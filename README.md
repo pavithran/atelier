@@ -500,8 +500,8 @@ variables and the ones its entry names in `env`, never a variable named
 `ATELIER_*` or one whose name says it holds a token, key or secret. A review
 job authenticates with the reviewing model's own agent token, which `tokens`
 in the config locates (a Keychain entry name or a file under
-`~/.config/atelier/`, never the value); without one the review is refused
-unless `ownerRecordsReviews` opts into the owner-recorded path. The
+`~/.config/atelier/`, never the value); without one the review is refused,
+naming the token to store, and never recorded by the owner token. The
 harness leads a process group of its own, and every process left in it is
 ended when the harness ends. No cloud runner ships: a task sent to `cloud`
 waits for a runner named `cloud:NAME`, any program that speaks the queue's

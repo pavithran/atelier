@@ -95,15 +95,11 @@ export function parseConfig(json) {
       }
     }
   }
-  // Optional (t346): until every reviewer has its token, the owner may let
-  // the owner token record the reviews of models `tokens` leaves out, as
-  // every runner did before t346; the task page keeps saying the owner
-  // recorded them. Off by default: a model without a token is refused.
-  let ownerRecordsReviews;
-  if (value.ownerRecordsReviews !== undefined) {
-    if (typeof value.ownerRecordsReviews !== "boolean") errors.push("ownerRecordsReviews must be true or false");
-    else ownerRecordsReviews = value.ownerRecordsReviews;
-  }
+  // Removed (t346): the owner-recorded fallback, which let the owner token
+  // record the reviews of models `tokens` left out. A config that still
+  // carries it is refused, so the owner learns the reviews it expected to be
+  // recorded would not be, rather than finding the option silently ignored.
+  if (value.ownerRecordsReviews !== undefined) errors.push("ownerRecordsReviews was removed: a review is recorded only by the reviewer's own agent token, so name one under tokens for each model this runner reviews as (docs/runners.md, Reviewers post under their own agent token) and take the option out");
   const seen = new Set();
   // Optional: the jobs this runner takes, named exactly (DEFAULT_JOBS): with
   // it the list is the whole truth, so a runner configured for reviews takes
@@ -154,7 +150,7 @@ export function parseConfig(json) {
     if (errors.length === start) agents.push({ agent: entry.agent, models: [...entry.models], command: [...entry.command], ...(entry.env ? { env: [...entry.env] } : {}) });
   }
   return { agents, errors, taskTimeoutMs, finishTimeoutMs, ...(keychain ? { keychain } : {}), ...(balances ? { balances } : {}), ...(tokens ? { tokens } : {}),
-    ...(ownerRecordsReviews !== undefined ? { ownerRecordsReviews } : {}), ...(jobs !== undefined ? { jobs } : {}) };
+    ...(jobs !== undefined ? { jobs } : {}) };
 }
 
 export function readConfig(path = join(process.env.ATELIER_CONFIG_DIR ?? join(homedir(), ".config", "atelier"), "runner.json")) {

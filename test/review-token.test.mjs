@@ -66,17 +66,22 @@ const cliCalls = (calls) => calls.filter((c) => c.argv);
 const everything = (calls, logs) => JSON.stringify({ calls, logs });
 
 test("parseConfig takes tokens as a Keychain entry name or a file under the config directory, never the token itself", () => {
-  const ok = parseConfig({ agents, jobs: ["review"], tokens: { [model]: "agent.glm-5.3", "gpt-6-astra": "tokens/gpt-6-astra", "gemini-3.1-pro": "~/.config/atelier/tokens/gemini" }, ownerRecordsReviews: false });
+  const ok = parseConfig({ agents, jobs: ["review"], tokens: { [model]: "agent.glm-5.3", "gpt-6-astra": "tokens/gpt-6-astra", "gemini-3.1-pro": "~/.config/atelier/tokens/gemini" } });
   assert.deepEqual(ok.errors, []);
   assert.deepEqual(ok.tokens, { [model]: "agent.glm-5.3", "gpt-6-astra": "tokens/gpt-6-astra", "gemini-3.1-pro": "~/.config/atelier/tokens/gemini" });
-  assert.equal(ok.ownerRecordsReviews, false);
   assert.equal("tokens" in parseConfig({ agents }), false);
   for (const tokens of [[], "agent.glm", { "bad model": "agent.glm" }, { [model]: FAKE }, { [model]: "atl_abc" }, { [model]: "" }, { [model]: "/etc/passwd" }, { [model]: "../outside" }, { [model]: "~/.ssh/id_ed25519" }, { [model]: 7 }]) {
     const result = parseConfig({ agents, tokens });
     assert.ok(result.errors.length, JSON.stringify(tokens));
     assert.ok(!result.errors.join(" ").includes(FAKE), "a refused value is not echoed");
   }
-  assert.match(parseConfig({ agents, ownerRecordsReviews: "yes" }).errors.join(" "), /ownerRecordsReviews must be true or false/);
+  // The owner-recorded fallback is gone: a config that still opts in is
+  // refused, whatever the value, and the refusal says where the tokens go.
+  for (const value of [true, false, "yes"]) {
+    const stale = parseConfig({ agents, jobs: ["review"], tokens: { [model]: "agent.glm-5.3" }, ownerRecordsReviews: value });
+    assert.match(stale.errors.join(" "), /ownerRecordsReviews was removed: a review is recorded only by the reviewer's own agent token.*tokens.*docs\/runners\.md.*take the option out/, JSON.stringify(value));
+    assert.equal("ownerRecordsReviews" in stale, false);
+  }
 });
 
 test("a token file resolves under the Atelier config directory, is read by its first line, and must be the user's alone", (t) => {
@@ -101,20 +106,23 @@ test("a token file resolves under the Atelier config directory, is read by its f
   assert.deepEqual(names, ["agent.glm"]);
 });
 
-test("reviewToken refuses a model the config names no token for, naming the entry to add, unless the owner opted in", () => {
+test("reviewToken refuses a model the config names no token for, naming the entry to add, and never answers with the owner token", () => {
   const refused = reviewToken({ agents }, model, actor);
   assert.match(refused.refused, /no agent token for opencode\/glm-5\.3/);
   assert.match(refused.refused, /tokens\["glm-5\.3"\]/);
   assert.match(refused.refused, /atelier token issue --as opencode\/glm-5\.3/);
-  assert.match(refused.refused, /ownerRecordsReviews/);
-  assert.deepEqual(reviewToken({ agents, ownerRecordsReviews: true }, model, actor), { owner: true });
+  assert.match(refused.refused, /never the owner's/);
+  assert.ok(!refused.refused.includes("ownerRecordsReviews"), "the refusal names no opt-in; there is none");
+  assert.equal("owner" in refused, false);
+  // A stale opt-in that got past parseConfig changes nothing: still refused.
+  assert.match(reviewToken({ agents, ownerRecordsReviews: true }, model, actor).refused, /no agent token for opencode\/glm-5\.3/);
   // A named entry that holds nothing is missing, and the refusal names it.
   const empty = reviewToken({ agents, tokens: { [model]: "agent.glm" } }, model, actor, { readSecret: () => null });
   assert.match(empty.refused, /the agent token for opencode\/glm-5\.3 is missing: the Keychain entry agent\.glm holds none/);
   const noFile = reviewToken({ agents, tokens: { [model]: "tokens/glm" } }, model, actor, { env: { ATELIER_CONFIG_DIR: join(tmpdir(), "atelier-no-such-dir") } });
   assert.match(noFile.refused, /is missing: the file tokens\/glm holds none/);
   // A store that cannot be read is a refusal too, never an owner-recorded review.
-  const broken = reviewToken({ agents, tokens: { [model]: "agent.glm" }, ownerRecordsReviews: true }, model, actor, { readSecret: () => { throw new Error("security exited 44"); } });
+  const broken = reviewToken({ agents, tokens: { [model]: "agent.glm" } }, model, actor, { readSecret: () => { throw new Error("security exited 44"); } });
   assert.match(broken.refused, /could not be read from agent\.glm: security exited 44/);
   assert.deepEqual(reviewToken({ agents, tokens: { [model]: "agent.glm" } }, model, actor, { readSecret: () => FAKE }), { token: FAKE });
 });
@@ -165,16 +173,19 @@ test("a runner without a token for a model refuses that model's review jobs, bef
   }
 });
 
-test("the owner-recorded path stays only by opting in, and the runner says the page will say so", async () => {
+test("a stale ownerRecordsReviews opt-in buys no owner-recorded review: the job is refused like any other without a token", async () => {
   const { io, calls, logs } = fixture();
   const state = await runReview(assignment, { agents, ownerRecordsReviews: true }, "home:studio", io);
-  assert.equal(state.phase, "reviewed");
-  for (const c of cliCalls(calls)) assert.equal(c.opts, undefined, `${c.argv[0]} is made with the runner's own (owner) credentials`);
-  assert.ok(logs.some((l) => l.includes("with the owner token (ownerRecordsReviews)") && l.includes("the owner recorded this review")), logs.join("\n"));
-  assert.ok(!calls.some((c) => c.readSecret), "no token is looked up");
-  // A model that has a token uses it even when the owner opted in for the others.
+  assert.equal(state.phase, "failed");
+  assert.equal(state.skipped, true);
+  assert.match(state.reason, /no agent token for opencode\/glm-5\.3: the runner config names none under tokens\["glm-5\.3"\]/);
+  assert.deepEqual(cliCalls(calls), [], "no call is made with the runner's own (owner) credentials");
+  assert.ok(!calls.some((c) => c.harness), "no harness runs");
+  assert.ok(!logs.some((l) => /owner token \(ownerRecordsReviews\)|the owner recorded this review/.test(l)), logs.join("\n"));
+  // A model that has a token uses it, whatever else the config carries.
   const both = fixture();
-  await runReview(assignment, { agents, tokens: { [model]: "agent.glm" }, ownerRecordsReviews: true }, "home:studio", both.io);
+  const reviewed = await runReview(assignment, { agents, tokens: { [model]: "agent.glm" }, ownerRecordsReviews: true }, "home:studio", both.io);
+  assert.equal(reviewed.phase, "reviewed");
   for (const c of cliCalls(both.calls)) assert.deepEqual(c.opts, { token: FAKE });
 });
 

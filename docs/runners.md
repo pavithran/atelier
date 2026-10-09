@@ -201,18 +201,11 @@ A model `tokens` leaves out has its review jobs refused: the runner logs
 which token is missing (`no agent token for codex/gpt-6-astra: the runner
 config names none under tokens["gpt-6-astra"]`, or the entry or file that
 holds none) and takes no other review of that model in this process. Builds
-are not affected. To keep reviewing while tokens are being issued, the
-owner may opt in to the path every runner followed before t346:
-
-```json
-"ownerRecordsReviews": true
-```
-
-With it, a model without a token reviews under the owner token, the runner
-logs that it does, and the task page keeps saying the owner recorded that
-review, which the gate counts only because the request was claimed
-(`atelier land`'s rule since t215). A model that has a token uses it
-regardless. Take the setting out once every reviewer has a token.
+are not affected. There is no owner-recorded fallback: a review is recorded
+only by the reviewer's own token, never the owner token the runner builds
+with, so a config that still carries the former `ownerRecordsReviews` option
+is refused with a message saying so; take the option out and store the
+missing tokens.
 
 `atelier runner --discover` reports what each home model's harness actually
 serves, which can differ from the model the pool registers. It reads the pool
