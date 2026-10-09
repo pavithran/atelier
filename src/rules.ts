@@ -138,9 +138,9 @@ export interface Evidence {
 }
 
 // One finding of an automatic review, as parseVerdict (src/review/verdict.ts)
-// reads it from the reviewer's reply. `blocking` is a correctness, security
-// or data loss fault, which holds a change back; `follow-up` never does. A
-// review may carry findings even when it approves, as the follow-ups.
+// reads it from the reviewer's reply. `blocking` holds a change back when the
+// review bar in force allows it; `follow-up` never does. A review may carry
+// findings even when it approves, as the follow-ups.
 export interface Finding {
   file: string;
   line: number | null;
