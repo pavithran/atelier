@@ -191,7 +191,9 @@ export function renderDiffText(item: string, diff: ItemDiff): string {
   return out.join("\n");
 }
 
-function isBinary(bytes: Uint8Array): boolean {
+// Whether content is binary: a NUL byte within its first 8000 bytes, as git
+// decides it. Decided from the content alone, never from the path.
+export function isBinary(bytes: Uint8Array): boolean {
   const n = Math.min(bytes.length, 8000);
   for (let i = 0; i < n; i++) if (bytes[i] === 0) return true;
   return false;
@@ -206,7 +208,7 @@ export interface Reader {
   blob(hash: string): Promise<Uint8Array | null>;
 }
 
-type Leaf = { path: string; hash: string; mode: string };
+export type Leaf = { path: string; hash: string; mode: string };
 
 // Paths whose entry differs between two trees, descending only into subtrees
 // whose hashes differ.
@@ -287,13 +289,14 @@ export async function treeDiff(r: Reader, baseTree: string, headTree: string, li
     if (status === "mode") return { path, status, added: 0, removed: 0, hunks: [] };
     const [before, after] = await Promise.all([l ? r.blob(l.hash) : null, rt ? r.blob(rt.hash) : null]);
     const size = Math.max(before?.length ?? 0, after?.length ?? 0);
-    if (size > limits.blobBytes) return { path, status: "too-large" as FileStatus, added: 0, removed: 0, hunks: [] };
+    const tooLarge = { path, status: "too-large" as FileStatus, added: 0, removed: 0, hunks: [] };
+    if (size > limits.blobBytes) return tooLarge;
     if ((before && isBinary(before)) || (after && isBinary(after))) return { path, status: "binary" as FileStatus, added: 0, removed: 0, hunks: [] };
     const a = before ? splitLines(decoder.decode(before)) : [];
     const b = after ? splitLines(decoder.decode(after)) : [];
-    if (a.length + b.length > limits.diffLines) return { path, status: "too-large" as FileStatus, added: 0, removed: 0, hunks: [] };
+    if (a.length + b.length > limits.diffLines) return tooLarge;
     const ops = diffLines(a, b);
-    if (!ops) return { path, status: "too-large" as FileStatus, added: 0, removed: 0, hunks: [] };
+    if (!ops) return tooLarge;
     return {
       path, status,
       added: ops.filter((o) => o.op === "+").length,
@@ -368,13 +371,26 @@ export function repoReader(repo: ArtifactsRepo): Reader {
   };
 }
 
-// Every changed path, uncapped by the display limit: deciding whether an item
-// touches a protected path needs the whole list, not the first page of it.
-export async function changedPaths(r: Reader, baseTree: string, headTree: string, cap = 20_000): Promise<string[]> {
+// Every pair of entries that differs between two trees, uncapped by the
+// display limit: the base side and the head side of each path, either null
+// where the path is absent on that side, with the hash and mode of each. A
+// path added, deleted, modified, renamed (listed as a deletion and an
+// addition), type-changed or mode-changed is listed; one both trees hold
+// with the same hash and mode is not. It is enumeration only: nothing is
+// read or classified here, so a caller that must see every changed object
+// (the secret scan, scanTrees in src/secret-scan.ts) reads each by its hash
+// and decides for itself what it is.
+export async function changedEntries(r: Reader, baseTree: string, headTree: string, cap = 20_000): Promise<[Leaf | null, Leaf | null][]> {
   const pairs: [Leaf | null, Leaf | null][] = [];
   await changedLeaves(r, baseTree, headTree, "", pairs, cap);
   if (pairs.length > cap) throw new Error(`more than ${cap} changed paths`);
-  return pairs.map(([l, rt]) => (rt ?? l)!.path);
+  return pairs;
+}
+
+// Every changed path, uncapped by the display limit: deciding whether an item
+// touches a protected path needs the whole list, not the first page of it.
+export async function changedPaths(r: Reader, baseTree: string, headTree: string, cap = 20_000): Promise<string[]> {
+  return (await changedEntries(r, baseTree, headTree, cap)).map(([l, rt]) => (rt ?? l)!.path);
 }
 
 // The workspace's head and every path it differs from main's head on (see
@@ -402,6 +418,28 @@ export async function itemDiff(artifacts: Artifacts, baselineRepo: string, works
   if (m.mainTree === m.headTree) return { base: m.main, head: m.head, files: [], truncated: false, baseTree: m.mainTree, headTree: m.headTree };
   const { files, truncated } = await treeDiff(pairReader(fork, baseline), m.mainTree, m.headTree);
   return { base: m.main, head: m.head, files, truncated, baseTree: m.mainTree, headTree: m.headTree };
+}
+
+// A reader for the secret scan over any other: a tree or blob the head or
+// base names that neither repository holds is an error, never empty content.
+// The display diff reads a missing object as nothing (changedPage, treeDiff),
+// which shows a reader what can be shown; the scan must not, because a missing
+// blob read as empty is a file with no added lines, and so no findings, and a
+// missing tree is a directory with no changes. Thrown, the scan stays pending
+// and is retried (scanRecorded in src/index.ts).
+export function strictReader(r: Reader): Reader {
+  return {
+    tree: async (h) => {
+      const t = await r.tree(h);
+      if (!t) throw new Error(`secret scan: tree ${h.slice(0, 8)} is missing from the repositories`);
+      return t;
+    },
+    blob: async (h) => {
+      const b = await r.blob(h);
+      if (!b) throw new Error(`secret scan: blob ${h.slice(0, 8)} is missing from the repositories`);
+      return b;
+    },
+  };
 }
 
 // ── merged items ───────────────────────────────────────────────────────────
