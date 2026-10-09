@@ -828,3 +828,32 @@ it("a review skip is recorded by runner, read by head and since, and the queue's
   expect(await L.reviewSkips(partId, "b".repeat(40), since)).toEqual([]);
   expect(await L.reviewSkips(partId, head, new Date(Date.now() + 60_000).toISOString())).toEqual([]);
 });
+
+// t353: the review-skip route awaits the write before it acknowledges, so a
+// skip that cannot persist (a missing item) reaches the runner as a refusal
+// rather than an unacknowledged success that loses the report.
+it("the review-skip route persists the skip before acknowledging, and a skip for a missing item is refused", async () => {
+  const { default: worker } = await import("../src/index.ts");
+  const name = "review-skip-route";
+  const L = await setup(name);
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject({ name, repo: `${name}--baseline`, policy, createdAt: new Date().toISOString() });
+  const { id } = await L.newItem("Skipped", [], "owner");
+  const head = "a".repeat(40);
+  const token = { ...env, ATELIER_TOKEN: "review-skip-route-token" } as typeof env;
+  const skip = (item: string, runner: string) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${item}/review-skip`, {
+    method: "POST",
+    headers: { authorization: "Bearer review-skip-route-token", "x-atelier-actor": "owner", "x-atelier-runner": runner, "content-type": "application/json" },
+    body: JSON.stringify({ head, note: "no agent token" }),
+  }), token);
+  // A skip for a missing item is refused: the awaited write's failure reaches
+  // the runner instead of a success that never persisted.
+  const missing = await skip("t999", "home:studio");
+  expect(missing.status).toBe(404);
+  expect(await missing.json()).toMatchObject({ error: "no_item" });
+  // A skip for a real item is persisted before the response acknowledges it.
+  const since = new Date(Date.now() - 60_000).toISOString();
+  const ok = await skip(id, "home:studio");
+  expect(ok.status).toBe(200);
+  expect(await ok.json()).toEqual({ skipped: true });
+  expect(await L.reviewSkips(id, head, since)).toEqual([{ runner: "home:studio", at: expect.any(String), note: "no agent token" }]);
+});

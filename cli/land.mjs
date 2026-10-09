@@ -9,7 +9,7 @@ import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-lease.ts";
 import { unoffered } from "../src/dispatch/rules.ts";
 import { sameActor } from "../src/rules.ts";
-import { landingVerdict } from "../src/landing-verdict.ts";
+import { landingVerdict, allSkipped } from "../src/landing-verdict.ts";
 
 // atelier land (t187): the project owner lands one task whole, taking the
 // project's landing lease on the server so two sessions never race main.
@@ -592,6 +592,26 @@ export async function runLand(io) {
             break;
           }
           if (d.item.head !== head) throw new StepError(`${id}'s head moved to ${short(d.item.head)} while waiting for the review; start the landing again`);
+          // A review request every runner that offers the reviewer has skipped
+          // will never be claimed, however long the wait runs (t353). Read as
+          // the Workflow reads it: the skips recorded since the request, at
+          // this head, against the live runners offering the reviewer for the
+          // review job — and say so by runner name instead of waiting out the
+          // hour.
+          if (ask.reviewer) {
+            const skips = (d.events ?? [])
+              .filter((e) => e.kind === "review.skipped" && e.data?.head === head && Date.parse(e.at) >= Date.parse(since))
+              .map((e) => ({ runner: e.data?.runner }));
+            if (skips.length) {
+              let offers = null;
+              try { offers = await request("GET", "/runners"); } catch { /* without the offers nothing is known to have skipped */ }
+              const stuck = allSkipped(ask.reviewer, Array.isArray(offers) ? offers : [], skips);
+              if (stuck) {
+                await record("review", Date.now() - t0, { verdict: "skipped", reviewer: ask.reviewer, runners: stuck });
+                throw new StepError(`every runner that offers ${ask.reviewer} for the review of ${id} at ${short(head)} has skipped it: ${stuck.join(", ")}. The review request stays open and ${id} stays submitted. Review by hand (atelier review ${id} --approve --as ${ask.reviewer} --note "…"), then atelier accept ${id} and atelier merge ${id}, or run atelier land ${id} again once a runner can serve ${ask.reviewer}`);
+              }
+            }
+          }
           await explainWait(d);
           if (waited >= REVIEW_TIMEOUT_MS) {
             await record("review", Date.now() - t0, { verdict: "timeout", reviewer: ask.reviewer ?? undefined });
