@@ -111,7 +111,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
       ...(box.review.skips ?? []).map((s, i) => ({ seq: 100 + i, itemId: id, at: new Date().toISOString(), actor: s.runner, kind: "review.skipped", data: { head, runner: s.runner } })),
     ];
     return {
-      item: { id, title: `Fixture ${id}`, state, owner: "codex/test", head, ...(box.kinds[id] ? { kind: box.kinds[id] } : {}), acceptedHead: state === "accepted" || state === "merged" ? head : null },
+      item: { id, title: `Fixture ${id}`, state, owner: "codex/test", ...(box.pushActors ? { pushActors: box.pushActors } : {}), head, ...(box.kinds[id] ? { kind: box.kinds[id] } : {}), acceptedHead: state === "accepted" || state === "merged" ? head : null },
       policy: { checks: box.checks, protected: ["work.txt"], regenerate: box.regen },
       gate: { ready: true, outOfScope: [], blockers: [] }, evidence: [], reviews, events,
     };
@@ -208,7 +208,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     else if (url.endsWith("/submit")) { box.states[item] = "submitted"; answer = detail(item); }
     else if (url.endsWith("/review-request")) {
       if (!box.review.needed && !(body.wanted === true && body.reviewer)) answer = { needed: false, reason: box.review.reason ?? "the gate counts an independent approval already" };
-      else { box.review.reviewer = body.reviewer ?? box.review.reviewer; box.review.pending = true; box.review.at = new Date().toISOString(); answer = { needed: true, requested: true, reason: "a protected change needs an independent review", at: box.review.at, head, reviewer: body.reviewer ?? box.review.reviewer }; }
+      else { box.review.reviewer = body.reviewer ?? box.review.reviewer; box.review.pending = true; box.review.at = new Date().toISOString(); answer = { needed: true, requested: true, reason: `a protected change needs an independent review${!body.reviewer && box.review.why ? ` ${box.review.why}` : ""}`, at: box.review.at, head, reviewer: body.reviewer ?? box.review.reviewer }; }
     }     else if (url.endsWith("/accept")) {
       assert.equal(body.head, head);
       box.states[item] = "accepted"; answer = detail(item).item;
@@ -274,6 +274,17 @@ test("a clean landing takes the lease, merges main, regenerates, checks, waits f
   assert.equal(events.find((e) => e.body.step === "merged").body.mergeCommit, merged);
 });
 
+// With no --reviewer the server suggests the reviewer (t370): the landing
+// prints the reviewer it chose and the reasons the server gave.
+test("a landing with no --reviewer prints the reviewer the server chose and why", async (t) => {
+  const f = await landFixture(t);
+  f.box.review.why = "Frontier reviewer required for security, concurrency or gate work. From the pool, which goes by review precision, then outcome record, then actor name.";
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.deepEqual(f.posts("/review-request").at(-1).body, {});
+  assert.match(r.output, /Review requested for codex\/gpt-6-astra: a protected change needs an independent review Frontier reviewer required for security, concurrency or gate work\. From the pool, which goes by review precision, then outcome record, then actor name\. Waiting for the verdict/);
+});
+
 test("--reviewer waits for that review and lands on approval even where the gate needs none", async (t) => {
   const f = await landFixture(t);
   f.box.review.needed = false;
@@ -284,6 +295,19 @@ test("--reviewer waits for that review and lands on approval even where the gate
   assert.match(r.output, /antigravity\/gemini-3\.1-pro approved t1/);
   assert.equal(f.posts("/land").find((x) => x.body.step === "review").body.verdict, "approve");
   assert.equal(f.box.states.t1, "merged");
+});
+
+test("--reviewer who contributed to the task is refused before the lease and the checks", async (t) => {
+  const f = await landFixture(t);
+  f.box.pushActors = ["codex/gpt-6-luna"];
+  const before = git(f.checkout, "rev-parse", "HEAD");
+  const r = await f.run(f.checkout, "land", "t1", "--reviewer", "codex/gpt-6-luna");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /codex\/gpt-6-luna contributed to t1 .* cannot review it/);
+  assert.equal(f.posts("/landing-lease").length, 0);
+  assert.equal(f.posts("/review-request").length, 0);
+  assert.equal(f.posts("/land").length, 0);
+  assert.equal(git(f.checkout, "rev-parse", "HEAD"), before);
 });
 
 test("--reviewer stops the landing on a rejection even where the gate needs no review", async (t) => {

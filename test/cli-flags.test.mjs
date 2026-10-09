@@ -42,6 +42,33 @@ test("parseArgs: a switch keeps the next word as a positional, a text flag takes
   assert.deepEqual(parseArgs(["models", "add", "--help", "m1"])._, ["models", "add", "m1"]);
 });
 
+// t360: --version parses like --help, wherever it stands, and never takes a
+// value or lands in the flag table's way.
+test("parseArgs: --version is read before any flag, wherever it stands", () => {
+  assert.equal(parseArgs(["ls", "--version"]).version, true);
+  assert.deepEqual(parseArgs(["ls", "--version"]).bare, []);
+  assert.deepEqual(parseArgs(["ls", "--version"]).multi, {});
+  // A word after --version is never its value: --all is still a switch.
+  assert.equal(parseArgs(["ls", "--version", "--all"]).all, true);
+  assert.deepEqual(parseArgs(["ls", "--version", "--all"])._, ["ls"]);
+  assert.equal(parseArgs(["--version", "ls"]).version, true);
+  assert.deepEqual(parseArgs(["--version", "ls"])._, ["ls"]);
+  // After -- it is a word for the command, like any flag.
+  const rest = parseArgs(["check", "--", "--version"]);
+  assert.equal(rest.version, undefined);
+  assert.deepEqual(rest.rest, ["--version"]);
+});
+
+// t360: --version=… is refused as a value the flag does not take, never a
+// string that slips through and answers anyway.
+test("parseArgs: --version= is a problem, not a version", () => {
+  const parsed = parseArgs(["ls", "--version=x"]);
+  assert.equal(parsed.version, false);
+  assert.deepEqual(parsed.multi.version, [false]);
+  assert.match(parsed.problems[0], /^--version takes no value/);
+  assert.equal(parseArgs(["ls", "--version="]).version, false);
+});
+
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-flags-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -102,6 +129,8 @@ globalThis.fetch = async (url, options = {}) => {
     else {
       const [, id, verb] = /^items\\/([^/]+)(?:\\/(.*))?$/.exec(rest) ?? [];
       if (verb === "handoff") data = { item: { ...item(id), owner: body.to }, next: "next" };
+      // Asked to suggest (t370), it answers as the server does: the builder it chose and why.
+      else if (verb === "dispatch" && body.suggest === true) data = { ...item(id), dispatch: { to: "home", agent: "claude-code", model: "opus-5.5" }, suggestion: { actor: "claude-code/opus-5.5", reasons: ["Eligible pool models ranked by recorded successful and failed outcomes.", "Passed over codex/gpt-6.1-sol: two consecutive stalled builds; no successful build since."] } };
       else if (verb === "dispatch") data = { ...item(id), dispatch: { to: body.to ?? "any", agent: body.agent ?? null, model: body.model ?? null, ...(body.job !== undefined ? { job: body.job, head: body.head ?? "5".repeat(40) } : {}) } };
       else if (verb === "block") data = { ...item(id), state: "blocked", blocked: { reason: body.reason, by: "codex/test" } };
       else if (verb === "unblock") data = { ...item(id), state: "claimed" };
@@ -257,11 +286,31 @@ test("dispatch --job merge-main sends the conflicted task back to its builder, a
     assert.equal(refused.status, 1, argv.join(" "));
     assert.match(refused.stderr, why, argv.join(" "));
   }
-  // An ordinary dispatch is unchanged.
+  // An ordinary dispatch that names its agent is unchanged.
   f.clear();
-  const plain = f.run(f.checkout, ["dispatch", "t3", "--to", "home", "--project", "demo"]);
+  const plain = f.run(f.checkout, ["dispatch", "t3", "--to", "home", "--agent", "codex", "--project", "demo"]);
   assert.equal(plain.status, 0, plain.stderr);
-  assert.equal(plain.stdout, "t3 is waiting for a home runner.\n");
+  assert.deepEqual(f.requests().at(-1).body, { to: "home", agent: "codex" });
+  assert.equal(plain.stdout, "t3 is waiting for a home runner, codex.\n");
+});
+
+// With no --agent the server suggests the builder (t370): the CLI asks for
+// the suggestion and prints which builder it chose and why.
+test("dispatch with no --agent asks the server to suggest a builder and prints the choice and its reason", (t) => {
+  const f = fixture(t);
+  const r = f.run(f.checkout, ["dispatch", "t3", "--to", "home", "--project", "demo"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(f.requests().at(-1).body, { to: "home", suggest: true });
+  assert.equal(r.stdout, "Builder: claude-code/opus-5.5. Eligible pool models ranked by recorded successful and failed outcomes. Passed over codex/gpt-6.1-sol: two consecutive stalled builds; no successful build since.\nt3 is waiting for a home runner, claude-code with opus-5.5.\n");
+});
+
+// t360: --version answers after any command, before any request.
+test("--version after a command prints the version and contacts no server", (t) => {
+  const f = fixture(t);
+  const r = f.run(f.checkout, ["ls", "--version"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^atelier \d+\.\d+\.\d+ \(route level \d+\)\n$/);
+  assert.deepEqual(f.requests(), []);
 });
 
 test("a flag that needs a value refuses a bare one before any request", (t) => {

@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { FLAGS } from "../cli/atelier.mjs";
 
 const cli = resolve("cli/atelier.mjs");
 
@@ -27,6 +28,44 @@ test("--version prints the CLI version and route level", () => {
   assert.equal(r.status, 0);
   assert.match(r.stdout, new RegExp(`^atelier \\d+\\.\\d+\\.\\d+ \\(route level ${ROUTE_LEVEL}\\)\\n$`));
   assert.equal(r.stderr, "");
+});
+
+// t360: --version parses like --help, so every command answers it the same
+// way, before any server contact or flag check; ops answers before the
+// toolkit would run.
+test("every command answers CMD --version with the same version line, contacting no server", () => {
+  const first = run(["--version"]);
+  assert.equal(first.status, 0);
+  for (const cmd of Object.keys(FLAGS)) {
+    const r = run([cmd, "--version"]);
+    assert.equal(r.status, 0, `${cmd} --version: ${r.stderr}`);
+    assert.equal(r.stdout, first.stdout, `${cmd} --version`);
+    assert.equal(r.stderr, "", `${cmd} --version wrote to stderr`);
+  }
+});
+
+test("--version is read wherever it stands, before the flags are checked", () => {
+  const expected = run(["--version"]).stdout;
+  for (const args of [["--version", "ls"], ["ls", "--bogus", "--version"], ["ls", "--version", "--all"]]) {
+    const r = run(args);
+    assert.equal(r.status, 0, args.join(" "));
+    assert.equal(r.stdout, expected, args.join(" "));
+    assert.equal(r.stderr, "", args.join(" "));
+  }
+});
+
+test("an unknown command refuses --version as it refuses --help", () => {
+  const r = run(["frobnicate", "--version"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /^atelier: unknown command "frobnicate"; try atelier help\n$/);
+  assert.equal(r.stdout, "");
+});
+
+test("--version= is refused as a flag with a value, as --help= is", () => {
+  const r = run(["ls", "--version=x"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /^atelier: ls does not take --version; see atelier ls --help\n$/);
+  assert.equal(r.stdout, "");
 });
 
 test("models --help prints the usage and exits 0 without contacting the server", () => {

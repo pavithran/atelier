@@ -1,6 +1,7 @@
 import { assertReviewAllowed } from "./rules.ts";
 import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
+import { scanCommit } from "./secret-scan.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
@@ -16,6 +17,8 @@ import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderIn
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
+import { suggestionRecords } from "./models/suggestion-records.ts";
+import { suggestBuilder } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { buildPrecision, precisionWindow } from "./models/precision.ts";
@@ -616,6 +619,24 @@ async function baseRepo(env: Env, L: ReturnType<typeof ledger>, item: { kind?: s
   return baseRepoOf(item, baselineRepo, planFork);
 }
 
+// The push's secret scan (t332), run for the head the Ledger recorded with a
+// scan pending: every object that exact commit changes against the repository
+// the item is measured against, read by commit id (scanCommit), and its
+// findings recorded against that head alone (setSecret, which drops them if
+// the head has moved on). A scan that cannot be read throws, and the pending mark
+// stands, so the gate keeps refusing until a retry of the push event or of
+// `atelier push` completes it; nothing is cleared or recorded for a head
+// other than the one scanned. Returns the item as the scan left it, or as it
+// stands when no scan is pending for its head.
+async function scanRecorded(env: Env, L: ReturnType<typeof ledger>, item: Item): Promise<Item> {
+  if (!item.fork || !item.head || item.secretScan !== item.head) return item;
+  const head = item.head;
+  const p = await L.project();
+  const scan = await scanCommit(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork, head);
+  if (scan.head !== head) throw new Error(`secret scan: ${item.id}'s scan read ${scan.head.slice(0, 8)}, not the recorded head ${head.slice(0, 8)}`);
+  return L.setSecret(item.id, "atelier/events", head, scan.hits, scan.unscanned);
+}
+
 // A part whose fork holds nothing beyond the commit it forked from starts
 // from its plan branch's head when that branch has moved since, so its
 // builder sees every part integrated since (docs/orchestrator.md, section 5).
@@ -1114,6 +1135,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const { apply, ...selection } = cleanServed(body);
     return json({ project, ...selection, ...(await L.annotateServed(selection, actor, apply)) });
   }
+  // Standing decisions (src/decisions.ts): GET lists every one with its
+  // status, for the owner and for an agent token (agentRoute); POST records
+  // one and POST decisions/ID/withdraw withdraws one, for the owner alone.
+  if (parts[2] === "decisions") {
+    if (parts.length === 3 && m === "GET") return json({ decisions: await L.decisions() });
+    requireOwner(env, actor);
+    if (parts.length === 3 && m === "POST") return json(await L.recordDecision(body, actor), 201);
+    if (parts.length === 5 && parts[4] === "withdraw" && m === "POST") return json(await L.withdrawDecision(parts[3], actor, body.note));
+    throw new RuleError("not_found", "no such route", 404);
+  }
   // Protected actions: the owner's approvals and the steps a ship ran (src/actions-api.ts).
   if (parts[2] === "actions") {
     const r = await actionsApi(L, m, parts.slice(3), body, actor, ownerActor(env), async (commit) => onMainLine(env, (await L.project()).repo, commit));
@@ -1314,7 +1345,19 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // more history is read for it.
       const refused = !!item.head && lineage.holdsRecorded !== true && lineage.rebasedFrom !== item.head;
       const authors = refused ? [] : await pushedAuthors(env, item.fork, observed, item, await baseRepo(env, L, item, (await L.project()).repo));
-      return json(await L.recordPush(id, actor, observed, reported, !!c.token, lineage, authors));
+      const recorded = await L.recordPush(id, actor, observed, reported, !!c.token, lineage, authors, true);
+      // The push scan (t332): the added lines at the recorded head are read
+      // for key patterns, and the flag records only file and line, never the
+      // value. The head was recorded with its scan pending, so a scan that
+      // fails here leaves the gate refusing and the next push, at the same
+      // head or a new one, runs it again; the answer is the item as the scan
+      // left it, or with the scan still pending.
+      try {
+        return json(await scanRecorded(env, L, recorded));
+      } catch (err) {
+        console.error(`secret scan of ${id} deferred: ${err instanceof Error ? err.message : String(err)}`);
+        return json(await L.item(id));
+      }
     }
     case "evidence": {
       const item = await L.item(id);
@@ -1412,6 +1455,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json({ runId, state }, 202);
     }
     case "dispatch": {
+      let suggestion;
+      // atelier dispatch with no --agent asks for the suggestion; a dispatch
+      // that names no agent without asking stays open to any runner's agent.
+      if (body.suggest === true && !body.agent && body.job !== "merge-main") {
+        requireOwner(env, actor);
+        const [pool, track, item, p] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project()]);
+        suggestion = suggestBuilder({ ...track, item, project: p.name, pool, policy: p.policy, owner: ownerActor(env) }, body);
+        const slash = suggestion.actor.indexOf("/");
+        body.agent = suggestion.actor.slice(0, slash);
+        body.model = suggestion.actor.slice(slash + 1);
+        body.to = suggestion.where;
+      }
       // A merge-main dispatch names the main head its job merges. The owner
       // names none after a landing conflicted, so the head is main's as the
       // baseline holds it now (read as plan refresh reads it, t243): a newer
@@ -1427,7 +1482,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const oldToken = await L.tokenId(id);
       const before = await L.checkDispatch(id, actor, body);
       if (before.owner) await revoke(env, before.fork, oldToken);
-      return json(await L.dispatch(id, actor, body, oldToken));
+      return json({ ...await L.dispatch(id, actor, body, oldToken), ...(suggestion ? { suggestion } : {}) });
     }
     case "undispatch":
       return json(await L.undispatch(id, actor));
@@ -1441,6 +1496,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.block(id, actor, body.reason, !!c.token));
     case "unblock":
       return json(await L.unblock(id, actor, !!c.token));
+    case "clear-secret":
+      requireOwner(env, actor);
+      return json(await L.clearSecret(id, actor, body.reason, !!c.token));
     case "review": {
       const item = await L.item(id);
       assertReviewAllowed(item, !!c.token);
@@ -1509,7 +1567,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review-request": {
       requireOwner(env, actor);
       const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
-      return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true));
+      const track = reviewer === null ? await suggestionRecords(index(env), (p) => ledgerOf(env, p)) : undefined;
+      return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true, false, track));
     }
     // One recorded step of a landing (atelier land): what it was, how long it
     // took and what it settled, for the integration record (t186).
@@ -2201,6 +2260,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     else if (verb === "abandon") await L.abandon(id, owner, note, oldToken);
     else if (verb === "block") await L.block(id, owner, note);
     else if (verb === "unblock") await L.unblock(id, owner);
+    else if (verb === "clear-secret") await L.clearSecret(id, owner, note);
     else if (verb === "release") await L.release(id, owner, note, false, oldToken);
     else if (verb === "handoff") await L.handoff(id, owner, String(form.get("to") ?? ""), note, false, oldToken);
     else if (verb === "approve" || verb === "reject") {
@@ -2466,7 +2526,15 @@ export default {
               // head that should have moved and did not.
               const { holdsRecorded } = await pushLineage(env, notice.repo, current, item.head, null);
               const authors = holdsRecorded ? await pushedAuthors(env, notice.repo, current, item, await baseRepo(env, L, item, (await L.project()).repo)) : [];
-              const recorded = await L.observePush(item.id,current,item.head,holdsRecorded,authors);
+              const recorded = await L.observePush(item.id,current,item.head,holdsRecorded,authors,true);
+              // The push scan for a push seen on the fork, as the push route
+              // runs it: file and line only, never the value. It runs for the
+              // head recorded with its scan pending, which a sighting that
+              // moved the head just wrote and a redelivery after a failed
+              // scan still finds; a scan that throws leaves the event
+              // retried, so no push is acknowledged with its scan pending. A
+              // duplicate sighting of a scanned head runs nothing.
+              if (recorded.head === current) await scanRecorded(env, L, recorded);
               if (holdsRecorded && !["merged","abandoned"].includes(recorded.state) && recorded.head !== current) throw new Error("concurrent push; retry observation");
             }
             break;
