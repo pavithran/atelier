@@ -348,8 +348,18 @@ test("a coordinated change without protected paths says plainly why no review wa
   f.box.review.reason = "coordinated change needs no review in a project without an execution policy";
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /No review was needed: this change touched no protected paths\./);
-  assert.doesNotMatch(r.output, /execution policy|coordinated change/);
+  assert.match(r.output, /No review request was needed: coordinated change needs no review in a project without an execution policy\./);
+  assert.doesNotMatch(r.output, /protected path/);
+});
+
+test("a needed:false answer for failing checks prints the server's reason, never a claim about protected paths (t319)", async (t) => {
+  const f = await landFixture(t);
+  f.box.review.needed = false;
+  f.box.review.reason = "npm test failed at 1a2b3c4d; the builder fixes that before a review";
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /No review request was needed: npm test failed at 1a2b3c4d; the builder fixes that before a review\./);
+  assert.doesNotMatch(r.output, /protected path|touched no/);
 });
 
 test("--no-review leaves the task submitted, accepts and merges nothing, and releases the lease", async (t) => {
