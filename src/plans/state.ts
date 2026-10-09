@@ -8,6 +8,7 @@
 import type { LedgerEvent } from "../ledger.ts";
 import { liveOffers, offeredActors, type SeenOffer } from "../dispatch/rules.ts";
 import type { ModelEntry } from "../models/pool.ts";
+import { hasModelRole, modelState, offThePool } from "../models/pool.ts";
 import { MODEL_PROFILES, type ModelProfile } from "../models/registry.ts";
 import { route } from "../models/routing.ts";
 import { TEXT_CONTROLS } from "../text.ts";
@@ -307,6 +308,8 @@ export function pickPlanner(pool: readonly ModelEntry[], events: readonly Ledger
     const actor = actorOf(entry);
     const refusals: string[] = [];
     if (entry.status?.state === "refused") refusals.push(`status refused, reported by ${entry.status.by} at ${entry.status.at}`);
+    if (offThePool(entry)) refusals.push(`${modelState(entry)} since ${(entry.stateAt ?? entry.addedAt).slice(0, 10)} (the owner's standing)${entry.note ? `: ${entry.note}` : ""}`);
+    if (!hasModelRole(entry, "plan")) refusals.push(`not a planner; its roles are ${entry.roles!.join(", ")}`);
     if (paidPerToken(entry)) refusals.push(`paid per token (${entry.provider}); name it with --planner to use it`);
     if (offered && !offered.has(actor.toLowerCase())) refusals.push(`no live runner offers ${actor}, so no runner could claim the plan job`);
     try { assertEligible(actor, policy, DEFAULT_OWNER, "planner"); } catch (err) {

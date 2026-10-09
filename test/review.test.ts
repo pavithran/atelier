@@ -273,6 +273,7 @@ test("pickReviewer: the plan's routed reviewer, when it passes every rule, with 
     "The plan's routed reviewer for this part",
     "Another family (openai) than every contributor: zcode/glm-5.3 (zai)",
     "Status not checked yet",
+    "The owner's standing is available",
     "No per-token cost (subscription)",
     "Availability not set; treated as available",
   ] });
@@ -411,6 +412,21 @@ test("pickReviewer: refused, reserved and small-window models are passed over in
   // A review outside a plan names no kind of work, so a reserved tool is kept for its kinds.
   const outside = pick({ ...input, pool: [glm], route: null });
   assert.deepEqual(outside.passedOver, [{ actor: GLM, reasons: ["reserved for docs (availability of zcode); a review outside a plan is of no named kind"] }]);
+});
+
+test("pickReviewer: a paused or reserved model is passed over, and a model without the review role never reviews", () => {
+  // The contributor is openai, so the anthropic opus and sonnet are the candidates; opus sorts first.
+  const openai = item({ owner: "codex/gpt-6-astra", pushActors: ["codex/gpt-6-astra"] });
+  const paused = pick({ item: openai, pool: [{ ...opus, state: "paused", stateAt: T, note: "source down" }, sonnet] });
+  assert.equal(paused.reviewer!.actor, "claude-code/sonnet-5.5");
+  assert.deepEqual(paused.passedOver, [{ actor: "claude-code/opus-5.5", reasons: ["paused since 2026-10-05 (the owner's standing): source down"] }]);
+  const reserved = pick({ item: openai, pool: [{ ...opus, state: "reserved", note: "astra's credits" }, sonnet] });
+  assert.equal(reserved.reviewer!.actor, "claude-code/sonnet-5.5");
+  assert.deepEqual(reserved.passedOver, [{ actor: "claude-code/opus-5.5", reasons: ["reserved since 2026-10-05 (the owner's standing): astra's credits"] }]);
+  // A model whose roles lack review is never a reviewer.
+  const buildOnly = pick({ item: openai, pool: [{ ...opus, roles: ["build"] }, sonnet] });
+  assert.equal(buildOnly.reviewer!.actor, "claude-code/sonnet-5.5");
+  assert.deepEqual(buildOnly.passedOver, [{ actor: "claude-code/opus-5.5", reasons: ["not a reviewer; its roles are build"] }]);
 });
 
 test("pickReviewer: the choice does not depend on the order of the pool, and leaves its inputs alone", () => {

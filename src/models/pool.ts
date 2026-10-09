@@ -21,6 +21,27 @@ export interface ModelStatus {
   detail?: string;
 }
 
+// The owner's standing for a model, apart from the runner's report (status):
+// paused keeps it out of the pool until the owner turns it back on, and
+// reserved holds it back for a reason the note records (spent credits, a
+// source down for a spell), so routing, dispatch suggestions and review
+// requests skip both. "available" is the default and means nothing is held.
+export const MODEL_STATES = ["available", "paused", "reserved"] as const;
+export type ModelState = (typeof MODEL_STATES)[number];
+
+// The jobs a model may take. A model lists the roles it is fit for, and
+// routing never gives it the others: a review-only model is never a builder.
+// An entry that names none takes every role, as before these were recorded.
+export const MODEL_ROLES = ["build", "review", "plan"] as const;
+export type ModelRole = (typeof MODEL_ROLES)[number];
+
+// The tiers the owner decided (2026-10-08): frontier models for the hardest
+// work, execution models for the everyday, budget models for the cheap. The
+// tier is stored and returned, and is informational; routing reads roles and
+// state, not the tier.
+export const MODEL_TIERS = ["frontier", "execution", "budget"] as const;
+export type ModelTier = (typeof MODEL_TIERS)[number];
+
 export interface ModelEntry {
   id: string;                 // as the harness names it; the second half of an actor name
   harness: PoolHarness;
@@ -34,6 +55,26 @@ export interface ModelEntry {
   addedBy: string;
   addedAt: string;
   status?: ModelStatus;
+  state?: ModelState;         // the owner's standing; paused and reserved skip it
+  stateAt?: string;           // when the state was last set
+  roles?: readonly ModelRole[]; // the jobs it may take; all three when none are named
+  tier?: ModelTier;           // frontier, execution or budget
+}
+
+// The state as routing reads it: available unless the owner paused or reserved it.
+export function modelState(entry: Pick<ModelEntry, "state">): ModelState {
+  return entry.state ?? "available";
+}
+
+// Whether routing, dispatch suggestions and review requests skip the model.
+export function offThePool(entry: Pick<ModelEntry, "state">): boolean {
+  const state = modelState(entry);
+  return state === "paused" || state === "reserved";
+}
+
+// Whether the entry may take a job; an entry that names no roles takes every one.
+export function hasModelRole(entry: Pick<ModelEntry, "roles">, role: ModelRole): boolean {
+  return !entry.roles?.length || entry.roles.includes(role);
 }
 
 // Names, as patterns, oldest-established first within each family. Anything
@@ -129,13 +170,37 @@ export function cleanEntry(body: Record<string, unknown>, by: string, at: string
   if (aliases.some(pasted)) throw bad("an alias looks like a key; a key belongs in the Keychain");
   if (pasted(str(body.note))) throw bad("the note looks like it carries a key; a key belongs in the Keychain");
   const family = (str(body.family) || familyOf(id)) as PoolFamily;
+  const state = (str(body.state) || "available") as ModelState;
+  if (!MODEL_STATES.includes(state)) throw bad(`state must be one of ${MODEL_STATES.join(", ")}`);
+  const roles = cleanRoles(body.roles, bad);
+  const tier = cleanTier(body.tier, bad);
   return {
     id, harness, where, provider,
     ...(endpoint ? { endpoint } : {}),
     ...(keychain ? { keychain } : {}),
     aliases, family: FAMILIES.some(([f]) => f === family) ? family : familyOf(id),
     note: str(body.note).slice(0, 300), addedBy: by, addedAt: at,
+    ...(state !== "available" ? { state, stateAt: at } : {}),
+    ...(roles ? { roles } : {}),
+    ...(tier ? { tier } : {}),
   };
+}
+
+// A roles value: a list, or names separated by commas, each a model role.
+// Nothing, or a list that empties, means every role, which is not stored.
+function cleanRoles(v: unknown, bad: (detail: string) => RuleError): readonly ModelRole[] | undefined {
+  const names = (Array.isArray(v) ? v : str(v).split(",")).map(str).filter(Boolean);
+  if (!names.length) return undefined;
+  const roles = [...new Set(names)] as ModelRole[];
+  if (roles.some((r) => !MODEL_ROLES.includes(r))) throw bad(`roles must be some of ${MODEL_ROLES.join(", ")}`);
+  return roles;
+}
+
+function cleanTier(v: unknown, bad: (detail: string) => RuleError): ModelTier | undefined {
+  const tier = str(v);
+  if (!tier) return undefined;
+  if (!MODEL_TIERS.includes(tier as ModelTier)) throw bad(`tier must be one of ${MODEL_TIERS.join(", ")}`);
+  return tier as ModelTier;
 }
 
 export function cleanStatus(body: Record<string, unknown>, at: string, by: string): ModelStatus {
@@ -144,6 +209,39 @@ export function cleanStatus(body: Record<string, unknown>, at: string, by: strin
   const served = redactKeys(plain(str(body.served)).trim()).slice(0, 128);
   const detail = redactKeys(plain(str(body.detail)).trim()).slice(0, 300);
   return { state: state as ModelStatus["state"], at, by, ...(served ? { served } : {}), ...(detail ? { detail } : {}) };
+}
+
+// What `atelier models set` may change on an entry: its state, note, roles
+// and tier, each optional and, when absent, left as it was. Only a field
+// actually given is returned, so a set that names nothing is empty and
+// changes nothing. No field here may carry a key.
+export interface ModelSet {
+  state?: ModelState;
+  note?: string;
+  roles?: readonly ModelRole[];
+  tier?: ModelTier;
+}
+
+export function cleanModelSet(body: Record<string, unknown>): ModelSet {
+  const bad = (detail: string) => new RuleError("bad_model", detail, 400);
+  const out: ModelSet = {};
+  const given = (k: string) => body[k] !== undefined && body[k] !== null;
+  if (given("state")) {
+    const state = str(body.state) as ModelState;
+    if (!MODEL_STATES.includes(state)) throw bad(`state must be one of ${MODEL_STATES.join(", ")}`);
+    out.state = state;
+  }
+  if (given("note")) {
+    const note = str(body.note);
+    if (LOOKS_LIKE_KEY.test(note)) throw bad("the note looks like it carries a key; a key belongs in the Keychain");
+    out.note = note.slice(0, 300);
+  }
+  if (given("roles")) {
+    const roles = cleanRoles(body.roles, bad);
+    if (roles) out.roles = roles;
+  }
+  if (given("tier")) out.tier = cleanTier(body.tier, bad);
+  return out;
 }
 
 // The fields a status was observed under: change one and the status no
