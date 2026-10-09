@@ -53,6 +53,8 @@ const CONFIG = join(CONFIG_DIR, "config.json");
 const CACHE = process.env.ATELIER_CACHE ?? join(HOME, "Library", "Caches", "ai-projects", "cloudflare-git");
 const CHECK_TIMEOUT_MS = Number(process.env.ATELIER_CHECK_TIMEOUT ?? 20 * 60_000);
 const CLI_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+// The one line --version prints, wherever it stands, ops included.
+const VERSION_LINE = `atelier ${CLI_VERSION} (route level ${ROUTE_LEVEL})`;
 
 // ── plumbing ───────────────────────────────────────────────────────────────
 
@@ -299,7 +301,9 @@ export const FLAGS = {
 const REST = new Set(["check"]);
 // The flags each plan subcommand takes; "" is a new plan's.
 const PLAN_FLAGS = { "": ["scope", "planner"], show: ["json"], approve: ["hash", "allow-paid"], revise: ["note"], reroute: ["to"], retry: [], refresh: ["resolve", "to"], stop: ["note"], post: [] };
-const SWITCHES = new Set(Object.values(FLAGS).flatMap((row) => Object.keys(row).filter((flag) => row[flag] === true)));
+// version is a switch too, so --version=… is refused as a value it does not
+// take, instead of slipping through as a string that answers anyway.
+const SWITCHES = new Set(["version", ...Object.values(FLAGS).flatMap((row) => Object.keys(row).filter((flag) => row[flag] === true))]);
 
 export function parseArgs(argv, switches = SWITCHES) {
   const out = { _: [], multi: {}, bare: [], problems: [] };
@@ -350,9 +354,10 @@ const isMain = process.argv[1] && realpathSync(process.argv[1]) === fileURLToPat
 // Portfolio operations (surveys, devices and shipping, backups, Observatory,
 // the findings ledger) live in a private toolkit, not in this public command.
 // `atelier ops ...` hands everything after `ops` to it before this command
-// parses or reads anything, so no argument is changed on the way, and exits
-// as it exits. The toolkit is the program ATELIER_OPS names, or atelier-ops on
-// PATH; only an executable file counts.
+// parses anything, so no argument is changed on the way, and it exits as the
+// toolkit exits; only --version is read here first, like every other command,
+// so it never reaches the toolkit. The toolkit is the program ATELIER_OPS
+// names, or atelier-ops on PATH; only an executable file counts.
 const runnable = (path) => {
   try { return statSync(path).isFile() && (accessSync(path, fsConstants.X_OK), true); } catch { return false; }
 };
@@ -381,7 +386,14 @@ function runOps(argv) {
   }
   process.exit(r.status ?? 1);
 }
-if (isMain && process.argv[2] === "ops") runOps(process.argv.slice(3));
+if (isMain && process.argv[2] === "ops") {
+  const opsArgs = process.argv.slice(3);
+  // --version stands before any parsing, so only the words up to a `--` are
+  // read: an exact --version there is answered, like every other command.
+  const version = opsArgs.indexOf("--version"), end = opsArgs.indexOf("--");
+  if (version !== -1 && (end === -1 || version < end)) { console.log(VERSION_LINE); process.exit(0); }
+  runOps(opsArgs);
+}
 
 const args = parseArgs(process.argv.slice(2));
 const cfg = isMain ? loadConfig() : {};
@@ -3462,7 +3474,7 @@ if (isMain) {
   // every command, and --help/-h anywhere prints the command's usage, or the
   // general help. Both exit before any server contact.
   if (args.version) {
-    console.log(`atelier ${CLI_VERSION} (route level ${ROUTE_LEVEL})`);
+    console.log(VERSION_LINE);
     process.exit(0);
   }
   // --help/-h anywhere prints the command's usage, or the general help, and
