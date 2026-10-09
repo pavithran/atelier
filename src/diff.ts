@@ -23,10 +23,6 @@ export interface FileChange {
   added: number;
   removed: number;
   hunks: Hunk[];
-  // The hash of the file's content at the head, carried for a file listed
-  // too-large so the secret scan can fingerprint what it could not read
-  // (scanPush in src/secret-scan.ts); absent otherwise.
-  hash?: string;
 }
 
 export interface ItemDiff {
@@ -52,12 +48,6 @@ export const LIMITS = {
   treeReads: 1_000,      // directories read for one diff; deeper changes are not listed
   context: 3,
 };
-
-// The limits a push's secret scan diffs with: every changed file, whatever its
-// size or count, so a key behind the display diff's cut is still found. Only
-// a text file whose edit exceeds the Myers budget is left unscanned, and the
-// scan records that file as a blocking flag rather than pass it silently.
-export const SCAN_LIMITS: typeof LIMITS = { files: Infinity, blobBytes: Infinity, diffLines: Infinity, treeReads: Infinity, context: LIMITS.context };
 
 // ── line diff ──────────────────────────────────────────────────────────────
 
@@ -201,7 +191,9 @@ export function renderDiffText(item: string, diff: ItemDiff): string {
   return out.join("\n");
 }
 
-function isBinary(bytes: Uint8Array): boolean {
+// Whether content is binary: a NUL byte within its first 8000 bytes, as git
+// decides it. Decided from the content alone, never from the path.
+export function isBinary(bytes: Uint8Array): boolean {
   const n = Math.min(bytes.length, 8000);
   for (let i = 0; i < n; i++) if (bytes[i] === 0) return true;
   return false;
@@ -216,7 +208,7 @@ export interface Reader {
   blob(hash: string): Promise<Uint8Array | null>;
 }
 
-type Leaf = { path: string; hash: string; mode: string };
+export type Leaf = { path: string; hash: string; mode: string };
 
 // Paths whose entry differs between two trees, descending only into subtrees
 // whose hashes differ.
@@ -297,7 +289,7 @@ export async function treeDiff(r: Reader, baseTree: string, headTree: string, li
     if (status === "mode") return { path, status, added: 0, removed: 0, hunks: [] };
     const [before, after] = await Promise.all([l ? r.blob(l.hash) : null, rt ? r.blob(rt.hash) : null]);
     const size = Math.max(before?.length ?? 0, after?.length ?? 0);
-    const tooLarge = { path, status: "too-large" as FileStatus, added: 0, removed: 0, hunks: [], ...(rt ? { hash: rt.hash } : {}) };
+    const tooLarge = { path, status: "too-large" as FileStatus, added: 0, removed: 0, hunks: [] };
     if (size > limits.blobBytes) return tooLarge;
     if ((before && isBinary(before)) || (after && isBinary(after))) return { path, status: "binary" as FileStatus, added: 0, removed: 0, hunks: [] };
     const a = before ? splitLines(decoder.decode(before)) : [];
@@ -379,13 +371,26 @@ export function repoReader(repo: ArtifactsRepo): Reader {
   };
 }
 
-// Every changed path, uncapped by the display limit: deciding whether an item
-// touches a protected path needs the whole list, not the first page of it.
-export async function changedPaths(r: Reader, baseTree: string, headTree: string, cap = 20_000): Promise<string[]> {
+// Every pair of entries that differs between two trees, uncapped by the
+// display limit: the base side and the head side of each path, either null
+// where the path is absent on that side, with the hash and mode of each. A
+// path added, deleted, modified, renamed (listed as a deletion and an
+// addition), type-changed or mode-changed is listed; one both trees hold
+// with the same hash and mode is not. It is enumeration only: nothing is
+// read or classified here, so a caller that must see every changed object
+// (the secret scan, scanTrees in src/secret-scan.ts) reads each by its hash
+// and decides for itself what it is.
+export async function changedEntries(r: Reader, baseTree: string, headTree: string, cap = 20_000): Promise<[Leaf | null, Leaf | null][]> {
   const pairs: [Leaf | null, Leaf | null][] = [];
   await changedLeaves(r, baseTree, headTree, "", pairs, cap);
   if (pairs.length > cap) throw new Error(`more than ${cap} changed paths`);
-  return pairs.map(([l, rt]) => (rt ?? l)!.path);
+  return pairs;
+}
+
+// Every changed path, uncapped by the display limit: deciding whether an item
+// touches a protected path needs the whole list, not the first page of it.
+export async function changedPaths(r: Reader, baseTree: string, headTree: string, cap = 20_000): Promise<string[]> {
+  return (await changedEntries(r, baseTree, headTree, cap)).map(([l, rt]) => (rt ?? l)!.path);
 }
 
 // The workspace's head and every path it differs from main's head on (see
@@ -435,31 +440,6 @@ export function strictReader(r: Reader): Reader {
       return b;
     },
   };
-}
-
-// The diff a push's secret scan reads: `itemDiff` without the display limits,
-// so the scan sees every added line of every changed file, not just the first
-// page. A text file the diff cannot hold is listed too-large, and the scan
-// turns that into a blocking flag naming the file left unscanned. An object
-// the diff needs and cannot read throws (strictReader), so the scan is never
-// made from a diff with a hole in it.
-//
-// It is bound to `head`, the commit the Ledger recorded, never to the fork's
-// live head: the fork may have moved on since the head was recorded, and a
-// diff of the newer head would be applied to the older one's record. The
-// commit is read by its id, and the diff is made only when the commit read
-// is that one; a fork that cannot show it (a reader that answers with the
-// live head, a commit not reachable) throws, so the scan stays pending and
-// is retried rather than clearing or recording anything for the wrong head.
-export async function fullDiff(artifacts: Artifacts, baselineRepo: string, workspaceRepo: string, head: string): Promise<ItemDiff> {
-  using fork = await artifacts.get(workspaceRepo);
-  using baseline = await artifacts.get(baselineRepo);
-  const [[commit], [main]] = await Promise.all([fork.log({ ref: head, limit: 1 }), baseline.log({ limit: 1 })]);
-  if (!commit || commit.hash !== head) throw new Error(`secret scan: ${workspaceRepo} did not show the recorded head ${head.slice(0, 8)}${commit ? ` (read ${commit.hash.slice(0, 8)})` : ""}`);
-  if (!main) throw new Error(`secret scan: ${baselineRepo} has no commits to diff against`);
-  if (main.treeHash === commit.treeHash) return { base: main.hash, head: commit.hash, files: [], truncated: false, baseTree: main.treeHash, headTree: commit.treeHash };
-  const { files, truncated } = await treeDiff(strictReader(pairReader(fork, baseline)), main.treeHash, commit.treeHash, SCAN_LIMITS);
-  return { base: main.hash, head: commit.hash, files, truncated, baseTree: main.treeHash, headTree: commit.treeHash };
 }
 
 // ── merged items ───────────────────────────────────────────────────────────

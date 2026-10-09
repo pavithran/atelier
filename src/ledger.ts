@@ -1690,8 +1690,8 @@ export class Ledger extends DurableObject<Env> {
 
   // The secret flag a push scan records or clears (t332). `hits` names the
   // file, line and fingerprint of every added line that held a key pattern
-  // at `head`, and `unscanned` names every file whose added lines the scan
-  // could not read in full, with the hash of its content; an empty list of
+  // at `head`, and `unscanned` names every path whose head side the scan
+  // could not read as text, with why and the hash of its object; an empty list of
   // both clears the flag, so a later push that removes the line clears it.
   // Only the file, line and fingerprint ever reach the Ledger, never the
   // value.
@@ -1717,7 +1717,7 @@ export class Ledger extends DurableObject<Env> {
     const cleared = (file: string, fingerprint: string) => !!fingerprint && clearances.some((c) => c.file === file && c.fingerprint === fingerprint);
     const flags: SecretFlag[] = [
       ...hits.map((h): SecretFlag => ({ file: h.file, line: h.line, fingerprint: h.fingerprint, head, by: actor, at, ...(cleared(h.file, h.fingerprint) ? { cleared: true as const } : {}) })),
-      ...unscanned.map((u): SecretFlag => ({ file: u.file, line: 0, fingerprint: u.fingerprint, head, by: actor, at, unscanned: true, ...(cleared(u.file, u.fingerprint) ? { cleared: true as const } : {}) })),
+      ...unscanned.map((u): SecretFlag => ({ file: u.file, line: 0, fingerprint: u.fingerprint, head, by: actor, at, unscanned: true, ...(u.reason ? { reason: u.reason } : {}), ...(cleared(u.file, u.fingerprint) ? { cleared: true as const } : {}) })),
     ];
     const done: Record<string, string | null> = item.secretScan === head ? { secret_scan: null } : {};
     // A re-scan of the same head with the same findings changes nothing but
@@ -1727,7 +1727,7 @@ export class Ledger extends DurableObject<Env> {
     // superseded one.
     const prev = item.secret ?? [];
     const same = (f: SecretFlag, p: SecretFlag) => f.file === p.file && f.line === p.line && f.fingerprint === p.fingerprint
-      && (f.unscanned ?? false) === (p.unscanned ?? false) && (f.cleared ?? false) === (p.cleared ?? false);
+      && (f.unscanned ?? false) === (p.unscanned ?? false) && (f.reason ?? "") === (p.reason ?? "") && (f.cleared ?? false) === (p.cleared ?? false);
     const unchanged = prev.length === flags.length && flags.every((f, i) => same(f, prev[i])) && prev.every((f) => f.head === head);
     if (unchanged) {
       if ("secret_scan" in done) this.update(id, done, at);

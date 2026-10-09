@@ -87,9 +87,11 @@ export interface Block {
 // One entry of the secret flag the push scan records: where a key pattern was
 // added, at which head, by whom and when, with the fingerprint of the line
 // (fingerprint in src/secret-scan.ts). The matched value is never kept, so
-// only these fields exist. A flag with `unscanned` names a file whose added
-// lines the scan could not read in full; it has no line, so `line` is 0, and
-// its fingerprint is the hash of the file's content. A flag with `cleared`
+// only these fields exist. A flag with `unscanned` names a path whose head
+// side the scan could not read as text, with `reason` saying why (binary
+// content, a submodule, an oversized blob, a diff over budget); it has no
+// line, so `line` is 0, and its fingerprint is the hash of the object at the
+// head, so a clearance holds while that object is unchanged. A flag with `cleared`
 // was matched by a clearance the owner recorded (SecretClearance): it is
 // kept as the record of what the scan found, and does not block.
 export interface SecretFlag {
@@ -100,6 +102,7 @@ export interface SecretFlag {
   by: string;
   at: string;
   unscanned?: true;
+  reason?: string;
   cleared?: true;
 }
 
@@ -1237,7 +1240,7 @@ export function secretBlockers(item: Pick<Item, "secret" | "head" | "secretScan"
   const flags = (item.secret ?? [])
     .filter((f) => f.head === item.head && !f.cleared)
     .map((f) => f.unscanned
-      ? `secret scan could not read ${f.file} in full; clear it with a reason or push a revision that removes the line`
+      ? `secret scan could not read ${f.file} in full${f.reason ? ` (${f.reason})` : ""}; clear it with a reason or push a revision that removes the line`
       : `secret flagged in ${f.file}:${f.line}; clear it with a reason or push a revision that removes the line`);
   if (item.head && item.secretScan === item.head) {
     flags.push(`secret scan pending for ${item.head.slice(0, 8)}; it is retried until it completes, and atelier push runs it again`);
