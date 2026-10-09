@@ -517,7 +517,15 @@ export async function runLand(io) {
       const ask = await request("POST", `${itemPath}/review-request`, reviewer ? { reviewer, wanted: true } : {});
       if (!ask.needed && reviewer) throw new StepError(`the server made no review request for ${reviewer} (${ask.reason}); ${id} stays submitted`);
       if (!ask.needed) {
-        print(`No review was requested: ${ask.reason}. The gate decides whether ${id} can be accepted.`);
+        // The server answers a direct or coordinated change only when no
+        // protected path changed (src/review/needed.ts), so those two say so
+        // plainly; any other reason is printed as the server gave it.
+        const why = String(ask.reason ?? "");
+        print(/approval/i.test(why)
+          ? "No review request was needed: an independent approval already covers this change."
+          : /^an? (direct|coordinated) change needs no review/.test(why)
+            ? "No review was needed: this change touched no protected paths."
+            : `No review request was needed: ${(why || "the server gave no reason").replace(/\.*$/, "")}.`);
         await record("review", Date.now() - t0, { verdict: "none-needed", reason: String(ask.reason ?? "").slice(0, 500) });
       } else {
         const head = ask.head, since = ask.at;
@@ -602,8 +610,9 @@ export async function runLand(io) {
     // the lease now (t232).
     await renewBeforePublish();
     await step("accept", ["accept", id], p.path);
-    const landed = await step("merged", ["merge", id], p.path, () => ({ mergeCommit: git(["rev-parse", `refs/heads/${p.branch}`], { cwd: p.path }) }));
-    print(`${id} landed: ${landed.output.split("\n").filter(Boolean).at(-1) ?? "merged"}`);
+    const mergeHead = () => git(["rev-parse", `refs/heads/${p.branch}`], { cwd: p.path });
+    await step("merged", ["merge", id], p.path, () => ({ mergeCommit: mergeHead() }));
+    print(`${id} landed: merged as ${short(mergeHead())}.`);
   } catch (error) {
     await release();
     die(error.message);
@@ -702,7 +711,8 @@ function runRegenerateIn(dir, regenerate, io) {
 // the landing it belongs to.
 async function landStep(io, record, kind, argv, cwd, data = {}) {
   const t = Date.now();
-  const r = await (io.runCommand ?? runCommand)([process.execPath, io.atelier, ...argv, "--project", io.name], { cwd, env: io.env });
+  const quiet = kind === "accept" ? { write() {} } : undefined;
+  const r = await (io.runCommand ?? runCommand)([process.execPath, io.atelier, ...argv, "--project", io.name], { cwd, env: io.env, out: quiet, err: quiet });
   if (!r.passed) {
     await record(kind, r.durationMs, { failed: true, reason: r.output.split("\n").filter(Boolean).slice(-3).join(" | ").slice(0, 500) });
     throw new StepError(`atelier ${argv[0]} failed (exit ${r.status ?? "ended by a signal"}):\n${r.output.split("\n").filter(Boolean).slice(-12).join("\n")}`);
