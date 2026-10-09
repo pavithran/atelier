@@ -203,6 +203,18 @@ test("done refuses uncommitted work before pushing", async (t) => {
   assert.ok(!f.posts.some((p) => /\/(push|submit)$/.test(p.path)));
 });
 
+test("done refuses an over-long summary before any request, push or check", async (t) => {
+  const f = await fixture(t);
+  await f.run(["start", "t1"]);
+  git(f.workspace, "commit", "-q", "--allow-empty", "-m", "Work");
+  const requests = f.requests.length, remoteHead = git(f.remote, "rev-parse", "main");
+  const r = await f.run(["done", "x".repeat(601)], f.workspace);
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /the summary is 601 characters; the limit is 600\. Shorten it and send it again/);
+  assert.equal(f.requests.length, requests);
+  assert.equal(git(f.remote, "rev-parse", "main"), remoteHead);
+});
+
 test("push refuses a branch the fork does not read, and a claim refresh corrects the workspace", async (t) => {
   // The fork's HEAD names master while the claim gives main, as for llm-basics t2.
   const f = await fixture(t, { forkBranch: "master", claimBranch: "main" });
