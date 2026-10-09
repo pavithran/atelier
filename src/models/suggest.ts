@@ -2,14 +2,12 @@ import type { Item, ProjectPolicy } from "../rules.ts";
 import { assertEligible, DEFAULT_OWNER, modelKey, RuleError } from "../rules.ts";
 import type { ModelEntry } from "./pool.ts";
 import { buildReliability, outcomesOf, reliabilityLine, tiebreak, type ProjectEvents, type RunReport } from "./reliability.ts";
-import { buildPrecision, precisionWindow } from "./precision.ts";
 import { paidPerToken, type Choice } from "../plans/route.ts";
-import { pickReviewer } from "../review/reviewer.ts";
 import { servedActor, servedBy } from "./served.ts";
 
 export interface SuggestionRecords { sources: ProjectEvents[]; runs: RunReport[] }
 type Task = Pick<Item, "id" | "title" | "brief" | "scope" | "owner" | "pushActors">;
-interface Input extends SuggestionRecords {
+export interface SuggestionInput extends SuggestionRecords {
   item: Task;
   project: string;
   pool: readonly ModelEntry[];
@@ -51,7 +49,7 @@ export function stalledBuilder(entry: ModelEntry, records: SuggestionRecords): b
   return blocked;
 }
 
-function ranked(input: Input) {
+export function ranked(input: SuggestionInput) {
   const record = buildReliability(input.sources, input.runs, input.owner ?? DEFAULT_OWNER);
   return input.pool.map((entry) => {
     const rows = [...keysOf(entry)].flatMap((key) => record.get(key) ?? []);
@@ -60,7 +58,7 @@ function ranked(input: Input) {
   }).sort((a, b) => b.score - a.score || actorOf(a.entry).localeCompare(actorOf(b.entry)));
 }
 
-export function suggestBuilder(input: Input, constraints: { to?: unknown; model?: unknown } = {}): Choice & { where: string } {
+export function suggestBuilder(input: SuggestionInput, constraints: { to?: unknown; model?: unknown } = {}): Choice & { where: string } {
   const rejections = input.sources.filter((s) => s.project === input.project).flatMap((s) => s.events)
     .filter((e) => e.itemId === input.item.id && e.kind === "review.rejected").length;
   const strict = sensitive(input.item) || rejections >= 2;
@@ -80,18 +78,4 @@ export function suggestBuilder(input: Input, constraints: { to?: unknown; model?
     return { actor, where: entry.where, reasons: [why, `Outcome score ${score.toFixed(3)}. ${reason}`, ...excluded.map((s) => `Passed over ${s}.`)] };
   }
   throw new RuleError("no_builder", `${why} No eligible builder in the pool. ${excluded.join("; ")}`, 409);
-}
-
-export function suggestReviewer(input: Input, avoid: readonly { actor: string; reason: string }[] = [], now = new Date()): Choice {
-  const strict = input.frontierRequired === true || sensitive(input.item);
-  const ordered = ranked(input).filter(({ entry }) => !strict || frontier(entry));
-  const precision = buildPrecision(input.sources, precisionWindow(now), input.owner);
-  const pick = pickReviewer({ item: input.item, pool: ordered.map((r) => r.entry), policy: input.policy,
-    allowPaid: false, owner: input.owner, avoid, precision,
-    // Preserve outcome order between equal precision terms.
-    recordOrder: ordered.map(({ entry }) => actorOf(entry)),
-  });
-  if (!pick.reviewer) throw new RuleError("no_reviewer", `${strict ? "Security, concurrency or gate work requires a frontier reviewer. " : ""}${pick.unpicked}`, 409);
-  const row = ordered.find(({ entry }) => actorOf(entry) === pick.reviewer!.actor)!;
-  return { actor: pick.reviewer.actor, reasons: [strict ? "Frontier reviewer required for security, concurrency or gate work." : "Reviewer ranked by finding precision, then recorded outcomes.", row.reason, ...pick.reviewer.reasons] };
 }

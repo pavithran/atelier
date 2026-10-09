@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { suggestBuilder, suggestReviewer, stalledBuilder } from '../src/models/suggest.ts';
-import { cleanEntry } from '../src/models/pool.ts';
+import { suggestBuilder, stalledBuilder } from '../models/suggest.ts';
+import { suggestReviewer } from './suggest.ts';
+import { cleanEntry } from '../models/pool.ts';
 const entry = (id, harness = 'codex') => cleanEntry({ id, harness, where: 'home' }, 'owner', '2026-10-01');
 const pool = [entry('gpt-6.1-sol'), entry('gpt-6-astra'), entry('fable-5', 'claude-code'), entry('gemini-3', 'gemini-cli')];
 const item = { id: 't1', title: 'Improve formatting', scope: ['src/**'], owner: 'codex/gpt-6.1-sol', pushActors: [] };
@@ -65,7 +66,7 @@ test('a successful build clears the latch but a fresh pair stalls it again', () 
   assert.equal(stalledBuilder(pool[0], { sources, runs: [run(5), run(2), run(4), run(1)] }), true);
 });
 test('record loading pages past 1000 events and fails on unreadable projects', async () => {
-  const { suggestionRecords } = await import('../src/models/suggestion-records.ts');
+  const { suggestionRecords } = await import('../models/suggestion-records.ts');
   const index = { projects: async () => [{ name: 'p' }], runs: async (limit) => { assert.equal(limit, Number.MAX_SAFE_INTEGER); return [run(1)]; } };
   const page = Array.from({ length: 1000 }, (_, i) => ({ ...event(1, 'item.claimed', item.owner), seq: 1001 - i }));
   const calls = [];
@@ -79,7 +80,7 @@ test('record loading pages past 1000 events and fails on unreadable projects', a
 });
 
 // Scope is src/** and cli/**; run these alongside npm test with
-// node --test cli/suggest.test.mjs.
+// node --test src/review/suggest.test.mjs.
 test('measured protected changes require frontier even without title keywords', () => {
   assert.throws(() => suggestReviewer({ ...input, frontierRequired: true, pool: [pool[0], pool[3]] }), /frontier reviewer/);
 });
