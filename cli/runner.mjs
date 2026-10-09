@@ -7,7 +7,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { checkEnv } from "./check-env.mjs";
-import { readSecret } from "./credentials.mjs";
+import { envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
 import { reviewBrief, BRIEF_LIMITS, criteriaCount } from "../src/review/brief.ts";
 import { parseVerdict } from "../src/review/verdict.ts";
@@ -319,7 +319,11 @@ export function tokenFile(where, env = process.env, home = homedir()) {
 }
 export function readAgentToken(where, deps = {}) {
   const env = deps.env ?? process.env;
-  if (!where.includes("/")) return (deps.readSecret ?? readSecret)(where, { env: { ...env, [`ATELIER_${where}`]: "" } });
+  // The store reads a name's environment variable before the store itself
+  // (ATELIER_TOKEN for API_TOKEN, else ATELIER_NAME): that variable is
+  // cleared by the name the store uses, so no entry can answer with a
+  // variable of the runner's environment, least of all the owner's token.
+  if (!where.includes("/")) return (deps.readSecret ?? readSecret)(where, { env: { ...env, [envNameFor(where)]: "", [`ATELIER_${where}`]: "" } });
   const file = tokenFile(where, env, deps.home);
   if (!existsSync(file)) return null;
   if (process.platform !== "win32" && (statSync(file).mode & 0o077)) throw new Error(`${file} is readable by other users; run: chmod 600 ${file}`);
@@ -333,16 +337,29 @@ export function readAgentToken(where, deps = {}) {
 // the runner holds for its builds. `tokens` in the runner config says where
 // each model's is; a model it leaves out is refused, naming the entry to add.
 // There is no owner-recorded fallback: every reviewer has its own token.
-// Returns {token} or {refused: reason}.
+// The owner's credential is refused twice over: by name (API_TOKEN, or any
+// name the store reads from ATELIER_TOKEN; parseConfig refuses these too),
+// and by value, when the entry or file holds the same token this runner
+// builds with (deps.ownerTokens: ATELIER_TOKEN and the stored API_TOKEN).
+// Returns {token} or {refused: reason}; a reason never carries a value.
 export function reviewToken(config, model, actor, deps = {}) {
   const where = config.tokens?.[model];
   if (where === undefined) {
     return { refused: `no agent token for ${actor}: the runner config names none under tokens["${model}"] (atelier token issue --as ${actor}, then name the Keychain entry or token file there); a review is recorded only by the reviewer's own token, never the owner's` };
   }
+  if (!where.includes("/") && isOwnerSecretName(where)) {
+    return { refused: `tokens["${model}"] names the owner's token (${where}): a review must not use the owner's token (atelier token issue --as ${actor}, then store that token under a name of its own and name it there)` };
+  }
   let token;
   try { token = readAgentToken(where, deps); }
   catch (error) { return { refused: `the agent token for ${actor} could not be read from ${where}: ${error.message}` }; }
   if (!token) return { refused: `the agent token for ${actor} is missing: ${where.includes("/") ? `the file ${where}` : `the Keychain entry ${where}`} holds none (atelier token issue --as ${actor}, then store it there)` };
+  let owners = [];
+  try { owners = (deps.ownerTokens ?? (() => ownerTokens(deps.env ?? process.env)))(); }
+  catch { /* An unreadable owner store leaves nothing to compare with. */ }
+  if (owners.some((owner) => owner && owner === token)) {
+    return { refused: `the agent token under tokens["${model}"] (${where}) is the owner's token: a review must not use the owner's token (atelier token issue --as ${actor}, then store that token there)` };
+  }
   return { token };
 }
 
@@ -741,7 +758,7 @@ export async function runReview(assignment, config, name, runnerIO) {
     // model without one is refused for this process (skipped), not retried
     // every poll, and the reason names the token to store; the owner token
     // never records a review.
-    const credential = reviewToken(config, model, actor, { env: runnerIO.env, ...(runnerIO.readSecret ? { readSecret: runnerIO.readSecret } : {}) });
+    const credential = reviewToken(config, model, actor, { env: runnerIO.env, ...(runnerIO.readSecret ? { readSecret: runnerIO.readSecret } : {}), ...(runnerIO.ownerTokens ? { ownerTokens: runnerIO.ownerTokens } : {}) });
     if (credential.refused) throw Object.assign(new Error(credential.refused), { skipped: true });
     io = { ...runnerIO, cli: (argv, cwd) => runnerIO.cli(argv, cwd, { token: credential.token }) };
     // Claim the request; the server returns the part, the brief's inputs and a
