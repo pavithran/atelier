@@ -56,6 +56,148 @@ merged, and the landing picks up from the push. Without this a conflicted
 task dead-ended outside a plan (t234): a plain rework dispatch resets the
 workspace to the task's head, where the builder cannot reach main.
 
+## Setting up a runner
+
+Everything a runner needs to start agents ships in this repository: the four
+harness adapters in `bin/harness/`, the agent rules they give every agent,
+the provider catalogue in `cli/harness/providers.mjs` and `atelier runner
+setup`, which writes the configs. The only things a machine adds are the
+harnesses themselves and the credentials, which live in the credential store
+(the macOS Keychain, the Linux Secret Service or the file `atelier login
+--store` names) and never in a file this repository or setup writes.
+
+### On a fresh machine
+
+1. Install Node 22 or newer and clone this repository; `npm ci` in it. Put
+   `cli/atelier.mjs` on the PATH as `atelier` (`npm link`, or an alias).
+2. Install the harnesses this machine will run, any of: Claude Code
+   (`claude`, signed in to its plan), Codex (`codex`, signed in), opencode
+   (`opencode`) and Antigravity (`agy`, signed in to a Google account with
+   Gemini). Setup finds each by its command on the PATH.
+3. `atelier login` as the owner.
+4. Store the keys opencode's providers need, each by the name setup prints
+   (the pool entry's `--keychain` name when it gives one): `zai.API_KEY`,
+   `deepseek.API_KEY` and `openrouter.API_KEY`, and `CF_AIG_TOKEN` (a
+   Cloudflare API token with AI Gateway · Run) when an AI Gateway is named.
+   On Linux the adapter runs without the session bus the Secret Service
+   needs, so store them in the file store (`ATELIER_SECRET_STORE=file`).
+   On macOS each is an item `atelier.NAME`, typed without echo:
+
+   ```sh
+   security add-generic-password -U -T /usr/bin/security -s atelier.deepseek.API_KEY -a "$USER" -w
+   ```
+
+5. For each model this machine reviews as, issue its agent token and store
+   it as `agent.MODEL` (Reviewers post under their own agent token, below):
+
+   ```sh
+   atelier token issue --as codex/gpt-6-astra --project atelier --days 90 --label "home:NAME reviews"
+   security add-generic-password -U -T /usr/bin/security -s atelier.agent.gpt-6-astra -a "$USER" -w
+   ```
+
+6. Name the AI Gateway the pay-per-use providers go through, if any, as
+   `ATELIER_GATEWAY=ACCOUNT/GATEWAY` (or `CF_ACCOUNT_ID`, with the gateway
+   `atelier`), then run setup and start the runner:
+
+   ```sh
+   ATELIER_GATEWAY=0123abcd/atelier atelier runner setup --dry-run   # what it would write
+   ATELIER_GATEWAY=0123abcd/atelier atelier runner setup
+   atelier runner --name home:NAME
+   ```
+
+The runner then builds tasks dispatched to any of its models and serves
+reviews as any of them, so a build by one company's model and its review by
+another's can both run on this machine. `atelier runner setup --config PATH`
+writes the config to PATH instead; a second runner with a config of its own,
+`"jobs": ["review"]`, keeps reviews from waiting behind a build (One job at a
+time, below).
+
+### What setup writes
+
+`atelier runner setup [--config PATH] [--dry-run]` reads the pool from
+Atelier and looks for `claude`, `codex`, `opencode` and `agy` on the PATH.
+It writes, beside the runner config (`runner.json` in the config folder
+unless `--config` names another file):
+
+- the runner config: one entry per harness found, listing the pool's home
+  models for that harness, with every job including `review` and, for each
+  model, `tokens` naming the Keychain entry `agent.MODEL`. No entry names a
+  command, so the runner runs Atelier's adapter for each harness (The
+  adapters, below). Setup refuses to overwrite a runner config that exists.
+- `opencode/PROVIDER.json`, one opencode provider config per provider the
+  opencode models use (`zai-coding`, `deepseek-api`, `openrouter-api`, and
+  `ai-studio` for a local OpenAI-compatible server at the pool entry's
+  endpoint), and `opencode/models.json`, the index the opencode adapter reads
+  to find each model's provider, config and key name.
+
+A pool model for a harness this machine lacks is named and left out. An
+opencode model is refused, and left out with the reason printed, when:
+
+- its configured context or output limit exceeds what its provider serves.
+  What is served is read from the provider where it publishes it
+  (OpenRouter's model list; a local server's `/models`, through LM Studio's
+  `loaded_context_length` or `max_context_length`, vLLM's `max_model_len` or
+  a `context_length`), and otherwise from the dated figures in
+  `cli/harness/providers.mjs` (`SERVED`). A model whose served limits cannot
+  be read is refused, not guessed.
+- its context is below what the harness itself starts with
+  (`HARNESS_START`: opencode's system prompt and tool definitions with room
+  for the brief, 24,000 tokens), which would leave the model no room to work.
+
+The configured limits are `CONFIGURED` in the same file for the models
+Atelier knows, and what the provider serves (with output capped at 32,000
+tokens and a quarter of the context) for the rest. A limit is corrected in
+that file, in a change reviewed like any other.
+
+Each generated provider config:
+
+- names the variable its key is read from (`{env:DEEPSEEK_API_KEY}`), never
+  the key;
+- sends the AI Gateway metadata header, `cf-aig-metadata`, naming the run's
+  task, role and runner, and, through a gateway, `cf-aig-authorization`;
+- allows `git add` and `git commit` explicitly, denies `git push` and every
+  `atelier` command, denies paths outside the workspace and web fetches, and
+  configures no MCP server.
+
+The metadata header needs care. opencode replaces each `{env:VAR}` in a
+config's raw text before it parses the text, so a variable holding the
+runner's JSON object (`{"task":"t1",...}`) inside a JSON string ends the
+string at its first quote, and every config fails to parse: this broke every
+opencode run on 2026-10-09. The configs therefore read
+`{env:CF_AIG_METADATA_ESCAPED}`, which the opencode adapter sets to the
+runner's `CF_AIG_METADATA` escaped for a JSON string; after substitution and
+parsing, the header's value is the JSON object itself
+(`test/harness-adapters.test.mjs` holds this).
+
+### The adapters
+
+`bin/harness/atelier-claude.mjs`, `atelier-codex.mjs`, `atelier-opencode.mjs`
+and `atelier-agy.mjs` take the wrapper contract's six arguments (The wrapper
+contract in `bin/orchestrate/README.md`); the shared code is
+`cli/harness/adapter.mjs`. An entry with no `command` runs its harness's
+adapter with this Node and every placeholder, so one command builds, plans
+and reviews. An entry for `zcode` or `gemini-cli` still names its own
+command, since no adapter ships for them; a `command` given for any harness
+replaces the default.
+
+Each adapter puts the agent rules in front of the brief (only the workspace
+may be read or written; commit with plain `git add` and `git commit -m`
+commands ending `Agent: HARNESS/MODEL`; never push or run `atelier`; for a
+plan, write the plan file and commit nothing) and gives the whole prompt to
+the harness on standard input, never as an argument. A review's prompt is the
+brief and the diff, and the answer goes to the verdict file. Per harness:
+
+| Adapter | Runs | Permissions |
+| --- | --- | --- |
+| `atelier-claude` | `claude -p --model claude-MODEL` (`opus-5.5` is `claude-opus-5-5`) | `--strict-mcp-config` with no server; edits accepted; Bash only for `git add`, `git commit` and other named Git, npm and Node commands; `git push`, `atelier` and the web denied; a review gets no edit tools |
+| `atelier-codex` | `codex exec --model MODEL -` | no MCP server; `workspace-write` sandbox with `.git` writable for a build, `read-only` for a review, whose last message is the verdict |
+| `atelier-opencode` | `opencode run --model PROVIDER/MODEL` | the provider config setup wrote (`OPENCODE_CONFIG`); its key and the gateway token read from the credential store at run time and given to opencode alone |
+| `atelier-agy` | `agy --model MODEL` (`gemini-3.1-pro` is `gemini-3.1-pro-high`) | `--sandbox`, the workspace its working folder; a review's answer is `agy`'s JSON `response` |
+
+A harness that needs no key (Claude Code, Codex and Antigravity on their
+plans) uses its own login. A key the opencode adapter cannot find stops the
+run before opencode starts, naming the entry to store and never a value.
+
 ## Home runner
 
 `atelier runner --name home:NAME [--once] [--config PATH] [--integrate]` polls the queue every 30 seconds, claims one eligible job, and runs its configured harness. A runner offers `build`, `plan`, `merge-main`, `merge-main-task` and `merge-plan` jobs for every harness in its config, and `review` when its config lists it. A build or plan job runs the harness in the claimed workspace; a review job clones the head into a folder of its own, reads the diff and writes a verdict. The task brief is kept outside the workspace. A runner with `--integrate` runs no harness and takes no config: it offers only the `integrate` and `refresh` jobs, merging each part onto its plan's branch as `atelier/integrator`. Each opencode run also gets a data folder of its own
