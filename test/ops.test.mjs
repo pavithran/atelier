@@ -41,6 +41,19 @@ test("without the toolkit, atelier ops says what is missing and exits 2", () => 
   assert.equal(named.status, 2);
 });
 
+// t360: --version is answered here first, like every other command, and never
+// reaches the toolkit, even with one installed.
+test("atelier ops --version prints the version and the toolkit never runs", () => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-ops-"));
+  try {
+    const exe = toolkit(dir);
+    const r = run(["ops", "--version"], { ATELIER_OPS: exe });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^atelier \d+\.\d+\.\d+ \(route level \d+\)\n$/);
+    assert.equal(r.stderr, "");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("arguments the CLI's own parser would read reach the toolkit untouched", () => {
   const dir = mkdtempSync(join(tmpdir(), "atelier-ops-"));
   try {

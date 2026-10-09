@@ -53,6 +53,8 @@ const CONFIG = join(CONFIG_DIR, "config.json");
 const CACHE = process.env.ATELIER_CACHE ?? join(HOME, "Library", "Caches", "ai-projects", "cloudflare-git");
 const CHECK_TIMEOUT_MS = Number(process.env.ATELIER_CHECK_TIMEOUT ?? 20 * 60_000);
 const CLI_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+// The one line --version prints, wherever it stands, ops included.
+const VERSION_LINE = `atelier ${CLI_VERSION} (route level ${ROUTE_LEVEL})`;
 
 // ── plumbing ───────────────────────────────────────────────────────────────
 
@@ -219,8 +221,9 @@ function recordTokenExpiry(dir, expiresAt) {
 // handoff to the actor true, the project true). `false` refuses it with the
 // general message; a string is the message for that flag. A flag outside
 // the command's row is refused before the command runs. --project and --as
-// belong to every row, since project() and actor() read them, and --help
-// anywhere prints usage. The commands in REST take `--` and the words after it.
+// belong to every row, since project() and actor() read them, and --help and
+// --version anywhere print usage and the version. The commands in REST take
+// `--` and the words after it.
 // test/command-help.test.mjs holds this table to the help in src/usage.ts.
 export const COMMON = { project: false, as: false };
 export const FLAGS = {
@@ -298,15 +301,19 @@ export const FLAGS = {
 const REST = new Set(["check"]);
 // The flags each plan subcommand takes; "" is a new plan's.
 const PLAN_FLAGS = { "": ["scope", "planner"], show: ["json"], approve: ["hash", "allow-paid"], revise: ["note"], reroute: ["to"], retry: [], refresh: ["resolve", "to"], stop: ["note"], post: [] };
-const SWITCHES = new Set(Object.values(FLAGS).flatMap((row) => Object.keys(row).filter((flag) => row[flag] === true)));
+// version is a switch too, so --version=… is refused as a value it does not
+// take, instead of slipping through as a string that answers anyway.
+const SWITCHES = new Set(["version", ...Object.values(FLAGS).flatMap((row) => Object.keys(row).filter((flag) => row[flag] === true))]);
 
 export function parseArgs(argv, switches = SWITCHES) {
   const out = { _: [], multi: {}, bare: [], problems: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--") { out.rest = argv.slice(i + 1); break; }
-    // Help is read before any flag, so a word after --help is not its value.
+    // Help and the version are read before any flag, so a word after either
+    // is never its value.
     if (a === "-h" || a === "--help") { out.help = true; continue; }
+    if (a === "--version") { out.version = true; continue; }
     if (!a.startsWith("--")) { out._.push(a); continue; }
     const eq = a.indexOf("=");
     const key = eq === -1 ? a.slice(2) : a.slice(2, eq);
@@ -347,9 +354,10 @@ const isMain = process.argv[1] && realpathSync(process.argv[1]) === fileURLToPat
 // Portfolio operations (surveys, devices and shipping, backups, Observatory,
 // the findings ledger) live in a private toolkit, not in this public command.
 // `atelier ops ...` hands everything after `ops` to it before this command
-// parses or reads anything, so no argument is changed on the way, and exits
-// as it exits. The toolkit is the program ATELIER_OPS names, or atelier-ops on
-// PATH; only an executable file counts.
+// parses anything, so no argument is changed on the way, and it exits as the
+// toolkit exits; only --version is read here first, like every other command,
+// so it never reaches the toolkit. The toolkit is the program ATELIER_OPS
+// names, or atelier-ops on PATH; only an executable file counts.
 const runnable = (path) => {
   try { return statSync(path).isFile() && (accessSync(path, fsConstants.X_OK), true); } catch { return false; }
 };
@@ -378,7 +386,14 @@ function runOps(argv) {
   }
   process.exit(r.status ?? 1);
 }
-if (isMain && process.argv[2] === "ops") runOps(process.argv.slice(3));
+if (isMain && process.argv[2] === "ops") {
+  const opsArgs = process.argv.slice(3);
+  // --version stands before any parsing, so only the words up to a `--` are
+  // read: an exact --version there is answered, like every other command.
+  const version = opsArgs.indexOf("--version"), end = opsArgs.indexOf("--");
+  if (version !== -1 && (end === -1 || version < end)) { console.log(VERSION_LINE); process.exit(0); }
+  runOps(opsArgs);
+}
 
 const args = parseArgs(process.argv.slice(2));
 const cfg = isMain ? loadConfig() : {};
@@ -3460,13 +3475,16 @@ const commands = {
 };
 
 if (isMain) {
-  if (process.argv[2] === "--version") {
-    console.log(`atelier ${CLI_VERSION} (route level ${ROUTE_LEVEL})`);
-    process.exit(0);
-  }
   const cmd = args._[0] ?? "help";
   const fn = commands[cmd];
   if (!fn) die(`unknown command "${cmd}"; try atelier help`);
+  // --version anywhere prints the CLI version and route level, the same for
+  // every command, and --help/-h anywhere prints the command's usage, or the
+  // general help. Both exit before any server contact.
+  if (args.version) {
+    console.log(VERSION_LINE);
+    process.exit(0);
+  }
   // --help/-h anywhere prints the command's usage, or the general help, and
   // exits before any server contact.
   if (args.help) {
