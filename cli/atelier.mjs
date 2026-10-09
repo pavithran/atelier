@@ -3147,6 +3147,7 @@ const commands = {
     const body = { to: args.to, agent: args.agent, model: args.model, note: args.note, ...(args.job !== undefined ? { job: args.job, ...(args.head !== undefined ? { head: args.head } : {}) } : {}), ...(args["overlap-ok"] === true ? { overlapOk: true } : {}) };
     const item = await call("POST", `${I(name, id)}/dispatch`, body, OWNER);
     const d = item.dispatch;
+    if (item.suggestion) console.log(`Builder: ${item.suggestion.actor}. ${item.suggestion.reasons.join(" ")}`);
     // A server older than the override ignores it and answers without it.
     if (args["overlap-ok"] === true && !d.overlapOk) console.log("Warning: the server did not record --overlap-ok; deploy the server, then dispatch again.");
     else if (d.overlapOk) console.log(`${id} is offered to a runner although its scope may overlap a live item's in a core file.`);

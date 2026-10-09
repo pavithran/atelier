@@ -1007,7 +1007,7 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate }) {
     if (status.status === "errored" || status.status === "terminated") {
       die(`the landing Workflow ${instance} ${status.status === "terminated" ? "was terminated" : "failed"}: ${status.error?.message ?? detail ?? "no reason given"}`);
     }
-    const key = `${stage}:${round}`;
+    const key = `${stage}:${round}:${stage === "review" ? detail ?? "" : ""}`;
     if (key !== said) {
       said = key;
       const what = {
@@ -1015,7 +1015,7 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate }) {
         workspace: "holds the lease and waits for this machine to merge main and push",
         conflict: `is paused on conflicts in ${(files ?? []).join(", ") || "the merge of main"}`,
         checks: checksMode === "local" ? "reads the observed results of the checks this machine ran" : "runs the required checks in a Cloudflare container",
-        review: "waits for the review verdict",
+        review: `waits for the review verdict${detail ? `. ${detail}` : ""}`,
         merge: "has accepted the reviewed head and waits for the merge",
         done: "is done",
         failed: `failed: ${detail ?? ""}`,
