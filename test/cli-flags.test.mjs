@@ -59,6 +59,16 @@ test("parseArgs: --version is read before any flag, wherever it stands", () => {
   assert.deepEqual(rest.rest, ["--version"]);
 });
 
+// t360: --version=… is refused as a value the flag does not take, never a
+// string that slips through and answers anyway.
+test("parseArgs: --version= is a problem, not a version", () => {
+  const parsed = parseArgs(["ls", "--version=x"]);
+  assert.equal(parsed.version, false);
+  assert.deepEqual(parsed.multi.version, [false]);
+  assert.match(parsed.problems[0], /^--version takes no value/);
+  assert.equal(parseArgs(["ls", "--version="]).version, false);
+});
+
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-flags-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
