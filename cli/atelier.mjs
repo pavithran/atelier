@@ -22,6 +22,7 @@ import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } fr
 
 import { redactGitArgs } from "./runner.mjs";
 import { acceptancePolicy, controlPlaneChanges, mergeContext, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
+import { cleanSummary } from "../src/brief.ts";
 import { assertEligible, checkApplies, checkFiles, pathCollisions, recordedText } from "../src/rules.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { holdText } from "../src/dispatch/rules.ts";
@@ -564,7 +565,9 @@ export function noProjectMessage(name, host, projects, here) {
 // bare flag is refused by the flag table before the command runs.
 function summaryArg(cmd) {
   if (args.summary === undefined) return;
-  if (!args.summary.trim()) die(`--summary needs text: atelier ${cmd} ID --summary "TEXT"`);
+  let text;
+  try { text = cleanSummary(args.summary); } catch (error) { die(error.detail); }
+  if (!text) die(`--summary needs text: atelier ${cmd} ID --summary "TEXT"`);
 }
 
 // --check, --protect and --scope take text, once per use. A bare flag is
