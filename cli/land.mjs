@@ -8,7 +8,7 @@ import { runCommand } from "./ship.mjs";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-lease.ts";
 import { unoffered } from "../src/dispatch/rules.ts";
-import { sameActor } from "../src/rules.ts";
+import { contributorsOf, sameActor } from "../src/rules.ts";
 import { landingVerdict } from "../src/landing-verdict.ts";
 
 // atelier land (t187): the project owner lands one task whole, taking the
@@ -249,6 +249,14 @@ export async function runLand(io) {
     return d;
   };
   const d0 = await preflight();
+  // A reviewer who contributed to the task can never review it, whatever the
+  // change class, so the ledger's answer is known before the lease is taken
+  // or a check runs (t354). Same-family contributors are left to the server:
+  // only a protected change refuses them, and the class is not known yet.
+  if (reviewer !== undefined) {
+    const contributed = contributorsOf(d0.item).find((c) => sameActor(c, reviewer));
+    if (contributed) die(`${reviewer} contributed to ${id} (as ${contributed}) and cannot review it; name another reviewer with --reviewer H/M, of another family than every contributor.`);
+  }
   const regenerate = typeof d0.policy?.regenerate === "string" ? d0.policy.regenerate : null;
 
   if (dryRun) {
