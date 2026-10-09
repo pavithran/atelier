@@ -108,7 +108,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     const state = box.states[id];
     const events = id === "t1" && box.review.claimed && box.review.at ? [{ seq: 1, itemId: id, at: box.review.at, actor: box.review.reviewer, kind: "review.claimed", data: { head, runner: "home:mbp" } }] : [];
     return {
-      item: { id, title: `Fixture ${id}`, state, owner: "codex/test", head, ...(box.kinds[id] ? { kind: box.kinds[id] } : {}), acceptedHead: state === "accepted" || state === "merged" ? head : null },
+      item: { id, title: `Fixture ${id}`, state, owner: "codex/test", ...(box.pushActors ? { pushActors: box.pushActors } : {}), head, ...(box.kinds[id] ? { kind: box.kinds[id] } : {}), acceptedHead: state === "accepted" || state === "merged" ? head : null },
       policy: { checks: box.checks, protected: ["work.txt"], regenerate: box.regen },
       gate: { ready: true, outOfScope: [], blockers: [] }, evidence: [], reviews, events,
     };
@@ -281,6 +281,19 @@ test("--reviewer waits for that review and lands on approval even where the gate
   assert.match(r.output, /antigravity\/gemini-3\.1-pro approved t1/);
   assert.equal(f.posts("/land").find((x) => x.body.step === "review").body.verdict, "approve");
   assert.equal(f.box.states.t1, "merged");
+});
+
+test("--reviewer who contributed to the task is refused before the lease and the checks", async (t) => {
+  const f = await landFixture(t);
+  f.box.pushActors = ["codex/gpt-6-luna"];
+  const before = git(f.checkout, "rev-parse", "HEAD");
+  const r = await f.run(f.checkout, "land", "t1", "--reviewer", "codex/gpt-6-luna");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /codex\/gpt-6-luna contributed to t1 .* cannot review it/);
+  assert.equal(f.posts("/landing-lease").length, 0);
+  assert.equal(f.posts("/review-request").length, 0);
+  assert.equal(f.posts("/land").length, 0);
+  assert.equal(git(f.checkout, "rev-parse", "HEAD"), before);
 });
 
 test("--reviewer stops the landing on a rejection even where the gate needs no review", async (t) => {
