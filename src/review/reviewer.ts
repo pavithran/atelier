@@ -42,6 +42,7 @@ export interface PickInput {
   avoid?: readonly { actor: string; reason: string }[];       // reviewers to pass over, such as one whose claim lapsed
   profiles?: readonly ModelProfile[];           // context windows; MODEL_PROFILES by default
   owner?: string;
+  recordOrder?: readonly string[];             // eligible task suggestions, best outcome record first
   precision?: PrecisionRecord | null;           // reviewers' precision on blocking findings; orders the tier and the pool only
 }
 
@@ -79,7 +80,11 @@ export function pickReviewer(input: PickInput): ReviewerPick {
   for (const actor of byPrecision(input.tier ?? [], tierNames, precision)) wanted.push({ actor, source: { kind: "tier" } });
   if (input.route?.reviewer) wanted.push({ actor: input.route.reviewer.actor, source: { kind: "routed" } });
   input.route?.alternates.forEach((c, index) => wanted.push({ actor: c.actor, source: { kind: "alternate", index } }));
-  const pool = byPrecision([...input.pool].sort((a, b) => a.id.localeCompare(b.id) || actorOf(a).localeCompare(actorOf(b))), namesOf, precision);
+  const order = (entry: ModelEntry) => {
+    const index = input.recordOrder?.indexOf(actorOf(entry)) ?? -1;
+    return index < 0 ? Number.MAX_SAFE_INTEGER : index;
+  };
+  const pool = byPrecision([...input.pool].sort((a, b) => order(a) - order(b) || a.id.localeCompare(b.id) || actorOf(a).localeCompare(actorOf(b))), namesOf, precision);
   for (const entry of pool) wanted.push({ actor: actorOf(entry), source: { kind: "pool" } });
 
   const seen = new Set<string>();
@@ -113,7 +118,7 @@ function position(source: Source, input: PickInput): string {
   if (source.kind === "tier") return `A model of the project's review tier, asked first so its review serves as the tier review too${input.precision ? "; the tier is asked by review precision, then in its own order" : ""}`;
   if (source.kind === "routed") return "The plan's routed reviewer for this part";
   if (source.kind === "alternate") return `Alternate ${source.index + 1} in the plan's routing for this part`;
-  const order = input.precision ? "review precision, then model id, then actor name" : "model id, then actor name";
+  const order = input.recordOrder ? "review precision, then outcome record, then actor name" : input.precision ? "review precision, then model id, then actor name" : "model id, then actor name";
   return input.route
     ? `From the pool, after the plan's routing named no model that qualifies; the pool goes by ${order}`
     : `From the pool, which goes by ${order}`;
