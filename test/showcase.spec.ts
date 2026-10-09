@@ -150,7 +150,7 @@ it("the showcase leads with what Atelier is and keeps the tally as its sub-head"
   await L("lead-check").claim("t1", "codex/gpt-6");
   await I().setShowcase("lead-check", "named");
   const body = await (await worker.fetch(new Request("https://atelier.test/showcase"), testEnv)).text();
-  expect(body).toContain("<h1>A Git platform for many coding agents</h1>");
+  expect(body).toContain("<h1>A Git platform for multiple coding agents</h1>");
   expect(body.indexOf("One owner per task, evidence observed, another model family reviews, the owner decides.")).toBeGreaterThan(0);
   expect(body.indexOf('class="subhead"')).toBeGreaterThan(body.indexOf("<h1>A Git platform"));
   expect(body).toContain("The owner made 0 decisions.");

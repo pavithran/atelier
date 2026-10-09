@@ -1376,8 +1376,8 @@ it('the error page keeps the owner\'s name, highlights nothing, and says Go back
 
 it('one line about Atelier serves both the rail and the sign-in headline',()=>{
  const rail=renderProject(project,[],[],'PAVI');
- expect(rail).toContain('<p>Many agents, one owner per task.</p>');
- expect(renderLogin()).toContain('<h1>Many agents,<br>one owner per task.</h1>');
+ expect(rail).toContain('<p>Multiple agents, one owner per task.</p>');
+ expect(renderLogin()).toContain('<h1>Multiple agents,<br>one owner per task.</h1>');
 });
 
 it('Plans draws each plan as one unit with its parts, their state and why each went to its agent',()=>{
