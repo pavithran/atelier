@@ -65,7 +65,7 @@ import { baseRepoOf } from "./plans/integrate";
 import { evidenceAt, parseRuleError } from "./rules";
 import type { LandingLease } from "./landing-lease.ts";
 import type { LandingWorkflowStage } from "./ledger.ts";
-import { landingVerdict, type LandingReview } from "./landing-verdict.ts";
+import { landingVerdict, allSkipped, type LandingReview } from "./landing-verdict.ts";
 import type { RunRequest } from "./sandbox/runner";
 
 // What the landing-workflow route passes when it creates the instance.
@@ -546,6 +546,21 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         }
         await step.do("record the approved review", RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "approve", reviewer: poll.by, resolvedBy: poll.by }); return {}; });
         return;
+      }
+      // t353: a review request every runner that offers the reviewer has
+      // skipped will never be claimed, however long the wait runs. Asked once
+      // a poll, so the landing says so by runner name instead of waiting out
+      // the hour.
+      if (ask.reviewer) {
+        const stuck = await step.do(`see whether every reviewer skipped #${i}`, RETRIES, async () => {
+          const offers = await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers();
+          const runners = allSkipped(ask.reviewer!, offers, await L.reviewSkips(p.item, head, ask.at));
+          return runners ? { runners } : null;
+        });
+        if (stuck) {
+          await step.do("record the skipped review", RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "skipped", reviewer: ask.reviewer, runners: stuck.runners }); return {}; });
+          throw new NonRetryableError(`every runner that offers ${ask.reviewer} for the review of ${p.item} at ${short(head)} has skipped it: ${stuck.runners.join(", ")}. The review request stays open and ${p.item} stays submitted. Review by hand (atelier review ${p.item} --approve --as ${ask.reviewer} --note "…"), then atelier accept ${p.item} and atelier merge ${p.item}, or run atelier land ${p.item} --workflow again once a runner can serve ${ask.reviewer}`);
+        }
       }
       if (i + 1 >= maxPolls) {
         await step.do("record the review timeout", RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "timeout", ...(ask.reviewer ? { reviewer: ask.reviewer } : {}) }); return {}; });

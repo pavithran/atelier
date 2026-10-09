@@ -1789,6 +1789,10 @@ const commands = {
         // A run that stalled, timed out or was refused goes to the run
         // reports, under the runner's name, as a model's status does.
         reportRun: (body, runner, signal) => postAsRunner("/runs", body, runner, signal),
+        // A review this runner will not serve is reported to the project, so
+        // the landing waiting on it can say, by runner, when every runner
+        // that offers the reviewer has skipped (t353).
+        reportReviewSkip: (body, runner, signal) => postAsRunner(`${I(body.project, body.item)}/review-skip`, body, runner, signal),
       });
     } catch (error) { die(error.message); }
   },

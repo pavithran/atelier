@@ -348,6 +348,39 @@ test("a review run that timed out is reported with the review role", async (t) =
   assert.deepEqual(reports.map((r) => [r.role, r.outcome]), [["review", "timed-out"]]);
 });
 
+// t353: a review this runner fails twice is skipped for this process, and the
+// skip is reported to the server; a new review request (a new head and request
+// number) is served again, so an earlier landing's failures never strand the
+// next landing's review.
+test("a review that fails twice is reported as skipped, and a new head is served again", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { io, calls } = fixture({ code: 1 });
+  const reports = [];
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const first = { ...assignment, item: { ...assignment.item, head: "a".repeat(40), request: 1, dispatch: { job: "review" } } };
+  const second = { ...assignment, item: { ...assignment.item, head: "b".repeat(40), request: 2, dispatch: { job: "review" } } };
+  let polls = 0;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async reportReviewSkip(body) { reports.push(body); },
+    async queue() {
+      polls++;
+      if (polls === 1 || polls === 2) return [first];
+      if (polls === 3) return [second];
+      process.emit("SIGINT");
+      return [];
+    },
+  });
+  // The skip is reported once, for the first request's head.
+  assert.equal(reports.length, 1, JSON.stringify(reports));
+  assert.equal(reports[0].item, "t21");
+  assert.equal(reports[0].head, "a".repeat(40));
+  // The second request is served after the first was skipped: two claims for
+  // the first, one for the second.
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 3);
+});
+
 // t213: an interrupt during a review still gives the request back, with the
 // cleanup deadline a build's release gets, since the runner's own signal is
 // already aborted by then.

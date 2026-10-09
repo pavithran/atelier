@@ -3,6 +3,7 @@ import { introspectWorkflow, introspectWorkflowInstance } from "cloudflare:test"
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
+import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 
 // The landing Workflow (t280, src/landing-workflow.ts) run in workerd against
 // the real Ledger Durable Object, with the Workflows test helpers standing in
@@ -329,4 +330,40 @@ it("the landing-workflow route records the checks mode it starts with, keeps con
   // The stage the Workflow writes keeps the mode, so an executor attaching later reads it.
   await until(() => L.landingWorkflowOf(ids[0]), (r) => r?.stage === "workspace");
   expect(await L.landingWorkflowOf(ids[0])).toMatchObject({ stage: "workspace", checks: "local" });
+});
+
+// t353: a review request every runner that offers the reviewer has skipped
+// will never be claimed; the landing says so by runner name instead of
+// waiting out the review timeout.
+it("says by runner name when every runner that offers the reviewer has skipped", async () => {
+  const project = "wf-skip";
+  const L = ledger(project);
+  const record = { name: project, repo: `${project}--baseline`, policy: { checks: [], protected: ["README.md"] }, createdAt: new Date().toISOString() };
+  await L.setProject(record, "owner");
+  const index = env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  await index.registerProject(record);
+  const id = (await L.newItem("Protected", [], "owner")).id;
+  await L.claim(id, OPUS);
+  await L.setFork(id, `${project}--${id}`, H0, OPUS);
+  await L.recordPush(id, OPUS, H1, H1);
+  await observed(L, id, H1);
+  // A reviewer of another family, offered for review by a single runner.
+  await index.putModel({ id: "gpt-6-astra", harness: "codex", where: "cloud", provider: "subscription", aliases: [], family: familyOf("gpt-6-astra"), note: "", addedBy: "owner", addedAt: new Date().toISOString() } satisfies ModelEntry);
+  await index.putRunnerOffer({ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }] }, new Date().toISOString());
+  await L.setLandingWorkflow(id, "wf-skip-1", "owner");
+  await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, "wf-skip-1");
+  await wf.modify(async (m) => {
+    await m.disableSleeps();
+    await m.mockStepResult({ name: "confirm the fork's head" }, { head: H1 });
+    await m.mockStepResult({ name: "wait for the merge #0" }, true);
+  });
+  await env.LANDING_WORKFLOW.create({ id: "wf-skip-1", params: { ...params(project, id), pollMs: 10, reviewTimeoutMs: 30_000 } });
+  await send("wf-skip-1", "workspace", { round: 0, head: H1, mainHead: null, mergedIn: false });
+  // The review is requested; then the one runner that offers the reviewer skips it.
+  await until(async () => ((await L.events(id)) as unknown as LedgerEvent[]).some((e) => e.kind === "review.requested"), (v) => v);
+  await L.recordReviewSkip(id, H1, "home:studio", "owner", "no agent token");
+  await wf.waitForStatus("errored");
+  expect(await L.landingWorkflowOf(id)).toMatchObject({ stage: "failed" });
+  expect((await L.landingWorkflowOf(id))?.detail).toMatch(/every runner that offers codex\/gpt-6-astra for the review of t\d+ at aaaaaaaa has skipped it: home:studio/);
+  expect(await L.readProjectLanding()).toBeNull();
 });
