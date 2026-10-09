@@ -7,9 +7,9 @@ import { DurableObject } from "cloudflare:workers";
 import {
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
   assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, contributorsOf, DEFAULT_OWNER, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
-  assertBlockable, assertNotBlocked, blockReason, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
+  assertBlockable, assertNotBlocked, blockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
-  type Block, type ItemFields,
+  type Block, type SecretFlag, type ItemFields,
 } from "./rules";
 import { cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, sameCriteria } from "./criteria.ts";
@@ -20,6 +20,7 @@ import { assertDispatchable, assertDispatchedClaim, coreHold, makeDispatch, live
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
 import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
+import type { SecretHit } from "./secret-scan.ts";
 import { parsePlan, planHash, type Plan, type PlanPart } from "./plans/schema.ts";
 import { validatePlan } from "./plans/validate.ts";
 import { routeParts, type PartRoute } from "./plans/route.ts";
@@ -475,6 +476,10 @@ export class Ledger extends DurableObject<Env> {
     // A part's acceptance criteria from the approved plan (JSON), fixed when
     // the part is made, which its reviews are bound to beside `accept`.
     if (!columns.includes("part_accept")) this.sql.exec(`ALTER TABLE items ADD COLUMN part_accept TEXT`);
+    // The blocking secret flag a push scan records (t332): a JSON array of
+    // file and line, one entry per key pattern the added lines hold, never
+    // the value. Null when none stands.
+    if (!columns.includes("secret")) this.sql.exec(`ALTER TABLE items ADD COLUMN secret TEXT`);
     this.splitLongTitles();
     // Every valid plan proposal, one row each, in the order posted; no row
     // is ever changed. `actor` is who posted it.
@@ -1667,6 +1672,42 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id);
   }
 
+  // The secret flag a push scan records or clears (t332). `hits` names the
+  // file and line of every added line that held a key pattern at `head`; an
+  // empty list clears the flag, so a later push that removes the line clears
+  // it. Only the file and line ever reach the Ledger, never the value.
+  setSecret(id: string, actor: string, head: string, hits: SecretHit[]): Item {
+    const item = this.item(id);
+    if (item.head !== head) return item; // a newer push superseded this scan
+    const unchanged = (item.secret?.length ?? 0) === hits.length
+      && hits.every((h, i) => h.file === item.secret![i].file && h.line === item.secret![i].line);
+    if (unchanged) return item;
+    const at = new Date().toISOString();
+    if (!hits.length) {
+      this.update(id, { secret: null }, at);
+      this.log(id, actor, "secret.resolved", { head }, at);
+      return this.item(id);
+    }
+    const flags: SecretFlag[] = hits.map((h) => ({ file: h.file, line: h.line, head, by: actor, at }));
+    this.update(id, { secret: JSON.stringify(flags) }, at);
+    this.log(id, actor, "secret.flagged", { head, hits: hits.map((h) => ({ file: h.file, line: h.line })) }, at);
+    return this.item(id);
+  }
+
+  // The project owner clears a standing secret flag, recording the reason:
+  // the record of why the owner judged the line safe, which a later reader
+  // checks against the code (secret.cleared).
+  clearSecret(id: string, actor: string, reason: unknown, proved = false): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner clears a secret flag", 403);
+    const text = secretClearReason(reason);
+    const item = this.item(id);
+    if (!item.secret?.length) throw new RuleError("no_secret", `${id} has no secret flag to clear`, 409);
+    const at = new Date().toISOString();
+    this.update(id, { secret: null }, at);
+    this.log(id, actor, "secret.cleared", { reason: text, head: item.head }, at, proved);
+    return this.item(id);
+  }
+
   private releaseAllowed(id: string, actor: string, note: string): Item {
     assertLength(note, NOTE_MAX, "the release note");
     const item = this.item(id);
@@ -1797,6 +1838,10 @@ export class Ledger extends DurableObject<Env> {
     if (item.state !== "accepted" || item.acceptedHead !== head) {
       throw new RuleError("acceptance_changed", `${id} is no longer accepted at ${head.slice(0, 8)}; review it again before merging`, 409);
     }
+    // A standing secret flag blocks the merge too (t332), as it blocks
+    // acceptance through the gate; the message names the flag, never the value.
+    const secret = secretBlockers(item);
+    if (secret.length) throw new RuleError("secret", `${id} has a secret flag: ${secret.join("; ")}`, 409);
     // A merge publishes to the baseline, the one thing the project's landing
     // lease guards (t232): while another task's landing is live on it, the
     // merge is refused, so a landing that lost its lease (its Mac slept past
@@ -4053,6 +4098,9 @@ function toItem(r: Row): Item {
     accept: r.accept ? (JSON.parse(r.accept as string) as string[]) : [],
     // Only a blocked item carries the record; unblocking and abandoning clear it.
     ...(r.blocked ? { blocked: JSON.parse(r.blocked as string) as Block } : {}),
+    // Only an item whose push scan flagged a secret carries the array; a push
+    // that removes the line or a clear clears it.
+    ...(r.secret ? { secret: JSON.parse(r.secret as string) as SecretFlag[] } : {}),
     // Only a plan and its parts carry these.
     ...(r.kind === "plan" || r.kind === "part" ? { kind: r.kind } : {}),
     ...(r.plan ? { plan: r.plan as string } : {}),
