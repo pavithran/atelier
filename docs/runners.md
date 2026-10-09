@@ -143,6 +143,77 @@ atelier runner --name home:studio
 Add `--once` to handle at most one task and exit, including when the queue
 is empty.
 
+### Reviewers post under their own agent token
+
+A runner's builds run under the owner token the machine holds (`atelier
+login`). Its reviews do not: each review job claims the request, reads the
+fork and records its verdict with the reviewing model's own agent token, so
+the ledger, the task page and `atelier receipt` show the reviewer itself as
+the recorder ("recorded by codex/gpt-6-astra with its own token") and the
+gate counts the review as proved. A verdict the owner token recorded in a
+model's name says so on the page ("recorded by the project owner with the
+owner token"), which undercuts the claim that another company's model
+reviewed the change independently; since 2026-10-08 (t346) a runner never
+records one unless the owner opts in below.
+
+`tokens` in the runner config says, per model, where that model's token is
+stored, never the token itself: the name of a Keychain entry (read as
+`atelier.NAME`, the way `keychain` reads a model's key, through the store
+`atelier login --store` names on other systems), or the path of a file under
+`~/.config/atelier/` (a value with a `/`, written relative to that directory
+or as `~/.config/atelier/...`), which must be readable by the user alone
+(mode 0600):
+
+```json
+"tokens": {
+  "gpt-6-astra": "agent.gpt-6-astra",
+  "gemini-3.1-pro": "tokens/gemini-3.1-pro"
+}
+```
+
+The lead developer issues and stores each reviewer's token once, as the
+owner, on the machine that runs the reviews:
+
+```sh
+# Issue: bound to one actor and, here, one project; shown once.
+atelier token issue --as codex/gpt-6-astra --project atelier --days 90 --label "home:studio reviews"
+
+# Store the value it printed, by the name the config gives. In the macOS
+# Keychain, typed without echo (the value never goes on a command line):
+security add-generic-password -U -T /usr/bin/security -s atelier.agent.gpt-6-astra -a "$USER" -w
+# Or as a file the user alone can read:
+mkdir -p -m 700 ~/.config/atelier/tokens && (umask 077; cat > ~/.config/atelier/tokens/gemini-3.1-pro)
+```
+
+`atelier token ls` shows what is issued and when each expires; `atelier
+token revoke ID` ends one, and the runner's next review as that model is
+refused until a new token is stored. A config that carries something shaped
+like a token in `tokens` is refused.
+
+The runner reads a token only when it starts a review job for that model,
+by that exact name, and hands it to the CLI calls of that job alone, through
+the child's environment (`ATELIER_TOKEN`), never as an argument; the harness
+does not get it, and nothing the runner prints or reports carries it. An
+agent token keeps its limits: it reviews only as the actor it was issued to,
+so a token stored under the wrong model is refused by the server.
+
+A model `tokens` leaves out has its review jobs refused: the runner logs
+which token is missing (`no agent token for codex/gpt-6-astra: the runner
+config names none under tokens["gpt-6-astra"]`, or the entry or file that
+holds none) and takes no other review of that model in this process. Builds
+are not affected. To keep reviewing while tokens are being issued, the
+owner may opt in to the path every runner followed before t346:
+
+```json
+"ownerRecordsReviews": true
+```
+
+With it, a model without a token reviews under the owner token, the runner
+logs that it does, and the task page keeps saying the owner recorded that
+review, which the gate counts only because the request was claimed
+(`atelier land`'s rule since t215). A model that has a token uses it
+regardless. Take the setting out once every reviewer has a token.
+
 `atelier runner --discover` reports what each home model's harness actually
 serves, which can differ from the model the pool registers. It reads the pool
 from Atelier and, for each home model, the record its harness keeps (Codex's
