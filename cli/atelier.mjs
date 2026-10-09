@@ -219,8 +219,9 @@ function recordTokenExpiry(dir, expiresAt) {
 // handoff to the actor true, the project true). `false` refuses it with the
 // general message; a string is the message for that flag. A flag outside
 // the command's row is refused before the command runs. --project and --as
-// belong to every row, since project() and actor() read them, and --help
-// anywhere prints usage. The commands in REST take `--` and the words after it.
+// belong to every row, since project() and actor() read them, and --help and
+// --version anywhere print usage and the version. The commands in REST take
+// `--` and the words after it.
 // test/command-help.test.mjs holds this table to the help in src/usage.ts.
 export const COMMON = { project: false, as: false };
 export const FLAGS = {
@@ -305,8 +306,10 @@ export function parseArgs(argv, switches = SWITCHES) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--") { out.rest = argv.slice(i + 1); break; }
-    // Help is read before any flag, so a word after --help is not its value.
+    // Help and the version are read before any flag, so a word after either
+    // is never its value.
     if (a === "-h" || a === "--help") { out.help = true; continue; }
+    if (a === "--version") { out.version = true; continue; }
     if (!a.startsWith("--")) { out._.push(a); continue; }
     const eq = a.indexOf("=");
     const key = eq === -1 ? a.slice(2) : a.slice(2, eq);
@@ -3452,13 +3455,16 @@ const commands = {
 };
 
 if (isMain) {
-  if (process.argv[2] === "--version") {
-    console.log(`atelier ${CLI_VERSION} (route level ${ROUTE_LEVEL})`);
-    process.exit(0);
-  }
   const cmd = args._[0] ?? "help";
   const fn = commands[cmd];
   if (!fn) die(`unknown command "${cmd}"; try atelier help`);
+  // --version anywhere prints the CLI version and route level, the same for
+  // every command, and --help/-h anywhere prints the command's usage, or the
+  // general help. Both exit before any server contact.
+  if (args.version) {
+    console.log(`atelier ${CLI_VERSION} (route level ${ROUTE_LEVEL})`);
+    process.exit(0);
+  }
   // --help/-h anywhere prints the command's usage, or the general help, and
   // exits before any server contact.
   if (args.help) {
