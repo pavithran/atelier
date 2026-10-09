@@ -87,12 +87,12 @@ const LONG_VALUE = 40;
 const SHORT_SECRET = 24;
 
 // A `.env`-style assignment: `NAME=value` on its own line, with optional
-// quotes. The value must be token-shaped, so `URL=https://…` (a colon),
+// quotes, and base64 padding (one or two trailing `=`) allowed. The value must be token-shaped, so `URL=https://…` (a colon),
 // `COLOR=#fff` (too short, a hash) and `PORT=8080` (too short) never match.
 // A value shorter than LONG_VALUE counts only when the name is itself a
 // secret name, and any value counts once it is at least SHORT_SECRET, so
 // `OPENAI_API_KEY=sk-…` matches and `API_KEY=your_key_here` does not.
-const ASSIGNMENT = new RegExp(`^\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*["']?([A-Za-z0-9+/_-]{${SHORT_SECRET},})["']?\\s*$`);
+const ASSIGNMENT = new RegExp(`^\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*["']?([A-Za-z0-9+/_-]{${SHORT_SECRET},}={0,2})["']?\\s*$`);
 
 function secretAssignment(text: string): boolean {
   const m = ASSIGNMENT.exec(text);
