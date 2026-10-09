@@ -134,3 +134,43 @@ it("only the owner clears the flag, with a required reason, and the clearing is 
   // With nothing standing there is nothing to clear.
   await refusal(L.clearSecret("t1", "owner", "again"), "no_secret", /has no secret flag/);
 });
+
+it("a push recorded with its scan pending blocks until that head's own scan completes; a stale result is dropped", async () => {
+  const L = await setup("secret-pending");
+  await L.newItem("Bring a secret in by accident", ["src/**"], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", "secret-pending--t1", H0, A);
+  // The Worker records the head with its scan pending, in the same write.
+  const pushed = await L.recordPush("t1", A, H1, H1, false, undefined, [], true);
+  expect(pushed).toMatchObject({ head: H1, secretScan: H1 });
+  await L.addEvidence(observed("t1", H1));
+  await L.submit("t1", A);
+  await refusal(L.accept("t1", "owner"), "not_ready", /secret scan pending for aaaaaaaa/);
+  // Nothing has been judged yet, so there is no flag for the owner to clear.
+  await refusal(L.clearSecret("t1", "owner", "a fake key"), "secret_pending", /has not completed/);
+  // A newer push moves the pending mark to its own head; a result for the
+  // older head arriving afterwards is dropped, and the newer scan stands.
+  await L.recordPush("t1", A, H2, H2, false, undefined, [], true);
+  expect((await L.item("t1")).secretScan).toBe(H2);
+  const stale = await L.setSecret("t1", "atelier/events", H1, []);
+  expect(stale).toMatchObject({ head: H2, secretScan: H2 });
+  expect(stale.secret).toBeUndefined();
+  await L.addEvidence(observed("t1", H2));
+  await refusal(L.accept("t1", "owner"), "not_ready", /secret scan pending for bbbbbbbb/);
+  // The scan of the recorded head completes: its findings are recorded and
+  // the pending mark is cleared in the same write, so the flag alone blocks.
+  const scanned = await L.setSecret("t1", "atelier/events", H2, [{ file: "src/keys.ts", line: 3 }]);
+  expect(scanned.secretScan).toBeUndefined();
+  expect(scanned.secret).toMatchObject([{ file: "src/keys.ts", line: 3, head: H2 }]);
+  await refusal(L.accept("t1", "owner"), "not_ready", /secret flagged in src\/keys.ts:3/);
+  await L.clearSecret("t1", "owner", "a fake key in a test");
+  await L.accept("t1", "owner");
+  // A clean scan completing clears the mark without recording any flag.
+  await L.recordPush("t1", A, H1, H1, false, undefined, [], true);
+  expect((await L.setSecret("t1", "atelier/events", H1, [])).secretScan).toBeUndefined();
+  expect((await L.item("t1")).secret).toBeUndefined();
+  // A push recorded without a scan, as the Ledger's own callers record one,
+  // marks nothing pending.
+  await L.recordPush("t1", A, H2, H2);
+  expect((await L.item("t1")).secretScan).toBeUndefined();
+});

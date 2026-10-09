@@ -1743,7 +1743,13 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   // and offers the one way on: the owner clears it with a reason, which is
   // recorded.
   const secrets = (item.secret ?? []).filter((f) => f.head === item.head);
-  const secretBox = secrets.length
+  // A scan still pending for the head blocks the same way, with nothing to
+  // clear: it completes on the next push event retry or `atelier push`.
+  const scanPending = !!item.head && item.secretScan === item.head;
+  const secretBox = scanPending
+    ? `<div class="notice" role="status"><h3>Secret scan pending</h3>
+        <p class="meta">The push at <code>${e(item.head!.slice(0, 8))}</code> has not been scanned for key patterns yet. Acceptance and merge are refused until the scan completes; it is retried on its own, and <code>atelier push</code> runs it again.</p></div>`
+    : secrets.length
     ? `<div class="notice" role="status"><h3>Secret flagged</h3>
         <ul>${secrets.map((f) => `<li><code>${e(f.file)}${f.unscanned ? "" : `:${f.line}`}</code></li>`).join("")}</ul>
         <p class="meta">A key pattern was found in the added lines. Acceptance and merge are refused until it is cleared. Clear it only after checking the line is not a real secret; the reason you give is recorded.</p>
