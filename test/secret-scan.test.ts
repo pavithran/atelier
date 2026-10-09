@@ -98,6 +98,15 @@ test("a private key block and a bearer token are matched", () => {
   assert.ok(scanLine("bearer abcdefghijklmnopqrstuvwxyz0123456789"));
 });
 
+test("a .env-style assignment whose value carries base64 padding is matched", () => {
+  // Built at run time so this file holds no key-shaped literal.
+  const padded = ["Zm9v", "YmFy".repeat(12), "=="].join("");
+  assert.ok(scanLine(`SERVICE_SECRET=${padded}`));
+  assert.ok(scanLine(`SERVICE_SECRET="${padded}"`));
+  assert.ok(scanLine(`SERVICE_SECRET=${padded.slice(0, -1)}`));
+  assert.ok(!scanLine("PORT==8080"));
+});
+
 test("a .env-style assignment of a long secret is matched, and a short one is not", () => {
   assert.ok(scanLine(`OPENAI_API_KEY=${FAKE.openai}`));
   assert.ok(scanLine(`SECRET=${"x".repeat(32)}`));
