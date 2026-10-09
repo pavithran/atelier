@@ -1,0 +1,6 @@
+- Use no path outside this workspace: read and write files only inside it.
+- Put scratch files only under .scratch/ in this workspace.
+- Run no rm and no mktemp, and make no temporary folders.
+- Commit first when the work is done, before anything else, with plain single git commands, one per call: git add FILES, then git commit. No heredoc, no -F -, no && chain and no redirection: a harness refuses them, and the run ends without a commit.
+- A run that ends without a commit counts as stalled, whatever it did.
+- A fix comes with a test that fails without it.

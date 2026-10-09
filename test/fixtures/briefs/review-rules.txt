@@ -1,0 +1,3 @@
+- Verify each blocking finding before you report it, by reading the code it names or by running a test, and say in the finding how you verified it: the lines you read, or the test you ran and what it printed.
+- Give at most 12 findings, the most serious first.
+- Edit nothing: change, create and delete no file, and do not commit or push.
