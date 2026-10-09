@@ -30,6 +30,7 @@ export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.t
 
 import { adoption, SCOPE, writeMove } from "./adopt.mjs";
 import { runLand } from "./land.mjs";
+import { runRevert } from "./revert.mjs";
 import { adoptOldLanding, executablePaths, hooksOff, landingDir, landingJournal, landingJournalFile, landingLeft, landingLock, landingSymlinks, oldLandingJournalFile, RECEIPT_TEMPLATE, RECEIPTS_DIR, touchedExecutables, treeEntries } from "./landing.mjs";
 import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } from "./fresh.mjs";
 import { pushHistory } from "./push-steps.mjs";
@@ -41,7 +42,7 @@ import { describeStore, promptSecret, readSecret, writeSecret } from "./credenti
 import { checkEnv } from "./check-env.mjs";
 import { provenanceNote } from "./provenance.mjs";
 export { checkEnv } from "./check-env.mjs";
-import { COMMAND_USAGE, guideText, helpText, ROLES, rolePrompt } from "../src/usage.ts";
+import { COMMAND_USAGE, guideText, helpText, ROLES, rolePrompt } from "./help.mjs";
 import { planText } from "../src/plans/show.ts";
 import { ACTION_KINDS, DEFAULT_EXPIRY, KIND, REVISION, expirySeconds } from "../src/actions.ts";
 import { formatApprovals, knownKinds, runCommand, ship as runShip, shipPolicy, shipSecrets } from "./ship.mjs";
@@ -231,6 +232,7 @@ export const FLAGS = {
   login: { server: false, store: true },
   init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', core: '--core needs a glob: atelier init --core "GLOB", once per entry, or --core "" alone to clear them', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default', "review-tier": '--review-tier needs models: atelier init --review-tier H/M,H/M,..., or --review-tier "" to clear it' },
   adopt: {},
+  revert: {},
   publish: {},
   new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry', brief: '--brief needs text: atelier new "short title" --brief "TEXT"', accept: '--accept needs text: atelier new --accept "TEXT", once per criterion', "non-goal": '--non-goal needs text: atelier new --non-goal "TEXT", once per entry', "stop-when": '--stop-when needs text: atelier new --stop-when "TEXT", once per entry', "next-gate": '--next-gate needs text: atelier new --next-gate "TEXT"' },
   // edit takes the same, and --title; one empty value clears the field, so
@@ -2101,6 +2103,16 @@ const commands = {
     console.log(`Baseline ${name} now at ${short(git(["rev-parse", p.branch], { cwd: p.path }))}.`);
   },
 
+  async revert() {
+    if (args._.length !== 2) die(COMMAND_USAGE.revert);
+    const name = project(), as = await actor(OWNER);
+    await runRevert(args._[1], as, {
+      create: (body) => call("POST", `${P(name)}/items`, body, as),
+      claim: (id, who) => claimWorkspace(name, id, who),
+      git, say: console.log,
+    });
+  },
+
   // The title is the words given; with --brief the long text goes apart.
   // One long string alone is sent as the title, as an older CLI sends it:
   // the server keeps it as the brief and derives the short title, and the
@@ -2172,7 +2184,23 @@ const commands = {
     // none of their findings. The item's own record holds every review at
     // every head; --reviews prints it in full and --json carries it, so a
     // session can read why a review rejected the task (t173).
-    const d = args.reviews || args.json ? await call("GET", I(name, id), undefined, as) : null;
+    let d = {};
+    try { d = await request("GET", I(name, id), undefined, as); }
+    catch (error) {
+      // Older servers may serve the brief without the detail route. Keep
+      // that brief usable, but do not conceal authentication or server errors.
+      if (!(error instanceof RequestError)) throw error;
+      if (error.code !== 1 || error.message !== "not_found: no such route") die(error.message, error.code);
+    }
+    // Revert requests are historical links, not proof that the undo merged.
+    // Keep them outside the server brief's five-line evidence limit.
+    for (const event of d.events ?? []) {
+      if (event.itemId !== id || !["item.reverts", "item.revert_requested"].includes(event.kind)) continue;
+      const { itemId, mergeCommit } = event.data ?? {};
+      if (!/^t[1-9]\d*$/.test(itemId ?? "") || !/^[a-f0-9]{40,64}$/.test(mergeCommit ?? "")) continue;
+      const label = event.kind === "item.reverts" ? "Reverts" : "Revert requested in";
+      brief.evidence.push(`${label} ${itemId} (recorded merge ${mergeCommit}): ${server()}/p/${encodeURIComponent(name)}/${itemId}`);
+    }
     if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []) }, null, 2));
     const text = formatBrief(name, id, brief, server());
     console.log(args.reviews ? `${text}\n\n${formatReviews(d?.reviews ?? [], d?.ownerActor)}` : text);

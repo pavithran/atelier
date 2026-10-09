@@ -133,6 +133,54 @@ test("inbox and show print the owner brief and preserve JSON output", async (t) 
   }
 });
 
+test("show displays both ledger revert links without claiming the undo has merged", async (t) => {
+  const mergeCommit = "a".repeat(40);
+  const events = [
+    { itemId: "t1", kind: "item.revert_requested", data: { itemId: "t2", mergeCommit } },
+    { itemId: "t2", kind: "item.reverts", data: { itemId: "t1", mergeCommit } },
+    // Incomplete or invalid historical records must not hide valid links.
+    { itemId: "t1", kind: "item.revert_requested" },
+    { itemId: "t2", kind: "item.reverts", data: null },
+    { itemId: "t1", kind: "item.revert_requested", data: { itemId: "../other", mergeCommit } },
+    { itemId: "t2", kind: "item.reverts", data: { itemId: "t3", mergeCommit: "invalid" } },
+  ];
+  // Preloaded fetch exercises the real show command without a listening server.
+  const root = mkdtempSync(join(process.cwd(), ".show-test-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const preload = join(root, "server.mjs"), origin = "https://fake.invalid";
+  writeFileSync(preload, `
+    globalThis.fetch = async (url, options) => {
+      if (options.method !== "GET") throw new Error("show must be read-only");
+      const path = new URL(url).pathname;
+      if (!/^\\/api\\/projects\\/proj\\/items\\/t[12](\\/brief)?$/.test(path)) throw new Error("unexpected route: " + path);
+      return Response.json(path.endsWith("/brief") ? ${JSON.stringify(brief)} : { events: ${JSON.stringify(events)}, reviews: [] });
+    };
+  `);
+  const f = {
+    origin,
+    async run(argv) {
+      const output = execFileSync(process.execPath, ["--import", preload, cli, ...argv, "--project", "proj", "--as", actor], {
+        cwd: root, encoding: "utf8",
+        env: { ...process.env, ATELIER_ACTOR: actor, ATELIER_CONFIG_DIR: root, ATELIER_CACHE: root, ATELIER_TOKEN: "fake", ATELIER_SERVER: origin },
+      });
+      return { status: 0, output };
+    },
+  };
+  for (const [id, other, label] of [["t1", "t2", "Revert requested in"], ["t2", "t1", "Reverts"]]) {
+    const line = `${label} ${other} (recorded merge ${mergeCommit}): ${f.origin}/p/proj/${other}`;
+    for (const flags of [[], ["--reviews"], ["--json"]]) {
+      const r = await f.run(["show", id, ...flags]);
+      assert.equal(r.status, 0, r.output);
+      if (flags.includes("--json")) assert.deepEqual(JSON.parse(r.output).evidence, [...brief.evidence, line]);
+      else {
+        assert.ok(r.output.includes(line), r.output);
+        assert.ok(r.output.includes(brief.recommendation.reason));
+        assert.equal(r.output.split("\n").filter((s) => s.includes("recorded merge")).length, 1);
+      }
+    }
+  }
+});
+
 test("finish keeps its existing output and exit codes", async (t) => {
   for (const failed of [false, true]) {
     const f = await fixture(t, { failed });

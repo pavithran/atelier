@@ -4,11 +4,10 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { COMMAND_USAGE, HELP_FOOTER, HELP_FORMS, HELP_GROUPS, guideText, helpText } from "../src/usage.ts";
+import { COMMAND_USAGE, HELP_FOOTER, HELP_FORMS, HELP_GROUPS, guideText, helpText } from "../cli/help.mjs";
 
-// The text the CLI prints is data in src/usage.ts, drawn also by the How it
-// works page. The fixtures were captured from the CLI before that text moved,
-// so these tests fail on any change to what a user sees, not only on a move.
+// The CLI extends the shared web reference through cli/help.mjs. Fixtures
+// pin the combined text, so these tests catch changes to what a user sees.
 
 const cli = resolve("cli/atelier.mjs");
 const fixture = (name) => readFileSync(resolve("test/fixtures/cli", name), "utf8");
@@ -50,7 +49,7 @@ test("each command's usage line prints exactly as pinned", () => {
   }
 });
 
-test("the shared module renders the same bytes the CLI printed before it existed", () => {
+test("the help module renders the pinned CLI text", () => {
   assert.equal(helpText() + "\n", fixture("help.txt"));
   assert.equal(guideText(), fixture("guide.txt"));
 });
@@ -68,7 +67,7 @@ test("every command the CLI defines is in the help, and every help entry is a co
   const defined = cliCommands();
   assert.ok(defined.length > 30, `found only ${defined.length} commands`);
   const listed = new Set(HELP_FORMS.map((form) => form.split(" ")[0]));
-  for (const name of defined) if (name !== "help") assert.ok(listed.has(name), `atelier ${name} is not in the help: add it to src/usage.ts`);
+  for (const name of defined) if (name !== "help") assert.ok(listed.has(name), `atelier ${name} is not in the CLI help`);
   for (const name of listed) assert.ok(defined.includes(name), `the help lists ${name}, which the CLI does not define`);
 });
 

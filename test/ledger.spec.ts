@@ -61,6 +61,65 @@ function kinds(events: unknown): string[] {
   return (events as LedgerEvent[]).map((e) => e.kind);
 }
 
+it("a revert links both records and must earn fresh checks and independent review", async () => {
+  const L = await setup("revert", { ...policy, protected: ["src/**"] });
+  await L.newItem("Original", ["src/**"], "owner");
+  await refusal(L.newItem("", [], A, { revertOf: "t1" }), "not_merged", /not merged/);
+  expect(await L.items()).toHaveLength(1);
+  await L.claim("t1", A);
+  await L.setFork("t1", "revert--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence(observed("t1", H1));
+  await L.submit("t1", A);
+  await L.addReview(review("t1", B, H1, true), undefined, true);
+  await L.accept("t1", "owner");
+  await L.merged("t1", "owner", H2, true);
+  const before = await L.item("t1");
+  const undo = await L.newItem("ignored", ["ignored"], A, { revertOf: "t1" });
+  expect(undo).toMatchObject({ id: "t2", scope: ["src/**"], state: "open", head: null, acceptedHead: null, revert: { itemId: "t1", mergeCommit: H2 } });
+  expect(await L.item("t1")).toEqual(before);
+  expect(await L.events("t1")).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "item.revert_requested", data: { itemId: "t2", mergeCommit: H2 } })]));
+  expect(await L.events("t2")).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "item.reverts", data: { itemId: "t1", mergeCommit: H2 } })]));
+  await refusal(L.editItem("t2", "owner", { revertOf: "t1" }), "bad_field", /only when creating/);
+  await L.claim("t2", A);
+  await L.setFork("t2", "revert--t2", H2, A);
+  await L.recordPush("t2", A, H0, H0);
+  await L.submit("t2", A);
+  await refusal(L.accept("t2", "owner"), "not_ready", /./);
+  await L.addEvidence(observed("t2", H0));
+  await refusal(L.accept("t2", "owner"), "not_ready", /./);
+  await L.addReview(review("t2", B, H0, true), undefined, true);
+  expect(await L.accept("t2", "owner")).toMatchObject({ state: "accepted", acceptedHead: H0 });
+  await L.merged("t2", "owner", "c".repeat(40), true);
+  // A request is history, not a claim about today's tree. A repeated request
+  // still uses the original merge; the CLI reports an already-undone tree.
+  const previousEvents = await L.events("t1");
+  const repeated = await L.newItem("", [], A, { revertOf: "t1" });
+  expect(repeated).toMatchObject({ id: "t3", state: "open", head: null, revert: { itemId: "t1", mergeCommit: H2 } });
+  expect(await L.item("t1")).toEqual(before);
+  expect(await L.events("t1")).toEqual(expect.arrayContaining([
+    ...previousEvents,
+    expect.objectContaining({ kind: "item.revert_requested", data: { itemId: "t3", mergeCommit: H2 } }),
+  ]));
+  expect(await L.events("t3")).toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: "item.reverts", data: { itemId: "t1", mergeCommit: H2 } }),
+  ]));
+});
+
+it("revert refuses missing merge records and plan parts without creating a task", async () => {
+  const L = await setup("revert-invalid");
+  await L.newItem("Legacy merge", [], "owner");
+  await runInDurableObject(L, async (_instance, state) => {
+    state.storage.sql.exec("UPDATE items SET state = 'merged' WHERE id = 't1'");
+  });
+  await refusal(L.newItem("", [], A, { revertOf: "t1" }), "no_merge_commit", /no recorded merge/);
+  await runInDurableObject(L, async (_instance, state) => {
+    state.storage.sql.exec("UPDATE items SET kind = 'part' WHERE id = 't1'");
+  });
+  await refusal(L.newItem("", [], A, { revertOf: "t1" }), "revert_part", /merged plan/);
+  expect(await L.items()).toHaveLength(1);
+});
+
 it("the index instance lists the registered projects", async () => {
   const index = env.LEDGER.get(env.LEDGER.idFromName("__index"));
   await index.registerProject({ name: "zeta", repo: "zeta", policy, createdAt: new Date().toISOString() });
