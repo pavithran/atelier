@@ -94,6 +94,10 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "approvals [--all]", about: "Lists the approvals that stand, each with its kind, revision and expiry. `--all` adds the used, withdrawn and expired ones." },
     { form: "approvals withdraw ID [--note T]", about: "The project owner withdraws an approval no ship has used, so none can use it." },
   ], [
+    { form: 'decide "text" --quote "owner\'s words" [--project P]', about: "The project owner records a standing decision for the project, dated, with the owner's own words it rests on: another company reviews everywhere, the review bar, a spend limit, no overrides. Only the owner's token records one. Every review brief of the project and `atelier guide --role orchestrate` carry the decisions that stand, marked as decisions a reviewer must not overrule." },
+    { form: "decisions [--all] [--project P]", about: "Lists the project's standing decisions, oldest first, each with its id, date, text and the owner's words. `--all` adds the withdrawn ones with their notes." },
+    { form: 'decisions withdraw ID --note "why"', about: "The project owner withdraws a standing decision with a note saying why. It stops appearing in the briefs, the guide and the plain list; `--all` still shows it, withdrawn." },
+  ], [
     { form: "ship [--dry-run] [--push]", about: "Run by the project owner in the registered checkout, clean and at the baseline's head: composes the ship order from the project's ControlPlane ship policy and adapter, or from `docs/atelier/ship.json`, and refuses before running anything when a protected step has no approval at that revision, naming the command that approves it. It then runs the steps in order and stops at the first that fails, recording each step's command, exit status, duration and redacted output tail on the ledger. It pushes only with `--push`, which needs no approval since ship is owner-only and runs at one exact revision, and never forces a push. `--dry-run` prints the steps and which approvals are present or missing, and runs nothing." },
   ]] },
   { name: "Plans", lines: [[
@@ -141,7 +145,7 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "ops COMMAND [ARGS...]", aside: "portfolio operations, run by the private atelier-ops toolkit when installed", about: "Hands everything after `ops` to the private `atelier-ops` toolkit, named by `ATELIER_OPS` or found on `PATH`. Without one it says so and exits 2." },
   ]] },
   { name: "Docs", lines: [[
-    { form: "guide [--role build|review|plan|orchestrate]", aside: "paste into a project's AGENTS.md", about: "Prints the instructions an agent needs, to paste into a project's AGENTS.md or CLAUDE.md. `--role` prints the instructions for one role alone, from a project's `.atelier/prompts/ROLE.md` when it has one. `atelier adopt` inserts the plain guide." },
+    { form: "guide [--role build|review|plan|orchestrate] [--project P]", aside: "paste into a project's AGENTS.md", about: "Prints the instructions an agent needs, to paste into a project's AGENTS.md or CLAUDE.md. `--role` prints the instructions for one role alone, from a project's `.atelier/prompts/ROLE.md` when it has one. `--role orchestrate` for a project ends with the owner's standing decisions (`atelier decide`), read from the server. `atelier adopt` inserts the plain guide." },
   ]] },
   { name: "Tokens", gap: true, lines: [[
     { form: "token issue --as H/M [--project P]... [--days N] [--label TEXT]", about: "The project owner issues a token bound to one actor and shown once. It expires in 30 days unless `--days` (1 to 365) says otherwise, and covers the named projects or all of them." },
@@ -372,7 +376,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   },
   land: {
     flags: {
-      "--reviewer H/M": "names the reviewer the request goes to, and the review is asked for even where the gate needs none; otherwise the server picks a model of another family than every contributor, when the gate needs a review",
+      "--reviewer H/M": "names the reviewer the request goes to, and the review is asked for even where the gate needs none; otherwise, when the gate needs a review, the server suggests a model of another company than every contributor from the pool and the models' records, and the landing prints which and why",
       "--no-review": "skips waiting: the task is left submitted for the owner to settle the review by hand",
       "--wait": "queues for the landing lease while another task's landing holds it, saying whose landing it waits behind and which landings are queued ahead; the server hands the lease to the waiting landings in the order they queued, so it starts when its turn comes (three hours at most)",
       "--dry-run": "prints the steps and the refusals without changing anything",
@@ -477,6 +481,21 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
     },
     example: "atelier approvals --all --project demo",
   },
+  decide: {
+    flags: {
+      "--quote TEXT": "the owner's own words the decision rests on; required, at most 2000 characters",
+      "--project NAME": "the project the decision is for; this checkout's or workspace's project unless given",
+    },
+    example: 'atelier decide "Every change is reviewed by a model of another company" --quote "another company reviews everywhere" --project demo',
+  },
+  decisions: {
+    flags: {
+      "--all": "adds the withdrawn decisions, each with its note",
+      "--note TEXT": "with withdraw, why; required, kept with the decision",
+      "--project NAME": "the project; this checkout's or workspace's project unless given",
+    },
+    example: "atelier decisions --project demo",
+  },
   ship: {
     flags: {
       "--dry-run": "composes the ship order and checks its approvals, running nothing",
@@ -513,7 +532,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   dispatch: {
     flags: {
       "--to home|cloud|any": "the kind of runner; any unless given",
-      "--agent A": "the agent the runner must run",
+      "--agent A": "the agent the runner must run; unless given, the server suggests a builder from the model pool and the models' records and prints which and why",
       "--model M": "the model the runner must use",
       "--note TEXT": "a note the agent reads with the task",
       "--job merge-main": "sends the task to its builder to merge main into its workspace and resolve the conflicts of a landing that stopped on them",
@@ -723,6 +742,10 @@ Standing rules:
   findings, then hand it to a builder from another company or ask the owner.
 - Feed what you learn back: \`atelier new "Lesson: …"\` for a rule worth
   keeping, and a task on the atelier project for a missing feature.
+- When the owner settles a question for good (who reviews, the review bar, a
+  spend limit, no overrides), record it with \`atelier decide "text" --quote
+  "the owner's words"\`: every review brief and this guide carry the decisions
+  that stand, and \`atelier decisions\` lists them.
 
 The detail, with the reasons, is in docs/orchestrating.md.
 `,
