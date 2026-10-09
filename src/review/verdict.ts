@@ -16,7 +16,7 @@ import type { Finding } from "../rules.ts";
 
 export type { Finding };
 
-// Blocking findings are correctness, security and data loss faults; every
+// Blocking findings are what the review bar in force allows to block; every
 // other finding is a follow-up and never holds a change back.
 export type Severity = Finding["severity"];
 
@@ -33,7 +33,7 @@ export const VERDICT_LIMITS = { reply: 100_000, findings: 50, file: 512, text: 2
 // What may block, when the project sets no review bar of its own (`atelier
 // init --review-bar`). Every review brief states the bar in force, and
 // bin/orchestrate/review.sh reads this one as its default.
-export const DEFAULT_REVIEW_BAR = "Block only for a correctness, security or data-loss defect that the change introduces, or fails to fix while claiming to. A claim in a commit message that the code does not support is a correctness defect. Decisions the project owner made are not defects; everything else is a follow-up.";
+export const DEFAULT_REVIEW_BAR = "Block only for a correctness, security or data-loss defect that the change introduces, or fails to fix while claiming to; a behaviour change without a test that covers it; docs or help that now contradict the code; a breaking change to a command, route or API field without a migration; or a visible regression on a user-facing page. A claim in a commit message that the code does not support is a correctness defect. A blocking finding names the file and line and what breaks, and is never style or naming. Decisions the project owner made are not defects; anything else is a follow-up.";
 
 const FORMAT_EXAMPLES = [
   "End your reply with these lines, each at the start of its own line:",
@@ -143,7 +143,7 @@ function read(raw: unknown, asked: number): Statement {
   const summary = json.length ? json[0].summary : clip(lines.summary.join(" "), VERDICT_LIMITS.summary);
   if (findings.length > VERDICT_LIMITS.findings) refuse(`the reply has ${findings.length} findings, over the limit of ${VERDICT_LIMITS.findings}`);
   const blocking = findings.filter((f) => f.severity === "blocking").length;
-  if (verdict === "reject" && !blocking) refuse("a rejection must name at least one blocking finding (correctness, security or data loss); every other finding is a follow-up");
+  if (verdict === "reject" && !blocking) refuse("a rejection must name at least one blocking finding; every other finding is a follow-up");
   if (verdict === "approve" && blocking) refuse(`an approval cannot carry ${blocking === 1 ? "a blocking finding" : `${blocking} blocking findings`}; reject, or mark the finding a follow-up`);
   // An approval proves every acceptance criterion: one CRITERION line each,
   // each met. A missing line leaves the criterion unproved, and a line that

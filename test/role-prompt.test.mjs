@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { ROLES, ROLE_PROMPTS, ROLE_PROMPT_MAX, rolePrompt, guideText } from "../src/usage.ts";
@@ -41,6 +41,31 @@ test("atelier guide --role ROLE prints the default text, and the plain guide is 
     assert.equal(each.stdout, ROLE_PROMPTS[role], `--role ${role}`);
     assert.equal(each.stderr, "");
   }
+});
+
+// The orchestrate guide's standing rules, pinned: a change that drops one
+// fails here, and docs/orchestrating.md must state the same ones.
+const ORCHESTRATE_RULES = [
+  /builders from several companies, chosen by tier/,
+  /reviewed by a model from another\s+company/,
+  /Never override[^.]*except on the owner's own\s+confirmation/,
+  /Judge each review finding against the code[^.]*record every\s+verdict/,
+  /Land one task at a time/,
+  /Report every run that ended without a result/,
+  /On a stall/,
+  /repeated rejection/,
+];
+
+test("the orchestrate guide states each standing rule and names docs/orchestrating.md", () => {
+  const text = ROLE_PROMPTS.orchestrate;
+  for (const rule of ORCHESTRATE_RULES) assert.match(text, rule);
+  assert.match(text, /docs\/orchestrating\.md/);
+  assert.equal(run(["guide", "--role", "orchestrate"]).stdout, text);
+});
+
+test("docs/orchestrating.md states the same standing rules", () => {
+  const doc = readFileSync("docs/orchestrating.md", "utf8");
+  for (const rule of ORCHESTRATE_RULES) assert.match(doc, rule);
 });
 
 test("atelier guide --role refuses a role it does not know, and a --role with no value", () => {

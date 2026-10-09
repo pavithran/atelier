@@ -406,8 +406,11 @@ it, and a verdict that names none, or criteria the task no longer has, is
 refused. Changing a task's criteria withdraws every review and live review
 request of the old ones, and an acceptance, and they never count again. Every
 review brief states the project's review bar; unset, the default bar blocks
-only for a correctness, security or data-loss defect that the change
-introduces, or fails to fix while claiming to. `atelier init --review-tier
+for a correctness, security or data-loss defect that the change introduces,
+or fails to fix while claiming to, a behaviour change without a test that
+covers it, docs or help that now contradict the code, a breaking change to a
+command, route or API field without a migration, or a visible regression on a
+user-facing page; anything else is a follow-up. `atelier init --review-tier
 H/M,H/M` names a top tier of reviewers that reviews every protected change.
 
 The owner records a verdict on each finding with `atelier finding ID --head
