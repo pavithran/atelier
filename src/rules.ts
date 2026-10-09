@@ -45,6 +45,25 @@ export interface Item {
   // (criteriaOf in src/criteria.ts). Null or absent for any other item.
   partAccept?: string[] | null;
   blocked?: Block | null;   // set while the task is blocked; it keeps its owner and fork meanwhile
+  // A blocking flag the push scan records (t332): one per file and line whose
+  // added text held a key pattern. Only the file, line and a fingerprint of
+  // the line are kept, never the matched value. It stands while it names the
+  // current head and is not cleared, and stops the gate from accepting or
+  // merging; the project owner clears it with a reason (secret.cleared) or a
+  // later push that removes the line clears it.
+  secret?: SecretFlag[] | null;
+  // Every clearance the owner has recorded on the item (t332): the file and
+  // fingerprint of each line judged safe, with the reason, the head it was
+  // judged at, by whom and when. A later scan that finds a line with the
+  // same fingerprint in the same file records it as cleared, not blocking.
+  secretClearances?: SecretClearance[] | null;
+  // The head whose push scan has not completed (t332): recorded in the same
+  // write as the head itself, and cleared only by the scan's own result for
+  // that exact head (setSecret). While it names the current head the gate
+  // refuses to accept or merge, as a flag does, so a scan that failed or has
+  // not run yet never passes a push silently; a retry of the push event or of
+  // `atelier push` runs it again. Absent once the scan has completed.
+  secretScan?: string | null;
   // A plan, or a part of one (docs/orchestrator.md). An ordinary task
   // carries none of these four fields.
   kind?: "plan" | "part";
@@ -63,6 +82,42 @@ export interface Block {
   by: string;
   at: string;
   from: ItemState;
+}
+
+// One entry of the secret flag the push scan records: where a key pattern was
+// added, at which head, by whom and when, with the fingerprint of the line
+// (fingerprint in src/secret-scan.ts). The matched value is never kept, so
+// only these fields exist. A flag with `unscanned` names a path whose head
+// side the scan could not read as text, with `reason` saying why (binary
+// content, a submodule, an oversized blob, a diff over budget); it has no
+// line, so `line` is 0, and its fingerprint is the hash of the object at the
+// head, so a clearance holds while that object is unchanged. A flag with `cleared`
+// was matched by a clearance the owner recorded (SecretClearance): it is
+// kept as the record of what the scan found, and does not block.
+export interface SecretFlag {
+  file: string;
+  line: number;
+  fingerprint: string;
+  head: string;
+  by: string;
+  at: string;
+  unscanned?: true;
+  reason?: string;
+  cleared?: true;
+}
+
+// The owner's clearance of one flagged line: the file and fingerprint it is
+// recorded against, the reason, the head the flag stood at, by whom and when.
+// It matches a later finding with the same fingerprint in the same file,
+// whatever its line number, so a line that moves within its file stays
+// cleared; a file renamed, or the line changed in any way, is a new finding.
+export interface SecretClearance {
+  file: string;
+  fingerprint: string;
+  reason: string;
+  head: string | null;
+  by: string;
+  at: string;
 }
 
 // What `atelier new` and `atelier edit` set. A field present replaces the
@@ -795,6 +850,16 @@ export function blockReason(value: unknown): string {
   return reason;
 }
 
+// The reason a secret flag is cleared with. A missing, blank or over-long
+// reason is refused, because it is the record of why the owner judged the
+// line safe, which a later reader checks against the code.
+export function secretClearReason(value: unknown): string {
+  const reason = line(value);
+  if (!reason) throw new RuleError("secret_reason", "clearing a secret flag needs a reason: what shows the line is not a secret", 400);
+  if (reason.length > REASON_MAX) throw new RuleError("secret_reason", `a clearing reason is at most ${REASON_MAX} characters`, 400);
+  return reason;
+}
+
 // The item fields a request sets, checked at the boundary: each list is
 // strings with something in each, at most FIELD_LIST_MAX of them; the gate is
 // one line or null. A field that is not sent is left out, so the Ledger
@@ -1164,6 +1229,25 @@ export interface Gate {
   overridden?: ReviewOverride;  // set when the owner's override stands in for a missing independent review
 }
 
+// The blockers a standing secret flag raises, one per file and line. The
+// message names the flag, never the matched value, so the owner and the
+// gate's message both show where the key pattern is without printing it.
+// A flag on any other head than the item's current one has been superseded by
+// a later push and stands no longer. A scan still pending for the current
+// head blocks the same way, with its own message: the push is not known to
+// be clean until the scan of that exact head has completed.
+export function secretBlockers(item: Pick<Item, "secret" | "head" | "secretScan">): string[] {
+  const flags = (item.secret ?? [])
+    .filter((f) => f.head === item.head && !f.cleared)
+    .map((f) => f.unscanned
+      ? `secret scan could not read ${f.file} in full${f.reason ? ` (${f.reason})` : ""}; clear it with a reason or push a revision that removes the line`
+      : `secret flagged in ${f.file}:${f.line}; clear it with a reason or push a revision that removes the line`);
+  if (item.head && item.secretScan === item.head) {
+    flags.push(`secret scan pending for ${item.head.slice(0, 8)}; it is retried until it completes, and atelier push runs it again`);
+  }
+  return flags;
+}
+
 // `reviewHeld` says the change's independent review is held outside the
 // item, as a plan's is by its integrated parts' reviews (planGate): the
 // item's own contributors are then not compared with any reviewer, and no
@@ -1176,6 +1260,7 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   const blockers: string[] = [];
   if (item.state !== "submitted") blockers.push(`state is ${item.state}, not submitted`);
   if (!item.head) blockers.push("no verified push");
+  blockers.push(...secretBlockers(item));
   const view = evidenceAt(policy, evidence, item.head);
   for (const c of view.checks) {
     if (c.grade === "pending") blockers.push(`\`${c.claim}\` not yet observed at this head`);
