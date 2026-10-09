@@ -1415,7 +1415,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     case "dispatch": {
       let suggestion;
-      if (!body.agent && body.job !== "merge-main") {
+      // atelier dispatch with no --agent asks for the suggestion; a dispatch
+      // that names no agent without asking stays open to any runner's agent.
+      if (body.suggest === true && !body.agent && body.job !== "merge-main") {
         requireOwner(env, actor);
         const [pool, track, item, p] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project()]);
         suggestion = suggestBuilder({ ...track, item, project: p.name, pool, policy: p.policy, owner: ownerActor(env) }, body);
@@ -1509,7 +1511,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       requireOwner(env, actor);
       const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
       const track = reviewer === null ? await suggestionRecords(index(env), (p) => ledgerOf(env, p)) : undefined;
-      return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true || reviewer === null, false, track));
+      return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true, false, track));
     }
     // One recorded step of a landing (atelier land): what it was, how long it
     // took and what it settled, for the integration record (t186).

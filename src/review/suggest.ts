@@ -8,12 +8,17 @@ import { pickReviewer } from "./reviewer.ts";
 
 const actorOf = (m: SuggestionInput["pool"][number]) => `${m.harness}/${m.id}`;
 
-export function suggestReviewer(input: SuggestionInput, avoid: readonly { actor: string; reason: string }[] = [], now = new Date()): Choice {
+export interface ReviewerSuggestionInput extends SuggestionInput {
+  previous?: string | null;          // the reviewer of the last rejected round, asked first
+  tier?: readonly string[];          // the project's review tier, asked next for a protected change
+}
+
+export function suggestReviewer(input: ReviewerSuggestionInput, avoid: readonly { actor: string; reason: string }[] = [], now = new Date()): Choice {
   const strict = input.frontierRequired === true || sensitive(input.item);
   const ordered = ranked(input).filter(({ entry }) => !strict || frontier(entry));
   const precision = buildPrecision(input.sources, precisionWindow(now), input.owner);
   const pick = pickReviewer({ item: input.item, pool: ordered.map((r) => r.entry), policy: input.policy,
-    allowPaid: false, owner: input.owner, avoid, precision,
+    allowPaid: false, owner: input.owner, avoid, precision, previous: input.previous ?? null, tier: input.tier,
     // Preserve outcome order between equal precision terms.
     recordOrder: ordered.map(({ entry }) => actorOf(entry)),
   });

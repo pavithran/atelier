@@ -537,7 +537,7 @@ export async function runLand(io) {
         await record("review", Date.now() - t0, { verdict: "none-needed", reason: String(ask.reason ?? "").slice(0, 500) });
       } else {
         const head = ask.head, since = ask.at;
-        print(`${ask.requested === false ? "A review request is already open" : "Review requested"}${ask.reviewer ? ` for ${ask.reviewer}` : ""}: ${ask.reason}. Waiting for the verdict…`);
+        print(`${ask.requested === false ? "A review request is already open" : "Review requested"}${ask.reviewer ? ` for ${ask.reviewer}` : ""}: ${String(ask.reason ?? "").replace(/\.*$/, "")}. Waiting for the verdict…`);
         // While no runner has claimed the request, the landing says what the
         // runners are busy with and what waits ahead in the queue, once and
         // again when that changes, so a long wait is explained rather than

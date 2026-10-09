@@ -232,7 +232,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         await this.stage(step, L, p, "done", round, "submitted; the review is left to the owner (--no-review)");
         return { item: p.item, workflow: p.instance, review: "skipped" };
       }
-      await this.review(step, L, p, head);
+      await this.review(step, L, p, head, round);
 
       // The acceptance: the fork's head is read from Artifacts and must be
       // the reviewed head (as the accept route checks it), and the lease
@@ -515,17 +515,17 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
     }
   }
 
-  private async review(step: WorkflowStep, L: LedgerStub, p: Landing, head: string): Promise<void> {
+  private async review(step: WorkflowStep, L: LedgerStub, p: Landing, head: string, round: number): Promise<void> {
     const ask = await step.do("request the review", RETRIES, async () => {
       const index = this.env.LEDGER.get(this.env.LEDGER.idFromName("__index"));
       const pool = await index.models();
       const records = p.reviewer === null ? await suggestionRecords(index, (project) => this.env.LEDGER.get(this.env.LEDGER.idFromName(`project:${project.key ?? project.name}`))) : undefined;
       try {
-        const r = await L.requestReview(p.item, p.actor, p.reviewer, pool, true, false, records);
-        if (r.needed && r.reviewer) {
-          const current = await L.landingWorkflowOf(p.item);
-          await L.setLandingWorkflowStage(p.item, p.instance, "review", current?.round ?? 0, `Reviewer: ${r.reviewer}. ${r.reason}`);
-        }
+        // A named reviewer is wanted even where the gate needs none; with
+        // none named the gate decides, and the Ledger suggests the reviewer
+        // from the records when it needs one.
+        const r = await L.requestReview(p.item, p.actor, p.reviewer, pool, p.reviewer !== null, false, records);
+        if (r.needed && r.reviewer) await L.setLandingWorkflowStage(p.item, p.instance, "review", round, `Reviewer: ${r.reviewer}. ${r.reason}`);
         return { needed: r.needed, reason: r.reason, at: r.at ?? new Date().toISOString(), reviewer: r.reviewer ?? null };
       } catch (error) {
         throw new NonRetryableError(this.refusal(error));

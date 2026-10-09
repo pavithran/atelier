@@ -5,7 +5,7 @@ import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
-  assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX, changeClass, evidenceAt,
+  assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
   assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, contributorsOf, DEFAULT_OWNER, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
   assertBlockable, assertNotBlocked, blockReason, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
@@ -36,7 +36,7 @@ import type { PlanPartReview, PlanView } from "./plans/show.ts";
 import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { reviewBrief } from "./review/brief.ts";
 import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
-import { frontier, sensitive, type SuggestionRecords } from "./models/suggest.ts";
+import type { SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
 import { suggestReviewer } from "./review/suggest.ts";
 import { buildPrecision, precisionWindow, type PrecisionRecord } from "./models/precision.ts";
@@ -3337,7 +3337,7 @@ export class Ledger extends DurableObject<Env> {
     const item = this.item(id);
     // A named reviewer is judged even when a request already stands, so a
     // retry with a different name never silently keeps the wrong reviewer.
-    if (wanted && reviewer === null && !records) throw new RuleError("bad_request", "a wanted review names its reviewer", 400);
+    if (wanted && reviewer === null) throw new RuleError("bad_request", "a wanted review names its reviewer", 400);
     if (reviewer !== null) {
       if (!validActor(reviewer)) throw new RuleError("bad_actor", `"${reviewer}" is not harness/model`, 400);
       if (contributorsOf(item).some((c) => sameActor(c, reviewer))) {
@@ -3372,15 +3372,14 @@ export class Ledger extends DurableObject<Env> {
       if (live) {
         const dispatch = JSON.parse(live.dispatch as string) as Dispatch;
         const standing = dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : null;
-        if (records && !standing) throw new RuleError("no_reviewer", "The standing review request names no model; cannot verify independence", 409);
+        // A landing that names no reviewer waits on the standing request only
+        // while its reviewer is still of another company than every
+        // contributor; one who has since pushed or claimed is refused. The
+        // reviewer the owner named earlier stays the owner's choice, in the
+        // pool or not.
         if (records && standing) {
           const refusal = independenceRefusal(standing, contributorsOf(item));
-          const entry = pool.find((m) => sameActor(`${m.harness}/${m.id}`, standing));
-          const paths = evidenceAt(policy, this.evidenceFor(id), item.head).changedPaths ?? [];
-          const strict = sensitive({ ...item, scope: [...item.scope, ...paths] }) || changeClass(paths, policy) === "protected";
-          if (refusal || !entry || (strict && !frontier(entry))) {
-            throw new RuleError("no_reviewer", refusal ?? "The standing reviewer is outside the eligible pool or required frontier tier", 409);
-          }
+          if (refusal) throw new RuleError("no_reviewer", `the review requested of ${standing} at ${item.head!.slice(0, 8)} cannot count: ${refusal}. Name another with atelier land ${id} --reviewer H/M`, 409);
         }
         if (reviewer !== null && standing && !sameActor(standing, reviewer)) {
           throw new RuleError("review_requested", `a review of ${id} at ${item.head!.slice(0, 8)} is already requested from ${standing}; wait for its verdict, or let its claim lapse before naming ${reviewer}`, 409);
@@ -3396,7 +3395,10 @@ export class Ledger extends DurableObject<Env> {
     if (reviewer !== null) {
       chosen = reviewer;
     } else if (records) {
-      const pick = suggestReviewer({ ...records, item: { ...item, scope: [...item.scope, ...need.changedPaths] }, project: this.project().name, pool, policy, owner: this.owner, frontierRequired: need.changeClass === "protected" },
+      // The suggestion asks the previous round's reviewer and, for a
+      // protected change, the review tier first, as the pool pick below does.
+      const pick = suggestReviewer({ ...records, item: { ...item, scope: [...item.scope, ...need.changedPaths] }, project: this.project().name, pool, policy, owner: this.owner, frontierRequired: need.changeClass === "protected",
+        previous: need.previousReviewer, tier: need.changeClass === "protected" ? policy.reviewTier : undefined },
         need.lapsed.map((actor) => ({ actor, reason: "its claim on a review of this head lapsed" })), new Date(at));
       chosen = pick.actor;
       choiceReason = pick.reasons.join(" ");

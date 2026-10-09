@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { suggestBuilder, stalledBuilder } from '../models/suggest.ts';
-import { suggestReviewer } from './suggest.ts';
-import { cleanEntry } from '../models/pool.ts';
+import { suggestBuilder, stalledBuilder } from '../src/models/suggest.ts';
+import { suggestReviewer } from '../src/review/suggest.ts';
+import { cleanEntry } from '../src/models/pool.ts';
 const entry = (id, harness = 'codex') => cleanEntry({ id, harness, where: 'home' }, 'owner', '2026-10-01');
 const pool = [entry('gpt-6.1-sol'), entry('gpt-6-astra'), entry('fable-5', 'claude-code'), entry('gemini-3', 'gemini-cli')];
 const item = { id: 't1', title: 'Improve formatting', scope: ['src/**'], owner: 'codex/gpt-6.1-sol', pushActors: [] };
@@ -66,7 +66,7 @@ test('a successful build clears the latch but a fresh pair stalls it again', () 
   assert.equal(stalledBuilder(pool[0], { sources, runs: [run(5), run(2), run(4), run(1)] }), true);
 });
 test('record loading pages past 1000 events and fails on unreadable projects', async () => {
-  const { suggestionRecords } = await import('../models/suggestion-records.ts');
+  const { suggestionRecords } = await import('../src/models/suggestion-records.ts');
   const index = { projects: async () => [{ name: 'p' }], runs: async (limit) => { assert.equal(limit, Number.MAX_SAFE_INTEGER); return [run(1)]; } };
   const page = Array.from({ length: 1000 }, (_, i) => ({ ...event(1, 'item.claimed', item.owner), seq: 1001 - i }));
   const calls = [];
@@ -79,8 +79,20 @@ test('record loading pages past 1000 events and fails on unreadable projects', a
   await assert.rejects(suggestionRecords(index, () => ({ events: async () => { throw new Error('unreadable'); } })), /unreadable/);
 });
 
-// Scope is src/** and cli/**; run these alongside npm test with
-// node --test src/review/suggest.test.mjs.
 test('measured protected changes require frontier even without title keywords', () => {
   assert.throws(() => suggestReviewer({ ...input, frontierRequired: true, pool: [pool[0], pool[3]] }), /frontier reviewer/);
+});
+
+test('the reviewer is never of a company that contributed, whoever is first by record', () => {
+  // gpt-6.1-sol has the best record, but codex built the task with it.
+  const sources = [{ project: 'p', events: [event(1, 'item.claimed', item.owner), event(2, 'item.merged', 'owner')] }];
+  const result = suggestReviewer({ ...input, sources, item: { ...item, pushActors: ['codex/gpt-6-astra'] } });
+  assert.notEqual(result.actor.split('/')[0], 'codex');
+  assert.match(result.reasons.join(' '), /another family|recorded outcomes/);
+});
+test('a re-review goes to the previous reviewer and a protected change to the review tier first, within the rules', () => {
+  assert.equal(suggestReviewer({ ...input, previous: 'gemini-cli/gemini-3' }).actor, 'gemini-cli/gemini-3');
+  assert.equal(suggestReviewer({ ...input, frontierRequired: true, tier: ['claude-code/fable-5'] }).actor, 'claude-code/fable-5');
+  // A previous reviewer outside the frontier is not asked of sensitive work.
+  assert.equal(suggestReviewer({ ...input, frontierRequired: true, previous: 'gemini-cli/gemini-3' }).actor, 'claude-code/fable-5');
 });
