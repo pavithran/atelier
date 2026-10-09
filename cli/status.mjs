@@ -17,7 +17,7 @@
 // (jobsLine in cli/runner.mjs): the jobs it takes and, behind them, the known
 // jobs it does not.
 import { holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
-import { isOwnCall } from "../src/rules.ts";
+import { isOwnCall, mergedByOverride } from "../src/rules.ts";
 import { jobsLine } from "./runner.mjs";
 
 // An item as `ls --json` and `status --json` print it: what the text listings
@@ -40,6 +40,8 @@ export function statusJson(views) {
       inbox: mine,
       items: v.items.map(itemJson),
       overlaps: overlapPairs(mine),
+      // The merges that went in on the owner's override, by id (t371).
+      mergedByOverride: mergedByOverride(v.items).map((i) => i.id),
     };
   });
 }
@@ -254,6 +256,12 @@ export function formatStatus(views, waiting = {}) {
     if (working.length) {
       lines.push("  In progress");
       for (const i of working) lines.push(`    ${i.id}  ${i.state}  held by ${i.owner ?? "nobody"}  ${i.title}`);
+    }
+    // How many merges went in on the owner's override of the independent
+    // review, naming each, wherever the project has merged anything (t371).
+    const merged = v.items.filter((i) => i.state === "merged"), byOverride = mergedByOverride(merged);
+    if (merged.length) {
+      lines.push(`  Merged by override: ${byOverride.length} of ${merged.length} ${merged.length === 1 ? "merge" : "merges"}${byOverride.length ? ` (${byOverride.map((i) => i.id).join(", ")})` : ""}`);
     }
     if (queued.length || reviews.length) {
       lines.push("  Waiting for a runner");

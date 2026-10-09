@@ -38,7 +38,7 @@ import type { PartRoute } from "./plans/route.ts";
 // refreshes itself, in seconds, or nothing for the scrubber alone.
 export interface Live { nonce: string; refresh?: number }
 import {
-  bindingOf, DEFAULT_OWNER, decisionFor, evidenceAt, isOwnCall, latestReviews, mergedChecksAt, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey,
+  bindingOf, confirmationAt, DEFAULT_OWNER, decisionFor, evidenceAt, isOwnCall, latestReviews, mergedByOverride, mergedChecksAt, OVERRIDE_CONFIRMATION_MS, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey,
   type Evidence, type Gate, type InboxEntry, type Item, type MergedCheckView, type ProjectPolicy, type Review,
 } from "./rules";
 
@@ -1251,6 +1251,10 @@ export interface Standing {
   waiting: { id: string; title: string; kind: InboxEntry["kind"]; kinds: InboxEntry["kind"][]; reason: string; brief: { verdict: string; line: string } | null }[];
   queued: { id: string; title: string; to: string; agent: string | null; model: string | null; by: string; at: string; note: string }[];
   merged: { id: string; title: string; at: string; commit: string | null; line: string | null }[];
+  // Every merge that went in on the owner's override of the independent
+  // review (t371), newest first, with the reason recorded; `overrides.length`
+  // is the count the page and `atelier status` show.
+  overrides: { id: string; title: string; at: string; reason: string }[];
   handoffs: { id: string; title: string; from: string; to: string; note: string; at: string }[];
   controlPlane: { approval: string; protected: string[]; eligible: string[]; refuseOverlap: boolean } | null;
   // Each registered check, its class, that class in words (src/checks.ts),
@@ -1338,7 +1342,9 @@ export function buildStanding(
     queued: items.filter((i) => i.state === "open" && !i.owner && i.dispatch).map((i) => ({
       id: i.id, title: i.title, to: i.dispatch!.to, agent: i.dispatch!.agent ?? null, model: i.dispatch!.model ?? null, by: i.dispatch!.by, at: i.dispatch!.at, note: i.dispatch!.note ?? "",
     })),
-    merged, handoffs,
+    merged,
+    overrides: mergedByOverride(items).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((i) => ({ id: i.id, title: i.title, at: i.reviewOverride!.at, reason: i.reviewOverride!.reason })),
+    handoffs,
     // A project governed by ControlPlane carries the owner's recorded approval.
     controlPlane: p.policy.approval
       ? { approval: p.policy.approval, protected: p.policy.protected, eligible: p.policy.eligible ?? [], refuseOverlap: !!p.policy.refuseOverlap }
@@ -1360,10 +1366,12 @@ function standingSection(p: ProjectRecord, s: Standing): string {
     group("Waiting on the owner", s.waiting.map((w) => `<li>${link(w.id)} <strong>${e(w.title)}</strong>${tag(KIND[w.kind][0], KIND[w.kind][1])}<span class="meta">${e(w.reason)}${w.brief ? ` · brief, ${e(w.brief.verdict)}: ${e(w.brief.line)}` : ""}</span></li>`)),
     group("Queued for a runner", s.queued.map((q) => `<li>${link(q.id)} <strong>${e(q.title)}</strong><span class="meta">for ${e(runner(q))} · sent by ${e(q.by)} ${e(when(q.at))}${q.note ? ` · ${e(q.note)}` : ""}</span></li>`)),
     group("Last merges", s.merged.map((m) => `<li>${link(m.id)} <strong>${e(m.title)}</strong><span class="meta">${e(when(m.at))}${m.commit ? ` · <code>${e(m.commit.slice(0, 8))}</code>` : ""}${m.line ? ` · ${e(m.line)}` : ""}</span></li>`)),
+    // Every merge by override, each linked, under the count the lead line gives (t371).
+    group(`Merged by override: ${plural((s.overrides ?? []).length, "merge")}`, (s.overrides ?? []).map((o) => `<li>${link(o.id)} <strong>${e(o.title)}</strong><span class="meta">${e(when(o.at))} · the owner's override, not a review: ${e(o.reason)}</span></li>`)),
     group("Handoff notes", s.handoffs.map((h) => `<li>${link(h.id)} <strong>${e(h.title)}</strong><span class="meta">${e(h.from || "?")} to ${e(h.to || "?")}, ${e(when(h.at))}: ${e(h.note)}</span></li>`)),
   ].join("");
-  const inHand = s.live.length;
-  const lead = `<p class="meta">${plural(inHand, "task")} in hand${s.waiting.length ? ` · ${plural(s.waiting.length, "thing")} waiting on you here` : ""} · <a href="${href("p", p.name, "tasks")}">the whole task list</a></p>`;
+  const inHand = s.live.length, byOverride = (s.overrides ?? []).length;
+  const lead = `<p class="meta">${plural(inHand, "task")} in hand${s.waiting.length ? ` · ${plural(s.waiting.length, "thing")} waiting on you here` : ""} · <span class="merged-by-override">${plural(byOverride, "merge")} by override</span> · <a href="${href("p", p.name, "tasks")}">the whole task list</a></p>`;
   return `<section class="standing" id="standing" aria-label="Where it stands">
   <h2 class="section-title">Where it stands</h2>
   ${lead}
@@ -1543,6 +1551,7 @@ export function renderProjectSettings(p: ProjectRecord, ownerName: string | null
     <dt>Check execution</dt><dd>${p.policy.sandboxOnly ? "Only checks run in a Cloudflare container count" : "Checks count from a Cloudflare container or a runner's clean clone"}</dd>
     <dt>Eligible agents</dt><dd>${p.policy.eligible?.map(e).join(", ") || "Any agent"}</dd>
     <dt>Overlap</dt><dd>${p.policy.refuseOverlap ? "Refused" : "Flagged for review"}</dd>
+    <dt>Overrides</dt><dd>${p.policy.noOverride ? "Refused: every change needs its independent review (<code>atelier init --no-override</code>)" : "Allowed with a reason, confirmed by the owner on the task's page"}</dd>
     <dt>Baseline</dt><dd><code>${e(p.repo)}</code></dd>
   </dl>`;
   const cp = p.policy.approval
@@ -1687,13 +1696,27 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   // The owner's override, offered only while the missing independent review
   // is the one thing blocking this revision, since it waives that and nothing
   // else. Its reason is required and recorded.
+  // A project that forbids overrides (t371) offers neither form and says so.
+  // The forms count as the owner's confirmation only under the owner's own
+  // sign-in; the second gives `atelier accept --override-review` a quarter
+  // of an hour's permission for this head, which the owner token alone
+  // never has, and the note says while one stands.
   const overridable = evidenceVisible && item.state === "submitted" && !!item.head && gate.needsAssessor && gate.blockers.length === 1;
-  const override = overridable
+  const allowed = confirmationAt(item, Date.now(), d.ownerActor ?? DEFAULT_OWNER);
+  const override = overridable && d.policy.noOverride
+    ? `<p class="meta">This project forbids overrides of the independent review (<code>atelier init --no-override</code>): the revision lands only with an approval from a model of another family than every contributor.</p>`
+    : overridable
     ? `<details class="request-changes"><summary>Accept without an independent review</summary>
       <form class="stack" method="post" action="${action("override")}">${revision}
         <label>Why is no independent review possible?<textarea name="note" required rows="3" maxlength="${OVERRIDE_REASON_MAX}"></textarea></label>
-        <p class="meta">This records your override and its reason on the task and in the inbox, and accepts the revision. It is not a review.</p>
+        <p class="meta">This records your override and its reason on the task and in the inbox, and accepts the revision. It is not a review. Your sign-in here is the confirmation an override needs; the owner token alone cannot give it.</p>
         <button>Override the review and accept</button>
+      </form>
+      <form class="stack" method="post" action="${action("allow-override")}">${revision}
+        <p class="meta">${allowed
+          ? `You allowed an override from the command line for this revision until ${e(when(allowed.until))}: <code>atelier accept ${e(item.id)} --override-review "reason"</code> is taken until then, once.`
+          : `Or allow <code>atelier accept ${e(item.id)} --override-review "reason"</code> from the command line for this revision, for ${OVERRIDE_CONFIRMATION_MS / 60000} minutes and one override; without it the command is refused.`}</p>
+        <button>${allowed ? "Allow it again from now" : "Allow an override from the command line"}</button>
       </form></details>`
     : "";
   // The primary action while the gate waits for the independent review is the

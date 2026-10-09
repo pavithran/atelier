@@ -9,7 +9,7 @@ import { accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
-import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, type Evidence, type Item } from "./rules";
+import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, type Evidence, type Item } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
@@ -52,7 +52,11 @@ const READ_TTL = 3600;
 
 // `ref` is the project an API path names, resolved once at the entry (see
 // resolveProject); null when the path names none.
-type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null; waitUntil?: (p: Promise<unknown>) => void };
+// `signedIn` is set on a browser request the owner's own session answers for
+// (a cookie from /login, behind Access where it is set), never on one the
+// owner token alone authorises: the override forms count only the former as
+// the owner's confirmation (t371).
+type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null; waitUntil?: (p: Promise<unknown>) => void; signedIn?: boolean };
 
 // ── auth ───────────────────────────────────────────────────────────────────
 // The owner bearer token may declare any actor for orchestration. Agent tokens
@@ -1031,6 +1035,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // The core-file globs the queue holds overlapping dispatches on; [] clears them.
       ...(has("coreFiles") ? { coreFiles: asStrings(body.coreFiles, "coreFiles") } : {}),
       ...(has("sandboxOnly") ? { sandboxOnly: Boolean(body.sandboxOnly) } : {}),
+      // Overrides of the independent review refused in this project (t371).
+      ...(has("noOverride") ? { noOverride: Boolean(body.noOverride) } : {}),
       ...(has("approval") ? { approval: approvalArg(body.approval) } : {}),
     };
     // A check that is not read-only is refused before the baseline is made;
@@ -1749,9 +1755,19 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // reason, which the Ledger refuses.
       // note, when sent, is the owner's own word on the acceptance, kept
       // with it in the ledger (land.sh records the session's note there).
-      return json(await L.accept(id, actor, String(body.head ?? ""),
-        body.overrideReview === undefined ? undefined : typeof body.overrideReview === "string" ? body.overrideReview : "",
-        typeof body.note === "string" ? body.note : undefined));
+      // An override through the API comes with the owner token, which an
+      // agent session may hold, so the Ledger takes it only under the
+      // owner's standing permission from the task's page (t371); the
+      // refusal names that page on this server.
+      try {
+        return json(await L.accept(id, actor, String(body.head ?? ""),
+          body.overrideReview === undefined ? undefined : typeof body.overrideReview === "string" ? body.overrideReview : "",
+          typeof body.note === "string" ? body.note : undefined));
+      } catch (err) {
+        const rule = parseRuleError(err);
+        if (rule?.code === "override_unconfirmed") throw new RuleError(rule.code, rule.detail.replace(": open /p/", `: open ${c.url.origin}/p/`), rule.status);
+        throw err;
+      }
     case "merged": {
       requireOwner(env, actor);
       const p = await L.project();
@@ -2217,8 +2233,14 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const before = await L.item(id);
     const expected = String(form.get("head") ?? "");
     if (before.head) assertRevision(before, expected);
-    if (["accept", "override", "approve", "reject"].includes(verb)) await verifyRevision(env, ref.key, id, expected);
+    if (["accept", "override", "allow-override", "approve", "reject"].includes(verb)) await verifyRevision(env, ref.key, id, expected);
     if (verb === "accept" || verb === "override") await assertPlanMergeable(env, L, id);
+    // The override forms are the owner's confirmation only under the owner's
+    // own sign-in (t371): posted with the owner token as a bearer, as an
+    // agent could, they are refused as the API's override is.
+    if ((verb === "override" || verb === "allow-override") && !c.signedIn) {
+      throw new RuleError("override_unconfirmed", `an override of the independent review needs the owner's own sign-in, not the owner token: ${overrideConfirmationHint(project, id, c.url.origin)}`, 403);
+    }
     // A change of owner takes the write token with it, as on the API routes:
     // the Ledger clears the id read here only if it is still the one recorded.
     const oldToken = await L.tokenId(id);
@@ -2243,7 +2265,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     else if (verb === "accept") await L.accept(id, owner, expected);
     // The page's override form: accept with the owner's override of a missing
     // independent review, its reason in the note.
-    else if (verb === "override") await L.accept(id, owner, expected, note);
+    else if (verb === "override") await L.accept(id, owner, expected, note, undefined, true);
+    // The page's permission for an override from the command line (t371).
+    else if (verb === "allow-override") await L.confirmOverride(id, owner, expected);
     else if (verb === "abandon") await L.abandon(id, owner, note, oldToken);
     else if (verb === "block") await L.block(id, owner, note);
     else if (verb === "unblock") await L.unblock(id, owner);
@@ -2642,7 +2666,7 @@ export default {
         return Response.redirect(new URL("/login", url).toString(), 303);
       }
       if (typeof how === "object") return html("Agent tokens cannot use browser routes.", 403);
-      return await ui({ env, req, url, actor: ownerActor(env), body: null }, parts);
+      return await ui({ env, req, url, actor: ownerActor(env), body: null, signedIn: how === "ui" }, parts);
     } catch (err) {
       const rule = parseRuleError(err);
       // The error page keeps the owner's name on the pages only the owner

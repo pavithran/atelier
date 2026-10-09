@@ -708,12 +708,77 @@ it("decision 2026-10-06: the accept route takes an override only from the owner,
     expect([overrideReview, res.status, (await res.json() as { error: string }).error]).toEqual([overrideReview, 400, "override_reason"]);
   }
   expect((await L.item("t1")).state).toBe("submitted");
+  // t371: the owner token alone does not override, since an agent session
+  // may hold it. The API's override is refused, naming the page on this
+  // server and the button, until the owner allows it there under the owner's
+  // own sign-in; the page's form posted with the token as a bearer is refused
+  // the same way. One permission takes one override, for 15 minutes.
+  const unconfirmed = await owner("POST", "/items/t1/accept", { head: H1, overrideReview: reason });
+  expect(unconfirmed.status).toBe(403);
+  expect(await unconfirmed.json()).toEqual({ error: "override_unconfirmed", detail: `an override of the independent review needs the owner's confirmation: open https://atelier.test/p/${name}/t1 signed in as the owner, press "Allow an override from the command line", then run the command again within 15 minutes; the owner token alone does not confirm it` });
+  expect((await L.item("t1")).state).toBe("submitted");
+  const bindings = { ...testEnv, ARTIFACTS } as typeof env;
+  const page = (headers: Record<string, string>) => worker.fetch(new Request(`https://atelier.test/ui/${name}/t1/allow-override`, {
+    method: "POST", headers: { origin: "https://atelier.test", ...headers }, body: new URLSearchParams({ head: H1, criteria: NO_CRITERIA, note: "" }),
+  }), bindings);
+  const byBearer = await page({ authorization: `Bearer ${TOKEN}` });
+  expect(byBearer.status).toBe(403);
+  expect(await byBearer.text()).toMatch(/needs the owner(&#39;|'|&#x27;)s own sign-in, not the owner token/);
+  expect((await L.item("t1")).overrideConfirmation).toBeUndefined();
+  const cookie = await signIn(TOKEN, bindings);
+  expect((await page({ cookie })).status).toBe(303);
+  expect((await L.item("t1")).overrideConfirmation).toMatchObject({ head: H1, by: "owner" });
   const accepted = await owner("POST", "/items/t1/accept", { head: H1, overrideReview: reason });
   expect(accepted.status, await accepted.clone().text()).toBe(200);
   expect(await accepted.json()).toMatchObject({ state: "accepted", acceptedHead: H1, reviewOverride: { head: H1, by: "owner", reason } });
-  const detail = await (await owner("GET", "/items/t1")).json() as { events: { kind: string; data: Record<string, unknown> }[]; reviews: unknown[] };
-  expect(detail.events.find((e) => e.kind === "review.overridden")?.data).toMatchObject({ head: H1, reason });
+  const detail = await (await owner("GET", "/items/t1")).json() as { item: { overrideConfirmation?: unknown }; events: { kind: string; data: Record<string, unknown> }[]; reviews: unknown[] };
+  expect(detail.events.find((e) => e.kind === "review.overridden")?.data).toMatchObject({ head: H1, reason, confirmed: "command line" });
+  expect(detail.events.find((e) => e.kind === "override.allowed")?.data).toMatchObject({ head: H1 });
+  expect(detail.item.overrideConfirmation).toBeUndefined();
   expect(detail.reviews).toHaveLength(1);
+});
+
+// t371: a project set up with `atelier init --no-override` refuses every
+// override and every permission for one, through the API and the page alike.
+it("t371: a project that forbids overrides refuses them through the API and the page", async () => {
+  const name = "no-override-route", A = "claude-code/opus-5.5", H0 = "0".repeat(40), H1 = "a".repeat(40), T0 = "1".repeat(40), T1 = "2".repeat(40);
+  await project(name, ["AGENTS.md"]);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  // As `atelier init --no-override` records it (the init route sends noOverride: true).
+  expect((await L.initProject({ name, repo: name, reset: false, noOverride: true }, "owner")).policy.noOverride).toBe(true);
+  await L.newItem("Rewrite the agent instructions", [], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
+  await L.submit("t1", A);
+  const ARTIFACTS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }] }, {});
+  const bindings = { ...testEnv, ARTIFACTS } as typeof env;
+  const api = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/accept`, {
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ head: H1, overrideReview: "No other family" }),
+  }), bindings);
+  expect([api.status, (await api.json() as { error: string }).error]).toEqual([403, "override_forbidden"]);
+  const cookie = await signIn(TOKEN, bindings);
+  const page = (verb: string) => worker.fetch(new Request(`https://atelier.test/ui/${name}/t1/${verb}`, {
+    method: "POST", headers: { origin: "https://atelier.test", cookie }, body: new URLSearchParams({ head: H1, criteria: NO_CRITERIA, note: "No other family" }),
+  }), bindings);
+  for (const verb of ["allow-override", "override"]) {
+    const res = await page(verb);
+    expect([verb, res.status]).toEqual([verb, 403]);
+    expect(await res.text()).toMatch(/forbids overrides of the independent review/);
+  }
+  expect((await L.item("t1")).state).toBe("submitted");
+  // The task's page offers neither form and says the project forbids them;
+  // the Settings tab says so too, and `--no-override=false` allows them again.
+  const task = await worker.fetch(new Request(`https://atelier.test/p/${name}/t1`, { headers: { cookie } }), bindings);
+  const html = await task.text();
+  expect(html).toContain("This project forbids overrides of that review.");
+  expect(html).not.toContain("Allow an override from the command line");
+  expect(html).not.toContain("Override the review and accept");
+  const settings = await (await worker.fetch(new Request(`https://atelier.test/p/${name}/settings`, { headers: { cookie } }), bindings)).text();
+  expect(settings).toContain("Refused: every change needs its independent review");
+  expect((await L.initProject({ name, repo: name, reset: false, noOverride: false }, "owner")).policy.noOverride).toBeUndefined();
+  expect((await L.initProject({ name, repo: name, reset: false }, "owner")).policy.noOverride).toBeUndefined();
 });
 
 it("the standing route is readable by any signed-in actor, and by no one else", async () => {
