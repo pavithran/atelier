@@ -597,6 +597,9 @@ function branchArg(value: unknown): string {
   return value;
 }
 
+// The commit identity's fields as init sends them (src/commit-identity.ts).
+const IDENTITY_FIELDS = ["commitName", "commitEmail", "agentEmails", "privateEmails"];
+
 // The approval a policy records, as init sends it: the owner's own text,
 // stored with the policy, so one over its limit is refused, never cut.
 function approvalArg(value: unknown): string | null {
@@ -1079,6 +1082,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // Overrides of the independent review refused in this project (t371).
       ...(has("noOverride") ? { noOverride: Boolean(body.noOverride) } : {}),
       ...(has("approval") ? { approval: approvalArg(body.approval) } : {}),
+      // The project's commit identity (t451): each field given replaces the
+      // recorded one, and the whole is checked as the policy is merged
+      // (settleCommitIdentity), so an invalid one is refused before anything is made.
+      ...(IDENTITY_FIELDS.some(has) ? { commitIdentity: Object.fromEntries(IDENTITY_FIELDS.filter(has).map((k) => [k, body[k]])) } : {}),
     };
     // A check that is not read-only is refused before the baseline is made;
     // the Ledger decides the same again when it records the init.
@@ -1368,6 +1375,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         item: await L.item(id),
         workspace: { remote: w.remote, token: w.token, expiresAt: w.expiresAt, defaultBranch: w.defaultBranch },
         baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
+        // What the claim writes into the workspace's Git config, on whatever
+        // machine it runs (t451); null when the project names none yet.
+        commitIdentity: p.policy.commitIdentity ?? null,
       });
     }
     case "read-token": {
