@@ -435,9 +435,9 @@ test("new and edit send the framing as lists and a line, block sends its reason,
     [["new", "Title", "--stop-when", "  ", "--project", "demo"], /--stop-when needs text: atelier new --stop-when "TEXT", once per entry/],
     [["new", "Title", "--next-gate", "--project", "demo"], /--next-gate needs text: atelier new --next-gate "TEXT"/],
     [["new", "Title", "--next-gate", "  ", "--project", "demo"], /--next-gate needs text: atelier new --next-gate "TEXT"/],
-    [["edit", "t1", "--project", "demo"], /usage: atelier edit ID \[--title TEXT\] \[--brief TEXT\] \[--accept TEXT\]\.\.\. \[--non-goal TEXT\]/],
+    [["edit", "t1", "--project", "demo"], /usage: atelier edit ID \[--title TEXT\] \[--brief TEXT\] \[--scope GLOB\]\.\.\. \[--accept TEXT\]\.\.\. \[--non-goal TEXT\]/],
     [["edit", "t1", "--non-goal", "", "--non-goal", "x", "--project", "demo"], /--non-goal needs text: atelier edit ID --non-goal "TEXT", once per entry, or --non-goal "" alone to clear/],
-    [["edit", "t1", "--scope", "src/**", "--project", "demo"], /edit does not take --scope/],
+    [["edit", "t1", "--scope", "", "--scope", "src/**", "--project", "demo"], /--scope needs text: atelier edit ID --scope "GLOB", once per entry, or --scope "" alone to clear/],
     [["block", "t1", "--project", "demo"], /usage: atelier block \[ID\] "what it is waiting on"/],
     [["block", "--project", "demo"], /usage: atelier block/],
   ]) {
@@ -451,6 +451,16 @@ test("new and edit send the framing as lists and a line, block sends its reason,
   assert.equal(edited.status, 0, edited.stderr);
   assert.deepEqual(f.requests().map((q) => [q.method, q.path, q.body, q.actor]), [["POST", "/api/projects/demo/items/t1/edit", { nonGoals: ["no CSS"], stopWhen: [], nextGate: null }, "owner"]]);
   assert.match(edited.stdout, /^t1 edited\.\nNon-goals: no CSS\n$/);
+  f.clear();
+  // --scope is repeatable; one empty value clears it.
+  const scoped = f.run(f.checkout, ["edit", "t1", "--scope", "src/**", "--scope", "test/**", "--project", "demo"]);
+  assert.equal(scoped.status, 0, scoped.stderr);
+  assert.deepEqual(f.requests().map((q) => q.body), [{ scope: ["src/**", "test/**"] }]);
+  assert.match(scoped.stdout, /Scope: src\/\*\*, test\/\*\*/);
+  f.clear();
+  const unscoped = f.run(f.checkout, ["edit", "t1", "--scope", "", "--project", "demo"]);
+  assert.equal(unscoped.status, 0, unscoped.stderr);
+  assert.deepEqual(f.requests().map((q) => q.body), [{ scope: [] }]);
   f.clear();
   // block takes the id first when given, else the workspace's item; the reason is the words after it.
   const blocked = f.run(f.checkout, ["block", "t2", "waiting", "on", "the", "keys", "--project", "demo"]);
@@ -558,4 +568,13 @@ test("show prints the task's criteria, the plan's for a part, and their binding 
   const r = f.run(f.checkout, ["show", "t2", "--project", "demo"]);
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /\nAcceptance criterion 1: Nested lists parse\nPlan acceptance criterion 1: It works\nCriteria binding: c{64} \(a review of these criteria names it with --criteria\)\n/);
+});
+
+test("parseArgs: --brief is a switch only for status, found after flag values", () => {
+  const other = parseArgs(["--project", "status", "new", "--brief", "text"]);
+  assert.deepEqual(other._, ["new"]);
+  assert.equal(other.brief, "text");
+  const status = parseArgs(["--project", "demo", "status", "--brief"]);
+  assert.deepEqual(status._, ["status"]);
+  assert.equal(status.brief, true);
 });

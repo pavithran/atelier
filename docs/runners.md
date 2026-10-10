@@ -136,6 +136,14 @@ deadline from 45 minutes, and `finishTimeoutMs` to change the whole finish
 deadline from 60 minutes. Expiry ends the process group as above. A finish
 timeout leaves the claim held.
 
+A runner takes a new job only while the machine's load average is under a
+limit, so a saturated machine is not handed another harness to run on top of
+the rest (t403). The limit is the core count by default; set `loadLimit` to a
+number to change it, and the runner holds off while the load is at or above
+it, saying so on each poll it skips. The reading is the one-minute load
+average, and it is checked again before each job in a poll, so finishing a
+heavy job lets the load fall before another begins.
+
 ```sh
 atelier runner --name home:studio
 ```
@@ -155,6 +163,13 @@ model's name says so on the page ("recorded by the project owner with the
 owner token"), which undercuts the claim that another company's model
 reviewed the change independently; since 2026-10-08 (t346) a runner never
 records one.
+
+A reply the verdict parser refuses is kept, not discarded (t407): the runner
+posts `review-unparsable`, which keeps the reply on the task, its last
+100 KB with the reviewer and the head, and lets the request go for another
+reviewer. `atelier show ID --reviews` prints the kept replies, and the
+Models page counts each against the reviewer as a review that never reached
+a verdict.
 
 `tokens` in the runner config says, per model, where that model's token is
 stored, never the token itself: the name of a Keychain entry (read as

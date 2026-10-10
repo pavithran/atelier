@@ -214,6 +214,12 @@ time), the session can start a second runner (`atelier runner --name
 home:NAME-2`, see "The home runner" in `bin/orchestrate/README.md`) or
 review by hand.
 
+**Report after each landing.** The report the owner gets after every landing
+is `atelier status --brief`, under 20 lines: the recent merges, the commit
+the server is deployed at, live builds, reviews and the landing running, and
+the last 24 hours' spend against the daily limit. Give it as it prints; do
+not assemble it by hand.
+
 **Deploy when the CLI needs it.** On a machine where the CLI runs from the
 project's own checkout, a merge that adds a route the CLI calls, or changes
 the meaning of a route the CLI already calls, breaks every check until the
@@ -248,8 +254,12 @@ owner it read as a defect. The other half were real, and some were serious.
 ## Keeping the record honest
 
 - The task's holder is who the ledger says did the work. Before another
-  model works on a task, hand it off (`atelier handoff`); an accepted task
-  cannot be handed off, so integrate it under its holder or not at all.
+  model works on a task, hand it off (`atelier handoff`). The project owner
+  can send an accepted task back to building with `atelier handoff ID --to H/M`
+  or `atelier dispatch ID --job merge-main` after a merge conflict. The earlier
+  reviews and acceptance stay in the history; the new revision is submitted,
+  reviewed and accepted again. A merge holding the landing lease must finish
+  or be cancelled first. Plans use `atelier plan refresh ID` instead.
 - Every commit carries an `Agent:` line naming who wrote it.
 - When a closing note turns out to be wrong, say so where the record can
   hold it; never leave a false statement standing.
