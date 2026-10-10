@@ -237,3 +237,25 @@ test("a dispatch naming only a harness refuses the harness the claim would refus
   assert.doesNotThrow(() => assertDispatchClaimable(open, [], policy({ eligible: ["claude"] }), d({ agent: "claude" })));
   assert.doesNotThrow(() => assertDispatchClaimable(open, [], assessorOnly, d({ agent: "opencode" })));
 });
+
+// A harness whose governed agent depends on the model (opencode) cannot be
+// judged per model ahead of the claim, but when no governed agent holds the
+// role at all no model under any harness could qualify, so the refusal is
+// said now with the claim's own reason (t405).
+test("a dispatch naming only a harness refuses it when no agent holds the role, even a model-dependent harness", () => {
+  const policy = (over: Partial<ProjectPolicy> = {}): ProjectPolicy => ({ checks: [], protected: [], ...over });
+  const d = (o: Record<string, unknown> = {}) => makeDispatch(o, "pavi", T);
+  const open = item({ id: "t2", scope: ["relay/test/foo.ts"] });
+  // No governed agent holds the executor role: a claim by any model would be
+  // refused, so a harness-only dispatch for opencode is refused too.
+  const assessorOnly = policy({ agents: { codex: { available: true, eligible_roles: ["assessor"] } } });
+  assert.throws(() => assertDispatchClaimable(open, [], assessorOnly, d({ agent: "opencode" })), /opencode needs an available agent with the executor role; no agent is available with the executor role/);
+  // An agent that is present but unavailable for the role also leaves no
+  // model that could qualify.
+  const unavailable = policy({ agents: { glm: { available: false, eligible_roles: ["executor"] } } });
+  assert.throws(() => assertDispatchClaimable(open, [], unavailable, d({ agent: "opencode" })), /no agent is available with the executor role/);
+  // When some agent holds the role, opencode is left to the claim's own
+  // check, since a model that maps to that agent could qualify.
+  const exec = policy({ agents: { claude: { available: true, eligible_roles: ["executor"] } } });
+  assert.doesNotThrow(() => assertDispatchClaimable(open, [], exec, d({ agent: "opencode" })));
+});
