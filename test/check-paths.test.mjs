@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { constants, readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 
-const source = readFileSync(new URL("../cli/atelier.mjs", import.meta.url), "utf8");
+// The helpers are exported for the command modules (cli/commands/); a slice
+// of them runs here as a script, so without the keyword.
+const source = readFileSync(new URL("../cli/atelier.mjs", import.meta.url), "utf8").replace(/^export (?=(async )?function |const |let )/gm, "");
+const mergeSource = readFileSync(new URL("../cli/commands/merge.mjs", import.meta.url), "utf8");
 function cleanClone(git) {
   const code = source.slice(source.indexOf("function cleanClone("), source.indexOf("async function runCheck("));
   return runInNewContext(`${code}; cleanClone`, {
@@ -43,7 +46,7 @@ test("landing receipts record the computed class with the legacy fallback", () =
     write("checkout", { name: "p", id: "t1", item: { acceptedHead: "a".repeat(40) }, owners: [], view: [], reviews: [], policy: {}, branch: "main", changeClass: kind });
     assert.equal(receipt.execution_class, kind ?? "coordinated");
   }
-  assert.match(source, /writeReceipt\(cwd,\{[^\n]*changeClass:d\.gate\.changeClass/);
+  assert.match(mergeSource, /writeReceipt\(cwd,\{[^\n]*changeClass:d\.gate\.changeClass/);
 });
 
 // PAVI's decision, 2026-10-06: an override is recorded with its reason, so a
