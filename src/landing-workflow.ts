@@ -526,7 +526,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
     const ask = await step.do("request the review", RETRIES, async () => {
       const index = this.env.LEDGER.get(this.env.LEDGER.idFromName("__index"));
       const pool = await index.models();
-      const records = p.reviewer === null ? await suggestionRecords(index, (project) => this.env.LEDGER.get(this.env.LEDGER.idFromName(`project:${project.key ?? project.name}`))) : undefined;
+      const records = p.reviewer === null ? { ...await suggestionRecords(index, (project) => this.env.LEDGER.get(this.env.LEDGER.idFromName(`project:${project.key ?? project.name}`))), project: (await index.resolveProject(p.project)).key } : undefined;
       try {
         // A named reviewer is wanted even where the gate needs none; with
         // none named the gate decides, and the Ledger suggests the reviewer

@@ -3561,7 +3561,7 @@ const commands = {
       const s = m.status ? `${m.status.state} ${m.status.at.slice(0, 16)}Z${m.status.served && m.status.served !== m.id ? ` as ${m.status.served}` : ""}` : "not checked";
       return `${m.where.padEnd(5)} ${m.harness}/${m.id}  ${m.family}  ${s}${m.keychain ? `  key: ${m.keychain}` : ""}`;
     };
-    const taskOf = (n) => (n.project ? `${n.project}/${n.item}` : n.item);
+    const taskOf = (n) => (n.project ? `${n.projectName ?? n.project}/${n.item}` : n.item);
     const noteLines = (m) => (m.notes ?? []).map((n) => `  ${n.at.slice(0, 10)} by ${n.by}${n.item ? ` on ${taskOf(n)}` : ""}: ${n.text}`);
     if (sub === "add") {
       if (!id) die("atelier models add ID --harness H --where home|cloud");

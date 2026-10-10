@@ -1476,7 +1476,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (body.suggest === true && !body.agent && body.job !== "merge-main") {
         requireOwner(env, actor);
         const [pool, track, item, p] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project()]);
-        suggestion = suggestBuilder({ ...track, item, project: p.name, pool, policy: p.policy, owner: ownerActor(env) }, body);
+        suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env) }, body);
         const slash = suggestion.actor.indexOf("/");
         body.agent = suggestion.actor.slice(0, slash);
         body.model = suggestion.actor.slice(slash + 1);
@@ -1580,7 +1580,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review-request": {
       requireOwner(env, actor);
       const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
-      const track = reviewer === null ? await suggestionRecords(index(env), (p) => ledgerOf(env, p)) : undefined;
+      const track = reviewer === null ? { ...await suggestionRecords(index(env), (p) => ledgerOf(env, p)), project: ref.key } : undefined;
       return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true, false, track));
     }
     // One recorded step of a landing (atelier land): what it was, how long it

@@ -89,6 +89,14 @@ test("models show prints a model with its notes, oldest first, and says when it 
   assert.match(missing.output, /no-such-model is not in the pool/);
 });
 
+test("models show names a task by its project's current name, after a rename", async (t) => {
+  const renamed = { ...NOTE, project: "atelier-key", projectName: "atelier" };
+  const f = await stub(t, () => ({ data: [{ ...pool[0], notes: [renamed] }] }));
+  const shown = await f.run(["models", "show", "gpt-6.1-sol"]);
+  assert.equal(shown.status, 0, shown.output);
+  assert.deepEqual(shown.output.trim().split("\n").slice(1), ["  2026-10-09 by owner on atelier/t406: Commits without the full suite."]);
+});
+
 test("models lists the pool with each model's notes beneath its line, oldest first", async (t) => {
   const f = await stub(t, () => ({ data: pool }));
   const r = await f.run(["models"]);
