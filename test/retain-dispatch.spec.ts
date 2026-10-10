@@ -61,11 +61,19 @@ it("--overlap-ok on a held dispatch keeps its builder and place, is idempotent, 
 
   // A runner claims it first: the hold-only release is refused, not redispatched.
   const claimed = await make();
-  await dispatchOf(claimed, { to: "home", agent: "opencode" });
+  const pending = await dispatchOf(claimed, { to: "home", agent: "opencode" });
   await L.claim(claimed, "opencode/glm-5.3-flash", { runner: "home:studio", kind: "home" });
-  const late = await dispatchOf(claimed, { retain: true, overlapOk: true });
+  const late = await dispatchOf(claimed, { retain: true, retainAt: pending.body.dispatch!.at, overlapOk: true });
   expect(late.status).toBe(409);
   const after = (await L.item(claimed)) as { owner: string | null; dispatch: { overlapOk?: boolean } };
   expect(after.owner).toBe("opencode/glm-5.3-flash");
   expect(after.dispatch.overlapOk).toBeUndefined();
+
+  // Already-owned work follows ordinary redispatch, even with the legacy
+  // retain hint. Its workspace survives and its owner is released.
+  await L.setFork(claimed, `${name}--${claimed}`, H0, "opencode/glm-5.3-flash");
+  const requeued = await dispatchOf(claimed, { retain: true, overlapOk: true, agent: "codex", model: "gpt-6-astra" });
+  expect(requeued.status).toBe(200);
+  expect(requeued.body.dispatch).toMatchObject({ agent: "codex", model: "gpt-6-astra", overlapOk: true });
+  expect(await L.item(claimed)).toMatchObject({ state: "open", owner: null, fork: `${name}--${claimed}` });
 });
