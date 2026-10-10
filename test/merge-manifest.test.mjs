@@ -148,6 +148,35 @@ test("two tasks each adding a command merge through the pipeline: the indexes an
   assert.equal(cli("wave"), "wave\n");
 });
 
+test("a command deleted on one side and another added on the other merge: the regenerated indexes and fixtures drop the one and list the other", { timeout: 600_000 }, async (t) => {
+  const dir = fixture(t);
+  git(dir, "tag", "base");
+  addCommands(dir, "main", [["hello", "hello"]]);
+  git(dir, "checkout", "-q", "-B", "theirs", "base");
+  git(dir, "rm", "-q", `${HANDLERS}/gc.mjs`, `${SPECS}/gc.ts`);
+  writeFileSync(join(dir, SPECS, "index.ts"), specIndex(commandFiles(dir, SPECS, ".ts")));
+  writeFileSync(join(dir, HANDLERS, "index.mjs"), handlerIndex(commandFiles(dir, HANDLERS, ".mjs")));
+  git(dir, "commit", "-q", "-am", "remove gc");
+  git(dir, "checkout", "-q", "main");
+  const preview = previewMerge(dir, "HEAD", "theirs");
+  assert.deepEqual(preview.source, []);
+  assert.deepEqual(preview.generated, ["cli/commands/index.mjs", "src/usage/commands/index.ts"]);
+  const { run, calls } = counting();
+  const r = await mergeThrough(dir, "theirs", { message: "Merge theirs", run });
+  assert.equal(r.state, "merged", JSON.stringify({ ...r, manifest: undefined }));
+  assert.ok(calls.length >= 1);
+  assert.equal(git(dir, "status", "--porcelain"), "");
+  const read = (path) => readFileSync(join(dir, path), "utf8");
+  assert.ok(!existsSync(join(dir, HANDLERS, "gc.mjs")) && !existsSync(join(dir, SPECS, "gc.ts")));
+  assert.doesNotMatch(read("cli/commands/index.mjs"), /command_gc/);
+  assert.doesNotMatch(read("src/usage/commands/index.ts"), /command_gc/);
+  assert.match(read("cli/commands/index.mjs"), /command_hello/);
+  const usage = JSON.parse(read("test/fixtures/cli/usage.json"));
+  assert.equal(usage.gc, undefined);
+  assert.ok(usage.hello.startsWith("usage: atelier hello"));
+  assert.doesNotMatch(read("test/fixtures/cli/help.txt"), /\bgc \[--project/);
+});
+
 test("two command modules claiming one name stop the merge on the registry key before the generator runs", async (t) => {
   const dir = fixture(t);
   sides(dir, [["greet", "hello"]], [["hello", "hello"]], { indexes: false });
