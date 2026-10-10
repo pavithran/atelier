@@ -658,6 +658,15 @@ export async function runTask(assignment, config, name, io) {
   if (!assignment) { advance({ type: "claim", empty: true }); return state; }
   const { project, item, agent, model, actor } = assignment;
   let workspace, before, claimed = false, claimAttempted = false, taskFailure = false, brief, mergedMain;
+  const checkValidationReport = async (result) => {
+    const blocked = validationBlockedReport(result?.output);
+    if (!blocked) return;
+    // Keep the marker for both the builder and a main-conflict resolver, so
+    // a later run cannot resume committed but unverified work as a success.
+    const head = await io.head(workspace).catch(() => null);
+    await io.writeValidationBlock?.(workspace, { actor, head, detail: blocked });
+    throw Object.assign(new Error(blocked), { validationBlocked: true });
+  };
   const finish = async () => {
     const merged = io.prepareSubmission ? await io.prepareSubmission(assignment, workspace, async (merge) => {
       const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
@@ -667,7 +676,8 @@ export async function runTask(assignment, config, name, io) {
       try {
         const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
         dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
-        const result = await io.harness(commandFor(entry, { model, briefFile: resolution.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name));
+        const result = await io.harness(commandFor(entry, { model, briefFile: resolution.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name), { capture: true, stream: true });
+        await checkValidationReport(result);
         if (result.timedOut) throw new Error("harness timed out resolving main");
         if (result.code !== 0) throw new Error(`harness exited ${result.code} resolving main`);
       } finally {
@@ -798,14 +808,7 @@ export async function runTask(assignment, config, name, io) {
         }
       }
     }
-    const blocked = validationBlockedReport(result?.output);
-    if (blocked) {
-      // Persist outside the reset's tracked/untracked tree: a later runner
-      // must not mistake this committed but unverified work for a dead run.
-      const head = await io.head(workspace).catch(() => null);
-      await io.writeValidationBlock?.(workspace, { actor, head, detail: blocked });
-      throw Object.assign(new Error(blocked), { validationBlocked: true });
-    }
+    await checkValidationReport(result);
     if (result?.timedOut) throw new Error("harness timed out");
     if (io.stopped()) throw new Error("interrupted");
     taskFailure = result !== null && result.code !== 0;

@@ -118,6 +118,33 @@ test('conflicting current main returns to the same harness in the same run', asy
   assert.equal(state.mainHead, f.latest);
 });
 
+test('a committed conflict resolution with blocked validation is not submitted or resumed as verified', async (t) => {
+  const f = fixture(t, { conflict: true });
+  const harness = f.io.harness;
+  let saved;
+  f.io.writeValidationBlock = async (cwd, block) => {
+    assert.equal(cwd, f.workspace);
+    saved = block;
+  };
+  f.io.harness = async (argv, cwd, env, options) => {
+    assert.deepEqual(options, { capture: true, stream: true });
+    const result = await harness(argv, cwd, env, options);
+    return f.harnessCalls === 2
+      ? { ...result, output: 'validation_blocked: tests could not run because listen EPERM' }
+      : result;
+  };
+  const state = await runTask(f.job, config, 'home', f.io);
+  assert.equal(state.phase, 'failed');
+  assert.equal(state.validationBlocked, true);
+  assert.equal(state.taskFailure, false);
+  assert.equal(f.finished, false);
+  assert.equal(f.harnessCalls, 2);
+  assert.equal(await f.io.mergePending(f.workspace), false);
+  assert.equal(saved.actor, actor);
+  assert.equal(saved.head, git(f.workspace, 'rev-parse', 'HEAD'));
+  assert.match(saved.detail, /listen EPERM/);
+});
+
 test('resumed work refreshes main before submission without rebuilding', async (t) => {
   const f = fixture(t, { resumed: true });
   const state = await runTask(f.job, config, 'home', f.io);
