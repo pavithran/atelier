@@ -1,43 +1,52 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-const { guidePointer, markGuideFetched, agentsMdOffer, AGENTS_SECTION } = await import("../cli/atelier.mjs");
+const { guidePointer, statesReviewPath, agentsMdOffer, AGENTS_SECTION } = await import("../cli/atelier.mjs");
 
-test("a project whose orchestrator guide was not fetched gets one line naming it", () => {
+const without = () => "# ourai\n\nBuild with npm. Run `atelier guide` sometime.\n";
+const withPath = () => "# ourai\n\nLand with `atelier land t1 --reviewer codex/gpt-6`.\n";
+
+test("a project whose AGENTS.md lacks the review path gets one line naming the guide", () => {
   const projects = { ourai: { path: "/work/ourai" } };
-  const line = guidePointer(projects, ["ourai"]);
-  assert.match(line, /atelier guide --role orchestrate --project ourai/);
-  assert.match(line, /atelier land --reviewer/);
-  assert.equal(line.includes("\n"), false);
+  for (const read of [without, () => null]) {
+    const line = guidePointer(projects, ["ourai"], false, read);
+    assert.match(line, /atelier guide --role orchestrate --project ourai/);
+    assert.match(line, /atelier land --reviewer/);
+    assert.equal(line.includes("\n"), false);
+  }
 });
 
-test("the pointer is gone once the guide was fetched for that project", () => {
+test("the pointer is gone once AGENTS.md states the review path", () => {
   const projects = { ourai: { path: "/work/ourai" }, other: { path: "/work/other" } };
-  const now = Date.parse("2026-10-09T12:00:00Z");
-  assert.equal(markGuideFetched(projects, "ourai", "2026-10-09T11:00:00Z"), true);
-  assert.equal(guidePointer(projects, ["ourai"], false, now), null);
-  // Another project's guide is still unread.
-  assert.match(guidePointer(projects, ["ourai", "other"], false, now), /--project other/);
+  const read = (dir) => (dir === "/work/ourai" ? withPath() : without());
+  assert.equal(guidePointer(projects, ["ourai"], false, read), null);
+  assert.match(guidePointer(projects, ["ourai", "other"], false, read), /--project other/);
 });
 
-test("a fetch from an earlier session does not silence a new one", () => {
-  const projects = { ourai: { guideFetched: "2026-10-08T09:00:00Z" } };
-  assert.match(guidePointer(projects, ["ourai"], false, Date.parse("2026-10-09T09:00:00Z")), /--project ourai/);
-  assert.match(guidePointer({ ourai: { guideFetched: "junk" } }, ["ourai"]), /atelier guide/);
+test("nothing is remembered between calls: the same state prints the same line", () => {
+  const projects = { ourai: { path: "/work/ourai" } };
+  const first = guidePointer(projects, ["ourai"], false, without);
+  assert.equal(guidePointer(projects, ["ourai"], false, without), first);
+  assert.ok(first);
 });
 
 test("the pointer is not printed in a task workspace or for an unregistered project", () => {
   const projects = { ourai: { path: "/work/ourai" } };
-  assert.equal(guidePointer(projects, ["ourai"], true), null);
-  assert.equal(guidePointer(projects, ["nope"]), null);
-  assert.equal(markGuideFetched(projects, "nope"), false);
+  assert.equal(guidePointer(projects, ["ourai"], true, without), null);
+  assert.equal(guidePointer(projects, ["nope"], false, without), null);
 });
 
-test("several unread projects share one line", () => {
-  const projects = { a: {}, b: {} };
-  const line = guidePointer(projects, ["a", "b"]);
+test("several projects without the review path share one line", () => {
+  const projects = { a: { path: "/a" }, b: { path: "/b" } };
+  const line = guidePointer(projects, ["a", "b"], false, without);
   assert.match(line, /atelier guide --role orchestrate/);
   assert.equal(line.includes("\n"), false);
+});
+
+test("statesReviewPath needs atelier land with --reviewer on one line", () => {
+  assert.equal(statesReviewPath("atelier land t1 --reviewer a/b"), true);
+  assert.equal(statesReviewPath("atelier land t1\n--reviewer a/b"), false);
+  assert.equal(statesReviewPath(null), false);
 });
 
 test("init offers an AGENTS.md section that points at the guide and states the review path", () => {
@@ -57,4 +66,9 @@ test("init still offers the section when AGENTS.md mentions the guide but not th
   const offer = agentsMdOffer("# x\n\nRun `atelier guide --role orchestrate`.\n");
   assert.match(offer, /review path/);
   assert.ok(offer.includes(AGENTS_SECTION));
+});
+
+test("init offers the section when the review path is stated but the guide is not named", () => {
+  const offer = agentsMdOffer("# x\n\nLand with `atelier land t1 --reviewer a/b`.\n");
+  assert.match(offer, /atelier guide/);
 });

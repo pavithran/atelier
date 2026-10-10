@@ -108,6 +108,7 @@ async function run(t, setup, argv, env = {}) {
   mkdirSync(checkout);
   git(checkout, "init", "-q", "-b", "main");
   writeFileSync(join(checkout, "a.txt"), "one\n");
+  writeFileSync(join(checkout, "AGENTS.md"), "Land with `atelier land ID --reviewer H/M`.\n");
   git(checkout, "add", "."); git(checkout, "commit", "-q", "-m", "one");
   git(dir, "clone", "-q", "--bare", checkout, bare);
   const state = setup({ checkout, bare, dir }) ?? {};
@@ -131,7 +132,7 @@ async function run(t, setup, argv, env = {}) {
   });
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   t.after(() => server.close());
-  writeFileSync(join(dir, "config.json"), JSON.stringify({ server: "x", owner: "owner", projects: { demo: { path: checkout, branch: "main", guideFetched: new Date().toISOString(), ...state.project } } }));
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ server: "x", owner: "owner", projects: { demo: { path: checkout, branch: "main", ...state.project } } }));
   const child = spawn(process.execPath, [cli, ...(argv ?? ["status", "--project", "demo"])], {
     cwd: dir, env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_TOKEN: "test-token", ATELIER_ACTOR: "owner", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}`, ...env },
   });
