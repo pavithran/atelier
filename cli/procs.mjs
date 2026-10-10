@@ -7,12 +7,12 @@
 // that task's agent. The caller reads `ps` and `lsof`; this only parses and
 // words. Pure.
 
-// `ps -axo pid=,ppid=,etime=,args=` -> [{ pid, ppid, etime, argv }].
+// `ps -axo pid=,ppid=,etime=,args=` -> [{ pid, ppid, etime, args }].
 export function parsePs(text) {
   const rows = [];
   for (const line of text.split("\n")) {
     const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
-    if (m) rows.push({ pid: Number(m[1]), ppid: Number(m[2]), etime: m[3], argv: m[4].trim().split(/\s+/) });
+    if (m) rows.push({ pid: Number(m[1]), ppid: Number(m[2]), etime: m[3], args: m[4].trim() });
   }
   return rows;
 }
@@ -41,17 +41,16 @@ export function age(etime) {
   return `${s}s`;
 }
 
-// Whether argv is the runner: atelier.mjs (or `atelier`) then the word runner.
-const isRunner = (argv) => {
-  const base = (a) => (a ?? "").split("/").pop();
-  const i = /^(node|bun|deno)$/.test(base(argv[0])) ? 1 : 0;
-  return /^atelier(\.mjs)?$/.test(base(argv[i])) && argv[i + 1] === "runner";
+// Whether the command line is the runner: atelier.mjs (or `atelier`) then the
+// word runner. The line is read whole, not split on spaces, since the
+// script's path may hold some (iCloud's Mobile Documents does). Behind an
+// interpreter the script may be any path ending in atelier[.mjs]; with none,
+// the command itself must be, so `grep atelier runner` is not a runner.
+const isRunner = (args) => {
+  const m = /^(?:\S*\/)?(?:node|bun|deno)\s+(.*)$/.exec(args);
+  return m ? /^(?:.*\/)?atelier(?:\.mjs)? runner(?:\s|$)/.test(m[1]) : /^\S*atelier(?:\.mjs)? runner(?:\s|$)/.test(args);
 };
-const runnerName = (argv) => {
-  const i = argv.findIndex((a) => a === "--name" || a.startsWith("--name="));
-  if (i === -1) return "runner";
-  return argv[i] === "--name" ? argv[i + 1] ?? "runner" : argv[i].slice(7);
-};
+const runnerName = (args) => /\s--name(?:=|\s+)(\S+)/.exec(args)?.[1] ?? "runner";
 
 // The task a working directory belongs to, under `work`, or null.
 export function taskOf(cwd, work) {
@@ -69,15 +68,15 @@ export function liveProcesses({ ps, lsof, work, skip = [], project = null }) {
   const agents = [];
   for (const [pid, { comm, cwd }] of lsof) {
     const row = byPid.get(pid), task = taskOf(cwd, work);
-    if (!row || !task || skipped.has(pid) || isRunner(row.argv) || (project && task.project !== project)) continue;
+    if (!row || !task || skipped.has(pid) || isRunner(row.args) || (project && task.project !== project)) continue;
     agents.push({ pid, command: comm.split("/").pop(), age: age(row.etime), project: task.project, id: task.id });
   }
-  const runners = ps.filter((p) => !skipped.has(p.pid) && isRunner(p.argv)).map((p) => {
+  const runners = ps.filter((p) => !skipped.has(p.pid) && isRunner(p.args)).map((p) => {
     const tasks = new Set();
     for (const a of agents) {
       for (let at = byPid.get(a.pid); at; at = byPid.get(at.ppid)) if (at.ppid === p.pid) { tasks.add(a.id); break; }
     }
-    return { pid: p.pid, name: runnerName(p.argv), age: age(p.etime), tasks: [...tasks].sort() };
+    return { pid: p.pid, name: runnerName(p.args), age: age(p.etime), tasks: [...tasks].sort() };
   });
   const byTask = (a, b) => a.id.localeCompare(b.id, "en", { numeric: true }) || a.pid - b.pid;
   return { runners: runners.sort((a, b) => a.pid - b.pid), agents: agents.sort(byTask) };

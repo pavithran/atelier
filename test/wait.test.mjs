@@ -146,6 +146,32 @@ test("a blocked or abandoned task fails reviewed even with an approval at the he
   }
 });
 
+test("a sleep is capped at the time left, and the deadline beats a late success", async () => {
+  const c = clock(), slept = [];
+  const reads = [detail("claimed"), detail("merged")];
+  const r = await waitFor("merged", async () => reads.shift(), { now: c.now, sleep: async (ms) => { slept.push(ms); await c.sleep(ms); }, intervalMs: 60000, timeoutMs: 1000 });
+  assert.deepEqual(slept, [1000]);
+  assert.deepEqual([r.ok, r.code], [false, 3]);
+  const d = clock(), down = Object.assign(new Error("down"), { code: 4 });
+  const e = await waitFor("merged", async () => { throw down; }, { ...d, intervalMs: 60000, timeoutMs: 1000 });
+  assert.equal(e.code, 3);
+  assert.equal(d.now(), 1000);
+});
+
+test("reviewed: a rejection a later approval by the same reviewer superseded does not fail", () => {
+  const rej = { ...review("codex/x", false), at: "2026-10-09T10:00:00Z" }, ok = { ...review("codex/x", true), at: "2026-10-09T11:00:00Z" };
+  for (const s of ["submitted", "merged"]) assert.equal(judge("reviewed", detail(s, {}, [rej, ok])).ok, true, s);
+  const later = { ...rej, at: "2026-10-09T12:00:00Z" };
+  assert.equal(judge("reviewed", detail("submitted", {}, [ok, later])).ok, false);
+});
+
+test("a runner whose script path holds spaces is still a runner", () => {
+  const path = "/Users/p/Library/Mobile Documents/com~apple~CloudDocs/cli/atelier.mjs";
+  const ps = parsePs(`  10     1 01:00 /usr/bin/node ${path} runner --name icloud`);
+  const live = liveProcesses({ ps, lsof: new Map(), work: "/cache/work" });
+  assert.deepEqual(live.runners.map((r) => [r.pid, r.name]), [[10, "icloud"]]);
+});
+
 // `atelier wait` end to end against a stand-in server.
 const cli = resolve("cli/atelier.mjs");
 async function runWait(t, details, argv) {
