@@ -352,7 +352,8 @@ function spendLine(usage) {
 
 export function formatStatusBrief(b) {
   const s = b.standing;
-  const lines = [`${oneLine(s.project.title)} (${oneLine(s.project.name)}) as of ${String(s.generatedAt).slice(0, 16).replace("T", " ")} UTC`];
+  const mode = s.familyMode?.single ? ` (single-family: ${s.familyMode.single})` : "";
+  const lines = [`${oneLine(s.project.title)} (${oneLine(s.project.name)})${mode} as of ${String(s.generatedAt).slice(0, 16).replace("T", " ")} UTC`];
   lines.push("Recent merges:");
   const merged = s.merged.slice(0, BRIEF_MERGES);
   if (!merged.length) lines.push("  none");

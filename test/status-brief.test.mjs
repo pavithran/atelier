@@ -79,3 +79,9 @@ test("the brief says what it could not read", () => {
 test("the review queue is the array the API returns, and its waiting reviews are counted", () => {
   assert.match(formatStatusBrief(brief()), /1 waiting for a runner \(t2 by codex\/gpt-6\)/);
 });
+
+test("the brief includes the single-family mode if set", () => {
+  const standing = { ...brief().standing, familyMode: { single: "anthropic" } };
+  const out = formatStatusBrief(brief({ standing }));
+  assert.match(out, /single-family: anthropic/);
+});
