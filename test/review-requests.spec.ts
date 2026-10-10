@@ -947,6 +947,30 @@ it("a planner, builder or part reviewer the owner names while it is held from th
   await refusal(L.reroutePlan(partId, "owner", other), "model_held", new RegExp(`${other} is not a reviewer; its roles are build`));
 });
 
+// A retry or a revision asks the plan's own planner again, so it goes through
+// the same check: one the owner has paused, reserved or kept from planning
+// since the plan started is refused before anything is logged or queued, and
+// the owner reroutes the plan to another.
+it("a planner held since the plan started is refused on retry and revise, and nothing is dispatched", async () => {
+  for (const [name, change, why] of [
+    ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }, /codex\/gpt-6-astra is paused since 2026-10-06 \(the owner's standing\): AI Studio down/],
+    ["reserved", { state: "reserved", stateAt: AT, note: "astra's credits" }, /codex\/gpt-6-astra is reserved since 2026-10-06 \(the owner's standing\): astra's credits/],
+    ["review-only", { roles: ["review"] }, /codex\/gpt-6-astra is not a planner; its roles are review/],
+  ] as const) {
+    const L = await setup(`planner-held-again-${name}`);
+    const { item } = await L.newPlan("Ship it", ["src/**"], "owner", GPT, POOL);
+    const queued = (await L.item(item.id)).dispatch;
+    const logged = (await events(L, item.id)).length;
+    await L.poolChanged(POOL.map((e) => e.id === "gpt-6-astra" ? { ...e, ...change } : e));
+    await refusal(L.retryPlan(item.id, "owner"), "model_held", why);
+    await refusal(L.revisePlan(item.id, "owner", "Smaller parts"), "model_held", why);
+    expect((await L.item(item.id)).dispatch, name).toEqual(queued);
+    expect((await events(L, item.id)).length, name).toBe(logged);
+    await L.reroutePlan(item.id, "owner", OPUS);
+    expect((await L.item(item.id)).dispatch, name).toMatchObject({ agent: "claude-code", model: "opus-5.5", job: "plan" });
+  }
+});
+
 // Every plan dispatch reads the saved routes through the owner's standing
 // now (standingRoute): a part waiting on a builder the owner then pauses,
 // reserves or keeps from building is taken back and goes to the next routed
