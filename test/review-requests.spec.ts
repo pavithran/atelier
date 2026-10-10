@@ -8,6 +8,8 @@ import type { PlanPart } from "../src/plans/schema.ts";
 import { planText, type PlanView } from "../src/plans/show.ts";
 import { REVIEW_CLAIM_TIMEOUT_MS } from "../src/review/needed.ts";
 import { reviewBrief } from "../src/review/brief.ts";
+import { buildReliability } from "../src/models/reliability.ts";
+import { renderItem } from "../src/ui.ts";
 import { criteriaHash } from "../src/criteria.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.ts";
 
@@ -828,4 +830,135 @@ it("a review claim carries the owner's standing decisions, and the brief marks t
   const none = await plain.claimReview(other, await routedReviewer(plain, other), RUNNER) as unknown as ReviewClaim;
   expect(none.decisions).toEqual([]);
   expect(reviewBrief({ need: none.need!, item: none.item, events: none.events, plan: none.plan, owner: none.owner, decisions: none.decisions })).toContain("The project owner has recorded no standing decision for this project.");
+});
+
+
+// t396: an override waived a gate, not the right to audit what actually landed.
+async function overriddenMerge(project: string) {
+  const L = await setup(project);
+  await L.setProject({ name: project, repo: `${project}--baseline`, policy: { ...policy, protected: ["src/**"] }, createdAt: AT }, "owner");
+  const item = await L.newItem("Override landed", ["src/**"], "owner", { accept: ["Keeps data"] });
+  const head = "d".repeat(40), merge = "e".repeat(40);
+  await L.claim(item.id, OPUS);
+  await L.setFork(item.id, `${project}--${item.id}`, H0, OPUS);
+  await L.recordPush(item.id, OPUS, head, head);
+  await L.addEvidence(observed(item.id, head));
+  await L.submit(item.id, OPUS);
+  await L.accept(item.id, "owner", head, "No independent runner was available");
+  await L.merged(item.id, "owner", merge, true);
+  return { L, id: item.id, head, merge };
+}
+
+it("a runner reviews an overridden merge, preserves its landing and records its approval on the page and Models", async () => {
+  const { L, id, head, merge } = await overriddenMerge("post-merge-approval");
+  const requested = await L.requestReview(id, "owner", GPT, POOL);
+  expect(requested).toMatchObject({ needed: true, requested: true, head: merge, reviewer: GPT });
+  expect(await L.requestReview(id, "owner", GPT, POOL)).toMatchObject({ requested: false });
+  expect(await reviewWaiting(L)).toEqual([{ id, job: "review", agent: "codex", model: "gpt-6-astra" }]);
+  await refusal(L.claimReview(id, OPUS, RUNNER), "self_review", /cannot review/);
+  const claim = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
+  expect(claim).toMatchObject({ head: merge, item: { state: "merged", head: merge }, need: { needed: true, head: merge } });
+  expect(reviewBrief({ ...claim, need: claim.need!, diff: "+keep data" })).toContain("Keeps data");
+  await refusal(L.addReview({ itemId: id, by: GPT, head, criteria: claim.criteria, request: claim.request, approve: true, note: "Wrong revision", at: AT }), "stale_head", /older head/);
+  const findings = [{ file: "src/a/x.ts", line: 2, severity: "follow-up" as const, text: "Consider a clearer message" }];
+  await L.addReview({ itemId: id, by: GPT, head: merge, criteria: claim.criteria, request: claim.request, approve: true, note: "Merge keeps data", findings, at: AT }, undefined, true);
+  expect((await L.item(id))).toMatchObject({ state: "merged", head, acceptedHead: head, reviewOverride: expect.anything() });
+  expect(await L.reviewWaiting()).toEqual([]);
+  expect((await L.reviewsFor(id))[0]).toMatchObject({ postMerge: true });
+  const detail = await L.detail(id);
+  const html = renderItem(await L.project(), detail);
+  expect(html).toContain("Merge keeps data");
+  expect(html).toContain("Consider a clearer message");
+  expect(html).toContain("post-merge review");
+  const record = buildReliability([{ project: "post-merge-approval", events: await events(L) }], [], "owner");
+  expect(record.get("gpt-6-astra")?.approvals).toBe(1);
+  expect(record.get("opus-5.5")).toMatchObject({ merged: 1, mergedReviewed: 1, rounds: 1 });
+});
+
+it("blocking findings on an overridden merge file one linked defect and never reopen the merged task", async () => {
+  const { L, id, head, merge } = await overriddenMerge("post-merge-defect");
+  await L.requestReview(id, "owner", GPT, POOL, true);
+  const claim = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
+  const review = { itemId: id, by: GPT, head: merge, criteria: claim.criteria, request: claim.request, approve: false, note: "Loses data", findings: [blocker()], at: AT };
+  await L.addReview(review, undefined, true);
+  expect(await L.item(id)).toMatchObject({ state: "merged", acceptedHead: head });
+  const defectEvent = (await events(L, id)).find((e) => e.kind === "item.defect")!;
+  expect(defectEvent.data).toMatchObject({ head, mergeCommit: merge, foundIn: "t2" });
+  expect(await L.item("t2")).toMatchObject({ state: "open", brief: expect.stringContaining("It loses data.") });
+  expect((await events(L, "t2")).find((e) => e.kind === "item.defect_of")?.data).toMatchObject({ itemId: id, head: merge, request: claim.request });
+  await refusal(L.addReview(review, undefined, true), "stale_request", /no longer claimed/);
+  expect((await events(L, id)).filter((e) => e.kind === "item.defect")).toHaveLength(1);
+  const html = renderItem(await L.project(), await L.detail(id));
+  expect(html).toContain("It loses data.");
+  expect(html).toContain("Post-merge defect:");
+  expect(renderItem(await L.project(), await L.detail("t2"))).toContain("Defect from post-merge review of");
+  const record = buildReliability([{ project: "post-merge-defect", events: await events(L) }], [], "owner");
+  expect(record.get("gpt-6-astra")?.rejectionsGiven).toBe(1);
+  expect(record.get("opus-5.5")?.defects).toHaveLength(1);
+});
+
+
+it("the HTTP request and claim serve the merge from the baseline with its criteria", async () => {
+  const { default: worker } = await import("../src/index.ts");
+  const name = "post-merge-http";
+  const { L, id, merge } = await overriddenMerge(name);
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(await L.project());
+  const asked: string[] = [];
+  const ARTIFACTS = {
+    get: async (repo: string) => ({
+      info: async () => ({ remote: `https://git.test/${repo}`, defaultBranch: "main" }),
+      readCommit: async () => null,
+      createToken: async () => { asked.push(repo); return { plaintext: `token-${repo}`, id: "id", expiresAt: "soon" }; },
+      [Symbol.dispose]() {},
+    }),
+  } as unknown as Artifacts;
+  const call = (verb: string, actor: string, body: unknown) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${id}/${verb}`, {
+    method: "POST", headers: { authorization: "Bearer post-merge-token", "x-atelier-actor": actor, "x-atelier-runner": "home:studio", "content-type": "application/json" }, body: JSON.stringify(body),
+  }), { ...env, ATELIER_TOKEN: "post-merge-token", ARTIFACTS } as typeof env);
+  const requested = await call("review-request", "owner", { reviewer: GPT, wanted: true });
+  expect(requested.status).toBe(200);
+  expect(await requested.json()).toMatchObject({ head: merge, reviewer: GPT, requested: true });
+  const res = await call("review-claim", GPT, {});
+  expect(res.status).toBe(200);
+  expect(await res.json()).toMatchObject({ head: merge, criteria: await L.criteria(id), landed: { commit: merge }, readToken: { remote: `https://git.test/${name}--baseline` } });
+  expect(asked).toEqual([`${name}--baseline`, `${name}--baseline`]);
+});
+
+it("many long blocking findings stay complete on the review and file a bounded defect brief", async () => {
+  const { L, id, merge } = await overriddenMerge("post-merge-many-findings");
+  await L.requestReview(id, "owner", GPT, POOL, true);
+  const claim = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
+  const findings = Array.from({ length: 50 }, (_, i) => ({ ...blocker(), text: `Blocker ${i}: ${"x".repeat(1900)}` }));
+  await L.addReview({ itemId: id, by: GPT, head: merge, criteria: claim.criteria, request: claim.request, approve: false, note: "Many blockers", findings, at: AT });
+  expect((await L.reviewsFor(id))[0].findings).toEqual(findings);
+  const defect = await L.item("t2");
+  expect(defect.brief!.length).toBeLessThanOrEqual(4000);
+  expect(defect.brief).toContain(`Full findings are recorded on ${id}, review request ${claim.request}`);
+  expect(defect.accept).toHaveLength(1);
+});
+
+
+it("a merged task with no historical path measurements or scope still gets its audit", async () => {
+  const L = await setup("post-merge-no-paths");
+  const item = await L.newItem("Historical task", [], "owner");
+  const head = "d".repeat(40), merge = "e".repeat(40);
+  await L.claim(item.id, OPUS);
+  await L.setFork(item.id, "historical-fork", H0, OPUS);
+  await L.recordPush(item.id, OPUS, head, head);
+  await L.addEvidence(observed(item.id, head));
+  await L.submit(item.id, OPUS);
+  await L.accept(item.id, "owner", head);
+  await L.merged(item.id, "owner", merge, true);
+  // Simulate an older ledger that kept checks without measured paths.
+  await runInDurableObject(L, (_: Ledger, state: DurableObjectState) => {
+    state.storage.sql.exec(`UPDATE evidence SET json = json_remove(json, '$.changedPaths')`);
+  });
+  // A later project policy requires a check this historical merge never ran.
+  await L.setProject({ name: "post-merge-no-paths", repo: "post-merge-no-paths--baseline", policy: { checks: ["new check"], protected: [] }, createdAt: AT }, "owner");
+  await L.requestReview(item.id, "owner", GPT, POOL, true);
+  const claim = await L.claimReview(item.id, GPT, RUNNER) as unknown as ReviewClaim;
+  expect(claim.need).not.toBeNull();
+  const brief = reviewBrief({ ...claim, need: claim.need!, diff: "+landed" });
+  expect(brief).toContain("They do not verify this merge");
+  expect(brief).not.toContain("Every required check was observed passing at this head");
 });
