@@ -47,9 +47,9 @@ export default async function landCommand() {
   };
   try {
     await runLand({
-      args, name, id, p, request, git: gitOrThrow, die,
+      args, name, id, p, request, git: gitOrThrow, die, owner: OWNER,
       print: (line) => console.log(line),
-      workspacePath, atelier: fileURLToPath(new URL("../atelier.mjs", import.meta.url)), env: process.env,
+      workspacePath, atelier: fileURLToPath(new URL("../atelier.mjs", import.meta.url)), env: { ...process.env, ATELIER_TEST_PRIORITY: "release" },
       redact, secrets: () => [apiToken(), ...workspaceTokens(workspace)],
       // The token a landing's re-claim minted, kept as claimWorkspace keeps
       // one: the old header replaced before the fetch, the expiry recorded.

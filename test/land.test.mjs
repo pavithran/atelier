@@ -1,3 +1,4 @@
+import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
@@ -75,7 +76,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
   // the project's items and the runner queue, which the wait explains from.
   const box = {
     states: {}, reviews: { t1: [], t2: [] }, lease: null, waiting: [], version: null, routeLevel: ROUTE_LEVEL,
-    review: { needed: true, reviewer: "codex/gpt-6-astra", approve: true, pending: false, at: null, approveAfter: 0, claimed: false },
+    review: { needed: true, reviewer: "codex/gpt-6-astra", approve: true, pending: false, at: null, approveAfter: 0, claimed: false, skips: [] },
     requests: [], regen: "echo generated > gen-fixtures.txt", checks: ["exit 0"], items: [], queue: [], runners: null, renewFails: false, kinds: {},
     wf: { instance: null, stage: null, round: 0, checks: null, status: null, files: null, error: null, output: null, events: [], started: [], reads: 0, baseTokenAt: [], tick: null, onEvent: null },
   };
@@ -106,7 +107,12 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     const due = id === "t1" && box.review.pending && box.review.approveAfter !== null && box.review.approveAfter-- <= 0;
     const reviews = due ? (box.reviews.t1.push({ by: box.review.reviewer, approve: box.review.approve, head, note: box.review.approve ? "Land fixture approves." : "Land fixture rejects.", at: new Date().toISOString() }), box.review.pending = false, box.reviews.t1) : box.reviews[id];
     const state = box.states[id];
-    const events = id === "t1" && box.review.claimed && box.review.at ? [{ seq: 1, itemId: id, at: box.review.at, actor: box.review.reviewer, kind: "review.claimed", data: { head, runner: "home:mbp" } }] : [];
+    const events = [
+      ...(id === "t1" && box.review.claimed && box.review.at ? [{ seq: 1, itemId: id, at: box.review.at, actor: box.review.reviewer, kind: "review.claimed", data: { head, runner: "home:mbp" } }] : []),
+      // A skip names the request it refused (t353); the fixture's open
+      // request is number 1 unless a test asks for another.
+      ...(box.review.skips ?? []).map((s, i) => ({ seq: 100 + i, itemId: id, at: new Date().toISOString(), actor: s.runner, kind: "review.skipped", data: { head, runner: s.runner, request: s.request ?? 1 } })),
+    ];
     return {
       item: { id, title: `Fixture ${id}`, state, owner: "codex/test", ...(box.pushActors ? { pushActors: box.pushActors } : {}), head, ...(box.kinds[id] ? { kind: box.kinds[id] } : {}), acceptedHead: state === "accepted" || state === "merged" ? head : null },
       policy: { checks: box.checks, protected: ["work.txt"], regenerate: box.regen, ...(box.agents ? { agents: box.agents } : {}), ...(box.eligible ? { eligible: box.eligible } : {}) },
@@ -205,7 +211,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     else if (url.endsWith("/submit")) { box.states[item] = "submitted"; answer = detail(item); }
     else if (url.endsWith("/review-request")) {
       if (!box.review.needed && !(body.wanted === true && body.reviewer)) answer = { needed: false, reason: box.review.reason ?? "the gate counts an independent approval already" };
-      else { box.review.reviewer = body.reviewer ?? box.review.reviewer; box.review.pending = true; box.review.at = new Date().toISOString(); answer = { needed: true, requested: true, reason: `a protected change needs an independent review${!body.reviewer && box.review.why ? ` ${box.review.why}` : ""}`, at: box.review.at, head, reviewer: body.reviewer ?? box.review.reviewer }; }
+      else { box.review.reviewer = body.reviewer ?? box.review.reviewer; box.review.pending = true; box.review.at = new Date().toISOString(); answer = { needed: true, requested: true, reason: `a protected change needs an independent review${!body.reviewer && box.review.why ? ` ${box.review.why}` : ""}`, at: box.review.at, head, reviewer: body.reviewer ?? box.review.reviewer, request: box.review.request ?? 1 }; }
     }     else if (url.endsWith("/accept")) {
       assert.equal(body.head, head);
       box.states[item] = "accepted"; answer = detail(item).item;
@@ -225,10 +231,8 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
   await new Promise((ok) => server.listen(0, "127.0.0.1", ok)); t.after(() => server.close());
   const url = `http://127.0.0.1:${server.address().port}`;
   writeFileSync(join(config, "config.json"), JSON.stringify({ server: url, owner: "owner", projects: { proj: { path: checkout, branch: "main" } } }));
-  // Admission is deterministic: the host may stay busy throughout this test.
-  // check-load.test.mjs covers the load gate; these tests exercise landing.
   const run = async (cwd, ...args) => {
-    const child = spawn(process.execPath, [resolve("cli/atelier.mjs"), ...args, "--project", "proj"], { cwd, env: { ...process.env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: "fixture", ATELIER_CACHE: cache, ATELIER_SERVER: url, ATELIER_LAND_POLL_MS: "50", ATELIER_LOAD: "0", ...fx.env } });
+    const child = spawn(process.execPath, [resolve("cli/atelier.mjs"), ...args, "--project", "proj"], { cwd, env: { ...process.env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: "fixture", ATELIER_CACHE: cache, ATELIER_SERVER: url, ATELIER_LAND_POLL_MS: "50", ...fx.env } });
     t.after(() => child.kill("SIGKILL"));
     let output = ""; child.stdout.on("data", (s) => { output += s; fx.onOutput?.(output); }); child.stderr.on("data", (s) => output += s);
     const status = await new Promise((ok) => child.on("close", ok));
@@ -239,6 +243,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
 }
 
 test("a clean landing takes the lease, merges main, regenerates, checks, waits for the review, accepts and merges", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
   const before = { fork: f.forkHead("t1"), checkout: git(f.checkout, "rev-parse", "HEAD"), baseline: git(f.p, "--git-dir", f.baseline, "rev-parse", "main") };
   const r = await f.run(f.checkout, "land", "t1");
@@ -277,6 +282,7 @@ test("a clean landing takes the lease, merges main, regenerates, checks, waits f
 // With no --reviewer the server suggests the reviewer (t370): the landing
 // prints the reviewer it chose and the reasons the server gave.
 test("a landing with no --reviewer prints the reviewer the server chose and why", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   f.box.review.why = "Frontier reviewer required for security, concurrency or gate work. From the pool, which goes by review precision, then outcome record, then actor name.";
   const r = await f.run(f.checkout, "land", "t1");
@@ -286,6 +292,7 @@ test("a landing with no --reviewer prints the reviewer the server chose and why"
 });
 
 test("--reviewer waits for that review and lands on approval even where the gate needs none", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   f.box.review.needed = false;
   const r = await f.run(f.checkout, "land", "t1", "--reviewer", "antigravity/gemini-3.1-pro");
@@ -347,6 +354,7 @@ test("--reviewer outside a legacy eligibility list is refused up front, naming t
 });
 
 test("--reviewer stops the landing on a rejection even where the gate needs no review", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   f.box.review.needed = false; f.box.review.approve = false;
   const before = git(f.checkout, "rev-parse", "HEAD");
@@ -362,6 +370,7 @@ test("--reviewer stops the landing on a rejection even where the gate needs no r
 });
 
 test("a tier approval that comes first is said and not taken for the gate's verdict; the landing waits for the gate's review alone", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   f.box.tier = { by: "claude-code/sonnet-5.5", approve: true };
   f.box.review.approveAfter = 2;
@@ -374,6 +383,7 @@ test("a tier approval that comes first is said and not taken for the gate's verd
 });
 
 test("a tier rejection that arrives in the same poll as the gate's later approval still stops the landing", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   f.box.tier = { by: "claude-code/sonnet-5.5", approve: false };
   f.box.review.approveAfter = 0;
@@ -385,6 +395,7 @@ test("a tier rejection that arrives in the same poll as the gate's later approva
 });
 
 test("a tier rejection stops the landing as any rejection does", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   f.box.tier = { by: "claude-code/sonnet-5.5", approve: false };
   f.box.review.approveAfter = 2;
@@ -396,6 +407,7 @@ test("a tier rejection stops the landing as any rejection does", async (t) => {
 });
 
 test("without --reviewer a gate that needs no review says why and does not claim to accept", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   f.box.review.needed = false;
   const r = await f.run(f.checkout, "land", "t1");
@@ -406,6 +418,7 @@ test("without --reviewer a gate that needs no review says why and does not claim
 });
 
 test("a coordinated change without protected paths says plainly why no review was needed", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   f.box.review.needed = false;
   f.box.review.reason = "a coordinated change needs no review in a project without an execution policy; automatic review covers parts and the changes the gate needs reviewed";
@@ -416,6 +429,7 @@ test("a coordinated change without protected paths says plainly why no review wa
 });
 
 test("a direct change says plainly that it touched no protected paths", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   f.box.review.needed = false;
   f.box.review.reason = "a direct change needs no review";
@@ -425,6 +439,7 @@ test("a direct change says plainly that it touched no protected paths", async (t
 });
 
 test("a needed:false answer for failing checks prints the server's reason, never a claim about protected paths (t319)", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   f.box.review.needed = false;
   f.box.review.reason = "npm test failed at 1a2b3c4d; the builder fixes that before a review";
@@ -435,6 +450,7 @@ test("a needed:false answer for failing checks prints the server's reason, never
 });
 
 test("--no-review leaves the task submitted, accepts and merges nothing, and releases the lease", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   const before = git(f.checkout, "rev-parse", "HEAD");
   const r = await f.run(f.checkout, "land", "t1", "--no-review");
@@ -497,6 +513,7 @@ test("the lease refuses a second landing with who holds it and since when", asyn
 const WAITING = /Waiting behind (\S+)'s landing of (t\d) \(since ([^)]+)\); t1 starts as soon as the lease is free\./g;
 
 test("a lease held for a task that has closed guards nothing, so the landing starts without --wait", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   f.box.lease = { item: "t2", holder: "owner", at: "2026-10-06T09:30:00.000Z", renewedAt: new Date().toISOString() };
   f.box.states.t2 = "merged";
@@ -507,6 +524,7 @@ test("a lease held for a task that has closed guards nothing, so the landing sta
 });
 
 test("--wait queues behind another landing, says whose each time it changes, and starts once the lease is free", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   f.box.lease = { item: "t2", holder: "owner", at: "2026-10-06T09:30:00.000Z", renewedAt: new Date().toISOString() };
   f.env = { ATELIER_LAND_POLL_MS: "40" };
@@ -534,6 +552,7 @@ test("--wait queues behind another landing, says whose each time it changes, and
 });
 
 test("--wait queues again when another queued landing takes the lease first", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   f.box.takenFirst = { item: "t2", holder: "owner", at: "2026-10-06T11:00:00.000Z", renewedAt: new Date().toISOString() };
   f.env = { ATELIER_LAND_POLL_MS: "40" };
@@ -555,6 +574,7 @@ test("--wait queues again when another queued landing takes the lease first", as
 // needed (2026-10-07); the server now keeps the waiting landings in the
 // order they queued and hands the lease down that order.
 test("--wait keeps the queue's order: the landing that queued first takes the lease first, however the polls land", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   f.box.lease = { item: "t2", holder: "owner", at: "2026-10-07T09:00:00.000Z", renewedAt: new Date().toISOString() };
   // t2's landing queued for the lease at 09:14; t1 queues behind it now, and
@@ -617,6 +637,7 @@ test("a landing without --wait cannot take the lease ahead of one that queued fo
 // the CLI judges no row by its own machine's clock — a clock ahead of the
 // server's would drop a live row and jump the queue.
 test("a row whose landing stopped asking no longer counts: the landing reads the queue as the server pruned it", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   f.box.lease = { item: "t2", holder: "owner", at: "2026-10-07T09:00:00.000Z", renewedAt: new Date().toISOString() };
   // t3 queued ahead of this landing but stopped asking more than the expiry
@@ -759,6 +780,7 @@ test("a conflict stops the landing with the files named and the merge left for t
 });
 
 test("a conflict only in files the regenerate command rewrites is settled by taking either side and regenerating, and the landing goes on", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "gen-fixtures.txt", text: "from main\n", message: "Main regenerates the fixture" } });
   // The task's own regeneration of the same file, so the two sides conflict in it.
   writeFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "from task\n");
@@ -844,6 +866,7 @@ const raiseRouteLevel = (dir, level, message) => {
 };
 
 test("where main and the task each raised the route level from one base, the landing raises the merged level past both", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { seedRouteLevel: 6 });
   // Both sides raise 6 to 7, so the merge is clean at the number they share.
   raiseRouteLevel(f.workspace("t1"), 7, "Task raises the route level");
@@ -863,6 +886,7 @@ test("where main and the task each raised the route level from one base, the lan
 });
 
 test("where only main raised the route level, the merge takes main's number and nothing is raised past it", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { seedRouteLevel: 6 });
   raiseRouteLevel(f.checkout, 7, "Main raises the route level");
   const r = await f.run(f.checkout, "land", "t1");
@@ -876,6 +900,7 @@ test("where only main raised the route level, the merge takes main's number and 
 });
 
 test("where only the task raised the route level, the merge keeps the task's number", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { seedRouteLevel: 6, mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
   raiseRouteLevel(f.workspace("t1"), 7, "Task raises the route level");
   const r = await f.run(f.checkout, "land", "t1");
@@ -888,6 +913,7 @@ test("where only the task raised the route level, the merge keeps the task's num
 });
 
 test("a rerun of a conflicted merge resolved by hand still compares and raises the route level", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { seedRouteLevel: 6 });
   // Both sides raise, to different numbers, so the merge stops on the
   // conflict and is left for the owner to resolve.
@@ -921,6 +947,7 @@ test("a rerun of a conflicted merge resolved by hand still compares and raises t
 });
 
 test("a rerun after the route level was raised compares the same levels and raises nothing further", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { seedRouteLevel: 6 });
   raiseRouteLevel(f.workspace("t1"), 8, "Task raises the route level");
   raiseRouteLevel(f.checkout, 9, "Main raises the route level");
@@ -946,6 +973,7 @@ test("a rerun after the route level was raised compares the same levels and rais
 });
 
 test("a merge that brought main in through a side branch still compares and raises the route level", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { seedRouteLevel: 6 });
   // Both sides raise 6 to 7, so every merge below is clean at 7.
   raiseRouteLevel(f.workspace("t1"), 7, "Task raises the route level");
@@ -985,6 +1013,7 @@ test("a merge that brought main in through a side branch still compares and rais
 });
 
 test("a repo with no route-level file skips the comparison and the landing goes on", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
@@ -1031,6 +1060,7 @@ test("--dry-run prints the steps and the refusals without changing anything", as
 });
 
 test("a server at the CLI's route level passes whatever commit it runs", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
   f.box.version = "f".repeat(40);
   const r = await f.run(f.checkout, "land", "t1");
@@ -1124,7 +1154,7 @@ function waitingLanding(f, env = {}) {
   f.box.review.approveAfter = null;
   const child = spawn(process.execPath, [resolve("cli/atelier.mjs"), "land", "t1", "--project", "proj"], {
     cwd: f.checkout,
-    env: { ...process.env, ATELIER_CONFIG_DIR: join(f.p, "config"), ATELIER_TOKEN: "fixture", ATELIER_CACHE: join(f.p, "cache"), ATELIER_SERVER: f.url, ATELIER_LAND_POLL_MS: "30", ATELIER_LOAD: "0", ...env },
+    env: { ...process.env, ATELIER_CONFIG_DIR: join(f.p, "config"), ATELIER_TOKEN: "fixture", ATELIER_CACHE: join(f.p, "cache"), ATELIER_SERVER: f.url, ATELIER_LAND_POLL_MS: "30", ...env },
   });
   // Ended however the test ends, so a failed wait leaves no landing polling.
   f.after(() => child.kill("SIGKILL"));
@@ -1134,6 +1164,7 @@ function waitingLanding(f, env = {}) {
 }
 
 test("SIGINT and SIGTERM release the lease before the landing ends, with the signal's status", async (t) => {
+  if (!canInspectSlots(t)) return;
   for (const [signal, status] of [["SIGTERM", 143], ["SIGINT", 130]]) {
     const f = await landFixture(t);
     const landing = waitingLanding(f);
@@ -1169,6 +1200,7 @@ test("SIGINT, SIGTERM and SIGHUP during the regenerate step end its process grou
 });
 
 test("the landing renews the lease while it waits, and the renewal moves renewedAt on", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: "40" });
   await until(() => f.posts("/landing-lease").filter((x) => x.body.renew === true).length >= 3, CEILING_MS, "three renewals");
@@ -1184,6 +1216,7 @@ test("the landing renews the lease while it waits, and the renewal moves renewed
 });
 
 test("a lease not renewed for the expiry is taken over, and the landing says whose lapsed", { timeout: CEILING_MS }, async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   // Seed an already expired lease; do not wait for fifteen minutes to elapse.
   // run() resolves on CLI close, after the observed takeover and merge.
@@ -1255,6 +1288,7 @@ test("re-running land on the task holding the lease reaches the release from eve
 });
 
 test("while the review request is unclaimed, the landing names the runner's job and what is queued ahead", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   f.box.review.approveAfter = 4;
   f.box.items = [
@@ -1281,6 +1315,7 @@ test("while the review request is unclaimed, the landing names the runner's job 
 });
 
 test("while the review request is unclaimed and no live runner offers the reviewer, the landing says it can never be claimed", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   f.box.review.approveAfter = 4;
   // No runner offers the review job for the routed reviewer: one offers the
@@ -1314,7 +1349,49 @@ test("while the review request is unclaimed and no live runner offers the review
   assert.equal(h.box.states.t1, "merged");
 });
 
+test("a landing whose sole review runner has skipped says so by runner name and stops, instead of waiting out the hour", async (t) => {
+  const f = await landFixture(t);
+  // No verdict will ever arrive: the landing must say the skip, not time out.
+  f.box.review.approveAfter = null;
+  f.box.runners = [{ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() }];
+  f.box.review.skips = [{ runner: "home:studio" }];
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /every runner that offers codex\/gpt-6-astra for the review of t1 at \w+ has skipped it: home:studio\./);
+  assert.equal(f.posts("/land").find((x) => x.body.step === "review")?.body.verdict, "skipped");
+  assert.equal(f.posts("/land").find((x) => x.body.step === "review")?.body.reviewer, "codex/gpt-6-astra");
+  assert.equal(f.posts("/accept").length, 0);
+  assert.equal(f.posts("/merged").length, 0);
+  assert.equal(f.box.states.t1, "submitted");
+  // A second runner offering the reviewer, still live, leaves one that has not
+  // skipped: the landing keeps waiting instead of naming a partial skip.
+  const g = await landFixture(t);
+  g.box.review.approveAfter = 3;
+  g.box.runners = [
+    { runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() },
+    { runner: "home:desk", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() },
+  ];
+  g.box.review.skips = [{ runner: "home:studio" }];
+  const offered = await g.run(g.checkout, "land", "t1");
+  assert.equal(offered.status, 0, offered.output);
+  assert.doesNotMatch(offered.output, /has skipped it/);
+  assert.equal(g.box.states.t1, "merged");
+  // A skip of an earlier review request at the same head — an earlier
+  // landing's — does not count against the request this landing made: the
+  // landing waits for the verdict as before.
+  const h = await landFixture(t);
+  h.box.review.approveAfter = 3;
+  h.box.review.request = 2;
+  h.box.runners = [{ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() }];
+  h.box.review.skips = [{ runner: "home:studio", request: 1 }];
+  const earlier = await h.run(h.checkout, "land", "t1");
+  assert.equal(earlier.status, 0, earlier.output);
+  assert.doesNotMatch(earlier.output, /has skipped it/);
+  assert.equal(h.box.states.t1, "merged");
+});
+
 test("a refused renewal stops the heartbeat and is said once, and the lost lease is left alone; a failed one is retried and warned of once", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   const beatMs = 40;
   const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: String(beatMs) });
@@ -1347,6 +1424,7 @@ test("a refused renewal stops the heartbeat and is said once, and the lost lease
 });
 
 test("a landing that learns from its heartbeat that it lost the lease stops without accepting or merging", { timeout: CEILING_MS }, async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: "40" });
   await until(() => f.box.review.pending, CEILING_MS, "the review request");
@@ -1373,6 +1451,7 @@ test("a landing that learns from its heartbeat that it lost the lease stops with
 });
 
 test("before accepting, the landing asks for the lease again, so a takeover its heartbeat has not reported stops it", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   // The heartbeat is slow, so the takeover (the Mac slept and woke at the
   // verdict) must be caught by the renewal the landing asks for itself
@@ -1398,6 +1477,7 @@ test("before accepting, the landing asks for the lease again, so a takeover its 
 });
 
 test("a landing whose lease lapsed and was taken over releases nothing of the landing that took it", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   // t1's landing waits for a review while its lease is renewed; then its
   // renewals stop reaching the server and t2's landing takes the lease over.
@@ -1424,6 +1504,7 @@ test("a landing whose lease lapsed and was taken over releases nothing of the la
 });
 
 test("a landing that merged says the handover, not a warning, when a queued landing takes the lease in the moment after the merge", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
   // The server treats a merged task's lease as free (landingLive), so t2's
   // landing, queued with --wait, takes it the moment t1's merge is recorded,
@@ -1503,6 +1584,7 @@ test("land --workflow starts the Workflow, merges main and pushes only once the 
 });
 
 test("land --workflow pauses the Workflow on a conflict, and the rerun after the owner resolves it resumes the landing in a new round", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "work.txt", text: "from main\n", message: "Main edits the same file" } });
   const wf = scriptWorkflow(f);
   const r = await f.run(f.checkout, "land", "t1", "--workflow");
@@ -1529,6 +1611,7 @@ test("land --workflow pauses the Workflow on a conflict, and the rerun after the
 });
 
 test("land --workflow ends with the Workflow's own reason when the Workflow fails", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   const wf = scriptWorkflow(f);
   wf.onEvent = (event, box) => { wf.stage = "failed"; wf.status = "errored"; wf.error = "the required checks failed at abcdef12 in the Cloudflare container: npm test"; box.lease = null; };
@@ -1549,6 +1632,7 @@ test("land --workflow refuses an accepted task with no live Workflow, as the pla
 });
 
 test("land without --workflow never reaches the landing Workflow, and --dry-run with --workflow is refused", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
@@ -1565,6 +1649,7 @@ test("land without --workflow never reaches the landing Workflow, and --dry-run 
 // ── the local checks mode (t305) ────────────────────────────────────────────
 
 test("land --workflow runs the required checks here in a clean clone after the push, by default, and reports the head only once they pass", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
   const wf = scriptWorkflow(f);
   const r = await f.run(f.checkout, "land", "t1", "--workflow");
@@ -1593,6 +1678,7 @@ test("land --workflow runs the required checks here in a clean clone after the p
 });
 
 test("land --workflow with a failing local check reports the workspace failed, never the head, and ends with the check's failure", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   const wf = scriptWorkflow(f);
   f.box.checks = ["exit 3"];
