@@ -19,6 +19,7 @@ import { refusalOf, refusalText } from "../checks.ts";
 import { checkApplies, type CheckPaths } from "../rules.ts";
 import { MAX_RENDERS, renderGateway, RENDER_HOST } from "../render-check.ts";
 import { capLarge, putLarge, LARGE_MAX, type LargeRef } from "../large.ts";
+import { SANDBOX_OUTPUT_TAIL } from "../check-failure.ts";
 import { END_OF_ARCHIVE, entryBytes } from "./tar";
 import { fetchPinned, GIT_DEB, installCommands, TOOLS_DIR } from "./tools";
 import { writeTree } from "./tree";
@@ -31,7 +32,10 @@ const WORKDIR = "/workspace";
 // Each check step's limit: a full suite, Atelier's own among them, must be
 // able to finish on the container this Durable Object starts.
 const STEP_SECONDS = 1800;
-const OUTPUT_TAIL = 4000;
+// What a result keeps inline; the whole log goes to R2 beside it when it was
+// longer. The number is shared with the failure summary (src/check-failure.ts),
+// which labels a tail cut to it.
+const OUTPUT_TAIL = SANDBOX_OUTPUT_TAIL;
 export const EGRESS_HOSTS = ["registry.npmjs.org"];
 
 // Passed to every exec(): variables given to start() reach only the entrypoint.
@@ -339,6 +343,8 @@ export class CheckRunner extends DurableObject<Env> {
           : `${r.outputTail}\n[atelier] ran in a Cloudflare container in ${r.seconds}s, exit ${r.exitCode}${req.merged ? `, on the merge with main at ${state.mainHead?.slice(0, 8)}` : ""}`,
         where: "sandbox",
         mainHead: state.mainHead,
+        // The run that made the result, so a failure can be named by it (t436).
+        run: req.runId,
         ...(r.log ? { log: r.log } : {}),
         ...(r.notApplicable ? { notApplicable: true } : req.merged ? { merged: true } : {}),
       });
