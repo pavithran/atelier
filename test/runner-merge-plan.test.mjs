@@ -19,7 +19,7 @@ import { ROLE_PROMPTS } from "../src/usage.ts";
 // plan's fork and main, with a clone of the fork for the workspace; the CLI
 // and the server stand in through io, as in the other runner tests.
 
-const entry = { agent: "codex", models: ["gpt-6-astra"], command: ["codex", "{brief_file}", "{workspace}"] };
+const entry = { agent: "codex", models: ["gpt-6-astra"], command: ["codex", "exec", "--sandbox", "danger-full-access", "{brief_file}", "{workspace}"] };
 const config = { agents: [entry] };
 const ACTOR = "codex/gpt-6-astra";
 const ID = { name: "Test", email: "test@example.com" };
@@ -66,7 +66,7 @@ function fixture(t, { conflict, harness, dispatch = {}, setup }) {
       if (argv[0] === "base-token") return JSON.stringify({ remote: argv[1] === "t9" ? r.fork : r.main, token: `read-${argv[1]}`, defaultBranch: "main" });
       return "";
     },
-    async head(cwd) { return git(cwd, "rev-parse", "HEAD"); },
+    async head(cwd, { ref = "HEAD" } = {}) { return git(cwd, "rev-parse", ref); },
     async reset(cwd) { calls.push({ reset: true }); git(cwd, "reset", "-q", "--hard", "HEAD"); git(cwd, "clean", "-ffdq"); },
     async fetch(cwd, remote, token, head) { calls.push({ fetch: [remote, token, head] }); git(cwd, "fetch", "-q", remote, head); },
     async mergeMain(cwd, head, message) { calls.push({ mergeMain: [head, message] }); return run(cwd, mergeMainArgs(head, message)); },
@@ -192,6 +192,6 @@ test("a merge-main part whose merge of main conflicts fetches the plan's branch 
   });
   await runTask(job, config, "home:studio", io);
   assert.deepEqual(calls.filter((c) => c.mergeMain).map((c) => c.mergeMain[0]), [mainHead]);
-  assert.deepEqual(calls.filter((c) => c.fetch).map((c) => c.fetch[2]), [mainHead, r.planHead]);
+  assert.deepEqual(calls.filter((c) => c.fetch).map((c) => c.fetch[2]), ["refs/heads/main", r.planHead]);
   assert.ok(calls.find((c) => c.brief).brief.includes(`The plan's branch at ${r.planHead.slice(0, 8)} is fetched but not merged, since the merge of main is in progress`));
 });
