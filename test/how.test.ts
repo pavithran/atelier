@@ -13,7 +13,10 @@ import { LAYERS_CAPTION, LAYERS_LABEL, PLAN_FLOW, PLAN_FLOW_CAPTION, PLAN_FLOW_L
 // a sentence still describes a function's behaviour, which is a reviewer's job.
 
 const root = resolve(".");
-const read = (file: string) => readFileSync(join(root, file), "utf8");
+// src/usage.ts assembles the help from each command's declaration, so code
+// named there is looked for in src/usage/commands/ too.
+const declarations = () => readdirSync(join(root, "src/usage/commands")).map((name) => readFileSync(join(root, "src/usage/commands", name), "utf8")).join("\n");
+const read = (file: string) => readFileSync(join(root, file), "utf8") + (file === "src/usage.ts" ? `\n${declarations()}` : "");
 const named = (symbol: string) => new RegExp(`\\b${symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
 
 function sources(dir: string): string[] {
@@ -64,7 +67,7 @@ test("the review code is called by the ledger and the runner, and the page says 
   // The part brief (src/plans/brief.ts) shares the verdict's finding type and
   // limits, and the CLI reads the reply limit alone, to cut what it keeps of
   // an unparsable reply (t407); neither calls any of the review code.
-  const sharesTypes = new Set([join("src", "plans", "brief.ts"), join("cli", "atelier.mjs")]);
+  const sharesTypes = new Set([join("src", "plans", "brief.ts"), join("cli", "commands", "review-unparsable.mjs")]);
   const callers = [...sources("src"), ...sources("cli")].filter((file) => !file.startsWith(inside) && !sharesTypes.has(file) && imports.test(read(file)));
   assert.deepEqual([...callers].sort(), ["cli/runner.mjs", "src/ledger.ts"], "the review code should be called by the ledger and the runner alone");
   const requests = ORCHESTRATOR.find((p) => p.name === "Review requests and runner job")!;
