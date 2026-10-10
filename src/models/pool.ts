@@ -42,6 +42,15 @@ export type ModelRole = (typeof MODEL_ROLES)[number];
 export const MODEL_TIERS = ["frontier", "execution", "budget"] as const;
 export type ModelTier = (typeof MODEL_TIERS)[number];
 
+export interface ModelNote {
+  at: string;
+  by: string;                 // the owner who wrote it
+  text: string;
+  item?: string;              // the task it concerns; a note with none bears on every task
+  project?: string;           // the project's stable key, not its name: task ids repeat across projects
+  projectName?: string;       // the project's current name, read with the note and never stored
+}
+
 export interface ModelEntry {
   id: string;                 // as the harness names it; the second half of an actor name
   harness: PoolHarness;
@@ -59,6 +68,7 @@ export interface ModelEntry {
   stateAt?: string;           // when the state was last set
   roles?: readonly ModelRole[]; // the jobs it may take; all three when none are named
   tier?: ModelTier;           // frontier, execution or budget
+  notes?: ModelNote[];        // oldest first; read with the entry, never stored on it
 }
 
 // The state as routing reads it: available unless the owner paused or reserved it.
@@ -303,3 +313,27 @@ export function cleanModelSet(body: Record<string, unknown>): ModelSet {
 // The fields a status was observed under: change one and the status no
 // longer describes the entry.
 export const OBSERVED_UNDER = ["harness", "where", "provider", "endpoint", "keychain"] as const;
+
+export function cleanNote(body: Record<string, unknown>, by: string, at: string): ModelNote {
+  const bad = (detail: string) => new RuleError("bad_note", detail, 400);
+  const text = plain(str(body.text)).trim();
+  if (!text) throw bad("a note needs text");
+  if (text.length > 500) throw bad("a note is at most 500 characters");
+  if (LOOKS_LIKE_KEY.test(text)) throw bad("the note looks like it carries a key; a key belongs in the Keychain");
+  const item = str(body.item);
+  if (item && !/^t[1-9]\d*$/.test(item)) throw bad("a note names the task it concerns, such as t406, or none");
+  const project = plain(str(body.project)).trim();
+  if (item && !project) throw bad("a note on a task names its project, such as alpha");
+  if (project && !item) throw bad("a note names a project only with the task it concerns");
+  if (project.length > 100) throw bad("a project name is at most 100 characters");
+  return { at, by, text, ...(item ? { item, project } : {}) };
+}
+
+const noteTask = (n: ModelNote) => (n.project ? `${n.projectName ?? n.project}/${n.item}` : n.item ?? "");
+
+// The latest of an entry's notes that bears on a task: one that names no task, or that names this task in this project's key.
+export function latestNote(entry: Pick<ModelEntry, "notes">, projectKey: string, item: string): ModelNote | undefined {
+  return (entry.notes ?? []).filter((n) => !n.item || (n.item === item && n.project === projectKey)).at(-1);
+}
+
+export const noteLine = (n: ModelNote) => `Latest note, ${n.at.slice(0, 10)} by ${n.by}${n.item ? ` on ${noteTask(n)}` : ""}: ${n.text}`;

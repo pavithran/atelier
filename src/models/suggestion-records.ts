@@ -17,7 +17,7 @@ export async function suggestionRecords(
       if (page.length < 1000) break;
       before = page[page.length - 1].seq;
     }
-    return { project: project.name, events };
+    return { project: project.key ?? project.name, events };
   }));
   return { sources, runs };
 }
