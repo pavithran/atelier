@@ -299,6 +299,76 @@ it("a submitted task with a protected change gets a review request, named or pic
   expect(after.reason).toMatch(/the gate already counts an independent approval/);
 });
 
+// t353: a review request every live runner that offers its reviewer has
+// skipped will never be claimed, since each runner keeps its skip until the
+// request changes. The owner asking again, with the live offers, withdraws
+// it and asks anew under a fresh number, which the runners serve again;
+// without the offers, with a runner left to serve it, or once a runner has
+// claimed it, the request stands as it was.
+it("asking again for a review every runner that offers the reviewer has skipped withdraws the request and asks it anew under a new number", async () => {
+  const name = "land-reask-skipped";
+  const L = await setup(name);
+  const index = env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  await index.registerProject({ name, repo: `${name}--baseline`, policy, createdAt: new Date().toISOString() });
+  const id = (await L.newItem("Landing", [], "owner")).id;
+  const head = "a".repeat(40);
+  await submittedTask(L, id, head);
+  const offer = (runner: string) => ({ runner, kind: "home" as const, jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() });
+  const offers = [offer("home:studio"), offer("home:desk")];
+  const first = await L.requestReview(id, "owner", GPT, POOL, false, false, undefined, offers);
+  expect(first).toMatchObject({ needed: true, requested: true, reviewer: GPT, head });
+  // With no skip recorded, asking again returns the request as it stands.
+  expect(await L.requestReview(id, "owner", GPT, POOL, false, false, undefined, offers)).toMatchObject({ requested: false, request: first.request });
+  // One runner's skip leaves the other to serve it: the request stands.
+  await L.recordReviewSkip(id, first.request!, head, "home:studio", "owner", "no agent token");
+  expect(await L.requestReview(id, "owner", GPT, POOL, false, false, undefined, offers)).toMatchObject({ requested: false, request: first.request });
+  await L.recordReviewSkip(id, first.request!, head, "home:desk", "owner", "wrong agent");
+  // Without the live offers nothing is known to have skipped: the request stands.
+  expect(await L.requestReview(id, "owner", GPT, POOL)).toMatchObject({ requested: false, request: first.request });
+  // With them, every runner that offers the reviewer has skipped: the request
+  // is withdrawn, which is said by runner name, and asked anew under a new
+  // number the runners have not skipped.
+  const again = await L.requestReview(id, "owner", GPT, POOL, false, false, undefined, offers);
+  expect(again).toMatchObject({ needed: true, requested: true, reviewer: GPT, head });
+  expect(again.request).toBeGreaterThan(first.request!);
+  expect(again.reason).toMatch(new RegExp(`The earlier request at this head \\(${first.request}\\) was withdrawn: every runner that offers codex/gpt-6-astra had skipped it \\(home:studio, home:desk\\)`));
+  expect((await L.reviewRequests(id)).map((r) => r.state)).toEqual(["withdrawn", "open"]);
+  expect((await events(L, id)).find((e) => e.kind === "review.withdrawn")).toMatchObject({
+    actor: "owner",
+    data: { head, reviewer: GPT, request: first.request, runners: ["home:studio", "home:desk"], reason: expect.stringMatching(/^every runner that offers codex\/gpt-6-astra skipped review request \d+ \(home:studio, home:desk\)/) },
+  });
+  // The queue offers the new request alone, and the earlier skips count for nothing against it.
+  expect((await L.reviewWaiting()).map((w) => w.request)).toEqual([again.request]);
+  expect(await L.reviewSkips(id, again.request!)).toEqual([]);
+  // A request a runner has claimed is being served: skips of it, reported
+  // late, renew nothing.
+  await L.claimReview(id, GPT, RUNNER);
+  await L.recordReviewSkip(id, again.request!, head, "home:studio", "owner", "late");
+  await L.recordReviewSkip(id, again.request!, head, "home:desk", "owner", "late");
+  expect(await L.requestReview(id, "owner", GPT, POOL, false, false, undefined, offers)).toMatchObject({ requested: false, request: again.request });
+  expect((await L.reviewRequests(id)).map((r) => r.state)).toEqual(["withdrawn", "claimed"]);
+
+  // The review-request route asks with the live offers the index holds, so a
+  // landing run again over it renews a skipped request the same way.
+  const b = (await L.newItem("Landing again", [], "owner")).id;
+  const headB = "b".repeat(40);
+  await submittedTask(L, b, headB);
+  await index.putRunnerOffer({ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }] }, new Date().toISOString());
+  const token = { ...env, ATELIER_TOKEN: "land-routes-token" } as typeof env;
+  const ask = async () => (await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${b}/review-request`, {
+    method: "POST", headers: { authorization: "Bearer land-routes-token", "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify({ reviewer: GPT, wanted: true }),
+  }), token)).json() as Promise<{ requested: boolean; request: number; reason: string }>;
+  const asked = await ask();
+  expect(asked).toMatchObject({ requested: true });
+  expect(await ask()).toMatchObject({ requested: false, request: asked.request });
+  await L.recordReviewSkip(b, asked.request, headB, "home:studio", "owner", "no agent token");
+  const renewed = await ask();
+  expect(renewed).toMatchObject({ requested: true });
+  expect(renewed.request).toBeGreaterThan(asked.request);
+  expect(renewed.reason).toMatch(/every runner that offers codex\/gpt-6-astra had skipped it \(home:studio\)/);
+  expect((await L.reviewWaiting()).map((w) => [w.id, w.request])).toEqual([[b, renewed.request]]);
+});
+
 it("a wanted review is requested for the named reviewer though the gate needs none, and the gate's own refusals stand", async () => {
   const L = await setup("land-wanted");
   const id = (await L.newItem("Docs", [], "owner")).id;

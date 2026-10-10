@@ -366,6 +366,32 @@ it("says by runner name when every runner that offers the reviewer has skipped",
   await L.recordReviewSkip(id, request, H1, "home:studio", "owner", "no agent token");
   await wf.waitForStatus("errored");
   expect(await L.landingWorkflowOf(id)).toMatchObject({ stage: "failed" });
+  expect((await L.landingWorkflowOf(id))?.detail).toMatch(/every runner that offers codex\/gpt-6-astra for the review of t\d+ at aaaaaaaa has skipped it: home:studio\. .* or run atelier land t\d+ --workflow again, which asks the review anew for the runners to serve$/);
+  expect(await L.readProjectLanding()).toBeNull();
+
+  // The landing run again asks with the live offers: the request every
+  // runner skipped is withdrawn and asked anew under a new number, which the
+  // runner has not skipped, so its wait is not stranded by the earlier
+  // landing's skip; a skip of the new request ends it the same way.
+  await L.setLandingWorkflow(id, "wf-skip-2", "owner");
+  await using again = await introspectWorkflowInstance(env.LANDING_WORKFLOW, "wf-skip-2");
+  await again.modify(async (m) => {
+    await m.disableSleeps();
+    await m.mockStepResult({ name: "confirm the fork's head" }, { head: H1 });
+    await m.mockStepResult({ name: "wait for the merge #0" }, true);
+  });
+  await env.LANDING_WORKFLOW.create({ id: "wf-skip-2", params: { ...params(project, id), pollMs: 10, reviewTimeoutMs: 30_000 } });
+  await send("wf-skip-2", "workspace", { round: 0, head: H1, mainHead: null, mergedIn: false });
+  await until(async () => ((await L.events(id)) as unknown as LedgerEvent[]).filter((e) => e.kind === "review.requested").length, (n) => n === 2);
+  const withdrawn = ((await L.events(id)) as unknown as LedgerEvent[]).find((e) => e.kind === "review.withdrawn");
+  expect(withdrawn).toMatchObject({ data: { head: H1, reviewer: "codex/gpt-6-astra", request, runners: ["home:studio"] } });
+  const [renewed] = await L.reviewWaiting();
+  expect(renewed.request).toBeGreaterThan(request);
+  expect(await L.reviewSkips(id, renewed.request)).toEqual([]);
+  await until(() => L.landingWorkflowOf(id), (r) => r?.stage === "review");
+  expect((await L.landingWorkflowOf(id))?.detail).toMatch(/Reviewer: codex\/gpt-6-astra\. .*was withdrawn: every runner that offers codex\/gpt-6-astra had skipped it \(home:studio\)/);
+  await L.recordReviewSkip(id, renewed.request, H1, "home:studio", "owner", "no agent token, still");
+  await again.waitForStatus("errored");
   expect((await L.landingWorkflowOf(id))?.detail).toMatch(/every runner that offers codex\/gpt-6-astra for the review of t\d+ at aaaaaaaa has skipped it: home:studio/);
   expect(await L.readProjectLanding()).toBeNull();
 });
