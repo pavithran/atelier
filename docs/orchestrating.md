@@ -254,8 +254,12 @@ owner it read as a defect. The other half were real, and some were serious.
 ## Keeping the record honest
 
 - The task's holder is who the ledger says did the work. Before another
-  model works on a task, hand it off (`atelier handoff`); an accepted task
-  cannot be handed off, so integrate it under its holder or not at all.
+  model works on a task, hand it off (`atelier handoff`). The project owner
+  can send an accepted task back to building with `atelier handoff ID --to H/M`
+  or `atelier dispatch ID --job merge-main` after a merge conflict. The earlier
+  reviews and acceptance stay in the history; the new revision is submitted,
+  reviewed and accepted again. A merge holding the landing lease must finish
+  or be cancelled first. Plans use `atelier plan refresh ID` instead.
 - Every commit carries an `Agent:` line naming who wrote it.
 - When a closing note turns out to be wrong, say so where the record can
   hold it; never leave a false statement standing.
