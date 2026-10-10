@@ -1502,8 +1502,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review": {
       const item = await L.item(id);
       assertReviewAllowed(item, !!c.token);
-      assertRevision(item, String(body.head ?? ""));
-      if (item.fork && await headOf(env, item.fork) !== item.head) throw new RuleError("stale_head", "the workspace changed; record the push and review again");
+      // A post-merge review judges the recorded landing, not the submitted
+      // head or a workspace that may have moved or disappeared. addReview
+      // validates its merge commit and claimed request together in the Ledger.
+      if (item.state !== "merged") {
+        assertRevision(item, String(body.head ?? ""));
+        if (item.fork && await headOf(env, item.fork) !== item.head) throw new RuleError("stale_head", "the workspace changed; record the push and review again");
+      }
       await L.addReview({
         itemId: id, by: actor, head: String(body.head ?? item.head ?? ""),
         // The criteria binding is the reviewer's own, as given; never the item's.

@@ -936,14 +936,18 @@ it("blocking findings on an overridden merge file one linked defect and never re
 });
 
 
-it("the HTTP request and claim serve the merge from the baseline with its criteria", async () => {
+it.each([true, false])("the HTTP post-merge review records a verdict (approve=%s) against the landing, independent of the fork", async (approve) => {
   const { default: worker } = await import("../src/index.ts");
-  const name = "post-merge-http";
-  const { L, id, merge } = await overriddenMerge(name);
+  const name = `post-merge-http-${approve}`;
+  const { L, id, head, merge } = await overriddenMerge(name);
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(await L.project());
   const asked: string[] = [];
+  const headReads: string[] = [];
   const ARTIFACTS = {
     get: async (repo: string) => ({
+      // The original workspace is gone; a post-merge verdict must never
+      // depend on its live head (or the baseline's current head).
+      log: async () => { headReads.push(repo); throw new Error("repository head unavailable"); },
       info: async () => ({ remote: `https://git.test/${repo}`, defaultBranch: "main" }),
       readCommit: async () => null,
       createToken: async () => { asked.push(repo); return { plaintext: `token-${repo}`, id: "id", expiresAt: "soon" }; },
@@ -958,8 +962,42 @@ it("the HTTP request and claim serve the merge from the baseline with its criter
   expect(await requested.json()).toMatchObject({ head: merge, reviewer: GPT, requested: true });
   const res = await call("review-claim", GPT, {});
   expect(res.status).toBe(200);
-  expect(await res.json()).toMatchObject({ head: merge, criteria: await L.criteria(id), landed: { commit: merge }, readToken: { remote: `https://git.test/${name}--baseline` } });
+  const claim = await res.json() as ReviewClaim;
+  expect(claim).toMatchObject({ head: merge, criteria: await L.criteria(id), landed: { commit: merge }, readToken: { remote: `https://git.test/${name}--baseline` } });
   expect(asked).toEqual([`${name}--baseline`, `${name}--baseline`]);
+  const findings = [{ ...blocker(), severity: approve ? "follow-up" as const : "blocking" as const }];
+  const verdict = { head: merge, criteria: claim.criteria, request: claim.request, approve, note: "Audited the merge", findings };
+  // Neither the submitted head nor an unrelated SHA can answer this claim.
+  for (const wrongHead of [head, "f".repeat(40)]) {
+    const stale = await call("review", GPT, { ...verdict, head: wrongHead });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ error: "stale_head" });
+  }
+  expect(await L.reviewsFor(id)).toEqual([]);
+  const stored = await call("review", GPT, verdict);
+  expect(stored.status).toBe(200);
+  expect(await L.reviewsFor(id)).toEqual([expect.objectContaining({ head: merge, approve, findings, postMerge: true })]);
+  expect(await L.reviewRequests(id)).toEqual([expect.objectContaining({ head: merge, state: "answered", claimedBy: GPT })]);
+  expect(await L.item(id)).toMatchObject({ state: "merged", head, acceptedHead: head, reviewOverride: expect.anything() });
+  const html = renderItem(await L.project(), await L.detail(id));
+  expect(html).toContain("Audited the merge");
+  expect(html).toContain("It loses data.");
+  expect(html).toContain("post-merge review");
+  const record = buildReliability([{ project: name, events: await events(L) }], [], "owner");
+  expect(record.get("gpt-6-astra")).toMatchObject(approve ? { approvals: 1 } : { rejectionsGiven: 1 });
+  expect(record.get("opus-5.5")).toMatchObject({ merged: 1, mergedReviewed: 1, rounds: 1 });
+  if (!approve) {
+    expect(await L.item("t2")).toMatchObject({ state: "open", brief: expect.stringContaining("It loses data.") });
+    expect((await events(L, "t2")).find((e) => e.kind === "item.defect_of")?.data).toMatchObject({ itemId: id, head: merge, request: claim.request });
+    expect(record.get("opus-5.5")?.defects).toHaveLength(1);
+    expect(html).toContain("Post-merge defect:");
+  }
+  const repeated = await call("review", GPT, verdict);
+  expect(repeated.status).toBe(409);
+  expect(await repeated.json()).toMatchObject({ error: "stale_request" });
+  expect(await L.reviewsFor(id)).toHaveLength(1);
+  expect((await events(L, id)).filter((e) => e.kind === "item.defect")).toHaveLength(approve ? 0 : 1);
+  expect(headReads).toEqual([]);
 });
 
 it("many long blocking findings stay complete on the review and file a bounded defect brief", async () => {
