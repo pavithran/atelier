@@ -415,6 +415,23 @@ test("--override-triage goes past a stopped triage only once the stop and the ow
   assert.deepEqual(passing.triages().map((d) => d.outcome), ["passed"]);
 });
 
+test("--override-triage after a stop overrides the stop recorded at the same binding without asking the model again; a stale stop is triaged afresh (t475)", async (t) => {
+  const binding = { head: HEAD, base: BASE, criteria: criteriaOf({ accept: CRITERIA }) };
+  const stopped = (b) => [{ kind: "land.triage", seq: 1, data: triageRecord(b, "stopped", { triager: "codex/gpt-6-astra", statuses: [met(1), met(2, { status: "not-met" })].map((r) => ({ n: r.criterion, status: r.status })), reason: "criterion 2 not met" }) }];
+  const l = landing(t, { args: { triage: "codex/gpt-6-astra", "override-triage": "checked by hand", "no-review": true }, events: stopped(binding) });
+  await runLand(l.io);
+  assert.equal(l.asked.length, 0);
+  assert.deepEqual(l.triages().map((d) => [d.outcome, d.reason]), [["stopped", "criterion 2 not met"], ["overridden", "checked by hand"]]);
+  assert.match(l.output(), /criterion 2 not met \(as recorded at this head, merge base and criteria\)/);
+  assert.ok(l.at((c) => c.path?.endsWith("/land") && c.body.outcome === "overridden") < l.at((c) => c.command === "submit"));
+
+  // A stop recorded at another head is not this change's: the model is asked.
+  const moved = landing(t, { args: { triage: "codex/gpt-6-astra", "override-triage": "checked by hand", "no-review": true }, events: stopped({ ...binding, head: "c".repeat(40) }) });
+  await runLand(moved.io);
+  assert.equal(moved.asked.length, 1);
+  assert.deepEqual(moved.triages().slice(1).map((d) => d.outcome), ["passed"]);
+});
+
 test("passing triage hands the landing to the review rules as they were: no review needed, an existing approval (t475)", async (t) => {
   const none = landing(t, { args: { triage: "codex/gpt-6-astra" }, review: { needed: false, reason: "a direct change needs no review" } });
   await runLand(none.io);
