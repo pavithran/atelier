@@ -23,5 +23,6 @@
 // (t406).
 // 19: a project that requires criteria refuses a task filed or cleared
 // without them, and init takes --require-criteria (t397).
-// 20: the owner-only read-only project stuck report (t441).
-export const ROUTE_LEVEL = 20;
+// 20: runner-scoped API credentials and revocable Git gateway (t444).
+// 21: the owner-only read-only project stuck report (t441).
+export const ROUTE_LEVEL = 21;

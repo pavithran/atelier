@@ -1,0 +1,23 @@
+import type { CommandSpec } from "../command.ts";
+
+const spec: CommandSpec = {
+  name: "stuck",
+  forms: [
+    { group: "Owner", line: 2, slot: 5, form: "stuck [--project P] [--json] [--no-push-hours N] [--unanswered-hours N] [--lease-wait-minutes N] [--runner-poll-minutes N] [--review-answer-hours N]", about: "One read-only owner report of stuck tasks, lease waits, confirmed orphan leases, runner give-ups, idle polls, claimed reviews and stale core holds; prints evidence and recovery commands without running them, and separately lists failed observed check commands in the preceding rolling day." },
+  ],
+  flags: { json: true, "no-push-hours": false, "unanswered-hours": false, "lease-wait-minutes": false, "runner-poll-minutes": false, "review-answer-hours": false },
+  help: {
+    flags: {
+      "--project P": "owner-only read-only report for this project (defaults to the checkout's project); failed reads are unavailable, never empty evidence",
+      "--json": "prints observation time, limits, evidence ages and links, recovery commands, unavailable sources and failed observed check commands in the preceding rolling day",
+      "--no-push-hours N": "positive limit for claims and core holds; default 6 hours",
+      "--unanswered-hours N": "positive limit for unanswered changes requests; default 24 hours",
+      "--lease-wait-minutes N": "positive limit for lease-stage Workflows; default 30 minutes",
+      "--runner-poll-minutes N": "positive idle-poll limit; default 5 minutes, plus one minute of offer timestamp coarsening; active jobs are excluded",
+      "--review-answer-hours N": "positive limit for current claimed reviews; default 2 hours; renewed claims reset the clock",
+    },
+    example: "atelier stuck --project demo",
+  },
+};
+
+export default spec;
