@@ -158,3 +158,104 @@ it("a review request made before its model was held is refused at claim and with
   expect((await withdrawn(L, id)).map((e) => e.data)).toEqual([expect.objectContaining({ head: H1, reviewer: GPT, reason: expect.stringMatching(/reserved since 2026-10-05/) })]);
   expect(await L.requestReview(id, "owner", null, pool)).toMatchObject({ requested: true, reviewer: GLM });
 });
+
+// A queued build or plan job is claimed by a runner, not asked by a landing,
+// so the owner's standing reaches it the same two ways: a pool change
+// withdraws an unclaimed dispatch to a model now held from the job, and a
+// claim of one made before the change is refused and withdraws it. A task
+// then waits for the owner to dispatch it again; a plan is blocked until the
+// owner reroutes its planner.
+const HELD = [
+  ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }, /codex\/gpt-6-astra is paused since 2026-10-05 \(the owner's standing\): AI Studio down/],
+  ["reserved", { state: "reserved", stateAt: AT, note: "astra's credits" }, /codex\/gpt-6-astra is reserved since 2026-10-05 \(the owner's standing\): astra's credits/],
+] as const;
+const undispatched = async (L: ReturnType<typeof ledger>, id: string) => ((await L.events(id)) as unknown as Event[]).filter((e) => e.kind === "item.undispatched");
+
+async function project(name: string) {
+  const L = ledger(name);
+  await L.setProject({ name, repo: `${name}--baseline`, policy, createdAt: new Date().toISOString() }, "owner");
+  return L;
+}
+
+// Teaches the ledger the pool the way a landing does, without a pool change.
+async function learn(L: ReturnType<typeof ledger>, pool: ModelEntry[]) {
+  const other = await L.newItem("Other task", ["src/**"], "owner");
+  await L.requestReview(other.id, "owner", GLM, pool);
+}
+
+it("a pool change withdraws a standalone task's queued build for a model now paused, reserved or review-only, and its claim is refused", async () => {
+  for (const [name, change, reason] of [...HELD, ["review-only", { roles: ["review"] }, /codex\/gpt-6-astra is not a builder; its roles are review/]] as const) {
+    const L = await project(`build-held-${name}`);
+    await L.poolChanged(POOL);
+    const { id } = await L.newItem("Small task", ["src/**"], "owner");
+    await L.dispatch(id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
+    await L.poolChanged(holding(change));
+    expect((await L.item(id)).dispatch, name).toBeNull();
+    expect((await undispatched(L, id)).map((e) => e.data), name).toEqual([{ reason: expect.stringMatching(reason) }]);
+    await refusal(L.claim(id, GPT, RUNNER), "model_held", reason);
+    expect(await L.item(id), name).toMatchObject({ state: "open", owner: null });
+  }
+});
+
+it("a build dispatched before its model was held is refused at claim and withdrawn", async () => {
+  for (const [name, change, reason] of HELD) {
+    const L = await project(`build-held-claim-${name}`);
+    const { id } = await L.newItem("Small task", ["src/**"], "owner");
+    await L.dispatch(id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
+    await learn(L, holding(change));
+    expect((await L.item(id)).dispatch, name).toMatchObject({ agent: "codex", model: "gpt-6-astra" });
+    await refusal(L.claim(id, GPT, RUNNER), "model_held", new RegExp(`${reason.source}; its dispatch of ${id} is withdrawn`));
+    expect(await L.item(id), name).toMatchObject({ state: "open", owner: null, dispatch: null });
+    expect((await undispatched(L, id)).map((e) => e.data), name).toEqual([{ reason: expect.stringMatching(reason) }]);
+  }
+});
+
+it("a held model cannot claim a task by hand, and a model still free to build can", async () => {
+  const L = await project("build-held-hand");
+  await L.poolChanged(holding({ roles: ["review"] }));
+  const { id } = await L.newItem("Small task", ["src/**"], "owner");
+  await refusal(L.claim(id, GPT), "model_held", /codex\/gpt-6-astra is not a builder; its roles are review$/);
+  expect((await L.claim(id, BUILDER)).item).toMatchObject({ state: "claimed", owner: BUILDER });
+});
+
+it("a pool change withdraws an unapproved plan's queued plan job for a planner now held, blocks the plan, and a reroute asks another", async () => {
+  for (const [name, change, reason] of [...HELD, ["build-only", { roles: ["build"] }, /codex\/gpt-6-astra is not a planner; its roles are build/]] as const) {
+    const L = await project(`plan-held-${name}`);
+    const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", GPT, POOL);
+    expect((await L.item(item.id)).dispatch, name).toMatchObject({ job: "plan", agent: "codex", model: "gpt-6-astra" });
+    await L.poolChanged(holding(change));
+    expect((await L.item(item.id)).dispatch, name).toBeNull();
+    expect((await undispatched(L, item.id)).map((e) => e.data), name).toEqual([{ reason: expect.stringMatching(reason) }]);
+    expect((await L.planView(item.id)).blocked, name).toMatch(new RegExp(`${reason.source}.*; name another planner with atelier plan reroute ${item.id}`));
+    await refusal(L.claim(item.id, GPT, RUNNER), "not_dispatched", /has left the queue/);
+    await L.reroutePlan(item.id, "owner", BUILDER);
+    expect((await L.planView(item.id)).blocked, name).toBeNull();
+    expect((await L.claim(item.id, BUILDER, RUNNER)).item, name).toMatchObject({ state: "claimed", owner: BUILDER });
+  }
+});
+
+it("a plan job dispatched before its planner was held is refused at claim, withdrawn and the plan blocked", async () => {
+  for (const [name, change, reason] of HELD) {
+    const L = await project(`plan-held-claim-${name}`);
+    const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", GPT, POOL);
+    await learn(L, holding(change));
+    await refusal(L.claim(item.id, GPT, RUNNER), "model_held", new RegExp(`${reason.source}; its dispatch of ${item.id} is withdrawn`));
+    expect(await L.item(item.id), name).toMatchObject({ state: "open", owner: null, dispatch: null });
+    expect((await L.planView(item.id)).blocked, name).toMatch(reason);
+  }
+});
+
+it("a pool change leaves a queued build or plan job for a model still free to take it, and a claim already held", async () => {
+  const L = await project("held-kept");
+  const { id } = await L.newItem("Small task", ["src/**"], "owner");
+  await L.dispatch(id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
+  const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", GPT, POOL);
+  await L.poolChanged(POOL.map((e) => e.id === "glm-5.3" ? { ...e, state: "paused" as const, stateAt: AT } : e));
+  expect((await L.item(id)).dispatch).toMatchObject({ model: "gpt-6-astra" });
+  expect((await L.item(item.id)).dispatch).toMatchObject({ job: "plan", model: "gpt-6-astra" });
+  await L.claim(id, GPT, RUNNER);
+  await L.poolChanged(holding({ state: "paused", stateAt: AT }));
+  expect(await L.item(id)).toMatchObject({ state: "claimed", owner: GPT });
+  expect((await L.claim(id, GPT, RUNNER)).item).toMatchObject({ state: "claimed", owner: GPT });
+  expect(await undispatched(L, id)).toEqual([]);
+});

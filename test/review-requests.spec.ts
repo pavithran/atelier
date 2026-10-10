@@ -959,12 +959,14 @@ it("a planner held since the plan started is refused on retry and revise, and no
   ] as const) {
     const L = await setup(`planner-held-again-${name}`);
     const { item } = await L.newPlan("Ship it", ["src/**"], "owner", GPT, POOL);
-    const queued = (await L.item(item.id)).dispatch;
-    const logged = (await events(L, item.id)).length;
+    // The pool change withdraws the queued plan job; retry and revise then
+    // dispatch nothing and log nothing.
     await L.poolChanged(POOL.map((e) => e.id === "gpt-6-astra" ? { ...e, ...change } : e));
+    expect((await L.item(item.id)).dispatch, name).toBeNull();
+    const logged = (await events(L, item.id)).length;
     await refusal(L.retryPlan(item.id, "owner"), "model_held", why);
     await refusal(L.revisePlan(item.id, "owner", "Smaller parts"), "model_held", why);
-    expect((await L.item(item.id)).dispatch, name).toEqual(queued);
+    expect((await L.item(item.id)).dispatch, name).toBeNull();
     expect((await events(L, item.id)).length, name).toBe(logged);
     await L.reroutePlan(item.id, "owner", OPUS);
     expect((await L.item(item.id)).dispatch, name).toMatchObject({ agent: "claude-code", model: "opus-5.5", job: "plan" });
