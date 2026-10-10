@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { setImmediate as tick } from "node:timers/promises";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -264,7 +265,7 @@ test("a refused plan job is retried once before the runner retires it", async (t
   const claims = [], logs = [];
   let polls = 0;
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
-    workspacePath: () => workspace, wait: async () => {},
+    workspacePath: () => workspace, wait: () => tick(),
     queue: async () => { if (++polls === 4) { process.emit("SIGINT"); return []; } return [planJob]; },
     taskIO: {
       log: (s) => logs.push(s),
