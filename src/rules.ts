@@ -375,6 +375,12 @@ export interface CheckPaths {
 export interface ProjectPolicy {
   agents?: Record<string, AgentPolicy>;
   execution?: ExecutionPolicy;
+  prepare?: {
+    command: string;
+    inputs: string[];
+    outputs: string[];
+    declaration: CheckDeclaration;
+  };
   checks: string[];         // commands that must pass, observed, before acceptance
   checkClasses?: CheckDeclaration[];  // how each check is known to be read-only (src/checks.ts)
   checkPaths?: CheckPaths[];          // checks that apply only when the change touches these paths
