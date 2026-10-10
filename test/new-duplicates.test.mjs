@@ -91,6 +91,17 @@ test("a near miss files: another scope, a different title, or only a merged task
   assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => [q.body.title, q.body.scope]), cases.map(([title, scope]) => [title, [scope]]));
 });
 
+test("a task sent with only a brief, or as one long text, is checked under the title it is given", (t) => {
+  const f = fixture(t);
+  const brief = f.run(["new", "--brief", "Fix the parser", "--scope", "src/parser/**", "--project", "demo"]);
+  assert.equal(brief.status, 1, brief.stderr);
+  assert.match(brief.stderr, /^ {2}t12 {2}Fix the parser {2}\(claimed, codex\/test\)$/m);
+  const long = f.run(["new", "Fix the parser. Nested lists fail to parse, so they are dropped without a message.", "--scope", "src/parser/**", "--project", "demo"]);
+  assert.equal(long.status, 1, long.stderr);
+  assert.match(long.stderr, /^ {2}t12 {2}Fix the parser {2}\(claimed, codex\/test\)$/m);
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST"), []);
+});
+
 test("--duplicate-ok files the task it names, the title still the words given", (t) => {
   const f = fixture(t);
   const r = f.run(["new", "Fix the parser", "--duplicate-ok", "--scope", "src/parser/**", "--project", "demo"]);
