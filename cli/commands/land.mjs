@@ -47,7 +47,7 @@ export default async function landCommand() {
   };
   try {
     await runLand({
-      args, name, id, p, request, git: gitOrThrow, die,
+      args, name, id, p, request, git: gitOrThrow, die, owner: OWNER,
       print: (line) => console.log(line),
       workspacePath, atelier: fileURLToPath(new URL("../atelier.mjs", import.meta.url)), env: process.env,
       redact, secrets: () => [apiToken(), ...workspaceTokens(workspace)],
