@@ -39,12 +39,12 @@ export function judge(target, d, first = d) {
     if (gone) return { ok: false, text: `${id} is ${state}; it will not be submitted` };
     return null;
   }
+  if (gone) return { ok: false, text: `${id} is ${state}; it will not be reviewed` };
   const here = (d.reviews ?? []).filter((r) => r.head === d.item.head);
   const rejected = here.filter((r) => !r.approve);
   if (rejected.length) return { ok: false, text: `${id} was rejected by ${rejected.map((r) => r.by).join(", ")} at ${short(d.item.head)}` };
   if (here.length) return { ok: true, text: `${id} was approved by ${here.map((r) => r.by).join(", ")} at ${short(d.item.head)}` };
   if (PAST_REVIEW.has(state)) return { ok: true, text: `${id} is ${state}` };
-  if (gone) return { ok: false, text: `${id} is ${state}; it will not be reviewed` };
   return null;
 }
 
@@ -63,6 +63,7 @@ export async function waitFor(target, read, { intervalMs = 5000, timeoutMs = Inf
       // Only a server that cannot be reached (code 4) is worth another try;
       // a refusal or a missing task will not change.
       if (error.code !== undefined && error.code !== 4) return { ok: false, code: 4, text: `the task could not be read: ${error.message}` };
+      if (now() >= deadline) return { ok: false, code: 3, text: `gave up waiting for ${target}; the last read failed: ${error.message}` };
       if (++failed > retries) return { ok: false, code: 4, text: `the task could not be read: ${error.message}` };
       await sleep(intervalMs);
       continue;

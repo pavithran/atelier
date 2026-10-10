@@ -121,6 +121,31 @@ test("liveProcesses can be limited to one project, and says so when nothing runs
   assert.match(formatProcesses({ runners: [], agents: [] }), /no runner process\n {2}no agent process in a task workspace/);
 });
 
+test("a review workspace tID-review-UUID is the task's agent", () => {
+  const ps = parsePs("  10     1 01:00 /usr/bin/node /x/cli/atelier.mjs runner --name r\n  11    10 00:30 claude -p x");
+  const lsof = parseLsof("p11\ncclaude\nn/cache/work/demo/t7-review-0a1b-22");
+  const live = liveProcesses({ ps, lsof, work: "/cache/work" });
+  assert.deepEqual(live.agents.map((a) => [a.pid, a.project, a.id]), [[11, "demo", "t7"]]);
+  assert.deepEqual(live.runners[0].tasks, ["t7"]);
+});
+
+test("a command that merely mentions atelier runner is not a runner", () => {
+  const ps = parsePs("  400     1 00:01 pgrep -f atelier.mjs runner\n  401     1 00:01 grep atelier runner");
+  assert.deepEqual(liveProcesses({ ps, lsof: new Map(), work: "/cache/work" }).runners, []);
+});
+
+test("waitFor reads that keep failing still honour the timeout, code 3", async () => {
+  const down = Object.assign(new Error("server request failed"), { code: 4 });
+  const r = await waitFor("merged", async () => { throw down; }, { ...clock(), intervalMs: 5000, timeoutMs: 1000 });
+  assert.deepEqual([r.ok, r.code], [false, 3]);
+});
+
+test("a blocked or abandoned task fails reviewed even with an approval at the head", () => {
+  for (const state of ["blocked", "abandoned"]) {
+    assert.equal(judge("reviewed", detail(state, {}, [review("codex/x", true)])).ok, false);
+  }
+});
+
 // `atelier wait` end to end against a stand-in server.
 const cli = resolve("cli/atelier.mjs");
 async function runWait(t, details, argv) {

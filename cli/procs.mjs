@@ -43,8 +43,9 @@ export function age(etime) {
 
 // Whether argv is the runner: atelier.mjs (or `atelier`) then the word runner.
 const isRunner = (argv) => {
-  const i = argv.findIndex((a) => /(^|\/)atelier(\.mjs)?$/.test(a));
-  return i !== -1 && argv[i + 1] === "runner";
+  const base = (a) => (a ?? "").split("/").pop();
+  const i = /^(node|bun|deno)$/.test(base(argv[0])) ? 1 : 0;
+  return /^atelier(\.mjs)?$/.test(base(argv[i])) && argv[i + 1] === "runner";
 };
 const runnerName = (argv) => {
   const i = argv.findIndex((a) => a === "--name" || a.startsWith("--name="));
@@ -57,7 +58,7 @@ export function taskOf(cwd, work) {
   const root = work.replace(/\/+$/, "") + "/";
   if (!cwd.startsWith(root)) return null;
   const [project, id] = cwd.slice(root.length).split("/");
-  return project && /^t\d+$/.test(id ?? "") ? { project, id } : null;
+  return project && /^t\d+(-review-[\w-]+)?$/.test(id ?? "") ? { project, id: id.replace(/-review-.*$/, "") } : null;
 }
 
 // { runners: [{ pid, name, age, tasks }], agents: [{ pid, command, age, project, id }] }.
