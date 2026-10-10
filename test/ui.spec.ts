@@ -410,7 +410,7 @@ it('the Models page lists the pool by where it runs, escapes it, and adds throug
  const html=renderModels([
   {id:'GLM-5.3-Flash-4_8bit',harness:'opencode',where:'home',provider:'ai-studio',aliases:[],family:'zai',note:'<b>local</b>',addedBy:'pavi',addedAt:time,status:{state:'available',at:time,by:'home:studio'},notes:[
    {at:'2026-10-01T09:00:00Z',by:'pavi',text:'Stalls on long refactors.'},
-   {at:'2026-10-08T10:00:00Z',by:'pavi',text:'Commits <i>without</i> the full suite.',item:'t406'},
+   {at:'2026-10-08T10:00:00Z',by:'pavi',text:'Commits <i>without</i> the full suite.',item:'t406',project:'atelier'},
   ]},
   {id:'mystery-1',harness:'codex',where:'cloud',provider:'subscription',aliases:[],family:'other',note:'',addedBy:'pavi',addedAt:time},
  ],new Map([['opencode/GLM-5.3-Flash-4_8bit',{itemsClaimed:2,checkPasses:3,checkFailures:0,reviewsApproved:0,reviewsRejected:1,handoffsAway:0,merges:2}]]),'PAVI');
@@ -423,7 +423,7 @@ it('the Models page lists the pool by where it runs, escapes it, and adds throug
  expect(html).toContain('family not recognised');
  const noted=html.slice(html.indexOf('GLM-5.3-Flash-4_8bit'),html.indexOf('mystery-1'));
  expect(noted.match(/class="meta model-note"/g)).toHaveLength(2);
- expect(noted).toContain(`${stamp('2026-10-08T10:00:00Z')} · pavi on <code>t406</code>: Commits &lt;i&gt;without&lt;/i&gt; the full suite.`);
+ expect(noted).toContain(`${stamp('2026-10-08T10:00:00Z')} · pavi on <code>atelier/t406</code>: Commits &lt;i&gt;without&lt;/i&gt; the full suite.`);
  expect(noted.indexOf('Commits &lt;i&gt;')).toBeLessThan(noted.indexOf('Stalls on long refactors.'));
  expect(html.slice(html.indexOf('mystery-1'))).not.toContain('model-note');
  expect(html).toContain('action="/models/add"');

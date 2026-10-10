@@ -749,7 +749,7 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
   <p class="meta">${r.claimed ? `Took ${plural(r.claimed, "task")}, merged ${r.merges}; checks ${r.pass} passed, ${r.fail} failed; sent back ${plural(r.back, "time")}.` : "No work recorded yet."}</p>
   ${across.map((x) => `<p class="meta">Across projects${across.length > 1 ? ` as <code>${e(x.model)}</code>` : ""}: ${e(reliabilityLine(x))}</p>`).join("")}
   ${m.note ? `<p class="meta">${e(m.note)}</p>` : ""}
-  ${[...(m.notes ?? [])].reverse().map((n) => `<p class="meta model-note">${when(n.at)} · ${e(n.by)}${n.item ? ` on <code>${e(n.item)}</code>` : ""}: ${e(n.text)}</p>`).join("")}
+  ${[...(m.notes ?? [])].reverse().map((n) => `<p class="meta model-note">${when(n.at)} · ${e(n.by)}${n.item ? ` on <code>${n.project ? `${e(n.project)}/` : ""}${e(n.item)}</code>` : ""}: ${e(n.text)}</p>`).join("")}
   <form method="post" action="/models/remove" class="inline model-remove"><input type="hidden" name="id" value="${e(m.id)}"><button class="quiet">Remove</button></form>
 </li>`;
   };

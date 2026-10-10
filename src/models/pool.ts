@@ -26,6 +26,7 @@ export interface ModelNote {
   by: string;                 // the owner who wrote it
   text: string;
   item?: string;              // the task it concerns; a note with none bears on every task
+  project?: string;           // the project that task is in: task ids repeat across projects
 }
 
 export interface ModelEntry {
@@ -166,12 +167,18 @@ export function cleanNote(body: Record<string, unknown>, by: string, at: string)
   if (LOOKS_LIKE_KEY.test(text)) throw bad("the note looks like it carries a key; a key belongs in the Keychain");
   const item = str(body.item);
   if (item && !/^t[1-9]\d*$/.test(item)) throw bad("a note names the task it concerns, such as t406, or none");
-  return { at, by, text, ...(item ? { item } : {}) };
+  const project = plain(str(body.project)).trim();
+  if (item && !project) throw bad("a note on a task names its project, such as alpha");
+  if (project && !item) throw bad("a note names a project only with the task it concerns");
+  if (project.length > 100) throw bad("a project name is at most 100 characters");
+  return { at, by, text, ...(item ? { item, project } : {}) };
 }
 
-// The latest of an entry's notes that bears on a task: one that names no task, or that names this one.
-export function latestNote(entry: Pick<ModelEntry, "notes">, item: string | undefined): ModelNote | undefined {
-  return (entry.notes ?? []).filter((n) => !n.item || n.item === item).at(-1);
+const noteTask = (n: ModelNote) => (n.project ? `${n.project}/${n.item}` : n.item ?? "");
+
+// The latest of an entry's notes that bears on a task: one that names no task, or that names this task in this project.
+export function latestNote(entry: Pick<ModelEntry, "notes">, project: string, item: string): ModelNote | undefined {
+  return (entry.notes ?? []).filter((n) => !n.item || (n.item === item && n.project === project)).at(-1);
 }
 
-export const noteLine = (n: ModelNote) => `Latest note, ${n.at.slice(0, 10)} by ${n.by}${n.item ? ` on ${n.item}` : ""}: ${n.text}`;
+export const noteLine = (n: ModelNote) => `Latest note, ${n.at.slice(0, 10)} by ${n.by}${n.item ? ` on ${noteTask(n)}` : ""}: ${n.text}`;
