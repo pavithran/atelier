@@ -10,7 +10,7 @@ test("a note is dated text under a model, naming the task it concerns when it do
   for (const [body, why] of [
     [{ text: " \u0001 " }, /needs text/],
     [{ text: "x".repeat(501) }, /at most 500/],
-    [{ text: "key sk-proj-AbC123xyzQrS456" }, /carries a key/],
+    [{ text: `key ${["sk-proj-", "AbC123xyzQrS456"].join("")}` }, /carries a key/],
     [{ text: "fine", item: "406", project: "alpha" }, /such as t406/],
     [{ text: "fine", item: "t1 and t2", project: "alpha" }, /such as t406/],
     [{ text: "fine", item: "t1" }, /names its project/],
