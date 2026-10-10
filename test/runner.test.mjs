@@ -168,6 +168,14 @@ function fixture(options = {}) {
       if (options.unknownHead && reads > 1) throw new Error("unreadable HEAD");
       return reads === 1 ? "before" : options.head ?? "after";
     },
+    // Whether the base is an ancestor of the head (alreadyComplete); the
+    // record is ahead unless the test says otherwise (ancestor: false, or an
+    // error to throw).
+    async isAncestor(cwd, base, head) {
+      calls.push({ isAncestor: [base, head], cwd });
+      if (options.ancestor instanceof Error) throw options.ancestor;
+      return options.ancestor ?? true;
+    },
     async brief(workspace, text) {
       calls.push({ brief: text, workspace });
       if (options.failBrief) throw new Error("cannot write brief");
@@ -331,15 +339,20 @@ test("a resumed run finishes the dead run's commit and is not reported as stalle
 });
 
 test("a harness that changes nothing on a head that is not pushed work ahead of the base is released as stalled, and the report says why", async () => {
-  for (const [item, why] of [
+  for (const [item, why, options = {}] of [
     [assignment.item, "the task has no pushed head ahead of its base"],
     [{ ...assignment.item, head: "before", base: "before" }, "the task has no pushed head ahead of its base"],
     [{ ...assignment.item, head: "before" }, "the task has no pushed head ahead of its base"],
     [{ ...assignment.item, head: "pushed12345", base: "base" }, "the workspace head before is not the task's pushed head pushed12"],
     [{ ...assignment.item, state: "claimed", owner: "codex/other", head: "pushed12345", base: "base" }, "the workspace head before is not the task's pushed head pushed12"],
+    // The pushed head, but behind the base (a rollback recorded it): no work
+    // to submit, however the hashes differ.
+    [{ ...assignment.item, head: "before", base: "base" }, "the workspace head before is the task's pushed head but not ahead of its base base, which it does not descend from", { ancestor: false }],
+    [{ ...assignment.item, head: "before", base: "base" }, "whether the workspace head before is ahead of the task's base base could not be read: fatal: Not a valid commit name", { ancestor: new Error("fatal: Not a valid commit name") }],
   ]) {
-    const { io, calls, logs } = fixture({ head: "before" });
+    const { io, calls, logs } = fixture({ head: "before", ...options });
     const state = await runTask({ ...assignment, item }, config, "home:studio", io);
+    if ("ancestor" in options) assert.deepEqual(calls.find((c) => c.isAncestor), { isAncestor: ["base", "before"], cwd: "/cache/work/atelier/t13" }, "the ancestry is read in the workspace, base to head");
     assert.equal(state.phase, "failed", JSON.stringify(item));
     assert.equal(state.reason, "harness made no new commit");
     assert.equal(state.detail, `harness made no new commit: ${why}`);
@@ -363,16 +376,26 @@ test("a harness that changes nothing on a head that is not pushed work ahead of 
   }
 });
 
-test("alreadyComplete weighs the head against the task's record and the merges in progress", () => {
+test("alreadyComplete weighs the head against the task's record, its ancestry and the merges in progress", async () => {
   const item = { head: "h".repeat(40), base: "b".repeat(40) };
-  assert.deepEqual(alreadyComplete(item, item.head), { complete: true, why: `the workspace head ${"h".repeat(8)} is the task's pushed head, ahead of its base ${"b".repeat(8)}` });
-  assert.equal(alreadyComplete(item, item.head, [{ state: "held" }, { state: "merged" }]).complete, true);
+  const asked = [];
+  const ahead = async (base, head) => { asked.push([base, head]); return true; };
+  const behind = async () => false;
+  const unreadable = async () => { throw new Error("fatal: Not a valid commit name"); };
+  assert.deepEqual(await alreadyComplete(item, item.head, [], ahead), { complete: true, why: `the workspace head ${"h".repeat(8)} is the task's pushed head, ahead of its base ${"b".repeat(8)}` });
+  assert.deepEqual(asked, [[item.base, item.head]], "the ancestry asked is base to head");
+  assert.equal((await alreadyComplete(item, item.head, [{ state: "held" }, { state: "merged" }], ahead)).complete, true);
+  // Unequal hashes do not prove the head ahead: a rolled-back head is older
+  // than the base, and is released.
+  assert.deepEqual(await alreadyComplete(item, item.head, [], behind), { complete: false, why: `the workspace head ${"h".repeat(8)} is the task's pushed head but not ahead of its base ${"b".repeat(8)}, which it does not descend from` });
+  assert.deepEqual(await alreadyComplete(item, item.head, [], unreadable), { complete: false, why: `whether the workspace head ${"h".repeat(8)} is ahead of the task's base ${"b".repeat(8)} could not be read: fatal: Not a valid commit name` });
+  const never = async () => { throw new Error("ancestry must not be asked"); };
   for (const merges of [[{ state: "conflicts", files: ["a.txt"] }], [{ state: "held" }, { state: "skipped" }]]) {
-    assert.deepEqual(alreadyComplete(item, item.head, merges), { complete: false, why: "a merge is in progress" });
+    assert.deepEqual(await alreadyComplete(item, item.head, merges, never), { complete: false, why: "a merge is in progress" });
   }
-  assert.equal(alreadyComplete(item, "x".repeat(40)).why, `the workspace head ${"x".repeat(8)} is not the task's pushed head ${"h".repeat(8)}`);
+  assert.equal((await alreadyComplete(item, "x".repeat(40), [], never)).why, `the workspace head ${"x".repeat(8)} is not the task's pushed head ${"h".repeat(8)}`);
   for (const record of [{}, { head: item.head }, { base: item.base }, { head: item.base, base: item.base }]) {
-    assert.deepEqual(alreadyComplete(record, record.head ?? item.head), { complete: false, why: "the task has no pushed head ahead of its base" }, JSON.stringify(record));
+    assert.deepEqual(await alreadyComplete(record, record.head ?? item.head, [], never), { complete: false, why: "the task has no pushed head ahead of its base" }, JSON.stringify(record));
   }
 });
 
@@ -499,13 +522,22 @@ test("a restarted runner retakes the claim a stop left held and finishes its com
 // t453, with real git: the task's earlier run committed and pushed (the
 // server records that commit as the head, ahead of the base), the task comes
 // back, and the harness exits 0 without committing. The runner submits the
-// head it found instead of releasing the task; a head at the base is released.
+// head it found instead of releasing the task; a head at the base is released,
+// and so is a head behind the base (a rollback recorded it), which git's
+// ancestry check tells apart from one ahead, as unequal hashes cannot.
 test("a runner submits a task whose work is already committed and pushed when its harness changes nothing", async (t) => {
-  for (const pushed of [true, false]) {
+  for (const pushed of [true, false, "behind"]) {
     const { workspace, git, args } = gitWorkspace(t);
-    const base = git("rev-parse", "HEAD");
-    if (pushed) git("commit", "--quiet", "--allow-empty", "-m", "the earlier run's work");
+    let base = git("rev-parse", "HEAD");
+    if (pushed === true) git("commit", "--quiet", "--allow-empty", "-m", "the earlier run's work");
     const head = git("rev-parse", "HEAD");
+    if (pushed === "behind") {
+      // The base is a commit after the head; the workspace is rolled back to the head.
+      git("commit", "--quiet", "--allow-empty", "-m", "the base, rolled back from");
+      base = git("rev-parse", "HEAD");
+      git("reset", "--quiet", "--hard", head);
+      assert.equal(git("merge-base", head, base), head, "the head is an ancestor of the base, not the other way round");
+    }
     const commands = [], logs = [], reports = [];
     await runRunner({ ...args, once: true }, {
       workspacePath: () => workspace,
@@ -519,11 +551,16 @@ test("a runner submits a task whose work is already committed and pushed when it
       async reportRun(body) { reports.push(body.outcome); },
     });
     assert.equal(git("rev-parse", "HEAD"), head, "the workspace is left at the head it held");
-    if (pushed) {
+    if (pushed === true) {
       assert.deepEqual(commands, ["claim", "finish"], "the pushed head is checked and submitted");
       assert.ok(logs.includes(`already complete: the workspace head ${head.slice(0, 8)} is the task's pushed head, ahead of its base ${base.slice(0, 8)}; the harness changed nothing, so the checks run and that head is submitted without a new commit`), logs.join("\n"));
       assert.ok(logs.includes("submitted"));
       assert.deepEqual(reports, [], "an already-complete run is not reported against the model");
+    } else if (pushed === "behind") {
+      assert.deepEqual(commands, ["claim", "release"], "a head behind the base is released");
+      assert.ok(logs.includes(`nothing to submit: the workspace head ${head.slice(0, 8)} is the task's pushed head but not ahead of its base ${base.slice(0, 8)}, which it does not descend from, and the harness changed nothing`), logs.join("\n"));
+      assert.ok(logs.includes("released: no new commit"));
+      assert.deepEqual(reports, ["stalled"]);
     } else {
       assert.deepEqual(commands, ["claim", "release"], "a head at the base is released as before");
       assert.ok(logs.includes("nothing to submit: the task has no pushed head ahead of its base, and the harness changed nothing"), logs.join("\n"));
