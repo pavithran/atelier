@@ -134,6 +134,26 @@ test("independentApproval and the gate: a different model of the company counts,
   assert.equal(gate(protectedItem, returned, [pass()], [review(SONNET)], OWNER).needsAssessor, true);
 });
 
+// The review of gpt-6-astra at bef5eba0: a coordinated change under the mode
+// counted another company's approval. No path counts one now.
+test("independentApproval and the gate: under single-family mode another company's approval counts for a coordinated change no more than a protected one", () => {
+  assert.equal(independentApproval(review(GPT), "coordinated", [OPUS], OWNER, "anthropic"), false);
+  assert.equal(independentApproval(review("zcode/glm-5.3"), "coordinated", [OPUS], OWNER, "anthropic"), false);
+  assert.equal(independentApproval(review(GPT), "coordinated", [OPUS], OWNER), true);
+  const execution: ProjectPolicy["execution"] = { allowed_classes: ["direct", "coordinated", "protected"], direct: { enabled: false, allowed_path_patterns: [] }, protected_path_patterns: [] };
+  const governed: ProjectPolicy = { ...anthropic, execution };
+  const coordinated = item();
+  const changed = [pass({ changedPaths: ["src/review/x.ts"] })];
+  const g = gate(coordinated, governed, changed, [review(GPT)], OWNER);
+  assert.equal(g.changeClass, "coordinated");
+  assert.equal(g.ready, false);
+  assert.equal(g.needsAssessor, true);
+  assert.ok(g.blockers.includes("Coordinated change: needs one review from a different anthropic model than every contributor (single-family mode)"), g.blockers.join("; "));
+  assert.equal(gate(coordinated, governed, changed, [review(SONNET)], OWNER).ready, true);
+  // The default counts the same GPT approval.
+  assert.equal(gate(coordinated, { ...crossFamily, execution }, changed, [review(GPT)], OWNER).ready, true);
+});
+
 // t394 with t371: single-family mode and --no-override together. The mode
 // decides which reviewer counts; the prohibition counts no override, a stored
 // one included, and every refusal and request names both.

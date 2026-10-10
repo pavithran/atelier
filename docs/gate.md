@@ -169,7 +169,13 @@ contributor, compared by model name without letter case, a `:profile` suffix
 or the harness: the same model in another harness is still the same model.
 A model never counts as reviewer of a change it contributed to, in either
 mode and for a coordinated change too: Opus reviewing in Codex what Opus
-built in Claude Code is not another agent's review. The mode is shown under the project's title on every tab of its page
+built in Claude Code is not another agent's review. No other company's
+model reviews under the mode, by any path: the gate counts its approval for
+neither a protected nor a coordinated change, a review it submits directly
+is refused, and so is its claim of a review request, whatever the policy was
+when the request was made. The switch to the mode withdraws every open or
+claimed review request another company's model holds or is asked to give.
+The mode is shown under the project's title on every tab of its page
 and on its Settings tab, by `atelier status` and `atelier status --project`,
 at the top of every review brief, and in each merge's provenance note, so
 nobody takes such a review for a cross-company one.
