@@ -3,7 +3,7 @@
 // `node --test`. Every line is drawn from evidence, reviews, the gate or the
 // event log; nothing is inferred beyond that.
 
-import { bindingOf, DEFAULT_OWNER, evidenceAt, countingReviews, gate as gateOf, mergedBlockers, modelOf, recordedText, stateLabel, type Review } from "./rules.ts";
+import { bindingOf, DEFAULT_OWNER, evidenceAt, countingReviews, gate as gateOf, independentReviewerText, mergedBlockers, modelOf, recordedText, singleFamily, stateLabel, type Review } from "./rules.ts";
 import { assertLength } from "./text.ts";
 import { criteriaOf } from "./criteria.ts";
 import type { LedgerEvent } from "./ledger.ts";
@@ -122,7 +122,8 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
     lines.push({ rank: 0, text: `Changes outside the task's scope: ${shown}${gate.outOfScope.length > 3 ? `, and ${gate.outOfScope.length - 3} more` : ""}.` });
   }
   if (gate.requirement) lines.push({ rank: -1, text: `${gate.requirement}. Project owner acceptance is required.` });
-  if (gate.needsAssessor && !gate.requirement) lines.push({ rank: 0, text: "It touches a protected path and no model of another family than every contributor has approved this revision." });
+  const single = singleFamily(policy);
+  if (gate.needsAssessor && !gate.requirement) lines.push({ rank: 0, text: `It touches a protected path and no ${single ? `different ${single} model from every contributor (single-family mode)` : "model of another family than every contributor"} has approved this revision.` });
   const overridden = overrideOf(detail);
   if (overridden) lines.push({ rank: -1, text: `The project owner overrode the independent review at this revision: ${clip(overridden.reason, 200).replace(/[.\s]*$/, "")}.` });
   if (view.reports.length) lines.push({ rank: 3, text: `${plural(view.reports.length, "report")} recorded, not verified.` });
@@ -222,7 +223,7 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
       verdict: "review",
       // The override is offered only when the missing review is all that
       // blocks, since it waives that and nothing else.
-      reason: `${gate.requirement ?? "This revision touches a protected path and needs an approval from a model of another family than every contributor"}${also.length ? `; ${also.join("; ")}` : ""}.${gate.blockers.length === 1 ? " Your own approval is not that review; if no reviewer qualifies, accept with an override and its reason." : ""}`,
+      reason: `${gate.requirement ?? `This revision touches a protected path and needs an approval from ${independentReviewerText(singleFamily(d.policy))}`}${also.length ? `; ${also.join("; ")}` : ""}.${gate.blockers.length === 1 ? ` Your own approval is not that review${d.policy.noOverride ? "" : "; if no reviewer qualifies, accept with an override and its reason"}.` : ""}${d.policy.noOverride ? " This project forbids overrides of that review." : ""}`,
     };
   }
   if (asked.length) return { verdict: "send back", reason: `${upper(asked.join(" and "))}.` };
