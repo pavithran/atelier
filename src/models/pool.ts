@@ -5,7 +5,7 @@
 // machine reads the key when it needs it. Families are recognised by the
 // model's name, so a new release is coloured correctly the day it appears.
 
-import { RuleError } from "../rules.ts";
+import { modelKey, RuleError } from "../rules.ts";
 
 export type PoolFamily = "anthropic" | "openai" | "zai" | "google" | "deepseek" | "qwen" | "minimax" | "mistral" | "meta" | "moonshot" | "xai" | "xiaomi" | "bytedance" | "cohere" | "other";
 export const HARNESSES = ["opencode", "claude-code", "codex", "zcode", "gemini-cli", "antigravity"] as const;
@@ -83,7 +83,7 @@ export function hasModelRole(entry: Pick<ModelEntry, "roles">, role: ModelRole):
 // An entry the pool no longer has keeps its saved standing.
 export function withStanding(saved: readonly ModelEntry[], current: readonly ModelEntry[]): ModelEntry[] {
   return saved.map((entry) => {
-    const now = current.find((c) => c.id === entry.id && c.harness === entry.harness);
+    const now = standingEntry(current, `${entry.harness}/${entry.id}`);
     if (!now) return entry;
     const { state: _state, stateAt: _stateAt, roles: _roles, ...rest } = entry;
     return {
@@ -110,10 +110,27 @@ export function standingRefusal(entry: ModelEntry, role: ModelRole): string | nu
 // The same check for an actor (harness/model, the model by its id or an
 // alias), prefixed with its name. An actor outside the pool is not held.
 export function actorStanding(pool: readonly ModelEntry[], actor: string, role: ModelRole): string | null {
-  const name = actor.toLowerCase();
-  const entry = pool.find((e) => [e.id, ...e.aliases].some((id) => `${e.harness}/${id}`.toLowerCase() === name));
+  const entry = standingEntry(pool, actor, role);
   const refusal = entry ? standingRefusal(entry, role) : null;
   return refusal ? `${actor} is ${refusal}` : null;
+}
+
+// Whether a pool entry runs the model an actor or a bare model name names,
+// by modelKey: letter case, a ":profile" suffix and the harness do not make
+// another model, so "codex/gpt-6-astra:high" runs the entry gpt-6-astra.
+export function entryRuns(entry: Pick<ModelEntry, "id" | "aliases">, name: string): boolean {
+  const key = modelKey(name);
+  return [entry.id, ...entry.aliases].some((id) => modelKey(id) === key);
+}
+
+// The entry whose standing holds for an actor: of the entries running its
+// model, the one under the actor's own harness when the pool has it; else,
+// for a role, the first that refuses it; else the first.
+function standingEntry(pool: readonly ModelEntry[], actor: string, role?: ModelRole): ModelEntry | undefined {
+  const runs = pool.filter((e) => entryRuns(e, actor));
+  const slash = actor.indexOf("/");
+  const harness = slash === -1 ? null : actor.slice(0, slash).toLowerCase();
+  return runs.find((e) => e.harness === harness) ?? (role ? runs.find((e) => standingRefusal(e, role)) : undefined) ?? runs[0];
 }
 
 // Names, as patterns, oldest-established first within each family. Anything

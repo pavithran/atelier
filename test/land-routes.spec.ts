@@ -310,6 +310,10 @@ it("a named reviewer the owner paused, reserved or kept from reviewing is refuse
     const pool = POOL.map((e) => e.id === "gpt-6-astra" ? { ...e, ...change } : e);
     await refusal(L.requestReview(id, "owner", GPT, pool), "model_held", why);
     await refusal(L.requestReview(id, "owner", GPT, pool, true), "model_held", why);
+    // A profile or another letter case names the same model, held the same.
+    for (const named of [`${GPT}:high`, "CODEX/GPT-6-Astra:fast"]) {
+      await refusal(L.requestReview(id, "owner", named, pool), "model_held", new RegExp(why.source.replace("codex\\/gpt-6-astra is", `${named.replace(/[/.]/g, "\\$&")} is`)));
+    }
     expect(await L.reviewRequests(id), name).toEqual([]);
     expect((await events(L, id)).filter((e) => e.kind === "review.requested"), name).toEqual([]);
     // Back to available, the same name is asked.
