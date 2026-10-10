@@ -1,0 +1,68 @@
+atelier atelier/t471 "A landing finds edits that main moved to another file"
+accepted head 55d9931bb20cafdf173bb6d447099be07f5b5257
+OBSERVED FAIL npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-10T23:05:56.926Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-10T23:06:00.856Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-10T23:20:39.084Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-10T23:20:43.178Z
+REVIEW approve by codex/gpt-6-astra at 55d9931bb20cafdf173bb6d447099be07f5b5257, recorded by codex/gpt-6-astra
+2026-10-10T19:38:38.707Z pavi item.created
+2026-10-10T19:40:31.320Z pavi item.edited
+2026-10-10T19:40:31.320Z pavi item.criteria_changed
+2026-10-10T19:40:32.241Z pavi item.dispatched
+2026-10-10T20:51:45.085Z pavi item.dispatched
+2026-10-10T21:30:31.033Z claude-code/opus-5.5 item.claimed
+2026-10-10T21:30:58.694Z claude-code/opus-5.5 fork.created
+2026-10-10T22:19:43.021Z claude-code/opus-5.5 push.observed
+2026-10-10T22:25:49.772Z claude-code/opus-5.5 evidence.observed
+2026-10-10T22:25:52.968Z claude-code/opus-5.5 evidence.observed
+2026-10-10T22:25:53.419Z claude-code/opus-5.5 item.submitted
+2026-10-10T22:39:11.920Z pavi land.lease
+2026-10-10T22:39:17.811Z pavi land.merge
+2026-10-10T22:39:29.294Z pavi land.regenerate
+2026-10-10T22:39:32.245Z claude-code/opus-5.5 push.observed
+2026-10-10T22:39:33.299Z pavi land.push
+2026-10-10T22:44:54.192Z claude-code/opus-5.5 evidence.observed
+2026-10-10T22:44:58.298Z claude-code/opus-5.5 evidence.observed
+2026-10-10T22:44:58.745Z pavi land.check
+2026-10-10T22:45:01.375Z pavi review.requested
+2026-10-10T22:45:22.658Z codex/gpt-6-astra review.claimed
+2026-10-10T22:45:23.331Z codex/gpt-6-astra review.diff
+2026-10-10T22:47:43.232Z codex/gpt-6-astra review.rejected
+2026-10-10T22:47:47.877Z pavi land.review
+2026-10-10T22:49:22.082Z pavi review.finding
+2026-10-10T22:49:35.565Z pavi land.lease
+2026-10-10T22:49:41.502Z pavi land.merge
+2026-10-10T22:49:52.921Z pavi land.regenerate
+2026-10-10T22:49:56.136Z claude-code/opus-5.5 push.observed
+2026-10-10T22:49:56.918Z pavi land.push
+2026-10-10T22:54:56.210Z claude-code/opus-5.5 evidence.observed
+2026-10-10T22:54:59.919Z claude-code/opus-5.5 evidence.observed
+2026-10-10T22:55:00.420Z pavi land.check
+2026-10-10T22:55:03.180Z pavi review.requested
+2026-10-10T22:55:14.007Z codex/gpt-6-astra review.claimed
+2026-10-10T22:55:14.766Z codex/gpt-6-astra review.diff
+2026-10-10T22:57:24.927Z codex/gpt-6-astra review.rejected
+2026-10-10T22:57:34.812Z pavi land.review
+2026-10-10T22:59:07.913Z pavi review.finding
+2026-10-10T23:00:45.864Z pavi land.lease
+2026-10-10T23:00:52.746Z pavi land.merge
+2026-10-10T23:01:05.185Z pavi land.regenerate
+2026-10-10T23:01:08.082Z claude-code/opus-5.5 push.observed
+2026-10-10T23:01:09.071Z pavi land.push
+2026-10-10T23:05:57.463Z claude-code/opus-5.5 evidence.observed
+2026-10-10T23:06:01.515Z claude-code/opus-5.5 evidence.observed
+2026-10-10T23:06:01.935Z pavi land.check
+2026-10-10T23:15:19.559Z pavi land.lease
+2026-10-10T23:15:25.720Z pavi land.merge
+2026-10-10T23:15:37.015Z pavi land.regenerate
+2026-10-10T23:15:39.013Z pavi land.push
+2026-10-10T23:20:39.890Z claude-code/opus-5.5 evidence.observed
+2026-10-10T23:20:43.499Z claude-code/opus-5.5 evidence.observed
+2026-10-10T23:20:43.960Z pavi land.check
+2026-10-10T23:20:46.801Z pavi review.requested
+2026-10-10T23:21:04.486Z codex/gpt-6-astra review.claimed
+2026-10-10T23:21:05.094Z codex/gpt-6-astra review.diff
+2026-10-10T23:23:16.173Z codex/gpt-6-astra review.approved
+2026-10-10T23:23:19.159Z pavi land.review
+2026-10-10T23:23:20.119Z pavi item.accepted
+2026-10-10T23:23:20.146Z pavi land.accept
