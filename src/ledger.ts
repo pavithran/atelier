@@ -1,7 +1,7 @@
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
 import { sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
-import { modelState, OBSERVED_UNDER, reviewHeld, withStanding, type ModelEntry, type ModelSet, type ModelStatus } from "./models/pool";
+import { actorStanding, modelState, OBSERVED_UNDER, withStanding, type ModelEntry, type ModelSet, type ModelStatus } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -819,6 +819,14 @@ export class Ledger extends DurableObject<Env> {
     return row ? JSON.parse(row.value as string) as ModelEntry[] : [];
   }
 
+  // A model the owner names for a job (a reviewer, a planner, a builder) is
+  // refused, with the reason, while the owner's standing holds it from that
+  // job; one outside the pool is the owner's to name.
+  private assertStanding(actor: string, role: "build" | "review" | "plan", pool: readonly ModelEntry[] = this.poolStanding()): void {
+    const held = actorStanding(pool, actor, role);
+    if (held) throw new RuleError("model_held", `${held}; name another, or change its standing with atelier models set`, 409);
+  }
+
   private keepPool(pool: readonly ModelEntry[]): void {
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('pool', ?)`, JSON.stringify(pool));
   }
@@ -1106,7 +1114,7 @@ export class Ledger extends DurableObject<Env> {
       const contributors = contributorsOf(item);
       if (asked.some((a) => sameActor(a, reviewer)) || contributors.some((c) => sameActor(c, reviewer))) continue;
       if (!wanted && independenceRefusal(reviewer, contributors)) continue;
-      if (reviewHeld(this.poolStanding(), reviewer)) continue;
+      if (actorStanding(this.poolStanding(), reviewer, "review")) continue;
       const need = reviewNeeded({
         item, part: false, policy: this.project().policy,
         evidence: this.evidenceFor(id), reviews: this.reviewsFor(id),
@@ -2497,6 +2505,7 @@ export class Ledger extends DurableObject<Env> {
     let chosen: string, reasons: string[];
     if (planner !== null) {
       chosen = namedActor(planner, policy, "planner", this.owner);
+      this.assertStanding(chosen, "plan", pool);
       reasons = ["Named by the project owner"];
     } else {
       const pick = pickPlanner(pool, this.events(undefined, RECORD_EVENTS), policy, MODEL_PROFILES, await this.routingOffers());
@@ -2709,6 +2718,7 @@ export class Ledger extends DurableObject<Env> {
     if (item.kind === "plan") {
       const { record } = this.planningPlan(id, actor, "reroute");
       const planner = namedActor(to, policy, "planner", this.owner);
+      this.assertStanding(planner, "plan");
       this.planDispatch(planner, actor, at);
       this.log(id, actor, "plan.rerouted", { to: planner, from: record.planner }, at);
       record.planner = planner;
@@ -2719,6 +2729,7 @@ export class Ledger extends DurableObject<Env> {
     if (item.kind === "part" && (item.state === "submitted" || (item.state === "blocked" && item.blocked?.from === "submitted"))) return this.rerouteReviewer(item, actor, to, at);
     const { record, key } = this.openPart(item, "reroute");
     const builder = namedActor(to, policy, "executor", this.owner);
+    this.assertStanding(builder, "build");
     const slash = builder.indexOf("/");
     // Refuses a name no runner could claim under, before anything is written.
     makeDispatch({ to: "home", agent: builder.slice(0, slash), model: builder.slice(slash + 1) }, ORCHESTRATOR, at);
@@ -2745,6 +2756,7 @@ export class Ledger extends DurableObject<Env> {
     const plan = this.item(item.plan!);
     if (plan.state === "merged" || plan.state === "abandoned") throw new RuleError("closed", `${item.id}'s plan ${plan.id} is ${plan.state}`);
     const reviewer = namedActor(to, this.project().policy, "assessor", this.owner);
+    this.assertStanding(reviewer, "review");
     const refusal = independenceRefusal(reviewer, contributorsOf(item));
     if (refusal) throw new RuleError("not_independent", `${reviewer} cannot review ${item.id}: ${refusal}; name a model of another family than every contributor`, 409);
     const claimed = this.sql.exec(`SELECT claimedBy FROM review_requests WHERE item = ? AND state = 'claimed' AND tier IS NULL`, item.id).toArray()
@@ -3263,7 +3275,7 @@ export class Ledger extends DurableObject<Env> {
         const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
         const refusal = !asked ? null
           : (r.tier === 1 ? (contributors.some((c) => sameActor(c, asked)) ? `${asked} contributed to it, and nobody reviews their own work` : null)
-            : independenceRefusal(asked, contributors)) ?? (r.state === "open" ? reviewHeld(standing, asked) : null);
+            : independenceRefusal(asked, contributors)) ?? (r.state === "open" ? actorStanding(standing, asked, "review") : null);
         if (!asked || !refusal) continue;
         this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
         this.log(p.id, ORCHESTRATOR, "review.withdrawn", { head: r.head as string, reviewer: asked, reason: refusal, ...(r.tier === 1 ? { tier: true } : {}) }, at);
@@ -3286,7 +3298,7 @@ export class Ledger extends DurableObject<Env> {
       // policy, and has not let a claim on this head lapse.
       const change = record.reviewers?.[p.partKey!];
       const named = change?.by && !need.lapsed.some((a) => sameActor(a, change.actor)) && !independenceRefusal(change.actor, contributors)
-        && mayAssess(change.actor, policy, this.owner) && !reviewHeld(standing, change.actor) ? change.actor : null;
+        && mayAssess(change.actor, policy, this.owner) && !actorStanding(standing, change.actor, "review") ? change.actor : null;
       // pickReviewer passes over every contributor and every model of a
       // contributor's family, the routed reviewer included, and asks the
       // alternates and then the pool.
@@ -3310,7 +3322,7 @@ export class Ledger extends DurableObject<Env> {
       // part's routing, so plan show and the plan page name the reviewer
       // asked and why, and later rounds ask that reviewer first.
       const routed = route?.reviewer?.actor ?? null;
-      const why = routed ? independenceRefusal(routed, contributors) ?? reviewHeld(standing, routed) : null;
+      const why = routed ? independenceRefusal(routed, contributors) ?? actorStanding(standing, routed, "review") : null;
       if (routed && why && !sameActor(routed, reviewer)) {
         (record.reviewers ??= {})[p.partKey!] = { actor: reviewer, from: routed, reason: why, at };
         this.savePlanRecord(id, record);
@@ -3551,6 +3563,7 @@ export class Ledger extends DurableObject<Env> {
       if (contributorsOf(item).some((c) => sameActor(c, reviewer))) {
         throw new RuleError("self_review", `${reviewer} contributed to ${id} and cannot review it`, 403);
       }
+      this.assertStanding(reviewer, "review", pool);
     }
     const policy = this.project().policy;
     const at = new Date().toISOString();
@@ -3689,7 +3702,7 @@ export class Ledger extends DurableObject<Env> {
     // A tier model the owner has paused, reserved or kept from reviewing is
     // passed over, as the gate's selector passes it over.
     const standing = this.poolStanding();
-    const reviewer = pickTierReviewer(policy.reviewTier, contributorsOf(item), [gateReviewer, ...asked], (a) => mayAssess(a, policy, this.owner) && !reviewHeld(standing, a), this.reviewPrecision(at));
+    const reviewer = pickTierReviewer(policy.reviewTier, contributorsOf(item), [gateReviewer, ...asked], (a) => mayAssess(a, policy, this.owner) && !actorStanding(standing, a, "review"), this.reviewPrecision(at));
     if (!reviewer) return;
     const slash = reviewer.indexOf("/");
     const dispatch = { ...makeDispatch({ to: "home", agent: reviewer.slice(0, slash), model: reviewer.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
@@ -3758,7 +3771,7 @@ export class Ledger extends DurableObject<Env> {
     const contributors = contributorsOf(item);
     if (contributors.some((c) => sameActor(c, reviewer))) return;
     if (!wanted && independenceRefusal(reviewer, contributors)) return;
-    if (reviewHeld(this.poolStanding(), reviewer)) return;
+    if (actorStanding(this.poolStanding(), reviewer, "review")) return;
     const policy = this.project().policy;
     const need = reviewNeeded({
       item, part: false, policy,

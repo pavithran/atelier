@@ -1,6 +1,6 @@
 import type { Item, ProjectPolicy } from "../rules.ts";
 import { assertEligible, DEFAULT_OWNER, modelKey, RuleError } from "../rules.ts";
-import type { ModelEntry } from "./pool.ts";
+import { standingRefusal, type ModelEntry } from "./pool.ts";
 import { buildReliability, outcomesOf, reliabilityLine, tiebreak, type ProjectEvents, type RunReport } from "./reliability.ts";
 import { paidPerToken, type Choice } from "../plans/route.ts";
 import { servedActor, servedBy } from "./served.ts";
@@ -66,10 +66,12 @@ export function suggestBuilder(input: SuggestionInput, constraints: { to?: unkno
   const excluded: string[] = [];
   for (const { entry, score, reason } of ranked(input)) {
     const actor = actorOf(entry);
-    let refusal = "";
     if (constraints.model && ![entry.id, ...entry.aliases].includes(String(constraints.model))) continue;
     if (constraints.to && constraints.to !== "any" && constraints.to !== entry.where) continue;
-    if (strict && !frontier(entry)) refusal = "not frontier";
+    let refusal = "";
+    const held = standingRefusal(entry, "build");
+    if (held) refusal = held;
+    else if (strict && !frontier(entry)) refusal = "not frontier";
     else if (stalledBuilder(entry, input)) refusal = "two consecutive stalled builds; no successful build since";
     else if (entry.status?.state === "refused") refusal = "provider refused";
     else if (paidPerToken(entry)) refusal = "per-token spending is not authorized";

@@ -878,3 +878,27 @@ it("an open review request is withdrawn when the owner pauses its reviewer or ta
     expect((await events(L, partId)).find((e) => e.kind === "review.withdrawn")).toMatchObject({ data: { reviewer: GPT, reason: expect.stringMatching(reason) } });
   }
 });
+
+// Every model the owner names for a plan's job goes through the same check
+// (standingRefusal): a planner, a part's builder and a part's reviewer the
+// owner holds from that job are refused with the reason.
+it("a planner, builder or part reviewer the owner names while it is held from the job is refused with the reason", async () => {
+  const planning = await setup("named-held-planner");
+  const paused = POOL.map((e) => e.id === "glm-5.3" ? { ...e, state: "paused" as const, stateAt: AT, note: "AI Studio down" } : e);
+  await refusal(planning.newPlan("Ship it", ["src/**"], "owner", GLM, paused), "model_held", /zcode\/glm-5\.3 is paused since 2026-10-06 \(the owner's standing\): AI Studio down/);
+  const reviewOnly = POOL.map((e) => e.id === "glm-5.3" ? { ...e, roles: ["review" as const] } : e);
+  await refusal(planning.newPlan("Ship it", ["src/**"], "owner", GLM, reviewOnly), "model_held", /zcode\/glm-5\.3 is not a planner; its roles are review/);
+
+  const L = await setup("named-held-part");
+  const { partId, builder } = await approved(L);
+  const other = [OPUS, GPT, GLM].find((a) => a !== builder)!;
+  const id = other.split("/")[1];
+  await L.poolChanged(POOL.map((e) => e.id === id ? { ...e, roles: ["review" as const] } : e));
+  await refusal(L.reroutePlan(partId, "owner", other), "model_held", new RegExp(`${other} is not a builder; its roles are review`));
+  await L.poolChanged(POOL);
+  await submitPart(L, partId, "a".repeat(40));
+  await L.poolChanged(POOL.map((e) => e.id === id ? { ...e, state: "reserved" as const, stateAt: AT, note: "credits" } : e));
+  await refusal(L.reroutePlan(partId, "owner", other), "model_held", new RegExp(`${other} is reserved since 2026-10-06 \\(the owner's standing\\): credits`));
+  await L.poolChanged(POOL.map((e) => e.id === id ? { ...e, roles: ["build" as const] } : e));
+  await refusal(L.reroutePlan(partId, "owner", other), "model_held", new RegExp(`${other} is not a reviewer; its roles are build`));
+});

@@ -31,7 +31,7 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import { liveOffers, offering, offeredActors, type Dispatch, type Offering, type SeenOffer } from "../dispatch/rules.ts";
-import { familyOf, hasModelRole, modelState, offThePool, type ModelEntry, type PoolFamily } from "../models/pool.ts";
+import { familyOf, standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import { buildRecord, type ActorRecord, type ModelRecord } from "../models/record.ts";
 import { MODEL_PROFILES, type Family, type Harness, type ModelProfile, type TaskKind } from "../models/registry.ts";
 import { outcomesOf, reliabilityLine, tiebreak, type Reliability } from "../models/reliability.ts";
@@ -243,12 +243,12 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
   else passed.push(status ? `Status ${status.state}, reported by ${status.by} at ${status.at}` : "Status not checked yet");
 
   // The owner's standing on the entry, apart from the runner's report: a
-  // paused or reserved model takes no part, and its note says why. It skips
-  // both roles alike.
-  if (offThePool(entry)) {
-    const state = modelState(entry);
-    both.push(`${state} since ${(entry.stateAt ?? entry.addedAt).slice(0, 10)} (the owner's standing)${entry.note ? `: ${entry.note}` : ""}`);
-  } else passed.push("The owner's standing is available");
+  // paused or reserved model takes no part, and its note says why; the jobs
+  // the entry may take bind each role alone, so a review-only model is never
+  // a builder and a build-only one never a reviewer.
+  const heldBuild = standingRefusal(entry, "build");
+  const heldReview = standingRefusal(entry, "review");
+  if (!heldBuild && !heldReview) passed.push("The owner's standing is available");
 
   const { allowPaid, spend } = ctx.input;
   if (!paidPerToken(entry)) passed.push(`No per-token cost (${entry.provider})`);
@@ -287,12 +287,10 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
   }
 
   const refusal = claimRefusal(actor, ctx.input.policy);
-  // The jobs the entry may take, so a review-only model is never a builder
-  // and a build-only one never a reviewer: the role rule binds each role alone.
   const build = refusal ? [...both, refusal] : [...both];
-  if (!hasModelRole(entry, "build")) build.push(`not a builder; its roles are ${entry.roles!.join(", ")}`);
+  if (heldBuild) build.push(heldBuild);
   const review = ctx.governed && !hasRole(actor, ctx.input.policy, "assessor") ? [...both, `${actor} needs an available agent with the assessor role`] : [...both];
-  if (!hasModelRole(entry, "review")) review.push(`not a reviewer; its roles are ${entry.roles!.join(", ")}`);
+  if (heldReview) review.push(heldReview);
   // The offer the review job asks of a runner: a review is claimed only by
   // a runner that offers the job and can claim as the model, so a reviewer
   // no live runner so offers would wait forever, whatever runner names the
