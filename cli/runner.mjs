@@ -556,6 +556,36 @@ export function mergeMainSection(merge) {
   ].join("\n");
 }
 
+// Refresh main at the submission boundary, after the builder has committed.
+// The base token of a part's plan reads the baseline, not the plan's fork.
+export async function prepareBuildSubmission(assignment, workspace, io, resolve) {
+  const { project, item, actor } = assignment;
+  const base = JSON.parse(await io.cli(["base-token", item.plan ?? item.id, "--project", project, "--as", actor]));
+  if (!base.defaultBranch) throw new Error("main base token has no default branch");
+  for (;;) {
+    if (io.stopped()) throw new Error("interrupted");
+    await io.fetch(workspace, base.remote, base.token, base.defaultBranch);
+    const mainHead = (await io.revParse(workspace, "FETCH_HEAD")).trim();
+    if (!/^[a-f0-9]{40,64}$/.test(mainHead)) throw new Error("main fetch returned an invalid commit");
+    const merged = await io.mergeMain(workspace, mainHead, `Merge main at ${mainHead} into ${item.id}\n\nAgent: ${actor}`);
+    const files = await io.conflicts(workspace);
+    if (files.length) {
+      io.log(`main at ${mainHead} conflicts; returning to ${actor} in this run`);
+      await resolve({ mainHead, state: "conflicts", files });
+    } else if (merged.code !== 0) {
+      throw new Error(`merging current main failed: ${oneLine(merged.output ?? "").slice(0, 500)}`);
+    }
+    // A successful harness exit alone is not evidence that it committed the
+    // resolution: verify ancestry and the absence of a pending merge as well.
+    if ((await io.conflicts(workspace)).length || await io.mergePending(workspace)) throw new Error("main merge is still unresolved or uncommitted");
+    if ((await io.mergeBase(workspace, mainHead, "HEAD")).trim() !== mainHead) throw new Error("the build does not contain the fetched main commit");
+    // Resolution may take long enough for main to advance again. Refresh it
+    // once more before finishing; a clean or already-held head can proceed.
+    if (files.length) continue;
+    return { mainHead, head: await io.head(workspace) };
+  }
+}
+
 // Dependencies keep the task lifecycle testable without a server or a harness.
 export async function runTask(assignment, config, name, io) {
   let state = nextStep({ phase: "idle" }, { type: "queue", assignment });
@@ -564,6 +594,28 @@ export async function runTask(assignment, config, name, io) {
   if (!assignment) { advance({ type: "claim", empty: true }); return state; }
   const { project, item, agent, model, actor } = assignment;
   let workspace, before, claimed = false, claimAttempted = false, taskFailure = false, brief;
+  const finish = async () => {
+    const merged = io.prepareSubmission ? await io.prepareSubmission(assignment, workspace, async (merge) => {
+      const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
+      const context = io.jobBrief ? await io.jobBrief(project, item.id, actor) : null;
+      const resolution = await io.brief(workspace, `${roleText("build", workspace)}\n\n${briefFor({ ...item, owner: actor }, project)}\n${context?.text ?? ""}\n${mergeMainSection(merge)}\n\n${conflictsSection(merge)}\n`);
+      let dataHome;
+      try {
+        const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
+        dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
+        const result = await io.harness(commandFor(entry, { model, briefFile: resolution.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name));
+        if (result.timedOut) throw new Error("harness timed out resolving main");
+        if (result.code !== 0) throw new Error(`harness exited ${result.code} resolving main`);
+      } finally {
+        if (dataHome) await io.removeDataHome(dataHome);
+        await io.removeBrief(resolution);
+      }
+    }) : null;
+    if (io.stopped()) throw new Error("interrupted");
+    if (merged) state = { ...state, ...merged };
+    await io.cli(["finish", item.id, "--project", project, "--as", actor,
+      ...(merged ? ["--summary", `Built ${item.id} with main at ${merged.mainHead} merged`] : [])], workspace);
+  };
   try {
     const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
     if (!entry || actor !== `${agent}/${model}`) throw new Error("queue returned an unsupported assignment");
@@ -595,10 +647,9 @@ export async function runTask(assignment, config, name, io) {
     // and the run ended — a stop, a crash — before finish could push and
     // submit. The commit is the model's completed work, its last step under
     // the brief, so this run finishes it (push, checks, submit) and starts
-    // no harness of its own, and merges nothing again either: the dead run
-    // already merged what the job asked — main for a merge-main job, the
-    // plan's branch — and committed the resolution. A workspace at the
-    // recorded head means the dead run committed nothing, and the harness
+    // no build harness of its own. Submission still refreshes current main.
+    // The dead run already committed the job's requested resolution. A
+    // workspace at the recorded head means the dead run committed nothing, and the harness
     // runs as for any other claim.
     const resumed = item.state === "claimed" && item.owner === actor && !!item.head && before !== item.head;
     let result = null;
@@ -629,7 +680,7 @@ export async function runTask(assignment, config, name, io) {
         advance({ type: "start" });
         taskFailure = true;
         advance({ type: "exit", code: 0, before, head });
-        await io.cli(["finish", item.id, "--project", project, "--as", actor], workspace);
+        await finish();
         advance({ type: "finish" });
         return state;
       }
@@ -678,7 +729,7 @@ export async function runTask(assignment, config, name, io) {
     taskFailure = true;
     advance(io.stopped() ? { error: "interrupted" } : { type: "exit", code: result?.code ?? 0, before: resumed ? item.head : before, head });
     if (state.phase === "failed") throw new Error(state.reason);
-    await io.cli(["finish", item.id, "--project", project, "--as", actor], workspace);
+    await finish();
     advance({ type: "finish" });
   } catch (error) {
     if (state.phase !== "failed") advance({ error: error.message });
@@ -1406,6 +1457,8 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
       ...(options.token ? { env: { ...process.env, ATELIER_TOKEN: options.token } } : {}),
       step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
       ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild),
+    prepareSubmission: (assignment, workspace, resolve) => prepareBuildSubmission(assignment, workspace, io, resolve),
+    mergePending: async (cwd) => (await executeChild(["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"], { cwd, capture: true, signal: controller.signal })).code === 0,
     head: (cwd, { cleanup = false } = {}) => checked(["git", "rev-parse", "HEAD"],
       { cwd, capture: true, ...(cleanup ? cleanupOptions() : { signal: controller.signal }) }, executeChild),
     // Every build, plan and merge job's workspace keeps .scratch/ out of Git
