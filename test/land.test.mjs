@@ -231,7 +231,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     const status = await new Promise((ok) => child.on("close", ok));
     return { status, output };
   };
-  const fx = { p, url, baseline, checkout, workspace: (id) => join(cache, "work", "proj", id), fork: (id) => join(p, `fork-${id}.git`), forkHead, mainCommit, box, run, env: {}, onOutput: null, posts: (suffix) => box.requests.filter((r) => r.method === "POST" && r.path.endsWith(suffix)) };
+  const fx = { after: (fn) => t.after(fn), p, url, baseline, checkout, workspace: (id) => join(cache, "work", "proj", id), fork: (id) => join(p, `fork-${id}.git`), forkHead, mainCommit, box, run, env: {}, onOutput: null, posts: (suffix) => box.requests.filter((r) => r.method === "POST" && r.path.endsWith(suffix)) };
   return fx;
 }
 
@@ -666,6 +666,7 @@ test("a signal ends a queued landing, leaving the queue and taking no lease", as
     cwd: f.checkout,
     env: { ...process.env, ATELIER_CONFIG_DIR: join(f.p, "config"), ATELIER_TOKEN: "fixture", ATELIER_CACHE: join(f.p, "cache"), ATELIER_SERVER: f.url, ATELIER_LAND_POLL_MS: "30" },
   });
+  t.after(() => child.kill("SIGKILL"));
   let output = ""; child.stdout.on("data", (s) => { output += s; }); child.stderr.on("data", (s) => { output += s; });
   const done = new Promise((ok) => child.on("close", (status, signal) => ok({ status, signal })));
   await until(() => f.posts("/landing-lease").some((x) => x.body.queued === true && x.body.item === "t1"), 15_000, "the queued ask");
@@ -1116,6 +1117,8 @@ function waitingLanding(f, env = {}) {
     cwd: f.checkout,
     env: { ...process.env, ATELIER_CONFIG_DIR: join(f.p, "config"), ATELIER_TOKEN: "fixture", ATELIER_CACHE: join(f.p, "cache"), ATELIER_SERVER: f.url, ATELIER_LAND_POLL_MS: "30", ...env },
   });
+  // Ended however the test ends, so a failed wait leaves no landing polling.
+  f.after(() => child.kill("SIGKILL"));
   let output = ""; child.stdout.on("data", (s) => output += s); child.stderr.on("data", (s) => output += s);
   const done = new Promise((ok) => child.on("close", (status, signal) => ok({ status, signal })));
   return { child, done, output: () => output };
@@ -1134,6 +1137,25 @@ test("SIGINT and SIGTERM release the lease before the landing ends, with the sig
     assert.equal(f.box.lease, null);
     assert.ok(f.posts("/landing-lease").some((x) => x.body.cancel === true));
     assert.equal(f.box.states.t1, "submitted");
+  }
+});
+
+// t419: a landing signalled while its regenerate command runs ends that
+// command's process group, and what it started, as it releases the lease.
+test("SIGINT, SIGTERM and SIGHUP during the regenerate step end its process group with the landing", { timeout: 60_000 }, async (t) => {
+  for (const [signal, status] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]]) {
+    const f = await landFixture(t);
+    const pidFile = join(f.p, "regen-sleeper.pid");
+    f.box.regen = `sleep 300 & echo $! > ${JSON.stringify(pidFile)}; wait`;
+    const landing = waitingLanding(f);
+    await until(() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim(), 15_000, "the regenerate command's sleeper");
+    const sleeper = Number(readFileSync(pidFile, "utf8"));
+    landing.child.kill(signal);
+    const ended = await landing.done;
+    assert.equal(ended.status, status, landing.output());
+    assert.equal(f.box.lease, null, landing.output());
+    const alive = () => { try { process.kill(sleeper, 0); return true; } catch { return false; } };
+    await until(() => !alive(), 2000, `the end of the regenerate sleeper ${sleeper} after ${signal}`);
   }
 });
 
