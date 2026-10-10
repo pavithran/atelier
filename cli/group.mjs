@@ -40,12 +40,14 @@ export function killTree(pgid) {
 // is SIGKILLed on the way out: the group is not the terminal's foreground
 // group, so no interrupt reaches it there. `onSpawn(pid)` is told the
 // group's id as soon as it exists. With `stdio: "inherit"` the command
-// writes to this process's output and none is captured.
+// writes to this process's output and none is captured. Given
+// `onData(key, chunk)`, each piece of output ("stdout" or "stderr") goes to
+// it as it comes and none is kept here.
 //
 // Resolves { status, signal, stdout, stderr, error, timedOut }; `error` is
 // set when the command could not start, ran past its time or overran its
 // output, and the output then keeps its last half of `maxBytes`.
-export function runGroup(argv, { cwd, env, timeoutMs, graceMs = 5000, maxBytes = 64 * 1024 * 1024, signal, onSpawn, stdio = "pipe" } = {}) {
+export function runGroup(argv, { cwd, env, timeoutMs, graceMs = 5000, maxBytes = 64 * 1024 * 1024, signal, onSpawn, onData, stdio = "pipe" } = {}) {
   return new Promise((done) => {
     const child = spawn(argv[0], argv.slice(1), { cwd, env, detached: true, stdio: ["ignore", stdio, stdio] });
     const pid = child.pid;
@@ -80,6 +82,7 @@ export function runGroup(argv, { cwd, env, timeoutMs, graceMs = 5000, maxBytes =
     if (signal?.aborted) onAbort();
     else signal?.addEventListener("abort", onAbort, { once: true });
     const append = (key, chunk) => {
+      if (onData) return onData(key, chunk);
       if (error) return;
       bytes += Buffer.byteLength(chunk);
       if (key === "stdout") stdout += chunk; else stderr += chunk;

@@ -6,6 +6,7 @@ import { constants as osConstants, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runGroup } from "../cli/group.mjs";
 import { execute } from "../cli/runner.mjs";
+import { runCommand } from "../cli/ship.mjs";
 import { etimeSeconds, findStrays, formatStrays, parseLsofCwd, parsePs, strayTests } from "../cli/strays.mjs";
 
 // t419: no process a test or a check starts outlives it. Seven test processes
@@ -151,6 +152,26 @@ test("a check past its time limit SIGKILLs the group npm test's runner started t
   const r = await check;
   assert.equal(r.timedOut, true);
   assert.ok(!alive(spinner) && !alive(sleeper), `the spinning test ${spinner} or its sleeper ${sleeper} outlived the check`);
+});
+
+// A ship step (a verify-deploy smoke check) leaves no server behind, when it
+// exits and when it runs past its timeout, and its output still streams.
+test("a ship step's background process ends with the step and at its timeout", { timeout: 30_000 }, async () => {
+  for (const [argv, timeoutMs] of [[background(0), 60_000], [background(0, true), 500]]) {
+    let shown = "";
+    const out = { write: (s) => { shown += s; } };
+    const r = await runCommand(argv, { timeoutMs, out, err: out });
+    const sleeper = Number(shown.trim());
+    assert.ok(sleeper > 0, shown);
+    assert.ok(await gone(sleeper, 2000), `the step's sleeper ${sleeper} outlived it`);
+    if (timeoutMs === 500) {
+      assert.equal(r.passed, false);
+      assert.match(r.output, /\[atelier\] ended by SIGKILL with its process group after its 1s timeout/);
+    } else assert.equal(r.passed, true, r.output);
+  }
+  const missing = await runCommand(["/no/such/command"], { timeoutMs: 5000, out: { write() {} }, err: { write() {} } });
+  assert.equal(missing.status, null);
+  assert.match(missing.output, /could not run \/no\/such\/command/);
 });
 
 // The runner's execute, past a harness's deadline, ends a group the harness
