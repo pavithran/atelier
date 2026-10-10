@@ -83,10 +83,12 @@ const gone = async (pid) => {
 };
 
 test("a process the check leaves behind is ended, and the clone is removed", { timeout: CEILING_MS }, async (t) => {
-  // A loop in the background, still writing into the clone after the check
+  // A loop in the background that never ends by itself, so only the check's
+  // cleanup can end it (a finite loop would end inside the wait and pass
+  // without cleanup). It is still writing into the clone after the check
   // has exited, as a test runner's worker or a watcher can. Its output goes
   // elsewhere, so the check's own output closes when the check exits.
-  const f = await fixture(t, (root) => `(for i in $(seq 1 600); do date > "$PWD/bg-$i.txt"; sleep 0.05; done) >/dev/null 2>&1 & echo $! > '${join(root, "bg.pid")}'; exit 0`);
+  const f = await fixture(t, (root) => `(while :; do date > "$PWD/bg.txt"; sleep 0.05; done) >/dev/null 2>&1 & echo $! > '${join(root, "bg.pid")}'; exit 0`);
   t.after(() => { try { process.kill(Number(readFileSync(join(f.root, "bg.pid"), "utf8")), "SIGKILL"); } catch { /* It has ended. */ } });
   const r = await f.run();
   assert.equal(r.status, 0, r.stdout + r.stderr);
