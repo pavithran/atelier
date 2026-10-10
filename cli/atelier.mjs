@@ -38,6 +38,8 @@ import { pushHistory } from "./push-steps.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
 import { formatLocal, formatStatus, itemJson, statusJson } from "./status.mjs";
+import { WAIT_FOR, waitFor } from "./wait.mjs";
+import { formatProcesses, liveProcesses, parseLsof, parsePs } from "./procs.mjs";
 import { receiptJson, receiptText } from "./receipt.mjs";
 import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
 import { checkEnv } from "./check-env.mjs";
@@ -298,6 +300,7 @@ export const FLAGS = {
   owners: { json: true },
   inbox: { json: true },
   status: { json: true },
+  wait: { for: false, timeout: false, interval: false },
   open: {},
   guide: { role: '--role needs a value: atelier guide --role build|review|plan|orchestrate' },
   help: {},
@@ -1402,6 +1405,17 @@ async function localStanding(name, as) {
   const leftover = items.filter((i) => here.has(i.id) && closed(i)).length;
   return { project: name, tasks, leftover, landing: { lock: landingRunning(name), lease: await landingLease(name, as) } };
 }
+
+// The runners and agent processes live on this machine, read as columns from
+// ps and the working directories from lsof (cli/procs.mjs): no command line
+// is kept. null when either tool could not be run.
+function liveHere(project = null) {
+  const ps = spawnSync("ps", ["-axo", "pid=,ppid=,etime=,args="], { encoding: "utf8", maxBuffer: 64 << 20 });
+  const lsof = spawnSync("lsof", ["-a", "-d", "cwd", "-Fpcn"], { encoding: "utf8", maxBuffer: 64 << 20 });
+  if (ps.error || ps.status !== 0 || !lsof.stdout) return null;
+  return liveProcesses({ ps: parsePs(ps.stdout), lsof: parseLsof(lsof.stdout), work: join(CACHE, "work"), skip: [process.pid, ps.pid, lsof.pid], project });
+}
+const liveText = (live) => (live ? formatProcesses(live) : "Live on this Mac:\n  the process table could not be read");
 
 // One line per remote of the local checkout: where the registered branch
 // stands against that remote's tracking ref, as it was last fetched or
@@ -3488,8 +3502,9 @@ const commands = {
       const standing = await call("GET", `${P(name)}/standing`, undefined, as);
       const checkout = await checkoutStatus(name, as);
       const local = await localStanding(name, as);
-      if (args.json) return console.log(JSON.stringify({ project: standing, checkout, ...(local ? { local } : {}) }, null, 2));
-      console.log(formatStanding(standing, OWNER_NAME) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : ""));
+      const live = liveHere(name);
+      if (args.json) return console.log(JSON.stringify({ project: standing, checkout, ...(local ? { local } : {}), processes: live }, null, 2));
+      console.log(formatStanding(standing, OWNER_NAME) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : "") + "\n\n" + liveText(live));
       return;
     }
     const known = await call("GET", "/projects", undefined, OWNER);
@@ -3509,7 +3524,25 @@ const commands = {
       return { name: p.name, title: p.title, items, inbox };
     }));
     if (args.json) return console.log(JSON.stringify(statusJson(views), null, 2));
-    console.log(formatStatus(views, { queue, offers }));
+    console.log(formatStatus(views, { queue, offers }) + "\n\n" + liveText(liveHere()));
+  },
+
+  // Blocks until the task reaches the state --for names, or fails, and says
+  // which in one line (cli/wait.mjs); the exit status carries the outcome.
+  async wait() {
+    const name = project(), id = itemArg(), as = await actor(OWNER);
+    const target = args.for ?? "merged";
+    if (!WAIT_FOR.includes(target)) die(`--for needs one of ${WAIT_FOR.join(", ")}: atelier wait ${id} --for merged`);
+    const seconds = (flag, fallback) => {
+      if (args[flag] === undefined) return fallback;
+      const n = Number(args[flag]);
+      if (!Number.isFinite(n) || n <= 0) die(`--${flag} needs a number of seconds above zero: atelier wait ${id} --${flag} 60`);
+      return n;
+    };
+    const timeout = seconds("timeout", Infinity), interval = seconds("interval", 5);
+    const result = await waitFor(target, () => request("GET", I(name, id), undefined, as), { intervalMs: interval * 1000, timeoutMs: timeout * 1000 });
+    console.log(result.text);
+    process.exit(result.code);
   },
 
   async open() {

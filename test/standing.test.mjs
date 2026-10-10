@@ -156,7 +156,7 @@ test("status --project prints where it stands and says the checkout is in step, 
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /^Demo project \(demo\) as of /);
   assert.match(r.output, /Waiting on /);
-  assert.match(r.output, /\nCheckout: in step\. main @ [0-9a-f]{8} holds the baseline's head [0-9a-f]{8}\.\s*$/);
+  assert.match(r.output, /\nCheckout: in step\. main @ [0-9a-f]{8} holds the baseline's head [0-9a-f]{8}\.\s*(\n\nLive on this Mac:[\s\S]*)?$/);
   // The baseline's head is read from the server; no read token is minted.
   assert.deepEqual(r.seen, ["GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head"]);
 });
@@ -164,7 +164,7 @@ test("status --project prints where it stands and says the checkout is in step, 
 test("status --project with an agent token reads the baseline's head through a route the allowlist admits", async (t) => {
   const r = await run(t, () => null, undefined, { ATELIER_TOKEN: "atl_agent-token", ATELIER_ACTOR: "codex/gpt-6-astra" });
   assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /\nCheckout: in step\. main @ [0-9a-f]{8} holds the baseline's head [0-9a-f]{8}\.\s*$/);
+  assert.match(r.output, /\nCheckout: in step\. main @ [0-9a-f]{8} holds the baseline's head [0-9a-f]{8}\.\s*(\n\nLive on this Mac:[\s\S]*)?$/);
   assert.deepEqual(r.seen, ["GET /api/config", "GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head"]);
 });
 
@@ -218,7 +218,7 @@ test("a project set up with --history-since is compared through its pairs", asyn
     Object.assign(seenHashes, { head, baselineHead });
     return { project: { fresh: true } };
   });
-  assert.match(inStep.output, /\nCheckout: in step\. main @ [0-9a-f]{8} is the commit the baseline's head [0-9a-f]{8} matches\.\s*$/);
+  assert.match(inStep.output, /\nCheckout: in step\. main @ [0-9a-f]{8} is the commit the baseline's head [0-9a-f]{8} matches\.\s*(\n\nLive on this Mac:[\s\S]*)?$/);
   assert.ok(inStep.output.includes(`main @ ${seenHashes.head.slice(0, 8)} is the commit the baseline's head ${seenHashes.baselineHead.slice(0, 8)} matches`));
   // The checkout has moved past the commit the baseline's head is paired with.
   const behind = await run(t, ({ checkout, bare, dir }) => {
@@ -229,7 +229,7 @@ test("a project set up with --history-since is compared through its pairs", asyn
     git(checkout, "add", "."); git(checkout, "commit", "-q", "-m", "three");
     return { project: { fresh: true } };
   });
-  assert.match(behind.output, /\nCheckout: out of step\. main has commits the baseline lacks; run atelier sync --project demo\.\s*$/);
+  assert.match(behind.output, /\nCheckout: out of step\. main has commits the baseline lacks; run atelier sync --project demo\.\s*(\n\nLive on this Mac:[\s\S]*)?$/);
   // The checkout is the baseline's own commit, which is not a project commit: the pair names another.
   const wrong = await run(t, ({ checkout, bare, dir }) => {
     const baselineHead = rebuilt(bare, dir, "c");

@@ -45,10 +45,11 @@ export const HELP_GROUPS: HelpGroup[] = [
   ], [
     { form: "ls [--all] [--json]", about: "Lists the project's tasks with state, owner and head. Merged and abandoned tasks need `--all`. `--json` prints them for scripts, each task with its created, updated and last-push times, as Observatory reads them." },
     { form: "show ID [--reviews] [--json]", about: "Prints a task's decision brief: what is decided, the recorded evidence, a recommendation and the task's address. `--reviews` also prints each review at each head with its whole note and findings; `--json` prints the brief, carrying the reviews, for scripts." },
+    { form: "wait ID [--for merged|submitted|reviewed|any-change] [--timeout SECONDS] [--interval SECONDS]", about: "Blocks until the task reaches that state, or fails, and prints the outcome as one line; the default is `merged`. `merged` waits for the merge, `submitted` for the submission (a task already further on counts), `reviewed` for a review recorded at the task's current head (an approval is reached, a rejection fails), and `any-change` for the task's state, head, owner or review count to differ from the first read. A task that is abandoned or blocked fails every wait but `any-change`. It polls every 5 seconds and rides through a server that is briefly unreachable. Exit status: 0 reached, 1 failed, 3 gave up at `--timeout` (no limit by default), 4 the task could not be read. It replaces a hand-written `pgrep` or `lsof` loop, which matches its own command line and misses a death." },
     { form: "receipt ID [--json]", about: "Prints one task's whole story from the ledger, in the order it was recorded: created, claimed, each handoff and release, each pushed head as Artifacts answered it, each observed check at each head, each review with its verdict and every finding with the owner's verdict on it (confirmed, refuted or fixed), then the submission, acceptance and merge or abandonment that ended it. `--json` prints the task's events as the ledger holds them, in order." },
     { form: "owners [--json]", about: "Prints one line per live task: its state, its owner and since when." },
     { form: "inbox [--json]", about: "Prints the decision brief of each task that needs the project owner, most urgent first. `--json` prints the entries for scripts." },
-    { form: "status [--project P] [--json]", aside: "with a project: where it stands, as text", about: "Prints the owner's queue for every project: what waits for the owner, which pairs of live tasks name overlapping scopes (each pair once, nothing waiting on the owner), what is in progress and what waits for a runner, with the live item each dispatch the project's core files hold waits on, each open review request among it with its reviewer named, and, for any queued job no live runner offers, that it can never be claimed until a runner that offers it is started, which is a mismatch between the dispatch and the runners rather than a wait. With `--project` it prints where one project stands instead, ending with whether this checkout is in step with the baseline and, when any of the project's tasks has a workspace on this Mac, an On this Mac section: each live task's workspace with its uncommitted changes, commits not pushed to its fork, a merge in progress and a waiting COMMIT_MSG.txt, a count of the merged or abandoned tasks' workspaces left behind, and whether a landing is running here for the project. `--json` prints machine-readable records, each task with its created, updated and last-push times, as Observatory reads them, the overlapping pairs under `overlaps` and the same local facts under `local`." },
+    { form: "status [--project P] [--json]", aside: "with a project: where it stands, as text", about: "Prints the owner's queue for every project: what waits for the owner, which pairs of live tasks name overlapping scopes (each pair once, nothing waiting on the owner), what is in progress and what waits for a runner, with the live item each dispatch the project's core files hold waits on, each open review request among it with its reviewer named, and, for any queued job no live runner offers, that it can never be claimed until a runner that offers it is started, which is a mismatch between the dispatch and the runners rather than a wait. With `--project` it prints where one project stands instead, ending with whether this checkout is in step with the baseline and, when any of the project's tasks has a workspace on this Mac, an On this Mac section: each live task's workspace with its uncommitted changes, commits not pushed to its fork, a merge in progress and a waiting COMMIT_MSG.txt, a count of the merged or abandoned tasks' workspaces left behind, and whether a landing is running here for the project. Both forms end with the runners and agent processes live on this Mac, by task: each runner with its `--name`, process id and age, and each task whose workspace an agent process works in, with that process's name; never a command line. `--json` prints machine-readable records, each task with its created, updated and last-push times, as Observatory reads them, the overlapping pairs under `overlaps` and the same local facts under `local`." },
     { form: "open", about: "Opens the server in a browser, using the macOS `open` command." },
   ]] },
   { name: "Agents", lines: [[
@@ -264,6 +265,14 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       "--json": "prints the tasks as JSON, each with its created, updated and last-push times",
     },
     example: "atelier ls --all --project demo",
+  },
+  wait: {
+    flags: {
+      "--for STATE": "merged (the default), submitted, reviewed or any-change",
+      "--timeout SECONDS": "gives up after this long, exit status 3; with no limit by default",
+      "--interval SECONDS": "how often it reads the task; 5 by default",
+    },
+    example: "atelier wait t3 --for reviewed --project demo",
   },
   show: {
     flags: {
@@ -742,8 +751,12 @@ Standing rules:
   verdict with \`atelier finding\`.
 - Land one task at a time with \`atelier land ID\`. Never land two together.
 - Report every run that ended without a result with \`atelier run-report\`.
+- Wait on a task with \`atelier wait ID --for merged|submitted|reviewed|any-change\`,
+  not a hand-written pgrep or lsof loop: it ends when the task reaches that
+  state or fails, and says which.
 - On a stall (a claimed task with no progress), check whether the agent's
-  process still runs, then \`atelier handoff\` the task to another model or
+  process still runs (\`atelier status\` lists this Mac's runners and agents by
+  task), then \`atelier handoff\` the task to another model or
   \`atelier release\` it. Do not start the same work twice.
 - After a repeated rejection of the same task, stop resending it: judge the
   findings, then hand it to a builder from another company or ask the owner.
