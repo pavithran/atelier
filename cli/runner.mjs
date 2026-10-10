@@ -374,7 +374,8 @@ function gitAuth(token, base = process.env) {
 
 // The cf-aig-metadata header's value for one harness run, which the runner's
 // opencode configs send on every pay-per-use call through the AI Gateway (the
-// config's provider headers read "{env:CF_AIG_METADATA}"): whose run the call
+// config's provider headers read it, escaped for JSON by the opencode adapter,
+// as "{env:CF_AIG_METADATA_ESCAPED}"; cli/harness/providers.mjs): whose run the call
 // belongs to, so the gateway's analytics, and the Models page with them, can
 // count calls per task (src/usage/gateway.ts reads them back). The role is
 // the one run reports use: build, review or plan. The gateway keeps at most
