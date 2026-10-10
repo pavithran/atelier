@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import type { LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import {
-  buildReliability, cleanDefect, cleanFinding, cleanRun, outcomesOf, reliabilityLine, roundsPerMerge, tiebreak,
+  buildReliability, runTotal, cleanDefect, cleanFinding, cleanRun, outcomesOf, reliabilityLine, roundsPerMerge, tiebreak,
   type ModelReliability, type RunReport,
 } from "../src/models/reliability.ts";
 import { route } from "../src/models/routing.ts";
@@ -143,7 +143,7 @@ test("runs the runners reported: stalled, timed out and refused per model, and r
     run({ actor: "atelier/sandbox" }),
     run({ actor: OWNER }),
   ], OWNER);
-  assert.deepEqual(one(rel, "opus-5.5").runs, { stalled: 1, "timed-out": 1, refused: 0, harness_failed: 0, early_stop: 0, permission_stop: 0, duplicate_design: 0, incomplete_merge: 0 });
+  assert.deepEqual(one(rel, "opus-5.5").runs, { stalled: 1, "timed-out": 1, refused: 0, harness_failed: 0, early_stop: 0, permission_stop: 0, duplicate_design: 0, incomplete_merge: 0, validation_blocked: 0 });
   const glm = one(rel, "glm-5.3");
   assert.deepEqual([glm.runs.refused, glm.unfinishedReviews], [2, 1]);
   assert.deepEqual(glm.actors, ["opencode/GLM-5.3"]);
@@ -185,7 +185,7 @@ test("a run report is validated: an agent, a known role and outcome, a task id, 
   for (const [body, why] of [
     [{ actor: "owner", outcome: "stalled" }, /harness\/model/],
     [{ actor: "atelier/sandbox", outcome: "stalled" }, /harness\/model/],
-    [{ actor: OPUS, outcome: "crashed" }, /outcome must be one of stalled, timed-out, refused, harness_failed, early_stop, permission_stop, duplicate_design, incomplete_merge/],
+    [{ actor: OPUS, outcome: "crashed" }, /outcome must be one of stalled, timed-out, refused, harness_failed, early_stop, permission_stop, duplicate_design, incomplete_merge, validation_blocked/],
     [{ actor: OPUS, outcome: "stalled", role: "integrate" }, /build, plan or review/],
     [{ actor: OPUS, outcome: "stalled", item: "x1" }, /task id/],
     [{ actor: OPUS, outcome: "stalled", project: "a/b" }, /project/],
@@ -421,4 +421,13 @@ test("a commit another agent pushed into the holder's task is credited to that a
     assert.equal(r.merged, 1, model);
     assert.equal(r.defects.length, 1, model);
   }
+});
+
+
+test("validation blocked remains visible without penalizing the model's reliability", () => {
+  const rel = buildReliability([], [run({ outcome: "validation_blocked", detail: "npm test: listen EPERM" })], OWNER);
+  const model = one(rel, "opus-5.5");
+  assert.equal(model.runs.validation_blocked, 1);
+  assert.equal(runTotal(model), 0);
+  assert.match(model.runCauses[0].note, /validation_blocked.*listen EPERM/);
 });
