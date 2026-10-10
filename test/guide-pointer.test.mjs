@@ -33,7 +33,8 @@ test("nothing is remembered between calls: the same state prints the same line",
 test("the pointer is not printed in a task workspace or for an unregistered project", () => {
   const projects = { ourai: { path: "/work/ourai" } };
   assert.equal(guidePointer(projects, ["ourai"], true, without), null);
-  assert.equal(guidePointer(projects, ["nope"], false, without), null);
+  assert.match(guidePointer(projects, ["nope"], false, without), /--project nope/);
+  assert.match(guidePointer({}, ["demo"], false, () => null), /atelier guide --role orchestrate/);
 });
 
 test("several projects without the review path share one line", () => {
