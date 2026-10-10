@@ -9,7 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { checkEnv } from "./check-env.mjs";
 import { killTree, treeGroups } from "./group.mjs";
 import { formatLoad, envLoad, coreCount, loadLimitOf } from "./load.mjs";
-import { envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
+import { runnerChildEnv, envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
 import { reviewBrief, BRIEF_LIMITS, criteriaCount } from "../src/review/brief.ts";
 import { submission } from "../src/brief.ts";
@@ -311,7 +311,7 @@ export function harnessEnv(base, names = [], tokens = []) {
 // The owner's Atelier token as this machine holds it: ATELIER_TOKEN, and the
 // one `atelier login` stored. Read only when an entry names variables to pass.
 export function ownerTokens(base = process.env) {
-  const tokens = [base.ATELIER_TOKEN?.trim()];
+  const tokens = [base.ATELIER_TOKEN?.trim(), base.ATELIER_RUNNER_TOKEN?.trim()];
   try { tokens.push(readSecret("API_TOKEN", { env: { ...base, ATELIER_TOKEN: "" } })); } catch { /* A store that cannot be read gives the CLI no token either. */ }
   return tokens.filter(Boolean);
 }
@@ -622,13 +622,43 @@ export function validationBlockedReport(output) {
   return oneLine(report.slice(Math.max(start, match.index - 60), match.index + 240)).replace(/\s+/g, " ").trim();
 }
 
+// Whether a build whose harness exited 0 and committed nothing has left the
+// task complete all the same (t453): the workspace head is the task's pushed
+// head, and that head is ahead of the task's base, so an earlier run's work
+// is committed and pushed and this run found nothing to add. Such a run is
+// finished — the checks run and the head is submitted — not released as a
+// stall. The head is not complete while a merge the runner started is in
+// progress (conflicts left for the harness, or a plan merge skipped behind
+// one), whatever the task's record says: the resolution is the work asked
+// for. Ahead means the base is an ancestor of the head, which unequal hashes
+// alone do not prove: a rollback (atelier push --rollback) records a head
+// older than the base, and such a head holds no work to submit, so it is
+// released. `isAncestor(base, head)` answers that (git merge-base
+// --is-ancestor); when it cannot, the head is not taken as complete.
+// Returns {complete, why}, the reason written for the run's log either way.
+export async function alreadyComplete(item, head, merges = [], isAncestor) {
+  const short = (hash) => String(hash).slice(0, 8);
+  if (merges.some((m) => m.state === "conflicts" || m.state === "skipped")) return { complete: false, why: "a merge is in progress" };
+  if (!item.head || !item.base || item.head === item.base) return { complete: false, why: "the task has no pushed head ahead of its base" };
+  if (head !== item.head) return { complete: false, why: `the workspace head ${short(head)} is not the task's pushed head ${short(item.head)}` };
+  let ahead;
+  try { ahead = await isAncestor(item.base, head); } catch (error) {
+    return { complete: false, why: `whether the workspace head ${short(head)} is ahead of the task's base ${short(item.base)} could not be read: ${error.message}` };
+  }
+  if (!ahead) return { complete: false, why: `the workspace head ${short(head)} is the task's pushed head but not ahead of its base ${short(item.base)}, which it does not descend from` };
+  return { complete: true, why: `the workspace head ${short(head)} is the task's pushed head, ahead of its base ${short(item.base)}` };
+}
+
 export async function runTask(assignment, config, name, io) {
   let state = nextStep({ phase: "idle" }, { type: "queue", assignment });
   const advance = (result) => { state = nextStep(state, result); io.log(`${state.phase}${state.reason ? `: ${state.reason}` : ""}`); };
   io.log("nothing claimed");
   if (!assignment) { advance({ type: "claim", empty: true }); return state; }
   const { project, item, agent, model, actor } = assignment;
-  let workspace, before, claimed = false, claimAttempted = false, taskFailure = false, brief, mergedMain;
+  let workspace, before, claimed = false, claimAttempted = false, taskFailure = false, brief, mergedMain, already = null;
+  // The merges the run started (startMergeMain, startMergePlan), kept for
+  // the exit: a head is not complete while one is in progress (alreadyComplete).
+  const merges = [];
   const finishArgs = () => ["finish", item.id, "--project", project, "--as", actor,
     ...(mergedMain ? ["--summary", `Merged main at ${mergedMain}`] : [])];
   try {
@@ -688,7 +718,6 @@ export async function runTask(assignment, config, name, io) {
       // The reset is what makes the merge-main job a task needs (t243): it
       // clears the conflicted merge a landing left in the workspace, and the
       // merge that follows puts main back in it for the builder to resolve.
-      const merges = [];
       const logMerge = (m) => io.log(m.state === "conflicts" ? `${mergedWhat(m)} merged with conflicts in ${m.files.join(", ")}` : m.state === "merged" ? `${mergedWhat(m)} merged cleanly as ${m.head.slice(0, 8)}` : m.state === "skipped" ? `${mergedWhat(m)} fetched, not merged, while the merge of main is in progress` : `the workspace already holds ${mergedWhat(m)}`);
       if (merging) {
         merges.push(await startMergeMain(assignment, workspace, io));
@@ -762,14 +791,27 @@ export async function runTask(assignment, config, name, io) {
     // work began at the recorded head, not at the workspace's before, so the
     // exit names that head as what the run moved from.
     const head = resumed ? before : await io.head(workspace);
+    // A harness that exited 0 and committed nothing (t453): when the head it
+    // left is the task's pushed head, ahead of the base, the work is already
+    // committed and pushed by an earlier run — a task sent back whose builder
+    // found nothing to add, say — so this run finishes it as a resumed run
+    // finishes a dead run's commit: the exit names the base as what the run
+    // moved from, the checks run, and that head is submitted. Any other
+    // unchanged head is a stall, released below; the log says which.
+    already = !resumed && result?.code === 0 && head === before ? await alreadyComplete(item, head, merges, (base, h) => io.isAncestor(workspace, base, h)) : null;
+    if (already?.complete) io.log(`already complete: ${already.why}; the harness changed nothing, so the checks run and that head is submitted without a new commit`);
+    else if (already) io.log(`nothing to submit: ${already.why}, and the harness changed nothing`);
     taskFailure = true;
-    advance(io.stopped() ? { error: "interrupted" } : { type: "exit", code: result?.code ?? 0, before: resumed ? item.head : before, head });
+    advance(io.stopped() ? { error: "interrupted" } : { type: "exit", code: result?.code ?? 0, before: resumed ? item.head : already?.complete ? item.base : before, head });
     if (state.phase === "failed") throw new Error(state.reason);
     await io.cli(finishArgs(), workspace);
     advance({ type: "finish" });
   } catch (error) {
     if (state.phase !== "failed") advance({ error: error.message });
     state = { ...state, taskFailure: taskFailure && !error.infrastructure && !io.stopped() };
+    // The stall's report to the server (runOutcome, reportRun) says why the
+    // unchanged head was nothing to submit, as the log does.
+    if (already && !already.complete && state.reason === "harness made no new commit") state = { ...state, detail: `${state.reason}: ${already.why}` };
     if (error.validationBlocked) state = { ...state, validationBlocked: true, taskFailure: false, skipped: true };
     if (!claimed && error.skipped) {
       state = { ...state, skipped: true };
@@ -1456,7 +1498,7 @@ export function runOutcome(state) {
 
 // `reportRun(body, runner, signal)` sends a run report; a report that fails
 // is logged and the loop goes on.
-export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun, version, load = envLoad(), cores = coreCount }) {
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun, version, load = envLoad(), cores = coreCount }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
@@ -1502,7 +1544,7 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
     // child's environment, which wins over the owner's stored token; it is
     // never an argument, which any local user could read.
     cli: (argv, cwd, options = {}) => checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, capture: readsOutput(argv), claim: argv[0] === "claim",
-      ...(options.token ? { env: { ...process.env, ATELIER_TOKEN: options.token } } : {}),
+      env: runnerChildEnv(process.env, offer.runner, credential, options.token),
       step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
       ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild),
     head: (cwd, { cleanup = false, ref = "HEAD" } = {}) => checked(["git", "rev-parse", "--verify", `${ref}^{commit}`],
@@ -1524,7 +1566,7 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
       try { return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null; } catch { return null; }
     },
     writeValidationBlock: async (cwd, block) => writeFileSync(join(cwd, ".git", "atelier-validation-blocked"), JSON.stringify(block), { mode: 0o600 }),
-    env: process.env, ownerTokens: () => ownerTokens(process.env),
+    env: process.env, ownerTokens: () => [...ownerTokens(process.env), credential].filter(Boolean),
     brief: writeBrief, removeBrief, dataHome: makeDataHome, removeDataHome,
     // The plan job's and a part's server calls (atelier.mjs wires them to
     // fetch); a runner started without them takes no plan job and no part.
@@ -1532,6 +1574,17 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
     clone: (remote, token, dir) => checked(["git", "clone", "--quiet", remote, dir], { env: gitAuth(token), signal: controller.signal, step: "clone" }, executeChild),
     diff: (dir, base, head) => checked(["git", "diff", base, head], { cwd: dir, capture: true, signal: controller.signal, step: "diff" }, executeChild),
     mergeBase: (dir, a, b) => checked(["git", "merge-base", a, b], { cwd: dir, capture: true, signal: controller.signal, step: "merge-base" }, executeChild),
+    // Whether `base` is an ancestor of `head` (alreadyComplete): git exits 0
+    // for yes and 1 for no, so neither goes through checked; anything else
+    // (an unknown commit, say) is a failure.
+    isAncestor: async (dir, base, head) => {
+      const result = await executeChild(["git", "merge-base", "--is-ancestor", base, head], { cwd: dir, capture: true, captureError: true, signal: controller.signal, step: "merge-base" });
+      if (result.timedOut) throw new Error("merge-base timed out");
+      if (controller.signal.aborted) throw new Error("interrupted");
+      if (result.code === 0) return true;
+      if (result.code === 1) return false;
+      throw new Error(result.stderr || `git exited ${result.signal ?? result.code}`);
+    },
     revParse: (dir, spec) => checked(["git", "rev-parse", spec], { cwd: dir, capture: true, signal: controller.signal, step: "rev-parse" }, executeChild),
     // A review role's override read from the accepted base (reviewRoleText):
     // the file as the base holds it, or the command fails and the default is
