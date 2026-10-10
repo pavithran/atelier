@@ -1,4 +1,4 @@
-import { assertReviewAllowed } from "./rules.ts";
+import { assertCriteriaAllowed, assertReviewAllowed } from "./rules.ts";
 import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
 import { scanCommit } from "./secret-scan.ts";
@@ -16,7 +16,7 @@ import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, R
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
-import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
+import { cleanEntry, cleanNote, cleanStatus, type ModelEntry } from "./models/pool";
 import { suggestionRecords } from "./models/suggestion-records.ts";
 import { suggestBuilder } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
@@ -903,6 +903,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       requireOwner(env, actor);
       return json({ removed: await I.removeModel(id) });
     }
+    if (parts.length === 3 && parts[2] === "notes" && m === "POST") {
+      requireOwner(env, actor);
+      return json(await I.addModelNote(id, cleanNote(body, actor, new Date().toISOString())));
+    }
     if (parts.length === 3 && parts[2] === "status" && m === "POST") {
       const runner = parseRunner(req.headers.get("x-atelier-runner"));
       if (!runner) throw new RuleError("bad_runner", "a status report names its runner in X-Atelier-Runner", 400);
@@ -1068,6 +1072,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       ...(has("execution") ? { execution: parseExecution(body.execution) } : {}),
       ...(has("eligible") ? { eligible: asStrings(body.eligible, "eligible") } : {}),
       ...(has("refuseOverlap") ? { refuseOverlap: Boolean(body.refuseOverlap) } : {}),
+      ...(has("requireCriteria") ? { requireCriteria: Boolean(body.requireCriteria) } : {}),
       // The core-file globs the queue holds overlapping dispatches on; [] clears them.
       ...(has("coreFiles") ? { coreFiles: asStrings(body.coreFiles, "coreFiles") } : {}),
       ...(has("sandboxOnly") ? { sandboxOnly: Boolean(body.sandboxOnly) } : {}),
@@ -1201,7 +1206,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (body.planner !== undefined && typeof body.planner !== "string") throw new RuleError("bad_actor", "planner must be harness/model", 400);
     return json(await L.newPlan(body.goal, asStrings(body.scope, "scope"), actor, body.planner ?? null, await index(env).models()), 201);
   }
-  if (parts.length === 3 && m === "POST") return json(await L.newItem(String(body.title ?? ""), asStrings(body.scope, "scope"), actor, itemFields(body)), 201);
+  if (parts.length === 3 && m === "POST") {
+    const fields = itemFields(body);
+    assertCriteriaAllowed((await L.project().catch(() => null))?.policy ?? {}, fields.accept);
+    return json(await L.newItem(String(body.title ?? ""), asStrings(body.scope, "scope"), actor, fields), 201);
+  }
   if (parts.length === 3 && m === "GET") return json(await L.items());
 
   const id = parts[3];
@@ -1268,8 +1277,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     requireOwner(env, actor);
     const remembered = await L.landingWorkflowOf(id);
     if (!remembered) return json({ instance: null, status: null, stage: null });
-    const status = await env.LANDING_WORKFLOW.get(remembered.instance).then((i) => i.status()).catch(() => null);
-    return json({ ...remembered, status });
+    let status: InstanceStatus | null = null;
+    let readError: string | undefined;
+    try {
+      status = await (await env.LANDING_WORKFLOW.get(remembered.instance)).status();
+      await L.observeLandingWorkflowStatus(id, remembered.instance, status);
+    } catch (error) {
+      readError = String((error as Error)?.message ?? error);
+    }
+    const queued = (await L.readLandingQueue()).some((row) => row.item === id);
+    return json({ ...remembered, status, lastStatus: status && status.status !== "unknown" ? { status: status.status, ...(status.error ? { error: { name: status.error.name.slice(0, 200), message: status.error.message.slice(0, 2000) } } : {}) } : remembered.lastStatus ?? null, ...(readError ? { readError } : {}), queued });
   }
   if (m !== "POST") throw new RuleError("not_found", "no such route", 404);
 
@@ -1429,6 +1446,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         by: actor,
         at: new Date().toISOString(),
         ...(check ? { changedPaths: null, outputTail, where: "runner" as const } : {}),
+        // The load the caller read when the check started (t403); a number or
+        // nothing, never a value the caller made up for it.
+        ...(check && Number.isFinite(Number(body.load)) ? { load: Number(body.load) } : {}),
       };
       if (!e.claim) throw new RuleError("bad_claim", "evidence needs a claim", 400);
       // Atelier counts no result from a command that is never read-only.
@@ -1503,7 +1523,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (body.suggest === true && !body.agent && body.job !== "merge-main") {
         requireOwner(env, actor);
         const [pool, track, item, p] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project()]);
-        suggestion = suggestBuilder({ ...track, item, project: p.name, pool, policy: p.policy, owner: ownerActor(env) }, body);
+        suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env) }, body);
         const slash = suggestion.actor.indexOf("/");
         body.agent = suggestion.actor.slice(0, slash);
         body.model = suggestion.actor.slice(slash + 1);
@@ -1530,9 +1550,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.undispatch(id, actor));
     // The owner's framing of a task: agentRoute gives an agent token no edit
     // route, and requireOwner refuses any other actor the owner token names.
-    case "edit":
+    case "edit": {
       requireOwner(env, actor);
-      return json(await L.editItem(id, actor, { ...itemFields(body), ...(body.title !== undefined ? { title: titleLine(body.title) } : {}) }));
+      const fields = { ...itemFields(body), ...(body.title !== undefined ? { title: titleLine(body.title) } : {}) };
+      if (fields.accept !== undefined) assertCriteriaAllowed((await L.project().catch(() => null))?.policy ?? {}, fields.accept);
+      return json(await L.editItem(id, actor, fields, body.scope !== undefined ? asStrings(body.scope, "scope") : undefined));
+    }
     // The holder or the owner blocks and unblocks; the Ledger checks which.
     case "block":
       return json(await L.block(id, actor, body.reason, !!c.token));
@@ -1607,7 +1630,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review-request": {
       requireOwner(env, actor);
       const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
-      const track = reviewer === null ? await suggestionRecords(index(env), (p) => ledgerOf(env, p)) : undefined;
+      const track = reviewer === null ? { ...await suggestionRecords(index(env), (p) => ledgerOf(env, p)), project: ref.key } : undefined;
       return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true, false, track));
     }
     // One recorded step of a landing (atelier land): what it was, how long it
@@ -1652,9 +1675,29 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // runs no checks on its machine.
       if (body.checks !== undefined && !LANDING_CHECKS_MODES.includes(body.checks as LandingChecksMode)) throw new RuleError("bad_checks", "checks must be local or container", 400);
       const checks: LandingChecksMode = body.checks === "local" ? "local" : "container";
-      const live = async () => remembered ? await env.LANDING_WORKFLOW.get(remembered.instance).then((i) => i.status()).catch(() => null) : null;
-      const standing = await live();
-      if (standing && ["queued", "running", "waiting", "waitingForPause", "paused"].includes(standing.status)) {
+      let standing: InstanceStatus | null = null;
+      if (remembered) {
+        try {
+          // Only a confirmed missing instance from get() permits replacement.
+          // A status() failure still leaves an executor that might be running.
+          let instance;
+          try {
+            instance = await env.LANDING_WORKFLOW.get(remembered.instance);
+          } catch (error) {
+            if (!/\binstance\.not_found$/.test(String((error as Error)?.message ?? error))) throw error;
+            await L.clearLandingWorkflow(id, remembered.instance, actor);
+          }
+          if (instance) {
+            standing = await instance.status();
+            await L.observeLandingWorkflowStatus(id, remembered.instance, standing);
+          }
+        } catch (error) {
+          // A failed read does not prove the instance ended. Never start a
+          // second executor beside a landing whose state we cannot establish.
+          throw new RuleError("workflow_unreadable", `the landing Workflow ${remembered.instance} cannot be read: ${String((error as Error)?.message ?? error)}; last status: ${remembered.lastStatus?.status ?? "unknown"}; last error: ${remembered.lastStatus?.error?.message ?? remembered.detail ?? "none recorded"}; ${id} ${(await L.readLandingQueue()).some((row) => row.item === id) ? "is still queued" : "is not queued"}`, 503);
+        }
+      }
+      if (standing && !["complete", "errored", "terminated"].includes(standing.status)) {
         return json({ ...remembered!, created: false, status: standing });
       }
       // The timeouts the landing waits with, each a positive number of
@@ -1665,11 +1708,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const item = await L.item(id);
       if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; there is nothing to land.`, 409);
       if (item.state === "accepted") throw new RuleError("accepted", `${id} is accepted at ${(item.acceptedHead ?? "").slice(0, 8)}; merge it with: atelier merge ${id}.`, 409);
-      // The instance is recorded under the id chosen here before it is
-      // created, so the stage it writes from its first step is never
-      // written ahead of the record (and dropped as a stale instance's).
+      // Remember only a successfully created instance. The first stage retries
+      // if execution reaches it before this request has saved the record.
       const instanceId = `land-${id}-${Date.now()}`;
-      const record = await L.setLandingWorkflow(id, instanceId, actor, checks);
       const instance = await env.LANDING_WORKFLOW.create({
         id: instanceId,
         params: {
@@ -1680,7 +1721,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           ...ms("checksTimeoutMs"), ...ms("pollMs"), ...ms("mergePollMs"), ...ms("waitTimeoutMs"), ...ms("workspaceTimeoutMs"), ...ms("conflictTimeoutMs"), ...ms("reviewTimeoutMs"), ...ms("mergeTimeoutMs"),
         },
       });
-      return json({ ...record, created: true, status: await instance.status() }, 201);
+      const record = await L.setLandingWorkflow(id, instanceId, actor, checks);
+      const status = await instance.status();
+      await L.observeLandingWorkflowStatus(id, instanceId, status);
+      return json({ ...record, created: true, status }, 201);
     }
     case "integrated": {
       // The integrator reports a merge of one part. The Worker verifies the
@@ -1793,7 +1837,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const item = await L.release(id, actor, note, !!c.token, oldToken);
       return json(item);
     }
-    case "accept":
+    case "accept": {
       requireOwner(env, actor);
       await verifyRevision(env, ref.key, id, String(body.head ?? ""));
       await assertPlanMergeable(env, L, id);
@@ -1806,10 +1850,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // agent session may hold, so the Ledger takes it only under the
       // owner's standing permission from the task's page (t371); the
       // refusal names that page on this server and the factor it takes.
+      const overrideReview = body.overrideReview === undefined ? undefined : typeof body.overrideReview === "string" ? body.overrideReview : "";
+      let item: Item;
       try {
-        return json(await L.accept(id, actor, String(body.head ?? ""),
-          body.overrideReview === undefined ? undefined : typeof body.overrideReview === "string" ? body.overrideReview : "",
-          typeof body.note === "string" ? body.note : undefined));
+        item = await L.accept(id, actor, String(body.head ?? ""), overrideReview, typeof body.note === "string" ? body.note : undefined);
       } catch (err) {
         const rule = parseRuleError(err);
         if (rule?.code === "override_unconfirmed") {
@@ -1817,6 +1861,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         }
         throw err;
       }
+      // An override the owner records while a reviewer of another family was
+      // available is answered with that reviewer, so the owner sees the
+      // `atelier land ID --reviewer H/M` command that would have replaced it
+      // (t395).
+      const availableReviewer = overrideReview !== undefined ? await L.availableReviewer(id, await index(env).models()) : null;
+      return json({ ...item, ...(availableReviewer ? { availableReviewer } : {}) });
+    }
     case "merged": {
       requireOwner(env, actor);
       const p = await L.project();
@@ -2170,7 +2221,8 @@ function isHeld(item: Item): boolean {
 async function inbox(env: Env, token?: AgentToken) {
   const projects = (await index(env).projects()).filter((p) => inScope(token, namesOf(p)));
   const now = new Date().toISOString();
-  const lists = await Promise.all(projects.map((p) => ledgerOf(env, p).inbox(now)));
+  const pool = await index(env).models();
+  const lists = await Promise.all(projects.map((p) => ledgerOf(env, p).inbox(now, pool)));
   return lists.flat().sort((a, b) => b.weight - a.weight);
 }
 

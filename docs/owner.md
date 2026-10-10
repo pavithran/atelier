@@ -214,6 +214,15 @@ Atelier hands everything after it, unchanged and before reading anything
 itself, to the executable `ATELIER_OPS` names or to `atelier-ops` on `PATH`,
 and exits as it exits. Without one, `atelier ops` says so and exits 2.
 
+`atelier ops token-expiry NAME --on YYYY-MM-DD` is the one `ops` command
+Atelier handles itself. It records the day a named token expires — the deploy
+and ops Cloudflare tokens, for one — in a local file
+(`~/.config/atelier/token-expiries.json`, or `ATELIER_CONFIG_DIR`) that holds
+only each name and its day, never a token's value. `atelier status` then warns
+from 14 days before each recorded expiry, naming the token and the date, so
+the owner's calendar is not the only reminder. Record the next expiry again
+with the same command once a token is rotated.
+
 ## Local cache cleanup
 
 `atelier gc --project NAME` previews local directories eligible for removal.

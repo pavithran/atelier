@@ -78,8 +78,8 @@ test("t371: a project that forbids overrides refuses every override before the r
   // The inbox, the page and the brief say so instead of offering the override.
   const now = new Date(T);
   const entry = (p: ProjectPolicy) => inboxFor("proj", [item()], p, touching, [], now).map((x) => [x.kind, x.reason]);
-  assert.deepEqual(entry(policy), [["assess", `${PROTECTED_NEED}; ask a reviewer who qualifies, or accept with an override and its reason`]]);
-  assert.deepEqual(entry(forbidding), [["assess", `${PROTECTED_NEED}; ask a reviewer who qualifies; this project forbids overrides`]]);
+  assert.deepEqual(entry(policy), [["assess", `${PROTECTED_NEED}; ask a reviewer with atelier land t1 --reviewer H/M, and override only as the owner's last resort`]]);
+  assert.deepEqual(entry(forbidding), [["assess", `${PROTECTED_NEED}; ask a reviewer with atelier land t1 --reviewer H/M; this project forbids overrides`]]);
   assert.equal(overrideOffer(policy, true), " If no reviewer qualifies, you can accept with an override and say why.");
   assert.equal(overrideOffer(policy, false), "");
   assert.equal(overrideOffer(forbidding, true), " This project forbids overrides of that review.");

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { redactKeys } from "../src/models/pool.ts";
 import { isOwnerSecretName } from "./credentials.mjs";
@@ -36,7 +37,47 @@ const PROVIDER = /^[a-z0-9][a-z0-9._-]{0,31}$/i;
 // The name of an environment variable a harness entry passes on (runner.mjs harnessEnv).
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 
-export function parseConfig(json) {
+// The harness adapters Atelier ships (bin/harness/, cli/harness/adapter.mjs),
+// which an entry runs when it gives no command of its own. Each is started by
+// this Node with every placeholder, so the one command builds, plans and
+// reviews; opencode's also names the folder of the provider configs `atelier
+// runner setup` wrote for this runner config (providersDir), and the
+// credential store the
+// runner itself reads (ATELIER_SECRET_STORE, ATELIER_CONFIG_DIR): the runner
+// passes a harness no ATELIER_ variable (check-env.mjs), so without these the
+// adapter would look for its keys in another store than the one they were
+// put in.
+const ADAPTERS = { "claude-code": "atelier-claude.mjs", codex: "atelier-codex.mjs", opencode: "atelier-opencode.mjs", antigravity: "atelier-agy.mjs" };
+const BIN = fileURLToPath(new URL("../bin/harness/", import.meta.url));
+export function defaultCommand(agent, configPath = defaultConfigPath(), env = process.env) {
+  const adapter = ADAPTERS[agent];
+  if (!adapter) return null;
+  const store = agent !== "opencode" ? [] : [
+    "--providers", providersDir(configPath),
+    ...(env.ATELIER_SECRET_STORE ? ["--secret-store", env.ATELIER_SECRET_STORE] : []),
+    ...(env.ATELIER_CONFIG_DIR ? ["--secrets-dir", env.ATELIER_CONFIG_DIR] : []),
+  ];
+  return [process.execPath, join(BIN, adapter), ...store,
+    "{model}", "{brief_file}", "{workspace}", "{plan_file}", "{diff_file}", "{verdict_file}"];
+}
+export const defaultConfigDir = () => process.env.ATELIER_CONFIG_DIR ?? join(homedir(), ".config", "atelier");
+export const defaultConfigPath = () => join(defaultConfigDir(), "runner.json");
+
+// The folder of one runner config's opencode provider configs: opencode/NAME
+// beside it, NAME the config's whole file name (runner.json). A folder per
+// config, so setting up a second runner leaves the first one's index and
+// provider configs as they were; the extension stays in NAME, so
+// runner.json and runner.backup never share one (the finding on 84644528).
+export function providersDir(configPath) {
+  const path = resolve(configPath);
+  return join(dirname(path), "opencode", basename(path));
+}
+
+// `configPath` is the file the config was read from, beside which `runner
+// setup` keeps the opencode provider configs a default command names
+// (providersDir); `env` the runner's environment, which names its credential
+// store.
+export function parseConfig(json, { configPath, env } = {}) {
   const agents = [], errors = [];
   let value;
   try { value = typeof json === "string" ? JSON.parse(json) : json; }
@@ -48,6 +89,14 @@ export function parseConfig(json) {
   if (!Number.isInteger(taskTimeoutMs) || taskTimeoutMs <= 0 || taskTimeoutMs > 2_147_483_647) errors.push("taskTimeoutMs must be a positive timer-safe integer");
   const finishTimeoutMs = value.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS;
   if (!Number.isInteger(finishTimeoutMs) || finishTimeoutMs <= 0 || finishTimeoutMs > 2_147_483_647) errors.push("finishTimeoutMs must be a positive timer-safe integer");
+  // Optional (t403): the load average under which the runner takes a new job.
+  // Without it the limit is the machine's core count (cli/load.mjs), so the
+  // runner holds off once the machine is more than fully busy.
+  let loadLimit;
+  if (value.loadLimit !== undefined) {
+    if (typeof value.loadLimit !== "number" || !Number.isFinite(value.loadLimit) || value.loadLimit <= 0) errors.push("loadLimit must be a positive number");
+    else loadLimit = value.loadLimit;
+  }
   // Optional: for each model that needs an API key, the name of the Keychain
   // entry that holds it. The key itself is refused here, and never echoed.
   let keychain;
@@ -122,7 +171,7 @@ export function parseConfig(json) {
       }
     }
   }
-  for (const [i, entry] of value.agents.entries()) {
+  for (let [i, entry] of value.agents.entries()) {
     const bad = (message) => errors.push(`agents[${i}]: ${message}`);
     const start = errors.length;
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) { bad("expected an object"); continue; }
@@ -132,6 +181,12 @@ export function parseConfig(json) {
     if (!Array.isArray(entry.models) || !entry.models.length ||
         entry.models.some((m) => typeof m !== "string" || !MODEL.test(m)) ||
         new Set(entry.models).size !== entry.models.length) bad("models must be distinct claimable model ids");
+    // No command: the adapter Atelier ships for the harness, where it ships one.
+    if (entry.command === undefined && HARNESSES.includes(entry.agent)) {
+      const command = defaultCommand(entry.agent, configPath, env);
+      if (command) entry = { ...entry, command };
+      else bad(`Atelier ships no adapter for ${entry.agent}; give its command`);
+    }
     if (!Array.isArray(entry.command) || !entry.command.length ||
         entry.command.some((s) => typeof s !== "string" || s.includes("\0")) || !entry.command[0]?.trim()) {
       bad("command must be an argv array with an executable and no NUL characters");
@@ -155,11 +210,11 @@ export function parseConfig(json) {
     if (errors.length === start) agents.push({ agent: entry.agent, models: [...entry.models], command: [...entry.command], ...(entry.env ? { env: [...entry.env] } : {}) });
   }
   return { agents, errors, taskTimeoutMs, finishTimeoutMs, ...(keychain ? { keychain } : {}), ...(balances ? { balances } : {}), ...(tokens ? { tokens } : {}),
-    ...(jobs !== undefined ? { jobs } : {}) };
+    ...(jobs !== undefined ? { jobs } : {}), ...(loadLimit !== undefined ? { loadLimit } : {}) };
 }
 
-export function readConfig(path = join(process.env.ATELIER_CONFIG_DIR ?? join(homedir(), ".config", "atelier"), "runner.json")) {
-  const config = parseConfig(readFileSync(path, "utf8"));
+export function readConfig(path = defaultConfigPath()) {
+  const config = parseConfig(readFileSync(path, "utf8"), { configPath: path });
   if (config.errors.length) throw new Error(config.errors.join("; "));
   return config;
 }
