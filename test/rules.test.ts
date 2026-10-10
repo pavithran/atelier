@@ -456,7 +456,7 @@ test("changed paths take the strictest class and retain implicit check protectio
   assert.equal(changeClass(["docs/a.md"], { ...governed, execution: { ...governed.execution!, direct: { enabled: false, allowed_path_patterns: ["**"] } } }), "coordinated");
 });
 
-test("direct needs no review, coordinated needs another actor, protected needs another family", () => {
+test("direct needs no review, coordinated needs another model, protected needs another family", () => {
   const direct = [pass({ changedPaths: ["docs/a.md"] })];
   const coordinated = [pass()];
   const protectedChange = [pass({ changedPaths: ["AGENTS.md"] })];
@@ -617,11 +617,11 @@ test("a contributor's model under another letter case, profile or registered nam
   assert.equal(gate(item(), policy, touching, [review("codex/gpt-6-astra")]).ready, true);
 
   // Governed, coordinated: another spelling of a contributor is that
-  // contributor; the same model in another harness is another agent.
+  // contributor; changing harness does not make its review independent.
   const coordinated = [pass({ changedPaths: ["src/a.ts"] })];
   assert.equal(gate(item(), governed, coordinated, [review("Claude-Code/OPUS-5.5:fast")]).ready, false);
   assert.equal(gate(item(), governed, coordinated, [review("claude-code/claude-opus-5-5")]).ready, false);
-  assert.equal(gate(item(), governed, coordinated, [review("codex/opus-5.5")]).ready, true);
+  assert.equal(gate(item(), governed, coordinated, [review("codex/opus-5.5")]).ready, false);
 
   // Governed, protected: a profile suffix never changes a model's family, nor
   // the agent its review is counted for.
@@ -630,6 +630,32 @@ test("a contributor's model under another letter case, profile or registered nam
   assert.equal(agentOf("opencode/qwen3.8-27b:google-eval", anyAssessor.agents!), "qwen");
   assert.equal(gate(qwen, anyAssessor, touching, [review("opencode/qwen3.8-27b:google-eval")]).ready, false);
   assert.equal(gate(qwen, anyAssessor, touching, [review("codex/gpt-6-astra")]).ready, true);
+});
+
+test("t418: changing harness never makes a contributor model independent", () => {
+  const scenarios = [
+    { label: "coordinated", policy: governed, paths: ["src/a.ts"] },
+    { label: "governed protected", policy: governed, paths: ["AGENTS.md"] },
+    { label: "ungoverned protected", policy, paths: ["AGENTS.md"] },
+  ];
+  for (const scenario of scenarios) {
+    const evidence = [pass({ changedPaths: scenario.paths })];
+    for (const task of [
+      item(),
+      item({ owner: "codex/gpt-6", pushActors: ["claude-code/opus-5.5"] }),
+    ]) {
+      for (const by of ["codex/claude-opus-5-5", "codex/OPUS-5.5:fast", "opencode/opus-5.5"]) {
+        const g = gate(task, scenario.policy, evidence, [review(by)]);
+        assert.equal(g.ready, false, `${scenario.label}: ${by}`);
+        assert.equal(g.needsAssessor, true, `${scenario.label}: ${by}`);
+      }
+      // A different model at the same company qualifies only for coordinated work.
+      assert.equal(gate(task, scenario.policy, evidence, [review("codex/claude-sonnet-5-5")]).ready,
+        scenario.label === "coordinated", scenario.label);
+      // A company absent from all contributors qualifies for either class.
+      assert.equal(gate(task, scenario.policy, evidence, [review("qwen/qwen3")]).ready, true, scenario.label);
+    }
+  }
 });
 
 test("review independence includes every contributor after a handoff", () => {
