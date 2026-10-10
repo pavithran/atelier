@@ -413,6 +413,11 @@ round; t435 has the runner merge main before submitting.
 
 ### Held dispatches
 
+Scope each task as narrowly as the change allows. A scope of `src/**`
+reaches every core file, so the task is held behind any live task in any of
+them: on 10 October twelve tasks filed with broad scopes all waited on one
+task, while a second machine's runners sat idle.
+
 `atelier status` shows `Held: waits on tX … both scopes reach core file F`
 for a dispatch whose scope overlaps a live task's in a core file. Check that
 tX is really moving (its workspace's last commit, an agent process in it). If
