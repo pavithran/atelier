@@ -311,8 +311,20 @@ const PLAN_FLAGS = { "": ["scope", "planner"], show: ["json"], approve: ["hash",
 // take, instead of slipping through as a string that answers anyway.
 const SWITCHES = new Set(["version", ...Object.values(FLAGS).flatMap((row) => Object.keys(row).filter((flag) => row[flag] === true))]);
 // --brief is text for new and edit and a switch for status, so it is a switch
-// only when the command is status, the first word that is not a flag.
-const switchesFor = (argv) => (argv.find((a) => !a.startsWith("-")) === "status" ? SWITCHES : new Set([...SWITCHES].filter((flag) => flag !== "brief")));
+// only when the command is status: the first word that is not a flag or a
+// flag's value.
+const commandOf = (argv) => {
+  const plain = new Set([...SWITCHES].filter((flag) => flag !== "brief"));
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--") return undefined;
+    if (!a.startsWith("-")) return a;
+    if (!a.startsWith("--") || a.includes("=")) continue;
+    const next = argv[i + 1];
+    if (plain.has(a.slice(2)) ? next === "true" || next === "false" : next !== undefined && !next.startsWith("--")) i++;
+  }
+};
+const switchesFor = (argv) => (commandOf(argv) === "status" ? SWITCHES : new Set([...SWITCHES].filter((flag) => flag !== "brief")));
 
 export function parseArgs(argv, switches = switchesFor(argv)) {
   const out = { _: [], multi: {}, bare: [], problems: [] };

@@ -324,7 +324,7 @@ export function formatStatusBrief(b) {
   const building = s.live.filter((i) => i.state === "claimed");
   const submitted = s.live.filter((i) => i.state === "submitted" || i.state === "accepted");
   lines.push(`Live builds: ${building.length ? `${building.length} (${named(building.map((i) => `${i.id} ${oneLine(i.owner ?? "nobody")}`))})` : "none"}.`);
-  const requests = (b.queue?.queue ?? []).filter((q) => q.project === s.project.name && q.item?.dispatch?.job === "review");
+  const requests = (Array.isArray(b.queue) ? b.queue : []).filter((q) => q.project === s.project.name && q.item?.dispatch?.job === "review");
   const reviewing = requests.map((q) => `${q.item.id} by ${oneLine(q.item.dispatch.agent ?? "any")}/${oneLine(q.item.dispatch.model ?? "any")}`);
   const asked = !b.queue ? "the review queue could not be read" : reviewing.length ? `${reviewing.length} waiting for a runner (${named(reviewing)})` : "none waiting for a runner";
   lines.push(`Reviews: ${submitted.length} submitted or accepted${submitted.length ? ` (${named(submitted.map((i) => `${i.id} ${i.state}`))})` : ""}; ${asked}.`);

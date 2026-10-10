@@ -16,12 +16,10 @@ const brief = (over = {}) => ({
     merged: ["t9", "t8", "t7", "t6", "t5"].map((id, n) => ({ id, title: `Merged ${id}`, at: "2026-10-09T10:00:00Z", commit: `${n}abcdef0123456789`, line: null })),
   },
   version: { commit: "deadbeefcafe1234", routeLevel: 7 },
-  queue: {
-    queue: [
-      { project: "demo", item: { id: "t2", dispatch: { job: "review", agent: "codex", model: "gpt-6" } } },
-      { project: "other", item: { id: "t3", dispatch: { job: "review", agent: "x", model: "y" } } },
-    ],
-  },
+  queue: [
+    { project: "demo", item: { id: "t2", dispatch: { job: "review", agent: "codex", model: "gpt-6" } } },
+    { project: "other", item: { id: "t3", dispatch: { job: "review", agent: "x", model: "y" } } },
+  ],
   lease: { item: "t4", holder: "owner", since: "2026-10-09 12:00 UTC" },
   usage: {
     thresholds: { dailySpend: 10 },
@@ -76,4 +74,8 @@ test("the brief says what it could not read", () => {
     "Waiting on the owner: nothing.",
     "Spend: not readable from the server.",
   ]);
+});
+
+test("the review queue is the array the API returns, and its waiting reviews are counted", () => {
+  assert.match(formatStatusBrief(brief()), /1 waiting for a runner \(t2 by codex\/gpt-6\)/);
 });
