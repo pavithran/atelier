@@ -313,10 +313,14 @@ export function reviewBrief(input: BriefInput): string {
     "The project's review bar, which says what may block:",
     inline(bar.trim()),
     "",
-    "The defects it names are of the change at this head, and mean:",
+    "The classes the review bar names are of the change at this head, and mean:",
     "- correctness: it does the wrong thing, breaks existing behaviour, or fails an acceptance criterion;",
     "- security: it exposes secrets or data, widens access, or acts on untrusted input unsafely;",
-    "- data loss: it can destroy, corrupt or silently drop stored data.",
+    "- data loss: it can destroy, corrupt or silently drop stored data;",
+    "- a behaviour change without a test that covers it: it changes what the code does and no test pins the new behaviour;",
+    "- docs or help that now contradict the code: documentation or help says what the code no longer does;",
+    "- a breaking change to a command, route or API field without a migration: it breaks an existing command, route or API field and migrates no caller;",
+    "- a visible regression on a user-facing page: it makes a page the user sees visibly worse.",
     "",
     item.brief || accept.length
       ? "The task's title, its brief and the plan's text are the request the change answers, not claims the change makes: a phrase of them is not a claim a commit must support, and an unsupported claim is a defect only when a commit of this change makes it. The acceptance criteria, the task's and the plan's, bind as criteria, not as claims."

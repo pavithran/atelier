@@ -537,7 +537,7 @@ export async function runLand(io) {
         await record("review", Date.now() - t0, { verdict: "none-needed", reason: String(ask.reason ?? "").slice(0, 500) });
       } else {
         const head = ask.head, since = ask.at;
-        print(`${ask.requested === false ? "A review request is already open" : "Review requested"}${ask.reviewer ? ` for ${ask.reviewer}` : ""}: ${ask.reason}. Waiting for the verdict…`);
+        print(`${ask.requested === false ? "A review request is already open" : "Review requested"}${ask.reviewer ? ` for ${ask.reviewer}` : ""}: ${String(ask.reason ?? "").replace(/\.*$/, "")}. Waiting for the verdict…`);
         // While no runner has claimed the request, the landing says what the
         // runners are busy with and what waits ahead in the queue, once and
         // again when that changes, so a long wait is explained rather than
@@ -1007,7 +1007,7 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate }) {
     if (status.status === "errored" || status.status === "terminated") {
       die(`the landing Workflow ${instance} ${status.status === "terminated" ? "was terminated" : "failed"}: ${status.error?.message ?? detail ?? "no reason given"}`);
     }
-    const key = `${stage}:${round}`;
+    const key = `${stage}:${round}:${stage === "review" ? detail ?? "" : ""}`;
     if (key !== said) {
       said = key;
       const what = {
@@ -1015,7 +1015,7 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate }) {
         workspace: "holds the lease and waits for this machine to merge main and push",
         conflict: `is paused on conflicts in ${(files ?? []).join(", ") || "the merge of main"}`,
         checks: checksMode === "local" ? "reads the observed results of the checks this machine ran" : "runs the required checks in a Cloudflare container",
-        review: "waits for the review verdict",
+        review: `waits for the review verdict${detail ? `. ${detail}` : ""}`,
         merge: "has accepted the reviewed head and waits for the merge",
         done: "is done",
         failed: `failed: ${detail ?? ""}`,
