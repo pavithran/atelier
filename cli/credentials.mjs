@@ -217,7 +217,7 @@ export function runnerCredential(server, name, deps = {}) {
   if (!name) return null;
   const key = `runner.${normalizeRunner(name)}`;
   const raw = (deps.read ?? readSecret)(key, { ...deps, env: { ...env, [envNameFor(key)]: undefined } });
-  if (!raw) throw new Error(`no runner credential in ${key}; store one with token store --runner ${name}`);
+  if (!raw) return null; // no entry: the owner's login applies, as before runner tokens
   let record;
   try { record = JSON.parse(raw); } catch { throw new Error(`${key} has no server binding; store it again`); }
   if (record.server !== server.replace(/\/+$/, "") || typeof record.token !== "string" || !record.token) throw new Error(`${key} is not bound to this server`);

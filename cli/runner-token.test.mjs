@@ -23,7 +23,10 @@ test("runner environment wins, empty/invalid selections cannot fall back, stores
   assert.equal(runnerCredential("https://one.test", "home:studio", { env: { ...env, ATELIER_RUNNER_TOKEN: "explicit-invalid" } }), "explicit-invalid");
   assert.throws(() => runnerCredential("https://one.test", "home:studio", { env: { ...env, ATELIER_RUNNER_TOKEN: "" } }), /empty/);
   assert.throws(() => runnerCredential("https://two.test", "home:studio", { env }), /not bound/);
-  assert.throws(() => runnerCredential("https://one.test", "home:missing", { env }), /no runner credential/);
+  assert.equal(runnerCredential("https://one.test", "home:missing", { env }), null);
+  assert.throws(() => runnerCredential("https://one.test", "home:studio", { env, read: () => "not json" }), /no server binding/);
+  assert.throws(() => runnerCredential("https://one.test", "home:studio", { env, read: () => JSON.stringify({ server: "https://one.test" }) }), /not bound/);
+  assert.throws(() => runnerCredential("https://one.test", "home:missing", { env: { ...env, ATELIER_RUNNER_TOKEN: "" } }), /empty/);
   const child = runnerChildEnv(env, "home:studio", "stored-runner", "model-review-token");
   assert.equal(runnerCredential("https://one.test", child.ATELIER_RUNNER_NAME, { env: child }), "model-review-token");
 });
