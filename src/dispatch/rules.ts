@@ -4,7 +4,7 @@
 // claim it through the ordinary atomic claim. A runner at home therefore only
 // ever makes outgoing requests, and every runner's work is judged the same way.
 
-import { RuleError, samePlan, scopesOverlapWithin, validActor, type Item, type ItemState } from "../rules.ts";
+import { RuleError, samePlan, scopesOverlap, scopesOverlapWithin, validActor, type Item, type ItemState } from "../rules.ts";
 import { assertLength, OWNER_TEXT_MAX } from "../text.ts";
 
 export type RunnerKind = "cloud" | "home";
@@ -174,6 +174,93 @@ export function coreHold(item: Item, items: readonly Item[], coreFiles: readonly
 // and the core-file glob both scopes reach.
 export function holdText(h: CoreHold): string {
   return `waits on ${h.id} (${h.state}${h.owner ? ` by ${h.owner}` : ""}): both scopes reach core file ${h.core}`;
+}
+
+// The live item a dispatched task's claim would be refused against, when the
+// project refuses overlapping claims (policy.refuseOverlap): a claimed or
+// submitted item outside the task's plan whose scope overlaps the task's.
+// Like coreHold, only a job that builds — a plain build or merge-main — is
+// ever refused an overlap; the plan, integrate, refresh and review jobs
+// change no workspace of their own.
+export interface OverlapRefusal {
+  id: string;
+  owner: string | null;
+  title: string;
+  state: ItemState;
+}
+
+export function overlapRefusal(item: Item, items: readonly Item[]): OverlapRefusal | null {
+  const d = item.dispatch;
+  if (!d || d.overlapOk || item.kind === "plan") return null;
+  if (d.job !== undefined && d.job !== "merge-main") return null;
+  for (const o of items) {
+    if (o.id === item.id || samePlan(item, o)) continue;
+    if (o.state !== "claimed" && o.state !== "submitted") continue;
+    if (scopesOverlap(item.scope, o.scope)) return { id: o.id, owner: o.owner, title: o.title, state: o.state };
+  }
+  return null;
+}
+
+// The failed build runs a runner reported for one item, and how many of them
+// the runner gives up at (cli/runner.mjs skips the task once it has failed
+// twice, so the queue reports it as skipped rather than merely waiting).
+export const SKIP_AFTER = 2;
+const FAILED_OUTCOMES = new Set(["stalled", "timed-out", "refused", "harness_failed"]);
+
+export function failedRunCount(runs: readonly { project: string | null; item: string | null; role: string; outcome: string }[], project: string, item: string): number {
+  return runs.filter((r) => r.project === project && r.item === item && r.role === "build" && FAILED_OUTCOMES.has(r.outcome)).length;
+}
+
+// Why a dispatched task the queue offers is not being taken, each reason in
+// words, ready to print. The queue checks them in this order: the core-file
+// hold, the overlap the project's policy refuses, the failures a runner gave
+// up at, and no live runner offering the model or job. A task may carry
+// several; `atelier status` and `atelier show` print one line each.
+export type UnclaimedKind = "held" | "overlap" | "skipped" | "unoffered";
+
+export interface UnclaimedReason {
+  kind: UnclaimedKind;
+  line: string;
+}
+
+export function unclaimed(
+  item: Item,
+  input: {
+    held?: CoreHold | null;
+    overlap?: OverlapRefusal | null;
+    offers?: readonly SeenOffer[] | null;
+    runs?: readonly { project: string | null; item: string | null; role: string; outcome: string }[] | null;
+    project?: string;
+    now?: Date;
+  },
+): UnclaimedReason[] {
+  const out: UnclaimedReason[] = [];
+  if (input.held) out.push({ kind: "held", line: heldReasonLine(item, input.held) });
+  if (input.overlap) out.push({ kind: "overlap", line: overlapReasonLine(input.overlap) });
+  const failed = input.runs && input.project ? failedRunCount(input.runs, input.project, item.id) : 0;
+  if (failed >= SKIP_AFTER) out.push({ kind: "skipped", line: skippedReasonLine(item, failed) });
+  if (item.dispatch && input.offers) {
+    const dead = unoffered(item.dispatch, input.offers, input.now);
+    if (dead) out.push({ kind: "unoffered", line: unofferedReasonLine(dead, item) });
+  }
+  return out;
+}
+
+function heldReasonLine(item: Item, h: CoreHold): string {
+  const next = item.kind === "part" ? "" : `, or at once with atelier dispatch ${item.id} --overlap-ok`;
+  return `Held: ${holdText(h)}; offered once ${h.id} merges or is abandoned${next}.`;
+}
+
+function overlapReasonLine(o: OverlapRefusal): string {
+  return `Overlap refused: ${o.id} (${o.owner ?? "unowned"}) holds a scope that overlaps this one, and the project refuses overlapping claims; a runner can take it once ${o.id} merges or is abandoned, or the owner allows overlaps with atelier init --refuse-overlap=false.`;
+}
+
+function skippedReasonLine(item: Item, n: number): string {
+  return `Skipped: a runner gave it up after ${n} failure${n === 1 ? "" : "s"}; fix the failure, then dispatch it again with atelier dispatch ${item.id}.`;
+}
+
+function unofferedReasonLine(dead: string, item: Item): string {
+  return `${dead[0].toUpperCase()}${dead.slice(1)}. Dispatch it to a model a live runner offers (atelier dispatch ${item.id} --agent H --model M), or start a runner that offers it.`;
 }
 
 export function assertDispatchable(item: Item): void {

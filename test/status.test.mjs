@@ -182,13 +182,16 @@ test("with the queue and the runners' offers, open reviews wait with the runner 
     { runner: "home:studio", kind: "home", jobs: ["build", "plan", "review"], agents: [{ agent: "opencode", models: ["glm-5.3"] }], at: now.toISOString() },
   ];
   const review = (agent, model) => ({ to: "home", agent, model, by: "atelier/orchestrator", at: now.toISOString(), note: "", job: "review" });
+  const build = (agent, model) => ({ to: "home", agent, model, by: "owner", at: now.toISOString(), note: "" });
   const queue = [
+    { project: "demo", item: { id: "t3", title: "Task t3", dispatch: build("codex", "gpt-6-astra"), why: [{ kind: "unoffered", line: "No live runner can take it: home:studio offers build as opencode/glm-5.3." }] } },
+    { project: "demo", item: { id: "t4", title: "Task t4", dispatch: build("opencode", "glm-5.3") } },
     { project: "demo", item: { id: "t7", title: "Task t7", dispatch: review("claude-code", "fable-5.1") } },
     { project: "other", item: { id: "t9", title: "Elsewhere", dispatch: review("antigravity", "gemini-3.1-pro") } },
   ];
   const out = formatStatus([{
     name: "demo",
-    items: [item("t3", "open", { dispatch: { to: "home", agent: "codex", model: "gpt-6-astra", by: "owner", at: now.toISOString(), note: "" } }), item("t4", "open", { dispatch: { to: "home", agent: "opencode", model: "glm-5.3", by: "owner", at: now.toISOString(), note: "" } })],
+    items: [item("t3", "open", { dispatch: build("codex", "gpt-6-astra") }), item("t4", "open", { dispatch: build("opencode", "glm-5.3") })],
     inbox: [],
   }], { queue, offers, now }).split("\n");
   assert.ok(out.includes("    t3  for home codex/gpt-6-astra  Task t3"));
@@ -460,19 +463,43 @@ test("the runners section lists live runners first, and formatStatus appends it 
 });
 
 test("a queued task the core files hold says what it waits on and how to let it through; a held part takes no override", () => {
-  const held = { id: "t1", owner: "codex/gpt-6", state: "claimed", title: "Task t1", core: "src/ledger.ts" };
   const d = { to: "home", agent: "codex", model: "gpt-6" };
+  const taskHeld = { kind: "held", line: "Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned, or at once with atelier dispatch t2 --overlap-ok." };
+  const partHeld = { kind: "held", line: "Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned." };
   const out = formatStatus([{
     name: "demo",
     items: [item("t1", "claimed", { owner: "codex/gpt-6" }), item("t2", "open", { dispatch: d }), item("t3", "open", { dispatch: d, kind: "part", plan: "t8" }), item("t4", "open", { dispatch: d })],
     inbox: [],
   }], { queue: [
-    { project: "demo", item: { ...item("t2", "open", { dispatch: d }), held } },
-    { project: "demo", item: { ...item("t3", "open", { dispatch: d, kind: "part", plan: "t8" }), held } },
+    { project: "demo", item: { ...item("t2", "open", { dispatch: d }), why: [taskHeld] } },
+    { project: "demo", item: { ...item("t3", "open", { dispatch: d, kind: "part", plan: "t8" }), why: [partHeld] } },
     { project: "demo", item: item("t4", "open", { dispatch: d }) },
-    { project: "other", item: { ...item("t4", "open", { dispatch: d }), held } },
+    { project: "other", item: { ...item("t4", "open", { dispatch: d }), why: [taskHeld] } },
   ] }).split("\n");
   assert.ok(out.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned, or at once with atelier dispatch t2 --overlap-ok."), out.join("\n"));
   assert.ok(out.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned."));
   assert.equal(out.filter((l) => l.includes("Held:")).length, 2, "t4 is not held here, only in another project");
+});
+
+// t420: every reason a dispatched task is not being taken is printed, with
+// the command that releases it, one line per reason, from the queue's `why`.
+test("each reason a queued task is not taken prints with the command that releases it", () => {
+  const d = { to: "home", agent: "codex", model: "gpt-6" };
+  const why = (id) => [
+    { kind: "held", line: `Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned, or at once with atelier dispatch ${id} --overlap-ok.` },
+    { kind: "overlap", line: `Overlap refused: t1 (codex/gpt-6) holds a scope that overlaps this one, and the project refuses overlapping claims; a runner can take it once t1 merges or is abandoned, or the owner allows overlaps with atelier init --refuse-overlap=false.` },
+    { kind: "skipped", line: `Skipped: a runner gave it up after 2 failures; fix the failure, then dispatch it again with atelier dispatch ${id}.` },
+    { kind: "unoffered", line: "No live runner can take it: home:studio offers build as opencode/glm-5.3." },
+  ];
+  const out = formatStatus([{
+    name: "demo",
+    items: [item("t1", "claimed", { owner: "codex/gpt-6" }), item("t2", "open", { dispatch: d })],
+    inbox: [],
+  }], { queue: [{ project: "demo", item: { ...item("t2", "open", { dispatch: d }), why: why("t2") } }] }).split("\n");
+  assert.ok(out.includes("    t2  for home codex/gpt-6  Task t2"));
+  for (const line of why("t2").map((r) => r.line)) assert.ok(out.includes(`      ${line}`), line);
+  // A task with no reason prints its bare line and nothing more.
+  const bare = formatStatus([{ name: "demo", items: [item("t3", "open", { dispatch: d })], inbox: [] }], { queue: [{ project: "demo", item: item("t3", "open", { dispatch: d }) }] }).split("\n");
+  assert.ok(bare.includes("    t3  for home codex/gpt-6  Task t3"));
+  assert.equal(bare.filter((l) => l.includes("  t3") || l.includes("for home")).length, 1, "no reason line for a task the queue does not hold");
 });

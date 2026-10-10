@@ -1341,7 +1341,7 @@ export function runOutcome(state) {
 
 // `reportRun(body, runner, signal)` sends a run report; a report that fails
 // is logged and the loop goes on.
-export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun, version }) {
+export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun, version, idleWhy }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
@@ -1450,6 +1450,22 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
     // logged, the rest are quiet until the queue answers again, and each
     // lengthens the wait before the next poll (queueBackoffMs).
     let misses = 0;
+    // Why this runner found nothing it may claim while dispatches wait (t420):
+    // the queue's GET lists every waiting dispatch with the reason, so an idle
+    // runner says once what holds each one, and stays quiet until that changes.
+    let lastWhy = null;
+    const sayIdleWhy = async () => {
+      if (!idleWhy) return;
+      let waiting;
+      try { waiting = await idleWhy(controller.signal); } catch { return; }
+      const held = (Array.isArray(waiting) ? waiting : []).filter((q) => q?.item?.why?.length);
+      if (!held.length) { lastWhy = null; return; }
+      const signature = held.map((q) => `${q.project}/${q.item.id}:${q.item.why.map((r) => `${r.kind}:${r.line}`).join("|")}`).sort().join("\n");
+      if (signature === lastWhy) return;
+      lastWhy = signature;
+      line(`found nothing to claim while ${held.length} dispatch${held.length === 1 ? "" : "es"} wait${held.length === 1 ? "s" : ""}:`);
+      for (const q of held) for (const r of q.item.why) line(`  ${q.project}/${q.item.id}  ${r.line}`);
+    };
     while (!controller.signal.aborted) {
       let state;
       try {
@@ -1474,8 +1490,10 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
         // before t252's fix still lists, and they stay in the queue for a
         // runner that takes them.
         const ordered = [...tasks.filter((task) => task.item.dispatch?.job === "review"), ...tasks.filter((task) => task.item.dispatch?.job !== "review")];
+        let ranTask = false;
         for (const task of ordered.filter((task) => offer.jobs.includes(jobOf(task)) && !refused.has(refusedKey(task)) && (failures.get(taskKey(task)) ?? 0) < 2 &&
           (infrastructureFailures.get(taskKey(task)) ?? 0) < 3)) {
+          ranTask = true;
           // A dispatch carrying job: "plan" asks for the plan job, one
           // carrying "review" for the review job, "integrate" for the
           // integrate job and "refresh" for the refresh job
@@ -1508,6 +1526,7 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
           if (state.claimRefused || state.skipped) refused.add(refusedKey(task));
           else if (args.once || state.phase !== "failed" || state.taskFailure) break;
         }
+        if (!ranTask && !controller.signal.aborted) await sayIdleWhy();
         state ??= { phase: "idle" };
       } catch (error) { state = nextStep({ phase: "idle" }, { error: error.message }); line(`failed: ${state.reason}`); }
       if (args.once) { if (state.phase === "failed" && !controller.signal.aborted) process.exitCode = 1; break; }

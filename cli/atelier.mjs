@@ -1819,6 +1819,21 @@ const commands = {
         // A run that stalled, timed out or was refused goes to the run
         // reports, under the runner's name, as a model's status does.
         reportRun: (body, runner, signal) => postAsRunner("/runs", body, runner, signal),
+        // Why an idle runner found nothing to claim: the queue's GET, which
+        // lists every waiting dispatch with its reason (t420). Asked only
+        // when a poll offers nothing, never on the busy path.
+        idleWhy: async (signal) => {
+          await resolveTokenActor();
+          let res;
+          try {
+            res = await fetch(server() + "/api/queue", { signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]), headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER } });
+          } catch (error) {
+            if (signal.aborted) throw error;
+            throw Object.assign(new Error(`queue: ${error.message}`), { transient: true });
+          }
+          if (!res.ok) throw Object.assign(new Error(`queue: ${res.status}`), { transient: res.status >= 500 || res.status === 429 });
+          return res.json();
+        },
       });
     } catch (error) { die(error.message); }
   },
@@ -2231,9 +2246,18 @@ const commands = {
       const label = event.kind === "item.reverts" ? "Reverts" : "Revert requested in";
       brief.evidence.push(`${label} ${itemId} (recorded merge ${mergeCommit}): ${server()}/p/${encodeURIComponent(name)}/${itemId}`);
     }
-    if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []) }, null, 2));
+    // Why a dispatched task is not being taken, as the queue holds it (t420):
+    // each reason in words and the command that releases it. Read from the
+    // queue's entry for it, so `show` and `status` say the same thing.
+    let why = [];
+    try {
+      why = ((await request("GET", "/queue", undefined, as)) ?? [])
+        .find((q) => q.project === name && q.item?.id === id)?.item?.why ?? [];
+    } catch { /* the brief still prints; the queue's reason is a bonus */ }
+    if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []), ...(why.length ? { why } : {}) }, null, 2));
     const text = formatBrief(name, id, brief, server());
-    console.log(args.reviews ? `${text}\n\n${formatReviews(d?.reviews ?? [], d?.ownerActor)}` : text);
+    const extra = why.length ? `\n\n${why.map((r) => r.line).join("\n")}` : "";
+    console.log(args.reviews ? `${text}${extra}\n\n${formatReviews(d?.reviews ?? [], d?.ownerActor)}` : `${text}${extra}`);
   },
 
   // The task's whole story from the ledger, in order (cli/receipt.mjs): one

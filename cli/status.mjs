@@ -16,7 +16,7 @@
 // each named runner's jobs said as the runner's own first line says them
 // (jobsLine in cli/runner.mjs): the jobs it takes and, behind them, the known
 // jobs it does not.
-import { holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
+import { OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
 import { isOwnCall } from "../src/rules.ts";
 import { jobsLine } from "./runner.mjs";
 
@@ -191,20 +191,13 @@ function reviewQueue(waiting, name, offers) {
     }));
 }
 
-// What each queued job of one project that the core files hold waits on, by
-// item id, from the queue's entries (GET /queue).
-function heldIn(waiting, name) {
+// Why each queued job of one project is not being taken, by item id, from the
+// queue's entries (GET /queue): the server attaches `why`, the reasons in
+// words (unclaimed in src/dispatch/rules.ts), for the owner's listing.
+function whyIn(waiting, name) {
   return new Map((waiting.queue ?? [])
-    .filter((q) => q.project === name && q.item?.held && q.item.dispatch?.job !== "review")
-    .map((q) => [q.item.id, q.item.held]));
-}
-
-// A held job's line: what it waits on, and how it goes ahead — once that
-// item merges or is abandoned, or at once, for a task, by the owner's
-// override. A plan's part takes no override: the plan dispatches it.
-function heldLine(item, held) {
-  const next = item.kind === "part" ? "" : `, or at once with atelier dispatch ${item.id} --overlap-ok`;
-  return `Held: ${holdText(held)}; offered once ${held.id} merges or is abandoned${next}.`;
+    .filter((q) => q.project === name && q.item?.why?.length)
+    .map((q) => [q.item.id, q.item.why]));
 }
 
 // One queued job no live runner offers: said as its own line, capitalised,
@@ -233,11 +226,7 @@ export function formatStatus(views, waiting = {}) {
     const working = v.items.filter((i) => i.state === "claimed" || i.state === "submitted");
     const queued = v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch);
     const reviews = reviewQueue(waiting, v.name, offers);
-    const held = heldIn(waiting, v.name);
-    const deadBuilds = new Map(queued
-      .filter((i) => offers && (i.dispatch.agent || i.dispatch.model))
-      .map((i) => [i.id, unoffered(i.dispatch, offers, waiting.now)])
-      .filter(([, dead]) => dead !== null));
+    const why = whyIn(waiting, v.name);
     lines.push(v.title ? `${v.title} (${v.name})` : v.name);
     if (!decisions.length && !working.length && !queued.length && !reviews.length) {
       // Only overlaps follow, so the idle line is worded for the owner: it
@@ -259,9 +248,7 @@ export function formatStatus(views, waiting = {}) {
       lines.push("  Waiting for a runner");
       for (const i of queued) {
         lines.push(`    ${i.id}  for ${runnerOf(i.dispatch)}  ${i.title}`);
-        if (held.has(i.id)) lines.push(`      ${heldLine(i, held.get(i.id))}`);
-        const dead = deadBuilds.get(i.id);
-        if (dead) lines.push(`      ${unofferedLine(dead)}`);
+        for (const reason of why.get(i.id) ?? []) lines.push(`      ${reason.line}`);
       }
       for (const r of reviews) {
         lines.push(`    ${r.id}  review by ${r.reviewer}  ${r.title}`);
