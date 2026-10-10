@@ -37,6 +37,7 @@ opencode at a config that names the key's variable, never the key:
 
 ```sh
 #!/bin/sh
+CF_AIG_TOKEN="$(tr -d '\n' < "$HOME/.config/api-keys/gateway.key")" \
 DEEPSEEK_API_KEY="$(tr -d '\n' < "$HOME/.config/api-keys/deepseek.key")" \
 OPENCODE_CONFIG="$HOME/.config/opencode/deepseek-api.json" \
 exec opencode "$@"
@@ -51,14 +52,32 @@ exec opencode "$@"
 Each config uses `"npm": "@ai-sdk/openai-compatible"` with
 `"apiKey": "{env:VARIABLE}"`, and disables every MCP server so an agent sees
 only its workspace. The DeepSeek and OpenRouter configs give their providers
-the gateway's base URL and two headers: `cf-aig-authorization`
-(`Bearer {env:CF_AIG_TOKEN}`, a Cloudflare API token with AI Gateway · Run),
-read from the environment opencode runs in, and `cf-aig-metadata`
-(`{env:CF_AIG_METADATA}`), which the home runner sets per run — task, role,
-runner — and `run-agent.sh` sets from the brief's task line, so the gateway's
-figures count calls per task (docs/models-and-usage.md, "AI Gateway costs").
-The provider's own key still goes in its own header; the gateway passes it
-through and logs the call.
+the gateway's base URL and two headers:
+
+```json
+{
+  "provider": {
+    "deepseek-api": {
+      "options": {
+        "baseURL": "https://gateway.ai.cloudflare.com/v1/ACCOUNT/atelier/deepseek",
+        "headers": {
+          "cf-aig-authorization": "Bearer {env:CF_AIG_TOKEN}",
+          "cf-aig-metadata": "{env:CF_AIG_METADATA}"
+        }
+      }
+    }
+  }
+}
+```
+
+The gateway token (a Cloudflare API token with AI Gateway · Run) is read from
+the environment opencode runs in (`{env:CF_AIG_TOKEN}`) and never written into
+the config, so the file can be shared and the token is not leaked. The
+`cf-aig-metadata` header (`{env:CF_AIG_METADATA}`) is set by the home runner
+per run — task, role, runner — and `run-agent.sh` sets it from the brief's task
+line, so the gateway's figures count calls per task (docs/models-and-usage.md,
+"AI Gateway costs"). The provider's own key still goes in its own header; the
+gateway passes it through and logs the call.
 
 Reviews run through Antigravity's CLI, `agy`, signed in to a Google account
 with Gemini access; its models include `gemini-3.1-pro-high` and

@@ -13,10 +13,12 @@ harness (OpenCode, Claude Code, Codex, ZCode, the Gemini CLI or
 Antigravity), where it runs, its provider and, for an API, the name of the
 Keychain entry on the runner's machine that holds its key. Atelier stores
 that name and never a key; a form or request that carries one is refused.
+A harness model (Antigravity, Codex, Claude Code) needs no key.
 
 ```text
 atelier models add GLM-5.3-Flash-4_8bit --harness opencode --where home --endpoint http://studio.local:8000/v1
-atelier models add gemini-3.1-pro --harness opencode --where cloud --provider google --keychain gemini.API_KEY
+atelier models add claude-3-7-sonnet-20250219 --harness opencode --where cloud --provider anthropic --keychain anthropic.API_KEY
+atelier models add gemini-3.1-pro --harness antigravity --where cloud
 atelier models
 ```
 
