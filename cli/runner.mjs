@@ -11,6 +11,7 @@ import { formatLoad, envLoad, coreCount, loadLimitOf } from "./load.mjs";
 import { envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
 import { reviewBrief, BRIEF_LIMITS, criteriaCount } from "../src/review/brief.ts";
+import { submission } from "../src/brief.ts";
 import { parseVerdict, VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
@@ -936,17 +937,22 @@ export const REMERGE_DIFF_ARGS = (head) => ["git", "show", "--remerge-diff", "--
 // it, or null when the reviewed item is no merge-main job. The signals are
 // the ones the server and the build side already use: the item's dispatch
 // naming the merge-main job (a task's under t243, or a part's, whose
-// dispatch names the main head it merges and is kept once claimed), or a
+// dispatch names the main head at dispatch and is kept once claimed), or a
 // plan part whose key is a merge-main part's (mergeMainKey in
 // src/plans/state.ts), which carries main's head's first 8 characters.
+// The current submission records the actual claim-time target. Prefer it
+// over either dispatch-time signal, but still verify it against Git below.
+// Older submissions fall back to the dispatch or part key.
 // `main` is that head, full or a prefix, or null when neither names it.
 export function mergeMainJob(claimed) {
   const d = claimed?.item?.dispatch;
   const hash = (h) => typeof h === "string" && /^[a-f0-9]{8,64}$/.test(h) ? h : null;
-  if (d?.job === "merge-main") return { main: hash(d.head) };
   const key = claimed?.plan?.part?.key ?? claimed?.item?.partKey;
-  if (typeof key === "string" && key.startsWith(MERGE_MAIN)) return { main: hash(key.slice(MERGE_MAIN.length)) };
-  return null;
+  const part = typeof key === "string" && key.startsWith(MERGE_MAIN);
+  if (d?.job !== "merge-main" && !part) return null;
+  const recorded = submission(claimed.events ?? [], claimed.item?.id, claimed.head);
+  const actual = /^Merged main at ([a-f0-9]{40,64})$/.exec(recorded?.summary ?? "")?.[1];
+  return { main: actual ?? (d?.job === "merge-main" ? hash(d.head) : hash(key.slice(MERGE_MAIN.length))) };
 }
 
 // A merge-main job's head is a merge of main into the part or task: its first
