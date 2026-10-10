@@ -685,7 +685,7 @@ export function changeClass(paths: string[], policy: ProjectPolicy): ChangeClass
 
 export function classRequirement(kind: ChangeClass): string {
   if (kind === "protected") return "Protected change: needs one review from another model family";
-  if (kind === "coordinated") return "Coordinated change: needs one review from another agent";
+  if (kind === "coordinated") return "Coordinated change: needs one review from a different model than every contributor";
   return "Direct change: needs no review";
 }
 

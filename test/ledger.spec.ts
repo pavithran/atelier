@@ -974,7 +974,7 @@ it("governed policy persists across init and gates claims, handoffs, reviews and
   await L.addEvidence(observed("t1", H1));
   await L.submit("t1", A);
   await L.addReview(review("t1", "opencode/glm-5.3", H1, true));
-  await refusal(L.accept("t1", "owner"), "not_ready", /another agent/);
+  await refusal(L.accept("t1", "owner"), "not_ready", /different model than every contributor/);
   await L.addReview(review("t1", B, H1, true));
   await refusal(L.accept("t1", B), "not_project_owner", /only the project owner/);
   expect(await L.accept("t1", "owner")).toMatchObject({ state: "accepted", acceptedHead: H1 });
