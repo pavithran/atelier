@@ -1,12 +1,12 @@
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
 import { sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
-import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool";
+import { OBSERVED_UNDER, type ModelEntry, type ModelNote, type ModelStatus } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
-  assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, confirmationAt, contributorsOf, DEFAULT_OWNER, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, RuleError, sameActor, validActor,
+  assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, RuleError, sameActor, validActor,
   type OverrideConfirmation, type OwnerFactor,
   assertBlockable, assertNotBlocked, blockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
@@ -170,6 +170,7 @@ export interface ProjectInit {
   execution?: ProjectPolicy["execution"];
   eligible?: string[];
   refuseOverlap?: boolean;
+  requireCriteria?: boolean;
   coreFiles?: string[];       // replaces the core-file globs; [] clears them (see ProjectPolicy.coreFiles)
   sandboxOnly?: boolean;
   noOverride?: boolean;       // overrides of the independent review are refused (see ProjectPolicy.noOverride)
@@ -200,6 +201,7 @@ export interface LandingWorkflowRecord {
   // machine holding the workspace, "container" in the CheckRunner. The
   // executor reads it to know whether the checks are its to run.
   checks?: "local" | "container";
+  lastStatus?: { status: InstanceStatus["status"]; error?: { name: string; message: string } };
 }
 
 const LAND_STEPS = new Set(["lease", "merge", "regenerate", "push", "check", "submit", "review", "accept", "merged"]);
@@ -358,6 +360,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       protected: i.protected ?? p?.protected ?? [...DEFAULT_PROTECTED],
       eligible: i.eligible ?? p?.eligible ?? [],
       refuseOverlap: i.refuseOverlap ?? p?.refuseOverlap ?? false,
+      ...((i.requireCriteria ?? p?.requireCriteria) ? { requireCriteria: true } : {}),
       ...(coreFiles.length ? { coreFiles } : {}),
       sandboxOnly: i.sandboxOnly ?? p?.sandboxOnly ?? false,
       // Carried only when set, so a project that allows overrides records nothing new.
@@ -431,6 +434,7 @@ export class Ledger extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS showcase (name TEXT PRIMARY KEY, mode TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS model_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT NOT NULL, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS usage (tool TEXT NOT NULL, runner TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (tool, runner));
       CREATE TABLE IF NOT EXISTS usage_alerts (key TEXT PRIMARY KEY, tool TEXT NOT NULL, runner TEXT NOT NULL, since TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL);
@@ -775,8 +779,30 @@ export class Ledger extends DurableObject<Env> {
 
   // The model pool, on the index instance like the project list: shared by
   // every project, written by the owner, read by runners.
+  // Each entry carries its notes, oldest first (src/models/pool.ts).
   models(): ModelEntry[] {
-    return this.sql.exec(`SELECT json FROM models ORDER BY id`).toArray().map((r) => JSON.parse(r.json as string));
+    const names = new Map(this.projects().map((p) => [p.key ?? p.name, p.name]));
+    const notes = new Map<string, ModelNote[]>();
+    for (const r of this.sql.exec(`SELECT model, json FROM model_notes ORDER BY id`).toArray()) {
+      const list = notes.get(r.model as string) ?? [];
+      const note: ModelNote = JSON.parse(r.json as string);
+      list.push(note.project ? { ...note, projectName: names.get(note.project) ?? note.project } : note);
+      notes.set(r.model as string, list);
+    }
+    return this.sql.exec(`SELECT json FROM models ORDER BY id`).toArray().map((r) => {
+      const entry: ModelEntry = JSON.parse(r.json as string);
+      const mine = notes.get(entry.id);
+      return mine ? { ...entry, notes: mine } : entry;
+    });
+  }
+
+  // Stored under the project's key, so a rename never detaches the note.
+  addModelNote(id: string, note: ModelNote): ModelNote {
+    if (!this.sql.exec(`SELECT id FROM models WHERE id = ?`, id).toArray().length) throw new RuleError("no_model", `${id} is not in the model pool`, 404);
+    const named = note.project ? this.resolveProject(note.project) : undefined;
+    const stored = named ? { ...note, project: named.key } : note;
+    this.sql.exec(`INSERT INTO model_notes (model, json) VALUES (?, ?)`, id, JSON.stringify(stored));
+    return named ? { ...stored, projectName: named.name } : stored;
   }
 
   putModel(entry: ModelEntry): ModelEntry {
@@ -980,7 +1006,7 @@ export class Ledger extends DurableObject<Env> {
   // decided under the old ones (criteriaChanged), and the answer says what
   // it took back. The criteria of a part already integrated, or of a task
   // under a landing lease, cannot change, and nothing is written then.
-  editItem(id: string, actor: string, fields: ItemFields): Item & { criteriaChange?: CriteriaChange } {
+  editItem(id: string, actor: string, fields: ItemFields, scope?: string[]): Item & { criteriaChange?: CriteriaChange } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner edits a task's fields", 403);
     if (fields.revertOf !== undefined) throw new RuleError("bad_field", "revertOf is set only when creating a task", 400);
     const item = this.item(id);
@@ -992,12 +1018,17 @@ export class Ledger extends DurableObject<Env> {
       if (title.length > TITLE_MAX) throw new RuleError("bad_title", `a title is at most ${TITLE_MAX} characters; put the rest in the brief`, 400);
       set.title = title;
     }
-    if (!Object.keys(set).length) throw new RuleError("nothing_to_edit", "nothing to change: give --title, --brief, --accept, --non-goal, --stop-when or --next-gate", 400);
+    const rescoping = scope !== undefined && JSON.stringify(scope) !== JSON.stringify(item.scope);
+    if (scope !== undefined) {
+      if (item.kind === "part") throw new RuleError("part_scope", `${id} is a part of a plan, whose scope the plan sets; nothing was changed`, 409);
+      set.scope = JSON.stringify(scope);
+    }
+    if (!Object.keys(set).length) throw new RuleError("nothing_to_edit", "nothing to change: give --title, --brief, --scope, --accept, --non-goal, --stop-when or --next-gate", 400);
     const changing = fields.accept !== undefined && !sameCriteria(fields.accept, item.accept);
     if (changing) this.assertCriteriaEditable(item);
     const at = new Date().toISOString();
     this.update(id, set, at);
-    this.log(id, actor, "item.edited", { ...fields }, at);
+    this.log(id, actor, "item.edited", { ...fields, ...(rescoping ? { scope, scopeWas: item.scope } : {}) }, at);
     const change = changing ? this.criteriaChanged(item, actor, at) : null;
     return { ...this.item(id), ...(change ? { criteriaChange: change } : {}) };
   }
@@ -1212,9 +1243,10 @@ export class Ledger extends DurableObject<Env> {
 
   // The project owner puts an open task in the queue for a kind of runner.
   // Only the owner, for now; an orchestrator with an approved plan comes later.
-  // A task held by an agent (claimed, or submitted and perhaps rejected) can
+  // A task held by an agent (claimed, submitted or accepted) can
   // be sent back to a runner too: the holder is released and the task queued
-  // in one step, keeping its workspace and commits for the next builder. The
+  // in one step, keeping its workspace, commits and acceptance history for
+  // the next builder. An accepted task must be submitted and accepted again. The
   // caller revokes the holder's write token first (see checkDispatch), and
   // passes its id as `token`. A dispatch naming the merge-main job sends a
   // task whose landing conflicted with main back to its builder (t243): the
@@ -1228,7 +1260,7 @@ export class Ledger extends DurableObject<Env> {
     const held = this.holds(item);
     if (held) {
       this.dropToken(id, token);
-      this.update(id, { owner: null, state: "open" }, d.at);
+      this.update(id, { owner: null, state: "open", accepted_head: null }, d.at);
       this.log(id, actor, "item.released", { from: item.owner, note: "dispatched again by the project owner" }, d.at);
     }
     this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), d.at, id);
@@ -1252,13 +1284,14 @@ export class Ledger extends DurableObject<Env> {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner dispatches", 403);
     const item = this.item(id);
     this.assertNotPlanned(item);
+    if (item.state === "accepted") this.acceptedReworkAllowed(item, actor);
     if (!this.holds(item)) assertDispatchable(item);
     if (input) this.assertMergeMainWorkspace(item, makeDispatch(input, actor, new Date().toISOString()));
     return item;
   }
 
   private holds(item: Item): boolean {
-    return !!item.owner && (item.state === "claimed" || item.state === "submitted");
+    return !!item.owner && ["claimed", "submitted", "accepted"].includes(item.state);
   }
 
   undispatch(id: string, actor: string): Item {
@@ -1545,7 +1578,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`INSERT INTO evidence (item_id, json) VALUES (?, ?)`, e.itemId, JSON.stringify(e));
     // A record that a check does not apply has no result, so it is logged as its own kind, not as a pass.
     // A check whose whole log is kept in R2 (t284) names it by reference in the event.
-    this.log(e.itemId, e.by, e.notApplicable ? "evidence.not_applicable" : `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.changedPaths !== undefined ? { changedPaths: e.changedPaths } : {}), ...(e.where ? { where: e.where } : {}), ...(e.log ? { log: e.log } : {}), ...(e.merged ? { merged: true, mainHead: e.mainHead } : {}) }, new Date().toISOString(), proved);
+    this.log(e.itemId, e.by, e.notApplicable ? "evidence.not_applicable" : `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.changedPaths !== undefined ? { changedPaths: e.changedPaths } : {}), ...(e.where ? { where: e.where } : {}), ...(e.log ? { log: e.log } : {}), ...(e.merged ? { merged: true, mainHead: e.mainHead } : {}), ...(e.load !== undefined ? { load: e.load } : {}) }, new Date().toISOString(), proved);
     if (e.grade === "observed") this.notify(e.itemId, origin);
     // Passing checks at a head the item moved to may be what the gate waited
     // on to need its review again: a request the move withdrew is carried.
@@ -1681,8 +1714,16 @@ export class Ledger extends DurableObject<Env> {
     assertHandoffTarget(to, this.owner);
     assertEligible(to, this.project().policy, this.owner);
     assertNotBlocked(item);
-    if (item.state !== "claimed" && item.state !== "submitted") throw new RuleError("closed", `${id} is ${item.state}`);
+    if (item.state === "accepted") this.acceptedReworkAllowed(item, from);
+    else if (item.state !== "claimed" && item.state !== "submitted") throw new RuleError("closed", `${id} is ${item.state}`);
     return item;
+  }
+
+  private acceptedReworkAllowed(item: Item, actor: string): void {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner sends accepted work back to building", 403);
+    this.assertNotPlanned(item);
+    const landing = this.landing(item.id);
+    if (landing) throw new RuleError("landing", `${item.id} is being merged at ${landing.slice(0, 8)} and holds the landing lease; finish atelier merge ${item.id}, or cancel an unpublished merge with atelier merge ${item.id} --cancel before sending it back to building`, 409);
   }
 
   // The holder or the project owner blocks a task with the reason it cannot
@@ -1847,7 +1888,7 @@ export class Ledger extends DurableObject<Env> {
     const item = this.handoffAllowed(id, from, to, note);
     this.dropToken(id, token);
     const at = new Date().toISOString();
-    this.update(id, { owner: to, state: "claimed" }, at);
+    this.update(id, { owner: to, state: "claimed", accepted_head: null }, at);
     this.log(id, from, "item.handoff", { from: item.owner, to, note }, at, proved);
     return this.item(id);
   }
@@ -1965,6 +2006,26 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id);
   }
 
+  // A reviewer of another family than every contributor that the pool offers
+  // for this item, or null when none qualifies. Shown to the owner who
+  // overrides the independent review, so an override is their last resort,
+  // never a missed review: the command that would replace it is
+  // `atelier land ID --reviewer H/M` (t395). It picks as the gate's real
+  // selection does, so a protected change's review goes to the review tier
+  // first, one review serving the gate and the tier (src/review/tier.ts).
+  availableReviewer(id: string, pool: readonly ModelEntry[]): string | null {
+    const item = this.item(id);
+    const policy = this.project().policy;
+    const changedPaths = evidenceAt(policy, this.evidenceFor(id), item.head).changedPaths;
+    const kind = changedPaths === null ? null : changeClass(changedPaths, policy);
+    const pick = pickReviewer({
+      item, pool, policy, allowPaid: false, owner: this.owner,
+      precision: this.reviewPrecision(new Date().toISOString()),
+      tier: kind === "protected" ? policy.reviewTier : undefined,
+    });
+    return pick.reviewer?.actor ?? null;
+  }
+
   // A merge lands the accepted revision under a lease: while it is held,
   // the task's owner cannot push a new revision over the one being merged.
   // It has no expiry, because a merge may have published the revision even
@@ -2060,6 +2121,7 @@ export class Ledger extends DurableObject<Env> {
     const record = this.landingWorkflowOf(id);
     if (!record || record.instance !== instance) return null;
     const next: LandingWorkflowRecord = {
+      ...(record.lastStatus ? { lastStatus: record.lastStatus } : {}),
       instance, at: record.at, stage, stageAt: new Date().toISOString(), round,
       ...(record.checks ? { checks: record.checks } : {}),
       ...(detail ? { detail: detail.slice(0, 2000) } : {}),
@@ -2067,6 +2129,20 @@ export class Ledger extends DurableObject<Env> {
     };
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing-workflow:${id}`, JSON.stringify(next));
     return next;
+  }
+
+  // Fence observations to the recorded instance, as stage reports are fenced.
+  observeLandingWorkflowStatus(id: string, instance: string, status: NonNullable<LandingWorkflowRecord["lastStatus"]>): void {
+    const record = this.landingWorkflowOf(id);
+    if (!record || record.instance !== instance || status.status === "unknown") return;
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing-workflow:${id}`, JSON.stringify({ ...record, lastStatus: { status: status.status, ...(status.error ? { error: { name: status.error.name.slice(0, 200), message: status.error.message.slice(0, 2000) } } : {}) } }));
+  }
+
+  // Remove only the missing instance that the owner actually read.
+  clearLandingWorkflow(id: string, instance: string, actor: string): void {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
+    if (this.landingWorkflowOf(id)?.instance !== instance) return;
+    this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing-workflow:${id}`);
   }
 
   landingWorkflowOf(id: string): LandingWorkflowRecord | null {
@@ -2464,11 +2540,15 @@ export class Ledger extends DurableObject<Env> {
     return { item, criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, evidence, reviews, unparsable: this.unparsableFor(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
   }
 
-  inbox(now: string): InboxEntry[] {
+  inbox(now: string, pool: readonly ModelEntry[] = []): InboxEntry[] {
     const p = this.project();
     const all = this.sql.exec(`SELECT json FROM evidence`).toArray().map((r) => JSON.parse(r.json as string));
     const rv = this.sql.exec(`SELECT json FROM reviews`).toArray().map((r) => JSON.parse(r.json as string));
+    // An assess entry carries the reviewer the pool offers, so the owner sees
+    // the runnable `atelier land ID --reviewer H/M` command that replaces an
+    // override, not the placeholder alone (t395).
     return [...inboxFor(p.name, this.items(), p.policy, all, rv, new Date(now), this.owner), ...this.planEntries(p.name, now), ...this.shipEntries(p)]
+      .map((e) => (e.kind === "assess" ? { ...e, reviewer: this.availableReviewer(e.itemId, pool) } : e))
       .sort((a, b) => b.weight - a.weight);
   }
 
@@ -3562,7 +3642,7 @@ export class Ledger extends DurableObject<Env> {
   // where the gate needs none; only a gate that cannot proceed (checks not
   // passing, a rejection at this head whose blocking findings the owner has
   // not refuted, no push) refuses, with its reason.
-  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean } {
+  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner asks for a review", 403);
     const item = this.item(id);
     // A named reviewer is judged even when a request already stands, so a
@@ -3627,7 +3707,7 @@ export class Ledger extends DurableObject<Env> {
     } else if (records) {
       // The suggestion asks the previous round's reviewer and, for a
       // protected change, the review tier first, as the pool pick below does.
-      const pick = suggestReviewer({ ...records, item: { ...item, scope: [...item.scope, ...need.changedPaths] }, project: this.project().name, pool, policy, owner: this.owner, frontierRequired: need.changeClass === "protected",
+      const pick = suggestReviewer({ ...records, item: { ...item, scope: [...item.scope, ...need.changedPaths] }, pool, policy, owner: this.owner, frontierRequired: need.changeClass === "protected",
         previous: need.previousReviewer, tier: need.changeClass === "protected" ? policy.reviewTier : undefined },
         need.lapsed.map((actor) => ({ actor, reason: "its claim on a review of this head lapsed" })), new Date(at));
       chosen = pick.actor;

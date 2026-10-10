@@ -1,10 +1,10 @@
 atelier — one owner per task, observed evidence, the project owner decides.
 
 Sessions   unwrap [--project P] · wrap "summary" [--next TEXT] [--found TEXT]... [--push] [--no-check | --allow-failing] [--project P]
-Setup      login --server URL · login --store · init [--title TEXT] [--check CMD]... [--declare-read-only TEXT] [--protect GLOB]... [--core GLOB]... [--sandbox-only] [--refuse-overlap] [--no-override] [--approval TEXT] [--regenerate CMD] [--review-bar TEXT] [--review-tier H/M,H/M] [--reset] [--history-since YYYY-MM-DD] · sync · publish
+Setup      login --server URL · login --store · init [--title TEXT] [--check CMD]... [--declare-read-only TEXT] [--protect GLOB]... [--core GLOB]... [--sandbox-only] [--refuse-overlap] [--require-criteria] [--no-override] [--approval TEXT] [--regenerate CMD] [--review-bar TEXT] [--review-tier H/M,H/M] [--reset] [--history-since YYYY-MM-DD] · sync · publish
            notes-remote [REMOTE | --off]
-Items      new "short title" [--brief TEXT] [--accept TEXT]... [--scope GLOB]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT] · edit ID [--title TEXT] [--brief TEXT] [--accept TEXT]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]
-           ls [--all] [--json] · show ID [--reviews] [--json] · receipt ID [--json] · owners [--json] · inbox [--json] · status [--project P] [--json] (with a project: where it stands, as text) · open
+Items      new "short title" [--brief TEXT] [--accept TEXT]... [--scope GLOB]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT] · edit ID [--title TEXT] [--brief TEXT] [--scope GLOB]... [--accept TEXT]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]
+           ls [--all] [--json] · show ID [--reviews] [--json] · receipt ID [--json] · owners [--json] · inbox [--json] · status [--project P] [--brief] [--json] (with a project: where it stands, as text) · open
 Agents     start ID [--as H/M] [--runner home:NAME] · done "summary" [--sandbox]
            claim ID --as H/M [--runner home:NAME] · finish [--sandbox] [--summary T] · push [--force | --rollback] · update · check [--sandbox] [--merged] [-- CMD] · report [ID] "what you verified and how" [--item ID] [--project P] · submit [--summary T]
            handoff ID --to H/M [--note TEXT] · release ID [--note TEXT] · block [ID] "what it is waiting on" · unblock [ID] · diff ID · review ID --approve|--reject --criteria BINDING [--request N] [--note TEXT] [--head SHA] [--findings JSON] · review-claim ID [--runner home:NAME] · review-release ID [--note T] · review-unparsable ID --head SHA --note TEXT --reply-file PATH
@@ -17,7 +17,7 @@ Plans      plan "goal" [--scope GLOB]... [--planner H/M] · plan show ID [--json
            plan approve ID --hash HASH [--allow-paid] · plan revise ID --note TEXT
            plan reroute ID --to H/M · plan retry ID · plan refresh ID [--resolve [--to H/M]] · plan stop ID [--note TEXT]
            plan post ID FILE
-Models     models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... [--note TEXT] · models remove ID
+Models     models · models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... [--note TEXT] · models show ID · models note ID 'text' [--item tN] · models remove ID
            dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] [--job merge-main [--head H]] [--overlap-ok] · undispatch ID · queue
 Projects   projects rename OLD NEW · projects remove NAME [--force] · showcase set NAME [--named|--anonymous] · showcase remove NAME · init --name NAME --rename-local
            
@@ -26,7 +26,7 @@ Local      gc [--project NAME] [--dry-run | --apply] · runner --name home:NAME 
            runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH]   (what each home model's harness serves)
            runner --usage [--name home:NAME] [--dry-run] [--config PATH]   (each tool's windows, served models, costs and balances)
 Ops        ops COMMAND [ARGS...]   (portfolio operations, run by the private atelier-ops toolkit when installed)
-Docs       guide [--role build|review|plan|orchestrate] [--project P]   (paste into a project's AGENTS.md)
+Docs       guide [--role build|review|plan|orchestrate] [--full] [--project P]   (paste into a project's AGENTS.md)
 
 Tokens     token issue --as H/M [--project P]... [--days N] [--label TEXT] · token ls · token revoke ID
 Common flags: --project NAME, --as harness/model (or ATELIER_ACTOR). A switch such as --approve, --json or --sandbox-only is on when named alone. It takes the word true or false after it and never any other word: --sandbox-only false or --sandbox-only=false turns it off.
