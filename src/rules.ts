@@ -332,6 +332,10 @@ export interface ProjectPolicy {
   protected: string[];      // globs whose changes need an independent assessor
   eligible?: string[];      // harness families allowed to act (e.g. "claude"); empty or absent means any
   refuseOverlap?: boolean;  // refuse a claim whose scope overlaps another live item
+  // Every task is filed, and kept, with acceptance criteria (`atelier init
+  // --require-criteria`): a review judges a change against them, so a task
+  // without them has nothing to bind its review to.
+  requireCriteria?: boolean;
   // Globs of the files only one live item at a time may change: the queue
   // holds a dispatch whose scope overlaps a live item's within one of them
   // (coreHold in src/dispatch/rules.ts). Absent or empty, nothing is held.
@@ -1007,6 +1011,14 @@ export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPol
   if (policy.refuseOverlap && item.owner !== actor) {
     const refusal = overlappingRefusal(item, items, actor);
     if (refusal) throw new RuleError("overlap", refusal);
+  }
+}
+
+// A project that requires criteria files no task without them and clears none:
+// the review of a change without criteria would judge it against nothing.
+export function assertCriteriaAllowed(policy: Pick<ProjectPolicy, "requireCriteria">, accept: readonly string[] | undefined): void {
+  if (policy.requireCriteria && !accept?.length) {
+    throw new RuleError("no_criteria", "this project requires acceptance criteria on every task, since a review judges a change against them: give the task at least one with --accept \"TEXT\"", 400);
   }
 }
 

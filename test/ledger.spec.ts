@@ -839,6 +839,18 @@ it("the submit route passes an optional summary to the Ledger", async () => {
   expect(event.data.summary).toBe("From the CLI.");
 });
 
+it("the criteria requirement is set by an init that names it, kept by one that does not, and dropped by reset", async () => {
+  const { mergeProject } = await import("../src/ledger");
+  const base = { name: "c", repo: "c", reset: false };
+  const plain = mergeProject(null, { ...base, checks: ["npm test"] }, "2026-10-04T00:00:00Z");
+  expect(plain.policy).not.toHaveProperty("requireCriteria");
+  const strict = mergeProject(plain, { ...base, requireCriteria: true }, "later");
+  expect(strict.policy.requireCriteria).toBe(true);
+  expect(mergeProject(strict, { ...base, title: "V" }, "later").policy.requireCriteria).toBe(true);
+  expect(mergeProject(strict, { ...base, requireCriteria: false }, "later").policy).not.toHaveProperty("requireCriteria");
+  expect(mergeProject(strict, { ...base, reset: true }, "later").policy).not.toHaveProperty("requireCriteria");
+});
+
 it("an init is merged into the project in one step and keeps every field it does not name", async () => {
   const { mergeProject } = await import("../src/ledger");
   const base = { name: "m", repo: "m", reset: false };
