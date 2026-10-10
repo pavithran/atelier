@@ -1,4 +1,4 @@
-import { assertReviewAllowed } from "./rules.ts";
+import { assertCriteriaAllowed, assertReviewAllowed } from "./rules.ts";
 import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
 import { scanCommit } from "./secret-scan.ts";
@@ -1028,6 +1028,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       ...(has("execution") ? { execution: parseExecution(body.execution) } : {}),
       ...(has("eligible") ? { eligible: asStrings(body.eligible, "eligible") } : {}),
       ...(has("refuseOverlap") ? { refuseOverlap: Boolean(body.refuseOverlap) } : {}),
+      ...(has("requireCriteria") ? { requireCriteria: Boolean(body.requireCriteria) } : {}),
       // The core-file globs the queue holds overlapping dispatches on; [] clears them.
       ...(has("coreFiles") ? { coreFiles: asStrings(body.coreFiles, "coreFiles") } : {}),
       ...(has("sandboxOnly") ? { sandboxOnly: Boolean(body.sandboxOnly) } : {}),
@@ -1159,7 +1160,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (body.planner !== undefined && typeof body.planner !== "string") throw new RuleError("bad_actor", "planner must be harness/model", 400);
     return json(await L.newPlan(body.goal, asStrings(body.scope, "scope"), actor, body.planner ?? null, await index(env).models()), 201);
   }
-  if (parts.length === 3 && m === "POST") return json(await L.newItem(String(body.title ?? ""), asStrings(body.scope, "scope"), actor, itemFields(body)), 201);
+  if (parts.length === 3 && m === "POST") {
+    const fields = itemFields(body);
+    assertCriteriaAllowed((await L.project().catch(() => null))?.policy ?? {}, fields.accept);
+    return json(await L.newItem(String(body.title ?? ""), asStrings(body.scope, "scope"), actor, fields), 201);
+  }
   if (parts.length === 3 && m === "GET") return json(await L.items());
 
   const id = parts[3];
@@ -1488,9 +1493,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.undispatch(id, actor));
     // The owner's framing of a task: agentRoute gives an agent token no edit
     // route, and requireOwner refuses any other actor the owner token names.
-    case "edit":
+    case "edit": {
       requireOwner(env, actor);
-      return json(await L.editItem(id, actor, { ...itemFields(body), ...(body.title !== undefined ? { title: titleLine(body.title) } : {}) }));
+      const fields = { ...itemFields(body), ...(body.title !== undefined ? { title: titleLine(body.title) } : {}) };
+      if (fields.accept !== undefined) assertCriteriaAllowed((await L.project().catch(() => null))?.policy ?? {}, fields.accept);
+      return json(await L.editItem(id, actor, fields));
+    }
     // The holder or the owner blocks and unblocks; the Ledger checks which.
     case "block":
       return json(await L.block(id, actor, body.reason, !!c.token));

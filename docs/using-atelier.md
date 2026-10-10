@@ -56,6 +56,11 @@ and reviewer get, and a reviewer blocks a change that fails a criterion. One
 long text with no `--brief` becomes the brief, with its first clause as the
 title; `atelier edit ID --title T --brief B --accept A` changes them.
 
+A task filed without `--accept` is created with a warning, because a review
+would have no criteria to judge its change against. `atelier init
+--require-criteria` makes that a refusal for the project, and under it
+`atelier edit ID --accept ""` is refused too.
+
 Give it to a session ("get this done"), or queue it for a runner with
 `atelier dispatch ID`.
 

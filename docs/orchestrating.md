@@ -21,6 +21,9 @@ project, whatever its company; each is explained in the sections below.
   confirmation. Ask, and cite the owner's words; never infer them.
 - Judge each review finding against the code before acting, and record every
   verdict with `atelier finding`.
+- File every task with its acceptance criteria, written before the build. A
+  review judges the change against them, so a task without them gives the
+  review nothing to bind to.
 - Land one task at a time with `atelier land ID`. Never land two together.
 - Report every run that ended without a result with `atelier run-report`.
 - On a stall (a claimed task with no progress), check whether the agent's
@@ -135,6 +138,11 @@ misread:
 - A change that depends on a platform limit or runtime behaviour local tests
   cannot reproduce names it in the task, and the project declares a remote
   smoke check run before and after deploy.
+- Give the task's acceptance criteria in the brief, and have them written
+  before the build. On 2026-10-09 the seven ourai tasks t20 to t26, login
+  security among them, were filed with none, so their reviews had nothing to
+  judge against. `atelier new` now warns on a task filed without criteria, and
+  `atelier init --require-criteria` refuses one for the project.
 - Say what the agent must not do: push, deploy, run `atelier` against the
   real server, or touch the owner's checkout.
 - Before sending one brief to many projects, pilot it on the project whose
