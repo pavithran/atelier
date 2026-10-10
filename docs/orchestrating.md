@@ -379,7 +379,7 @@ these waits with a command.
 | `… rejected tN at SHA: …` | The reviewer asked for changes | "Judging a review" |
 | `… route level N, this CLI route level N+1` | A merge raised `ROUTE_LEVEL` and the server is older | Deploy, then queue the task again |
 | `the landing lease was not tN's within 3 hours` | The landing reattached to an old Workflow run that had been waiting for the lease and has now timed out (t430) | Queue the task again: the next landing starts a fresh run |
-| `FAIL … npm test @ SHA` | The checks failed in a clean clone at the merged head | Run the suite in the task's workspace, keeping the whole output in a file, to name the failing test; then send it back or fix it |
+| `FAIL … npm test @ SHA` | The checks failed in a clean clone at the merged head, or ran out of time (`check exceeded its time limit` in the landing's output) | If it timed out, the machine was too loaded: lower the load, or raise `ATELIER_CHECK_TIMEOUT` for the landing, and queue it again. Otherwise run the suite in the task's workspace, keeping the whole output, to name the failing test; then send it back or fix it |
 
 ### Conflicts
 
