@@ -1,8 +1,8 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { checkEnv } from "./check-env.mjs";
+import { runGroup } from "./group.mjs";
 import { excludeScratch } from "./scratch.mjs";
 import { runCommand } from "./ship.mjs";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
@@ -353,12 +353,13 @@ export async function runLand(io) {
   // lease behind. A Ctrl-C reaches the step's child process through the
   // process group as well. While --wait queues nothing is held, so a signal
   // then releases no lease, but it leaves the queue the landing holds a
-  // place in (t249).
+  // place in (t249). A terminal hang-up is taken the same way, so the
+  // regenerate command's group (runRegenerateIn) ends with the landing.
   const onSignal = (signal) => {
     print(`${signal} received; releasing the landing lease of ${name}…`);
-    release().finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
+    release().finally(() => process.exit(signal === "SIGINT" ? 130 : signal === "SIGHUP" ? 129 : 143));
   };
-  for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, onSignal);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, onSignal);
   // --wait polls for the lease until no live task holds it and no landing
   // queued earlier still waits, saying whose landing it waits behind each
   // time that changes, and gives up after WAIT_TIMEOUT_MS from when it began
@@ -635,7 +636,7 @@ export async function runLand(io) {
     die(error.message);
   }
   await release();
-  for (const signal of ["SIGINT", "SIGTERM"]) process.off(signal, onSignal);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.off(signal, onSignal);
   // When another landing took the lease over, release() has said where it
   // stands; claiming a release here would say what did not happen.
   if (takenOverBy === null) print(`The landing lease for ${name} is released; another task may land.`);
@@ -725,9 +726,10 @@ async function pushRefreshing(io, ctx, push) {
 // The regenerate command, run in the workspace the way a check runs it.
 // Both the merge (to settle conflicts that lie only in generated files)
 // and the regenerate step (to bring every generated file current with the
-// merged tree) come through here.
-function runRegenerateIn(dir, regenerate, io) {
-  const r = spawnSync("/bin/sh", ["-c", regenerate], { cwd: dir, env: checkEnv(), timeout: CHECK_TIMEOUT_MS, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+// merged tree) come through here. It leads a process group of its own
+// (runGroup), ended whole when its shell exits or its time limit passes.
+async function runRegenerateIn(dir, regenerate, io) {
+  const r = await runGroup(["/bin/sh", "-c", regenerate], { cwd: dir, env: checkEnv(), timeoutMs: CHECK_TIMEOUT_MS });
   const output = io.redact(`${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? `\n[atelier] ${r.error.message}` : ""}`, io.secrets());
   if (output.trim()) process.stdout.write(output.slice(-4000) + "\n");
   return { ok: !r.error && r.status === 0, why: r.error ? r.error.message : `exit ${r.status}` };
@@ -802,7 +804,7 @@ async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, g
           taken.set(file, shaOf(file));
         }
         if (either) {
-          regen = runRegenerateIn(dir, regenerate, io);
+          regen = await runRegenerateIn(dir, regenerate, io);
           unwritten = regen.ok ? conflicts.filter((file) => shaOf(file) === taken.get(file)) : null;
         }
         if (regen?.ok && !unwritten.length) {
@@ -902,7 +904,7 @@ async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, g
     guard();
     const start = Date.now();
     print(`Regenerating with \`${regenerate}\`…`);
-    const r = runRegenerateIn(dir, regenerate, io);
+    const r = await runRegenerateIn(dir, regenerate, io);
     if (!r.ok) {
       await record("regenerate", Date.now() - start, { command: regenerate, failed: true });
       throw new StepError(`the fixture regeneration command \`${regenerate}\` failed (${r.why}); the merge is left in the workspace. Fix the command (the project's policy declares it: atelier init --regenerate), then run atelier land ${id} again`);
