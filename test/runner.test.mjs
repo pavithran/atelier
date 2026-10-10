@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { runInNewContext } from "node:vm";
 import { test } from "node:test";
+import { setImmediate as tick } from "node:timers/promises";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -444,7 +445,7 @@ test("a queue poll that times out or meets a 5xx is transient: logged once, back
   let polls = 0;
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
     workspacePath: () => { throw new Error("no task should be claimed"); },
-    wait: async (ms) => { waits.push(ms); },
+    wait: async (ms) => { waits.push(ms); await tick(); },
     async queue() {
       polls++;
       if (polls <= errors.length) throw errors[polls - 1];
@@ -741,7 +742,7 @@ test("runner skips refused revisions across polls and tries the next offered tas
   };
   let polls = 0;
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
     async queue() {
       polls++;
       if (polls === 1) return [first, next];
@@ -852,7 +853,7 @@ test("runner remembers unsupported project names and claims the task behind them
   const { io, calls, logs } = fixture();
   let polls = 0;
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
     async queue() {
       if (++polls === 3) { process.emit("SIGINT"); return []; }
       return [{ ...assignment, project: "My Project" }, ...(polls === 1 ? [assignment] : [])];
@@ -872,7 +873,7 @@ test("runner stops retrying after two failures even when the task revision chang
     if (failure === "spawn") io.harness = async () => { throw new Error("ENOENT"); };
     let polls = 0;
     await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
-      workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+      workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
       async queue() {
         if (++polls === 4) { process.emit("SIGINT"); return []; }
         return [{ ...assignment, item: { ...assignment.item, updatedAt: String(polls) } },
@@ -974,7 +975,7 @@ test("claim child failures release possible claims and retire the task after thr
     const commands = [], logs = [];
     let polls = 0;
     await runRunner(args, {
-      workspacePath: () => workspace, wait: async () => {},
+      workspacePath: () => workspace, wait: () => tick(),
       queue: async () => {
         if (++polls === 5) { process.emit("SIGINT"); return []; }
         return [assignment];
@@ -1000,7 +1001,7 @@ test("runner resets tracked edits and untracked files before every harness attem
   const logs = [];
   let polls = 0, attempts = 0;
   await runRunner(args, {
-    workspacePath: () => workspace, wait: async () => {},
+    workspacePath: () => workspace, wait: () => tick(),
     queue: async () => {
       if (++polls === 3) { process.emit("SIGINT"); return []; }
       return [assignment];
@@ -1046,7 +1047,7 @@ test("the reset before a harness saves uncommitted work under refs/atelier/rescu
   const logs = [];
   let polls = 0, attempts = 0;
   await runRunner(args, {
-    workspacePath: () => workspace, wait: async () => {},
+    workspacePath: () => workspace, wait: () => tick(),
     queue: async () => {
       if (++polls === 3) { process.emit("SIGINT"); return []; }
       return [assignment];
@@ -1086,7 +1087,7 @@ test("the rescue stages around a file git cannot index, so every other untracked
   const logs = [];
   let polls = 0, attempts = 0;
   await runRunner(args, {
-    workspacePath: () => workspace, wait: async () => {},
+    workspacePath: () => workspace, wait: () => tick(),
     queue: async () => {
       if (++polls === 3) { process.emit("SIGINT"); return []; }
       // The second poll offers the claim back, as the queue does a runner that
@@ -1209,7 +1210,7 @@ test("server failures in finish retire the task after three failures", async (t)
   let polls = 0, finishes = 0, reads = 0;
   taskIO.head = async () => ++reads % 2 ? "before" : "after";
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO, wait: async () => {},
+    workspacePath: io.workspacePath, taskIO, wait: () => tick(),
     queue: async () => {
       if (++polls === 5) { process.emit("SIGINT"); return []; }
       return [assignment];
@@ -1275,7 +1276,7 @@ test("real runner caps reset, claim and finish failures while serving the next t
     const claims = [], releases = [], runs = [], finishes = [], logs = [];
     let polls = 0;
     await runRunner(args, {
-      workspacePath: (_, id) => join(dir, id), wait: async () => {},
+      workspacePath: (_, id) => join(dir, id), wait: () => tick(),
       queue: async () => {
         if (++polls === 5) { process.emit("SIGINT"); return []; }
         return [assignment, { ...assignment, item: { ...assignment.item, id: "t14" } }]
@@ -1565,7 +1566,7 @@ test("a run that timed out, stalled or was refused is reported under the runner'
     const { io, logs } = fixture(options);
     const reports = [];
     await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
-      workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, queue: async () => [assignment],
+      workspacePath: io.workspacePath, taskIO: io, wait: () => tick(), queue: async () => [assignment],
       async reportRun(body, runner, signal) { reports.push({ body, runner, signalled: signal instanceof AbortSignal }); },
     });
     const expected = outcome ? [{ body: { actor: assignment.actor, role: "build", outcome, project: "atelier", item: "t13", detail }, runner: "home:studio", signalled: true }] : [];
@@ -1575,7 +1576,7 @@ test("a run that timed out, stalled or was refused is reported under the runner'
   // A report the server refuses is logged, and the runner goes on.
   const { io, logs } = fixture({ head: "before", code: 1 });
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, queue: async () => [assignment],
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(), queue: async () => [assignment],
     async reportRun() { throw new Error("403 this operation requires the owner token"); },
   });
   assert.ok(logs.includes("could not report atelier/t13 as refused: 403 this operation requires the owner token"));

@@ -231,7 +231,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     const status = await new Promise((ok) => child.on("close", ok));
     return { status, output };
   };
-  const fx = { p, url, baseline, checkout, workspace: (id) => join(cache, "work", "proj", id), fork: (id) => join(p, `fork-${id}.git`), forkHead, mainCommit, box, run, env: {}, onOutput: null, posts: (suffix) => box.requests.filter((r) => r.method === "POST" && r.path.endsWith(suffix)) };
+  const fx = { after: (fn) => t.after(fn), p, url, baseline, checkout, workspace: (id) => join(cache, "work", "proj", id), fork: (id) => join(p, `fork-${id}.git`), forkHead, mainCommit, box, run, env: {}, onOutput: null, posts: (suffix) => box.requests.filter((r) => r.method === "POST" && r.path.endsWith(suffix)) };
   return fx;
 }
 
@@ -630,6 +630,7 @@ test("a signal ends a queued landing, leaving the queue and taking no lease", as
     cwd: f.checkout,
     env: { ...process.env, ATELIER_CONFIG_DIR: join(f.p, "config"), ATELIER_TOKEN: "fixture", ATELIER_CACHE: join(f.p, "cache"), ATELIER_SERVER: f.url, ATELIER_LAND_POLL_MS: "30" },
   });
+  t.after(() => child.kill("SIGKILL"));
   let output = ""; child.stdout.on("data", (s) => { output += s; }); child.stderr.on("data", (s) => { output += s; });
   const done = new Promise((ok) => child.on("close", (status, signal) => ok({ status, signal })));
   await until(() => f.posts("/landing-lease").some((x) => x.body.queued === true && x.body.item === "t1"), 15_000, "the queued ask");
@@ -1080,6 +1081,8 @@ function waitingLanding(f, env = {}) {
     cwd: f.checkout,
     env: { ...process.env, ATELIER_CONFIG_DIR: join(f.p, "config"), ATELIER_TOKEN: "fixture", ATELIER_CACHE: join(f.p, "cache"), ATELIER_SERVER: f.url, ATELIER_LAND_POLL_MS: "30", ...env },
   });
+  // Ended however the test ends, so a failed wait leaves no landing polling.
+  f.after(() => child.kill("SIGKILL"));
   let output = ""; child.stdout.on("data", (s) => output += s); child.stderr.on("data", (s) => output += s);
   const done = new Promise((ok) => child.on("close", (status, signal) => ok({ status, signal })));
   return { child, done, output: () => output };

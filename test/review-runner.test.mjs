@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { setImmediate as tick } from "node:timers/promises";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -291,7 +292,7 @@ test("the runner serves a review job before the builds the queue lists first", a
   const args = runnerConfig(t, ["build", "review"]);
   const { io, calls } = fixture();
   const build = { ...assignment, item: { id: "t20", title: "Build" } };
-  await runRunner(args, { workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, queue: async () => [build, assignment] });
+  await runRunner(args, { workspacePath: io.workspacePath, taskIO: io, wait: () => tick(), queue: async () => [build, assignment] });
   assert.deepEqual(calls.filter((c) => c.argv).map((c) => c.argv[0]).slice(0, 1), ["review-claim"]);
   assert.ok(!calls.some((c) => c.argv?.[0] === "claim"), "the build waits for the next poll");
 });
@@ -310,7 +311,7 @@ test("a reviews-only runner passes builds by and serves the review", async (t) =
   ];
   const offers = [];
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
     queue: async (offer) => { offers.push(offer.jobs); return [...builds, assignment]; },
   });
   assert.deepEqual(offers, [["review"]], "the offer names reviews alone");
@@ -319,12 +320,15 @@ test("a reviews-only runner passes builds by and serves the review", async (t) =
 
 // t252: with only builds offered, a reviews-only runner claims nothing and
 // keeps polling, and the builds stay in the queue for a runner that takes them.
-test("a reviews-only runner claims nothing when the queue offers only builds", async (t) => {
+// The stand-in wait yields to the timers (tick), so should the stop never
+// come the test's timeout still fires, where a wait that resolved at once
+// left the poll loop spinning a core for a day (t419).
+test("a reviews-only runner claims nothing when the queue offers only builds", { timeout: 10_000 }, async (t) => {
   const args = { ...runnerConfig(t), once: undefined };
   const { io, calls } = fixture();
   let polls = 0;
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
     queue: async () => {
       if (++polls === 2) process.emit("SIGINT");
       return [{ ...assignment, item: { id: "t20", title: "Build" } }];
@@ -342,7 +346,7 @@ test("a review run that timed out is reported with the review role", async (t) =
   const previous = process.exitCode;
   t.after(() => { process.exitCode = previous; });
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, queue: async () => [assignment],
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(), queue: async () => [assignment],
     async reportRun(body) { reports.push(body); },
   });
   assert.deepEqual(reports.map((r) => [r.role, r.outcome]), [["review", "timed-out"]]);
@@ -351,7 +355,7 @@ test("a review run that timed out is reported with the review role", async (t) =
 // t213: an interrupt during a review still gives the request back, with the
 // cleanup deadline a build's release gets, since the runner's own signal is
 // already aborted by then.
-test("an interrupted review releases the request through the real CLI helper", async (t) => {
+test("an interrupted review releases the request through the real CLI helper", { timeout: 10_000 }, async (t) => {
   const args = { ...runnerConfig(t), once: undefined };
   const { io } = fixture();
   const { cli, stopped, ...taskIO } = io;
@@ -361,7 +365,7 @@ test("an interrupted review releases the request through the real CLI helper", a
   // polls, and the assertion below fails instead of the poll loop spinning.
   let polls = 0;
   await runRunner(args, {
-    workspacePath: io.workspacePath, wait: async () => {}, queue: async () => { if (++polls > 3) process.emit("SIGINT"); return [assignment]; },
+    workspacePath: io.workspacePath, wait: () => tick(), queue: async () => { if (++polls > 3) process.emit("SIGINT"); return [assignment]; },
     taskIO: { ...taskIO, async harness() { process.emit("SIGINT"); return { code: 0 }; } },
     async executeChild(argv, options) {
       if (argv[2] === "review-claim") return { code: 0, output: JSON.stringify(claimed) };
@@ -400,7 +404,7 @@ async function serveReview(t, dir, claim) {
   t.after(() => { process.exitCode = previous; });
   const seen = {}, posted = [];
   await runRunner(args, {
-    workspacePath: () => join(dir, "t21"), wait: async () => {}, queue: async () => [task],
+    workspacePath: () => join(dir, "t21"), wait: () => tick(), queue: async () => [task],
     taskIO: { readSecret: () => FAKE_TOKEN },
     async executeChild(argv, options) {
       if (argv[0] === "git") return execute(argv, options);

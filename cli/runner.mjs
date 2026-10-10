@@ -1363,6 +1363,8 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
   };
   const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
   for (const signal of signals) process.on(signal, stop);
+  // However this process exits, no group it started outlives it.
+  process.on("exit", killGroups);
   const refused = new Set(), failures = new Map(), infrastructureFailures = new Map();
   const cleanupOptions = () => ({ timeoutMs: 5000, step: "cleanup" });
   // Resets a workspace to a commit and removes untracked files, saving any
@@ -1513,5 +1515,8 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
       if (args.once) { if (state.phase === "failed" && !controller.signal.aborted) process.exitCode = 1; break; }
       await wait(30_000, undefined, { signal: controller.signal }).catch((error) => { if (error.name !== "AbortError") throw error; });
     }
-  } finally { for (const signal of signals) process.removeListener(signal, stop); }
+  } finally {
+    for (const signal of signals) process.removeListener(signal, stop);
+    process.removeListener("exit", killGroups);
+  }
 }
