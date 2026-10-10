@@ -121,6 +121,48 @@ test("a child a test leaves running is ended with the file's tests, and a hung s
   assert.ok(await gone(sleeper, 2000), `the leaked child ${sleeper} outlived the run`);
 });
 
+// A file for a fixture to write pids to, and a reader of them. The pids are
+// SIGKILLed after the test, before the file goes, should the guard have
+// missed one, so a failing run leaves nothing either.
+function pidsFile(t) {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-orphans-test-"));
+  const pidFile = join(dir, "pids");
+  const pids = () => existsSync(pidFile) ? readFileSync(pidFile, "utf8").split(/\s+/).filter(Boolean).map(Number) : [];
+  t.after(() => {
+    for (const pid of pids()) try { process.kill(pid, "SIGKILL"); } catch { /* Gone. */ }
+    rmSync(dir, { recursive: true, force: true });
+  });
+  return { pidFile, pids };
+}
+
+test("a child's descendants are ended though the child itself exits first, async or sync", { timeout: 30_000 }, async (t) => {
+  const { pidFile, pids } = pidsFile(t);
+  const run = guarded(t, "descend.mjs", { GUARD_PID_FILE: pidFile });
+  const ended = await run.done;
+  assert.equal(ended.status, 0, run.output());
+  assert.equal(pids().length, 3, run.output());
+  for (const pid of pids()) assert.ok(await gone(pid, 2000), `the sleeper ${pid} outlived the child that started it`);
+});
+
+test("a sync child ignoring SIGTERM is ended at its timeout, with its descendants", { timeout: 30_000 }, async (t) => {
+  const { pidFile, pids } = pidsFile(t);
+  const run = guarded(t, "stubborn.mjs", { GUARD_PID_FILE: pidFile });
+  const ended = await run.done;
+  assert.equal(ended.status, 0, run.output());
+  assert.equal(pids().length, 2, run.output());
+  for (const pid of pids()) assert.ok(await gone(pid, 2000), `${pid} outlived the sync call's timeout`);
+});
+
+test("a sync child that outlasts its kill signal is ended with its test process by the watchdog", { timeout: 30_000 }, async (t) => {
+  const { pidFile, pids } = pidsFile(t);
+  const run = guarded(t, "stubborn.mjs", { GUARD_PID_FILE: pidFile, GUARD_KILL_SIGNAL: "SIGTERM", ATELIER_TEST_FILE_LIMIT_MS: "1500" });
+  const ended = await run.done;
+  assert.notEqual(ended.status, 0, run.output());
+  assert.match(run.output(), /test guard: .*stubborn\.mjs .* ran past its limit/);
+  assert.equal(pids().length, 2, run.output());
+  for (const pid of pids()) assert.ok(await gone(pid, 2000), `${pid} outlived the test process the watchdog killed`);
+});
+
 // The section atelier status prints from ps and lsof.
 test("etimeSeconds reads each form of ps's elapsed time", () => {
   assert.equal(etimeSeconds("05:07"), 307);
