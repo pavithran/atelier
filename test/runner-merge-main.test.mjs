@@ -18,7 +18,7 @@ import { CONFLICTS_ARGS, conflictsSection, mergeMainArgs, mergeMainSection, resc
 // the baseline, and the brief is the local one with the job's instructions
 // and the conflicting files after it.
 
-const entry = { agent: "codex", models: ["gpt-6-astra"], command: ["codex", "{brief_file}", "{workspace}"] };
+const entry = { agent: "codex", models: ["gpt-6-astra"], command: ["codex", "exec", "--sandbox", "danger-full-access", "{brief_file}", "{workspace}"] };
 const config = { agents: [entry] };
 const ACTOR = "codex/gpt-6-astra";
 const ID = { name: "Test", email: "test@example.com" };

@@ -156,6 +156,7 @@ export function publicPage(o: { title: string; description: string; brand: strin
 }
 
 export interface Detail {
+  runs?: import("./models/reliability").RunReport[];
   ownerActor?: string;
   // The factor the server takes as the owner's confirmation of an override
   // (t371): the Access identity, the confirmation secret, or null for a
@@ -1949,6 +1950,7 @@ ${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 <section id="changes" class="review-section"><h3>Changes</h3>${renderDiff(diff, item.head, mergedChecks)}${scope}${protectedNote}</section>
 <section id="checks" class="review-section"><h3>Checks and reviews</h3>
   <p class="meta">${view.checks.length ? `${decision.passed} of ${view.checks.length} required checks passed at this revision.` : view.notApplicable.length ? "No required check applies to this revision." : "This project requires no checks."}${view.checks.length && view.notApplicable.length ? ` ${view.notApplicable.length} more ${view.notApplicable.length === 1 ? "does" : "do"} not apply to it.` : ""}${d.policy.sandboxOnly ? " Only checks run in a Cloudflare container count for this project." : ""}</p>
+  ${(d.runs ?? []).filter((r) => r.outcome === "validation_blocked").map((r) => `<aside class="callout"><strong>Validation blocked</strong><p>The build harness could not run the required checks. This is a reported limitation, separate from clean-clone check results.</p><p>${e(r.detail)}</p><p class="meta">${e(r.actor)} · ${e(r.runner)} · ${e(r.at)}</p></aside>`).join("")}
   ${checkRows}${notApplicableRows}${reports}${reviews}${overrideNote}${blockers}
 </section>
 <details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>

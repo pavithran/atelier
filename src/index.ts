@@ -2611,6 +2611,7 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
     // The page's override forms ask for the factor this server takes (t371).
     const read: Detail = await L.detail(parts[2]);
     const detail: Detail = { ...read, ownerFactor: ownerFactorOf(env) };
+    detail.runs = await index(env).runsForItem(p.name, parts[2]);
     return html(renderItem(p, detail, ownerName(env), await diffFor(env, L, p.repo, item, detail.events), live), 200, nonce);
   }
   return html("Not found.", 404);
