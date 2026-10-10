@@ -936,7 +936,7 @@ async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, g
 // It ends when the instance completes or fails. Closing the laptop stops
 // only this view: the Workflow keeps its place, and the same command run
 // again attaches and goes on from the stage it reached.
-const LIVE = ["queued", "running", "waiting", "waitingForPause", "paused"];
+const LIVE = ["queued", "running", "waiting", "waitingForPause", "paused", "rollingBack"];
 
 async function runLandWorkflow(io, { d0, itemPath, dir, regenerate }) {
   const { args, name, id, p, request, git, die, print } = io;
@@ -995,6 +995,14 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate }) {
     return () => clearInterval(timer);
   };
 
+  let lastStatus = started.status, lastInstance = started.instance;
+  const queueState = async (read) => {
+    if (typeof read?.queued === "boolean") return read.queued ? `${id} is still queued` : `${id} is not queued`;
+    try {
+      const lease = await request("GET", leasePath);
+      return Array.isArray(lease.waiting) ? (lease.waiting.some((row) => row.item === id) ? `${id} is still queued` : `${id} is not queued`) : `whether ${id} is still queued is unknown`;
+    } catch { return `whether ${id} is still queued is unknown`; }
+  };
   let said = null, workedRound = null, mergedHere = false, saidWait = false;
   for (;;) {
     let read;
@@ -1009,14 +1017,19 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate }) {
       print(`${id} landed through the landing Workflow; the lease is released.`);
       return;
     }
-    if (!instance || !status) die(`the landing Workflow of ${id} can no longer be read (instance ${instance ?? "none"}); its lease lapses on its own. Run atelier land ${id} --workflow again to start or attach the landing`);
+    if (!instance || !status || status.status === "unknown" || instance !== started.instance) {
+      const last = instance === started.instance ? read?.lastStatus ?? lastStatus : lastStatus;
+      die(`the landing Workflow of ${id} can no longer be read (instance ${lastInstance ?? "none"}); last status: ${last?.status ?? "unknown"}; last error: ${last?.error?.message ?? detail ?? "none recorded"}; read error: ${read?.readError ?? (instance && instance !== started.instance ? `replaced by ${instance}` : "no status returned")}; ${await queueState(read)}. Its lease lapses on its own. Read the instance before starting another landing.`, 1);
+    }
+    lastStatus = status;
+    lastInstance = instance;
     if (status.status === "complete") {
       if (noReview || status.output?.review === "skipped") print(`${id} is submitted and left for you to settle the review by hand (--no-review): atelier review ${id} --approve --as H/M --note "…", then atelier accept ${id} and atelier merge ${id}.`);
       else print(`${id} landed through the landing Workflow (instance ${instance}); the lease is released.`);
       return;
     }
     if (status.status === "errored" || status.status === "terminated") {
-      die(`the landing Workflow ${instance} ${status.status === "terminated" ? "was terminated" : "failed"}: ${status.error?.message ?? detail ?? "no reason given"}`);
+      die(`the landing Workflow ${instance} ${status.status === "terminated" ? "was terminated" : "failed"}: ${status.error?.message ?? detail ?? "no reason given"}; last status: ${status.status}; ${await queueState(read)}`, 1);
     }
     const key = `${stage}:${round}:${stage === "review" ? detail ?? "" : ""}`;
     if (key !== said) {

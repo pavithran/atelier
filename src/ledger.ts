@@ -198,6 +198,7 @@ export interface LandingWorkflowRecord {
   // machine holding the workspace, "container" in the CheckRunner. The
   // executor reads it to know whether the checks are its to run.
   checks?: "local" | "container";
+  lastStatus?: { status: InstanceStatus["status"]; error?: { name: string; message: string } };
 }
 
 const LAND_STEPS = new Set(["lease", "merge", "regenerate", "push", "check", "submit", "review", "accept", "merged"]);
@@ -2017,6 +2018,7 @@ export class Ledger extends DurableObject<Env> {
     const record = this.landingWorkflowOf(id);
     if (!record || record.instance !== instance) return null;
     const next: LandingWorkflowRecord = {
+      ...(record.lastStatus ? { lastStatus: record.lastStatus } : {}),
       instance, at: record.at, stage, stageAt: new Date().toISOString(), round,
       ...(record.checks ? { checks: record.checks } : {}),
       ...(detail ? { detail: detail.slice(0, 2000) } : {}),
@@ -2024,6 +2026,13 @@ export class Ledger extends DurableObject<Env> {
     };
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing-workflow:${id}`, JSON.stringify(next));
     return next;
+  }
+
+  // Fence observations to the recorded instance, as stage reports are fenced.
+  observeLandingWorkflowStatus(id: string, instance: string, status: NonNullable<LandingWorkflowRecord["lastStatus"]>): void {
+    const record = this.landingWorkflowOf(id);
+    if (!record || record.instance !== instance || status.status === "unknown") return;
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing-workflow:${id}`, JSON.stringify({ ...record, lastStatus: { status: status.status, ...(status.error ? { error: { name: status.error.name.slice(0, 200), message: status.error.message.slice(0, 2000) } } : {}) } }));
   }
 
   landingWorkflowOf(id: string): LandingWorkflowRecord | null {

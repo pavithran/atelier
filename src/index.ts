@@ -1226,8 +1226,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     requireOwner(env, actor);
     const remembered = await L.landingWorkflowOf(id);
     if (!remembered) return json({ instance: null, status: null, stage: null });
-    const status = await env.LANDING_WORKFLOW.get(remembered.instance).then((i) => i.status()).catch(() => null);
-    return json({ ...remembered, status });
+    let status: InstanceStatus | null = null;
+    let readError: string | undefined;
+    try {
+      status = await (await env.LANDING_WORKFLOW.get(remembered.instance)).status();
+      await L.observeLandingWorkflowStatus(id, remembered.instance, status);
+    } catch (error) {
+      readError = String((error as Error)?.message ?? error);
+    }
+    const queued = (await L.readLandingQueue()).some((row) => row.item === id);
+    return json({ ...remembered, status, lastStatus: status && status.status !== "unknown" ? { status: status.status, ...(status.error ? { error: status.error } : {}) } : remembered.lastStatus ?? null, ...(readError ? { readError } : {}), queued });
   }
   if (m !== "POST") throw new RuleError("not_found", "no such route", 404);
 
@@ -1610,9 +1618,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // runs no checks on its machine.
       if (body.checks !== undefined && !LANDING_CHECKS_MODES.includes(body.checks as LandingChecksMode)) throw new RuleError("bad_checks", "checks must be local or container", 400);
       const checks: LandingChecksMode = body.checks === "local" ? "local" : "container";
-      const live = async () => remembered ? await env.LANDING_WORKFLOW.get(remembered.instance).then((i) => i.status()).catch(() => null) : null;
-      const standing = await live();
-      if (standing && ["queued", "running", "waiting", "waitingForPause", "paused"].includes(standing.status)) {
+      let standing: InstanceStatus | null = null;
+      if (remembered) {
+        try {
+          standing = await (await env.LANDING_WORKFLOW.get(remembered.instance)).status();
+          await L.observeLandingWorkflowStatus(id, remembered.instance, standing);
+        } catch (error) {
+          // A failed read does not prove the instance ended. Never start a
+          // second executor beside a landing whose state we cannot establish.
+          throw new RuleError("workflow_unreadable", `the landing Workflow ${remembered.instance} cannot be read: ${String((error as Error)?.message ?? error)}; last status: ${remembered.lastStatus?.status ?? "unknown"}; last error: ${remembered.lastStatus?.error?.message ?? remembered.detail ?? "none recorded"}; ${id} ${(await L.readLandingQueue()).some((row) => row.item === id) ? "is still queued" : "is not queued"}`, 503);
+        }
+      }
+      if (standing && !["complete", "errored", "terminated"].includes(standing.status)) {
         return json({ ...remembered!, created: false, status: standing });
       }
       // The timeouts the landing waits with, each a positive number of
@@ -1638,7 +1655,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           ...ms("checksTimeoutMs"), ...ms("pollMs"), ...ms("mergePollMs"), ...ms("waitTimeoutMs"), ...ms("workspaceTimeoutMs"), ...ms("conflictTimeoutMs"), ...ms("reviewTimeoutMs"), ...ms("mergeTimeoutMs"),
         },
       });
-      return json({ ...record, created: true, status: await instance.status() }, 201);
+      const status = await instance.status();
+      await L.observeLandingWorkflowStatus(id, instanceId, status);
+      return json({ ...record, created: true, status }, 201);
     }
     case "integrated": {
       // The integrator reports a merge of one part. The Worker verifies the

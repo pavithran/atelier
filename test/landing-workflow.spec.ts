@@ -330,3 +330,77 @@ it("the landing-workflow route records the checks mode it starts with, keeps con
   await until(() => L.landingWorkflowOf(ids[0]), (r) => r?.stage === "workspace");
   expect(await L.landingWorkflowOf(ids[0])).toMatchObject({ stage: "workspace", checks: "local" });
 });
+
+it("fourteen simultaneous lease waiters remain readable through repeated polls and all finish in queue order", async () => {
+  const project = "wf-many-queued";
+  const tasks = [];
+  for (let i = 0; i < 14; i++) tasks.push(await pushedTask(project, `wf-many-${i}`));
+  const L = ledger(project);
+  const blocker = (await L.newItem("Hold the lease while fourteen queue", [], "owner")).id;
+  await L.beginProjectLanding(blocker, "owner");
+  await using introspector = await introspectWorkflow(env.LANDING_WORKFLOW);
+  await introspector.modifyAll(async (m) => {
+    await m.disableRetryDelays();
+    // Exercise transient platform failures with the backlog still present.
+    await m.mockStepError({ name: "ask for the landing lease r0 #0" }, new Error("internal error"), 2);
+  });
+  await Promise.all(tasks.map(({ id }, i) => env.LANDING_WORKFLOW.create({
+    id: `wf-many-${i}`, params: { ...params(project, id), waitTimeoutMs: 60_000, noReview: true },
+  })));
+  const queue = await until(() => L.readLandingQueue(), (rows) => rows.length === 14);
+  // More than one lease poll per waiter, not just a burst of instance starts.
+  await new Promise((r) => setTimeout(r, 800));
+  for (let i = 0; i < tasks.length; i++) {
+    const instance = await env.LANDING_WORKFLOW.get(`wf-many-${i}`);
+    expect(["running", "waiting"]).toContain((await instance.status()).status);
+    expect(await L.landingWorkflowOf(tasks[i]!.id)).toMatchObject({ stage: "lease" });
+  }
+  const refreshed = await L.readLandingQueue();
+  expect(refreshed.map((row) => row.item)).toEqual(queue.map((row) => row.item));
+  for (let i = 0; i < queue.length; i++) {
+    expect(Date.parse(refreshed[i]!.renewedAt!)).toBeGreaterThan(Date.parse(queue[i]!.renewedAt!));
+  }
+  await L.cancelProjectLanding(blocker, "owner");
+  for (const row of queue) {
+    const record = await until(() => L.landingWorkflowOf(row.item), (r) => r?.stage === "workspace");
+    expect(await L.readProjectLanding()).toMatchObject({ item: row.item });
+    await send(record!.instance, "workspace", { round: 0, head: H1 });
+    await until(() => L.landingWorkflowOf(row.item), (r) => r?.stage === "done");
+  }
+  for (let i = 0; i < tasks.length; i++) {
+    await until(async () => (await env.LANDING_WORKFLOW.get(`wf-many-${i}`)).status(), (s) => s.status === "complete");
+    expect((await L.item(tasks[i]!.id)).state).toBe("submitted");
+  }
+  expect(await L.readLandingQueue()).toEqual([]);
+  expect(await L.readProjectLanding()).toBeNull();
+}, 30_000);
+
+it("unreadable instance diagnostics retain its last status/error and queue membership without replacing it", async () => {
+  const project = "wf-unreadable";
+  const { L, id } = await pushedTask(project, "missing-instance");
+  await L.queueProjectLanding(id, "owner");
+  await L.observeLandingWorkflowStatus(id, "missing-instance", { status: "errored", error: { name: "Error", message: "internal error" } });
+  // Stale observations and stage changes cannot erase this instance's status.
+  await L.observeLandingWorkflowStatus(id, "older-instance", { status: "complete" });
+  await L.setLandingWorkflowStage(id, "missing-instance", "lease", 0);
+  await L.observeLandingWorkflowStatus(id, "missing-instance", { status: "unknown" });
+  const failingEnv = { ...env, LANDING_WORKFLOW: {
+    create: env.LANDING_WORKFLOW.create.bind(env.LANDING_WORKFLOW),
+    createBatch: env.LANDING_WORKFLOW.createBatch.bind(env.LANDING_WORKFLOW),
+    deleteBatch: env.LANDING_WORKFLOW.deleteBatch.bind(env.LANDING_WORKFLOW),
+    get: async () => { throw new Error("instance no longer exists"); },
+  } };
+  const call = (method: string) => worker.fetch(new Request(`https://atelier.test/api/projects/${project}/items/${id}/landing-workflow`, {
+    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, ...(method === "POST" ? { body: "{}" } : {}),
+  }), { ...failingEnv, ATELIER_TOKEN: TOKEN } as typeof env);
+  expect(await (await call("GET")).json()).toMatchObject({
+    instance: "missing-instance", status: null, queued: true, readError: "instance no longer exists",
+    lastStatus: { status: "errored", error: { message: "internal error" } },
+  });
+  const refused = await call("POST");
+  expect(refused.status).toBe(503);
+  expect(await refused.json()).toMatchObject({ detail: expect.stringMatching(/last status: errored; last error: internal error; .*is still queued/) });
+  expect((await L.landingWorkflowOf(id))?.instance).toBe("missing-instance");
+  await L.queueProjectLanding(id, "owner", true);
+  expect(await (await call("GET")).json()).toMatchObject({ queued: false });
+});
