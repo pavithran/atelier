@@ -176,4 +176,10 @@ test("a malformed explicit runner environment value cannot read a store or selec
       read: () => assert.fail("explicit token must not read a store"),
     }), /ATELIER_RUNNER_TOKEN is (empty|malformed)/);
   }
+  for (const value of ["a\nb", "a\u0000b", "a\tb", "a\u007fb"]) {
+    assert.throws(() => runnerCredential("https://one.test", "studio", {
+      env: { ATELIER_RUNNER_TOKEN: value, ATELIER_TOKEN: "owner-secret" },
+      read: () => assert.fail("explicit token must not read a store"),
+    }), /one line of text/);
+  }
 });

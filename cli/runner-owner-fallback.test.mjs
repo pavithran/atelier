@@ -8,13 +8,13 @@ import { ROUTE_LEVEL } from "../src/route-level.ts";
 const root = resolve(".cache/runner-owner-fallback-tests");
 mkdirSync(root, { recursive: true });
 
-function run(t, extra, argv = ["queue"], stored = {}) {
+function run(t, extra, argv = ["queue"], stored = {}, jobs = ["build", "review", "plan"]) {
   const dir = mkdtempSync(join(root, "test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   writeFileSync(join(dir, "secrets.json"), JSON.stringify(stored), { mode: 0o600 });
   writeFileSync(join(dir, "config.json"), JSON.stringify({ server: "https://one.test" }));
   const config = join(dir, "runner.json");
-  writeFileSync(config, JSON.stringify({ agents: [{ agent: "codex", models: ["gpt-6-astra"], command: ["unused", "{model}", "{brief_file}", "{workspace}", "{verdict_file}", "{plan_file}"] }], jobs: ["build", "review", "plan"] }));
+  writeFileSync(config, JSON.stringify({ agents: [{ agent: "codex", models: ["gpt-6-astra"], command: ["unused", "{model}", "{brief_file}", "{workspace}", "{verdict_file}", "{plan_file}"] }], jobs }));
   if (argv[0] === "runner") argv = [...argv, "--config", config, "--once"];
   const cli = resolve("cli/atelier.mjs");
   const script = `
@@ -57,25 +57,37 @@ test("an explicitly empty ATELIER_RUNNER_TOKEN still fails and never uses the ow
   assert.match(result.stderr, /empty/);
 });
 
-for (const argv of [
-  ["runner", "--name", "home:nobody"],
-  ["claim", "t1", "--project", "demo", "--runner", "home:nobody"],
-  ["start", "t1", "--project", "demo", "--runner", "home:nobody"],
+for (const [argv, jobs] of [
+  [["runner", "--name", "home:nobody"], ["build"]],
+  [["runner", "--name", "home:nobody"], ["review"]],
+  [["runner", "--name", "home:nobody"], ["plan"]],
+  [["claim", "t1", "--project", "demo", "--runner", "home:nobody"]],
+  [["start", "t1", "--project", "demo", "--runner", "home:nobody"]],
 ]) {
-  test(`${argv[0]}: missing entry uses the stored owner login, or fails without one`, (t) => {
-    const owner = run(t, {}, argv, { API_TOKEN: "owner-secret" });
+  const label = jobs ? `${argv[0]} (${jobs[0]})` : argv[0];
+  for (const stored of [null, [], "invalid", 42, false]) {
+    test(`${label}: malformed secrets file ${JSON.stringify(stored)} never selects owner`, (t) => {
+      const result = run(t, { ATELIER_TOKEN: "owner-secret" }, argv, stored, jobs);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /must contain a secret entry object/);
+      assert.doesNotMatch(result.stderr, /AUTH=|running with the owner's credential/);
+    });
+  }
+  test(`${label}: missing entry uses the stored owner login, or fails without one`, (t) => {
+    const owner = run(t, {}, argv, { API_TOKEN: "owner-secret" }, jobs);
     assert.match(owner.stderr, /AUTH=Bearer owner-secret/);
     assert.equal(owner.stderr.match(/running with the owner's credential/g)?.length, 1);
-    const missing = run(t, {}, argv);
+    const missing = run(t, {}, argv, {}, jobs);
     assert.notEqual(missing.status, 0);
     assert.match(missing.stderr, /no API token/);
     assert.doesNotMatch(missing.stderr, /AUTH=/);
   });
 
   for (const entry of ["", "   ", 42, false, null, {}, "not json", "null",
+    ...["", "   ", "a\nb", null, 42].map((token) => JSON.stringify({ server: "https://one.test", token })),
     JSON.stringify({ server: "https://other.test", token: "runner-secret" })]) {
-    test(`${argv[0]}: malformed or foreign stored entry ${JSON.stringify(entry)} never selects owner`, (t) => {
-      const result = run(t, {}, argv, { API_TOKEN: "owner-secret", "runner.home:nobody": entry });
+    test(`${label}: malformed or foreign stored entry ${JSON.stringify(entry)} never selects owner`, (t) => {
+      const result = run(t, {}, argv, { API_TOKEN: "owner-secret", "runner.home:nobody": entry }, jobs);
       assert.notEqual(result.status, 0);
       assert.match(result.stderr, /one line of text|no server binding|not bound/);
       assert.doesNotMatch(result.stderr, /AUTH=|running with the owner's credential/);
@@ -83,8 +95,8 @@ for (const argv of [
   }
 
   for (const token of ["", "invalid", "expired", "revoked"]) {
-    test(`${argv[0]}: explicit ${token || "empty"} token never selects owner`, (t) => {
-      const result = run(t, { ATELIER_RUNNER_TOKEN: token }, argv, { API_TOKEN: "owner-secret" });
+    test(`${label}: explicit ${token || "empty"} token never selects owner`, (t) => {
+      const result = run(t, { ATELIER_RUNNER_TOKEN: token }, argv, { API_TOKEN: "owner-secret" }, jobs);
       assert.notEqual(result.status, 0);
       assert.doesNotMatch(result.stderr, /owner-secret|running with the owner's credential/);
       if (token) assert.equal(result.stderr.match(new RegExp(`AUTH=Bearer ${token}`, "g"))?.length, 1);
