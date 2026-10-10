@@ -470,6 +470,30 @@ it("under single-family mode a landing's review goes to a different model of the
   expect((await plain.claimReview(p, GPT, RUNNER) as unknown as { singleFamily: string | null }).singleFamily).toBeNull();
 });
 
+// t394, the review of e5cb758c: a dispatch that names no model leaves the
+// runner's choice to the claim, which is refused for another company's model
+// as a handoff to one is; a separate tier review is asked only of the
+// company's tier models; and a landing that resumes on its standing request
+// judges that request's reviewer by the same mode.
+it("under single-family mode no other company's model claims, takes a handoff or is asked for the tier, and a landing resumes on its standing review", async () => {
+  const SONNET = "claude-code/sonnet-5.5", SOL = "codex/gpt-6.1-sol", FABLE = "claude-code/fable-5.1";
+  const single: ProjectPolicy = { ...policy, familyMode: { single: "anthropic", by: "owner", at: AT } };
+  const L = await setup("land-single-family-guards", { ...single, reviewTier: [SOL, FABLE] });
+  const id = (await L.newItem("Guards", [], "owner")).id;
+  await L.dispatch(id, "owner", { to: "home" });
+  await refusal(L.claim(id, GPT, RUNNER), "single_family", /^codex\/gpt-6-astra is not one of anthropic's models, and this project runs in single-family mode \(anthropic\)/);
+  await refusal(L.dispatch(id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" }), "single_family", /^gpt-6-astra is not one of anthropic's models/);
+  const head = "d".repeat(40);
+  await submittedTask(L, id, head);
+  await refusal(L.handoff(id, OPUS, GPT, "over to you"), "single_family", /^codex\/gpt-6-astra is not one of anthropic's models/);
+  // The gate goes to SONNET, outside the tier; the tier's SOL comes first but is another company's, so FABLE is asked.
+  expect(await L.requestReview(id, "owner", SONNET, POOL)).toMatchObject({ requested: true, reviewer: SONNET });
+  expect((await L.reviewWaiting()).map((i) => `${i.dispatch!.agent}/${i.dispatch!.model}`)).toEqual([SONNET, FABLE]);
+  // The landing resumes on SONNET's open request: a different anthropic model is no refusal under the mode.
+  const records = { sources: [], runs: [] };
+  expect(await L.requestReview(id, "owner", null, POOL, false, false, records)).toMatchObject({ requested: false, reviewer: SONNET, head });
+});
+
 it("a landing's review goes to a tier model of another family first, and its one review serves the gate and the tier", async () => {
   const GEMINI = "antigravity/gemini-3.1-pro";
   // Without the tier, the pool's order would pick GEMINI for the gate.

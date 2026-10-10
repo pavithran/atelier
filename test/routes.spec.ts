@@ -386,7 +386,7 @@ it("the single-family route records the company with who and when, records the r
   expect(other.status).toBe(409);
   const refusal = await other.json() as { error: string; detail: string };
   expect(refusal.error).toBe("single_family");
-  expect(refusal.detail).toBe("gpt-6-astra is not one of anthropic's models, and this project runs in single-family mode (anthropic): dispatch to one of anthropic's models, or return to cross-family review with atelier init --cross-family");
+  expect(refusal.detail).toBe("gpt-6-astra is not one of anthropic's models, and this project runs in single-family mode (anthropic): use one of anthropic's models, or return to cross-family review with atelier init --cross-family");
   expect((await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home", agent: "claude-code", model: "sonnet-5.5" })).status).toBe(200);
   // A dispatch that names no model leaves the choice to the runner's offer, as before.
   expect((await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home" })).status).toBe(200);

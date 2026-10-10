@@ -151,13 +151,16 @@ The company is one of the families a model's name is recognised by
 ([`src/models/pool.ts`](../src/models/pool.ts): anthropic, openai, google,
 zai, deepseek, qwen, minimax, mistral, meta, moonshot, xai, xiaomi,
 bytedance, cohere). The policy records the mode as `familyMode`, with who set
-it and when. Under it, plan routing, a hand dispatch, the reviewer picker and
-the landing take only that company's models, and the gate counts an approval
+it and when. Under it, plan routing, a hand dispatch, the reviewer picker,
+the review tier and the landing take only that company's models; a claim or
+handoff by another company's model is refused, so a dispatch that names no
+model cannot hand the work to one either. The gate counts an approval
 when the reviewer is a different model of the company from every recorded
 contributor, compared by model name without letter case, a `:profile` suffix
 or the harness: the same model in another harness is still the same model.
 A model never counts as reviewer of a change it contributed to, in either
-mode. The mode is shown under the project's title on every tab of its page
+mode and for a coordinated change too: Opus reviewing in Codex what Opus
+built in Claude Code is not another agent's review. The mode is shown under the project's title on every tab of its page
 and on its Settings tab, by `atelier status` and `atelier status --project`,
 at the top of every review brief, and in each merge's provenance note, so
 nobody takes such a review for a cross-company one.
