@@ -17,6 +17,11 @@ import type { LedgerEvent } from "../src/ledger.ts";
 // released and the files named until the owner resumes, and a report from
 // an earlier round is passed over. The landing-workflow routes start and
 // read an instance and refuse what the Workflow would only fail on.
+// Remote smoke required before and after deploy: queue fourteen real landings
+// behind a held lease, read every instance through multiple stretched polls,
+// then release and verify all finish in queue order. Check recovery after a
+// failed create and an instance missing after retention. Local workerd covers
+// the API paths and durable steps, not production internal errors/retention.
 
 const H0 = "0".repeat(40), H1 = "a".repeat(40), H2 = "b".repeat(40), H9 = "9".repeat(40);
 const OPUS = "claude-code/opus-5.5";
@@ -329,4 +334,228 @@ it("the landing-workflow route records the checks mode it starts with, keeps con
   // The stage the Workflow writes keeps the mode, so an executor attaching later reads it.
   await until(() => L.landingWorkflowOf(ids[0]), (r) => r?.stage === "workspace");
   expect(await L.landingWorkflowOf(ids[0])).toMatchObject({ stage: "workspace", checks: "local" });
+});
+
+it("fourteen simultaneous lease waiters remain readable through repeated polls and all finish in queue order", async () => {
+  const project = "wf-many-queued";
+  const tasks = [];
+  for (let i = 0; i < 14; i++) tasks.push(await pushedTask(project, `wf-many-${i}`));
+  const L = ledger(project);
+  const blocker = (await L.newItem("Hold the lease while fourteen queue", [], "owner")).id;
+  await L.beginProjectLanding(blocker, "owner");
+  await using introspector = await introspectWorkflow(env.LANDING_WORKFLOW);
+  await introspector.modifyAll(async (m) => {
+    await m.disableRetryDelays();
+    // Exercise transient platform failures with the backlog still present.
+    await m.mockStepError({ name: "ask for the landing lease r0 #0" }, new Error("internal error"), 2);
+  });
+  await Promise.all(tasks.map(({ id }, i) => env.LANDING_WORKFLOW.create({
+    id: `wf-many-${i}`, params: { ...params(project, id), waitTimeoutMs: 60_000, noReview: true },
+  })));
+  const queue = await until(() => L.readLandingQueue(), (rows) => rows.length === 14);
+  // More than one lease poll per waiter, not just a burst of instance starts.
+  await new Promise((r) => setTimeout(r, 800));
+  for (let i = 0; i < tasks.length; i++) {
+    const instance = await env.LANDING_WORKFLOW.get(`wf-many-${i}`);
+    expect(["running", "waiting"]).toContain((await instance.status()).status);
+    expect(await L.landingWorkflowOf(tasks[i]!.id)).toMatchObject({ stage: "lease" });
+  }
+  const refreshed = await L.readLandingQueue();
+  expect(refreshed.map((row) => row.item)).toEqual(queue.map((row) => row.item));
+  for (let i = 0; i < queue.length; i++) {
+    expect(Date.parse(refreshed[i]!.renewedAt!)).toBeGreaterThan(Date.parse(queue[i]!.renewedAt!));
+  }
+  await L.cancelProjectLanding(blocker, "owner");
+  for (const row of queue) {
+    const record = await until(() => L.landingWorkflowOf(row.item), (r) => r?.stage === "workspace");
+    expect(await L.readProjectLanding()).toMatchObject({ item: row.item });
+    await send(record!.instance, "workspace", { round: 0, head: H1 });
+    await until(() => L.landingWorkflowOf(row.item), (r) => r?.stage === "done");
+  }
+  for (let i = 0; i < tasks.length; i++) {
+    await until(async () => (await env.LANDING_WORKFLOW.get(`wf-many-${i}`)).status(), (s) => s.status === "complete");
+    expect((await L.item(tasks[i]!.id)).state).toBe("submitted");
+  }
+  expect(await L.readLandingQueue()).toEqual([]);
+  expect(await L.readProjectLanding()).toBeNull();
+}, 30_000);
+
+it("unreadable instance diagnostics retain its last status/error and queue membership without replacing it", async () => {
+  const project = "wf-unreadable";
+  const { L, id } = await pushedTask(project, "missing-instance");
+  await L.queueProjectLanding(id, "owner");
+  await L.observeLandingWorkflowStatus(id, "missing-instance", { status: "errored", error: { name: "Error", message: "internal error" } });
+  // Stale observations and stage changes cannot erase this instance's status.
+  await L.observeLandingWorkflowStatus(id, "older-instance", { status: "complete" });
+  await L.setLandingWorkflowStage(id, "missing-instance", "lease", 0);
+  await L.observeLandingWorkflowStatus(id, "missing-instance", { status: "unknown" });
+  const failingEnv = { ...env, LANDING_WORKFLOW: {
+    create: env.LANDING_WORKFLOW.create.bind(env.LANDING_WORKFLOW),
+    createBatch: env.LANDING_WORKFLOW.createBatch.bind(env.LANDING_WORKFLOW),
+    deleteBatch: env.LANDING_WORKFLOW.deleteBatch.bind(env.LANDING_WORKFLOW),
+    get: async () => { throw new Error("internal error reading Workflow"); },
+  } };
+  const call = (method: string) => worker.fetch(new Request(`https://atelier.test/api/projects/${project}/items/${id}/landing-workflow`, {
+    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, ...(method === "POST" ? { body: "{}" } : {}),
+  }), { ...failingEnv, ATELIER_TOKEN: TOKEN } as typeof env);
+  expect(await (await call("GET")).json()).toMatchObject({
+    instance: "missing-instance", status: null, queued: true, readError: "internal error reading Workflow",
+    lastStatus: { status: "errored", error: { message: "internal error" } },
+  });
+  const refused = await call("POST");
+  expect(refused.status).toBe(503);
+  expect(await refused.json()).toMatchObject({ detail: expect.stringMatching(/last status: errored; last error: internal error; .*is still queued/) });
+  expect((await L.landingWorkflowOf(id))?.instance).toBe("missing-instance");
+  await L.queueProjectLanding(id, "owner", true);
+  expect(await (await call("GET")).json()).toMatchObject({ queued: false });
+});
+
+function statusHandle(status: WorkflowInstance["status"]): WorkflowInstance {
+  const unused = async () => { throw new Error("unexpected Workflow handle method"); };
+  return { id: "test-handle", status, pause: unused, resume: unused, terminate: unused, restart: unused, delete: unused, sendEvent: unused, subscribe: unused };
+}
+
+const workflowBinding = () => ({
+  get: env.LANDING_WORKFLOW.get.bind(env.LANDING_WORKFLOW),
+  create: env.LANDING_WORKFLOW.create.bind(env.LANDING_WORKFLOW),
+  createBatch: env.LANDING_WORKFLOW.createBatch.bind(env.LANDING_WORKFLOW),
+  deleteBatch: env.LANDING_WORKFLOW.deleteBatch.bind(env.LANDING_WORKFLOW),
+});
+
+function workflowRequest(project: string, id: string, method = "POST") {
+  return new Request(`https://atelier.test/api/projects/${project}/items/${id}/landing-workflow`, {
+    method, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    ...(method === "POST" ? { body: JSON.stringify({ checks: "local" }) } : {}),
+  });
+}
+
+it("does not remember a failed create and can retry the landing", async () => {
+  const project = "wf-create-retry";
+  const { L, id } = await pushedTask(project, "expired-before-create");
+  let creates = 0;
+  const binding = {
+    ...workflowBinding(),
+    get: async () => { throw new Error("instance.not_found"); },
+    create: async (options: Parameters<typeof env.LANDING_WORKFLOW.create>[0]) => {
+      creates++;
+      // Neither a stale record nor the new id may be recorded before success.
+      expect(await L.landingWorkflowOf(id)).toBeNull();
+      if (creates === 1) throw new Error("internal error");
+      return env.LANDING_WORKFLOW.create(options);
+    },
+  };
+  const testEnv = { ...env, ATELIER_TOKEN: TOKEN, LANDING_WORKFLOW: binding } as typeof env;
+  expect((await worker.fetch(workflowRequest(project, id), testEnv)).status).toBe(500);
+  expect(await L.landingWorkflowOf(id)).toBeNull();
+  const response = await worker.fetch(workflowRequest(project, id), testEnv);
+  expect(response.status).toBe(201);
+  const result = await response.json() as { instance: string };
+  expect(await L.landingWorkflowOf(id)).toMatchObject({ instance: result.instance, checks: "local" });
+  await until(() => L.landingWorkflowOf(id), (r) => r?.stage === "workspace");
+  expect(creates).toBe(2);
+});
+
+it("replaces an instance missing from the real binding while keeping its queue place", async () => {
+  const project = "wf-expired-restart";
+  const { L, id } = await pushedTask(project, "wf-expired-missing");
+  const blocker = (await L.newItem("Hold lease", [], "owner")).id;
+  await L.beginProjectLanding(blocker, "owner");
+  await L.queueProjectLanding(id, "owner");
+  const before = await L.readLandingQueue();
+  const response = await worker.fetch(workflowRequest(project, id), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
+  expect(response.status).toBe(201);
+  const result = await response.json() as { instance: string };
+  expect(result.instance).not.toBe("wf-expired-missing");
+  expect(await L.landingWorkflowOf(id)).toMatchObject({ instance: result.instance });
+  expect((await L.readLandingQueue()).map((row) => ({ item: row.item, at: row.at })))
+    .toEqual(before.map((row) => ({ item: row.item, at: row.at })));
+});
+
+it("returns bounded last-status errors even on the first successful read", async () => {
+  const project = "wf-bounded-error";
+  const { L, id } = await pushedTask(project, "wf-error-long");
+  const error = { name: "n".repeat(300), message: "m".repeat(3000) };
+  const testEnv = { ...env, ATELIER_TOKEN: TOKEN, LANDING_WORKFLOW: {
+    ...workflowBinding(),
+    get: async () => statusHandle(async () => ({ status: "errored", error })),
+  } } as typeof env;
+  const response = await worker.fetch(workflowRequest(project, id, "GET"), testEnv);
+  expect(await response.json()).toMatchObject({ lastStatus: { status: "errored", error: { name: error.name.slice(0, 200), message: error.message.slice(0, 2000) } } });
+  expect((await L.landingWorkflowOf(id))?.lastStatus?.error?.message.length).toBe(2000);
+});
+
+it("twelve multi-hour lease waiters remain readable at the stretched poll cadence", async () => {
+  const project = "wf-stretched-queue";
+  const tasks = [];
+  for (let i = 0; i < 12; i++) tasks.push(await pushedTask(project, `wf-stretched-${i}`));
+  const L = ledger(project);
+  const blocker = (await L.newItem("Hold the lease", [], "owner")).id;
+  await L.beginProjectLanding(blocker, "owner");
+  await using introspector = await introspectWorkflow(env.LANDING_WORKFLOW);
+  await introspector.modifyAll(async (m) => {
+    // Advance two real durable sleeps without spending 84 seconds per test.
+    // The third sleep keeps the production cadence and remains pending.
+    await m.disableSleeps([{ name: "wait for the landing lease r0 #0" }, { name: "wait for the landing lease r0 #1" }]);
+    await m.disableRetryDelays();
+  });
+  await Promise.all(tasks.map(({ id }, i) => env.LANDING_WORKFLOW.create({
+    id: `wf-stretched-${i}`, params: { ...params(project, id), waitTimeoutMs: 3 * 3_600_000, noReview: true },
+  })));
+  await until(() => L.readLandingQueue(), (rows) => rows.length === 12);
+  for (let i = 0; i < tasks.length; i++) {
+    await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, `wf-stretched-${i}`);
+    expect(await wf.waitForStepResult({ name: "ask for the landing lease r0 #2" })).toMatchObject({ took: false });
+    const instance = await env.LANDING_WORKFLOW.get(`wf-stretched-${i}`);
+    expect(["running", "waiting"]).toContain((await instance.status()).status);
+    expect(await L.landingWorkflowOf(tasks[i]!.id)).toMatchObject({ stage: "lease" });
+  }
+  expect(await L.readLandingQueue()).toHaveLength(12);
+});
+
+it("does not replace an existing handle when status fails, even with a missing-instance error", async () => {
+  const project = "wf-status-failure";
+  const { L, id } = await pushedTask(project, "wf-status-existing");
+  let creates = 0;
+  const testEnv = { ...env, ATELIER_TOKEN: TOKEN, LANDING_WORKFLOW: {
+    ...workflowBinding(),
+    get: async () => statusHandle(async () => { throw new Error("instance.not_found"); }),
+    create: async () => { creates++; throw new Error("must not create"); },
+  } } as typeof env;
+  expect((await worker.fetch(workflowRequest(project, id), testEnv)).status).toBe(503);
+  expect(creates).toBe(0);
+  expect((await L.landingWorkflowOf(id))?.instance).toBe("wf-status-existing");
+});
+
+it("fences stale-record clearing to the owner and the instance read", async () => {
+  const { L, id } = await pushedTask("wf-clear-fence", "wf-clear-current");
+  let refused = false;
+  try { await L.clearLandingWorkflow(id, "wf-clear-current", OPUS); }
+  catch (error) { refused = true; expect(String(error)).toMatch(/only the project owner/); }
+  expect(refused).toBe(true);
+  await L.clearLandingWorkflow(id, "wf-clear-old", "owner");
+  expect((await L.landingWorkflowOf(id))?.instance).toBe("wf-clear-current");
+  await L.clearLandingWorkflow(id, "wf-clear-current", "owner");
+  expect(await L.landingWorkflowOf(id)).toBeNull();
+});
+
+it("retries its first stage when execution starts before create returns and replaces a terminal record", async () => {
+  const project = "wf-create-race";
+  const { L, id } = await pushedTask(project, "wf-old-terminal");
+  const testEnv = { ...env, ATELIER_TOKEN: TOKEN, LANDING_WORKFLOW: {
+    ...workflowBinding(),
+    get: async () => statusHandle(async () => ({ status: "errored" })),
+    create: async (options: Parameters<typeof env.LANDING_WORKFLOW.create>[0]) => {
+      const instance = await env.LANDING_WORKFLOW.create(options);
+      // Let the new Workflow reach its first stage before recording its id.
+      await new Promise((r) => setTimeout(r, 200));
+      expect((await L.landingWorkflowOf(id))?.instance).toBe("wf-old-terminal");
+      expect(await L.readProjectLanding()).toBeNull();
+      return instance;
+    },
+  } } as typeof env;
+  const response = await worker.fetch(workflowRequest(project, id), testEnv);
+  expect(response.status).toBe(201);
+  const result = await response.json() as { instance: string };
+  expect(await until(() => L.landingWorkflowOf(id), (r) => r?.stage === "workspace"))
+    .toMatchObject({ instance: result.instance, stage: "workspace" });
 });
