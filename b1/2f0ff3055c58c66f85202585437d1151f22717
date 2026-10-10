@@ -1,0 +1,49 @@
+atelier atelier/t403 "Runners and landing checks hold back when the machine is saturated"
+accepted head f4eab1dc9d053595096210d42874cedc39963026
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — opencode/deepseek-v4-pro 2026-10-10T07:21:41.228Z
+OBSERVED pass npm run types && npm run typecheck — opencode/deepseek-v4-pro 2026-10-10T07:21:46.081Z
+REVIEW approve by codex/gpt-6-astra at f4eab1dc9d053595096210d42874cedc39963026, recorded by codex/gpt-6-astra
+2026-10-09T19:55:20.970Z pavi item.created
+2026-10-09T22:49:50.261Z pavi item.edited
+2026-10-09T22:49:50.261Z pavi item.criteria_changed
+2026-10-09T22:49:51.468Z pavi item.dispatched
+2026-10-10T01:12:53.431Z opencode/deepseek-v4-pro item.claimed
+2026-10-10T01:12:58.981Z opencode/deepseek-v4-pro fork.created
+2026-10-10T01:38:25.515Z opencode/deepseek-v4-pro push.observed
+2026-10-10T01:42:39.139Z opencode/deepseek-v4-pro evidence.observed
+2026-10-10T01:42:41.634Z opencode/deepseek-v4-pro evidence.observed
+2026-10-10T01:42:42.141Z opencode/deepseek-v4-pro item.submitted
+2026-10-10T03:56:56.315Z pavi land.lease
+2026-10-10T03:56:57.311Z pavi land.merge
+2026-10-10T03:57:08.049Z pavi land.regenerate
+2026-10-10T03:57:09.996Z pavi land.push
+2026-10-10T04:05:40.606Z opencode/deepseek-v4-pro evidence.observed
+2026-10-10T04:05:42.876Z opencode/deepseek-v4-pro evidence.observed
+2026-10-10T04:05:43.250Z pavi land.check
+2026-10-10T04:06:04.423Z pavi review.requested
+2026-10-10T04:06:13.836Z codex/gpt-6-astra review.claimed
+2026-10-10T04:07:44.834Z codex/gpt-6-astra review.rejected
+2026-10-10T04:07:50.339Z pavi land.review
+2026-10-10T04:08:14.704Z pavi review.finding
+2026-10-10T04:08:15.276Z pavi review.finding
+2026-10-10T04:08:16.156Z pavi item.released
+2026-10-10T04:08:16.156Z pavi item.dispatched
+2026-10-10T04:48:55.196Z opencode/deepseek-v4-pro item.claimed
+2026-10-10T05:21:50.698Z opencode/deepseek-v4-pro push.observed
+2026-10-10T05:27:22.703Z opencode/deepseek-v4-pro evidence.observed
+2026-10-10T05:27:25.183Z opencode/deepseek-v4-pro evidence.observed
+2026-10-10T05:27:25.651Z opencode/deepseek-v4-pro item.submitted
+2026-10-10T07:14:43.439Z pavi land.lease
+2026-10-10T07:14:46.441Z pavi land.merge
+2026-10-10T07:14:55.558Z pavi land.regenerate
+2026-10-10T07:14:58.160Z opencode/deepseek-v4-pro push.observed
+2026-10-10T07:14:59.029Z pavi land.push
+2026-10-10T07:21:41.734Z opencode/deepseek-v4-pro evidence.observed
+2026-10-10T07:21:46.199Z opencode/deepseek-v4-pro evidence.observed
+2026-10-10T07:21:46.751Z pavi land.check
+2026-10-10T07:22:07.996Z pavi review.requested
+2026-10-10T07:22:28.762Z codex/gpt-6-astra review.claimed
+2026-10-10T07:24:02.997Z codex/gpt-6-astra review.approved
+2026-10-10T07:24:09.127Z pavi land.review
+2026-10-10T07:24:09.312Z pavi item.accepted
+2026-10-10T07:24:09.335Z pavi land.accept
