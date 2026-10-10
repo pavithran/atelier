@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { NO_CRITERIA } from "../src/criteria.ts";
+import { NO_OWNER_FACTOR } from "../src/rules.ts";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import { signIn } from "./signin.ts";
@@ -682,13 +683,19 @@ it("decision 2026-10-06: the accept route takes an override only from the owner,
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
   await L.submit("t1", A);
-  const ARTIFACTS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }] }, {});
-  const as = (bearer: string, actor: string | null) => (method: string, path: string, body?: unknown) =>
+  // The baseline's log too, so the task page can draw the change and offer its forms.
+  const ARTIFACTS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }], [name]: [{ hash: H0, parents: [], treeHash: T0 }] }, {});
+  // The server takes the confirmation secret as the owner's factor (t371);
+  // `bare` is one with neither it nor Access, which can confirm no override.
+  const SECRET = "owner-only-word-no-session-holds";
+  const bindings = { ...testEnv, ARTIFACTS, OVERRIDE_SECRET: SECRET } as typeof env;
+  const bare = { ...testEnv, ARTIFACTS } as typeof env;
+  const as = (bearer: string, actor: string | null, on = bindings) => (method: string, path: string, body?: unknown) =>
     worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
       method,
       headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
-    }), { ...testEnv, ARTIFACTS } as typeof env);
+    }), on);
   const owner = as(TOKEN, "owner");
   const reason = "No model of another family is available";
 
@@ -709,31 +716,59 @@ it("decision 2026-10-06: the accept route takes an override only from the owner,
   }
   expect((await L.item("t1")).state).toBe("submitted");
   // t371: the owner token alone does not override, since an agent session
-  // may hold it. The API's override is refused, naming the page on this
-  // server and the button, until the owner allows it there under the owner's
-  // own sign-in; the page's form posted with the token as a bearer is refused
-  // the same way. One permission takes one override, for 15 minutes.
+  // may hold it, and nor does the browser session that token signs in at
+  // /login. The API's override is refused, naming the page on this server,
+  // the button and the factor the server takes, until the owner allows it
+  // there with that factor: the Access sign-in where the pages are behind
+  // Access (test/access.spec.ts), else the confirmation secret, which no
+  // session is given. A server with neither takes no confirmation and says
+  // what to set. One permission takes one override, for 15 minutes.
   const unconfirmed = await owner("POST", "/items/t1/accept", { head: H1, overrideReview: reason });
   expect(unconfirmed.status).toBe(403);
-  expect(await unconfirmed.json()).toEqual({ error: "override_unconfirmed", detail: `an override of the independent review needs the owner's confirmation: open https://atelier.test/p/${name}/t1 signed in as the owner, press "Allow an override from the command line", then run the command again within 15 minutes; the owner token alone does not confirm it` });
+  expect(await unconfirmed.json()).toEqual({ error: "override_unconfirmed", detail: `an override of the independent review needs the owner's confirmation: open https://atelier.test/p/${name}/t1 as the owner, press "Allow an override from the command line" giving the server's confirmation secret (OVERRIDE_SECRET, which no session is given), then run the command again within 15 minutes; the owner token alone does not confirm it` });
   expect((await L.item("t1")).state).toBe("submitted");
-  const bindings = { ...testEnv, ARTIFACTS } as typeof env;
-  const page = (headers: Record<string, string>) => worker.fetch(new Request(`https://atelier.test/ui/${name}/t1/allow-override`, {
-    method: "POST", headers: { origin: "https://atelier.test", ...headers }, body: new URLSearchParams({ head: H1, criteria: NO_CRITERIA, note: "" }),
-  }), bindings);
-  const byBearer = await page({ authorization: `Bearer ${TOKEN}` });
+  // On a server with neither Access nor a secret, the refusal says what to set.
+  const nowhere = await as(TOKEN, "owner", bare)("POST", "/items/t1/accept", { head: H1, overrideReview: reason });
+  expect(nowhere.status).toBe(403);
+  expect((await nowhere.json() as { detail: string }).detail).toContain(`confirming as the owner, then run the command again within 15 minutes; ${NO_OWNER_FACTOR}; the owner token alone does not confirm it`);
+  const page = (headers: Record<string, string>, on = bindings, confirmation?: string) => worker.fetch(new Request(`https://atelier.test/ui/${name}/t1/allow-override`, {
+    method: "POST", headers: { origin: "https://atelier.test", ...headers }, body: new URLSearchParams({ head: H1, criteria: NO_CRITERIA, note: "", ...(confirmation === undefined ? {} : { confirmation }) }),
+  }), on);
+  // The owner token as a bearer is refused, even with the secret.
+  const byBearer = await page({ authorization: `Bearer ${TOKEN}` }, bindings, SECRET);
   expect(byBearer.status).toBe(403);
   expect(await byBearer.text()).toMatch(/needs the owner(&#39;|'|&#x27;)s own sign-in, not the owner token/);
-  expect((await L.item("t1")).overrideConfirmation).toBeUndefined();
+  // A session alone, which that token buys at /login, is refused without the secret, or with a wrong one.
   const cookie = await signIn(TOKEN, bindings);
-  expect((await page({ cookie })).status).toBe(303);
-  expect((await L.item("t1")).overrideConfirmation).toMatchObject({ head: H1, by: "owner" });
+  const noSecret = await page({ cookie });
+  expect(noSecret.status).toBe(403);
+  expect(await noSecret.text()).toMatch(/needs the confirmation secret, which was not given/);
+  const wrongSecret = await page({ cookie }, bindings, "a guess");
+  expect(wrongSecret.status).toBe(403);
+  expect(await wrongSecret.text()).toMatch(/needs the confirmation secret, which was not this server(&#39;|'|&#x27;)s/);
+  // On the bare server the session confirms nothing, whatever the form carries,
+  // and the page says what to set instead of offering the forms.
+  const bareCookie = await signIn(TOKEN, bare);
+  const noFactor = await page({ cookie: bareCookie }, bare, SECRET);
+  expect(noFactor.status).toBe(403);
+  expect(await noFactor.text()).toMatch(/which this server cannot take/);
+  const bareTask = await (await worker.fetch(new Request(`https://atelier.test/p/${name}/t1`, { headers: { cookie: bareCookie } }), bare)).text();
+  expect(bareTask).toContain("put its pages behind Cloudflare Access");
+  expect(bareTask).not.toContain("Allow an override from the command line");
+  expect((await L.item("t1")).overrideConfirmation).toBeUndefined();
+  // With the secret set, the page asks for it in both forms; the right secret
+  // allows the override, and the record says which factor confirmed it.
+  const task = await (await worker.fetch(new Request(`https://atelier.test/p/${name}/t1`, { headers: { cookie } }), bindings)).text();
+  expect(task.match(/name="confirmation"/g)).toHaveLength(2);
+  expect(task).toContain("Allow an override from the command line");
+  expect((await page({ cookie }, bindings, SECRET)).status).toBe(303);
+  expect((await L.item("t1")).overrideConfirmation).toMatchObject({ head: H1, by: "owner", factor: "secret" });
   const accepted = await owner("POST", "/items/t1/accept", { head: H1, overrideReview: reason });
   expect(accepted.status, await accepted.clone().text()).toBe(200);
   expect(await accepted.json()).toMatchObject({ state: "accepted", acceptedHead: H1, reviewOverride: { head: H1, by: "owner", reason } });
   const detail = await (await owner("GET", "/items/t1")).json() as { item: { overrideConfirmation?: unknown }; events: { kind: string; data: Record<string, unknown> }[]; reviews: unknown[] };
-  expect(detail.events.find((e) => e.kind === "review.overridden")?.data).toMatchObject({ head: H1, reason, confirmed: "command line" });
-  expect(detail.events.find((e) => e.kind === "override.allowed")?.data).toMatchObject({ head: H1 });
+  expect(detail.events.find((e) => e.kind === "review.overridden")?.data).toMatchObject({ head: H1, reason, confirmed: "command line", factor: "secret" });
+  expect(detail.events.find((e) => e.kind === "override.allowed")?.data).toMatchObject({ head: H1, factor: "secret" });
   expect(detail.item.overrideConfirmation).toBeUndefined();
   expect(detail.reviews).toHaveLength(1);
 });
@@ -752,15 +787,16 @@ it("t371: a project that forbids overrides refuses them through the API and the 
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
   await L.submit("t1", A);
-  const ARTIFACTS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }] }, {});
-  const bindings = { ...testEnv, ARTIFACTS } as typeof env;
+  const ARTIFACTS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }], [name]: [{ hash: H0, parents: [], treeHash: T0 }] }, {});
+  // A server that takes the confirmation secret, given: the prohibition is told even to a confirmed owner.
+  const bindings = { ...testEnv, ARTIFACTS, OVERRIDE_SECRET: "owner-only-word" } as typeof env;
   const api = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/accept`, {
     method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ head: H1, overrideReview: "No other family" }),
   }), bindings);
   expect([api.status, (await api.json() as { error: string }).error]).toEqual([403, "override_forbidden"]);
   const cookie = await signIn(TOKEN, bindings);
   const page = (verb: string) => worker.fetch(new Request(`https://atelier.test/ui/${name}/t1/${verb}`, {
-    method: "POST", headers: { origin: "https://atelier.test", cookie }, body: new URLSearchParams({ head: H1, criteria: NO_CRITERIA, note: "No other family" }),
+    method: "POST", headers: { origin: "https://atelier.test", cookie }, body: new URLSearchParams({ head: H1, criteria: NO_CRITERIA, note: "No other family", confirmation: "owner-only-word" }),
   }), bindings);
   for (const verb of ["allow-override", "override"]) {
     const res = await page(verb);

@@ -166,18 +166,30 @@ export interface ReviewOverride {
 
 // The owner's permission for an override made with the owner token (t371).
 // An agent session acting with that token recorded every override on ourAI,
-// so an override now needs the owner's own word, given where only the owner
-// can give it: the task's page, reached through Cloudflare Access or the
-// owner's own sign-in, never through the token the agents hold. The page's
-// own override form carries that word itself; the command line needs this
-// permission, given on the page, which names one head and lasts
-// OVERRIDE_CONFIRMATION_MS from when it was given.
+// so an override now needs the owner's own word, given with a factor no
+// agent holds (OwnerFactor): the task's page, under the owner's Cloudflare
+// Access identity where the pages are behind Access, or else with the
+// server's confirmation secret, which no session is given. A browser session
+// alone is not that word: without Access, the owner token buys one at
+// /login. The page's own override form carries the factor itself; the
+// command line needs this permission, given on the page, which names one
+// head and lasts OVERRIDE_CONFIRMATION_MS from when it was given.
 export interface OverrideConfirmation {
   head: string;
   by: string;
   at: string;
   until: string;
+  factor?: OwnerFactor;       // how the owner confirmed on the page; absent on a record from before the factor was kept
 }
+
+// The factor an override's confirmation rests on: the owner's Access identity
+// (`access`), which every owner page carries where the server names its
+// Access team, or the confirmation secret (`secret`), OVERRIDE_SECRET on the
+// server, typed into the page's form and never given to a session. The
+// server decides which it takes (ownerFactorOf in src/index.ts): Access
+// where it is set, else the secret, else nothing, and then no override can
+// be confirmed until one is set.
+export type OwnerFactor = "access" | "secret";
 
 export const OVERRIDE_CONFIRMATION_MS = 15 * 60 * 1000;
 
@@ -187,10 +199,24 @@ export function confirmationAt(item: Pick<Item, "head" | "overrideConfirmation">
   return c && item.head && c.head === item.head && c.by === owner && Date.parse(c.until) > now ? c : null;
 }
 
+// How the owner confirms on a server that takes the factor given: the words
+// the hint below, the page and the Settings tab share.
+export function ownerFactorText(factor: OwnerFactor | null | undefined): string {
+  if (factor === "access") return "under your Cloudflare Access sign-in, which is the confirmation";
+  if (factor === "secret") return "giving the server's confirmation secret (OVERRIDE_SECRET, which no session is given)";
+  return "confirming as the owner";
+}
+
+// What a server with no factor must do before any override can be confirmed.
+export const NO_OWNER_FACTOR = "this server can take no confirmation: put its pages behind Cloudflare Access (CF_ACCESS_ISS, CF_ACCESS_AUD and CF_ACCESS_OWNER_EMAIL) or give it a confirmation secret (OVERRIDE_SECRET, set with wrangler secret put and never given to a session)";
+
 // How the owner confirms an override from the command line: the refusal every
-// unconfirmed override gets, naming the page and the button.
-export function overrideConfirmationHint(project: string, id: string, origin = ""): string {
-  return `open ${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)} signed in as the owner, press "Allow an override from the command line", then run the command again within ${OVERRIDE_CONFIRMATION_MS / 60000} minutes; the owner token alone does not confirm it`;
+// unconfirmed override gets, naming the page, the button and the factor the
+// server takes (`factor`: undefined where the caller does not know, as the
+// Ledger does not; null for a server that takes none).
+export function overrideConfirmationHint(project: string, id: string, origin = "", factor?: OwnerFactor | null): string {
+  const page = `open ${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)} as the owner, press "Allow an override from the command line" ${ownerFactorText(factor)}, then run the command again within ${OVERRIDE_CONFIRMATION_MS / 60000} minutes`;
+  return `${page}; ${factor === null ? `${NO_OWNER_FACTOR}; ` : ""}the owner token alone does not confirm it`;
 }
 
 // The merged items that went in on the owner's override: those whose override
@@ -1350,7 +1376,10 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   if (!options.reviewHeld && (kind === "protected" || (governed && kind === "coordinated"))) {
     const contributors = contributorsOf(item);
     if (!reviews.some((r) => independentApproval(r, kind, contributors, owner))) {
-      overridden = overrideAt(item, owner);
+      // A project that forbids overrides (t371) counts none, an override
+      // recorded before the prohibition included: the change waits for its
+      // review as if the override had never been made.
+      overridden = policy.noOverride ? null : overrideAt(item, owner);
       if (!overridden) {
         needsAssessor = true;
         blockers.push(governed ? requirement : PROTECTED_NEED);

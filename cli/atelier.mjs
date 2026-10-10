@@ -37,7 +37,7 @@ import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } f
 import { pushHistory } from "./push-steps.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
-import { formatLocal, formatStatus, itemJson, statusJson } from "./status.mjs";
+import { formatLocal, formatStatus, itemJson, statusJson, taskLink } from "./status.mjs";
 import { receiptJson, receiptText } from "./receipt.mjs";
 import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
 import { checkEnv } from "./check-env.mjs";
@@ -1156,7 +1156,8 @@ const flat = (value) => stripVTControlCharacters(String(value)).replace(/[\p{Cc}
 // Where a project stands, as plain text an agent can paste into a chat: one
 // line per item, and any text a person or agent wrote flattened.
 const at = (iso) => `${String(iso).slice(0, 16).replace("T", " ")} UTC`;
-export function formatStanding(s, ownerName = "the project owner") {
+// `origin` is the server in use, for the link to each merge by override.
+export function formatStanding(s, ownerName = "the project owner", origin = "") {
   const runner = (q) => `${q.to}${q.agent ? ` ${q.agent}` : ""}${q.model ? `/${q.model}` : ""}`;
   const lines = [`${flat(s.project.title)} (${flat(s.project.name)}) as of ${at(s.generatedAt)}, from Atelier's record`];
   const group = (title, rows) => { if (rows.length) lines.push("", `${title}:`, ...rows.map((r) => `  ${r}`)); };
@@ -1164,8 +1165,9 @@ export function formatStanding(s, ownerName = "the project owner") {
   group(`Waiting on ${flat(ownerName)}`, s.waiting.map((w) => `${w.id}  ${w.kind}  ${flat(w.title)}  ${flat(w.reason)}${w.brief ? `  brief, ${flat(w.brief.verdict)}: ${flat(w.brief.line)}` : ""}`));
   group("Queued for a runner", s.queued.map((q) => `${q.id}  for ${flat(runner(q))}  ${flat(q.title)}${q.note ? `  note: ${flat(q.note)}` : ""}`));
   group("Last merges", s.merged.map((m) => `${m.id}  ${at(m.at)}${m.commit ? `  ${m.commit.slice(0, 8)}` : ""}  ${flat(m.title)}${m.line ? `  summary: ${flat(m.line)}` : ""}`));
-  // Every merge by override, counted in the heading and named one per line (t371).
-  group(`Merged by override: ${(s.overrides ?? []).length}`, (s.overrides ?? []).map((o) => `${o.id}  ${at(o.at)}  ${flat(o.title)}  reason: ${flat(o.reason)}`));
+  // Every merge by override, counted in the heading and one per line under
+  // it, each with the link to its page on the server in use (t371).
+  group(`Merged by override: ${(s.overrides ?? []).length}`, (s.overrides ?? []).map((o) => `${o.id}  ${taskLink(origin, s.project.name, o.id)}  ${at(o.at)}  ${flat(o.title)}  reason: ${flat(o.reason)}`));
   group("Handoff notes", s.handoffs.map((h) => `${h.id}  ${flat(h.from || "?")} to ${flat(h.to || "?")}, ${at(h.at)}  ${flat(h.note)}`));
   if (lines.length === 1) lines.push("", "Nothing is held, waiting, queued or recently merged.");
   if (s.partial?.length) lines.push("", "Part of this record is not shown:", ...s.partial.map((x) => `  ${flat(x)}`));
@@ -1561,7 +1563,7 @@ const commands = {
   async unwrap() {
     const name = project(), as = await actor(OWNER), cwd = sessionCheckout(name);
     const standing = await call("GET", `${P(name)}/standing`, undefined, as);
-    console.log(formatStanding(standing, OWNER_NAME));
+    console.log(formatStanding(standing, OWNER_NAME, server()));
     console.log(await checkoutStatusLine(name, as));
     if (cwd) for (const line of remoteStatusLines(name, cwd)) console.log(line);
     if (cwd) {
@@ -2076,7 +2078,7 @@ const commands = {
     console.log(`Protected:  ${[...new Set([...(pol.protected ?? []), ...checkInputs])].sort().join(", ")}`);
     console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
     console.log(`Overlap:    ${pol.refuseOverlap ? "refused" : "flagged"}`);
-    console.log(`Overrides:  ${pol.noOverride ? "refused; every change needs its independent review" : "allowed with a reason, once the owner confirms on the task's page"}`);
+    console.log(`Overrides:  ${pol.noOverride ? "refused; every change needs its independent review" : "allowed with a reason, once the owner confirms on the task's page with the Access sign-in or the server's confirmation secret"}`);
     // A server older than --no-override ignores it and answers without it.
     if (args["no-override"] === true && !pol.noOverride) console.log("Warning: the server did not record --no-override; deploy the server, then run atelier init --no-override again.");
     console.log(`Core files: ${pol.coreFiles?.length ? `${pol.coreFiles.join(", ")}; the queue holds a dispatch whose scope overlaps a live item's in one` : "none; the queue holds no dispatch for its scope"}`);
@@ -3498,7 +3500,7 @@ const commands = {
       const checkout = await checkoutStatus(name, as);
       const local = await localStanding(name, as);
       if (args.json) return console.log(JSON.stringify({ project: standing, checkout, ...(local ? { local } : {}) }, null, 2));
-      console.log(formatStanding(standing, OWNER_NAME) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : ""));
+      console.log(formatStanding(standing, OWNER_NAME, server()) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : ""));
       return;
     }
     const known = await call("GET", "/projects", undefined, OWNER);
@@ -3517,8 +3519,8 @@ const commands = {
       const { items } = await call("GET", P(p.name), undefined, OWNER);
       return { name: p.name, title: p.title, items, inbox };
     }));
-    if (args.json) return console.log(JSON.stringify(statusJson(views), null, 2));
-    console.log(formatStatus(views, { queue, offers }));
+    if (args.json) return console.log(JSON.stringify(statusJson(views, server()), null, 2));
+    console.log(formatStatus(views, { queue, offers, server: server() }));
   },
 
   async open() {
