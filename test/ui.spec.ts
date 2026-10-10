@@ -721,6 +721,17 @@ it('the merge preview says plainly whether a task would merge into main, and esc
  expect(bad).toContain('at least 1,000 commits');
  expect(bad).toContain('<code>&lt;b&gt;.ts</code>');
 });
+it('the merge preview without checks marks nothing green, since no pass has been observed',async()=>{
+ const {renderMainPreview}=await import('../src/ui');
+ const current=renderMainPreview({head:'h',ahead:0,aheadCapped:false,merge:{clean:true,conflicts:[],both:[],ours:0,theirs:1}});
+ const clean=renderMainPreview({head:'h',ahead:3,aheadCapped:false,merge:{clean:true,conflicts:[],both:[],ours:4,theirs:1}});
+ expect(current).toContain('<span class="tag ">Up to date</span>');
+ expect(clean).toContain('<span class="tag ">Merges cleanly</span>');
+ for(const html of [current,clean]){
+  expect(html).not.toMatch(/class="[^"]*\bgo\b/);
+  expect(html).not.toMatch(/class="[^"]*\bbad\b/);
+ }
+});
 
 it('the showcase sets a project known only from git beside Atelier\'s record, and says what git cannot show',async()=>{
  const {renderShowcase}=await import('../src/ui');
