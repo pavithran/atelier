@@ -350,18 +350,25 @@ the same task several rounds running is still the right reviewer; see
 `bin/orchestrate/land-queue.sh` lands tasks one after another, waiting for
 the machine's load to fall under 25 before each, and prints one `LANDQ tN:`
 line per landing. Start it once from the project's checkout as a long-lived
-background job, then add each submitted task by appending a line to its
-queue file:
+background job, then add each submitted task with `--add`:
 
 ```sh
 bin/orchestrate/land-queue.sh            # once, in the background
-echo "t405:codex/gpt-6-astra" >> "$ATELIER_CACHE/land-queue/atelier.queue"
+bin/orchestrate/land-queue.sh --add t405:codex/gpt-6-astra
 ```
+
+`--add` takes the queue's lock (the directory `atelier.queue.lock` beside the
+queue file), as the queue does when it takes the first line, so an addition
+made while a landing is being taken off the queue is never lost. A bare
+`echo … >>` does not take the lock and can be lost; do not use it. The queue
+prints `LANDQ tN: …` for each landing and, once nothing has been queued for
+two hours, `LANDQ idle: …` and exits: start it again then.
 
 Order the queue so the tasks that touch core files land first: everything
 else will merge around them, and a core-file change landed late conflicts
 with every task that landed before it. Within that, put first the tasks that
-another piece of work waits on. Edit the queue file to reorder it.
+another piece of work waits on. To reorder it, hold the lock while you edit the queue file:
+`mkdir "$ATELIER_CACHE/land-queue/atelier.queue.lock"`, edit, then `rmdir` it.
 
 Do not chain landings by having a shell wait on `pgrep -f "… tN"`: the
 waiting shell's own command line contains the pattern, so `pgrep` finds the
@@ -402,9 +409,8 @@ conflicting files.
 
 The same files conflict almost every time on Atelier: `cli/atelier.mjs`,
 `src/usage.ts`, `src/ledger.ts` and the CLI's help and usage fixtures. A
-merge-main job merges main as it was when the job was dispatched (t429
-changes that to main as it is when a runner claims it); if main has moved a
-long way since, dispatch the job again.
+merge-main job merges main as it is when a runner claims it (t429), so the
+job needs no redispatch to pick up a newer main.
 
 A build job, a fix after findings included, submits the head it built on
 the fork's old base without merging main first, so on 10 October nearly
@@ -428,22 +434,73 @@ landing.
 
 ### After each merge
 
-1. In the project checkout: `git pull --ff-only`, then the type check
-   (`npx tsc -p . && npx tsc -p test`).
-2. `git diff PREVIOUS HEAD -- src/route-level.ts`: if `ROUTE_LEVEL` rose,
-   deploy now (`npm run deploy`), between landings and never while another
-   landing's checks run, and queue again any landing refused on route level.
-3. Publish main to the public mirror once it is checked (t433 makes this a
-   command): every new commit's
-   author and committer address is the public no-reply address, the diff
-   carries no key, token, private address or personal email, and the files
-   the project keeps private are not in it. Then push.
-4. Report to the lead developer: what merged, what was deployed, what is
-   landing and what went back.
+Run these in the project checkout, in order, between landings and never
+while another landing's checks run.
 
-After a batch of merges, run main's full suite with its whole output kept in
-a file, so a failure can be named; a failure that does not repeat on a
-second run is still a flaky test to file.
+1. Update and type check:
+
+   ```sh
+   PREVIOUS=$(git rev-parse HEAD)
+   git pull --ff-only
+   npx tsc -p . && npx tsc -p test
+   ```
+
+   `git pull` failing as not fast-forward means the checkout holds a commit
+   main does not: stop and find it. A type error is a break on main: name the
+   task whose merge caused it (`git log $PREVIOUS..HEAD`) and send it back.
+2. Check main's full suite in a clean clone, with the whole output kept so a
+   failure can be named:
+
+   ```sh
+   rm -rf /tmp/main-check; git clone -q . /tmp/main-check
+   (cd /tmp/main-check && npm ci && npm test) > /tmp/main-check.log 2>&1; echo $?
+   ```
+
+   `0`: main is good, go on. Non-zero: do not deploy. Find the failing test
+   in the log and run it a second time; a failure that does not repeat is a
+   flaky test to file, one that repeats is a break on main to send back to
+   the task that caused it.
+3. Deploy once the suite passes (the owner's decision d6: landed changes are
+   deployed after main's full suite passes, not only when `ROUTE_LEVEL`
+   rises):
+
+   ```sh
+   git diff $PREVIOUS HEAD -- src/route-level.ts
+   npm run deploy
+   ```
+
+   The diff shows whether `ROUTE_LEVEL` rose; if it did, queue again every
+   landing refused on route level once the deploy is done. `npm run deploy`
+   does not run tests, which is why step 2 comes first. If it fails, report
+   the error and queue no landing that needs the new route.
+4. Publish main to the public mirror once it is checked (t433 makes this a
+   command). Name the mirror's remote `public` (`git remote -v` lists them;
+   `git remote add public URL` once) and run:
+
+   ```sh
+   git fetch public
+   # a. every new commit's author and committer address must be the public
+   #    no-reply address; this prints the ones that are not
+   git log --format='%h %ae %ce' public/main..main | grep -v "$NOREPLY"
+   # b. the added lines carry no key, token, private address or personal email
+   git diff public/main main | grep -E '^\+' | grep -iE 'api[_-]?key|token|secret|password|PRIVATE KEY|sk-[A-Za-z0-9]{20,}|([0-9]{1,3}\.){3}[0-9]{1,3}|@[a-z0-9-]+\.[a-z]{2,}'
+   # c. files the project keeps private are not in the diff
+   git diff --name-only public/main main | grep -E '^(PROJECT|AGENTS)\.md$|^\.env'
+   # d. only when a, b and c printed nothing
+   git push public main
+   ```
+
+   `NOREPLY` is the public no-reply address, read from the project's
+   recorded decisions (`atelier guide --role orchestrate`). No output from
+   a, b or c is the pass. Output from a: those commits must be rewritten
+   before they are published, so send their task back. Output from b: read
+   each line; a test fixture or a documented placeholder is fine, a real
+   value goes back to its task. Output from c: the file must leave main
+   first. Any output holds the push. If the push is rejected as
+   non-fast-forward, the mirror has a commit main does not: fetch, find it,
+   and never force the push.
+5. Report to the lead developer: what merged, what was deployed, what is
+   landing and what went back.
 
 ## Judging a review
 
