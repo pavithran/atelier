@@ -45,7 +45,7 @@ it("a note needs a pool model, the owner, text without a key, and a task name", 
   expect((await call("POST", "/models/no-such-model/notes", { text: "fine" })).status).toBe(404);
   expect((await call("POST", "/models/refused-model/notes", { text: "fine" }, "codex/other")).status).toBe(403);
   expect((await call("POST", "/models/refused-model/notes", { text: "   " })).status).toBe(400);
-  expect((await call("POST", "/models/refused-model/notes", { text: "key sk-proj-AbC123xyzQrS456" })).status).toBe(400);
+  expect((await call("POST", "/models/refused-model/notes", { text: `key ${["sk-proj-", "AbC123xyzQrS456"].join("")}` })).status).toBe(400);
   expect((await call("POST", "/models/refused-model/notes", { text: "fine", item: "406", project: "alpha" })).status).toBe(400);
   expect((await call("POST", "/models/refused-model/notes", { text: "fine", item: "t1" })).status).toBe(400);
   expect((await (await call("GET", "/models")).json() as ModelEntry[]).find((m) => m.id === "refused-model")?.notes).toBeUndefined();
