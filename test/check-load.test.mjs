@@ -15,7 +15,7 @@ import { join, resolve } from "node:path";
 const cli = resolve("cli/atelier.mjs");
 const actor = "codex/test";
 
-async function fixture(t) {
+async function fixture(t, checks = ["exit 0"]) {
   const root = mkdtempSync(join(tmpdir(), "atelier-check-load-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const source = join(root, "source"), remote = join(root, "remote.git"), cache = join(root, "cache");
@@ -28,7 +28,7 @@ async function fixture(t) {
   const evidence = [];
   const server = createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk;
-    let data = { item, gate: { ready: false, blockers: [] }, policy: { checks: ["exit 0"], sandboxOnly: false } };
+    let data = { item, gate: { ready: false, blockers: [] }, policy: { checks, sandboxOnly: false } };
     if (req.url.endsWith("/read-token")) data = { remote, token: "read", head, defaultBranch: "main" };
     if (req.url.endsWith("/base-token")) data = { remote, token: "base", head, defaultBranch: "main" };
     if (req.url.endsWith("/evidence")) evidence.push(JSON.parse(raw));
@@ -65,4 +65,14 @@ test("a check at or above the limit waits, says so, and records the load it fina
   assert.match(r.stderr, /load 90 is at or above the limit 4; waiting for it to fall before running the checks/);
   assert.equal(f.evidence.length, 1);
   assert.equal(f.evidence[0].load, 1, "the evidence records the load once it had fallen under the limit");
+});
+
+test("each check waits in turn and records its own starting load, not the first check's", { timeout: 30_000 }, async (t) => {
+  const f = await fixture(t, ["exit 0", "exit 0"]);
+  const r = await f.run({ ATELIER_LOAD_LIMIT: "4", ATELIER_LOAD: "1,90,2" });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(f.evidence.length, 2);
+  assert.equal(f.evidence[0].load, 1, "the first check starts at the first reading");
+  assert.equal(f.evidence[1].load, 2, "the second check records its own starting load");
+  assert.match(r.stderr, /load 90 is at or above the limit 4; waiting for it to fall before running the checks/, "the second check waits and says so too");
 });

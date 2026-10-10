@@ -1656,3 +1656,20 @@ test("a runner with no loadLimit holds back at the core count, and the reading i
   assert.ok(!calls.some((c) => c.argv?.[0] === "claim"), "99 is above the 4 cores");
   assert.deepEqual(readings, [99], "the load is read once for the offered job");
 });
+
+test("the runner's own load reader holds back under load, not just an injected one", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-load-default-reader-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify({ ...config, loadLimit: 2 }));
+  const previous = process.env.ATELIER_LOAD;
+  t.after(() => { if (previous === undefined) delete process.env.ATELIER_LOAD; else process.env.ATELIER_LOAD = previous; });
+  process.env.ATELIER_LOAD = "5";
+  const { io, calls, logs } = fixture();
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    queue: async () => [assignment],
+  });
+  assert.ok(!calls.some((c) => c.argv?.[0] === "claim"), "no job is claimed while the runner's own reader reports load 5");
+  assert.ok(logs.some((s) => /load 5 is at or above the limit 2; waiting before taking a job/.test(s)), logs.join("\n"));
+});
