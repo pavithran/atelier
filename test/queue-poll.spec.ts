@@ -108,14 +108,16 @@ it("the queue attaches, in words, why a dispatch is held, refused an overlap or 
   await index().registerProject(record);
   // One live item both reaches the core file and overlaps the dispatched scope.
   const live = await L.newItem("Live work", ["src/**"], "owner");
-  await L.claim(live.id, A);
-  await L.setFork(live.id, `${name}--${live.id}`, H0, A);
   // A task the core file holds and the policy refuses; one the policy refuses
   // alone (its scope overlaps but reaches no core file); one neither holds.
   const held = await L.newItem("Core edit", ["src/ledger.ts"], "owner");
   const refused = await L.newItem("Also src", ["src/index.ts"], "owner");
   const free = await L.newItem("Docs", ["docs/**"], "owner");
+  // Dispatched before the live item is claimed: a dispatch made after it
+  // would itself be refused (t405), so the overlap arises only this way.
   for (const id of [held.id, refused.id, free.id]) await L.dispatch(id, "owner", { to: "home", agent: "opencode" });
+  await L.claim(live.id, A);
+  await L.setFork(live.id, `${name}--${live.id}`, H0, A);
   // A live runner offers opencode, and has failed the free task twice; a
   // fourth task names a model no live runner offers.
   const now = new Date().toISOString();
