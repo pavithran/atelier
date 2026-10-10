@@ -3504,6 +3504,7 @@ const commands = {
       const s = m.status ? `${m.status.state} ${m.status.at.slice(0, 16)}Z${m.status.served && m.status.served !== m.id ? ` as ${m.status.served}` : ""}` : "not checked";
       return `${m.where.padEnd(5)} ${m.harness}/${m.id}  ${m.family}  ${s}${m.keychain ? `  key: ${m.keychain}` : ""}`;
     };
+    const noteLines = (m) => (m.notes ?? []).map((n) => `  ${n.at.slice(0, 10)} by ${n.by}${n.item ? ` on ${n.item}` : ""}: ${n.text}`);
     if (sub === "add") {
       if (!id) die("atelier models add ID --harness H --where home|cloud");
       for (const k of ["key", "api-key", "token"]) if (args[k] !== undefined) die("Atelier never stores keys; put the key in your Keychain and give its entry's name with --keychain");
@@ -3528,14 +3529,15 @@ const commands = {
       const m = (await call("GET", "/models", undefined, OWNER)).find((entry) => entry.id === id);
       if (!m) die(`${id} is not in the pool`);
       console.log(modelLine(m));
-      if (!m.notes?.length) return console.log("  No notes yet. Add one: atelier models note ID 'text'");
-      for (const n of m.notes) console.log(`  ${n.at.slice(0, 10)} by ${n.by}${n.item ? ` on ${n.item}` : ""}: ${n.text}`);
+      const lines = noteLines(m);
+      if (!lines.length) return console.log("  No notes yet. Add one: atelier models note ID 'text'");
+      for (const line of lines) console.log(line);
       return;
     }
     if (sub) die(`${COMMAND_USAGE.models}\nunknown models command "${sub}"; use add, remove, note, show, or nothing to list`);
     const pool = await call("GET", "/models", undefined, OWNER);
     if (!pool.length) return console.log("The pool is empty. Add a model: atelier models add ID --harness H --where home|cloud");
-    for (const m of pool) console.log(modelLine(m));
+    for (const m of pool) console.log([modelLine(m), ...noteLines(m)].join("\n"));
   },
 
   // The public showcase: which projects the owner shows, and whether each is
