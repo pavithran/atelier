@@ -39,7 +39,7 @@ import type { PartRoute } from "./plans/route.ts";
 export interface Live { nonce: string; refresh?: number }
 import {
   bindingOf, DEFAULT_OWNER, decisionFor, evidenceAt, isOwnCall, latestReviews, mergedChecksAt, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey,
-  type Evidence, type Gate, type InboxEntry, type Item, type MergedCheckView, type ProjectPolicy, type Review,
+  type Evidence, type Gate, type InboxEntry, type Item, type MergedCheckView, type ProjectPolicy, type Review, type UnparsableReply,
 } from "./rules";
 
 // What a page calls a project: its title when it has one, else its name. Links,
@@ -161,6 +161,9 @@ export interface Detail {
   policy: ProjectPolicy;
   evidence: Evidence[];
   reviews: Review[];
+  // Replies no verdict could be read from, kept on the task (t407), oldest
+  // first; the reviews above carry none of them.
+  unparsable?: UnparsableReply[];
   gate: Gate;
   events: LedgerEvent[];
 }
@@ -746,6 +749,7 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
   <p class="meta">${r.claimed ? `Took ${plural(r.claimed, "task")}, merged ${r.merges}; checks ${r.pass} passed, ${r.fail} failed; sent back ${plural(r.back, "time")}.` : "No work recorded yet."}</p>
   ${across.map((x) => `<p class="meta">Across projects${across.length > 1 ? ` as <code>${e(x.model)}</code>` : ""}: ${e(reliabilityLine(x))}</p>`).join("")}
   ${m.note ? `<p class="meta">${e(m.note)}</p>` : ""}
+  ${[...(m.notes ?? [])].reverse().map((n) => `<p class="meta model-note">${when(n.at)} · ${e(n.by)}${n.item ? ` on <code>${n.project ? `${e(n.projectName ?? n.project)}/` : ""}${e(n.item)}</code>` : ""}: ${e(n.text)}</p>`).join("")}
   <form method="post" action="/models/remove" class="inline model-remove"><input type="hidden" name="id" value="${e(m.id)}"><button class="quiet">Remove</button></form>
 </li>`;
   };
@@ -1848,21 +1852,29 @@ ${framing}${openScope}
   // The head's own runs: a merged check ran on another tree and is shown
   // beside the merge preview instead.
   const checkRows = view.checks.map((c) => {
-    const last = d.evidence
+    const runs = d.evidence
       .filter((x) => x.head === item.head && x.claim === c.claim && x.grade === "observed" && !x.merged && !x.notApplicable && (!d.policy.sandboxOnly || x.where === "sandbox"))
-      .sort((a, b) => a.at.localeCompare(b.at))
-      .pop();
+      .sort((a, b) => a.at.localeCompare(b.at));
+    const last = runs.at(-1);
     const status = c.grade === "pending" ? tag("Waiting", "ask") : c.passed ? tag("Passed", "go") : tag("Failed", "bad");
     const where = c.grade === "observed" ? whereChip(c.where) : "";
     const uncounted = !last && d.policy.sandboxOnly && d.evidence.some((x) => x.head === item.head && x.claim === c.claim && x.grade === "observed" && !x.merged && x.where !== "sandbox");
+    // The load the run started at, one decimal, so a failure under a
+    // saturated machine stays legible beside a later pass (t403).
+    const loadOf = (x: Evidence) => (x.load !== undefined ? `load ${Math.round(x.load * 10) / 10}` : "");
     const detail = last
-      ? `${e(last.by)} · ${e(WHERE[last.where ?? "runner"][0])} · ${when(last.at)}`
+      ? `${e(last.by)} · ${e(WHERE[last.where ?? "runner"][0])} · ${when(last.at)}${loadOf(last) ? ` · ${loadOf(last)}` : ""}`
       : uncounted
         ? "This check ran on a runner, which does not count for this project. Run <code>atelier check --sandbox</code> to run it in a Cloudflare container."
         : "The task owner must run this required check.";
+    // Every result at this head is kept and shown, each with its load, so a
+    // later pass of an unchanged command does not replace its earlier failure.
+    const history = runs.length > 1
+      ? `<ul class="check-runs">${runs.map((x) => `<li>${x.passed ? tag("Passed", "go") : tag("Failed", "bad")}<span class="meta">${e(x.by)} · ${when(x.at)}${loadOf(x) ? ` · ${loadOf(x)}` : ""}</span></li>`).join("")}</ul>`
+      : "";
     return `<details class="check-row"${c.passed === false ? " open" : ""}>
       <summary>${status}<code>${e(c.claim)}</code>${where}</summary>
-      <p class="meta">${detail}</p>${last?.outputTail ? `<pre tabindex="0">${e(last.outputTail)}</pre>` : ""}</details>`;
+      <p class="meta">${detail}</p>${history}${last?.outputTail ? `<pre tabindex="0">${e(last.outputTail)}</pre>` : ""}</details>`;
   }).join("");
   // A check whose paths this revision does not touch is shown, and never blocks.
   const notApplicableRows = view.notApplicable.map((claim) => {

@@ -88,9 +88,18 @@ it("a task rejected twice is suggested to a frontier builder", async () => {
   expect(() => suggestBuilder({ ...records, item, project: "suggest-rejected", pool: [POOL[1]], policy, owner: "owner" })).toThrow(/codex\/gpt-6\.1-sol: not frontier/);
 });
 
+it("a renamed project's records are read under its key, so its task's rejections stay with it", async () => {
+  await project("suggest-was");
+  await index().renameProject("suggest-was", "suggest-is");
+  await ledger("suggest-was").setName("suggest-is", "owner");
+  const records = await suggestionRecords(index(), (p) => ledger(p.key ?? p.name));
+  expect(records.sources.map((s) => s.project)).toContain("suggest-was");
+  expect(records.sources.map((s) => s.project)).not.toContain("suggest-is");
+});
+
 it("a landing that names no reviewer asks one of another company than every contributor, with its reason, and only when the gate needs a review", async () => {
   const L = await project("suggest-review");
-  const records = await suggestionRecords(index(), (p) => ledger(p.key ?? p.name));
+  const records = { ...await suggestionRecords(index(), (p) => ledger(p.key ?? p.name)), project: "suggest-review" };
   const submitted = async (title: string, head: string, paths: string[]) => {
     const id = (await L.newItem(title, [], "owner")).id;
     await L.claim(id, OPUS, RUNNER);
