@@ -87,3 +87,74 @@ it("the owner's set reaches every project's ledger, which then refuses the model
   expect((await call("POST", "/models/gpt-6-astra/set", "owner", { roles: ["build", "review"] })).status).toBe(200);
   expect((await L.dispatch(task.id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" })).dispatch).toMatchObject({ agent: "codex", model: "gpt-6-astra" });
 });
+
+// A standalone task's review request is made by a landing, not a plan's
+// tick, so the owner's standing reaches it two ways: a pool change withdraws
+// an unclaimed request to a model now held from reviewing, and a claim of
+// one made before the change (the pool reached the ledger another way) is
+// refused and withdraws it. Either way the next landing asks another.
+const BUILDER = "claude-code/opus-5.5", GPT = "codex/gpt-6-astra", GLM = "zcode/glm-5.3";
+const RUNNER = { runner: "home:studio", kind: "home" } as const;
+const H0 = "0".repeat(40), H1 = "a".repeat(40);
+const POOL = [entry("opus-5.5", "claude-code"), entry("gpt-6-astra", "codex"), entry("glm-5.3", "zcode")];
+const holding = (change: Partial<ModelEntry>) => POOL.map((e) => e.id === "gpt-6-astra" ? { ...e, ...change } : e);
+type Event = { kind: string; data: Record<string, unknown> };
+
+async function submitted(name: string) {
+  const L = ledger(name);
+  // A change to a protected path, which the gate needs reviewed.
+  await L.setProject({ name, repo: `${name}--baseline`, policy: { ...policy, protected: ["AGENTS.md"] }, createdAt: new Date().toISOString() }, "owner");
+  const { id } = await L.newItem("Small task", [], "owner");
+  await L.claim(id, BUILDER);
+  await L.setFork(id, `fork-${id}`, H0, BUILDER);
+  await L.recordPush(id, BUILDER, H1, H1);
+  await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: H1, passed: true, by: "owner", at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
+  await L.submit(id, BUILDER);
+  return { L, id };
+}
+
+const open = async (L: ReturnType<typeof ledger>, id: string) => (await L.reviewRequests(id)).filter((r) => r.state === "open" || r.state === "claimed");
+const withdrawn = async (L: ReturnType<typeof ledger>, id: string) => ((await L.events(id)) as unknown as Event[]).filter((e) => e.kind === "review.withdrawn");
+
+it("a pool change withdraws a standalone task's unclaimed review request to a model now paused, reserved or kept from reviewing, and the next landing asks another", async () => {
+  for (const [name, change, reason] of [
+    ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }, /codex\/gpt-6-astra is paused since 2026-10-05 \(the owner's standing\): AI Studio down/],
+    ["reserved", { state: "reserved", stateAt: AT, note: "astra's credits" }, /codex\/gpt-6-astra is reserved since 2026-10-05 \(the owner's standing\): astra's credits/],
+    ["build-only", { roles: ["build"] }, /codex\/gpt-6-astra is not a reviewer; its roles are build/],
+  ] as const) {
+    const { L, id } = await submitted(`standalone-held-${name}`);
+    expect(await L.requestReview(id, "owner", GPT, POOL), name).toMatchObject({ requested: true, reviewer: GPT });
+    const pool = holding(change);
+    await L.poolChanged(pool);
+    expect(await open(L, id), name).toEqual([]);
+    expect((await withdrawn(L, id)).map((e) => e.data), name).toEqual([expect.objectContaining({ head: H1, reviewer: GPT, reason: expect.stringMatching(reason) })]);
+    await refusal(L.claimReview(id, GPT, RUNNER), "no_review", /has no open review request/);
+    expect(await L.requestReview(id, "owner", null, pool), name).toMatchObject({ requested: true, reviewer: GLM });
+  }
+});
+
+it("a pool change leaves a standalone request to a model still free to review, and one already claimed", async () => {
+  const { L, id } = await submitted("standalone-held-kept");
+  await L.requestReview(id, "owner", GPT, POOL);
+  await L.poolChanged(POOL.map((e) => e.id === "glm-5.3" ? { ...e, state: "paused" as const, stateAt: AT } : e));
+  expect(await open(L, id)).toEqual([expect.objectContaining({ state: "open" })]);
+  await L.claimReview(id, GPT, RUNNER);
+  await L.poolChanged(holding({ state: "paused", stateAt: AT }));
+  expect(await open(L, id)).toEqual([expect.objectContaining({ state: "claimed", claimedBy: GPT })]);
+  expect(await withdrawn(L, id)).toEqual([]);
+});
+
+it("a review request made before its model was held is refused at claim and withdrawn, so the gate asks again", async () => {
+  const { L, id } = await submitted("standalone-held-claim");
+  await L.requestReview(id, "owner", GPT, POOL);
+  // The ledger learns the new standing from a landing of another task, which
+  // carries the pool, without the pool change that would withdraw the request.
+  const other = await L.newItem("Other task", ["src/**"], "owner");
+  const pool = holding({ state: "reserved", stateAt: AT, note: "astra's credits" });
+  await L.requestReview(other.id, "owner", GLM, pool);
+  expect(await open(L, id)).toEqual([expect.objectContaining({ state: "open" })]);
+  await refusal(L.claimReview(id, GPT, RUNNER), "model_held", new RegExp(`codex/gpt-6-astra is reserved since 2026-10-05 \\(the owner's standing\\): astra's credits; its review of ${id} is withdrawn`));
+  expect(await open(L, id)).toEqual([]);
+  expect((await withdrawn(L, id)).map((e) => e.data)).toEqual([expect.objectContaining({ head: H1, reviewer: GPT, reason: expect.stringMatching(/reserved since 2026-10-05/) })]);
+  expect(await L.requestReview(id, "owner", null, pool)).toMatchObject({ requested: true, reviewer: GLM });
+});

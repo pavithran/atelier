@@ -855,11 +855,29 @@ export class Ledger extends DurableObject<Env> {
 
   // The index sends the pool here when the owner changes it, and every open
   // approved plan ticks, so a review asked of a model just paused, reserved
-  // or kept from reviewing is withdrawn and asked of another.
+  // or kept from reviewing is withdrawn and asked of another. A standalone
+  // item's unclaimed request to such a model is withdrawn too, so the next
+  // landing's gate asks again rather than waiting on it.
   poolChanged(pool: ModelEntry[]): void {
     this.keepPool(pool);
+    const at = new Date().toISOString();
+    const open = this.sql.exec(`SELECT r.id, r.item, r.head, r.dispatch, r.tier, i.plan FROM review_requests r JOIN items i ON i.id = r.item WHERE r.state = 'open'`).toArray();
+    for (const r of open) {
+      if (r.plan && this.planRecord(r.plan as string).approval) continue;
+      const d = JSON.parse(r.dispatch as string) as Dispatch;
+      const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
+      const held = asked ? actorStanding(pool, asked, "review") : null;
+      if (held) this.withdrawHeldRequest(r.item as string, r.id as number, r.head as string, asked!, held, r.tier === 1, at);
+    }
     const plans = this.sql.exec(`SELECT id FROM items WHERE kind = 'plan' AND state NOT IN ('merged', 'abandoned')`).toArray().map((r) => r.id as string);
     for (const id of plans) if (this.planRecord(id).approval) this.afterPlanChange(id);
+  }
+
+  // An unclaimed review request to a model the owner's standing now holds
+  // from reviewing, withdrawn with the reason.
+  private withdrawHeldRequest(itemId: string, request: number, head: string, reviewer: string, reason: string, tier: boolean, at: string): void {
+    this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ? AND state = 'open'`, request);
+    this.log(itemId, ORCHESTRATOR, "review.withdrawn", { head, reviewer, reason, ...(tier ? { tier: true } : {}) }, at);
   }
 
   // ── usage ────────────────────────────────────────────────────────────────
@@ -3575,6 +3593,14 @@ export class Ledger extends DurableObject<Env> {
     if (dispatch.agent && harness !== dispatch.agent) throw new RuleError("wrong_agent", `${itemId}'s review asks for ${dispatch.agent}, not ${harness}`, 403);
     if (dispatch.model && model !== dispatch.model) throw new RuleError("wrong_model", `${itemId}'s review asks for ${dispatch.model}, not ${model ?? "no model"}`, 403);
     const at = new Date().toISOString();
+    // A request made before the owner paused, reserved or kept this model
+    // from reviewing is not claimable: it is withdrawn, so the gate asks
+    // again, and the claim refused with the reason.
+    const held = actorStanding(this.poolStanding(), actor, "review");
+    if (held) {
+      this.withdrawHeldRequest(itemId, row.id as number, head, actor, held, tier, at);
+      throw new RuleError("model_held", `${held}; its review of ${itemId} is withdrawn`, 409);
+    }
     // A part's claim carries the plan's account of it for the brief; an item
     // outside a plan has none, and its need is read as the gate reads it.
     const record = item.plan ? this.planRecord(item.plan) : null;

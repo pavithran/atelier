@@ -429,6 +429,30 @@ it('the Models page lists the pool by where it runs, escapes it, and adds throug
  const page=await worker.fetch(new Request('https://atelier.test/models',{headers:{cookie:signedIn}}),{...env,ATELIER_TOKEN:TOKEN} as typeof env);
  expect(await page.text()).toContain('deepseek-chat');
 });
+it('the Models page shows a paused or reserved model with the date its state was set, and each model\'s roles and tier',async()=>{
+ const {renderModels}=await import('../src/ui');
+ const base={where:'cloud' as const,provider:'subscription' as const,aliases:[],addedBy:'pavi',addedAt:time};
+ const html=renderModels([
+  {...base,id:'gemini-4-pro',harness:'gemini-cli',family:'google',note:'AI Studio down until 10-09',state:'paused',stateAt:'2026-10-05T12:00:00Z',roles:['build','review'],tier:'execution'},
+  {...base,id:'gpt-6-astra',harness:'codex',family:'openai',note:'astra\'s credits',state:'reserved',stateAt:'2026-10-08T12:00:00Z',tier:'frontier'},
+  {...base,id:'gpt-6-luna',harness:'codex',family:'openai',note:'',roles:['review'],tier:'budget'},
+  {...base,id:'opus-5.5',harness:'claude-code',family:'anthropic',note:'',state:'available',stateAt:'2026-10-09T12:00:00Z'},
+ ],new Map(),'PAVI');
+ const card=(id:string)=>html.slice(html.indexOf(`<strong class="mono">${id}</strong>`)).split('</li>')[0];
+ expect(card('gemini-4-pro')).toMatch(/<span class="tag ask">paused<\/span><span class="meta">set 2026-10-05 \d\d:\d\d [^<]*<\/span>/);
+ expect(card('gemini-4-pro')).toContain('<span class="tag ">build, review</span><span class="meta">the jobs it may take</span>');
+ expect(card('gemini-4-pro')).toContain('<span class="tag ">execution</span><span class="meta">tier</span>');
+ // A reserved model's note shows beside its state.
+ expect(card('gpt-6-astra')).toMatch(/<span class="tag ask">reserved<\/span><span class="meta">set 2026-10-08 \d\d:\d\d [^<]* · astra(&#39;|&#x27;|')s credits<\/span>/);
+ expect(card('gpt-6-astra')).toContain('<span class="tag ">frontier</span><span class="meta">tier</span>');
+ expect(card('gpt-6-astra')).not.toContain('the jobs it may take');
+ // A review-only model with no state set shows its roles and tier, and no state.
+ expect(card('gpt-6-luna')).toContain('<span class="tag ">review</span><span class="meta">the jobs it may take</span>');
+ expect(card('gpt-6-luna')).toContain('<span class="tag ">budget</span><span class="meta">tier</span>');
+ expect(card('gpt-6-luna')).not.toMatch(/paused|reserved|set 2026/);
+ // Available is not shown, nor its date; no roles or tier, no standing line.
+ expect(card('opus-5.5')).not.toMatch(/tag ask">available|set 2026-10-09|the jobs it may take|<span class="meta">tier<\/span>/);
+});
 it('the front door: / is the public showcase for everyone, and the owner signs in to Home at /home',async()=>{
  const TOKEN='door-test-token';
  const signedIn=await signIn(TOKEN,{...env,ATELIER_TOKEN:TOKEN} as typeof env);
