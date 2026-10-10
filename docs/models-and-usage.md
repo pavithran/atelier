@@ -13,10 +13,12 @@ harness (OpenCode, Claude Code, Codex, ZCode, the Gemini CLI or
 Antigravity), where it runs, its provider and, for an API, the name of the
 Keychain entry on the runner's machine that holds its key. Atelier stores
 that name and never a key; a form or request that carries one is refused.
+A harness model (Antigravity, Codex, Claude Code) needs no key.
 
 ```text
 atelier models add GLM-5.3-Flash-4_8bit --harness opencode --where home --endpoint http://studio.local:8000/v1
-atelier models add gemini-3.1-pro --harness opencode --where cloud --provider google --keychain gemini.API_KEY
+atelier models add claude-3-7-sonnet-20250219 --harness opencode --where cloud --provider anthropic --keychain anthropic.API_KEY
+atelier models add gemini-3.1-pro --harness antigravity --where cloud
 atelier models
 ```
 
@@ -221,10 +223,13 @@ last segment. The gateway is authenticated, so each call also carries a
 with AI Gateway · Run on the account), which opencode reads from the
 runner's environment. A `cf-aig-metadata` header, a JSON object of at most
 five entries, says whose call it is; the runner sets it per run as
-`CF_AIG_METADATA`, so the config reads it from the environment and every
-call of one run carries the same task, role and runner
-(`bin/orchestrate/run-agent.sh` sets the same variable for a hand
-dispatch):
+`CF_AIG_METADATA`, and every call of one run carries the same task, role
+and runner (`bin/orchestrate/run-agent.sh` sets the same variable for a hand
+dispatch). opencode substitutes `{env:VAR}` into the config's raw text before
+parsing it, so the JSON cannot go into a JSON string as it is: the opencode
+adapter sets `CF_AIG_METADATA_ESCAPED`, the same object escaped for a JSON
+string, and the configs `atelier runner setup` writes read that
+(docs/runners.md, "What setup writes"):
 
 ```json
 {
@@ -234,7 +239,7 @@ dispatch):
         "baseURL": "https://gateway.ai.cloudflare.com/v1/ACCOUNT/atelier/deepseek",
         "headers": {
           "cf-aig-authorization": "Bearer {env:CF_AIG_TOKEN}",
-          "cf-aig-metadata": "{env:CF_AIG_METADATA}"
+          "cf-aig-metadata": "{env:CF_AIG_METADATA_ESCAPED}"
         }
       }
     }
