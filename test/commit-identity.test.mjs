@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { addressRefusal, builderRefusals, commitRefusals, emailProblem, IDENTITY_LOG_FORMAT, parseIdentityLog, publicRefusals, settleCommitIdentity } from "../src/commit-identity.ts";
+import { addressRefusal, builderRefusals, commitRefusals, emailProblem, IDENTITY_LOG_FORMAT, isPublicMirror, parseIdentityLog, publicRefusals, settleCommitIdentity } from "../src/commit-identity.ts";
 import { identityRefusals, IDENTITY_FILE, resolveIdentity, runTask } from "../cli/runner.mjs";
 import { identityEnv, identityRangeRefusals } from "../cli/atelier.mjs";
 
@@ -61,6 +61,19 @@ test("an invalid policy is refused, naming the field to fix", () => {
   refused({ agentEmails: 3 }, POLICY, /agentEmails must be a list/);
   refused({ privateEmails: [OWNER.email] }, POLICY, /commitEmail 123\+owner@users\.noreply\.github\.com is declared private/);
   refused({ privateEmails: [AGENT] }, POLICY, /agentEmails agents@atelier\.example is declared private/);
+  refused({ publicMirrors: ["--upload-pack=x"] }, POLICY, /publicMirrors "--upload-pack=x" is not a remote name/);
+  refused({ publicMirrors: ["git@github.com:o/r.git"] }, POLICY, /is not a remote name/);
+  refused({ publicMirrors: 3 }, POLICY, /publicMirrors must be a list of remote names/);
+  // A public mirror would publish the project's address: it must be a no-reply one.
+  refused({ publicMirrors: ["github"] }, { ...POLICY, email: "owner@studio.example" }, /commitEmail owner@studio\.example is not a GitHub no-reply address .* publicMirrors github would publish it/);
+  refused({ commitEmail: "owner@studio.example" }, { ...POLICY, publicMirrors: ["github"] }, /is not a GitHub no-reply address/);
+});
+
+test("the policy declares which remotes are public mirrors, kept on a later init and cleared by an empty list", () => {
+  const mirrored = settleCommitIdentity({ publicMirrors: ["github", " github ", "", "codeberg"] }, POLICY);
+  assert.deepEqual(mirrored, { ...POLICY, publicMirrors: ["github", "codeberg"] });
+  assert.deepEqual(settleCommitIdentity({ agentEmails: [] }, mirrored).publicMirrors, ["github", "codeberg"]);
+  assert.deepEqual(settleCommitIdentity({ publicMirrors: [] }, mirrored), POLICY);
 });
 
 test("an address is refused when missing, guessed, declared private or outside the policy", () => {
@@ -199,12 +212,24 @@ test("commit records parse whatever a name holds, and an empty field is refused"
 
 // ── public mirror ─────────────────────────────────────────────────────────
 
-test("a public mirror takes only no-reply addresses: an agent address allowed for landing is not thereby public", () => {
+test("a public mirror takes only the project's own no-reply address: an agent address allowed for landing is not thereby public", () => {
   const c = (authorEmail, committerEmail = authorEmail) => ({ commit: "b".repeat(40), authorName: "A", authorEmail, committerName: "A", committerEmail });
-  assert.deepEqual(publicRefusals([c(OWNER.email), c("41898282+github-actions[bot]@users.noreply.github.com")]), []);
-  assert.equal(commitRefusals(POLICY, [c(AGENT)]).length, 0, "landing allows the agent address");
-  assert.deepEqual(publicRefusals([c(AGENT, OWNER.email)]), [`commit ${"b".repeat(12)}: the author email ${AGENT} is not a public no-reply address (such as 123+name@users.noreply.github.com)`]);
-  assert.equal(publicRefusals([c("owner@personal.example")]).length, 2);
+  const mirrored = { ...POLICY, publicMirrors: ["github"] };
+  assert.deepEqual(publicRefusals(mirrored, [c(OWNER.email), c(OWNER.email.toUpperCase())]), []);
+  assert.equal(commitRefusals(mirrored, [c(AGENT)]).length, 0, "landing allows the agent address");
+  assert.deepEqual(publicRefusals(mirrored, [c(AGENT, OWNER.email)]), [`commit ${"b".repeat(12)}: the author email ${AGENT} is not the project's public address ${OWNER.email} (commitEmail), the only one a public mirror (publicMirrors) takes`]);
+  // Another no-reply address is public, but not the project's declared one.
+  assert.match(publicRefusals(mirrored, [c(OWNER.email, "41898282+github-actions[bot]@users.noreply.github.com")])[0], /the committer email 41898282\+github-actions\[bot\]@users\.noreply\.github\.com is not the project's public address/);
+  assert.equal(publicRefusals(mirrored, [c("owner@personal.example")]).length, 2);
+  // A policy whose own address is not a no-reply one publishes nothing.
+  assert.match(publicRefusals({ ...POLICY, email: "owner@studio.example" }, [c("owner@studio.example")])[0], /the author email owner@studio\.example is not a GitHub no-reply address .*; set commitEmail/);
+});
+
+test("only a remote the policy declares is a public mirror", () => {
+  assert.equal(isPublicMirror({ ...POLICY, publicMirrors: ["github"] }, "github"), true);
+  assert.equal(isPublicMirror({ ...POLICY, publicMirrors: ["github"] }, "origin"), false);
+  assert.equal(isPublicMirror(POLICY, "github"), false, "no declared mirrors, none checked");
+  assert.equal(isPublicMirror(undefined, "github"), false);
 });
 
 // ── claim ─────────────────────────────────────────────────────────────────

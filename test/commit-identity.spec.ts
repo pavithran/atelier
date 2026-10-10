@@ -30,7 +30,7 @@ function call(method: string, path: string, body?: unknown, actor = "owner") {
   }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts } as typeof env);
 }
 
-type Policy = { commitIdentity?: { name: string; email: string; agentEmails: string[]; privateEmails?: string[] } };
+type Policy = { commitIdentity?: { name: string; email: string; agentEmails: string[]; privateEmails?: string[]; publicMirrors?: string[] } };
 
 it("init records a validated commit identity, keeps it on a re-init, refuses an invalid one and drops it on a reset", async () => {
   const policyOf = async (body: unknown) => {
@@ -43,11 +43,14 @@ it("init records a validated commit identity, keeps it on a re-init, refuses an 
     .toEqual({ ...OWNER, agentEmails: ["agents@atelier.example"] });
   expect((await policyOf({ title: "Identity" })).commitIdentity?.email).toBe(OWNER.email);
   expect((await policyOf({ privateEmails: ["owner@personal.example"] })).commitIdentity).toEqual({ ...OWNER, agentEmails: ["agents@atelier.example"], privateEmails: ["owner@personal.example"] });
+  expect((await policyOf({ publicMirrors: ["github"] })).commitIdentity?.publicMirrors).toEqual(["github"]);
+  expect((await policyOf({ publicMirrors: [] })).commitIdentity).not.toHaveProperty("publicMirrors");
 
   for (const [body, detail] of [
     [{ commitEmail: "pavi@studio.local" }, /commitEmail "pavi@studio\.local" is one Git guesses/],
     [{ agentEmails: ["owner@personal.example"] }, /agentEmails owner@personal\.example is declared private/],
     [{ commitName: "" }, /commitName must be/],
+    [{ publicMirrors: ["-x"] }, /publicMirrors "-x" is not a remote name/],
   ] as const) {
     const bad = await call("PUT", "/projects/identity-init", body);
     expect(bad.status).toBe(400);

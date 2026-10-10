@@ -24,4 +24,7 @@
 // 19: a project that requires criteria refuses a task filed or cleared
 // without them, and init takes --require-criteria (t397).
 // Runner-scoped API credentials and revocable Git gateway (t444).
-export const ROUTE_LEVEL = 20;
+// 21: a project's policy carries its commit identity, which every claim,
+// runner and landing reads, and init takes commitName, commitEmail,
+// agentEmails, privateEmails and publicMirrors (t451).
+export const ROUTE_LEVEL = 21;
