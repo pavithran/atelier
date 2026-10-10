@@ -352,6 +352,15 @@ function ledgerOf(env: Env, p: ProjectRecord) {
 function index(env: Env) {
   return env.LEDGER.get(env.LEDGER.idFromName("__index"));
 }
+// Sends the pool to every project's Ledger after the owner changes it, so the
+// ticks that run there without the index (tier reviews, a plan's reviews)
+// skip a model just paused, reserved or kept from reviewing. A project that
+// cannot be reached keeps its last copy; the change itself stands.
+async function sendPool(env: Env): Promise<void> {
+  const I = index(env);
+  const [pool, projects] = await Promise.all([I.models(), I.projects()]);
+  await Promise.allSettled(projects.map((p) => ledgerOf(env, p).poolChanged(pool)));
+}
 function resolveProject(env: Env, name: string): Promise<ProjectRef> {
   return index(env).resolveProject(name);
 }
@@ -836,11 +845,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const id = parts[1] ?? "";
     if (parts.length === 2 && m === "PUT") {
       requireOwner(env, actor);
-      return json(await I.putModel(cleanEntry({ ...body, id }, actor, new Date().toISOString())));
+      const entry = await I.putModel(cleanEntry({ ...body, id }, actor, new Date().toISOString()));
+      await sendPool(env);
+      return json(entry);
     }
     if (parts.length === 2 && m === "DELETE") {
       requireOwner(env, actor);
-      return json({ removed: await I.removeModel(id) });
+      const removed = await I.removeModel(id);
+      await sendPool(env);
+      return json({ removed });
     }
     if (parts.length === 3 && parts[2] === "status" && m === "POST") {
       const runner = parseRunner(req.headers.get("x-atelier-runner"));
@@ -849,7 +862,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     if (parts.length === 3 && parts[2] === "set" && m === "POST") {
       requireOwner(env, actor);
-      return json(await I.setModel(id, cleanModelSet(body), new Date().toISOString()));
+      const entry = await I.setModel(id, cleanModelSet(body), new Date().toISOString());
+      await sendPool(env);
+      return json(entry);
     }
     throw new RuleError("not_found", "no such route", 404);
   }

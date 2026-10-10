@@ -1,7 +1,7 @@
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
 import { sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
-import { modelState, OBSERVED_UNDER, type ModelEntry, type ModelSet, type ModelStatus } from "./models/pool";
+import { modelState, OBSERVED_UNDER, reviewHeld, withStanding, type ModelEntry, type ModelSet, type ModelStatus } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -795,6 +795,29 @@ export class Ledger extends DurableObject<Env> {
     return record;
   }
 
+  // A project's copy of the pool, as the index last sent it (poolChanged) or
+  // a caller passed it in (requestReview, approvePlan), so the ticks and the
+  // re-asks that run without the index read the owner's standing for each
+  // model: tier reviews, carried requests and a plan's reviews skip a model
+  // paused, reserved or kept from reviewing. Empty until first sent.
+  private poolStanding(): ModelEntry[] {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'pool'`).toArray()[0];
+    return row ? JSON.parse(row.value as string) as ModelEntry[] : [];
+  }
+
+  private keepPool(pool: readonly ModelEntry[]): void {
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('pool', ?)`, JSON.stringify(pool));
+  }
+
+  // The index sends the pool here when the owner changes it, and every open
+  // approved plan ticks, so a review asked of a model just paused, reserved
+  // or kept from reviewing is withdrawn and asked of another.
+  poolChanged(pool: ModelEntry[]): void {
+    this.keepPool(pool);
+    const plans = this.sql.exec(`SELECT id FROM items WHERE kind = 'plan' AND state NOT IN ('merged', 'abandoned')`).toArray().map((r) => r.id as string);
+    for (const id of plans) if (this.planRecord(id).approval) this.afterPlanChange(id);
+  }
+
   // ── usage ────────────────────────────────────────────────────────────────
   // Each tool's usage, limits and balances as a home runner last reported
   // them, on the index instance beside the model pool: one report per tool
@@ -1069,6 +1092,7 @@ export class Ledger extends DurableObject<Env> {
       const contributors = contributorsOf(item);
       if (asked.some((a) => sameActor(a, reviewer)) || contributors.some((c) => sameActor(c, reviewer))) continue;
       if (!wanted && independenceRefusal(reviewer, contributors)) continue;
+      if (reviewHeld(this.poolStanding(), reviewer)) continue;
       const need = reviewNeeded({
         item, part: false, policy: this.project().policy,
         evidence: this.evidenceFor(id), reviews: this.reviewsFor(id),
@@ -2489,6 +2513,7 @@ export class Ledger extends DurableObject<Env> {
     // The plan item must be unheld: a planner that still holds its claim would
     // keep a live write token through the plan's completion.
     if (item.owner) throw new RuleError("planning", `${id} is held by ${item.owner}, which is planning now; approve it once its claim is released`, 409);
+    this.keepPool(pool);
     const record = this.planRecord(id);
     if (record.approval) throw new RuleError("plan_approved", `${id} was approved at ${record.approval.hash.slice(0, 12)}; a plan is approved once`, 409);
     if (!/^[a-f0-9]{64}$/.test(hash)) throw new RuleError("bad_hash", `give the full hash atelier plan show ${id} prints`, 400);
@@ -3080,6 +3105,11 @@ export class Ledger extends DurableObject<Env> {
     const plan = planWithAdded(this.approvedPlan(id, approval.hash), record);
     const policy = this.project().policy;
     const now = new Date(at);
+    // The pool fixed at approval, with the owner's standing as the pool has
+    // it now: a model paused, reserved or kept from reviewing since is not
+    // asked.
+    const standing = this.poolStanding();
+    const pool = withStanding(approval.pool, standing);
     for (const listed of parts) {
       if (listed.state !== "submitted" || !listed.partKey) continue;
       // The part as item() reads it, with its push actors: planParts reads
@@ -3101,14 +3131,16 @@ export class Ledger extends DurableObject<Env> {
       // the review is asked again below of one who can give it.
       const contributors = contributorsOf(p);
       // A tier request needs no other family, only a reviewer who has not
-      // contributed.
-      const live = this.sql.exec(`SELECT id, head, dispatch, tier FROM review_requests WHERE item = ? AND state IN ('open', 'claimed')`, p.id).toArray();
+      // contributed. An open request for a model the owner has since paused,
+      // reserved or kept from reviewing is withdrawn too; a claimed one is
+      // left to finish.
+      const live = this.sql.exec(`SELECT id, head, dispatch, tier, state FROM review_requests WHERE item = ? AND state IN ('open', 'claimed')`, p.id).toArray();
       for (const r of live) {
         const d = JSON.parse(r.dispatch as string) as Dispatch;
         const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
         const refusal = !asked ? null
-          : r.tier === 1 ? (contributors.some((c) => sameActor(c, asked)) ? `${asked} contributed to it, and nobody reviews their own work` : null)
-            : independenceRefusal(asked, contributors);
+          : (r.tier === 1 ? (contributors.some((c) => sameActor(c, asked)) ? `${asked} contributed to it, and nobody reviews their own work` : null)
+            : independenceRefusal(asked, contributors)) ?? (r.state === "open" ? reviewHeld(standing, asked) : null);
         if (!asked || !refusal) continue;
         this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
         this.log(p.id, ORCHESTRATOR, "review.withdrawn", { head: r.head as string, reviewer: asked, reason: refusal, ...(r.tier === 1 ? { tier: true } : {}) }, at);
@@ -3131,12 +3163,12 @@ export class Ledger extends DurableObject<Env> {
       // policy, and has not let a claim on this head lapse.
       const change = record.reviewers?.[p.partKey!];
       const named = change?.by && !need.lapsed.some((a) => sameActor(a, change.actor)) && !independenceRefusal(change.actor, contributors)
-        && mayAssess(change.actor, policy, this.owner) ? change.actor : null;
+        && mayAssess(change.actor, policy, this.owner) && !reviewHeld(standing, change.actor) ? change.actor : null;
       // pickReviewer passes over every contributor and every model of a
       // contributor's family, the routed reviewer included, and asks the
       // alternates and then the pool.
       const pick = named ? null : pickReviewer({
-        item: p, pool: approval.pool, policy, allowPaid: approval.allowPaid,
+        item: p, pool, policy, allowPaid: approval.allowPaid,
         part, route,
         previous: need.previousReviewer,
         // A protected part's review goes to the tier first, so one review
@@ -3155,7 +3187,7 @@ export class Ledger extends DurableObject<Env> {
       // part's routing, so plan show and the plan page name the reviewer
       // asked and why, and later rounds ask that reviewer first.
       const routed = route?.reviewer?.actor ?? null;
-      const why = routed ? independenceRefusal(routed, contributors) : null;
+      const why = routed ? independenceRefusal(routed, contributors) ?? reviewHeld(standing, routed) : null;
       if (routed && why && !sameActor(routed, reviewer)) {
         (record.reviewers ??= {})[p.partKey!] = { actor: reviewer, from: routed, reason: why, at };
         this.savePlanRecord(id, record);
@@ -3387,6 +3419,7 @@ export class Ledger extends DurableObject<Env> {
   requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner asks for a review", 403);
     const item = this.item(id);
+    this.keepPool(pool);
     // A named reviewer is judged even when a request already stands, so a
     // retry with a different name never silently keeps the wrong reviewer.
     if (wanted && reviewer === null) throw new RuleError("bad_request", "a wanted review names its reviewer", 400);
@@ -3510,7 +3543,10 @@ export class Ledger extends DurableObject<Env> {
     const asked = this.sql.exec(`SELECT dispatch FROM review_requests WHERE item = ? AND head = ? AND tier IS NULL`, item.id, need.head).toArray()
       .map((r) => JSON.parse(r.dispatch as string) as Dispatch)
       .flatMap((d) => (d.agent && d.model ? [`${d.agent}/${d.model}`] : []));
-    const reviewer = pickTierReviewer(policy.reviewTier, contributorsOf(item), [gateReviewer, ...asked], (a) => mayAssess(a, policy, this.owner), this.reviewPrecision(at));
+    // A tier model the owner has paused, reserved or kept from reviewing is
+    // passed over, as the gate's selector passes it over.
+    const standing = this.poolStanding();
+    const reviewer = pickTierReviewer(policy.reviewTier, contributorsOf(item), [gateReviewer, ...asked], (a) => mayAssess(a, policy, this.owner) && !reviewHeld(standing, a), this.reviewPrecision(at));
     if (!reviewer) return;
     const slash = reviewer.indexOf("/");
     const dispatch = { ...makeDispatch({ to: "home", agent: reviewer.slice(0, slash), model: reviewer.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
@@ -3579,6 +3615,7 @@ export class Ledger extends DurableObject<Env> {
     const contributors = contributorsOf(item);
     if (contributors.some((c) => sameActor(c, reviewer))) return;
     if (!wanted && independenceRefusal(reviewer, contributors)) return;
+    if (reviewHeld(this.poolStanding(), reviewer)) return;
     const policy = this.project().policy;
     const need = reviewNeeded({
       item, part: false, policy,

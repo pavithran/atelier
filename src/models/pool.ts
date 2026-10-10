@@ -77,6 +77,35 @@ export function hasModelRole(entry: Pick<ModelEntry, "roles">, role: ModelRole):
   return !entry.roles?.length || entry.roles.includes(role);
 }
 
+// Entries saved earlier (a plan's pool, fixed at its approval) with the
+// owner's standing as the pool has it now laid over each: a model paused,
+// reserved or given other roles since is skipped as the pool would skip it.
+// An entry the pool no longer has keeps its saved standing.
+export function withStanding(saved: readonly ModelEntry[], current: readonly ModelEntry[]): ModelEntry[] {
+  return saved.map((entry) => {
+    const now = current.find((c) => c.id === entry.id && c.harness === entry.harness);
+    if (!now) return entry;
+    const { state: _state, stateAt: _stateAt, roles: _roles, ...rest } = entry;
+    return {
+      ...rest, note: now.note,
+      ...(now.state ? { state: now.state } : {}), ...(now.stateAt ? { stateAt: now.stateAt } : {}),
+      ...(now.roles ? { roles: now.roles } : {}),
+    };
+  });
+}
+
+// Why the owner's standing keeps an actor (harness/model, the model by its
+// id or an alias) from reviewing, or null when it may: paused or reserved,
+// or without the review role. An actor outside the pool is not held.
+export function reviewHeld(pool: readonly ModelEntry[], actor: string): string | null {
+  const name = actor.toLowerCase();
+  const entry = pool.find((e) => [e.id, ...e.aliases].some((id) => `${e.harness}/${id}`.toLowerCase() === name));
+  if (!entry) return null;
+  if (offThePool(entry)) return `${actor} is ${modelState(entry)} since ${(entry.stateAt ?? entry.addedAt).slice(0, 10)} (the owner's standing)${entry.note ? `: ${entry.note}` : ""}`;
+  if (!hasModelRole(entry, "review")) return `${actor} is not a reviewer; its roles are ${entry.roles!.join(", ")}`;
+  return null;
+}
+
 // Names, as patterns, oldest-established first within each family. Anything
 // none matches is "other", and the Models page says so.
 const FAMILIES: [PoolFamily, RegExp][] = [

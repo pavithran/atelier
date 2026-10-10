@@ -89,10 +89,12 @@ it("the thresholds are owner settings with defaults, and off turns one off", asy
     ((await (await call("GET", "/usage", "owner", undefined, {}, over as Partial<typeof env>)).json()) as { thresholds: unknown }).thresholds;
   expect(await read({})).toEqual({ weeklyPercent: 80, windowPercent: 90, dailySpend: 10, balanceFloor: 10 });
   expect(await read({ USAGE_WEEKLY_PERCENT: "50", USAGE_DAILY_SPEND: "off", USAGE_BALANCE_FLOOR: "lots" })).toEqual({ weeklyPercent: 50, windowPercent: 90, dailySpend: null, balanceFloor: 10 });
-  // A report is judged against the settings in force when it arrives.
-  const over = await call("POST", "/usage/codex", "owner", codexBody(55), { "x-atelier-runner": "home:settings" }, { USAGE_WEEKLY_PERCENT: "50" } as Partial<typeof env>);
+  // A report is judged against the settings in force when it arrives. The
+  // route judges it at the real time, so its weekly window resets after it.
+  const live = { ...codexBody(55), windows: [{ name: "weekly", usedPercent: 55, resetsAt: at(Date.now() + 4 * 86_400_000), at: AT }] };
+  const over = await call("POST", "/usage/codex", "owner", live, { "x-atelier-runner": "home:settings" }, { USAGE_WEEKLY_PERCENT: "50" } as Partial<typeof env>);
   expect(((await over.json()) as { alerts: string[] }).alerts).toEqual(["codex: weekly window 55% used"]);
-  const under = await call("POST", "/usage/codex", "owner", codexBody(55), { "x-atelier-runner": "home:settings-off" }, { USAGE_WEEKLY_PERCENT: "off" } as Partial<typeof env>);
+  const under = await call("POST", "/usage/codex", "owner", live, { "x-atelier-runner": "home:settings-off" }, { USAGE_WEEKLY_PERCENT: "off" } as Partial<typeof env>);
   expect(((await under.json()) as { alerts: string[] }).alerts).toEqual([]);
 });
 

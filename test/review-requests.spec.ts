@@ -829,3 +829,52 @@ it("a review claim carries the owner's standing decisions, and the brief marks t
   expect(none.decisions).toEqual([]);
   expect(reviewBrief({ need: none.need!, item: none.item, events: none.events, plan: none.plan, owner: none.owner, decisions: none.decisions })).toContain("The project owner has recorded no standing decision for this project.");
 });
+
+// The owner's standing for a model (src/models/pool.ts) reaches the reviews
+// a project's ledger asks without the index: the index sends the pool on each
+// change (poolChanged), and tier reviews and a plan's reviews skip a model
+// paused, reserved or kept from reviewing since approval.
+const held = (actor: string, change: Partial<ModelEntry>): ModelEntry => {
+  const [harness, id] = actor.split("/");
+  return { ...entry(id, harness as ModelEntry["harness"]), ...change };
+};
+
+it("a tier model the owner paused, reserved or kept from reviewing is never asked for the tier review", async () => {
+  for (const [name, change] of [
+    ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }],
+    ["reserved", { state: "reserved", stateAt: AT, note: "credits kept" }],
+    ["build-only", { roles: ["build"] }],
+  ] as const) {
+    const { L, partId, sibling } = await tiered(`review-tier-held-${name}`);
+    await L.poolChanged([...POOL, held(sibling, change)]);
+    await submitPart(L, partId, "a".repeat(40));
+    expect(await reviewWaiting(L), name).toEqual([{ id: partId, job: "review", agent: "codex", model: "gpt-6-astra" }]);
+    expect((await L.reviewRequests(partId)).filter((r) => r.tier), name).toEqual([]);
+  }
+});
+
+it("a plan's reviewer the owner reserves after approval is passed over, and its routing names why", async () => {
+  const L = await setup("review-held-after-approval");
+  const { id, partId, builder } = await approved(L);
+  await L.poolChanged(POOL.map((e) => e.id === "gpt-6-astra" ? { ...e, state: "reserved" as const, stateAt: AT, note: "astra's credits" } : e));
+  await submitPart(L, partId, "a".repeat(40));
+  const other = [OPUS, GLM].find((a) => a !== builder)!;
+  expect(await routedReviewer(L, partId)).toBe(other);
+  expect((await events(L, partId)).find((e) => e.kind === "plan.reviewer_changed")).toMatchObject({ data: { from: GPT, to: other, reason: expect.stringMatching(/reserved since 2026-10-06.*astra's credits/) } });
+  expect((await L.planView(id)).blocked).toBeNull();
+});
+
+it("an open review request is withdrawn when the owner pauses its reviewer or takes away its review role, and asked of another", async () => {
+  for (const [name, change, reason] of [
+    ["paused", { state: "paused", stateAt: AT }, /paused since 2026-10-06/],
+    ["build-only", { roles: ["build"] }, /not a reviewer; its roles are build/],
+  ] as const) {
+    const L = await setup(`review-held-open-${name}`);
+    const { partId, builder } = await approved(L);
+    await submitPart(L, partId, "a".repeat(40));
+    expect(await routedReviewer(L, partId)).toBe(GPT);
+    await L.poolChanged(POOL.map((e) => e.id === "gpt-6-astra" ? { ...e, ...change } : e));
+    expect(await routedReviewer(L, partId), name).toBe([OPUS, GLM].find((a) => a !== builder));
+    expect((await events(L, partId)).find((e) => e.kind === "review.withdrawn")).toMatchObject({ data: { reviewer: GPT, reason: expect.stringMatching(reason) } });
+  }
+});
