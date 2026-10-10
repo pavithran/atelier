@@ -39,7 +39,7 @@ import type { PartRoute } from "./plans/route.ts";
 export interface Live { nonce: string; refresh?: number }
 import {
   bindingOf, confirmationAt, DEFAULT_OWNER, decisionFor, evidenceAt, isOwnCall, latestReviews, mergedByOverride, mergedChecksAt, NO_OWNER_FACTOR, OVERRIDE_CONFIRMATION_MS, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey,
-  type Evidence, type Gate, type InboxEntry, type Item, type MergedCheckView, type OwnerFactor, type ProjectPolicy, type Review,
+  type Evidence, type Gate, type InboxEntry, type Item, type MergedCheckView, type OwnerFactor, type ProjectPolicy, type Review, type UnparsableReply,
 } from "./rules";
 
 // What a page calls a project: its title when it has one, else its name. Links,
@@ -166,6 +166,9 @@ export interface Detail {
   policy: ProjectPolicy;
   evidence: Evidence[];
   reviews: Review[];
+  // Replies no verdict could be read from, kept on the task (t407), oldest
+  // first; the reviews above carry none of them.
+  unparsable?: UnparsableReply[];
   gate: Gate;
   events: LedgerEvent[];
 }
