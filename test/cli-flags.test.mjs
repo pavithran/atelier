@@ -471,11 +471,11 @@ test("new and edit send the framing as lists and a line, block sends its reason,
 // t315: a short title, a brief and acceptance criteria. One long string is
 // sent as the title, as an older CLI sends it, and the answer says the
 // server kept it as the brief.
-// t402: a session that has not fetched the orchestrator guide for the project
-// is pointed at it by the commands it runs, and stops being once it has.
-const POINTER = "Not read yet for demo: atelier guide --role orchestrate --project demo prints how to run, review and land work here, including atelier land --reviewer.\n";
+// t402: a session is pointed at the orchestrator guide by the commands it runs
+// until the project's AGENTS.md states the review path.
+const POINTER = "Review path for demo: atelier guide --role orchestrate --project demo prints how to run, review and land work here, including atelier land --reviewer.\n";
 
-test("ls and new name the orchestrator guide until it was fetched, and not in a task workspace or in --json", (t) => {
+test("ls and new name the orchestrator guide until AGENTS.md states the review path, and not in a task workspace or in --json", (t) => {
   const f = fixture(t);
   for (const argv of [["ls", "--project", "demo"], ["new", "A task", "--project", "demo"]]) {
     const r = f.run(f.checkout, argv);
@@ -485,9 +485,7 @@ test("ls and new name the orchestrator guide until it was fetched, and not in a 
   }
   assert.doesNotMatch(f.run(f.checkout, ["ls", "--json", "--project", "demo"]).stdout, /atelier guide/);
   assert.doesNotMatch(f.run(f.workspace, ["ls"]).stdout, /atelier guide/);
-  const config = JSON.parse(readFileSync(join(f.dir, "config.json"), "utf8"));
-  config.projects.demo.guideFetched = new Date().toISOString();
-  writeFileSync(join(f.dir, "config.json"), JSON.stringify(config));
+  writeFileSync(join(f.checkout, "AGENTS.md"), "Land with `atelier land ID --reviewer H/M`.\n");
   for (const argv of [["ls", "--project", "demo"], ["new", "A task", "--project", "demo"]]) {
     const r = f.run(f.checkout, argv);
     assert.equal(r.status, 0, r.stderr);

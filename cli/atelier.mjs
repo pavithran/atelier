@@ -436,26 +436,25 @@ export function insecureServer(url) {
 
 // A session driving Atelier by hand reads the project's AGENTS.md and the
 // output of the commands it runs, not the briefs the build and review agents
-// get. Unless `atelier guide --role orchestrate` was fetched for a project on
-// this Mac within GUIDE_FRESH_MS (recorded as guideFetched on its config
-// entry), status, ls and new end with one line that names it. A fetch counts
-// for one session's length, not for good: a later session sees the line again.
-// A task workspace gets none: its agent has the brief.
-export const GUIDE_FRESH_MS = 4 * 60 * 60 * 1000;
-
-export function guidePointer(projects, names, inWorkspace = false, now = Date.now()) {
-  if (inWorkspace) return null;
-  const fresh = (at) => { const t = Date.parse(at); return Number.isFinite(t) && now - t < GUIDE_FRESH_MS && t <= now + 60000; };
-  const unread = names.filter((n) => projects?.[n] && !fresh(projects[n].guideFetched));
-  if (!unread.length) return null;
-  const one = unread.length === 1;
-  return `Not read yet${one ? ` for ${unread[0]}` : ""}: atelier guide --role orchestrate${one ? ` --project ${unread[0]}` : ""} prints how to run, review and land work here, including atelier land --reviewer.`;
+// get. Unless the project's AGENTS.md already states the review path (atelier
+// land --reviewer), status, ls and new end with one line that names
+// `atelier guide --role orchestrate`. Nothing is remembered between runs: the
+// CLI cannot tell one session from the next, so the line stays until the
+// AGENTS.md says it. A task workspace gets none: its agent has the brief.
+export function statesReviewPath(markdown) {
+  return typeof markdown === "string" && /atelier land\b[^\n]*--reviewer/.test(markdown);
 }
 
-export function markGuideFetched(projects, name, at = new Date().toISOString()) {
-  if (!projects?.[name]) return false;
-  projects[name].guideFetched = at;
-  return true;
+function readAgentsMd(dir) {
+  try { return readFileSync(join(dir, "AGENTS.md"), "utf8"); } catch { return null; }
+}
+
+export function guidePointer(projects, names, inWorkspace = false, read = readAgentsMd) {
+  if (inWorkspace) return null;
+  const unread = names.filter((n) => projects?.[n] && !statesReviewPath(projects[n].path ? read(projects[n].path) : null));
+  if (!unread.length) return null;
+  const one = unread.length === 1;
+  return `Review path${one ? ` for ${unread[0]}` : ""}: atelier guide --role orchestrate${one ? ` --project ${unread[0]}` : ""} prints how to run, review and land work here, including atelier land --reviewer.`;
 }
 
 // The short AGENTS.md section atelier init offers: it points at the guide and
@@ -469,7 +468,7 @@ Review path: a finished task is reviewed before it merges. \`atelier land ID --r
 
 export function agentsMdOffer(markdown) {
   const pointsAtGuide = markdown !== null && /atelier guide/.test(markdown);
-  const statesReview = markdown !== null && /atelier land\b[^\n]*--reviewer/.test(markdown);
+  const statesReview = statesReviewPath(markdown);
   if (pointsAtGuide && statesReview) return null;
   const gap = markdown === null ? "This checkout has no AGENTS.md" : !pointsAtGuide ? "AGENTS.md does not mention atelier guide" : "AGENTS.md does not state the review path (atelier land --reviewer)";
   return `${gap}, so a session that reads only it never sees the review path. atelier init did not edit it; add this section:\n\n${AGENTS_SECTION}`;
@@ -3585,7 +3584,6 @@ const commands = {
     if (!name) { process.stdout.write(text); return; }
     const { decisions } = await call("GET", `${P(name)}/decisions`, undefined, OWNER);
     process.stdout.write(`${text}\n${decisionsSection(decisions.filter((d) => d.status === "standing"))}\n`);
-    if (markGuideFetched(cfg.projects, name)) saveConfig(cfg);
   },
 
   help() {
