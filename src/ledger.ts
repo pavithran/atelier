@@ -2035,6 +2035,13 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing-workflow:${id}`, JSON.stringify({ ...record, lastStatus: { status: status.status, ...(status.error ? { error: { name: status.error.name.slice(0, 200), message: status.error.message.slice(0, 2000) } } : {}) } }));
   }
 
+  // Remove only the missing instance that the owner actually read.
+  clearLandingWorkflow(id: string, instance: string, actor: string): void {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
+    if (this.landingWorkflowOf(id)?.instance !== instance) return;
+    this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing-workflow:${id}`);
+  }
+
   landingWorkflowOf(id: string): LandingWorkflowRecord | null {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `landing-workflow:${id}`).toArray()[0];
     return row ? JSON.parse(row.value as string) : null;

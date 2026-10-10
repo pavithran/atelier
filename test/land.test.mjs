@@ -1771,6 +1771,9 @@ for (const queued of [true, false]) test(`land --workflow exits non-zero on losi
   assert.match(r.output, /instance land-t1-1/);
   assert.match(r.output, /last status: errored; last error: internal error; read error: Workflow instance not found/);
   assert.match(r.output, queued ? /t1 is still queued/ : /t1 is not queued/);
+  assert.match(r.output, /atelier land t1 --workflow/);
+  assert.match(r.output, /a missing instance is cleared automatically/);
+  assert.match(r.output, /npx wrangler workflows instances describe landing/);
   assert.deepEqual(wf.events, []);
   assert.deepEqual(f.posts("/merged"), []);
 });
