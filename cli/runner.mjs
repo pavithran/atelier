@@ -422,7 +422,7 @@ export function removeDataHome({ dir, onExit }) {
 // command fails; every other command's goes to the runner's own output, as
 // the owner watching it expects. The integrate and refresh jobs read check's
 // to say what failed, and log it either way.
-const READS_OUTPUT = new Set(["review-claim", "read-token", "integrated", "integration-failed", "refreshed", "refresh-failed", "base-token", "check"]);
+const READS_OUTPUT = new Set(["review-claim", "criteria-review-claim", "read-token", "integrated", "integration-failed", "refreshed", "refresh-failed", "base-token", "check"]);
 export const readsOutput = (argv) => READS_OUTPUT.has(argv[0]);
 
 export async function checked(argv, options, executeChild = execute) {
@@ -640,8 +640,10 @@ export async function runTask(assignment, config, name, io) {
       const serverBrief = item.kind === "part" ? await io.jobBrief(project, item.id, actor) : null;
       if (serverBrief && typeof serverBrief.text !== "string") throw new Error("the server's job brief has no text");
       // A task sent back with an earlier attempt committed keeps briefFor, and
-      // adds the review's findings the server holds for its head, if any.
-      const reworked = !serverBrief && io.jobBrief && item.head && item.base && item.head !== item.base ? await io.jobBrief(project, item.id, actor) : null;
+      // adds the review's findings the server holds for its head, if any. A
+      // task whose acceptance criteria were reviewed (t438) adds what those
+      // reviews found and how the owner answered, which the server holds too.
+      const reworked = !serverBrief && io.jobBrief && ((item.head && item.base && item.head !== item.base) || item.criteriaReviews) ? await io.jobBrief(project, item.id, actor) : null;
       if (reworked && typeof reworked.text !== "string") throw new Error("the server's job brief has no text");
       const local = briefFor({ ...item, owner: actor }, project);
       // A merge-main task's brief (t243) is the local one with the job's own
@@ -816,6 +818,9 @@ export async function runReview(assignment, config, name, runnerIO) {
       // The owner's standing decisions (src/decisions.ts), as the claim
       // carries them; an older server sends none, and the brief says so.
       decisions: claimed.decisions ?? null,
+      // The reviews of the acceptance criteria themselves and the owner's
+      // resolutions of their findings (t438), as the claim carries them.
+      criteriaReviews: claimed.criteriaReviews ?? null, criteriaResolutions: claimed.criteriaResolutions ?? null, criteriaRev: claimed.criteriaRev ?? null,
     });
     brief = await io.brief(workspace, `${await reviewRoleText(io, workspace, compare)}\n\n${text}`);
     diffFile = await io.writeDiff(workspace, ownDiff === null ? diff : `${diff}${diff && !diff.endsWith("\n") ? "\n" : ""}${ownDiff}`);
@@ -888,6 +893,94 @@ export async function runReview(assignment, config, name, runnerIO) {
   } finally {
     if (brief) await io.removeBrief(brief);
     if (diffFile) io.removeDiff(diffFile);
+    if (verdictFile) io.removeFile?.(verdictFile);
+    if (workspace) io.removeTree?.(workspace);
+  }
+}
+
+// A criteria review job (t438, src/review/criteria.ts): the runner claims the
+// review of a task's acceptance criteria, hands the reviewer the brief the
+// server built (there is no change to clone: the criteria are judged before
+// the build), reads the verdict and posts it bound to the revision, binding
+// and review the claim gave. A harness that stops, times out or writes a
+// reply no verdict can be read from records the failure on the review, which
+// approves nothing, so the criteria may be asked about again.
+export async function runCriteriaReview(assignment, config, name, runnerIO) {
+  const { project, item, agent, model, actor } = assignment;
+  let brief, diffFile, workspace, verdictFile, claimed = null, settled = false, io = runnerIO;
+  const fail = async (reason) => {
+    settled = true;
+    try { await io.cli(["criteria-review-failed", item.id, "--project", project, "--as", actor, "--request", String(claimed.request), "--note", releaseNote(reason)]); }
+    catch (error) { io.log(`could not record the criteria review's failure: ${error.message}`); }
+  };
+  try {
+    const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
+    if (!entry || actor !== `${agent}/${model}`) throw new Error("queue returned an unsupported assignment");
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(project) || !/^t[0-9]+$/.test(item.id)) throw Object.assign(new Error("queue returned an invalid project or task id"), { skipped: true });
+    // The reviewer's own token (reviewToken, t346) goes on every CLI call of
+    // this job, as it does on a review's.
+    const credential = reviewToken(config, model, actor, { env: runnerIO.env, ...(runnerIO.readSecret ? { readSecret: runnerIO.readSecret } : {}), ...(runnerIO.ownerTokens ? { ownerTokens: runnerIO.ownerTokens } : {}) });
+    if (credential.refused) throw Object.assign(new Error(credential.refused), { skipped: true });
+    io = { ...runnerIO, cli: (argv, cwd) => runnerIO.cli(argv, cwd, { token: credential.token }) };
+    const answer = JSON.parse(await io.cli(["criteria-review-claim", item.id, "--project", project, "--as", actor, "--runner", name]));
+    if (typeof answer?.brief !== "string" || !Number.isInteger(answer.request) || !Number.isInteger(answer.rev) || typeof answer.criteria !== "string") {
+      throw new Error("the server's criteria review claim has no brief, revision, binding or request");
+    }
+    claimed = answer;
+    // The reviewer reads no code, so it works in an empty folder of its own
+    // beside the task's workspace, removed when the job ends; a harness
+    // confined to its workspace still finds its brief and diff beside it.
+    workspace = `${io.workspacePath(project, item.id)}-criteria-${randomUUID().slice(0, 8)}`;
+    io.makeDir?.(workspace);
+    if (io.stopped()) throw new Error("interrupted");
+    brief = await io.brief(workspace, `${roleText("review", workspace)}\n\n${claimed.brief}`);
+    // A review command names a diff file; this job has no diff, and says so
+    // in the file it hands over in its place.
+    diffFile = await io.brief(workspace, "There is no diff: this review judges the task's acceptance criteria, not a change. Read the brief.\n");
+    verdictFile = io.verdictPath(workspace);
+    const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
+    const dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
+    let result;
+    try {
+      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, diffFile: diffFile.file, verdictFile, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "review", name));
+    } finally {
+      if (dataHome) {
+        try { await io.removeDataHome(dataHome); }
+        catch (error) { io.log(`could not remove ${dataHome.dir}: ${error.message}`); }
+      }
+    }
+    if (io.stopped()) throw new Error("interrupted");
+    if (result.timedOut) {
+      await fail("harness timed out");
+      return { phase: "failed", reason: "harness timed out", taskFailure: true };
+    }
+    if (result.code !== 0) {
+      await fail(`harness exited ${result.code}`);
+      return { phase: "failed", reason: `harness exited ${result.code}`, taskFailure: true };
+    }
+    let reply;
+    try { reply = io.readVerdict(verdictFile); } catch { reply = ""; }
+    // The brief asks for no CRITERION lines: the reply judges the criteria,
+    // it does not prove them met.
+    const parsed = parseVerdict(reply, 0);
+    if (!parsed.ok) {
+      await fail(parsed.error);
+      io.log(`criteria review failed: ${parsed.error}`);
+      return { phase: "failed", reason: parsed.error, taskFailure: true };
+    }
+    const argv = ["criteria-verdict", item.id, "--project", project, "--as", actor, "--rev", String(claimed.rev), "--criteria", claimed.criteria, "--request", String(claimed.request),
+      parsed.verdict === "approve" ? "--approve" : "--reject", "--note", parsed.summary];
+    if (parsed.findings.length) argv.push("--findings", JSON.stringify(parsed.findings));
+    await io.cli(argv);
+    io.log(`reviewed the acceptance criteria: ${parsed.verdict}`);
+    return { phase: "reviewed", verdict: parsed.verdict };
+  } catch (error) {
+    io.log(`failed: ${error.message}`);
+    if (claimed && !settled) await fail(error.message);
+    return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
+  } finally {
+    if (brief) await io.removeBrief(brief);
+    if (diffFile) await io.removeBrief(diffFile);
     if (verdictFile) io.removeFile?.(verdictFile);
     if (workspace) io.removeTree?.(workspace);
   }
@@ -1397,6 +1490,8 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
   const io = {
     removeFile: (file) => rmSync(file, { force: true }),
     removeTree: (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }),
+    // The empty folder a criteria review job works in (runCriteriaReview).
+    makeDir: (dir) => mkdirSync(dir, { recursive: true }),
     workspacePath, log: line, stopped: () => controller.signal.aborted,
     // `options.token` (a review job's, t346) is the Atelier token this one
     // call authenticates with, handed to the CLI as ATELIER_TOKEN in the
@@ -1405,7 +1500,7 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
     cli: (argv, cwd, options = {}) => checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, capture: readsOutput(argv), claim: argv[0] === "claim",
       ...(options.token ? { env: { ...process.env, ATELIER_TOKEN: options.token } } : {}),
       step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
-      ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild),
+      ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable" || argv[0] === "criteria-review-failed") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild),
     head: (cwd, { cleanup = false } = {}) => checked(["git", "rev-parse", "HEAD"],
       { cwd, capture: true, ...(cleanup ? cleanupOptions() : { signal: controller.signal }) }, executeChild),
     // Every build, plan and merge job's workspace keeps .scratch/ out of Git
@@ -1495,7 +1590,8 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
         // (jobOf), so one kept for reviews passes by the builds a server from
         // before t252's fix still lists, and they stay in the queue for a
         // runner that takes them.
-        const ordered = [...tasks.filter((task) => task.item.dispatch?.job === "review"), ...tasks.filter((task) => task.item.dispatch?.job !== "review")];
+        const reviewJob = (task) => task.item.dispatch?.job === "review" || task.item.dispatch?.job === "criteria-review";
+        const ordered = [...tasks.filter(reviewJob), ...tasks.filter((task) => !reviewJob(task))];
         for (const task of ordered.filter((task) => offer.jobs.includes(jobOf(task)) && !refused.has(refusedKey(task)) && (failures.get(taskKey(task)) ?? 0) < 2 &&
           (infrastructureFailures.get(taskKey(task)) ?? 0) < 3)) {
           // A saturated machine takes no new job (t403): while the load
@@ -1516,17 +1612,20 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
             ? await runPlanTask(task, config, offer.runner, io)
             : task.item.dispatch?.job === "review"
               ? await runReview(task, config, offer.runner, io)
-              : task.item.dispatch?.job === "integrate"
-                ? await runIntegrate(task, config, offer.runner, io)
-                : task.item.dispatch?.job === "refresh"
-                  ? await runRefresh(task, config, offer.runner, io)
-                  : await runTask(task, config, offer.runner, io);
+              : task.item.dispatch?.job === "criteria-review"
+                ? await runCriteriaReview(task, config, offer.runner, io)
+                : task.item.dispatch?.job === "integrate"
+                  ? await runIntegrate(task, config, offer.runner, io)
+                  : task.item.dispatch?.job === "refresh"
+                    ? await runRefresh(task, config, offer.runner, io)
+                    : await runTask(task, config, offer.runner, io);
           if (controller.signal.aborted) break;
           const outcome = runOutcome(state);
           if (outcome && reportRun) {
             try {
-              // The report names the job that ran: a plan, a review, or a build.
-              const role = task.item.dispatch?.job === "plan" || task.item.dispatch?.job === "review" ? task.item.dispatch.job : "build";
+              // The report names the job that ran: a plan, a review (a
+              // criteria review counts as one), or a build.
+              const role = task.item.dispatch?.job === "plan" || task.item.dispatch?.job === "review" ? task.item.dispatch.job : task.item.dispatch?.job === "criteria-review" ? "review" : "build";
               await reportRun({ actor: task.actor, role, outcome, project: task.project, item: task.item.id, detail: state.detail ?? state.reason }, offer.runner, controller.signal);
               io.log(`reported ${task.project}/${task.item.id} as ${outcome}`);
             } catch (error) { io.log(`could not report ${task.project}/${task.item.id} as ${outcome}: ${error.message}`); }

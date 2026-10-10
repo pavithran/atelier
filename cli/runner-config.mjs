@@ -17,7 +17,9 @@ export const DEFAULT_FINISH_TIMEOUT_MS = 60 * 60_000;
 // for reviews alone (t252) and a config that wants both lists "build" and its
 // kin beside "review".
 export const DEFAULT_JOBS = ["build", "plan", "merge-main", "merge-main-task", "merge-plan"];
-const JOB_NAMES = new Set([...DEFAULT_JOBS, "review"]);
+// The criteria-review job (t438) reviews a task's acceptance criteria before
+// its build, through the same {verdict_file} a review writes.
+const JOB_NAMES = new Set([...DEFAULT_JOBS, "review", "criteria-review"]);
 
 const HARNESSES = ["opencode", "claude-code", "codex", "zcode", "gemini-cli", "antigravity"];
 const MODEL = /^[a-z0-9][a-z0-9._:-]{0,63}$/i;
@@ -167,7 +169,7 @@ export function parseConfig(json, { configPath, env } = {}) {
       jobs = [...new Set(value.jobs.map((j) => j.trim()))];
       for (const job of jobs) {
         if (job === "integrate" || job === "refresh") errors.push(`jobs cannot list "${job}": the integrate and refresh jobs are the integrator's alone (atelier runner --integrate, which takes no config)`);
-        else if (!JOB_NAMES.has(job)) errors.push(`jobs cannot list "${job}": the jobs are build, plan, merge-main, merge-main-task, merge-plan and review`);
+        else if (!JOB_NAMES.has(job)) errors.push(`jobs cannot list "${job}": the jobs are build, plan, merge-main, merge-main-task, merge-plan, review and criteria-review`);
       }
     }
   }
@@ -198,7 +200,8 @@ export function parseConfig(json, { configPath, env } = {}) {
       if (/[{}]/.test(entry.command[0])) bad("the executable must not contain placeholders");
       // A runner that offers reviews may be given one for any of its agents,
       // and a reviewer's verdict is read from the {verdict_file} it writes.
-      if (jobs?.includes("review") && !placeholders.includes("verdict_file")) bad(`jobs include "review", but ${entry.agent}'s command has no {verdict_file} placeholder, so it could not write a verdict; add one, or take "review" out of jobs`);
+      const verdictJob = ["review", "criteria-review"].find((job) => jobs?.includes(job));
+      if (verdictJob && !placeholders.includes("verdict_file")) bad(`jobs include "${verdictJob}", but ${entry.agent}'s command has no {verdict_file} placeholder, so it could not write a verdict; add one, or take "${verdictJob}" out of jobs`);
     }
     // Optional: the variables of the runner's environment this harness also
     // gets, such as the provider key opencode reads. Atelier's own never.

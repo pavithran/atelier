@@ -11,7 +11,7 @@ import { TEXT_CONTROLS } from "./text.ts";
 import { appliesText, checkClasses, classText, type CheckClass } from "./checks.ts";
 import theme from "./theme.css";
 import layout from "./layout.css";
-import type { ProjectRecord, LedgerEvent } from "./ledger";
+import type { CriteriaReviewView, ProjectRecord, LedgerEvent } from "./ledger";
 import type { FileChange, ItemDiff, Landed } from "./diff";
 import { ago, position, splitActor, staggers, type Bench, type Floor, type MarkKind } from "./floor";
 import { briefFor, submission, type Verdict } from "./brief";
@@ -165,6 +165,9 @@ export interface Detail {
   // first; the reviews above carry none of them.
   unparsable?: UnparsableReply[];
   gate: Gate;
+  // Where the review of the item's acceptance criteria stands (t438), with
+  // every criteria review and resolution; absent from an older server.
+  criteriaReview?: CriteriaReviewView;
   events: LedgerEvent[];
 }
 // `full` is set on the task's own page, the one place that shows the task's

@@ -241,7 +241,7 @@ export const FLAGS = {
   ops: {},
   runner: { name: false, once: true, config: false, discover: true, probe: true, "dry-run": true, usage: true, integrate: true },
   login: { server: false, store: true },
-  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', core: '--core needs a glob: atelier init --core "GLOB", once per entry, or --core "" alone to clear them', approval: false, reset: true, "refuse-overlap": true, "require-criteria": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default', "review-tier": '--review-tier needs models: atelier init --review-tier H/M,H/M,..., or --review-tier "" to clear it' },
+  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', core: '--core needs a glob: atelier init --core "GLOB", once per entry, or --core "" alone to clear them', approval: false, reset: true, "refuse-overlap": true, "require-criteria": true, "require-criteria-review": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default', "review-tier": '--review-tier needs models: atelier init --review-tier H/M,H/M,..., or --review-tier "" to clear it' },
   adopt: {},
   revert: {},
   publish: {},
@@ -267,6 +267,12 @@ export const FLAGS = {
   "review-claim": { runner: false },
   "review-release": { note: false },
   "review-unparsable": { head: false, note: false, "reply-file": false },
+  // Criteria review (t438): the owner asks and answers findings; the reviewer's runner claims, records a verdict or a failure.
+  "criteria-review": { reviewer: false },
+  "criteria-review-claim": { runner: false },
+  "criteria-verdict": { approve: true, reject: true, rev: false, criteria: false, request: false, note: false, findings: false },
+  "criteria-review-failed": { request: false, note: false },
+  "criteria-finding": { review: false, index: false, verdict: '--verdict needs a value: atelier criteria-finding ID --review N --index N --verdict confirmed|refuted|fixed', note: false },
   "read-token": {},
   "base-token": {},
   integrated: { part: false, "merge-commit": false },
@@ -1399,6 +1405,7 @@ export function formatBrief(project, id, brief, origin) {
     ...(brief.summary ? [`Summary: ${flat(brief.summary)}`] : []), ...formatFields(brief),
     ...(brief.partAccept ?? []).map((c, i) => `Plan acceptance criterion ${i + 1}: ${flat(c)}`),
     ...(brief.criteria ? [`Criteria binding: ${brief.criteria} (a review of these criteria names it with --criteria)`] : []),
+    ...(brief.criteriaReview ? [`Criteria review: ${flat(brief.criteriaReview)}`] : []),
     ...brief.evidence.map(flat),
     `Recommendation: ${flat(brief.recommendation.verdict)}. ${flat(brief.recommendation.reason)}`,
     `${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`].join("\n");
@@ -1432,6 +1439,34 @@ export function formatReviews(reviews, owner = OWNER, unparsable = []) {
   for (const r of newestReviews(unparsable)) {
     lines.push(`  ${flat(r.by)} wrote a reply no verdict could be read from at ${short(r.head)} (${at(r.at)}): ${flat(r.note) || "(no reason recorded)"}`);
     lines.push(`    Reply: ${flat(r.reply) || "(nothing written)"}`);
+  }
+  return lines.join("\n");
+}
+
+// The reviews of the task's acceptance criteria themselves (t438), apart
+// from the reviews of the change above: where they stand now, who wrote each
+// revision, and each review that reached a verdict or failed, newest first,
+// with its findings and the project owner's newest resolution of each. The
+// same flattening as formatReviews, so no note or finding can pose as a line
+// of Atelier's own. Empty when the server sent no record (an older server).
+export function formatCriteriaReviews(view) {
+  if (!view) return "";
+  const lines = ["Criteria reviews:"];
+  const standing = view.status?.approved ? "approved" : "not approved";
+  lines.push(`  Revision ${view.status?.rev ?? 0}, ${standing}${view.required ? "; the project requires the approval before a build" : ""}: ${flat(view.status?.reason ?? "")}`);
+  for (const r of view.revisions ?? []) lines.push(`  Revision ${r.rev} by ${flat(r.by)} (${at(r.at)}), binding ${flat(r.criteria)}.`);
+  const latest = new Map();
+  for (const v of [...(view.resolutions ?? [])].sort((a, b) => String(a.at).localeCompare(String(b.at)))) latest.set(`${v.review}:${v.index}`, v);
+  const shown = (view.reviews ?? []).filter((r) => ["approved", "rejected", "failed"].includes(r.state)).sort((a, b) => b.id - a.id);
+  if (!shown.length) lines.push("  No criteria review has reached a verdict.");
+  for (const r of shown) {
+    const what = r.state === "failed" ? `reached no verdict (${flat(r.failure ?? "failed")})` : r.state;
+    lines.push(`  Criteria review ${r.id}, revision ${r.rev}${r.rev === view.status?.rev ? " (the criteria as they are now)" : ""}: ${flat(r.reviewer)} ${what} (${at(r.decidedAt ?? r.requestedAt)}).`);
+    if (r.state !== "failed") lines.push(`    Note: ${flat(r.summary ?? "") || "(no note)"}`);
+    (r.findings ?? []).forEach((f, i) => {
+      const v = latest.get(`${r.id}:${i + 1}`);
+      lines.push(`    ${i + 1}. ${f.severity} ${flat(f.file)} ${flat(f.text)}${v ? ` [${flat(v.verdict)}${flat(v.note) ? `: ${flat(v.note)}` : ""}]` : " [no resolution recorded]"}`);
+    });
   }
   return lines.join("\n");
 }
@@ -2175,6 +2210,7 @@ const commands = {
     // setting on; given as --sandbox-only=false or --sandbox-only false, off.
     if (cp || args["refuse-overlap"] !== undefined || reset) policy.refuseOverlap = cp?.refuseOverlap ?? args["refuse-overlap"] === true;
     if (args["require-criteria"] !== undefined || reset) policy.requireCriteria = args["require-criteria"] === true;
+    if (args["require-criteria-review"] !== undefined || reset) policy.requireCriteriaReview = args["require-criteria-review"] === true;
     if (args["sandbox-only"] !== undefined || reset) policy.sandboxOnly = args["sandbox-only"] === true;
     // --core names the core files, once per glob, replacing the recorded
     // ones; --core "" alone clears them, and --reset without it does too.
@@ -2260,6 +2296,8 @@ const commands = {
     console.log(`Criteria:   ${pol.requireCriteria ? "required on every task" : "optional"}`);
     // A server older than the criteria requirement ignores it and answers without one.
     if (args["require-criteria"] === true && !pol.requireCriteria) console.log("Warning: the server did not record the criteria requirement; deploy the server, then run atelier init --require-criteria again.");
+    console.log(`Criteria review: ${pol.requireCriteriaReview ? "required before a build is dispatched or claimed" : "not required"}`);
+    if (args["require-criteria-review"] === true && !pol.requireCriteriaReview) console.log("Warning: the server did not record the criteria review requirement; deploy the server, then run atelier init --require-criteria-review again.");
     console.log(`Core files: ${pol.coreFiles?.length ? `${pol.coreFiles.join(", ")}; the queue holds a dispatch whose scope overlaps a live item's in one` : "none; the queue holds no dispatch for its scope"}`);
     // A server older than core files ignores them and answers without any.
     if (core?.length && !pol.coreFiles?.length) console.log("Warning: the server did not record the core files; deploy the server, then run atelier init --core again.");
@@ -2429,9 +2467,12 @@ const commands = {
       const label = event.kind === "item.reverts" ? "Reverts" : "Revert requested in";
       brief.evidence.push(`${label} ${itemId} (recorded merge ${mergeCommit}): ${server()}/p/${encodeURIComponent(name)}/${itemId}`);
     }
-    if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []) }, null, 2));
+    // The record of the criteria reviews (t438) rides along when the server
+    // keeps one; an older server sends none, and the output is as before.
+    if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}) }, null, 2));
     const text = formatBrief(name, id, brief, server());
-    console.log(args.reviews ? `${text}\n\n${formatReviews(d?.reviews ?? [], d?.ownerActor, d?.unparsable ?? [])}` : text);
+    const criteria = args.reviews && d?.criteriaReview ? `\n\n${formatCriteriaReviews(d.criteriaReview)}` : "";
+    console.log(args.reviews ? `${text}\n\n${formatReviews(d?.reviews ?? [], d?.ownerActor, d?.unparsable ?? [])}${criteria}` : text);
   },
 
   // The task's whole story from the ledger, in order (cli/receipt.mjs): one
@@ -2763,6 +2804,72 @@ const commands = {
     catch (error) { die(`could not read the reply file: ${error.message}`); }
     const r = await call("POST", `${I(name, id)}/review-unparsable`, { head: args.head, note: args.note ?? "", reply: reply.slice(-VERDICT_LIMITS.reply) }, as);
     console.log(`Kept the unparsable review reply on ${id}${r.released === false ? "" : ", and released its review request"}.`);
+  },
+
+  // Criteria review (t438): the project owner asks for a review of a task's
+  // acceptance criteria before it is built, by a model of another family
+  // than every model that wrote them. The server picks the reviewer unless
+  // one is named, and says why none can be asked.
+  async "criteria-review"() {
+    const name = project(), id = itemArg();
+    if (args.reviewer !== undefined && (typeof args.reviewer !== "string" || !args.reviewer.includes("/"))) die("--reviewer needs harness/model: atelier criteria-review ID --reviewer H/M");
+    const r = await call("POST", `${I(name, id)}/criteria-review-request`, args.reviewer ? { reviewer: args.reviewer } : {}, OWNER);
+    if (r.requested) console.log(`Asked ${r.reviewer} to review ${id}'s acceptance criteria (revision ${r.rev}, criteria review ${r.request}). A runner that offers the criteria-review job takes it; ${r.reason}.`);
+    else console.log(`No review was asked: ${r.reason}${r.reviewer ? ` (${r.reviewer}, criteria review ${r.request})` : ""}.`);
+  },
+
+  // The reviewer's runner claims the open criteria review and prints what
+  // the server gave: the brief, the revision and binding to name, the
+  // review's number.
+  async "criteria-review-claim"() {
+    const name = project(), id = itemArg(), as = await actor();
+    const r = await call("POST", `${I(name, id)}/criteria-review-claim`, {}, as, args.runner ? { "x-atelier-runner": args.runner } : {});
+    console.log(JSON.stringify(r));
+  },
+
+  // The verdict on a claimed criteria review, bound to the revision, binding
+  // and review the claim gave; the server refuses one the criteria have left.
+  async "criteria-verdict"() {
+    if (!args.approve && !args.reject) die(COMMAND_USAGE["criteria-verdict"]);
+    const name = project(), id = itemArg(), as = await actor();
+    const rev = Number(args.rev);
+    if (!Number.isInteger(rev) || rev < 1) die("--rev needs the revision the criteria review claim gave");
+    if (!/^[a-f0-9]{64}$/.test(String(args.criteria))) die("--criteria needs the 64-digit binding the criteria review claim gave");
+    const request = Number(args.request);
+    if (!Number.isInteger(request) || request < 1) die("--request needs the criteria review's number the claim gave");
+    let findings;
+    if (args.findings !== undefined) {
+      if (typeof args.findings !== "string" || !args.findings.trim()) die("--findings needs a JSON list of findings");
+      try { findings = JSON.parse(args.findings); } catch { die("--findings is not valid JSON"); }
+    }
+    await call("POST", `${I(name, id)}/criteria-review`, {
+      approve: args.approve === true, rev, criteria: String(args.criteria), request, note: args.note ?? "",
+      ...(findings !== undefined ? { findings } : {}),
+    }, as);
+    console.log(`${args.approve ? "Approved" : "Rejected"} ${id}'s acceptance criteria at revision ${rev} as ${as}.`);
+  },
+
+  // A claimed criteria review that reached no verdict: recorded as failed,
+  // so it approves nothing and the criteria may be asked about again.
+  async "criteria-review-failed"() {
+    const name = project(), id = itemArg(), as = await actor();
+    const request = Number(args.request);
+    if (!Number.isInteger(request) || request < 1) die("--request needs the criteria review's number the claim gave");
+    await call("POST", `${I(name, id)}/criteria-review-failed`, { request, note: args.note ?? "" }, as);
+    console.log(`Recorded criteria review ${request} of ${id} as failed; it approves nothing.`);
+  },
+
+  // The project owner answers one finding of a criteria review.
+  async "criteria-finding"() {
+    const name = project(), id = itemArg();
+    const verdict = args.verdict;
+    if (!["confirmed", "refuted", "fixed"].includes(verdict)) die("--verdict must be confirmed, refuted or fixed: atelier criteria-finding ID --review N --index N --verdict ...");
+    const review = Number(args.review);
+    if (!Number.isInteger(review) || review < 1) die("--review needs the criteria review's number: atelier criteria-finding ID --review N --index N --verdict ...");
+    const index = Number(args.index);
+    if (!Number.isInteger(index) || index < 1) die("--index needs the finding's position in the review, one based: atelier criteria-finding ID --review N --index N --verdict ...");
+    await call("POST", `${I(name, id)}/criteria-finding`, { review, index, verdict, note: args.note ?? "" }, OWNER);
+    console.log(`Recorded ${verdict} on finding ${index} of criteria review ${review} of ${id}.${verdict === "confirmed" ? " It stands; edit the criteria with atelier edit." : ""}`);
   },
 
   // Read-only access tokens the runner uses outside a task or review job: the

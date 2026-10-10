@@ -1033,6 +1033,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       ...(has("eligible") ? { eligible: asStrings(body.eligible, "eligible") } : {}),
       ...(has("refuseOverlap") ? { refuseOverlap: Boolean(body.refuseOverlap) } : {}),
       ...(has("requireCriteria") ? { requireCriteria: Boolean(body.requireCriteria) } : {}),
+      ...(has("requireCriteriaReview") ? { requireCriteriaReview: Boolean(body.requireCriteriaReview) } : {}),
       // The core-file globs the queue holds overlapping dispatches on; [] clears them.
       ...(has("coreFiles") ? { coreFiles: asStrings(body.coreFiles, "coreFiles") } : {}),
       ...(has("sandboxOnly") ? { sandboxOnly: Boolean(body.sandboxOnly) } : {}),
@@ -1185,6 +1186,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // part's (docs/orchestrator.md, sections 2 and 3). An agent token reaches
   // it (agentRoute), and the Ledger gives it to the holder alone.
   if (verb === "job-brief" && parts.length === 5 && m === "GET") return json(await L.jobBrief(id, actor));
+  // Where the review of the item's acceptance criteria stands (t438): the
+  // status, every criteria review and every resolution of a finding.
+  if (verb === "criteria-reviews" && parts.length === 5 && m === "GET") return json(await L.criteriaReviewView(id));
   if (verb === "sandbox" && parts[5] && m === "GET") {
     // A run id is `${key}:${item}:${head}:${ms}`, and a project's key may
     // hold a colon (only new names are refused one), so the prefix alone can
@@ -1868,6 +1872,43 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const { head, index, verdict, note } = cleanFinding(body);
       await L.addFinding(id, actor, head, index, verdict, note);
       return json({ id, head, index, verdict }, 201);
+    }
+    // Criteria review (t438, src/review/criteria.ts): the owner asks for a
+    // review of the task's acceptance criteria, naming the reviewer or
+    // letting the pool pick one of another family than every model author.
+    case "criteria-review-request": {
+      requireOwner(env, actor);
+      const reviewer = body.reviewer === undefined || body.reviewer === null || body.reviewer === "" ? null : String(body.reviewer);
+      return json(await L.requestCriteriaReview(id, actor, reviewer, await index(env).models(), !!c.token));
+    }
+    // The reviewer's runner claims the open criteria review and gets the
+    // brief, the revision and binding its verdict must name, and the review's id.
+    case "criteria-review-claim":
+      return json(await L.claimCriteriaReview(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token));
+    // The reviewer's verdict on the criteria review it claimed, bound to the
+    // revision and binding the claim gave; a stale one is refused.
+    case "criteria-review": {
+      if (typeof body.rev !== "number" || !Number.isInteger(body.rev)) throw new RuleError("bad_request", "rev must be the revision the criteria review claim gave", 400);
+      if (typeof body.request !== "number" || !Number.isInteger(body.request)) throw new RuleError("bad_request", "request must be the criteria review's id, as the claim gave it", 400);
+      return json(await L.addCriteriaReview({
+        itemId: id, by: actor, rev: body.rev, criteria: String(body.criteria ?? ""), request: body.request,
+        approve: Boolean(body.approve), summary: String(body.note ?? body.summary ?? ""),
+        ...(body.findings !== undefined ? { findings: body.findings } : {}),
+      }, !!c.token));
+    }
+    // A claimed criteria review that reached no verdict: the harness failed,
+    // timed out or wrote a reply no verdict could be read from.
+    case "criteria-review-failed": {
+      if (typeof body.request !== "number" || !Number.isInteger(body.request)) throw new RuleError("bad_request", "request must be the criteria review's id, as the claim gave it", 400);
+      return json(await L.failCriteriaReview(id, actor, body.request, String(body.note ?? ""), !!c.token));
+    }
+    // The owner's answer to one finding of a criteria review.
+    case "criteria-finding": {
+      requireOwner(env, actor);
+      if (typeof body.review !== "number" || !Number.isInteger(body.review)) throw new RuleError("bad_finding", "--review must be the criteria review's id", 400);
+      if (typeof body.index !== "number" || !Number.isInteger(body.index) || body.index < 1) throw new RuleError("bad_finding", "--index must be the finding's position in the review, one based", 400);
+      const note = String(body.note ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+      return json(await L.resolveCriteriaFinding(id, actor, body.review, body.index, String(body.verdict ?? ""), note), 201);
     }
   }
   throw new RuleError("not_found", "no such route", 404);
