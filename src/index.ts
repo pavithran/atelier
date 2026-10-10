@@ -2122,7 +2122,8 @@ function isHeld(item: Item): boolean {
 async function inbox(env: Env, token?: AgentToken) {
   const projects = (await index(env).projects()).filter((p) => inScope(token, namesOf(p)));
   const now = new Date().toISOString();
-  const lists = await Promise.all(projects.map((p) => ledgerOf(env, p).inbox(now)));
+  const pool = await index(env).models();
+  const lists = await Promise.all(projects.map((p) => ledgerOf(env, p).inbox(now, pool)));
   return lists.flat().sort((a, b) => b.weight - a.weight);
 }
 
