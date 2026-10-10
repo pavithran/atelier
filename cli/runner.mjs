@@ -7,7 +7,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { checkEnv } from "./check-env.mjs";
-import { formatLoad, envLoad, coreCount, loadLimitOf } from "./load.mjs";
+import { SLOT_WRAPPER } from "./load.mjs";
 import { envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
 import { reviewBrief, BRIEF_LIMITS, criteriaCount } from "../src/review/brief.ts";
@@ -165,6 +165,9 @@ export function nextStep(state, result) {
     default: return { ...state, phase: "failed", reason: "unknown runner state" };
   }
 }
+
+const quoteShell = (word) => "'" + word.replaceAll("'", "'\\''") + "'";
+const testSlotNote = `Run each test command through the host slot wrapper: ${quoteShell(process.execPath)} ${quoteShell(SLOT_WRAPPER)} -- COMMAND ARGUMENTS. It reuses nested slots and inherits this job's priority. Direct shell commands are outside enforcement.`;
 
 const cli = fileURLToPath(new URL("./atelier.mjs", import.meta.url));
 const line = (message) => console.log(`runner: ${String(message).replace(/[\r\n]+/g, " ")}`);
@@ -385,9 +388,16 @@ export function gatewayMetadata(task, role, runner) {
 }
 
 // What a harness run's environment adds to harnessEnv's filtered variables:
-// the per-run opencode data folder (OWN_DATA_HOME) and CF_AIG_METADATA.
-export function harnessRunEnv(env, dataHome, task, role, runner) {
-  return { ...env, ...(dataHome ? { XDG_DATA_HOME: dataHome.dir } : {}), CF_AIG_METADATA: gatewayMetadata(task, role, runner) };
+// the per-run opencode data folder, gateway metadata and test-slot identity.
+export function harnessRunEnv(env, dataHome, task, role, runner, project, actor = runner) {
+  return {
+    ...env, ...(dataHome ? { XDG_DATA_HOME: dataHome.dir } : {}),
+    CF_AIG_METADATA: gatewayMetadata(task, role, runner),
+    ATELIER_TEST_PRIORITY: role === "review" ? "review" : "ordinary",
+    ATELIER_TEST_TASK: task, ATELIER_TEST_ACTOR: actor,
+    ...(project ? { ATELIER_TEST_PROJECT: project } : {}),
+    ...(process.env.ATELIER_TEST_SLOTS !== undefined ? { ATELIER_TEST_SLOTS: process.env.ATELIER_TEST_SLOTS } : {}),
+  };
 }
 
 // Every opencode process opens one database in its data folder,
@@ -651,7 +661,7 @@ export async function runTask(assignment, config, name, io) {
         : merging
           ? `${local}\n${reworked?.text ? `${reworked.text}\n\n` : ""}${mergeMainSection(merges[0])}\n\n${conflictsSection(...merges)}\n`
           : reworked?.text ? `${local}\n${reworked.text}\n` : local;
-      brief = await io.brief(workspace, `${roleText("build", workspace)}\n\n${body}`);
+      brief = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${body}`);
       const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
       for (const name of withheld) io.log(`${name} holds the Atelier owner token, so ${agent} does not get it; take it out of env in the runner config`);
       // See OWN_DATA_HOME. The folder lasts exactly as long as the harness: it
@@ -660,7 +670,7 @@ export async function runTask(assignment, config, name, io) {
       try {
         advance({ type: "start" });
         taskFailure = true;
-        result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name));
+        result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name, project, actor));
       } finally {
         if (dataHome) {
           try { await io.removeDataHome(dataHome); }
@@ -817,7 +827,7 @@ export async function runReview(assignment, config, name, runnerIO) {
       // carries them; an older server sends none, and the brief says so.
       decisions: claimed.decisions ?? null,
     });
-    brief = await io.brief(workspace, `${await reviewRoleText(io, workspace, compare)}\n\n${text}`);
+    brief = await io.brief(workspace, `${await reviewRoleText(io, workspace, compare)}\n\n${testSlotNote}\n\n${text}`);
     diffFile = await io.writeDiff(workspace, ownDiff === null ? diff : `${diff}${diff && !diff.endsWith("\n") ? "\n" : ""}${ownDiff}`);
     verdictFile = io.verdictPath(workspace);
     const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
@@ -826,7 +836,7 @@ export async function runReview(assignment, config, name, runnerIO) {
     const dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
     let result;
     try {
-      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, diffFile: diffFile.file, verdictFile, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "review", name));
+      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, diffFile: diffFile.file, verdictFile, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "review", name, project, actor));
     } finally {
       if (dataHome) {
         try { await io.removeDataHome(dataHome); }
@@ -1278,7 +1288,7 @@ export async function runPlanTask(assignment, config, name, io) {
     if (io.stopped()) throw new Error("interrupted");
     const job = await io.jobBrief(project, item.id, actor);
     if (!job || typeof job.text !== "string") throw new Error("the server's job brief has no text");
-    brief = await io.brief(workspace, `${roleText("plan", workspace)}\n\n${job.text}`);
+    brief = await io.brief(workspace, `${roleText("plan", workspace)}\n\n${testSlotNote}\n\n${job.text}`);
     const planFile = planFilePath(workspace);
     const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
     for (const each of withheld) io.log(`${each} holds the Atelier owner token, so ${agent} does not get it; take it out of env in the runner config`);
@@ -1290,7 +1300,7 @@ export async function runPlanTask(assignment, config, name, io) {
       // The plan job's harness output is captured, so a harness that fails
       // before writing the plan leaves its last error line for the release
       // note and the run report; a build's harness output still streams.
-      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace, planFile }), workspace, harnessRunEnv(env, dataHome, item.id, "plan", name), { capture: true, captureError: true });
+      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace, planFile }), workspace, harnessRunEnv(env, dataHome, item.id, "plan", name, project, actor), { capture: true, captureError: true });
     } finally {
       if (dataHome) {
         try { await io.removeDataHome(dataHome); }
@@ -1359,7 +1369,7 @@ export function runOutcome(state) {
 
 // `reportRun(body, runner, signal)` sends a run report; a report that fails
 // is logged and the loop goes on.
-export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun, version, load = envLoad(), cores = coreCount }) {
+export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun, version }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
@@ -1372,10 +1382,6 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
   const offer = integrating
     ? { runner: args.name.toLowerCase(), kind: "home", agents: [], jobs: ["integrate", "refresh"] }
     : offerFrom(config, args.name);
-  // The load average under which this runner takes a new job (t403): the
-  // config's `loadLimit`, else the machine's core count, so a saturated
-  // machine is not given another harness to run on top of the rest.
-  const loadLimit = loadLimitOf(config.loadLimit, cores());
   const controller = new AbortController();
   // The first interrupt ends the active child's group with its grace
   // period; a second kills every group at once and exits.
@@ -1498,16 +1504,6 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
         const ordered = [...tasks.filter((task) => task.item.dispatch?.job === "review"), ...tasks.filter((task) => task.item.dispatch?.job !== "review")];
         for (const task of ordered.filter((task) => offer.jobs.includes(jobOf(task)) && !refused.has(refusedKey(task)) && (failures.get(taskKey(task)) ?? 0) < 2 &&
           (infrastructureFailures.get(taskKey(task)) ?? 0) < 3)) {
-          // A saturated machine takes no new job (t403): while the load
-          // average is at or above the limit the runner holds back and says
-          // so, and the next poll tries again. One job at a time is started,
-          // and the check runs again before the next, so finishing a heavy
-          // job lets the load fall before another begins.
-          const current = load();
-          if (current >= loadLimit) {
-            io.log(`load ${formatLoad(current)} is at or above the limit ${formatLoad(loadLimit)}; waiting before taking a job`);
-            break;
-          }
           // A dispatch carrying job: "plan" asks for the plan job, one
           // carrying "review" for the review job, "integrate" for the
           // integrate job and "refresh" for the refresh job

@@ -43,7 +43,7 @@ import { formatTokenExpiryWarnings, parseExpiryDay, readTokenExpiries, recordTok
 import { receiptJson, receiptText } from "./receipt.mjs";
 import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
 import { checkEnv } from "./check-env.mjs";
-import { coreCount, envLoad, formatLoad, loadLimitOf, waitForLoad } from "./load.mjs";
+import { slotInvocation, slotStatus, formatSlots } from "./load.mjs";
 import { provenanceNote } from "./provenance.mjs";
 export { checkEnv } from "./check-env.mjs";
 import { COMMAND_USAGE, guideText, helpText, ROLES, rolePrompt } from "./help.mjs";
@@ -992,11 +992,12 @@ function mergeWithMain(dir, id) {
 // SIGTERM, then SIGKILL after `graceMs`, and the result comes back only once
 // the group is gone, so nothing the check started still writes in the clone
 // when it is removed. A process that leaves the group (setsid) is beyond this.
-async function runCheck(cmd, dir, secrets, graceMs = 5000) {
+async function runCheck(cmd, dir, secrets, metadata, graceMs = 5000) {
   process.stderr.write(`atelier: running \`${cmd}\` in a clean clone…\n`);
   const record = JSON.parse(readFileSync(markerPath(dir), "utf8"));
   const r = await new Promise((done) => {
-    const child = spawn("/bin/sh", ["-c", cmd], { cwd: dir, env: checkEnv(), detached: true });
+    const invocation = slotInvocation(["/bin/sh", "-c", cmd], metadata, checkEnv());
+    const child = spawn(invocation.argv[0], invocation.argv.slice(1), { cwd: dir, env: invocation.env, detached: true });
     const pid = child.pid;
     checkGroup = pid;
     const onInt = interrupted("SIGINT"), onTerm = interrupted("SIGTERM");
@@ -1786,7 +1787,8 @@ const commands = {
     if (refused.length) die(`${refused.join(".\n")}.\nwrap runs the registered checks in this checkout, so it stopped before running any. Replace the check with atelier init --check, or wrap with --no-check.`);
     const failing = [];
     if (!data.checksSkipped) for (const command of record.policy.checks) {
-      const result = spawnSync(command, { cwd, shell: true, encoding: "utf8", timeout: CHECK_TIMEOUT_MS, maxBuffer: 1024 * 1024 });
+      const invocation = slotInvocation(["/bin/sh", "-c", command], { project: name, actor: as, class: "release" });
+      const result = spawnSync(invocation.argv[0], invocation.argv.slice(1), { cwd, env: invocation.env, encoding: "utf8", timeout: CHECK_TIMEOUT_MS, maxBuffer: 1024 * 1024 });
       data.checks.push({ command, passed: result.status === 0, grade: "reported" });
       console.log(`Reported: ${command}: ${result.status === 0 ? "passed" : "failed"} (owner's checkout, not a clean clone).`);
       if (result.status !== 0) failing.push({ command, status: result.status, signal: result.signal, timedOut: result.error?.code === "ETIMEDOUT" });
@@ -2599,15 +2601,6 @@ const commands = {
       // Worker refuses a main head that is not on main's line.
       if (args.merged) mainHead = mergeWithMain(dir, id);
       const on = mainHead ? ` merged with main ${short(mainHead)}` : "";
-      // A landing's required checks compete with the home runners for this
-      // machine (t403): while the load average is at or above the limit they
-      // wait, saying so, and each result records the load it started at. The
-      // limit is ATELIER_LOAD_LIMIT when set, else the core count.
-      const configuredLimit = process.env.ATELIER_LOAD_LIMIT;
-      const limit = loadLimitOf(configuredLimit !== undefined && Number(configuredLimit) > 0 ? Number(configuredLimit) : undefined, coreCount());
-      // One reader for the whole command, so a sequence of readings (a test's
-      // ATELIER_LOAD) advances across the checks and each records its own.
-      const readLoad = envLoad();
       for (const cmd of cmds) {
         // A registered check whose paths this change does not touch is not
         // run. It is recorded as not applicable, which the Worker accepts only
@@ -2620,14 +2613,7 @@ const commands = {
           console.log(`N/A   ${cmd}  @ ${short(ws.head)}  (it ${appliesText(policy, cmd)}; this change touches none of them)`);
           continue;
         }
-        // The wait is per check (t403): a check that starts later must wait on
-        // the load as the earlier one did, and its own starting load is what
-        // its result records, not the first check's.
-        const startLoad = await waitForLoad(limit, {
-          readLoad,
-          report: (current) => process.stderr.write(`atelier: load ${formatLoad(current)} is at or above the limit ${formatLoad(limit)}; waiting for it to fall before running the checks\n`),
-        });
-        const r = await runCheck(cmd, dir, secrets);
+        const r = await runCheck(cmd, dir, secrets, { project: name, task: id, actor: as });
         // The Worker measures the changed paths from Artifacts and ignores this
         // list, which is sent only so a deployment without that measurement
         // still records one. The list printed below is the one the Worker
@@ -2636,7 +2622,6 @@ const commands = {
         const d = await postEvidence(`${I(name, id)}/evidence`, {
           kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed,
           outputTail: `${r.output.slice(-3500)}\n[sha256 of full output: ${r.sha}]`,
-          load: startLoad,
           ...(mainHead ? { merged: true, mainHead } : {}),
         }, as);
         const row = d?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd && !e.merged).at(-1);
@@ -3312,7 +3297,7 @@ const commands = {
       await runLand({
         args, name, id, p, request, git: gitOrThrow, die,
         print: (line) => console.log(line),
-        workspacePath, atelier: fileURLToPath(import.meta.url), env: process.env,
+        workspacePath, atelier: fileURLToPath(import.meta.url), env: { ...process.env, ATELIER_TEST_PRIORITY: "release" },
         redact, secrets: () => [apiToken(), ...workspaceTokens(workspace)],
         // The token a landing's re-claim minted, kept as claimWorkspace keeps
         // one: the old header replaced before the fetch, the expiry recorded.
@@ -3774,8 +3759,9 @@ const commands = {
       const standing = await call("GET", `${P(name)}/standing`, undefined, as);
       const checkout = await checkoutStatus(name, as);
       const local = await localStanding(name, as);
-      if (args.json) return console.log(JSON.stringify({ project: standing, checkout, ...(local ? { local } : {}) }, null, 2));
-      console.log(tokenExpiryWarningsText(formatStanding(standing, OWNER_NAME) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : "")));
+      const testSlots = await slotStatus();
+      if (args.json) return console.log(JSON.stringify({ project: standing, checkout, testSlots, ...(local ? { local } : {}) }, null, 2));
+      console.log(tokenExpiryWarningsText(formatStanding(standing, OWNER_NAME) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : "") + "\n\n" + formatSlots(testSlots)));
       pointToGuide([name]);
       return;
     }
@@ -3797,6 +3783,7 @@ const commands = {
     }));
     if (args.json) return console.log(JSON.stringify(statusJson(views), null, 2));
     console.log(tokenExpiryWarningsText(formatStatus(views, { queue, offers })));
+    console.log(formatSlots(await slotStatus()));
     pointToGuide(chosen.map((p) => p.name));
   },
 
