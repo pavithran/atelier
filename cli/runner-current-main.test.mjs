@@ -15,7 +15,7 @@ const commit = (cwd, file, text) => {
   return git(cwd, 'rev-parse', 'HEAD');
 };
 
-function fixture(t, { conflict = false, rework = false, resumed = false, unresolved = false, failFetch = false, advanceDuringResolution = false, mergeJob = false } = {}) {
+function fixture(t, { conflict = false, rework = false, resumed = false, unresolved = false, discardWork = false, failFetch = false, advanceDuringResolution = false, mergeJob = false } = {}) {
   const root = mkdtempSync(join(process.cwd(), '.runner-main-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const main = join(root, 'main'), workspace = join(root, 'work');
@@ -29,7 +29,8 @@ function fixture(t, { conflict = false, rework = false, resumed = false, unresol
     ...(resumed ? { state: 'claimed', owner: actor, head: base } : {}),
   } };
   const calls = [], briefs = [];
-  let latest, harnessCalls = 0, finished = false;
+  let latest, harnessCalls = 0, finished = false, tokenCount = 0;
+  const fetchedTokens = new Set();
   const advanceMain = () => { latest = commit(main, conflict ? 'shared.txt' : 'main.txt', 'new main\n'); };
   if (resumed || mergeJob) advanceMain();
   if (mergeJob) job.item.dispatch = { job: 'merge-main', head: latest };
@@ -39,7 +40,12 @@ function fixture(t, { conflict = false, rework = false, resumed = false, unresol
     revParse: async (cwd, ref) => git(cwd, 'rev-parse', ref),
     mergeBase: async (cwd, a, b) => git(cwd, 'merge-base', a, b),
     mergePending: async (cwd) => existsSync(join(cwd, '.git', 'MERGE_HEAD')),
-    fetch: async (cwd, remote, token, ref) => { if (failFetch) throw new Error('fetch unavailable'); git(cwd, 'fetch', '-q', remote, ref); },
+    fetch: async (cwd, remote, token, ref) => {
+      if (failFetch) throw new Error('fetch unavailable');
+      assert.ok(!fetchedTokens.has(token), 'each refresh obtains a fresh read token');
+      fetchedTokens.add(token);
+      git(cwd, 'fetch', '-q', remote, ref);
+    },
     mergeMain: async (cwd, head, message) => {
       try { git(cwd, ...mergeMainArgs(head, message).slice(1)); return { code: 0 }; }
       catch (error) { return { code: error.status, output: error.stdout }; }
@@ -50,10 +56,15 @@ function fixture(t, { conflict = false, rework = false, resumed = false, unresol
     removeBrief: async () => {},
     harness: async (argv, cwd) => {
       harnessCalls++;
+      assert.deepEqual(argv, ['codex', join(root, `brief-${briefs.length}`)]);
+      assert.equal(cwd, workspace, 'resolution stays in the build workspace');
       if (existsSync(join(cwd, '.git', 'MERGE_HEAD'))) {
         assert.match(briefs.at(-1), /Resolve the merge of main/);
         assert.match(briefs.at(-1), /shared.txt/);
-        if (!unresolved) {
+        if (discardWork) {
+          git(cwd, 'merge', '--abort');
+          git(cwd, 'reset', '--hard', latest);
+        } else if (!unresolved) {
           writeFileSync(join(cwd, 'shared.txt'), 'work and new main\n');
           git(cwd, 'add', 'shared.txt');
           git(cwd, 'commit', '-q', '--no-edit');
@@ -67,7 +78,7 @@ function fixture(t, { conflict = false, rework = false, resumed = false, unresol
     },
     cli: async (argv) => {
       calls.push(argv);
-      if (argv[0] === 'base-token') return JSON.stringify({ remote: main, token: 'read', defaultBranch: 'main' });
+      if (argv[0] === 'base-token') return JSON.stringify({ remote: main, token: `read-${++tokenCount}`, defaultBranch: 'main' });
       if (argv[0] === 'finish') {
         // The finish boundary runs checks and submits this merged revision.
         assert.equal(git(workspace, 'merge-base', latest, 'HEAD'), latest);
@@ -134,4 +145,41 @@ test('a clean explicit merge job also records current main before finishing', as
   assert.equal(state.phase, 'submitted', JSON.stringify(state));
   assert.equal(state.mainHead, f.latest);
   assert.equal(f.harnessCalls, 0);
+});
+
+test('a resolver cannot submit main by discarding the committed build', async (t) => {
+  const f = fixture(t, { conflict: true, discardWork: true });
+  const state = await runTask(f.job, config, 'home', f.io);
+  assert.equal(state.phase, 'failed');
+  assert.match(state.reason, /discarded the build's committed work/);
+  assert.equal(f.finished, false);
+});
+
+test('a part refreshes the baseline through its plan before submission', async (t) => {
+  const f = fixture(t);
+  Object.assign(f.job.item, { kind: 'part', plan: 't400' });
+  const state = await runTask(f.job, config, 'home', f.io);
+  assert.equal(state.phase, 'submitted', JSON.stringify(state));
+  assert.equal(state.mainHead, f.latest);
+  assert.deepEqual(f.calls.find((args) => args[0] === 'base-token'),
+    ['base-token', 't400', '--project', 'atelier', '--as', actor]);
+});
+
+for (const stage of ['fetch', 'merge']) test(`stopping after ${stage} prevents further merge work`, async (t) => {
+  const f = fixture(t, { conflict: true });
+  let stopped = false;
+  f.io.stopped = () => stopped;
+  const method = stage === 'fetch' ? 'fetch' : 'mergeMain';
+  const original = f.io[method];
+  f.io[method] = async (...args) => {
+    const result = await original(...args);
+    stopped = true;
+    return result;
+  };
+  const state = await runTask(f.job, config, 'home', f.io);
+  assert.equal(state.phase, 'failed');
+  assert.match(state.reason, /interrupted/);
+  assert.equal(f.harnessCalls, 1, 'no resolution harness starts after stopping');
+  assert.equal(await f.io.mergePending(f.workspace), stage === 'merge');
+  assert.equal(f.finished, false);
 });

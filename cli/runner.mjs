@@ -560,16 +560,21 @@ export function mergeMainSection(merge) {
 // The base token of a part's plan reads the baseline, not the plan's fork.
 export async function prepareBuildSubmission(assignment, workspace, io, resolve) {
   const { project, item, actor } = assignment;
-  const base = JSON.parse(await io.cli(["base-token", item.plan ?? item.id, "--project", project, "--as", actor]));
-  if (!base.defaultBranch) throw new Error("main base token has no default branch");
   for (;;) {
     if (io.stopped()) throw new Error("interrupted");
+    // A conflict resolver can outlive a read token. Obtain a fresh one for
+    // every fetch, including the refresh after the harness returns.
+    const base = JSON.parse(await io.cli(["base-token", item.plan ?? item.id, "--project", project, "--as", actor]));
+    if (!base.defaultBranch) throw new Error("main base token has no default branch");
     await io.fetch(workspace, base.remote, base.token, base.defaultBranch);
     const mainHead = (await io.revParse(workspace, "FETCH_HEAD")).trim();
     if (!/^[a-f0-9]{40,64}$/.test(mainHead)) throw new Error("main fetch returned an invalid commit");
+    if (io.stopped()) throw new Error("interrupted");
+    const workHead = (await io.head(workspace)).trim();
     const merged = await io.mergeMain(workspace, mainHead, `Merge main at ${mainHead} into ${item.id}\n\nAgent: ${actor}`);
     const files = await io.conflicts(workspace);
     if (files.length) {
+      if (io.stopped()) throw new Error("interrupted");
       io.log(`main at ${mainHead} conflicts; returning to ${actor} in this run`);
       await resolve({ mainHead, state: "conflicts", files });
     } else if (merged.code !== 0) {
@@ -579,6 +584,9 @@ export async function prepareBuildSubmission(assignment, workspace, io, resolve)
     // resolution: verify ancestry and the absence of a pending merge as well.
     if ((await io.conflicts(workspace)).length || await io.mergePending(workspace)) throw new Error("main merge is still unresolved or uncommitted");
     if ((await io.mergeBase(workspace, mainHead, "HEAD")).trim() !== mainHead) throw new Error("the build does not contain the fetched main commit");
+    // Resetting to main would satisfy the main ancestry check while losing
+    // the builder's work. A resolution must preserve both sides' history.
+    if ((await io.mergeBase(workspace, workHead, "HEAD")).trim() !== workHead) throw new Error("the main merge discarded the build's committed work");
     // Resolution may take long enough for main to advance again. Refresh it
     // once more before finishing; a clean or already-held head can proceed.
     if (files.length) continue;
