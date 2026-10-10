@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { setImmediate as tick } from "node:timers/promises";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -7,6 +8,10 @@ import { join } from "node:path";
 import { parseConfig } from "../cli/runner-config.mjs";
 import { commandFor, offerFrom, planFilePath, runPlanTask, runTask, runRunner, runOutcome, execute } from "../cli/runner.mjs";
 import { ROLE_PROMPTS } from "../src/usage.ts";
+
+// Pin the load under the runner's limit so these tests are not held back by
+// this machine's real load; the gate is tested with an injected load.
+process.env.ATELIER_LOAD = "0";
 
 // The runner's plan job and a part's brief (docs/orchestrator.md, sections 2
 // and 3, build step 7b): the runner offers plan jobs, claims the plan item as
@@ -260,7 +265,7 @@ test("a refused plan job is retried once before the runner retires it", async (t
   const claims = [], logs = [];
   let polls = 0;
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
-    workspacePath: () => workspace, wait: async () => {},
+    workspacePath: () => workspace, wait: () => tick(),
     queue: async () => { if (++polls === 4) { process.emit("SIGINT"); return []; } return [planJob]; },
     taskIO: {
       log: (s) => logs.push(s),

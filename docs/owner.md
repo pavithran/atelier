@@ -214,6 +214,27 @@ Atelier hands everything after it, unchanged and before reading anything
 itself, to the executable `ATELIER_OPS` names or to `atelier-ops` on `PATH`,
 and exits as it exits. Without one, `atelier ops` says so and exits 2.
 
+`atelier ops token-expiry NAME --on YYYY-MM-DD` is the one `ops` command
+Atelier handles itself. It records the day a named token expires — the deploy
+and ops Cloudflare tokens, for one — in a local file
+(`~/.config/atelier/token-expiries.json`, or `ATELIER_CONFIG_DIR`) that holds
+only each name and its day, never a token's value. `atelier status` then warns
+from 14 days before each recorded expiry, naming the token and the date, so
+the owner's calendar is not the only reminder. Record the next expiry again
+with the same command once a token is rotated.
+
+## Test processes left running
+
+`atelier status` also names every test process on this machine that has run
+for over an hour from a workspace under the cache's `work/` folder (a test
+runner, a test file's process or `npm test`), by its working directory or a
+workspace path in its command: its pid, the workspace, how long it has run,
+whether it has been orphaned to PID 1, and its command. It never ends one.
+Check each with `ps -o pid,ppid,etime,command -p PID` before `kill PID`. The
+checks Atelier runs and `npm test` itself each lead a process group that is
+killed whole when they exit or time out, so a process named here is one that
+left its group or ran before that held.
+
 ## Local cache cleanup
 
 `atelier gc --project NAME` previews local directories eligible for removal.

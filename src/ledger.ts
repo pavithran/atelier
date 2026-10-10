@@ -1,22 +1,23 @@
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
-import { sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
-import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool";
+import { runnerDenied, sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
+import { OBSERVED_UNDER, type ModelEntry, type ModelNote, type ModelStatus } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
-  assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, contributorsOf, DEFAULT_OWNER, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
+  assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, RuleError, sameActor, validActor,
+  type OverrideConfirmation, type OwnerFactor,
   assertBlockable, assertNotBlocked, blockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
-  type Block, type SecretFlag, type SecretClearance, type ItemFields,
+  type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
 } from "./rules";
 import { cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, sameCriteria } from "./criteria.ts";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
 import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
-import { assertDispatchable, assertDispatchedClaim, coreHold, makeDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
+import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, makeDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
@@ -38,6 +39,7 @@ import type { PlanPartReview, PlanView } from "./plans/show.ts";
 import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { listDecisions, recordDecision, standingDecisions, withdrawDecision, type Decision, type DecisionStore, type DecisionView } from "./decisions.ts";
 import { reviewBrief } from "./review/brief.ts";
+import { VERDICT_LIMITS } from "./review/verdict.ts";
 import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import type { SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
@@ -169,8 +171,10 @@ export interface ProjectInit {
   execution?: ProjectPolicy["execution"];
   eligible?: string[];
   refuseOverlap?: boolean;
+  requireCriteria?: boolean;
   coreFiles?: string[];       // replaces the core-file globs; [] clears them (see ProjectPolicy.coreFiles)
   sandboxOnly?: boolean;
+  noOverride?: boolean;       // overrides of the independent review are refused (see ProjectPolicy.noOverride)
   approval?: string | null;
 }
 
@@ -198,6 +202,7 @@ export interface LandingWorkflowRecord {
   // machine holding the workspace, "container" in the CheckRunner. The
   // executor reads it to know whether the checks are its to run.
   checks?: "local" | "container";
+  lastStatus?: { status: InstanceStatus["status"]; error?: { name: string; message: string } };
 }
 
 const LAND_STEPS = new Set(["lease", "merge", "regenerate", "push", "check", "submit", "review", "accept", "merged"]);
@@ -357,8 +362,11 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       protected: i.protected ?? p?.protected ?? [...DEFAULT_PROTECTED],
       eligible: i.eligible ?? p?.eligible ?? [],
       refuseOverlap: i.refuseOverlap ?? p?.refuseOverlap ?? false,
+      ...((i.requireCriteria ?? p?.requireCriteria) ? { requireCriteria: true } : {}),
       ...(coreFiles.length ? { coreFiles } : {}),
       sandboxOnly: i.sandboxOnly ?? p?.sandboxOnly ?? false,
+      // Carried only when set, so a project that allows overrides records nothing new.
+      ...((i.noOverride ?? p?.noOverride) ? { noOverride: true } : {}),
       ...(approval ? { approval } : {}),
     },
     createdAt: current?.createdAt ?? at,
@@ -414,6 +422,12 @@ export class Ledger extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
+    // Reviewers' replies no verdict could be read from (t407) are kept in
+    // their own table, below beside the reviews, one row each in the order
+    // they were kept. A reply lives there and not in its event: the
+    // reliability record replays every event of every project for each page
+    // and each routing, and a reply of up to 100 KB there would bloat them
+    // all; the event says the rest.
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS projects (name TEXT PRIMARY KEY, json TEXT NOT NULL);
@@ -422,6 +436,7 @@ export class Ledger extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS showcase (name TEXT PRIMARY KEY, mode TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS model_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT NOT NULL, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS usage (tool TEXT NOT NULL, runner TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (tool, runner));
       CREATE TABLE IF NOT EXISTS usage_alerts (key TEXT PRIMARY KEY, tool TEXT NOT NULL, runner TEXT NOT NULL, since TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL);
@@ -435,6 +450,9 @@ export class Ledger extends DurableObject<Env> {
         id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, json TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS reviews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS unparsable (
         id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, json TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS notifications (
@@ -456,6 +474,8 @@ export class Ledger extends DurableObject<Env> {
     if (!columns.includes("dispatch")) this.sql.exec(`ALTER TABLE items ADD COLUMN dispatch TEXT`);
     if (!columns.includes("runner")) this.sql.exec(`ALTER TABLE items ADD COLUMN runner TEXT`);
     if (!columns.includes("review_override")) this.sql.exec(`ALTER TABLE items ADD COLUMN review_override TEXT`);
+    // The owner's standing permission for an override from the command line (t371).
+    if (!columns.includes("override_confirmation")) this.sql.exec(`ALTER TABLE items ADD COLUMN override_confirmation TEXT`);
     // The claim generation: one more on every claim and every change of
     // owner. A write token is recorded only under the generation its claim
     // reserved (see recordToken).
@@ -761,8 +781,30 @@ export class Ledger extends DurableObject<Env> {
 
   // The model pool, on the index instance like the project list: shared by
   // every project, written by the owner, read by runners.
+  // Each entry carries its notes, oldest first (src/models/pool.ts).
   models(): ModelEntry[] {
-    return this.sql.exec(`SELECT json FROM models ORDER BY id`).toArray().map((r) => JSON.parse(r.json as string));
+    const names = new Map(this.projects().map((p) => [p.key ?? p.name, p.name]));
+    const notes = new Map<string, ModelNote[]>();
+    for (const r of this.sql.exec(`SELECT model, json FROM model_notes ORDER BY id`).toArray()) {
+      const list = notes.get(r.model as string) ?? [];
+      const note: ModelNote = JSON.parse(r.json as string);
+      list.push(note.project ? { ...note, projectName: names.get(note.project) ?? note.project } : note);
+      notes.set(r.model as string, list);
+    }
+    return this.sql.exec(`SELECT json FROM models ORDER BY id`).toArray().map((r) => {
+      const entry: ModelEntry = JSON.parse(r.json as string);
+      const mine = notes.get(entry.id);
+      return mine ? { ...entry, notes: mine } : entry;
+    });
+  }
+
+  // Stored under the project's key, so a rename never detaches the note.
+  addModelNote(id: string, note: ModelNote): ModelNote {
+    if (!this.sql.exec(`SELECT id FROM models WHERE id = ?`, id).toArray().length) throw new RuleError("no_model", `${id} is not in the model pool`, 404);
+    const named = note.project ? this.resolveProject(note.project) : undefined;
+    const stored = named ? { ...note, project: named.key } : note;
+    this.sql.exec(`INSERT INTO model_notes (model, json) VALUES (?, ?)`, id, JSON.stringify(stored));
+    return named ? { ...stored, projectName: named.name } : stored;
   }
 
   putModel(entry: ModelEntry): ModelEntry {
@@ -848,6 +890,10 @@ export class Ledger extends DurableObject<Env> {
   // The most recent reports, newest first.
   runs(limit = RUN_REPORTS): RunReport[] {
     return this.sql.exec(`SELECT json FROM runs ORDER BY id DESC LIMIT ?`, limit).toArray().map((r) => JSON.parse(r.json as string));
+  }
+
+  runsForItem(project: string, item: string): RunReport[] {
+    return this.sql.exec(`SELECT json FROM runs WHERE json_extract(json, '$.project') = ? AND json_extract(json, '$.item') = ? ORDER BY id DESC LIMIT 20`, project, item).toArray().map((r) => JSON.parse(r.json as string));
   }
 
   // ── runner offers ─────────────────────────────────────────────────────────
@@ -966,7 +1012,7 @@ export class Ledger extends DurableObject<Env> {
   // decided under the old ones (criteriaChanged), and the answer says what
   // it took back. The criteria of a part already integrated, or of a task
   // under a landing lease, cannot change, and nothing is written then.
-  editItem(id: string, actor: string, fields: ItemFields): Item & { criteriaChange?: CriteriaChange } {
+  editItem(id: string, actor: string, fields: ItemFields, scope?: string[]): Item & { criteriaChange?: CriteriaChange } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner edits a task's fields", 403);
     if (fields.revertOf !== undefined) throw new RuleError("bad_field", "revertOf is set only when creating a task", 400);
     const item = this.item(id);
@@ -978,12 +1024,17 @@ export class Ledger extends DurableObject<Env> {
       if (title.length > TITLE_MAX) throw new RuleError("bad_title", `a title is at most ${TITLE_MAX} characters; put the rest in the brief`, 400);
       set.title = title;
     }
-    if (!Object.keys(set).length) throw new RuleError("nothing_to_edit", "nothing to change: give --title, --brief, --accept, --non-goal, --stop-when or --next-gate", 400);
+    const rescoping = scope !== undefined && JSON.stringify(scope) !== JSON.stringify(item.scope);
+    if (scope !== undefined) {
+      if (item.kind === "part") throw new RuleError("part_scope", `${id} is a part of a plan, whose scope the plan sets; nothing was changed`, 409);
+      set.scope = JSON.stringify(scope);
+    }
+    if (!Object.keys(set).length) throw new RuleError("nothing_to_edit", "nothing to change: give --title, --brief, --scope, --accept, --non-goal, --stop-when or --next-gate", 400);
     const changing = fields.accept !== undefined && !sameCriteria(fields.accept, item.accept);
     if (changing) this.assertCriteriaEditable(item);
     const at = new Date().toISOString();
     this.update(id, set, at);
-    this.log(id, actor, "item.edited", { ...fields }, at);
+    this.log(id, actor, "item.edited", { ...fields, ...(rescoping ? { scope, scopeWas: item.scope } : {}) }, at);
     const change = changing ? this.criteriaChanged(item, actor, at) : null;
     return { ...this.item(id), ...(change ? { criteriaChange: change } : {}) };
   }
@@ -1037,8 +1088,9 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`UPDATE review_requests SET superseded = 1 WHERE item = ?`, id);
     const accepted = before.state === "accepted";
     const overridden = !!before.reviewOverride;
-    if (accepted || overridden) {
-      this.update(id, { ...(accepted ? { state: "claimed", accepted_head: null } : {}), ...(overridden ? { review_override: null } : {}) }, at);
+    // A standing permission for an override goes with the criteria it was given under.
+    if (accepted || overridden || before.overrideConfirmation) {
+      this.update(id, { ...(accepted ? { state: "claimed", accepted_head: null } : {}), ...(overridden ? { review_override: null } : {}), ...(before.overrideConfirmation ? { override_confirmation: null } : {}) }, at);
     }
     this.log(id, actor, "item.criteria_changed", {
       from, to, head: before.head, withdrawn: { reviews, requests: live.length },
@@ -1112,6 +1164,57 @@ export class Ledger extends DurableObject<Env> {
       .map((row) => ({ ...toItem(row), pushActors: pushActors(histories.get(row.id as string) ?? []) }));
   }
 
+  private runnerMeta<T>(key: string): T | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, key).toArray()[0];
+    return row ? JSON.parse(row.value as string) : null;
+  }
+
+  runnerPoll(token: AgentToken, offer: RunnerOffer): void {
+    if (!token.runner || offer.runner !== token.runner) throw runnerDenied(token);
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-offer:${token.id}`, JSON.stringify({ ...offer, at: new Date().toISOString() }));
+    // A report may follow a failed claim or a review run authenticated with
+    // its model token. Remember only jobs this poll actually authorizes,
+    // separately from the grants that authorize build/plan operations.
+    const { waiting, reviews } = this.queued();
+    for (const item of [...this.heldJobs(offer.runner), ...waiting, ...reviews]) {
+      if (!item.dispatch || "held" in item && item.held) continue;
+      const assignment = assign(item.dispatch, offer);
+      if (!assignment || ["integrate", "refresh"].includes(item.dispatch.job ?? "")) continue;
+      if (item.state === "claimed" && item.owner !== assignment.actor && item.dispatch.job !== "review") continue;
+      const role = item.dispatch.job === "review" ? "review" : item.dispatch.job === "plan" ? "plan" : "build";
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-report:${token.id}:${item.id}:${assignment.actor}:${role}`, JSON.stringify(item.dispatch.at));
+    }
+  }
+
+  assertRunnerReport(token: AgentToken, id: string, actor: string, role: string): void {
+    if (!this.runnerMeta(`runner-report:${token.id}:${id}:${actor}:${role}`)) throw runnerDenied(token);
+  }
+
+  assertRunnerJob(token: AgentToken, id: string, actor: string, claim = false): void {
+    let item: Item;
+    try { item = this.item(id); } catch { throw runnerDenied(token); }
+    const held = this.runnerMeta<{ actor: string; runner: string }>(`runner-job:${token.id}:${id}`);
+    if (held?.actor === actor && held.runner === token.runner && (item.owner === actor && item.runner === token.runner && !["merged", "abandoned", "blocked"].includes(item.state))) return;
+    if (claim && (item.state === "open" && !item.owner || item.state === "claimed" && item.owner === actor && item.runner === token.runner) && item.dispatch && !["review", "integrate", "refresh"].includes(item.dispatch.job ?? "")) {
+      const offer = this.runnerMeta<SeenOffer>(`runner-offer:${token.id}`);
+      if (offer && liveOffers([offer]).length && assign(item.dispatch, offer)?.actor === actor && !coreHold(item, this.items(), this.project().policy.coreFiles)) return;
+    }
+    throw runnerDenied(token);
+  }
+
+  recordRunnerGit(id: string, actor: string, generation: number, replaces: string | null, hash: string, token: AgentToken): boolean {
+    if (!this.recordToken(id, actor, generation, replaces, `runner:${hash}`)) return false;
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-git:${hash}`, JSON.stringify({ parent: token.hash, actor, id, generation }));
+    return true;
+  }
+
+  runnerGit(hash: string): { parent: string; actor: string; id: string; generation: number } | null {
+    const grant = this.runnerMeta<{ parent: string; actor: string; id: string; generation: number }>(`runner-git:${hash}`);
+    if (!grant || this.tokenId(grant.id) !== `runner:${hash}`) return null;
+    const row = this.sql.exec(`SELECT claim_gen FROM items WHERE id = ?`, grant.id).one();
+    return row.claim_gen === grant.generation ? grant : null;
+  }
+
   tokenId(id: string): string | null {
     const row = this.sql.exec(`SELECT token_id FROM items WHERE id = ?`, id).toArray()[0];
     return (row?.token_id as string | null) ?? null;
@@ -1121,9 +1224,10 @@ export class Ledger extends DurableObject<Env> {
   // write token its caller goes on to mint, and says which recorded token
   // that one replaces: the caller revokes it, and records the new one with
   // recordToken under this generation.
-  claim(id: string, actor: string, runner: { runner: string; kind: RunnerKind } | null = null, proved = false): { item: Item; needsFork: boolean; generation: number; replaces: string | null } {
+  claim(id: string, actor: string, runner: { runner: string; kind: RunnerKind } | null = null, proved = false, runnerToken?: AgentToken): { item: Item; needsFork: boolean; generation: number; replaces: string | null } {
     const at = new Date().toISOString();
     const item = this.item(id);
+    if (runnerToken) this.assertRunnerJob(runnerToken, id, actor, true);
     this.assertPlanClaim(item, actor);
     assertDispatchedClaim(item, actor, runner);
     // The integrator is a reserved actor, reachable only through a t43 token
@@ -1135,6 +1239,9 @@ export class Ledger extends DurableObject<Env> {
     } else {
       // A plan's planner claims its item to write the plan, under the planner role.
       assertClaimAllowed(item, this.items(), this.project().policy, actor, this.owner, item.kind === "plan" ? "planner" : "executor");
+    }
+    if (runnerToken) {
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-job:${runnerToken.id}:${id}`, JSON.stringify({ actor, runner: runnerToken.runner }));
     }
     if (item.owner === actor) {
       // Re-claiming refreshes the write token, so it is allowed only from where
@@ -1197,9 +1304,10 @@ export class Ledger extends DurableObject<Env> {
 
   // The project owner puts an open task in the queue for a kind of runner.
   // Only the owner, for now; an orchestrator with an approved plan comes later.
-  // A task held by an agent (claimed, or submitted and perhaps rejected) can
+  // A task held by an agent (claimed, submitted or accepted) can
   // be sent back to a runner too: the holder is released and the task queued
-  // in one step, keeping its workspace and commits for the next builder. The
+  // in one step, keeping its workspace, commits and acceptance history for
+  // the next builder. An accepted task must be submitted and accepted again. The
   // caller revokes the holder's write token first (see checkDispatch), and
   // passes its id as `token`. A dispatch naming the merge-main job sends a
   // task whose landing conflicted with main back to its builder (t243): the
@@ -1210,10 +1318,11 @@ export class Ledger extends DurableObject<Env> {
     const item = this.checkDispatch(id, actor);
     const d = makeDispatch(input, actor, new Date().toISOString());
     this.assertMergeMainWorkspace(item, d);
+    assertDispatchClaimable(item, this.items(), this.project().policy, d, this.owner);
     const held = this.holds(item);
     if (held) {
       this.dropToken(id, token);
-      this.update(id, { owner: null, state: "open" }, d.at);
+      this.update(id, { owner: null, state: "open", accepted_head: null }, d.at);
       this.log(id, actor, "item.released", { from: item.owner, note: "dispatched again by the project owner" }, d.at);
     }
     this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), d.at, id);
@@ -1237,13 +1346,18 @@ export class Ledger extends DurableObject<Env> {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner dispatches", 403);
     const item = this.item(id);
     this.assertNotPlanned(item);
+    if (item.state === "accepted") this.acceptedReworkAllowed(item, actor);
     if (!this.holds(item)) assertDispatchable(item);
-    if (input) this.assertMergeMainWorkspace(item, makeDispatch(input, actor, new Date().toISOString()));
+    if (input) {
+      const d = makeDispatch(input, actor, new Date().toISOString());
+      this.assertMergeMainWorkspace(item, d);
+      assertDispatchClaimable(item, this.items(), this.project().policy, d, this.owner);
+    }
     return item;
   }
 
   private holds(item: Item): boolean {
-    return !!item.owner && (item.state === "claimed" || item.state === "submitted");
+    return !!item.owner && ["claimed", "submitted", "accepted"].includes(item.state);
   }
 
   undispatch(id: string, actor: string): Item {
@@ -1530,7 +1644,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`INSERT INTO evidence (item_id, json) VALUES (?, ?)`, e.itemId, JSON.stringify(e));
     // A record that a check does not apply has no result, so it is logged as its own kind, not as a pass.
     // A check whose whole log is kept in R2 (t284) names it by reference in the event.
-    this.log(e.itemId, e.by, e.notApplicable ? "evidence.not_applicable" : `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.changedPaths !== undefined ? { changedPaths: e.changedPaths } : {}), ...(e.where ? { where: e.where } : {}), ...(e.log ? { log: e.log } : {}), ...(e.merged ? { merged: true, mainHead: e.mainHead } : {}) }, new Date().toISOString(), proved);
+    this.log(e.itemId, e.by, e.notApplicable ? "evidence.not_applicable" : `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.changedPaths !== undefined ? { changedPaths: e.changedPaths } : {}), ...(e.where ? { where: e.where } : {}), ...(e.log ? { log: e.log } : {}), ...(e.merged ? { merged: true, mainHead: e.mainHead } : {}), ...(e.load !== undefined ? { load: e.load } : {}) }, new Date().toISOString(), proved);
     if (e.grade === "observed") this.notify(e.itemId, origin);
     // Passing checks at a head the item moved to may be what the gate waited
     // on to need its review again: a request the move withdrew is carried.
@@ -1666,8 +1780,16 @@ export class Ledger extends DurableObject<Env> {
     assertHandoffTarget(to, this.owner);
     assertEligible(to, this.project().policy, this.owner);
     assertNotBlocked(item);
-    if (item.state !== "claimed" && item.state !== "submitted") throw new RuleError("closed", `${id} is ${item.state}`);
+    if (item.state === "accepted") this.acceptedReworkAllowed(item, from);
+    else if (item.state !== "claimed" && item.state !== "submitted") throw new RuleError("closed", `${id} is ${item.state}`);
     return item;
+  }
+
+  private acceptedReworkAllowed(item: Item, actor: string): void {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner sends accepted work back to building", 403);
+    this.assertNotPlanned(item);
+    const landing = this.landing(item.id);
+    if (landing) throw new RuleError("landing", `${item.id} is being merged at ${landing.slice(0, 8)} and holds the landing lease; finish atelier merge ${item.id}, or cancel an unpublished merge with atelier merge ${item.id} --cancel before sending it back to building`, 409);
   }
 
   // The holder or the project owner blocks a task with the reason it cannot
@@ -1832,7 +1954,7 @@ export class Ledger extends DurableObject<Env> {
     const item = this.handoffAllowed(id, from, to, note);
     this.dropToken(id, token);
     const at = new Date().toISOString();
-    this.update(id, { owner: to, state: "claimed" }, at);
+    this.update(id, { owner: to, state: "claimed", accepted_head: null }, at);
     this.log(id, from, "item.handoff", { from: item.owner, to, note }, at, proved);
     return this.item(id);
   }
@@ -1856,17 +1978,29 @@ export class Ledger extends DurableObject<Env> {
   // nothing else: a failing or pending check, a rejection or a disallowed
   // class still refuses the acceptance, and so nothing is recorded.
   // `note` is the owner's word on the acceptance, recorded with its event.
-  accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string): Item {
+  // An override needs the owner's own confirmation (t371): `confirmedBy` is
+  // the factor the page's own override form carried, an Access identity or
+  // the confirmation secret (OwnerFactor), which the route checked and which
+  // confirms the override in itself; otherwise the override is taken only
+  // while the owner's standing permission for this head (confirmOverride)
+  // has not run out, and that permission is spent by it. Without either it
+  // is refused, naming how to confirm, before anything is written; the owner
+  // token alone, which an agent session holds, never confirms, and nor does
+  // a browser session, which that token buys. A project that forbids
+  // overrides refuses every override first.
+  accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string, confirmedBy?: OwnerFactor): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner accepts", 403);
     if (note !== undefined) assertLength(note, NOTE_MAX, "the acceptance note");
     const item = this.item(id);
     if (expected !== undefined) assertRevision(item, expected);
-    const policy = this.project().policy;
+    const project = this.project(), policy = project.policy;
     const evidence = this.evidenceFor(id), reviews = this.reviewsFor(id);
     const current: Item = item.state === "accepted" ? { ...item, state: "submitted" } : item;
-    const at = new Date().toISOString();
+    const now = Date.now(), at = new Date(now).toISOString();
+    const confirmation = overrideReason === undefined || confirmedBy ? null : confirmationAt(current, now, this.owner);
     const override = overrideReason === undefined ? null
       : reviewOverrideFor(current, policy, evidence, reviews, this.owner, overrideReason, at);
+    if (override) override.override.confirmedAt = confirmation?.at ?? at;
     // A plan item is accepted through planGate (docs/orchestrator.md, section
     // 5), which adds its own blockers: every part integrated or landed, each
     // integrated at its recorded head, and the branch at the integration head,
@@ -1882,9 +2016,22 @@ export class Ledger extends DurableObject<Env> {
         })
       : gate(override ? { ...current, reviewOverride: override.override } : current, policy, evidence, reviews, this.owner);
     if (!g.ready) throw new RuleError("not_ready", `not ready: ${g.blockers.join("; ")}`);
+    // Last, once the override would otherwise go through, the owner's
+    // confirmation: a forbidden override, a missing reason, nothing to
+    // override or another blocker are told first, so the owner is sent to
+    // the page only for an override that is ready to be made.
+    if (override && !confirmedBy && !confirmation) {
+      throw new RuleError("override_unconfirmed", `an override of the independent review needs the owner's confirmation: ${overrideConfirmationHint(project.name, id)}`, 403);
+    }
     if (override) {
-      this.update(id, { review_override: JSON.stringify(override.override) }, at);
-      this.log(id, actor, "review.overridden", { head: item.head, reason: override.override.reason, waived: override.waived, contributors: override.contributors }, at);
+      // The permission, when one was used, is spent: one confirmation, one override.
+      this.update(id, { review_override: JSON.stringify(override.override), ...(item.overrideConfirmation ? { override_confirmation: null } : {}) }, at);
+      // The record says where the owner confirmed and with what factor.
+      const factor = confirmedBy ?? confirmation?.factor;
+      this.log(id, actor, "review.overridden", {
+        head: item.head, reason: override.override.reason, waived: override.waived, contributors: override.contributors,
+        confirmed: confirmedBy ? "page" : "command line", confirmedAt: override.override.confirmedAt, ...(factor ? { factor } : {}),
+      }, at);
     }
     this.update(id, { state: "accepted", accepted_head: item.head }, at);
     this.withdrawTierRequests(id, "the change was accepted; a tier review never holds a landing", at);
@@ -1897,6 +2044,52 @@ export class Ledger extends DurableObject<Env> {
       ...(note?.trim() ? { note: note.trim() } : {}),
     }, at);
     return this.item(id);
+  }
+
+  // The owner allows an override from the command line (t371): recorded from
+  // the task's page with the factor no agent holds, `factor`, the owner's
+  // Access identity or the confirmation secret (the route checks it, and
+  // says which), for the submitted head the page showed, and good for
+  // OVERRIDE_CONFIRMATION_MS. It overrides nothing itself: `atelier accept
+  // --override-review REASON` within that time does, and spends it. A
+  // project that forbids overrides refuses it; so does a task that is not
+  // submitted, or one whose gate is not missing the independent review,
+  // since there would be nothing to allow.
+  confirmOverride(id: string, actor: string, expected: string | undefined, factor: OwnerFactor): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner allows an override", 403);
+    if (factor !== "access" && factor !== "secret") throw new RuleError("override_unconfirmed", "an override is allowed only with the owner's Access identity or the confirmation secret", 403);
+    const policy = this.project().policy;
+    assertOverridesAllowed(policy);
+    const item = this.item(id);
+    if (expected !== undefined) assertRevision(item, expected);
+    if (item.state !== "submitted" || !item.head) throw new RuleError("not_submitted", `${id} is ${item.state}; an override is allowed only on a submitted revision`, 409);
+    const g = gate({ ...item, reviewOverride: null }, policy, this.evidenceFor(id), this.reviewsFor(id), this.owner);
+    if (!g.needsAssessor) throw new RuleError("override_unneeded", `${id} at ${item.head.slice(0, 8)} is not missing an independent review, so there is nothing to allow an override of`);
+    const now = Date.now(), at = new Date(now).toISOString();
+    const confirmation: OverrideConfirmation = { head: item.head, by: actor, at, until: new Date(now + OVERRIDE_CONFIRMATION_MS).toISOString(), factor };
+    this.update(id, { override_confirmation: JSON.stringify(confirmation) }, at);
+    this.log(id, actor, "override.allowed", { head: item.head, until: confirmation.until, factor }, at);
+    return this.item(id);
+  }
+
+  // A reviewer of another family than every contributor that the pool offers
+  // for this item, or null when none qualifies. Shown to the owner who
+  // overrides the independent review, so an override is their last resort,
+  // never a missed review: the command that would replace it is
+  // `atelier land ID --reviewer H/M` (t395). It picks as the gate's real
+  // selection does, so a protected change's review goes to the review tier
+  // first, one review serving the gate and the tier (src/review/tier.ts).
+  availableReviewer(id: string, pool: readonly ModelEntry[]): string | null {
+    const item = this.item(id);
+    const policy = this.project().policy;
+    const changedPaths = evidenceAt(policy, this.evidenceFor(id), item.head).changedPaths;
+    const kind = changedPaths === null ? null : changeClass(changedPaths, policy);
+    const pick = pickReviewer({
+      item, pool, policy, allowPaid: false, owner: this.owner,
+      precision: this.reviewPrecision(new Date().toISOString()),
+      tier: kind === "protected" ? policy.reviewTier : undefined,
+    });
+    return pick.reviewer?.actor ?? null;
   }
 
   // A merge lands the accepted revision under a lease: while it is held,
@@ -1994,6 +2187,7 @@ export class Ledger extends DurableObject<Env> {
     const record = this.landingWorkflowOf(id);
     if (!record || record.instance !== instance) return null;
     const next: LandingWorkflowRecord = {
+      ...(record.lastStatus ? { lastStatus: record.lastStatus } : {}),
       instance, at: record.at, stage, stageAt: new Date().toISOString(), round,
       ...(record.checks ? { checks: record.checks } : {}),
       ...(detail ? { detail: detail.slice(0, 2000) } : {}),
@@ -2001,6 +2195,20 @@ export class Ledger extends DurableObject<Env> {
     };
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing-workflow:${id}`, JSON.stringify(next));
     return next;
+  }
+
+  // Fence observations to the recorded instance, as stage reports are fenced.
+  observeLandingWorkflowStatus(id: string, instance: string, status: NonNullable<LandingWorkflowRecord["lastStatus"]>): void {
+    const record = this.landingWorkflowOf(id);
+    if (!record || record.instance !== instance || status.status === "unknown") return;
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing-workflow:${id}`, JSON.stringify({ ...record, lastStatus: { status: status.status, ...(status.error ? { error: { name: status.error.name.slice(0, 200), message: status.error.message.slice(0, 2000) } } : {}) } }));
+  }
+
+  // Remove only the missing instance that the owner actually read.
+  clearLandingWorkflow(id: string, instance: string, actor: string): void {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
+    if (this.landingWorkflowOf(id)?.instance !== instance) return;
+    this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing-workflow:${id}`);
   }
 
   landingWorkflowOf(id: string): LandingWorkflowRecord | null {
@@ -2276,6 +2484,12 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`SELECT json FROM reviews WHERE item_id = ? ORDER BY id`, id).toArray().map((r) => JSON.parse(r.json as string));
   }
 
+  // The unparsable replies kept on a task (t407), oldest first, as the detail
+  // route gives them to `atelier show ID --reviews`.
+  unparsableFor(id: string): UnparsableReply[] {
+    return this.sql.exec(`SELECT json FROM unparsable WHERE item_id = ? ORDER BY id`, id).toArray().map((r) => JSON.parse(r.json as string));
+  }
+
   wrapSession(value: Record<string, unknown>, actor: string): SessionNote {
     this.project();
     if (!validActor(actor)) throw new RuleError("bad_actor", "a session needs a valid actor", 400);
@@ -2389,14 +2603,18 @@ export class Ledger extends DurableObject<Env> {
       : null;
     // `criteria` is the binding of the item's acceptance criteria now, which a
     // review of it names (src/criteria.ts).
-    return { item, criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, evidence, reviews, ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
+    return { item, criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, evidence, reviews, unparsable: this.unparsableFor(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
   }
 
-  inbox(now: string): InboxEntry[] {
+  inbox(now: string, pool: readonly ModelEntry[] = []): InboxEntry[] {
     const p = this.project();
     const all = this.sql.exec(`SELECT json FROM evidence`).toArray().map((r) => JSON.parse(r.json as string));
     const rv = this.sql.exec(`SELECT json FROM reviews`).toArray().map((r) => JSON.parse(r.json as string));
+    // An assess entry carries the reviewer the pool offers, so the owner sees
+    // the runnable `atelier land ID --reviewer H/M` command that replaces an
+    // override, not the placeholder alone (t395).
     return [...inboxFor(p.name, this.items(), p.policy, all, rv, new Date(now), this.owner), ...this.planEntries(p.name, now), ...this.shipEntries(p)]
+      .map((e) => (e.kind === "assess" ? { ...e, reviewer: this.availableReviewer(e.itemId, pool) } : e))
       .sort((a, b) => b.weight - a.weight);
   }
 
@@ -3551,7 +3769,7 @@ export class Ledger extends DurableObject<Env> {
   // the live runner offers (`offers`), an open request at this head that
   // every runner offering its reviewer has skipped is withdrawn and asked
   // anew (renewSkippedRequest), so the runners serve the new request.
-  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords, offers?: readonly SeenOffer[]): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean; request?: number } {
+  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }, offers?: readonly SeenOffer[]): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean; request?: number } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner asks for a review", 403);
     const item = this.item(id);
     // A named reviewer is judged even when a request already stands, so a
@@ -3624,7 +3842,7 @@ export class Ledger extends DurableObject<Env> {
     } else if (records) {
       // The suggestion asks the previous round's reviewer and, for a
       // protected change, the review tier first, as the pool pick below does.
-      const pick = suggestReviewer({ ...records, item: { ...item, scope: [...item.scope, ...need.changedPaths] }, project: this.project().name, pool, policy, owner: this.owner, frontierRequired: need.changeClass === "protected",
+      const pick = suggestReviewer({ ...records, item: { ...item, scope: [...item.scope, ...need.changedPaths] }, pool, policy, owner: this.owner, frontierRequired: need.changeClass === "protected",
         previous: need.previousReviewer, tier: need.changeClass === "protected" ? policy.reviewTier : undefined },
         need.lapsed.map((actor) => ({ actor, reason: "its claim on a review of this head lapsed" })), new Date(at));
       chosen = pick.actor;
@@ -3801,6 +4019,31 @@ export class Ledger extends DurableObject<Env> {
     if (!row) throw new RuleError("no_review", `${itemId} has no review request claimed by ${actor}`, 404);
     this.sql.exec(`UPDATE review_requests SET state = 'open', claimedBy = NULL, runner = NULL, claimedAt = NULL WHERE id = ?`, row.id);
     this.log(itemId, actor, "review.released", { note }, at, proved);
+  }
+
+  // A reviewer's reply parseVerdict could not read (t407): kept on the task,
+  // its last VERDICT_LIMITS.reply characters with the reviewer and the head it
+  // judged, while the request the reviewer claimed is released exactly as
+  // releaseReview releases it. Before this the runner discarded the reply and
+  // the only evidence was its log, which the owner read by hand (GLM lost
+  // four replies this way on t372). A claim no longer held, because it lapsed
+  // or was withdrawn while the harness ran, releases nothing, and the reply is
+  // kept anyway. Returns whether a request was released.
+  unparsableReview(itemId: string, actor: string, head: string, note: string, reply: string, proved = false): { released: boolean } {
+    if (!validActor(actor)) throw new RuleError("bad_actor", `"${actor}" is not harness/model`, 400);
+    assertLength(note, NOTE_MAX, "the review note");
+    if (reply.length > VERDICT_LIMITS.reply) {
+      throw new RuleError("too_long", `the reply is ${reply.length} characters; keep its last ${VERDICT_LIMITS.reply}, as the runner's review-unparsable does`, 400);
+    }
+    this.item(itemId);
+    const at = new Date().toISOString();
+    this.sql.exec(`INSERT INTO unparsable (item_id, json) VALUES (?, ?)`, itemId, JSON.stringify({ itemId, by: actor, head, note, reply, at } satisfies UnparsableReply));
+    this.log(itemId, actor, "review.unparsable", { head, note }, at, proved);
+    const row = this.sql.exec(`SELECT id FROM review_requests WHERE item = ? AND state = 'claimed' AND claimedBy = ? ORDER BY id LIMIT 1`, itemId, actor).toArray()[0];
+    if (!row) return { released: false };
+    this.sql.exec(`UPDATE review_requests SET state = 'open', claimedBy = NULL, runner = NULL, claimedAt = NULL WHERE id = ?`, row.id);
+    this.log(itemId, actor, "review.released", { note }, at, proved);
+    return { released: true };
   }
 
   // ── integration (docs/orchestrator.md, section 5) ────────────────────────
@@ -4295,6 +4538,8 @@ function toItem(r: Row): Item {
     runner: (r.runner as string | null) ?? null,
     // Only an item the owner has overridden carries the field.
     ...(r.review_override ? { reviewOverride: JSON.parse(r.review_override as string) as ReviewOverride } : {}),
+    // Only an item the owner has allowed a command-line override on carries it.
+    ...(r.override_confirmation ? { overrideConfirmation: JSON.parse(r.override_confirmation as string) as OverrideConfirmation } : {}),
     nonGoals: r.non_goals ? (JSON.parse(r.non_goals as string) as string[]) : [],
     stopWhen: r.stop_when ? (JSON.parse(r.stop_when as string) as string[]) : [],
     nextGate: (r.next_gate as string | null) ?? null,
