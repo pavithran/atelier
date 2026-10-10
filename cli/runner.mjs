@@ -10,7 +10,7 @@ import { checkEnv } from "./check-env.mjs";
 import { envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
 import { reviewBrief, BRIEF_LIMITS, criteriaCount } from "../src/review/brief.ts";
-import { parseVerdict } from "../src/review/verdict.ts";
+import { parseVerdict, VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { rolePrompt, ROLE_PROMPT_MAX } from "../src/usage.ts";
@@ -738,8 +738,8 @@ export function jobOf(task) {
 // A review job (docs/orchestrator.md, section 4): the runner claims a review
 // request, clones the part's head read-only, writes the diff, gives the
 // reviewer the brief and the diff, reads the verdict and posts it. A harness
-// that writes no valid verdict releases the request, so another reviewer may
-// take it.
+// that writes no valid verdict keeps the reply on the task and releases the
+// request, so another reviewer may take it.
 export async function runReview(assignment, config, name, runnerIO) {
   const { project, item, agent, model, actor } = assignment;
   let brief, diffFile, workspace, verdictFile, claimedRequest = false, released = false, io = runnerIO;
@@ -840,8 +840,8 @@ export async function runReview(assignment, config, name, runnerIO) {
       await release(`harness exited ${result.code}`);
       return { phase: "failed", reason: `harness exited ${result.code}`, taskFailure: true };
     }
-    // A harness that wrote no verdict file leaves nothing to read; the
-    // request is released like any other unusable verdict.
+    // A harness that wrote no verdict file leaves nothing to read; the empty
+    // reply is kept like any other unusable one, so the failure is on the task.
     let reply;
     try { reply = io.readVerdict(verdictFile); } catch { reply = ""; }
     // The reply was asked for one CRITERION line per acceptance criterion
@@ -849,8 +849,24 @@ export async function runReview(assignment, config, name, runnerIO) {
     // and refuses an approval that misses one or declares one unmet.
     const parsed = parseVerdict(reply, criteriaCount(claimed.item, claimed.plan));
     if (!parsed.ok) {
-      await release(parsed.error);
-      io.log(`review released: ${parsed.error}`);
+      // The reply is kept on the task, its last VERDICT_LIMITS.reply
+      // characters with the reviewer and the head it judged, as the request
+      // is released (t407): before this the reply was discarded and the only
+      // evidence was this runner's log, which the owner read by hand (GLM
+      // lost four replies this way on t372). The reply travels as a file the
+      // CLI reads, never as an argument, which the operating system caps far
+      // below a long reply; writeBrief gives that file a sibling of the
+      // workspace, removed once the call ends whatever it answered.
+      const kept = await io.brief(workspace, reply.slice(-VERDICT_LIMITS.reply));
+      try {
+        await io.cli(["review-unparsable", item.id, "--project", project, "--as", actor, "--head", claimed.head, "--note", parsed.error, "--reply-file", kept.file]);
+        io.log(`review released: ${parsed.error}`);
+      } catch (error) {
+        io.log(`could not keep the unparsable reply on the task: ${error.message}`);
+        await release(parsed.error);
+      } finally {
+        await io.removeBrief(kept);
+      }
       return { phase: "failed", reason: parsed.error, taskFailure: true };
     }
     const argv = ["review", item.id, "--project", project, "--as", actor, "--head", claimed.head, parsed.verdict === "approve" ? "--approve" : "--reject", "--note", parsed.summary];
@@ -1383,7 +1399,7 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
     cli: (argv, cwd, options = {}) => checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, capture: readsOutput(argv), claim: argv[0] === "claim",
       ...(options.token ? { env: { ...process.env, ATELIER_TOKEN: options.token } } : {}),
       step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
-      ...((argv[0] === "release" || argv[0] === "review-release") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild),
+      ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild),
     head: (cwd, { cleanup = false } = {}) => checked(["git", "rev-parse", "HEAD"],
       { cwd, capture: true, ...(cleanup ? cleanupOptions() : { signal: controller.signal }) }, executeChild),
     // Every build, plan and merge job's workspace keeps .scratch/ out of Git
