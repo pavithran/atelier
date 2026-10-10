@@ -21,7 +21,7 @@
 // opinion.
 
 import type { ModelEntry } from "../models/pool.ts";
-import { hasModelRole, modelState, offThePool } from "../models/pool.ts";
+import { standingRefusal } from "../models/pool.ts";
 import { MODEL_PROFILES, type ModelProfile } from "../models/registry.ts";
 import { byPrecision, precisionLine, precisionOf, type PrecisionRecord } from "../models/precision.ts";
 import { paidPerToken, SIZE_M_CONTEXT, type Availability, type Choice, type PartRoute } from "../plans/route.ts";
@@ -161,16 +161,12 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
   if (status?.state === "refused") failed.push(`status refused, reported by ${status.by} at ${status.at}${status.detail ? `: ${status.detail}` : ""}`);
   else passed.push(status ? `Status ${status.state}, reported by ${status.by} at ${status.at}` : "Status not checked yet");
 
-  // The owner's standing: a paused or reserved model is skipped, with its note.
-  if (offThePool(entry)) {
-    const state = modelState(entry);
-    failed.push(`${state} since ${(entry.stateAt ?? entry.addedAt).slice(0, 10)} (the owner's standing)${entry.note ? `: ${entry.note}` : ""}`);
-  } else passed.push("The owner's standing is available");
-
-  // A review-only model is never a builder, and a model without the review
-  // role is never a reviewer: pickReviewer asks reviewers alone, so the review
-  // role is the one that matters here.
-  if (!hasModelRole(entry, "review")) failed.push(`not a reviewer; its roles are ${entry.roles!.join(", ")}`);
+  // The owner's standing: a paused or reserved model is skipped, with its
+  // note, and so is one without the review role, since pickReviewer asks
+  // reviewers alone.
+  const held = standingRefusal(entry, "review");
+  if (held) failed.push(held);
+  else passed.push("The owner's standing is available");
 
   const { allowPaid, spend } = input;
   if (!paidPerToken(entry)) passed.push(`No per-token cost (${entry.provider})`);

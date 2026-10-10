@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cleanEntry, cleanModelSet, cleanStatus, familyOf, hasModelRole, LOCAL_BUILD, modelState, offThePool, reviewHeld, withStanding } from "../src/models/pool.ts";
+import { cleanEntry, cleanModelSet, cleanStatus, familyOf, hasModelRole, LOCAL_BUILD, modelState, offThePool, actorStanding, withStanding } from "../src/models/pool.ts";
 
 const AT = "2026-10-04T12:00:00.000Z";
 
@@ -107,10 +107,12 @@ test("a saved pool takes the owner's standing now, and a held model or one witho
   assert.equal(withStanding([a], [astra])[0].state, undefined);
   // An entry the pool no longer has keeps what was saved.
   assert.deepEqual(withStanding([luna], []), [luna]);
-  assert.match(reviewHeld(now, "codex/astra")!, /reserved since 2026-10-09 \(the owner's standing\): credits/);
-  assert.match(reviewHeld(now, "codex/gpt-6-luna")!, /not a reviewer; its roles are build/);
-  assert.equal(reviewHeld([astra, luna], "codex/gpt-6-astra"), null);
-  assert.equal(reviewHeld(now, "claude-code/opus-5.5"), null);
+  assert.match(actorStanding(now, "codex/astra", "review")!, /^codex\/astra is reserved since 2026-10-09 \(the owner's standing\): credits/);
+  assert.match(actorStanding(now, "codex/gpt-6-luna", "review")!, /not a reviewer; its roles are build/);
+  assert.equal(actorStanding(now, "codex/gpt-6-luna", "build"), null);
+  assert.match(actorStanding(now, "codex/astra", "build")!, /reserved since/);
+  assert.equal(actorStanding([astra, luna], "codex/gpt-6-astra", "review"), null);
+  assert.equal(actorStanding(now, "claude-code/opus-5.5", "review"), null);
 });
 
 test("a status report is one of four states, with what was served", () => {

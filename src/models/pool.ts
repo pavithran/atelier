@@ -94,16 +94,26 @@ export function withStanding(saved: readonly ModelEntry[], current: readonly Mod
   });
 }
 
-// Why the owner's standing keeps an actor (harness/model, the model by its
-// id or an alias) from reviewing, or null when it may: paused or reserved,
-// or without the review role. An actor outside the pool is not held.
-export function reviewHeld(pool: readonly ModelEntry[], actor: string): string | null {
+// The one check every path makes before it chooses or accepts a model for a
+// job: dispatch suggestions, routing, a plan's planner, reviewer suggestions,
+// tier and plan reviews, carried requests and every model the owner names.
+// It says why the owner's standing keeps the entry from the role (paused or
+// reserved, with its note; or without the role), or null when it may take it.
+// test/pool-standing.test.mjs lists every path and fails if one skips it.
+const ROLE_NOUN: Record<ModelRole, string> = { build: "builder", review: "reviewer", plan: "planner" };
+export function standingRefusal(entry: ModelEntry, role: ModelRole): string | null {
+  if (offThePool(entry)) return `${modelState(entry)} since ${(entry.stateAt ?? entry.addedAt).slice(0, 10)} (the owner's standing)${entry.note ? `: ${entry.note}` : ""}`;
+  if (!hasModelRole(entry, role)) return `not a ${ROLE_NOUN[role]}; its roles are ${entry.roles!.join(", ")}`;
+  return null;
+}
+
+// The same check for an actor (harness/model, the model by its id or an
+// alias), prefixed with its name. An actor outside the pool is not held.
+export function actorStanding(pool: readonly ModelEntry[], actor: string, role: ModelRole): string | null {
   const name = actor.toLowerCase();
   const entry = pool.find((e) => [e.id, ...e.aliases].some((id) => `${e.harness}/${id}`.toLowerCase() === name));
-  if (!entry) return null;
-  if (offThePool(entry)) return `${actor} is ${modelState(entry)} since ${(entry.stateAt ?? entry.addedAt).slice(0, 10)} (the owner's standing)${entry.note ? `: ${entry.note}` : ""}`;
-  if (!hasModelRole(entry, "review")) return `${actor} is not a reviewer; its roles are ${entry.roles!.join(", ")}`;
-  return null;
+  const refusal = entry ? standingRefusal(entry, role) : null;
+  return refusal ? `${actor} is ${refusal}` : null;
 }
 
 // Names, as patterns, oldest-established first within each family. Anything
