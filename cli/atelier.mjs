@@ -61,6 +61,9 @@ const VERSION_LINE = `atelier ${CLI_VERSION} (route level ${ROUTE_LEVEL})`;
 // ── plumbing ───────────────────────────────────────────────────────────────
 
 let doneStep;
+// Each check the run recorded: { claim, result, where }, read into done's outcome.
+const doneChecks = [];
+const CLEAN_CLONE = "in a clean clone on this machine", CONTAINER = "in a Cloudflare container";
 
 function die(msg, code = 1) {
   if (doneStep) msg = `${doneStep} failed: ${msg}`;
@@ -275,7 +278,7 @@ export const FLAGS = {
   "run-report": { actor: false, role: false, outcome: false, project: false, item: false, detail: false },
   served: { recorded: false, from: false, to: false, item: false, note: false, apply: true },
   // done takes its summary as a word; it refuses --summary itself, with its usage.
-  done: { sandbox: true, summary: false },
+  done: { sandbox: true, summary: false, json: true },
   finish: { sandbox: true, summary: '--summary needs text: atelier finish ID --summary "TEXT"' },
   sync: {},
   merge: { cancel: true, "discard-local": true, head: false, approve: true, note: false, "policy-changed-ok": true, "override-review": '--override-review needs a reason: atelier merge ID --head FULL_REVISION --override-review "why no independent review is possible"' },
@@ -1133,6 +1136,7 @@ async function checkInSandbox() {
   }
   const on = state.request?.merged && state.mainHead ? ` merged with main ${short(state.mainHead)}` : "";
   for (const r of state.results ?? []) {
+    doneChecks.push({ claim: r.claim, result: r.notApplicable ? "not applicable" : r.passed ? "passed" : "failed", where: CONTAINER });
     if (r.notApplicable) { console.log(`N/A   ${r.claim}  @ ${short(state.request.head)}${on}  (not run: this change touches none of the paths it applies to)`); continue; }
     console.log(`${r.passed ? "PASS" : "FAIL"}  ${r.claim}  @ ${short(state.request.head)}${on}  (${r.seconds}s, in Cloudflare)`);
     if (!r.passed) process.stdout.write(r.outputTail.slice(-2000) + "\n");
@@ -1141,10 +1145,7 @@ async function checkInSandbox() {
   else if (state.changedPaths) console.log(`changed: ${state.changedPaths.join(", ") || "nothing"}`);
   if (state.status === "failed") die(`the run failed: ${state.error}`);
   if (!state.recorded) die("the checks ran but the ledger did not record them");
-  if (state.results.some((r) => r.passed === false)) {
-    if (doneStep) die("required checks failed", 2);
-    process.exit(2);
-  }
+  if (!doneStep && state.results.some((r) => r.passed === false)) process.exit(2);
 }
 
 // What an agent relays is one line per field: text a person or an agent
@@ -1197,8 +1198,60 @@ export function checkoutLine(raw) {
     : `Checkout: out of step. ${c.branch} @ ${short(c.head)} does not hold the baseline's head ${base}; reconcile the checkout before merging.`;
 }
 
-export function formatDone(gate) {
-  return gate.ready ? "Ready for the owner" : `Not ready: ${gate.blockers.map(flat).join("; ")}`;
+// The one outcome done ends with (exit codes in cli/help.mjs): failed checks,
+// nothing submitted; checked but blocked, submitted with a gate open; or
+// submitted and ready for the owner. Acceptance, merge and deploy are separate.
+export function doneReport({ id, head, checks, item, gate }) {
+  const submitted = item?.state === "submitted";
+  const failed = checks.filter((c) => c.result === "failed").map((c) => flat(c.claim));
+  const blockers = (gate?.blockers ?? []).map(flat);
+  const checkText = checks.length ? `Checks: ${checks.map((c) => `${flat(c.claim)} ${c.result}`).join("; ")} (${checks[0].where})` : "Checks: none ran";
+  let outcome, exitCode, line, unresolved, accept, merge, ownerAction;
+  if (failed.length) {
+    outcome = "failed_checks"; exitCode = 2;
+    unresolved = "not evaluated; nothing was submitted";
+    accept = "not reached"; merge = "not reached";
+    ownerAction = `none yet; fix ${failed.join("; ")} in the workspace, then run done again`;
+    line = `Outcome: failed checks: ${failed.join("; ")}; nothing was submitted`;
+  } else if (submitted && gate.ready) {
+    outcome = "submitted"; exitCode = 0;
+    unresolved = "none";
+    accept = "waiting for the owner"; merge = "not yet; it follows acceptance";
+    ownerAction = `accept ${id} at ${short(head)}: atelier accept ${id} --head ${head}`;
+    line = "Outcome: submitted, ready for the owner";
+  } else {
+    outcome = "checked_but_blocked"; exitCode = 3;
+    unresolved = `${blockers.length} (named on the last line)`;
+    accept = "not yet; the gate must be clear first"; merge = "not yet; it follows acceptance";
+    ownerAction = `clear the first blocker: ${blockers[0]}`;
+    line = `Outcome: checked but blocked by ${blockers.length} ${blockers.length === 1 ? "blocker" : "blockers"}: ${blockers.join("; ")}`;
+  }
+  const deploy = "not covered by done";
+  const summary = [
+    `Head: ${short(head)}`,
+    checkText,
+    `Unresolved gates: ${unresolved}`,
+    `Submitted: ${submitted ? "yes" : "no"}`,
+    `Accept: ${accept}`,
+    `Merge: ${merge}`,
+    `Deploy: ${deploy}`,
+    `Owner action: ${ownerAction}`,
+  ];
+  const json = {
+    outcome, exitCode, outcomeLine: line, head, submitted,
+    checks: checks.map(({ claim, result, where }) => ({ claim, result, where })),
+    unresolvedGates: failed.length ? [] : blockers,
+    accept, merge, deploy, ownerAction,
+  };
+  return { outcome, exitCode, summary, line, json };
+}
+
+// --json keeps stdout to the one object: what the steps print goes to stderr.
+function progressToStderr() {
+  const log = console.log, write = process.stdout.write;
+  console.log = (...text) => console.error(...text);
+  process.stdout.write = (...text) => process.stderr.write(...text);
+  return () => { console.log = log; process.stdout.write = write; };
 }
 
 // The owner's framing of a task, one line per field that is set, for the
@@ -2409,6 +2462,7 @@ const commands = {
           const n = await postEvidence(`${I(name, id)}/evidence`, { kind: "check", claim: cmd, head: ws.head, notApplicable: true }, as);
           const row = n?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd).at(-1);
           if (row) recorded = row.changedPaths;
+          doneChecks.push({ claim: cmd, result: "not applicable", where: CLEAN_CLONE });
           console.log(`N/A   ${cmd}  @ ${short(ws.head)}  (it ${appliesText(policy, cmd)}; this change touches none of them)`);
           continue;
         }
@@ -2425,6 +2479,7 @@ const commands = {
         }, as);
         const row = d?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd && !e.merged).at(-1);
         if (row) recorded = row.changedPaths;
+        doneChecks.push({ claim: cmd, result: r.passed ? "passed" : "failed", where: CLEAN_CLONE });
         console.log(`${r.passed ? "PASS" : "FAIL"}  ${cmd}  @ ${short(ws.head)}${on}`);
         if (!r.passed) { failed++; process.stdout.write(r.output.slice(-2000) + "\n"); }
       }
@@ -2435,10 +2490,7 @@ const commands = {
     const paths = recorded === undefined ? changed : recorded;
     if (mainHead) console.log(`Recorded on the merge with main at ${short(mainHead)}; these results stand beside the revision's own checks and go stale when main moves.`);
     else console.log(Array.isArray(paths) ? `changed: ${paths.join(", ") || "nothing"}` : "changed: not measured; the gate waits for a check that measures it");
-    if (failed) {
-      if (doneStep) die("required checks failed", 2);
-      process.exit(2);
-    }
+    if (failed && !doneStep) process.exit(2);
   },
 
   async gc() {
@@ -2480,7 +2532,7 @@ const commands = {
     const name = project(), id = itemArg(), as = await actor();
     await call("POST", `${I(name, id)}/submit`, args.summary === undefined ? {} : { summary: args.summary }, as);
     const d = await call("GET", I(name, id), undefined, as);
-    if (doneStep) return d.gate;
+    if (doneStep) return { item: d.item, gate: d.gate };
     console.log(d.gate.ready ? `${id} submitted and ready for ${OWNER_NAME}.` : `${id} submitted. Still blocking:\n${d.gate.blockers.map((b) => `  - ${b}`).join("\n")}`);
   },
 
@@ -2682,12 +2734,18 @@ const commands = {
     if (args._.length !== 2 || !args._[1].trim() || args.summary !== undefined || args.rest) die(COMMAND_USAGE.done);
     args.summary = args._[1];
     args._ = ["done"];
+    const restore = args.json === true ? progressToStderr() : () => {};
     doneStep = "prepare";
+    let result;
     try {
-      const gate = await commands.finish();
+      result = await commands.finish();
       doneStep = undefined;
-      console.log(formatDone(gate));
     } catch (error) { die(error.message); }
+    restore();
+    const report = doneReport(result);
+    if (args.json === true) console.log(JSON.stringify(report.json, null, 2));
+    else console.log([...report.summary, report.line].join("\n"));
+    process.exitCode = report.exitCode;
   },
 
   async finish() {
@@ -2705,8 +2763,10 @@ const commands = {
     if (git(["rev-parse","HEAD"]) !== head || git(["status","--porcelain"])) die("the workspace changed while finishing; inspect it and finish again");
     const current = await call("GET", I(name,id), undefined, as);
     if (current.item.head !== head) die("the remote revision changed while checks ran; finish again");
+    if (doneChecks.some((c) => c.result === "failed")) return { id, head, checks: doneChecks };
     if (doneStep) doneStep = "submit";
-    return commands.submit();
+    const submitted = await commands.submit();
+    return { id, head, checks: doneChecks, ...submitted };
   },
 
   // The project owner merges an exact revision. With --head, a submitted item
