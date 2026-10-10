@@ -28,6 +28,17 @@ const accepted = (cmd) => new Set(Object.keys(FLAGS[cmd]).filter((flag) => !(REF
 const flagsIn = (text) => new Set([...text.matchAll(/--([a-z][a-z-]*)/g)].map((m) => m[1]));
 const formsOf = (cmd) => HELP_FORMS.filter((form) => form.split(" ")[0] === cmd);
 
+test("review help names the merge revision and claimed request required after merge", () => {
+  const about = commandUsage("review").split("\n").find((line) => line.startsWith("Records a verdict"));
+  for (const text of [about, COMMAND_HELP.review.flags["--head SHA"]]) {
+    assert.match(text, /recorded merge SHA/);
+    assert.match(text, /--request.*post-merge review request.*claimed|--request.*claimed post-merge review request/);
+  }
+  assert.match(about, /must explicitly name/);
+  assert.match(about, /rather than the submitted head/);
+  assert.match(COMMAND_HELP.review.flags["--head SHA"], /defaults to the task's current head before merge/);
+});
+
 test("every flag the parser accepts is in the command's help forms, and the forms name none it refuses", () => {
   for (const cmd of Object.keys(FLAGS)) {
     const forms = formsOf(cmd);
