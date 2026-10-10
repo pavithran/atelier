@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { globMatcher, publishMirror } from "../cli/mirror.mjs";
+import { commitPatch, globMatcher, headerPath, publishMirror } from "../cli/mirror.mjs";
 
 // atelier publish REMOTE (t433), against a real checkout and a bare mirror on
 // disk. The keys below are assembled at run time so this file holds none.
@@ -15,9 +15,9 @@ const PUBLIC = "pub@example.org";
 const KEY = "AKIA" + "ABCDEFGHIJKLMNOP";
 const POLICY = { mirrors: { github: { destination: "", email: PUBLIC } }, privatePaths: ["private/**", "*.pem", "notes/internal.md"], privatePatterns: ["ACME-INTERNAL-\\d+"] };
 
-// Atelier's own runner, as publishMirror takes it.
+// Atelier's own runner, as publishMirror takes it: cwd, input and allowFail.
 const runner = (args, opts = {}) => {
-  const r = spawnSync("git", args, { cwd: opts.cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" } });
+  const r = spawnSync("git", args, { cwd: opts.cwd, input: opts.input, encoding: "utf8", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" } });
   if (!opts.allowFail && r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
   return opts.allowFail ? r : r.stdout.trim();
 };
@@ -111,6 +111,108 @@ test("a secret added and later deleted blocks publication, by place and never by
   assert.ok(r.text.includes(`${added.slice(0, 12)} config/app.txt:2: secret`), r.text);
   assert.ok(!r.text.includes(KEY));
   assert.deepEqual(f.refs(), []);
+});
+
+test("a secret added then removed is refused even when the net difference is empty: each commit's own patch is read", (t) => {
+  const f = fixture(t);
+  assert.equal(f.publish().ok, true);
+  const before = f.head();
+  // README.md ends as the mirror holds it: `git diff mirror..main` shows
+  // nothing, and the commit in between still publishes the key.
+  f.put("README.md", `hello\ntoken = ${KEY}\n`);
+  const added = f.commit("Add key");
+  f.put("README.md", "hello\n");
+  const removed = f.commit("Remove key");
+  assert.equal(f.git(f.checkout, "diff", `${before}..main`), "");
+  const r = f.publish();
+  assert.equal(r.ok, false);
+  assert.ok(r.text.includes(`${added.slice(0, 12)} README.md:2: secret`), r.text);
+  assert.ok(!r.text.includes(removed.slice(0, 12)), r.text);
+  assert.ok(!r.text.includes(KEY));
+  assert.equal(f.head(), before);
+});
+
+test("only the lines a commit adds are scanned, numbered as the commit holds them", (t) => {
+  const f = fixture(t);
+  f.put("docs/net.md", "one\ntwo\nthree\n"); f.commit("Doc");
+  assert.equal(f.publish().ok, true);
+  // A pattern declared after the mirror holds "two" does not re-report it
+  // when a later commit touches another line of the file.
+  f.put(".atelier/publication.json", JSON.stringify({ ...POLICY, privatePatterns: ["^two$", "^four$"], mirrors: { github: { ...POLICY.mirrors.github, destination: f.mirror } } }));
+  f.put("docs/net.md", "one\ntwo\nthree\nfour\n");
+  const c = f.commit("Append").slice(0, 12);
+  const r = f.publish();
+  assert.equal(r.ok, false);
+  assert.ok(r.text.includes(`${c} docs/net.md:4: private-pattern`), r.text);
+  assert.ok(!r.text.includes("docs/net.md:2"), r.text);
+});
+
+test("a line a merge alone introduces is reported at the merge; lines its parents hold are not", (t) => {
+  const f = fixture(t);
+  f.put("notes.txt", "a\nb\nc\n"); f.commit("Base");
+  assert.equal(f.publish().ok, true);
+  f.git(f.checkout, "checkout", "-qb", "side");
+  f.put("notes.txt", "a\nside\nc\n"); f.commit("Side");
+  f.git(f.checkout, "checkout", "-q", "main");
+  f.put("notes.txt", "a\nmain\nc\n"); f.commit("Main");
+  const merged = spawnSync("git", ["merge", "-q", "--no-commit", "side"], { cwd: f.checkout, encoding: "utf8", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" } });
+  assert.notEqual(merged.status, 0); // a conflict, resolved by hand with new content
+  f.put("notes.txt", `a\nmain\nside\nkey = ${KEY}\nc\n`);
+  const merge = f.commit("Merge").slice(0, 12);
+  const r = f.publish();
+  assert.equal(r.ok, false);
+  assert.ok(r.text.includes(`${merge} notes.txt:4: secret`), r.text);
+  assert.ok(!r.text.includes("notes.txt:2"), r.text);
+  assert.ok(!r.text.includes("notes.txt:3"), r.text);
+});
+
+test("paths git quotes in a patch header are named as paths", (t) => {
+  const f = fixture(t);
+  f.put("docs/my file.txt", `x\nkey = ${KEY}\n`);
+  f.put("docs/café \"quoted\".txt", `key = ${KEY}\n`);
+  f.put("docs/tab\there.txt", `\nkey = ${KEY}\n`);
+  const c = f.commit("Odd names").slice(0, 12);
+  const r = f.publish();
+  assert.equal(r.ok, false);
+  for (const expected of [`${c} docs/my file.txt:2: secret`, `${c} docs/café "quoted".txt:1: secret`, `${c} docs/tab\there.txt:2: secret`]) assert.ok(r.text.includes(expected), `${expected}\n${r.text}`);
+  assert.ok(!r.text.includes("cannot scan"), r.text);
+});
+
+test("a mode change, a type change and a symlink publish; an oversized blob is refused", (t) => {
+  const f = fixture(t);
+  f.put("run.sh", "echo\n"); f.commit("Script");
+  chmodSync(join(f.checkout, "run.sh"), 0o755); f.commit("Executable");
+  rmSync(join(f.checkout, "run.sh")); symlinkSync("README.md", join(f.checkout, "run.sh")); f.commit("Link");
+  let r = f.publish();
+  assert.equal(r.ok, true, r.text);
+  assert.match(r.text, /4 commits checked/);
+  f.put("big.txt", "x".repeat(8 * 1024 * 1024 + 1)); const big = f.commit("Big").slice(0, 12);
+  r = f.publish();
+  assert.equal(r.ok, false);
+  assert.ok(r.text.includes(`cannot scan ${big} big.txt: 8388609 bytes, over the`), r.text);
+});
+
+test("commitPatch reads plain and combined hunks with their line numbers", () => {
+  const plain = [
+    "diff --git a/x.txt b/x.txt", "index 1..2 100644", "--- a/x.txt", "+++ b/x.txt",
+    "@@ -3,2 +3,3 @@", "-gone", "+new three", "+new four", "\\ No newline at end of file",
+    "@@ -10 +11,2 @@", "+eleven", "+twelve",
+    "diff --git a/img.bin b/img.bin", "new file mode 100644", "Binary files /dev/null and b/img.bin differ",
+    "diff --combined m.txt", "index 1,2..3", "--- a/m.txt", "+++ b/m.txt",
+    "@@@ -1,2 -1,2 +1,4 @@@", "  same", "- left", " -right", "++merge", "+ from side",
+  ].join("\n");
+  const r = commitPatch(() => ({ status: 0, stdout: plain, stderr: "" }), "c");
+  assert.equal(r.ok, true, r.why);
+  assert.deepEqual(r.files.map((f) => [f.path, f.binary, f.added]), [
+    ["x.txt", false, [{ line: 3, text: "new three" }, { line: 4, text: "new four" }, { line: 11, text: "eleven" }, { line: 12, text: "twelve" }]],
+    ["img.bin", true, []],
+    ["m.txt", false, [{ line: 2, text: "merge" }, { line: 3, text: "from side" }]],
+  ]);
+  assert.equal(headerPath("diff --git a/a b.txt b/a b.txt"), "a b.txt");
+  assert.equal(headerPath('diff --git "a/caf\\303\\251 \\"q\\".txt" "b/caf\\303\\251 \\"q\\".txt"'), 'café "q".txt');
+  assert.equal(headerPath('diff --combined "t\\tab.txt"'), "t\tab.txt");
+  assert.equal(headerPath("diff --git a/one.txt b/two.txt"), null);
+  assert.equal(commitPatch(() => ({ status: 0, stdout: "+stray\n", stderr: "" }), "c").ok, false);
 });
 
 test("private addresses, private paths and policy patterns are reported with commit, path and line", (t) => {
