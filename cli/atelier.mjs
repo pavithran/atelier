@@ -42,13 +42,13 @@ import { formatLocal, formatStatus, formatStatusBrief, itemJson, statusJson, tas
 import { findStrays, formatStrays } from "./strays.mjs";
 import { formatTokenExpiryWarnings, parseExpiryDay, readTokenExpiries, recordTokenExpiryDay, TOKEN_EXPIRY_WARN_DAYS } from "./token-expiry.mjs";
 import { receiptJson, receiptText } from "./receipt.mjs";
-import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
+import { runnerCredential, storeRunnerCredential, normalizeRunner, describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
 import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
 import { coreCount, envLoad, formatLoad, loadLimitOf, waitForLoad } from "./load.mjs";
 import { provenanceNote } from "./provenance.mjs";
 export { checkEnv } from "./check-env.mjs";
-import { COMMAND_USAGE, guideText, helpText, ROLES, rolePrompt } from "./help.mjs";
+import { COMMAND_USAGE, TOKEN_SUBCOMMANDS, guideText, helpText, ROLES, rolePrompt } from "./help.mjs";
 import { planText } from "../src/plans/show.ts";
 import { ACTION_KINDS, DEFAULT_EXPIRY, KIND, REVISION, expirySeconds } from "../src/actions.ts";
 import { decisionLines, decisionsSection } from "../src/decisions.ts";
@@ -98,6 +98,13 @@ const trimSlash = (url) => String(url).replace(/\/$/, "");
 // not sent, and the command says what to do instead.
 function apiToken() {
   if (loginToken) return loginToken;
+  try {
+    let name = process.env.ATELIER_RUNNER_NAME;
+    if (!name && args._[0] === "runner" && !args.integrate && !args.discover && !args.usage && args._[1] !== "setup") name = args.name;
+    if (!name && ["claim", "start"].includes(args._[0])) name = args.runner;
+    const runner = runnerCredential(server(), name);
+    if (runner) return runner;
+  } catch (error) { die(error.message); }
   const fromEnv = process.env.ATELIER_TOKEN?.trim();
   if (fromEnv) return fromEnv;
   let token;
@@ -369,7 +376,8 @@ export function parseArgs(argv, switches = switchesFor(argv)) {
 // and a switch given a word other than true or false are refused here, before
 // the command runs or contacts the server.
 function checkFlags(cmd) {
-  const row = { ...COMMON, ...FLAGS[cmd] };
+  const subcommand = cmd === "token" ? TOKEN_SUBCOMMANDS[args._[1]] : null;
+  const row = { ...COMMON, ...FLAGS[cmd], ...subcommand?.flags };
   const see = COMMAND_USAGE[cmd] ? `atelier ${cmd} --help` : "atelier help";
   for (const flag of Object.keys(args.multi)) if (!(flag in row)) die(`${cmd} does not take --${flag}; see ${see}`);
   if (args.rest && !REST.has(cmd)) die(`${cmd} does not take "--" and the words after it; see ${see}`);
@@ -538,6 +546,8 @@ function wsConfig(key, cwd = process.cwd()) {
 }
 
 let tokenActor;
+let tokenRunner;
+let resolvedCredential;
 
 async function actor(fallback) {
   await resolveTokenActor();
@@ -765,9 +775,11 @@ function requireWorkspace(cmd, name, id, as) {
 }
 
 async function resolveTokenActor() {
-  if (tokenActor || !apiToken().startsWith("atl_")) return;
+  if (resolvedCredential === apiToken() || !apiToken().startsWith("atl_")) return;
   const config = await call("GET", "/config");
   tokenActor = config.actor;
+  tokenRunner = config.runner;
+  resolvedCredential = apiToken();
   const declared = args.as ?? process.env.ATELIER_ACTOR;
   if (tokenActor && args._[0] !== "token" && declared !== undefined && declared !== tokenActor) die("--as and ATELIER_ACTOR must match the agent token actor");
 }
@@ -868,7 +880,10 @@ async function claimWorkspace(name, id, as, runner) {
   // configured header, and a revoked one alongside the fresh one is refused.
   storeWorkspaceToken(dir, r.workspace.remote, r.workspace.token);
   recordTokenExpiry(dir, r.workspace.expiresAt);
-  if (!fresh) git(["fetch", "--quiet", "origin"], { cwd: dir });
+  if (!fresh) {
+    git(["remote", "set-url", "origin", r.workspace.remote], { cwd: dir });
+    git(["fetch", "--quiet", "origin"], { cwd: dir });
+  }
   // Each claim writes the branch the server gives, the project's branch,
   // which is the one Atelier reads, and says so when that changes what the
   // workspace held. Local commits are untouched: only where the next push
@@ -1881,16 +1896,26 @@ const commands = {
 
   async token() {
     const action = args._[1];
+    if (action === "store" && args.runner) {
+      const name = normalizeRunner(args.runner);
+      const token = await promptSecret("Runner token: ");
+      const res = await fetch(`${server()}/api/config`, { headers: { authorization: `Bearer ${token}` } });
+      const config = await res.json();
+      if (!res.ok || config.runner !== name) die("credential is not an active token for this runner");
+      console.log(storeRunnerCredential(server(), name, token));
+      return;
+    }
     if (action === "issue") {
-      if (typeof args.as !== "string") die("token issue needs --as HARNESS/MODEL");
+      if (args.runner && args.as) die("a runner token takes --runner and exactly one --project, not --as");
+      if (!args.runner && typeof args.as !== "string") die("token issue needs --as HARNESS/MODEL");
       if (args.days !== undefined && (!Number.isInteger(Number(args.days)) || Number(args.days) < 1 || Number(args.days) > 365)) die("--days needs an integer from 1 to 365");
       const result = await call("POST", "/tokens", {
-        actor: args.as, ...(args.multi.project ? { projects: args.multi.project } : {}),
+        ...(args.runner ? { runner: args.runner } : { actor: args.as }), ...(args.multi.project ? { projects: args.multi.project } : {}),
         ...(args.days !== undefined ? { days: Number(args.days) } : {}),
         ...(args.label !== undefined ? { label: args.label } : {}),
       }, OWNER);
-      console.log(`Token ${result.id} for ${result.actor}, expires ${result.expiresAt}`);
-      console.log("This token is not shown again. Set ATELIER_TOKEN to this value in the agent's session:");
+      console.log(`Token ${result.id} for ${result.runner ?? result.actor}, expires ${result.expiresAt}`);
+      console.log(`This token is not shown again. Set ${result.runner ? "ATELIER_RUNNER_TOKEN" : "ATELIER_TOKEN"} to this value in the session:`);
       console.log(result.token);
     } else if (action === "ls") {
       const tokens = await call("GET", "/tokens", undefined, OWNER);
@@ -1917,10 +1942,11 @@ const commands = {
     // throw rather than die, so the runner's loop decides what a failure
     // means; a 422 from posting a plan is a result the runner reports, not an
     // error thrown here.
-    const auth = (actor) => ({ authorization: `Bearer ${apiToken()}`, "x-atelier-actor": actor, "content-type": "application/json" });
+    const auth = (actor) => ({ authorization: `Bearer ${apiToken()}`, "x-atelier-actor": actor, ...(tokenRunner ? { "x-atelier-runner": tokenRunner } : {}), "content-type": "application/json" });
     const readJson = async (res) => { try { return await res.json(); } catch { return null; } };
     try {
       await runRunner(args, {
+        credential: apiToken(),
         workspacePath,
         // The server's route level against the CLI's, checked once at start:
         // a server behind this CLI would fail the runner's calls one by one.
@@ -3828,7 +3854,8 @@ if (isMain) {
   // --help/-h anywhere prints the command's usage, or the general help, and
   // exits before any server contact.
   if (args.help) {
-    if (cmd !== "help" && COMMAND_USAGE[cmd]) console.log(COMMAND_USAGE[cmd]);
+    if (cmd === "token" && TOKEN_SUBCOMMANDS[args._[1]]) console.log(TOKEN_SUBCOMMANDS[args._[1]].usage);
+    else if (cmd !== "help" && COMMAND_USAGE[cmd]) console.log(COMMAND_USAGE[cmd]);
     else commands.help();
     process.exit(0);
   }
