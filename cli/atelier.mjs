@@ -299,7 +299,7 @@ export const FLAGS = {
   inbox: { json: true },
   status: { json: true },
   open: {},
-  guide: { role: '--role needs a value: atelier guide --role build|review|plan|orchestrate' },
+  guide: { role: '--role needs a value: atelier guide --role build|review|plan|orchestrate', full: true },
   help: {},
 };
 const REST = new Set(["check"]);
@@ -3517,6 +3517,11 @@ const commands = {
   },
 
   async guide() {
+    if (args.full) {
+      if (args.role !== "orchestrate") die("--full prints the orchestrate handbook: atelier guide --role orchestrate --full");
+      process.stdout.write(readFileSync(new URL("../docs/orchestrating.md", import.meta.url), "utf8"));
+      return;
+    }
     if (args.role === undefined) { process.stdout.write(guideText()); return; }
     const role = args.role;
     if (!ROLES.includes(role)) die(`--role needs one of ${ROLES.join(", ")}: atelier guide --role build|review|plan|orchestrate`);
