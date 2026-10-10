@@ -1118,6 +1118,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
     }
     const record = await L.initProject(init, actor);
+    await L.poolChanged(await index(env).models());
     await index(env).registerProject(record);
     return json({ project: record, baseline: await mint(env, repo, "write", await projectBranch(env, record)) });
   }
@@ -1584,6 +1585,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // A held task is released as it is queued, so its holder's write token
       // is revoked first, as for a release.
       const oldToken = await L.tokenId(id);
+      if (body.agent && body.model) await L.poolChanged(await index(env).models());
       const before = await L.checkDispatch(id, actor, body);
       if (before.owner) await revoke(env, before.fork, oldToken);
       return json({ ...await L.dispatch(id, actor, body, oldToken), ...(suggestion ? { suggestion } : {}) });
