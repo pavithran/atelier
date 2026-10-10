@@ -15,6 +15,40 @@ test('builder is drawn from pool and explains record ranking', () => {
   assert.equal(result.actor, item.owner);
   assert.match(result.reasons.join(' '), /1 merge/);
 });
+test('builder and reviewer suggestions name the latest note that bears on their task', () => {
+  const notes = [
+    { at: '2026-10-01T09:00:00Z', by: 'owner', text: 'Stalls on long refactors.' },
+    { at: '2026-10-02T09:00:00Z', by: 'owner', text: 'Only t9 is affected.', item: 't9', project: 'p' },
+  ];
+  const noted = { ...pool[0], notes };
+  const general = 'Latest note, 2026-10-01 by owner: Stalls on long refactors.';
+  const forT9 = 'Latest note, 2026-10-02 by owner on p/t9: Only t9 is affected.';
+  assert.ok(suggestBuilder({ ...input, pool: [noted] }).reasons.includes(general));
+  assert.ok(suggestBuilder({ ...input, item: { ...item, id: 't9' }, pool: [noted] }).reasons.includes(forT9));
+  const reviewer = { ...input, pool: [noted], item: { ...item, owner: 'gemini-cli/gemini-3', pushActors: ['claude-code/fable-5'] } };
+  assert.equal(suggestReviewer(reviewer).actor, 'codex/gpt-6.1-sol');
+  assert.ok(suggestReviewer(reviewer).reasons.includes(general));
+  assert.ok(suggestReviewer({ ...reviewer, item: { ...reviewer.item, id: 't9' } }).reasons.includes(forT9));
+  assert.ok(!suggestBuilder({ ...input, pool: [pool[0]] }).reasons.some((r) => r.startsWith('Latest note')));
+});
+test('a task note bears only on the project it names, even where another project has the same task id', () => {
+  const notes = [
+    { at: '2026-10-01T09:00:00Z', by: 'owner', text: 'Stalls on long refactors.' },
+    { at: '2026-10-02T09:00:00Z', by: 'owner', text: 'Only alpha t1 is affected.', item: 't1', project: 'alpha' },
+    { at: '2026-10-03T09:00:00Z', by: 'owner', text: 'Only beta t1 is affected.', item: 't1', project: 'beta' },
+  ];
+  const noted = { ...pool[0], notes };
+  const reviewer = { ...input, pool: [noted], item: { ...item, owner: 'gemini-cli/gemini-3', pushActors: ['claude-code/fable-5'] } };
+  const alpha = 'Latest note, 2026-10-02 by owner on alpha/t1: Only alpha t1 is affected.';
+  const beta = 'Latest note, 2026-10-03 by owner on beta/t1: Only beta t1 is affected.';
+  assert.ok(suggestBuilder({ ...input, project: 'alpha', pool: [noted] }).reasons.includes(alpha));
+  assert.ok(suggestBuilder({ ...input, project: 'beta', pool: [noted] }).reasons.includes(beta));
+  assert.ok(suggestReviewer({ ...reviewer, project: 'alpha' }).reasons.includes(alpha));
+  assert.ok(suggestReviewer({ ...reviewer, project: 'beta' }).reasons.includes(beta));
+  const gamma = 'Latest note, 2026-10-01 by owner: Stalls on long refactors.';
+  assert.ok(suggestBuilder({ ...input, project: 'gamma', pool: [noted] }).reasons.includes(gamma));
+  assert.ok(!suggestBuilder({ ...input, project: 'gamma', pool: [noted] }).reasons.join(' ').includes('t1'));
+});
 test('sensitive work and two rejections require frontier builders', () => {
   for (const title of ['Fix security checks', 'Repair concurrency', 'Change gate rules']) {
     assert.notEqual(suggestBuilder({ ...input, item: { ...item, title } }).actor, item.owner);

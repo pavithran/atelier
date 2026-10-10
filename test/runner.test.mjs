@@ -11,6 +11,12 @@ import { checkEnv } from "../cli/check-env.mjs";
 import { helpText, ROLE_PROMPTS } from "../src/usage.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 
+// The runner's load gate (t403) reads the load through envLoad, which honours
+// ATELIER_LOAD. Pin it under the limit here, so a test that dispatches a job
+// is never held back by this machine's real load; the gate itself is tested
+// with an injected load below.
+process.env.ATELIER_LOAD = "0";
+
 const entry = { agent: "opencode", models: ["GLM-5.3-Flash-4_8bit", "glm:fast"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{workspace}"] };
 const config = { agents: [entry] };
 const assignment = { project: "atelier", item: { id: "t13", title: "Home runner", scope: ["cli/runner.mjs", "test/runner*"] }, agent: entry.agent, model: entry.models[0], actor: `${entry.agent}/${entry.models[0]}` };
@@ -1594,7 +1600,6 @@ test("a named variable the check allowlist already passes is withheld too when i
   assert.equal(env.PATH, undefined);
 });
 
-
 test("Codex builds refuse restricted and opaque adapters before claiming", async () => {
   for (const command of [["codex", "exec", "--full-auto"], ["codex", "exec", "--sandbox", "workspace-write"], ["wrapper", "{model}", "{brief_file}"], ["codex", "exec", "--sandbox=danger-full-access", "--sandbox=workspace-write"], ["codex", "exec", "--sandbox", "danger-full-access", "--approve-for-me"]]) {
     const e = { ...entry, agent: "codex", command };
@@ -1703,4 +1708,82 @@ test("runner records blocked validation as a harness limitation", async (t) => {
   assert.equal(reports[0].outcome, "validation_blocked");
   assert.equal(reports[0].item, assignment.item.id);
   assert.ok(!calls.some((c) => c.argv?.[0] === "finish"));
+});
+
+// t403: a saturated machine takes no new job. The runner holds back while the
+// load average is at or above the limit (the config's `loadLimit`, else the
+// core count), says so, and the next poll tries again.
+test("parseConfig accepts a positive loadLimit and refuses one that is not", () => {
+  assert.equal(parseConfig({ ...config, loadLimit: 4 }).loadLimit, 4);
+  assert.equal(parseConfig({ ...config, loadLimit: 1.5 }).loadLimit, 1.5, "a load average is a real number, so a fractional limit is allowed");
+  assert.equal("loadLimit" in parseConfig(config), false, "no loadLimit means the default, the core count");
+  for (const loadLimit of [0, -1, "4", Infinity, Number.NaN]) {
+    assert.match(parseConfig({ ...config, loadLimit }).errors.join(" "), /loadLimit/, String(loadLimit));
+  }
+});
+
+test("a runner holds back while the load is at or above its limit and says so", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-load-gate-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify({ ...config, loadLimit: 2 }));
+  const { io, calls, logs } = fixture();
+  let polls = 0;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    load: () => 5,
+    async queue() { polls++; return [assignment]; },
+  });
+  assert.equal(polls, 1);
+  assert.ok(!calls.some((c) => c.argv?.[0] === "claim"), "no job is claimed under load");
+  assert.ok(logs.some((s) => /load 5 is at or above the limit 2; waiting before taking a job/.test(s)), logs.join("\n"));
+});
+
+test("a runner takes a job while the load is under its limit", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-load-under-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify({ ...config, loadLimit: 2 }));
+  const { io, calls, logs } = fixture();
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    load: () => 1,
+    queue: async () => [assignment],
+  });
+  assert.ok(calls.some((c) => c.argv?.[0] === "claim"), "the job is claimed under the limit");
+  assert.ok(!logs.some((s) => s.includes("waiting before taking a job")));
+});
+
+test("a runner with no loadLimit holds back at the core count, and the reading is per job", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-load-default-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  const { io, calls } = fixture();
+  const readings = [];
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    load: () => { const v = 99; readings.push(v); return v; },
+    cores: () => 4,
+    queue: async () => [assignment],
+  });
+  assert.ok(!calls.some((c) => c.argv?.[0] === "claim"), "99 is above the 4 cores");
+  assert.deepEqual(readings, [99], "the load is read once for the offered job");
+});
+
+test("the runner's own load reader holds back under load, not just an injected one", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-load-default-reader-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify({ ...config, loadLimit: 2 }));
+  const previous = process.env.ATELIER_LOAD;
+  t.after(() => { if (previous === undefined) delete process.env.ATELIER_LOAD; else process.env.ATELIER_LOAD = previous; });
+  process.env.ATELIER_LOAD = "5";
+  const { io, calls, logs } = fixture();
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    queue: async () => [assignment],
+  });
+  assert.ok(!calls.some((c) => c.argv?.[0] === "claim"), "no job is claimed while the runner's own reader reports load 5");
+  assert.ok(logs.some((s) => /load 5 is at or above the limit 2; waiting before taking a job/.test(s)), logs.join("\n"));
 });
