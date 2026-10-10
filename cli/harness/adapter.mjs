@@ -14,7 +14,7 @@
 // and gives them to opencode alone; the others use their harness's own login.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 
@@ -161,7 +161,7 @@ export function executableFor(harness, env = process.env) {
 // The default folder of the provider configs `atelier runner setup` writes,
 // for the default runner config, runner.json (providersDir in runner-config.mjs).
 export function defaultProvidersDir(env = process.env, home = env.HOME ?? "") {
-  return join(env.ATELIER_CONFIG_DIR ?? join(home, ".config", "atelier"), "opencode", "runner");
+  return join(env.ATELIER_CONFIG_DIR ?? join(home, ".config", "atelier"), "opencode", "runner.json");
 }
 
 // What the opencode adapter needs for one model, from the index setup wrote
@@ -188,8 +188,10 @@ export const OPENCODE_CONFIG_VARS = ["OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CON
 // and .opencode in the workspace) and ~/.claude, so their MCP servers and
 // permissions would reach the run (the finding on 84358a17). So project
 // config and Claude Code's files are turned off, the variables that name more
-// config are dropped, and runAdapter gives each run an empty XDG_CONFIG_HOME
-// of its own, removed as the run ends.
+// config are dropped, and runAdapter gives each run a folder of its own
+// (runHome). opencode also reads ~/.opencode whatever
+// OPENCODE_DISABLE_PROJECT_CONFIG says (the finding on 84644528), so the
+// folder is HOME as well as every XDG folder.
 export function opencodeEnv(env, setup, secret = (name) => readSecret(name, { env })) {
   const out = { ...env };
   for (const name of OPENCODE_CONFIG_VARS) delete out[name];
@@ -222,6 +224,23 @@ export function storeEnv(env, options = {}) {
   };
 }
 
+// The variables that place an opencode run in `dir`, the run's own folder:
+// HOME and each XDG folder a subfolder of it, so no config of the owner's
+// (~/.opencode, ~/.config/opencode) is found and nothing opencode writes
+// outlives the run. git, which the agent commits with, would lose the
+// owner's identity with HOME, so it is given the owner's global git config
+// by name, unless the runner already names one.
+const XDG = { XDG_CONFIG_HOME: "config", XDG_DATA_HOME: "data", XDG_CACHE_HOME: "cache", XDG_STATE_HOME: "state" };
+export function runHome(env, dir) {
+  const out = { HOME: join(dir, "home") };
+  for (const [name, sub] of Object.entries(XDG)) out[name] = join(dir, sub);
+  for (const path of Object.values(out)) mkdirSync(path);
+  if (env.GIT_CONFIG_GLOBAL) return out;
+  const home = env.HOME ?? "";
+  const global = [join(home, ".gitconfig"), join(env.XDG_CONFIG_HOME || join(home, ".config"), "git", "config")].find((p) => home && existsSync(p));
+  return global ? { ...out, GIT_CONFIG_GLOBAL: global } : out;
+}
+
 // Runs one job; returns the exit status. `io` replaces the process's own
 // spawn, environment, output and secret reads in tests.
 export function runAdapter(harness, argv, io = {}) {
@@ -231,21 +250,24 @@ export function runAdapter(harness, argv, io = {}) {
   let args;
   try { args = parseArgs(argv); } catch (error) { return fail(error.message); }
   const kind = jobKind(args);
-  let childEnv = env, setup, configHome;
+  let childEnv = env, setup, runDir;
   try {
     if (harness === "opencode") {
       setup = opencodeSetup(args.model, args.options.providers ?? defaultProvidersDir(env));
       const secret = io.secret ?? ((name) => readSecret(name, { env: storeEnv(env, args.options) }));
       childEnv = opencodeEnv(env, setup, secret);
       // Outside the workspace, so nothing opencode leaves in it is committed.
-      configHome = mkdtempSync(join(tmpdir(), "atelier-opencode-config-"));
-      childEnv.XDG_CONFIG_HOME = configHome;
+      runDir = mkdtempSync(join(tmpdir(), "atelier-opencode-run-"));
+      Object.assign(childEnv, runHome(env, runDir));
     }
-  } catch (error) { return fail(error.message); }
+  } catch (error) {
+    if (runDir) rmSync(runDir, { recursive: true, force: true });
+    return fail(error.message);
+  }
   try {
     return runHarness(harness, args, kind, setup, childEnv, io, fail);
   } finally {
-    if (configHome) rmSync(configHome, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+    if (runDir) rmSync(runDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
   }
 }
 

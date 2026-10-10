@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { agentRules, claudeModel, parseArgs, runAdapter } from "../cli/harness/adapter.mjs";
@@ -28,9 +28,11 @@ const fs = require("node:fs");
 const input = fs.readFileSync(0, "utf8");
 const argv = process.argv.slice(2);
 const pick = ["OPENCODE_CONFIG", "DEEPSEEK_API_KEY", "CF_AIG_TOKEN", "CF_AIG_METADATA", "${METADATA_VAR}", "ATELIER_SECRET_STORE", "ATELIER_CONFIG_DIR",
-  "XDG_CONFIG_HOME", "OPENCODE_DISABLE_PROJECT_CONFIG", "OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT", "OPENCODE_PERMISSION"];
-const configHome = process.env.XDG_CONFIG_HOME && fs.existsSync(process.env.XDG_CONFIG_HOME) ? fs.readdirSync(process.env.XDG_CONFIG_HOME) : null;
-fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv, input, cwd: process.cwd(), configHome, env: Object.fromEntries(pick.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]])) }));
+  "XDG_CONFIG_HOME", "OPENCODE_DISABLE_PROJECT_CONFIG", "OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT", "OPENCODE_PERMISSION",
+  "HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "GIT_CONFIG_GLOBAL"];
+const list = (dir) => dir && fs.existsSync(dir) ? fs.readdirSync(dir) : null;
+const configHome = list(process.env.XDG_CONFIG_HOME), home = list(process.env.HOME);
+fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv, input, cwd: process.cwd(), configHome, home, env: Object.fromEntries(pick.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]])) }));
 const answer = "VERDICT: APPROVE\\nSUMMARY: fine";
 const at = argv.indexOf("--output-last-message");
 if (at !== -1) fs.writeFileSync(argv[at + 1], answer);
@@ -162,13 +164,47 @@ test("opencode runs with the generated config alone: no global, project or inher
   assert.equal(r.status, 0, r.stderr);
   const home = seen.env.XDG_CONFIG_HOME;
   assert.ok(home && home !== join(s.dir, ".config"), "a config folder of the run's own");
-  assert.ok(!realpathSync(join(home, "..")).startsWith(realpathSync(s.ws)), "outside the workspace");
+  assert.ok(!dirname(home).startsWith(s.ws), "outside the workspace");
   assert.deepEqual(seen.configHome, [], "and empty: no global config in it");
   assert.equal(seen.env.OPENCODE_DISABLE_PROJECT_CONFIG, "1", "the workspace's own opencode config is not read");
   assert.equal(seen.env.OPENCODE_DISABLE_CLAUDE_CODE, "1", "nor ~/.claude");
   for (const name of ["OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT", "OPENCODE_PERMISSION"]) assert.equal(seen.env[name], undefined, name);
   assert.equal(seen.env.OPENCODE_CONFIG, join(s.providers, "deepseek-api.json"));
   assert.throws(() => readdirSync(home), /ENOENT/, "removed as the run ends");
+});
+
+test("opencode runs with a HOME and XDG folders of the run's own, so no ~/.opencode config reaches it, and git keeps the owner's identity", (t) => {
+  // The finding on 84644528: opencode reads ~/.opencode whatever
+  // OPENCODE_DISABLE_PROJECT_CONFIG says, so its MCP servers and permissions
+  // reached the run while HOME was the owner's.
+  const s = setup(t);
+  mkdirSync(join(s.dir, ".opencode"));
+  writeFileSync(join(s.dir, ".opencode", "opencode.json"), JSON.stringify({ mcp: { leak: { type: "local", command: ["leak"] } }, permission: { bash: "allow" } }));
+  writeFileSync(join(s.dir, ".gitconfig"), "[user]\n\tname = Owner\n\temail = owner@example.com\n");
+  const { r, seen } = run("opencode", s, { model: "deepseek-v4-pro", env: {
+    XDG_DATA_HOME: join(s.dir, ".local", "share"), XDG_CACHE_HOME: join(s.dir, ".cache"), XDG_STATE_HOME: join(s.dir, ".local", "state"),
+  } });
+  assert.equal(r.status, 0, r.stderr);
+  const own = dirname(seen.env.XDG_CONFIG_HOME);
+  assert.ok(seen.env.HOME && seen.env.HOME !== s.dir, "a HOME of the run's own");
+  assert.deepEqual(seen.home, [], "and empty: no .opencode in it");
+  for (const name of ["HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"]) {
+    assert.equal(dirname(seen.env[name]), own, `${name} is in the run's folder`);
+  }
+  assert.ok(!own.startsWith(s.ws) && !own.startsWith(s.dir), "outside the workspace and the owner's HOME");
+  assert.throws(() => readdirSync(own), /ENOENT/, "removed as the run ends");
+  assert.equal(seen.env.GIT_CONFIG_GLOBAL, join(s.dir, ".gitconfig"), "git still commits as the owner");
+  // A GIT_CONFIG_GLOBAL the runner gives stays.
+  assert.equal(run("opencode", s, { model: "deepseek-v4-pro", env: { GIT_CONFIG_GLOBAL: "/elsewhere/gitconfig" } }).seen.env.GIT_CONFIG_GLOBAL, "/elsewhere/gitconfig");
+});
+
+test("docs/runners.md logs in with the server, as atelier login requires", () => {
+  // The finding on 84644528: the fresh-machine steps said `atelier login`
+  // alone, which the CLI refuses.
+  const text = readFileSync(join(repo, "docs", "runners.md"), "utf8");
+  const logins = [...text.matchAll(/`atelier login([^`]*)`/g)].map((m) => m[1]);
+  assert.ok(logins.some((rest) => /--server \S+/.test(rest)), "a step logs in with --server");
+  for (const rest of logins) assert.match(rest, /--server|--store/, `atelier login${rest}`);
 });
 
 test("a missing key stops the opencode adapter, naming the entry and never a value", (t) => {
@@ -211,10 +247,10 @@ test("an entry with no command runs the adapter Atelier ships, with every placeh
   assert.equal(agents[0].command[0], process.execPath);
   assert.equal(agents[0].command[1], join(repo, "bin", "harness", "atelier-codex.mjs"));
   // Each runner config has a provider folder of its own, named after it.
-  assert.deepEqual(agents[1].command.slice(2, 4), ["--providers", "/cfg/opencode/runner"]);
+  assert.deepEqual(agents[1].command.slice(2, 4), ["--providers", "/cfg/opencode/runner.json"]);
   // The runner's credential store goes to the opencode adapter as arguments.
   const named = parseConfig({ agents: [{ agent: "opencode", models: ["glm-5.3"] }] }, { configPath: "/cfg/review.json", env: { ATELIER_SECRET_STORE: "file", ATELIER_CONFIG_DIR: "/secrets" } });
-  assert.deepEqual(named.agents[0].command.slice(2, 8), ["--providers", "/cfg/opencode/review", "--secret-store", "file", "--secrets-dir", "/secrets"]);
+  assert.deepEqual(named.agents[0].command.slice(2, 8), ["--providers", "/cfg/opencode/review.json", "--secret-store", "file", "--secrets-dir", "/secrets"]);
   assert.deepEqual(parseConfig({ agents: [{ agent: "opencode", models: ["glm-5.3"] }] }, { configPath: "/cfg/runner.json", env: {} }).agents[0].command.slice(4, 5), ["{model}"]);
   const argv = commandFor(agents[0], { model: "gpt-6-astra", briefFile: "/b", workspace: "/w", planFile: undefined, diffFile: undefined, verdictFile: undefined });
   assert.deepEqual(argv.slice(2), ["gpt-6-astra", "/b", "/w", "undefined", "undefined", "undefined"]);

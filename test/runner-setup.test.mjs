@@ -94,10 +94,27 @@ test("a second runner config keeps the first runner's provider configs", async (
     assert.deepEqual(errors, []);
     const command = agents.find((a) => a.agent === "opencode").command;
     const providers = command[command.indexOf("--providers") + 1];
-    assert.equal(providers, `/cfg/opencode/${name}`);
+    assert.equal(providers, `/cfg/opencode/${name}.json`);
     const index = JSON.parse(written.get(join(providers, "models.json"))).models;
     assert.deepEqual(Object.keys(index), [model], `${name}'s index lists its own model`);
     assert.ok(written.has(join(providers, index[model].config)), `${name}'s provider config is there`);
+  }
+});
+
+test("two runner configs that differ only by extension keep provider configs of their own", async () => {
+  // The finding on 84644528: runner.json and runner.backup both resolved to
+  // opencode/runner, so the second setup's index replaced the first's.
+  const written = new Map();
+  const io = (pool) => ({ pool: async () => pool, which: everything, fetchJson, env: {}, print: () => {}, writeFile: (p, t) => written.set(p, t), exists: (p) => written.has(p) });
+  const args = (config) => ({ _: ["runner", "setup"], multi: { config: [config] }, config });
+  await runSetup(args("/cfg/runner.json"), io(POOL.filter((m) => m.id === "glm-5.3")));
+  await runSetup(args("/cfg/runner.backup"), io(POOL.filter((m) => m.id === "deepseek-v4-pro")));
+  for (const [name, model] of [["runner.json", "glm-5.3"], ["runner.backup", "deepseek-v4-pro"]]) {
+    const configPath = `/cfg/${name}`;
+    const command = parseConfig(written.get(configPath), { configPath }).agents.find((a) => a.agent === "opencode").command;
+    const providers = command[command.indexOf("--providers") + 1];
+    assert.equal(providers, `/cfg/opencode/${name}`);
+    assert.deepEqual(Object.keys(JSON.parse(written.get(join(providers, "models.json"))).models), [model], `${name}'s index lists its own model`);
   }
 });
 
@@ -109,7 +126,7 @@ test("the catalogue's own limits fit what it says each provider serves", () => {
 
 test("the generated provider configs send the gateway metadata, allow git add and git commit, and hold no key", async () => {
   const p = await plan({ env: { ATELIER_GATEWAY: "acct123/atelier" } });
-  const deepseek = file(p, ["opencode", "runner","deepseek-api.json"]);
+  const deepseek = file(p, ["opencode", "runner.json","deepseek-api.json"]);
   const options = deepseek.provider["deepseek-api"].options;
   assert.equal(options.baseURL, "https://gateway.ai.cloudflare.com/v1/acct123/atelier/deepseek");
   assert.equal(options.apiKey, "{env:DEEPSEEK_API_KEY}");
@@ -117,23 +134,23 @@ test("the generated provider configs send the gateway metadata, allow git add an
   assert.equal(options.headers["cf-aig-authorization"], "Bearer {env:CF_AIG_TOKEN}");
   assert.deepEqual(deepseek.provider["deepseek-api"].models["deepseek-v4-pro"].limit, CONFIGURED["deepseek-api"]["deepseek-v4-pro"]);
   for (const name of ["deepseek-api", "openrouter-api", "zai-coding", "ai-studio"]) {
-    const config = file(p, ["opencode", "runner",`${name}.json`]);
+    const config = file(p, ["opencode", "runner.json",`${name}.json`]);
     assert.equal(config.permission.bash["git add *"], "allow", name);
     assert.equal(config.permission.bash["git commit *"], "allow", name);
     assert.equal(config.permission.bash["git push*"], "deny", name);
     assert.ok(config.provider[name].options.headers["cf-aig-metadata"], `${name} sends the metadata`);
     assert.deepEqual(config.mcp, {});
   }
-  assert.deepEqual(file(p, ["opencode", "runner","openrouter-api.json"]).provider["openrouter-api"].models, { "xiaomi/mimo-v2.6-pro": { name: "xiaomi-mimo-v2.6-pro", limit: { context: 262144, output: 32000 } } });
-  assert.equal(file(p, ["opencode", "runner","ai-studio.json"]).provider["ai-studio"].options.baseURL, "http://studio.local:1234/v1");
-  const index = file(p, ["opencode", "runner","models.json"]).models;
+  assert.deepEqual(file(p, ["opencode", "runner.json","openrouter-api.json"]).provider["openrouter-api"].models, { "xiaomi/mimo-v2.6-pro": { name: "xiaomi-mimo-v2.6-pro", limit: { context: 262144, output: 32000 } } });
+  assert.equal(file(p, ["opencode", "runner.json","ai-studio.json"]).provider["ai-studio"].options.baseURL, "http://studio.local:1234/v1");
+  const index = file(p, ["opencode", "runner.json","models.json"]).models;
   assert.deepEqual(index["deepseek-v4-pro"], { provider: "deepseek-api", providerModel: "deepseek-v4-pro", config: "deepseek-api.json", key: "deepseek.KEY2", keyVar: "DEEPSEEK_API_KEY", gateway: true, limit: CONFIGURED["deepseek-api"]["deepseek-v4-pro"] });
   assert.equal(index["glm-5.3"].key, "zai.API_KEY");
   assert.equal(index["glm-5.3"].gateway, false, "the coding plan is not pay per use and goes direct");
   assert.equal(PERMISSION.external_directory, "deny");
   // Without a gateway, the providers are reached direct and say so.
   const direct = await plan();
-  assert.equal(file(direct, ["opencode", "runner","deepseek-api.json"]).provider["deepseek-api"].options.baseURL, "https://api.deepseek.com/v1");
+  assert.equal(file(direct, ["opencode", "runner.json","deepseek-api.json"]).provider["deepseek-api"].options.baseURL, "https://api.deepseek.com/v1");
   assert.match(direct.lines.join("\n"), /No AI Gateway is named/);
 });
 
@@ -142,7 +159,7 @@ test("setup writes the files, refuses to overwrite a runner config, and a dry ru
   const io = { pool: async () => POOL, which: everything, fetchJson, env: {}, print: (t) => printed.push(t), writeFile: (p, t) => written.set(p, t), exists: () => false };
   const args = (extra = {}) => ({ _: ["runner", "setup"], multi: Object.fromEntries(Object.keys(extra).map((k) => [k, [extra[k]]])), ...extra });
   await runSetup(args({ config: "/cfg/runner.json" }), io);
-  assert.deepEqual([...written.keys()].sort(), ["/cfg/opencode/runner/ai-studio.json", "/cfg/opencode/runner/deepseek-api.json", "/cfg/opencode/runner/models.json", "/cfg/opencode/runner/openrouter-api.json", "/cfg/opencode/runner/zai-coding.json", "/cfg/runner.json"]);
+  assert.deepEqual([...written.keys()].sort(), ["/cfg/opencode/runner.json/ai-studio.json", "/cfg/opencode/runner.json/deepseek-api.json", "/cfg/opencode/runner.json/models.json", "/cfg/opencode/runner.json/openrouter-api.json", "/cfg/opencode/runner.json/zai-coding.json", "/cfg/runner.json"]);
   await assert.rejects(runSetup(args({ config: "/cfg/runner.json" }), { ...io, exists: () => true }), /exists; setup does not overwrite a runner config/);
   written.clear();
   await runSetup(args({ config: "/cfg/runner.json", "dry-run": true }), { ...io, exists: () => true });
