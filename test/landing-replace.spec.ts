@@ -363,3 +363,79 @@ it("a lease-wait timeout says explicitly that no landing held the lease when the
   expect(detail).toMatch(new RegExp(`at the final attempt \\(.* UTC\\) no landing held it; the server said: owner's landing of ${ahead} has been waiting for the lease`));
   expect(await L.readProjectLanding()).toBeNull();
 });
+
+
+it("a request arriving after the claim but before create cannot erase the successor", async () => {
+  const project = "wf-claimed-not-created";
+  const { L, id } = await task(project);
+  const old = "wf-claimed-old";
+  await L.setLandingWorkflow(id, old, "owner", { reviewer: "codex/gpt-5.5" });
+  await enteredLeaseAgo(L, id, LANDING_LEASE_WAIT_LIMIT_MS + 1);
+  const reached = gate(), go = gate();
+  const creates: string[] = [];
+  const testEnv = { ...env, LANDING_WORKFLOW: {
+    get: async (instance: string) => {
+      if (instance !== old && !creates.includes(instance)) throw new Error("instance.not_found");
+      return handle(async () => ({ status: instance === old ? "terminated" : "queued" }), async () => {});
+    },
+    create: async (options: { id: string }) => {
+      reached.open();
+      await go.shut;
+      creates.push(options.id);
+      return handle(async () => ({ status: "queued" }), async () => {});
+    },
+  } } as unknown as typeof env;
+  const a = call(project, id, {}, testEnv);
+  await reached.shut;
+  const claimed = await L.landingWorkflowOf(id);
+  try {
+    const b = await call(project, id, { reviewer: "gemini-cli/gemini-3-pro" }, testEnv);
+    expect(b.status).toBe(503);
+    expect(await L.landingWorkflowOf(id)).toEqual(claimed);
+  } finally { go.open(); }
+  expect((await a).status).toBe(201);
+  expect(creates).toEqual([claimed!.instance]);
+  expect(await L.landingWorkflowOf(id)).toMatchObject({ reviewer: "codex/gpt-5.5", replaced: { from: old, reason: "lease-wait" } });
+  expect(await (await call(project, id, {}, testEnv)).json()).toMatchObject({ created: false, replaced: { from: old, to: claimed!.instance } });
+});
+
+it("an ended successor inherits unnamed review options and the replacement reason", async () => {
+  const project = "wf-ended-options";
+  const { L, id } = await task(project);
+  await L.claimLandingWorkflow(id, null, "wf-ended", "owner", { reviewer: "codex/gpt-5.5", noReview: true }, { from: "wf-original", reason: "reviewer", detail: "reviewer changed" });
+  let params: Record<string, unknown> = {};
+  const testEnv = { ...env, LANDING_WORKFLOW: {
+    get: async () => handle(async () => ({ status: "terminated" }), async () => {}),
+    create: async (options: { params: Record<string, unknown> }) => {
+      params = options.params;
+      return handle(async () => ({ status: "queued" }), async () => {});
+    },
+  } } as unknown as typeof env;
+  const response = await call(project, id, {}, testEnv);
+  expect(response.status).toBe(201);
+  const result = await response.json() as { instance: string };
+  expect(result).toMatchObject({ replaced: { from: "wf-original", to: result.instance } });
+  expect(params).toMatchObject({ reviewer: "codex/gpt-5.5", noReview: true });
+  expect(await L.landingWorkflowOf(id)).toMatchObject({ reviewer: "codex/gpt-5.5", noReview: true, replaced: { from: "wf-original", reason: "reviewer" } });
+});
+
+it("an eligible named reviewer safely restarts a pre-t430 record with no reviewer", async () => {
+  const project = "wf-legacy-reviewer";
+  const { L, id } = await task(project);
+  await L.setLandingWorkflow(id, "wf-legacy", "owner", "local");
+  let ended = false, creates = 0;
+  const testEnv = { ...env, LANDING_WORKFLOW: {
+    get: async () => handle(async () => ({ status: ended ? "terminated" : "waiting" }), async () => { ended = true; }),
+    create: async () => {
+      expect(ended).toBe(true);
+      creates++;
+      return handle(async () => ({ status: "queued" }), async () => {});
+    },
+  } } as unknown as typeof env;
+  expect((await call(project, id, { reviewer: "claude-code/sonnet-5.5" }, testEnv)).status).toBe(200);
+  expect(creates).toBe(0);
+  const response = await call(project, id, { reviewer: "codex/gpt-5.5" }, testEnv);
+  expect(response.status).toBe(201);
+  expect(await response.json()).toMatchObject({ reviewer: "codex/gpt-5.5", replaced: { from: "wf-legacy", reason: "reviewer" } });
+  expect(creates).toBe(1);
+});
