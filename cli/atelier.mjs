@@ -20,7 +20,8 @@ import { cleanSession, stateFile, handoffNotes, staleState, fileExcerpt, session
 
 import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } from "../src/context-budget.ts";
 
-import { redactGitArgs } from "./runner.mjs";
+import { redactGitArgs, IDENTITY_FILE, identityRefusals } from "./runner.mjs";
+import { commitRefusals, IDENTITY_LOG_FORMAT, NO_IDENTITY, parseIdentityLog, publicRefusals } from "../src/commit-identity.ts";
 import { acceptancePolicy, controlPlaneChanges, mergeContext, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
 import { cleanSummary } from "../src/brief.ts";
 import { VERDICT_LIMITS } from "../src/review/verdict.ts";
@@ -243,7 +244,7 @@ export const FLAGS = {
   ops: {},
   runner: { name: false, once: true, config: false, discover: true, probe: true, "dry-run": true, usage: true, integrate: true },
   login: { server: false, store: true },
-  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', core: '--core needs a glob: atelier init --core "GLOB", once per entry, or --core "" alone to clear them', approval: false, reset: true, "refuse-overlap": true, "require-criteria": true, "sandbox-only": true, "no-override": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default', "review-tier": '--review-tier needs models: atelier init --review-tier H/M,H/M,..., or --review-tier "" to clear it' },
+  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', core: '--core needs a glob: atelier init --core "GLOB", once per entry, or --core "" alone to clear them', approval: false, reset: true, "refuse-overlap": true, "require-criteria": true, "sandbox-only": true, "no-override": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default', "review-tier": '--review-tier needs models: atelier init --review-tier H/M,H/M,..., or --review-tier "" to clear it', "commit-name": '--commit-name needs the name the project\'s commits carry: atelier init --commit-name "NAME"', "commit-email": "--commit-email needs the address the project's commits carry: atelier init --commit-email EMAIL", "agent-email": '--agent-email needs an address: atelier init --agent-email EMAIL, once per address, or --agent-email "" alone to clear them', "private-email": '--private-email needs an address: atelier init --private-email EMAIL, once per address, or --private-email "" alone to clear them' },
   adopt: {},
   revert: {},
   publish: {},
@@ -883,9 +884,53 @@ async function claimWorkspace(name, id, as, runner) {
   if (!fresh) takeForkHead(dir, id, branch);
   const reads = forkBranch(dir);
   if (reads && reads !== branch) console.log(`Warning: ${id}'s fork reads its head from ${reads}, but the project's branch is ${branch}, so atelier push will refuse. To register ${reads}, ${OWNER_NAME} runs atelier init in the project's checkout with ${reads} checked out.`);
-  // Commit as the project's checkout does, not as this machine's global identity.
-  const identity = applyIdentity(cfg.projects?.[name]?.path, dir);
-  return { item: r.item, workspace: r.workspace, dir, identity };
+  const identity = setWorkspaceIdentity(dir, r.commitIdentity, cfg.projects?.[name]?.path, name);
+  // An agent claiming for itself is the builder, and commits in this
+  // environment; a runner checks its builder's own (cli/runner.mjs runTask).
+  if (!runner && r.commitIdentity) {
+    const refused = identityRefusals(dir, process.env, name);
+    if (refused.length) die(`${id} is claimed, but a commit made in ${dir} would carry an identity the project's policy refuses:\n  ${refused.join("\n  ")}\nFix that, then run atelier claim ${id} again.`);
+  }
+  return { item: r.item, workspace: r.workspace, dir, identity, fromPolicy: !!r.commitIdentity };
+}
+
+// The environment that makes a commit's author and committer the project's
+// own, over any GIT_AUTHOR_* or GIT_COMMITTER_* the caller's holds.
+export const identityEnv = (identity) => ({ GIT_AUTHOR_NAME: identity.name, GIT_AUTHOR_EMAIL: identity.email, GIT_COMMITTER_NAME: identity.name, GIT_COMMITTER_EMAIL: identity.email });
+
+// The commits `to` holds and `from` does not, each author and committer
+// field checked against the policy (t451): `from` is the history already
+// published there, which the check leaves alone.
+export function identityRangeRefusals(gitIn, cwd, identity, from, to) {
+  const log = gitIn(["log", `--format=${IDENTITY_LOG_FORMAT}`, `${from}..${to}`], { cwd, raw: true });
+  return commitRefusals(identity, parseIdentityLog(log));
+}
+
+// Every claim, of a new clone or a reused one, on any machine, writes the
+// project's commit identity from the server's policy into the workspace's
+// own Git config, so no commit falls back to this machine's global identity
+// (t451), and keeps the policy beside it for the runner's check. A write
+// that does not read back as written fails the claim's setup. A project
+// whose policy names no identity yet (docs/setup.md, "Commit identity")
+// keeps the old way: what the registered checkout sets, if this machine has
+// one.
+function setWorkspaceIdentity(dir, policy, checkout, name) {
+  const file = join(dir, ".git", IDENTITY_FILE);
+  if (!policy) {
+    rmSync(file, { force: true });
+    console.log(`Warning: ${NO_IDENTITY(name)}. Until then this workspace commits as the registered checkout does, if this machine has one, and runners refuse to start a builder.`);
+    return applyIdentity(checkout, dir);
+  }
+  for (const [key, value] of [["user.name", policy.name], ["user.email", policy.email]]) {
+    const set = git(["config", "--local", key, value], { cwd: dir, allowFail: true });
+    const read = git(["config", "--local", "--get", key], { cwd: dir, allowFail: true });
+    if (set.status !== 0 || read.status !== 0 || read.stdout.trim() !== value) {
+      die(`the claim could not set ${key} to ${JSON.stringify(value)} in ${dir}/.git/config: ${(set.stderr || read.stderr || `it reads ${JSON.stringify(read.stdout.trim())}`).trim()}`);
+    }
+  }
+  try { writeFileSync(file, `${JSON.stringify(policy)}\n`); }
+  catch (error) { die(`the claim could not record the project's commit identity in ${file}: ${error.message}`); }
+  return { name: policy.name, email: policy.email };
 }
 
 // The branch a fork's HEAD names, as its Git remote reports it. Atelier
@@ -1852,6 +1897,21 @@ const commands = {
     else die("could not inspect staged changes");
     data.pushes = [];
     for (const remote of remotes) {
+      // A public mirror takes only public addresses (publicRefusals):
+      // in a project whose policy names a commit identity, every commit the
+      // remote lacks, as last fetched or pushed, must carry a no-reply
+      // author and committer address. An agent address allowed for landing
+      // is not allowed here. Such a remote is not pushed, and fails as a
+      // push that failed does.
+      if (record.policy.commitIdentity) {
+        const log = git(["log", `--format=${IDENTITY_LOG_FORMAT}`, `refs/heads/${branch}`, "--not", `--remotes=${remote}`], { cwd, raw: true });
+        const unpublic = publicRefusals(parseIdentityLog(log));
+        if (unpublic.length) {
+          data.pushes.push({ remote, passed: false });
+          console.log(`Remote ${sessionText(remote, 200)}: not pushed; it would publish addresses that are not public:\n  ${unpublic.map((line) => sessionText(line, 300)).join("\n  ")}`);
+          continue;
+        }
+      }
       // The owner's own remotes: a normal push, LFS objects included (see gitEnv).
       const result = git(["-c", `remote.${remote}.mirror=false`, "push", "--no-force", "--no-follow-tags", remote, `refs/heads/${branch}:refs/heads/${branch}`], { cwd, allowFail: true, ownerRemote: true });
       data.pushes.push({ remote, passed: result.status === 0 });
@@ -2159,6 +2219,15 @@ const commands = {
     // ones; --core "" alone clears them, and --reset without it does too.
     const core = coreArg();
     if (core || reset) policy.coreFiles = core ?? [];
+    // The commit identity (t451): each flag given replaces what is recorded,
+    // and the server checks the whole and refuses an invalid one. A list
+    // flag given once as "" clears its list.
+    if (args["commit-name"] !== undefined) policy.commitName = args["commit-name"];
+    if (args["commit-email"] !== undefined) policy.commitEmail = args["commit-email"];
+    for (const [flag, field] of [["agent-email", "agentEmails"], ["private-email", "privateEmails"]]) {
+      const values = args.multi[flag];
+      if (values) policy[field] = values.length === 1 && values[0] === "" ? [] : values;
+    }
     const r = await call("PUT", P(name), {
       ...policy,
       ...(reset ? { reset: true } : {}),
@@ -2245,6 +2314,9 @@ const commands = {
     console.log(`Core files: ${pol.coreFiles?.length ? `${pol.coreFiles.join(", ")}; the queue holds a dispatch whose scope overlaps a live item's in one` : "none; the queue holds no dispatch for its scope"}`);
     // A server older than core files ignores them and answers without any.
     if (core?.length && !pol.coreFiles?.length) console.log("Warning: the server did not record the core files; deploy the server, then run atelier init --core again.");
+    const ci = pol.commitIdentity;
+    console.log(`Commits:    ${ci ? `${ci.name} <${ci.email}>${ci.agentEmails.length ? `; agents may also commit as ${ci.agentEmails.join(", ")}` : ""}${ci.privateEmails?.length ? `; declared private: ${ci.privateEmails.join(", ")}` : ""}` : "no identity named; claims fall back to the checkout's, and runners refuse to start a builder: set one with --commit-name NAME --commit-email EMAIL"}`);
+    if ((args["commit-email"] !== undefined || args["commit-name"] !== undefined) && !ci) console.log("Warning: the server did not record the commit identity; deploy the server, then run atelier init --commit-name NAME --commit-email EMAIL again.");
     if (pol.approval) console.log(`Approval:   ${pol.approval}`);
     let agentsMd = null;
     try { agentsMd = readFileSync(join(top, "AGENTS.md"), "utf8"); } catch {}
@@ -2437,9 +2509,9 @@ const commands = {
     const name = project();
     const id = itemArg();
     const as = await actor();
-    const { workspace, dir, identity } = await claimWorkspace(name, id, as, args.runner ?? null);
+    const { workspace, dir, identity, fromPolicy } = await claimWorkspace(name, id, as, args.runner ?? null);
     console.log(`${id} is yours, ${as}. Work here:\n  cd ${JSON.stringify(dir)}`);
-    if (identity.email) console.log(`Commits here are authored as ${identity.name ?? "(global name)"} <${identity.email}>, as in the project checkout.`);
+    if (identity.email) console.log(`Commits here are authored as ${identity.name ?? "(global name)"} <${identity.email}>, ${fromPolicy ? "as the project's policy names" : "as in the project checkout"}.`);
     console.log(`Write token expires ${workspace.expiresAt}; run \`atelier claim ${id}\` again to refresh it.`);
     console.log(args._[0] === "start" ? 'Then: commit, then atelier done "summary"' : `Then: commit → atelier push → atelier check → atelier submit`);
   },
@@ -3134,6 +3206,12 @@ const commands = {
       const ws=await call('POST',`${I(name,id)}/read-token`,{},OWNER);
       git(['fetch','--quiet',ws.remote,item.acceptedHead],{cwd,token:ws.token});
       if (git(['rev-parse','FETCH_HEAD'],{cwd})!==item.acceptedHead) die('fetched revision differs from the approval');
+      // The commits the task adds to the baseline carry the project's
+      // address or an agent address its policy allows (t451); what the
+      // baseline already holds is not read.
+      const identity=d.policy?.commitIdentity ?? die(`${NO_IDENTITY(name)}. Nothing was merged.`);
+      const taskRefusals=identityRangeRefusals(git,cwd,identity,baselineHead,item.acceptedHead);
+      if (taskRefusals.length) die(`${id}'s accepted revision holds commits whose identity the project's policy refuses:\n  ${taskRefusals.join('\n  ')}\nNothing was merged. The task's owner rewrites those commits under an allowed identity and submits a new revision, or the owner allows the address with atelier init --agent-email EMAIL.`);
       if (refreshed?.policy) {
         if (!item.base) die('the accepted revision has no recorded base; review the task again on its page and accept again');
         // The accepted revision's own changes: those since the newest baseline
@@ -3205,7 +3283,9 @@ const commands = {
           if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }
           const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote,changeClass:d.gate.changeClass});
           if(receipt)git(['add',receipt],{cwd});
-          git(['commit','--quiet','-m',`Merge ${id}: ${item.title}\n\n${marker}\nWorked by: ${owners.join(' → ')||item.owner}`],{cwd});
+          // The merge commit is the landing's own, made under the project's
+          // identity whatever this checkout or its environment would give.
+          git(['commit','--quiet','-m',`Merge ${id}: ${item.title}\n\n${marker}\nWorked by: ${owners.join(' → ')||item.owner}`],{cwd,env:identityEnv(identity)});
           journal.save({mergeCommit:git(['rev-parse','HEAD'],{cwd}),phase:'committed'});
         }
       }
@@ -3233,6 +3313,10 @@ const commands = {
       // give the same twin, so a retry publishes the same commit.
       const published=fresh?rebuild(git,cwd,mergeCommit,[journal.state.baselineStart??baselineHead,item.acceptedHead]):mergeCommit;
       if(fresh)savePairs(gitDir,name,{...loadPairs(gitDir,name),[published]:mergeCommit});
+      // Every commit the push adds to the baseline, the landing's generated
+      // merge commit and its twin included, is checked again before it goes.
+      const landingRefusals=identityRangeRefusals(git,cwd,identity,baselineHead,published);
+      if(landingRefusals.length)die(`the landing would put commits on the baseline whose identity the project's policy refuses:\n  ${landingRefusals.join('\n  ')}\nNothing was pushed. Remove the merge with atelier merge ${id} --cancel --discard-local, then merge again.`);
       for(const c of new Set([mergeCommit,published])){
         const priorNote=git(['notes','--ref=atelier','show',c],{cwd,allowFail:true});
         if(priorNote.status!==0||priorNote.stdout.trim()!==note.trim())git(['notes','--ref=atelier','add','-f','-m',note,c],{cwd});
