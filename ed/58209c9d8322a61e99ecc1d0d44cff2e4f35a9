@@ -1,0 +1,27 @@
+atelier atelier/t413 "Docs examples match how models are reached"
+accepted head 6c9ea262ab20f28735b008696b5ea23cc9d85d38
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — antigravity/gemini-3.1-pro 2026-10-10T05:33:35.185Z
+OBSERVED pass npm run types && npm run typecheck — antigravity/gemini-3.1-pro 2026-10-10T05:33:37.884Z
+REVIEW approve by codex/gpt-6-astra at 6c9ea262ab20f28735b008696b5ea23cc9d85d38, recorded by codex/gpt-6-astra
+2026-10-09T20:15:08.753Z pavi item.created
+2026-10-10T01:46:19.685Z pavi item.dispatched
+2026-10-10T03:24:54.476Z antigravity/gemini-3.1-pro item.claimed
+2026-10-10T03:24:59.372Z antigravity/gemini-3.1-pro fork.created
+2026-10-10T03:54:44.957Z antigravity/gemini-3.1-pro push.observed
+2026-10-10T03:59:50.798Z antigravity/gemini-3.1-pro evidence.observed
+2026-10-10T03:59:53.150Z antigravity/gemini-3.1-pro evidence.observed
+2026-10-10T03:59:53.602Z antigravity/gemini-3.1-pro item.submitted
+2026-10-10T05:27:55.766Z pavi land.lease
+2026-10-10T05:28:00.339Z pavi land.merge
+2026-10-10T05:28:16.656Z pavi land.regenerate
+2026-10-10T05:28:19.381Z antigravity/gemini-3.1-pro push.observed
+2026-10-10T05:28:19.906Z pavi land.push
+2026-10-10T05:33:35.686Z antigravity/gemini-3.1-pro evidence.observed
+2026-10-10T05:33:37.976Z antigravity/gemini-3.1-pro evidence.observed
+2026-10-10T05:33:38.386Z pavi land.check
+2026-10-10T05:33:58.371Z pavi review.requested
+2026-10-10T05:34:06.436Z codex/gpt-6-astra review.claimed
+2026-10-10T05:34:56.870Z codex/gpt-6-astra review.approved
+2026-10-10T05:34:59.025Z pavi land.review
+2026-10-10T05:34:59.706Z pavi item.accepted
+2026-10-10T05:34:59.734Z pavi land.accept
