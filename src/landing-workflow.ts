@@ -64,7 +64,7 @@ import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
 import { refusalOf, refusalText } from "./checks";
 import { baseRepoOf } from "./plans/integrate";
 import { evidenceAt, parseRuleError } from "./rules";
-import type { LandingLease } from "./landing-lease.ts";
+import { landingLeasePollMs, type LandingLease } from "./landing-lease.ts";
 import type { LandingWorkflowStage } from "./ledger.ts";
 import { landingVerdict, type LandingReview } from "./landing-verdict.ts";
 import type { RunRequest } from "./sandbox/runner";
@@ -290,7 +290,10 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
 
   private async stage(step: WorkflowStep, L: LedgerStub, p: Landing, stage: LandingWorkflowStage, round: number, detail?: string, files?: string[]): Promise<void> {
     await step.do(`stage ${stage} r${round}`, RETRIES, async () => {
-      await L.setLandingWorkflowStage(p.item, p.instance, stage, round, detail, files);
+      const record = await L.setLandingWorkflowStage(p.item, p.instance, stage, round, detail, files);
+      if (!record && stage === "lease" && round === 0) {
+        throw new Error("the landing instance is waiting for its record after creation");
+      }
       return {};
     });
   }
@@ -302,7 +305,11 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
   // the queue and ends. `record` writes the land.lease event for the first
   // take alone; a retake in a later round is a resume, not a second lease.
   private async takeLease(step: WorkflowStep, L: LedgerStub, p: Landing, label: string, record: boolean): Promise<void> {
-    const maxAsks = Math.max(1, Math.floor(p.wait / p.poll));
+    // Bound replay/step pressure during a long lease queue without letting
+    // its heartbeat approach the Ledger's fifteen-minute queue expiry.
+    // Small test/short-wait polls retain their requested cadence.
+    const poll = landingLeasePollMs(p.wait, p.poll);
+    const maxAsks = Math.max(1, Math.ceil(p.wait / poll));
     for (let i = 0; ; i++) {
       const ask = await step.do(`ask for the landing lease ${label} #${i}`, RETRIES, async () => {
         const t0 = Date.now();
@@ -330,7 +337,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         await step.do(`leave the landing queue ${label}`, RETRIES, async () => { await L.queueProjectLanding(p.item, p.actor, true); return {}; });
         throw new NonRetryableError(`the landing lease was not ${p.item}'s within ${span(p.wait)}: ${ask.why}. Nothing was changed; run atelier land ${p.item} --workflow again to queue once more`);
       }
-      await step.sleep(`wait for the landing lease ${label} #${i}`, p.poll);
+      await step.sleep(`wait for the landing lease ${label} #${i}`, poll);
     }
   }
 
