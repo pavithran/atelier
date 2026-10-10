@@ -1580,11 +1580,11 @@ test("land --workflow reports a finished landing, not a lost one, when the merge
 // reads one from disk, under .scratch/) and the CLI's own steps. The task is
 // held by codex/test, the owner is "owner", and the workspace records
 // `expiresAt` as its token's expiry (none when null).
-function tokenLanding(t, { expiresAt, claim = "ok", holder = "codex/test", runner = null, workflow = false, push = [] } = {}) {
+function tokenLanding(t, { expiresAt, claim = "ok", holder = "codex/test", runner = null, dispatch = null, actor = "codex/test", committed = true, workflow = false, push = [] } = {}) {
   const scratch = resolve(".scratch"); mkdirSync(scratch, { recursive: true });
   const dir = mkdtempSync(join(scratch, "land-token-")); t.after(() => rmSync(dir, { recursive: true, force: true }));
   execFileSync("git", ["init", "-q", dir]);
-  const config = { "atelier.project": "proj", "atelier.item": "t1", "atelier.actor": "codex/test", ...(expiresAt ? { "atelier.write-token-expires-at": expiresAt } : {}) };
+  const config = { "atelier.project": "proj", "atelier.item": "t1", "atelier.actor": actor, ...(expiresAt ? { "atelier.write-token-expires-at": expiresAt } : {}) };
   const calls = [], lines = [], adopted = [], commands = [];
   const itemPath = "/projects/proj/items/t1", leasePath = "/projects/proj/landing-lease";
   const fresh = new Date(Date.now() + 8 * 3600_000).toISOString();
@@ -1593,9 +1593,12 @@ function tokenLanding(t, { expiresAt, claim = "ok", holder = "codex/test", runne
     if (path === "/version") return { routeLevel: ROUTE_LEVEL, commit: "c0ffee" };
     if (path === leasePath && method === "GET") return { lease: null, waiting: [] };
     if (path === leasePath) return body.cancel ? {} : { item: { id: "t1", state: "submitted" } };
-    if (path === itemPath) return { item: { id: "t1", state: "submitted", owner: holder, runner }, policy: { checks: [] } };
+    if (path === itemPath) return { item: { id: "t1", state: holder ? "submitted" : "open", owner: holder, runner, dispatch }, policy: { checks: [] } };
+    if (path === `${itemPath}/undispatch`) { dispatch = null; return {}; }
     if (path === `${itemPath}/claim`) {
+      if (dispatch && !holder) throw new Error("dispatched: withdraw the dispatch to claim it by hand");
       if (claim !== "ok") throw Object.assign(new Error(claim), { status: 409 });
+      holder = as;
       return { item: { id: "t1" }, workspace: { remote: "https://fork.invalid/t1.git", token: "fresh-token", expiresAt: fresh, defaultBranch: "main" } };
     }
     if (path === `${itemPath}/base-token`) return { remote: "https://base.invalid/main.git", token: "read", defaultBranch: "main" };
@@ -1607,7 +1610,7 @@ function tokenLanding(t, { expiresAt, claim = "ok", holder = "codex/test", runne
   // Git as a landing asks it: main already merged, nothing to compare or
   // regenerate, the config above.
   const fakeGit = (args, o = {}) => {
-    const out = args[0] === "config" ? config[args.at(-1)] ?? null : args[0] === "rev-parse" ? "a".repeat(40) : "";
+    const out = args[0] === "config" ? config[args.at(-1)] ?? null : args[0] === "rev-parse" ? committed ? "a".repeat(40) : null : "";
     if (o.allowFail) return { status: out === null ? 1 : 0, stdout: out ?? "", stderr: "" };
     return out ?? "";
   };
@@ -1675,10 +1678,48 @@ test("a refresh the server refuses stops the landing before the lease, naming at
 });
 
 test("a workspace whose recorded actor is not the task's holder is not refreshed: nothing is claimed, as the owner or anyone (t275)", async (t) => {
-  for (const holder of ["owner", "claude-code/opus-5.5", null]) {
+  for (const holder of ["owner", "claude-code/opus-5.5"]) {
     const l = tokenLanding(t, { expiresAt: null, holder });
     await assert.rejects(runLand(l.io), /atelier claim t1/);
     assert.equal(l.claims().length, 0, `held by ${holder}`);
+    assert.equal(l.leaseTaken(), false);
+  }
+});
+
+test("land claims a released committed workspace as its builder and refreshes its token (t414)", async (t) => {
+  for (const expiresAt of [new Date(Date.now() - 60_000).toISOString(), new Date(Date.now() + 4 * 3600_000).toISOString()]) {
+    const l = tokenLanding(t, { holder: null, expiresAt });
+    await runLand(l.io);
+    assert.equal(l.claims().length, 1);
+    assert.equal(l.claims()[0].as, "codex/test");
+    assert.deepEqual(l.claims()[0].extra, {});
+    assert.equal(l.adopted[0].token, "fresh-token");
+    assert.deepEqual(l.commands, ["push", "check", "submit"]);
+    assert.ok(l.lines.some((x) => /Claiming t1 for its workspace's builder codex\/test/.test(x)));
+    assert.ok(l.calls.findIndex((c) => c.path.endsWith("/claim")) < l.calls.findIndex((c) => c.method === "POST" && c.path.endsWith("/landing-lease")));
+    assert.ok(!l.calls.some((c) => c.path.endsWith("/undispatch")));
+  }
+});
+
+test("land withdraws a waiting dispatch before claiming the committed workspace for its builder (t414)", async (t) => {
+  const l = tokenLanding(t, { holder: null, expiresAt: new Date(Date.now() - 60_000).toISOString(), dispatch: { to: "home" } });
+  await runLand(l.io);
+  const withdrawn = l.calls.findIndex((c) => c.path.endsWith("/undispatch"));
+  const claimed = l.calls.findIndex((c) => c.path.endsWith("/claim"));
+  assert.ok(withdrawn >= 0 && claimed > withdrawn);
+  assert.equal(l.claims()[0].as, "codex/test");
+  assert.equal(l.calls[withdrawn].as, undefined, "withdrawal uses the project owner's default identity");
+  assert.ok(l.lines.some((x) => /Withdrew t1's waiting dispatch/.test(x)));
+  assert.equal(l.adopted[0].token, "fresh-token");
+  assert.deepEqual(l.commands, ["push", "check", "submit"]);
+});
+
+test("land leaves an unheld dispatch alone without a recorded builder or committed head (t414)", async (t) => {
+  for (const missing of [{ actor: null }, { committed: false }]) {
+    const l = tokenLanding(t, { holder: null, dispatch: { to: "home" }, ...missing });
+    await assert.rejects(runLand(l.io), /no recorded actor|no committed head/);
+    assert.equal(l.claims().length, 0);
+    assert.ok(!l.calls.some((c) => c.path.endsWith("/undispatch")));
     assert.equal(l.leaseTaken(), false);
   }
 });
