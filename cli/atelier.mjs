@@ -3258,7 +3258,7 @@ const commands = {
       // merge commit is kept for reconciliation.
       await call('POST',`${I(name,id)}/landing`,{head:item.acceptedHead},OWNER);
       // The note goes to the public remote too, so it names reviewers and verdicts but never their text (cli/provenance.mjs).
-      const note=provenanceNote({name,id,item,view,reviews,events:d.events,policy:d.policy});
+      const note=provenanceNote({name,id,item,view,reviews,events:d.events,policy:d.policy,acceptanceFamily:d.acceptanceFamily});
       // Reconcile provenance independently: a previous push can publish only one ref.
       const remoteNotes=git(['ls-remote',base.remote,'refs/notes/atelier'],{cwd,token:base.token});
       if(remoteNotes){

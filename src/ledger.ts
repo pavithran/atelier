@@ -186,6 +186,14 @@ export interface ProjectInit {
   familyMode?: { single: PoolFamily | null; by: string };
 }
 
+// What an acceptance recorded of the family mode it was made under (t394):
+// the one company in single-family mode, or null under the default, and each
+// contributor with the company its model's name was read as then.
+export interface AcceptanceFamily {
+  singleFamily: PoolFamily | null;
+  contributors: { actor: string; company: PoolFamily }[];
+}
+
 // A project's role prompts (`atelier guide --role`, docs in the README) live
 // under `.atelier/prompts/ROLE.md`, and a runner passes a role's text to the
 // agent it runs. The path is protected in every project, so a change that
@@ -2079,9 +2087,14 @@ export class Ledger extends DurableObject<Env> {
     this.update(id, { state: "accepted", accepted_head: item.head }, at);
     this.withdrawTierRequests(id, "the change was accepted; a tier review never holds a landing", at);
     // The policy the acceptance is made under, for the merge guard's
-    // comparison with the policy at merge time.
+    // comparison with the policy at merge time. The family mode in force and
+    // each contributor with its company are recorded too (t394), so the
+    // merge's provenance note states the mode the review counted under, not
+    // the one the project runs in by the time it lands, and never reads work
+    // done before a switch as the current company's.
     this.log(id, actor, "item.accepted", {
       head: item.head, protected: [...policy.protected], eligible: [...(policy.eligible ?? [])], refuseOverlap: policy.refuseOverlap ?? false, checks: [...policy.checks],
+      singleFamily: singleFamily(policy), contributors: contributorsOf(item).map((c) => ({ actor: c, company: actorFamily(c) })),
       ...(policy.shipRuns ? { shipRuns: [...policy.shipRuns] } : {}),
       ...(override ? { reviewOverridden: true } : {}),
       ...(note?.trim() ? { note: note.trim() } : {}),
@@ -2644,9 +2657,14 @@ export class Ledger extends DurableObject<Env> {
     const acceptancePolicy: Record<string, unknown> | null = current
       ? Object.fromEntries(["protected", "eligible", "refuseOverlap", "checks", "shipRuns"].filter((k) => current[k] !== undefined).map((k) => [k, current[k]]))
       : null;
+    // The family mode and contributors the acceptance recorded (t394), or
+    // null for an older acceptance that recorded neither.
+    const acceptanceFamily: AcceptanceFamily | null = current && "singleFamily" in current
+      ? { singleFamily: current.singleFamily ?? null, contributors: current.contributors ?? [] }
+      : null;
     // `criteria` is the binding of the item's acceptance criteria now, which a
     // review of it names (src/criteria.ts).
-    return { item, criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, evidence, reviews, unparsable: this.unparsableFor(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
+    return { item, criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
   }
 
   inbox(now: string, pool: readonly ModelEntry[] = []): InboxEntry[] {
