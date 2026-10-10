@@ -150,7 +150,7 @@ it("the showcase leads with what Atelier is and keeps the tally as its sub-head"
   await L("lead-check").claim("t1", "codex/gpt-6");
   await I().setShowcase("lead-check", "named");
   const body = await (await worker.fetch(new Request("https://atelier.test/showcase"), testEnv)).text();
-  expect(body).toContain("<h1>A Git platform for many coding agents</h1>");
+  expect(body).toContain("<h1>A Git platform for multiple coding agents</h1>");
   expect(body.indexOf("<strong>Proven. Reviewed. Recorded.</strong> Git keeps the code. Atelier brings the receipts.")).toBeGreaterThan(0);
   // How a task travels names the five steps as its headings, then sums them up.
   const travels = body.slice(body.indexOf('aria-label="How a task travels"'));
