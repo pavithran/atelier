@@ -372,6 +372,16 @@ export interface CheckPaths {
   paths: string[];
 }
 
+// Preparation paths are literal workspace-relative files or directories, not globs.
+export function preparationPaths(value: unknown): string[] {
+  if (!Array.isArray(value) || !value.length || value.some((p) =>
+    typeof p !== "string" || !p || p.startsWith("/") ||
+    p.split("/").some((part) => !part || part === "." || part === "..") || /[\\*?\[\]\0]/.test(p))) {
+    throw new RuleError("bad_prepare", "preparation requires nonempty lists of literal relative input and output paths", 400);
+  }
+  return [...new Set(value)];
+}
+
 export interface ProjectPolicy {
   agents?: Record<string, AgentPolicy>;
   execution?: ExecutionPolicy;

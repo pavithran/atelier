@@ -1058,6 +1058,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       name: project, repo, reset: body.reset === true,
       ...(branch ? { branch } : {}),
       ...(has("title") ? { title: cleanTitle(body.title) ?? null } : {}),
+      ...(has("prepare") ? { prepare: (() => {
+        const value = body.prepare;
+        if (value === null || value === "") return null;
+        if (!value || typeof value !== "object" || Array.isArray(value)) throw new RuleError("bad_prepare", "prepare must declare command, inputs and outputs, or be empty to clear it", 400);
+        return { command: value.command, inputs: value.inputs, outputs: value.outputs,
+          ...(value.declaration !== undefined ? { declaration: parseDeclarations([value.declaration])[0] } : {}) };
+      })() } : {}),
       ...(has("checks") ? { checks: asStrings(body.checks, "checks") } : {}),
       ...(has("checkClasses") ? { checkClasses: parseDeclarations(body.checkClasses) } : {}),
       ...(has("checkPaths") ? { checkPaths: parseCheckPaths(body.checkPaths) } : {}),

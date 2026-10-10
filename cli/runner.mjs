@@ -754,7 +754,9 @@ export async function runTask(assignment, config, name, io) {
     // A runner with preparation checks the marker afterwards: a successful
     // preparation can repair the environment that an old marker described.
     const priorBlock = await io.readValidationBlock?.(workspace);
-    if (!io.prepare && priorBlock?.actor === actor && priorBlock.head && priorBlock.head === await io.head(workspace).catch(() => null)) {
+    if (priorBlock?.actor === actor && priorBlock.head &&
+        !(io.hasPreparation ? await io.hasPreparation(project, actor) : !!io.prepare) &&
+        priorBlock.head === await io.head(workspace).catch(() => null)) {
       throw Object.assign(new Error(priorBlock.detail), { validationBlocked: true, skipped: true });
     }
     if (io.stopped()) throw new Error("interrupted");
@@ -1580,7 +1582,7 @@ export function runOutcome(state) {
 
 // `reportRun(body, runner, signal)` sends a run report; a report that fails
 // is logged and the loop goes on.
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun, version, load = envLoad(), cores = coreCount }) {
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, version, load = envLoad(), cores = coreCount }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
@@ -1621,7 +1623,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   const io = {
     removeFile: (file) => rmSync(file, { force: true }),
     removeTree: (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }),
-    workspacePath, log: line, stopped: () => controller.signal.aborted,
+    workspacePath, hasPreparation, log: line, stopped: () => controller.signal.aborted,
     // `options.token` (a review job's, t346) is the Atelier token this one
     // call authenticates with, handed to the CLI as ATELIER_TOKEN in the
     // child's environment, which wins over the owner's stored token; it is

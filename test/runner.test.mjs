@@ -1997,6 +1997,16 @@ test('resumed work prepares before finishing, and retains its claim if preparati
   }
 });
 
+test('a project without preparation keeps the validation-block skip before claiming even when the runner has a prepare method', async () => {
+  const f = fixture();
+  f.io.readValidationBlock = async () => ({ actor: assignment.actor, head: 'before', detail: 'validation_blocked: unchanged environment' });
+  f.io.hasPreparation = async () => false;
+  f.io.prepare = async () => assert.fail('must not prepare');
+  const state = await runTask(assignment, config, 'home:test', f.io);
+  assert.equal(state.validationBlocked, true);
+  assert.equal(f.calls.some((c) => c.argv?.[0] === 'claim' || c.harness), false);
+});
+
 test('successful preparation clears a pre-preparation validation blocker but keeps a blocker from that same preparation', async () => {
   for (const prepared of [false, true]) {
     const f = fixture();
