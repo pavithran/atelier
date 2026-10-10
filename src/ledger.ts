@@ -1897,6 +1897,21 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id);
   }
 
+  // A reviewer of another family than every contributor that the pool offers
+  // for this item, or null when none qualifies. Shown to the owner who
+  // overrides the independent review, so an override is their last resort,
+  // never a missed review: the command that would replace it is
+  // `atelier land ID --reviewer H/M` (t395).
+  availableReviewer(id: string, pool: ModelEntry[]): string | null {
+    const item = this.item(id);
+    const policy = this.project().policy;
+    const pick = pickReviewer({
+      item, pool, policy, allowPaid: false, owner: this.owner,
+      precision: this.reviewPrecision(new Date().toISOString()),
+    });
+    return pick.reviewer?.actor ?? null;
+  }
+
   // A merge lands the accepted revision under a lease: while it is held,
   // the task's owner cannot push a new revision over the one being merged.
   // It has no expiry, because a merge may have published the revision even

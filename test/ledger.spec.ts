@@ -5,6 +5,7 @@ import { briefFor } from "../src/brief.ts";
 import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
 import { Ledger, type CriteriaChange, type LedgerEvent, type ReviewClaim } from "../src/ledger.ts";
 import { parseRuleError, type Evidence, type Item, type ProjectPolicy, type Review } from "../src/rules.ts";
+import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 
 // The Ledger driven end to end over Durable Object RPC, with its real SQLite
 // storage, inside the Workers test pool. The pure policy underneath is tested
@@ -271,6 +272,22 @@ it("decision 2026-10-06: only the owner overrides a missing review, with a reaso
   await L.addEvidence(observed("t1", H3, ["AGENTS.md"]));
   await L.submit("t1", A);
   await refusal(L.accept("t1", "owner", H3), "not_ready", /protected path/);
+});
+
+it("decision 2026-10-09: availableReviewer names the reviewer the pool offers, and null when none of another family qualifies", async () => {
+  const L = await setup("available-reviewer");
+  await L.newItem("Touch a protected path", ["AGENTS.md"], "owner");
+  await L.claim("t1", A);   // A = claude-code/opus-5.5 (anthropic)
+  const T = "2026-10-09T00:00:00.000Z";
+  const entry = (id: string, change: Partial<ModelEntry> = {}): ModelEntry => ({
+    id, harness: "codex", where: "home", provider: "subscription", aliases: [], family: familyOf(id), note: "", addedBy: "owner", addedAt: T, ...change,
+  });
+  // A model of another family than the contributor is named.
+  expect(await L.availableReviewer("t1", [entry("gpt-6-astra"), entry("opus-5.5", { harness: "claude-code" })]))
+    .toBe("codex/gpt-6-astra");
+  // Only the contributor's own model is in the pool: no reviewer of another family.
+  expect(await L.availableReviewer("t1", [entry("opus-5.5", { harness: "claude-code" })])).toBeNull();
+  expect(await L.availableReviewer("t1", [])).toBeNull();
 });
 
 it("the holder under another letter case, profile or registered name cannot review, and that model's approval does not count", async () => {
