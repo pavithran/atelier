@@ -89,7 +89,10 @@ export function describeStore(name = "API_TOKEN", deps = {}) {
 const keychain = {
   read(name, d) {
     const r = d.spawn("security", ["find-generic-password", "-s", `atelier.${name}`, "-w"], { encoding: "utf8" });
-    return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
+    if (!r.error && r.status === 44) return null;
+    if (r.error || r.status !== 0) throw new Error("could not read from the macOS Keychain");
+    assertValue(r.stdout.trim());
+    return r.stdout.trim();
   },
   // `security -i` takes its commands from stdin, which keeps the value out of
   // the argument list; the value is quoted for its parser. -U updates an
@@ -109,7 +112,10 @@ const keychain = {
 const secretService = {
   read(name, d) {
     const r = d.spawn("secret-tool", ["lookup", "service", "atelier", "account", name], { encoding: "utf8" });
-    return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
+    if (!r.error && r.status === 1 && !r.stdout && !r.stderr) return null;
+    if (r.error || r.status !== 0) throw new Error("could not read from the Linux Secret Service");
+    assertValue(r.stdout.trim());
+    return r.stdout.trim();
   },
   write(name, value, d) {
     const r = d.spawn("secret-tool", ["store", "--label", `Atelier ${name}`, "service", "atelier", "account", name], { input: value, encoding: "utf8" });
@@ -137,8 +143,11 @@ function readFileStore(d) {
 
 const fileStore = {
   read(name, d) {
-    const value = readFileStore(d)[name];
-    return typeof value === "string" && value ? value : null;
+    const entries = readFileStore(d);
+    if (!Object.hasOwn(entries, name)) return null;
+    const value = entries[name];
+    assertValue(value);
+    return value;
   },
   write(name, value, d) {
     const file = secretsFile(d);
@@ -210,6 +219,7 @@ export function normalizeRunner(name) {
 export function runnerCredential(server, name, deps = {}) {
   const env = deps.env ?? process.env;
   if (Object.hasOwn(env, "ATELIER_RUNNER_TOKEN") && env.ATELIER_RUNNER_TOKEN !== undefined) {
+    if (typeof env.ATELIER_RUNNER_TOKEN !== "string") throw new Error("ATELIER_RUNNER_TOKEN is malformed");
     const token = env.ATELIER_RUNNER_TOKEN.trim();
     if (!token) throw new Error("ATELIER_RUNNER_TOKEN is empty");
     return token;
@@ -217,10 +227,11 @@ export function runnerCredential(server, name, deps = {}) {
   if (!name) return null;
   const key = `runner.${normalizeRunner(name)}`;
   const raw = (deps.read ?? readSecret)(key, { ...deps, env: { ...env, [envNameFor(key)]: undefined } });
-  if (!raw) return null; // no entry: the owner's login applies, as before runner tokens
+  if (raw === null) return null; // no entry: the owner's login applies, as before runner tokens
+  assertValue(raw);
   let record;
   try { record = JSON.parse(raw); } catch { throw new Error(`${key} has no server binding; store it again`); }
-  if (record.server !== server.replace(/\/+$/, "") || typeof record.token !== "string" || !record.token) throw new Error(`${key} is not bound to this server`);
+  if (!record || record.server !== server.replace(/\/+$/, "") || typeof record.token !== "string" || !record.token) throw new Error(`${key} is not bound to this server`);
   return record.token;
 }
 
