@@ -112,6 +112,7 @@ export function formatLocal(local) {
 function nextCommand(entry, project) {
   const flag = ` --project ${project}`;
   if (entry.kind === "accept") return `atelier accept ${entry.itemId}${flag}`;
+  if (entry.kind === "assess") return `atelier land ${entry.itemId} --reviewer ${entry.reviewer ?? "H/M"}${flag}`;
   if (entry.kind === "merge") return `atelier merge ${entry.itemId}${flag}`;
   if (entry.kind === "ship") return `atelier ship --dry-run${flag}`;
   if (entry.kind === "stale") return `atelier release ${entry.itemId}${flag}`;

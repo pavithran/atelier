@@ -13,6 +13,14 @@ about working within them well.
 `atelier guide --role orchestrate` prints these for any agent that runs a
 project, whatever its company; each is explained in the sections below.
 
+A session that drives Atelier by hand reads the project's AGENTS.md and what
+its commands print, so Atelier reaches it there: `atelier status`, `ls` and
+`new` end with one line naming this guide until the project's AGENTS.md states
+the review path (`atelier land --reviewer`); fetching the guide does not
+silence it, and a project with no checkout on this Mac always gets it.
+`atelier init` offers a short AGENTS.md section that
+points at it and states the review path (it does not edit the file).
+
 - Use builders from several companies, chosen by tier, and not one company's
   models alone.
 - Every protected or coordinated change is reviewed by a model from another
@@ -21,7 +29,12 @@ project, whatever its company; each is explained in the sections below.
   confirmation. Ask, and cite the owner's words; never infer them.
 - Judge each review finding against the code before acting, and record every
   verdict with `atelier finding`.
-- Land one task at a time with `atelier land ID`. Never land two together.
+- Land one task at a time with `atelier land ID --reviewer H/M`, where
+  `H/M` names a reviewer of another family than every contributor; the
+  command merges main, checks, submits, waits for the independent review,
+  then accepts and merges. Never land two together. An override while
+  accepting is the owner's last resort when no reviewer qualifies, and
+  never the way to land another agent's work.
 - Report every run that ended without a result with `atelier run-report`.
 - On a stall (a claimed task with no progress), check whether the agent's
   process still runs, then `atelier handoff` the task to another model or
