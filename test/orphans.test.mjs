@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { constants as osConstants, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runGroup } from "../cli/group.mjs";
@@ -315,4 +316,40 @@ test("findStrays reads ps, asks lsof only about the candidates, and names none w
   assert.deepEqual(findStrays(cache, { run }).map((s) => [s.pid, s.workspace, s.cwd]), [[41, "demo/t9", "/c/work/demo/t9"]]);
   assert.deepEqual(asked[1], ["lsof", "-a", "-d", "cwd", "-Fn", "-p", "41"]);
   assert.deepEqual(findStrays(cache, { run: () => ({ status: 1, stdout: "" }) }), []);
+});
+
+// The whole path on this machine: real ps and lsof, a cache whose real path
+// differs from the one given (macOS's /var is /private/var), and the section
+// atelier status prints. ATELIER_STRAY_AGE_S stands in for the hour.
+test("atelier status names a test process running from a workspace, and says nothing once it has ended", { timeout: 30_000 }, async (t) => {
+  const cache = scratch(t), config = scratch(t);
+  const workspace = join(cache, "work", "demo", "t9");
+  mkdirSync(workspace, { recursive: true });
+  writeFileSync(join(workspace, "hang.test.mjs"), "setInterval(() => {}, 1000);\n");
+  const hung = spawn(process.execPath, ["hang.test.mjs"], { cwd: workspace, stdio: "ignore" });
+  t.after(() => hung.kill("SIGKILL"));
+  const server = createServer((req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("[]");
+  });
+  t.after(() => server.close());
+  await new Promise((done, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", done); });
+  const status = () => new Promise((done) => {
+    const child = spawn(process.execPath, [resolve("cli/atelier.mjs"), "status"], {
+      env: { ...process.env, ATELIER_CACHE: cache, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: "test-token", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}`, ATELIER_STRAY_AGE_S: "0" },
+    });
+    let output = "";
+    child.stdout.on("data", (s) => output += s);
+    child.stderr.on("data", (s) => output += s);
+    child.on("close", (code) => done({ code, output }));
+  });
+  const named = await status();
+  assert.equal(named.code, 0, named.output);
+  assert.match(named.output, /Test processes left from workspaces on this Mac \(1, each running over an hour\):/);
+  assert.match(named.output, new RegExp(`pid ${hung.pid}  demo/t9  running \\d+m  .*hang\\.test\\.mjs`));
+  hung.kill("SIGKILL");
+  assert.ok(await gone(hung.pid));
+  const quiet = await status();
+  assert.equal(quiet.code, 0, quiet.output);
+  assert.ok(!quiet.output.includes("Test processes left"), quiet.output);
 });

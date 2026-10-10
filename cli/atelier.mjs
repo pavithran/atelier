@@ -840,11 +840,13 @@ function workspacePath(name, id) {
 
 // Test processes over an hour old left from a workspace on this machine
 // (cli/strays.mjs), read under the cache's real path, the one ps and lsof
-// report.
+// report. ATELIER_STRAY_AGE_S, in seconds, replaces the hour, so a test can
+// name a process it has just started.
 function localStrays() {
   let cache = CACHE;
   try { cache = realpathSync(CACHE); } catch { /* No cache yet: nothing ran from it. */ }
-  return findStrays(cache);
+  const minAge = process.env.ATELIER_STRAY_AGE_S ? Number(process.env.ATELIER_STRAY_AGE_S) : NaN;
+  return findStrays(cache, minAge >= 0 ? { minAge } : {});
 }
 
 // Where a checkout's landing lock and journal live (cli/landing.mjs): under
