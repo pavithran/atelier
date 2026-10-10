@@ -7,6 +7,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { checkEnv } from "./check-env.mjs";
+import { killTree, treeGroups } from "./group.mjs";
 import { envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
 import { reviewBrief, BRIEF_LIMITS, criteriaCount } from "../src/review/brief.ts";
@@ -171,20 +172,24 @@ const line = (message) => console.log(`runner: ${String(message).replace(/[\r\n]
 // The process groups execute() has started and not yet seen end.
 const liveGroups = new Set();
 
-// SIGKILL to every process group execute() started that has not ended. A
+// SIGKILL to every process group execute() started that has not ended, and
+// to every group started from one (killTree: a check's, npm test's). A
 // second interrupt calls it just before process.exit, which leaves no time
 // for a grace period.
 export function killGroups() {
-  for (const pid of liveGroups) { try { process.kill(-pid, "SIGKILL"); } catch { /* The group has ended. */ } }
+  for (const pid of liveGroups) killTree(pid);
   liveGroups.clear();
 }
 
 // The child leads a process group of its own, and the group ends with it.
 // When the child exits, whether it succeeded or failed, when its deadline
 // passes and when `signal` aborts, every process in the group gets SIGTERM,
-// then SIGKILL if any is left after `graceMs`. The result comes back once
-// the group is gone, so nothing the child started still runs in its folder.
-// A process that leaves the group (setsid) is beyond this.
+// then SIGKILL if any is left after `graceMs`. A group started from it (a
+// check's, npm test's), read before the SIGTERM while the tree is whole, is
+// SIGKILLed once the wait ends, should its leader not have ended it on the
+// SIGTERM. The result comes back once the group is gone, so nothing the
+// child started still runs in its folder. A process that leaves the group
+// (setsid) is beyond this.
 export function execute(argv, { cwd, signal, capture = false, captureError = false, timeoutMs, env, graceMs = 5000 } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("interrupted"));
@@ -206,7 +211,11 @@ export function execute(argv, { cwd, signal, capture = false, captureError = fal
       if (ending || ended) return;
       ending = true;
       const until = Date.now() + graceMs;
-      const done = () => { liveGroups.delete(pid); ended = true; finish(); };
+      const nested = treeGroups(pid).filter((g) => g !== pid);
+      const done = () => {
+        for (const g of nested) { try { process.kill(-g, "SIGKILL"); } catch { /* The group has ended. */ } }
+        liveGroups.delete(pid); ended = true; finish();
+      };
       const wait = () => {
         if (!send(0)) return done();
         if (Date.now() >= until) { send("SIGKILL"); return done(); }
