@@ -41,6 +41,7 @@ import { formatLocal, formatStatus, itemJson, statusJson } from "./status.mjs";
 import { receiptJson, receiptText } from "./receipt.mjs";
 import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
 import { checkEnv } from "./check-env.mjs";
+import { coreCount, formatLoad, loadLimitOf, waitForLoad } from "./load.mjs";
 import { provenanceNote } from "./provenance.mjs";
 export { checkEnv } from "./check-env.mjs";
 import { COMMAND_USAGE, guideText, helpText, ROLES, rolePrompt } from "./help.mjs";
@@ -2401,6 +2402,15 @@ const commands = {
       // Worker refuses a main head that is not on main's line.
       if (args.merged) mainHead = mergeWithMain(dir, id);
       const on = mainHead ? ` merged with main ${short(mainHead)}` : "";
+      // A landing's required checks compete with the home runners for this
+      // machine (t403): while the load average is at or above the limit they
+      // wait, saying so, and each result records the load it started at. The
+      // limit is ATELIER_LOAD_LIMIT when set, else the core count.
+      const configuredLimit = process.env.ATELIER_LOAD_LIMIT;
+      const limit = loadLimitOf(configuredLimit !== undefined && Number(configuredLimit) > 0 ? Number(configuredLimit) : undefined, coreCount());
+      const startLoad = await waitForLoad(limit, {
+        report: (current) => process.stderr.write(`atelier: load ${formatLoad(current)} is at or above the limit ${formatLoad(limit)}; waiting for it to fall before running the checks\n`),
+      });
       for (const cmd of cmds) {
         // A registered check whose paths this change does not touch is not
         // run. It is recorded as not applicable, which the Worker accepts only
@@ -2421,6 +2431,7 @@ const commands = {
         const d = await postEvidence(`${I(name, id)}/evidence`, {
           kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed,
           outputTail: `${r.output.slice(-3500)}\n[sha256 of full output: ${r.sha}]`,
+          load: startLoad,
           ...(mainHead ? { merged: true, mainHead } : {}),
         }, as);
         const row = d?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd && !e.merged).at(-1);

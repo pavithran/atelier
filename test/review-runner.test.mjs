@@ -7,6 +7,10 @@ import { join } from "node:path";
 import { runReview, runRunner, commandFor, execute } from "../cli/runner.mjs";
 import { BRIEF_LIMITS } from "../src/review/brief.ts";
 
+// Pin the load under the runner's limit so these tests are not held back by
+// this machine's real load; the gate is tested with an injected load.
+process.env.ATELIER_LOAD = "0";
+
 // The review job (docs/orchestrator.md, section 4, build step 10) driven
 // through the same stand-in io the other runner tests use: the server answers
 // `review-claim` and `read-token`, and the clone, diff, brief, harness and

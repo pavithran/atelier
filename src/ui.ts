@@ -1848,21 +1848,29 @@ ${framing}${openScope}
   // The head's own runs: a merged check ran on another tree and is shown
   // beside the merge preview instead.
   const checkRows = view.checks.map((c) => {
-    const last = d.evidence
+    const runs = d.evidence
       .filter((x) => x.head === item.head && x.claim === c.claim && x.grade === "observed" && !x.merged && !x.notApplicable && (!d.policy.sandboxOnly || x.where === "sandbox"))
-      .sort((a, b) => a.at.localeCompare(b.at))
-      .pop();
+      .sort((a, b) => a.at.localeCompare(b.at));
+    const last = runs.at(-1);
     const status = c.grade === "pending" ? tag("Waiting", "ask") : c.passed ? tag("Passed", "go") : tag("Failed", "bad");
     const where = c.grade === "observed" ? whereChip(c.where) : "";
     const uncounted = !last && d.policy.sandboxOnly && d.evidence.some((x) => x.head === item.head && x.claim === c.claim && x.grade === "observed" && !x.merged && x.where !== "sandbox");
+    // The load the run started at, one decimal, so a failure under a
+    // saturated machine stays legible beside a later pass (t403).
+    const loadOf = (x: Evidence) => (x.load !== undefined ? `load ${Math.round(x.load * 10) / 10}` : "");
     const detail = last
-      ? `${e(last.by)} · ${e(WHERE[last.where ?? "runner"][0])} · ${when(last.at)}`
+      ? `${e(last.by)} · ${e(WHERE[last.where ?? "runner"][0])} · ${when(last.at)}${loadOf(last) ? ` · ${loadOf(last)}` : ""}`
       : uncounted
         ? "This check ran on a runner, which does not count for this project. Run <code>atelier check --sandbox</code> to run it in a Cloudflare container."
         : "The task owner must run this required check.";
+    // Every result at this head is kept and shown, each with its load, so a
+    // later pass of an unchanged command does not replace its earlier failure.
+    const history = runs.length > 1
+      ? `<ul class="check-runs">${runs.map((x) => `<li>${x.passed ? tag("Passed", "go") : tag("Failed", "bad")}<span class="meta">${e(x.by)} · ${when(x.at)}${loadOf(x) ? ` · ${loadOf(x)}` : ""}</span></li>`).join("")}</ul>`
+      : "";
     return `<details class="check-row"${c.passed === false ? " open" : ""}>
       <summary>${status}<code>${e(c.claim)}</code>${where}</summary>
-      <p class="meta">${detail}</p>${last?.outputTail ? `<pre tabindex="0">${e(last.outputTail)}</pre>` : ""}</details>`;
+      <p class="meta">${detail}</p>${history}${last?.outputTail ? `<pre tabindex="0">${e(last.outputTail)}</pre>` : ""}</details>`;
   }).join("");
   // A check whose paths this revision does not touch is shown, and never blocks.
   const notApplicableRows = view.notApplicable.map((claim) => {
