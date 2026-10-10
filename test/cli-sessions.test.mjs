@@ -1,8 +1,10 @@
+import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync, execFileSync } from "node:child_process";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { constants as osConstants } from "node:os";
 import { createHash } from "node:crypto";
 
 import { buildHistory, savePairs, loadPairs } from "../cli/fresh.mjs";
@@ -60,12 +62,14 @@ globalThis.fetch = async (url, options) => {
 `);
   const runWith = (env, ...args) => spawnSync(process.execPath, ["--import", preload, cli, ...args], { cwd: checkout, encoding: "utf8", env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: join(dir, "cache"), ATELIER_TOKEN: "fake", ATELIER_SERVER: "https://fake.invalid", ATELIER_ACTOR: "owner", GIT_CONFIG_NOSYSTEM: "1", ...env } });
   const run = (...args) => runWith({}, ...args);
+  // The same command started rather than awaited, so a test can signal it.
+  const spawnWith = (env, ...args) => spawn(process.execPath, ["--import", preload, cli, ...args], { cwd: checkout, stdio: "ignore", env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: join(dir, "cache"), ATELIER_TOKEN: "fake", ATELIER_SERVER: "https://fake.invalid", ATELIER_ACTOR: "owner", GIT_CONFIG_NOSYSTEM: "1", ...env } });
   // A command that refuses before any request leaves no log.
   const requests = () => existsSync(join(dir, "requests.jsonl")) ? readFileSync(join(dir, "requests.jsonl"), "utf8").trim().split("\n").map(JSON.parse) : [];
   const clean = () => rmSync(join(checkout, "loose.txt"));
   // Every git command the CLI ran, as its argument list; the preload logs them.
   const gitCalls = () => existsSync(join(dir, "git.jsonl")) ? readFileSync(join(dir, "git.jsonl"), "utf8").trim().split("\n").map(JSON.parse) : [];
-  return { dir, checkout, git, head, baseline, run, runWith, requests, clean, gitCalls };
+  return { dir, checkout, git, head, baseline, run, runWith, spawnWith, requests, clean, gitCalls };
 }
 function snapshot(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? snapshot(join(dir, e.name)) : [[join(dir, e.name), createHash("sha256").update(readFileSync(join(dir, e.name))).digest("hex")]]);
@@ -157,6 +161,7 @@ test("unwrap reports a tracking ref it cannot compare and carries on", (t) => {
 });
 
 test("wrap commits with summary, next and trailer when the checks pass, and updates the baseline", (t) => {
+  if (!canInspectSlots(t)) return;
   const f = fixture(t);
   const result = f.runWith({ FAKE_CHECKS: JSON.stringify(["true"]) }, "wrap", "Finished", "--next", "Fix check");
   assert.equal(result.status, 0, result.stderr);
@@ -197,6 +202,7 @@ function refusesFailingChecks(f, env, say) {
 }
 
 test("wrap refuses to commit when a registered check fails, naming it with its exit status", (t) => {
+  if (!canInspectSlots(t)) return;
   const f = fixture(t);
   const r = refusesFailingChecks(f, {}, /^atelier: wrap refuses to commit with a failing check: exit 7 \(exited 7\)\. Fix it, or run again with --allow-failing to commit anyway\./m);
   assert.match(r.stdout, /Reported: exit 7: failed \(owner's checkout, not a clean clone\)\./, "the result was printed before the refusal");
@@ -204,13 +210,39 @@ test("wrap refuses to commit when a registered check fails, naming it with its e
 });
 
 test("the refusal names every failed check, with the signal that ended one that did not exit", (t) => {
+  if (!canInspectSlots(t)) return;
   const f = fixture(t);
   const r = refusesFailingChecks(f, { FAKE_CHECKS: JSON.stringify(["exit 7", "true", "kill -TERM $$"]) },
     /wrap refuses to commit with 2 failing checks: exit 7 \(exited 7\), kill -TERM \$\$ \(ended by SIGTERM\)\. Fix them, or run again with --allow-failing/);
   assert.match(r.stdout, /Reported: true: passed/);
 });
 
+// t419: a registered check's group, and what it started, ends with the
+// command running it when that command is interrupted, hung up on or
+// SIGTERMed, and the command ends with the signal's status.
+test("SIGINT, SIGTERM and SIGHUP to wrap end the running check's process group", { timeout: 30_000 }, async (t) => {
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    const f = fixture(t);
+    const pidFile = join(f.dir, "check-sleeper.pid");
+    const child = f.spawnWith({ FAKE_CHECKS: JSON.stringify([`sleep 300 & echo $! > ${pidFile}; wait`]) }, "wrap", "Interrupted", "--next", "x");
+    t.after(() => child.kill("SIGKILL"));
+    const ended = new Promise((ok) => child.on("close", (status, sig) => ok({ status, sig })));
+    const until = Date.now() + 15_000;
+    while (!(existsSync(pidFile) && readFileSync(pidFile, "utf8").trim())) {
+      assert.ok(Date.now() < until, "the check never started its sleeper");
+      await new Promise((ok) => setTimeout(ok, 25));
+    }
+    const sleeper = Number(readFileSync(pidFile, "utf8"));
+    child.kill(signal);
+    assert.deepEqual(await ended, { status: 128 + osConstants.signals[signal], sig: null });
+    const alive = () => { try { process.kill(sleeper, 0); return true; } catch { return false; } };
+    for (const stop = Date.now() + 2000; alive() && Date.now() < stop;) await new Promise((ok) => setTimeout(ok, 50));
+    assert.equal(alive(), false, `after ${signal}, the check's sleeper ${sleeper} outlived wrap`);
+  }
+});
+
 test("wrap --allow-failing commits past a failing check and records the override in the note", (t) => {
+  if (!canInspectSlots(t)) return;
   const f = fixture(t);
   const result = f.run("wrap", "Finished", "--next", "Fix check", "--allow-failing");
   assert.equal(result.status, 0, result.stderr);
@@ -231,6 +263,7 @@ test("wrap --allow-failing commits past a failing check and records the override
 });
 
 test("wrap --allow-failing with passing checks records no override", (t) => {
+  if (!canInspectSlots(t)) return;
   const f = fixture(t);
   const r = f.runWith({ FAKE_CHECKS: JSON.stringify(["true"]) }, "wrap", "Fine", "--allow-failing");
   assert.equal(r.status, 0, r.stderr);
@@ -490,6 +523,7 @@ function refuses(f, say) {
 }
 for (const [state, { say, make }] of Object.entries(unfinished)) {
   test(`wrap refuses ${state} on a tree with nothing else in it`, (t) => {
+    if (/conflict markers/.test(say.source) && !canInspectSlots(t)) return;
     const f = fixture(t);
     f.clean();
     make(f);
@@ -508,6 +542,7 @@ test("a refusal stages nothing of the changes waiting beside it", (t) => {
 });
 
 test("wrap asks again whether the checkout is ready once the registered checks have run", (t) => {
+  if (!canInspectSlots(t)) return;
   // A registered check can leave work unfinished: the first look at the checkout passed.
   const f = fixture(t);
   f.clean();
@@ -579,6 +614,7 @@ test("a policy that is not committed yet applies from the session after it is", 
 });
 
 test("wrap asks again about the ceiling once the registered checks have run", (t) => {
+  if (!canInspectSlots(t)) return;
   const f = fixture(t);
   commitPolicy(f, 2);
   f.clean();

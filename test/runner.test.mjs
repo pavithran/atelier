@@ -1,21 +1,16 @@
 import { execFileSync, spawn } from "node:child_process";
 import { runInNewContext } from "node:vm";
 import { test } from "node:test";
+import { setImmediate as tick } from "node:timers/promises";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, jobsLine, gatewayMetadata, harnessRunEnv } from "../cli/runner.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, jobsLine, gatewayMetadata, harnessRunEnv, codexBuildRefusal, validationBlockedReport, alreadyComplete } from "../cli/runner.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
-import { helpText } from "../src/usage.ts";
+import { helpText, ROLE_PROMPTS } from "../src/usage.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
-
-// The runner's load gate (t403) reads the load through envLoad, which honours
-// ATELIER_LOAD. Pin it under the limit here, so a test that dispatches a job
-// is never held back by this machine's real load; the gate itself is tested
-// with an injected load below.
-process.env.ATELIER_LOAD = "0";
 
 const entry = { agent: "opencode", models: ["GLM-5.3-Flash-4_8bit", "glm:fast"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{workspace}"] };
 const config = { agents: [entry] };
@@ -168,6 +163,14 @@ function fixture(options = {}) {
       if (options.unknownHead && reads > 1) throw new Error("unreadable HEAD");
       return reads === 1 ? "before" : options.head ?? "after";
     },
+    // Whether the base is an ancestor of the head (alreadyComplete); the
+    // record is ahead unless the test says otherwise (ancestor: false, or an
+    // error to throw).
+    async isAncestor(cwd, base, head) {
+      calls.push({ isAncestor: [base, head], cwd });
+      if (options.ancestor instanceof Error) throw options.ancestor;
+      return options.ancestor ?? true;
+    },
     async brief(workspace, text) {
       calls.push({ brief: text, workspace });
       if (options.failBrief) throw new Error("cannot write brief");
@@ -286,6 +289,109 @@ test("a resumed finish failure preserves an ordinary claim and releases a part",
   assert.equal((await runTask({ ...assignment, item: heldItem({ kind: "part", head: "recorded" }) }, config, "home:studio", part.io)).phase, "failed");
   assert.ok(part.calls.some((c) => c.argv?.[0] === "release"), "a part whose finish failed goes back to its plan");
   assert.ok(!part.calls.some((c) => c.brief), "no brief is fetched for resumed work");
+});
+
+// t453: a task whose earlier run committed and pushed comes back (a review
+// sent it back, say) with its pushed head ahead of its base, and the builder
+// finds nothing to add: its harness exits 0 and commits nothing. The work is
+// complete, so the runner runs the checks and submits that head instead of
+// releasing the task as stalled.
+test("a harness that changes nothing on the task's pushed head, ahead of its base, submits that head", async () => {
+  for (const item of [
+    { ...assignment.item, head: "before", base: "base" },
+    { ...assignment.item, state: "open", owner: null, head: "before", base: "base", dispatch: { note: "address the findings" } },
+    // Held by this actor at the recorded head: the harness runs again (the
+    // dead run committed nothing) and, changing nothing, still submits.
+    heldItem({ head: "before", base: "base" }),
+  ]) {
+    const { io, calls, logs } = fixture({ head: "before" });
+    const state = await runTask({ ...assignment, item }, config, "home:studio", io);
+    assert.equal(state.phase, "submitted", JSON.stringify(item));
+    assert.equal(state.head, "before");
+    assert.ok(calls.some((c) => c.harness), "the harness ran");
+    const finish = calls.find((c) => c.argv?.[0] === "finish");
+    assert.deepEqual(finish.argv, ["finish", "t13", "--project", "atelier", "--as", assignment.actor]);
+    assert.equal(finish.cwd, "/cache/work/atelier/t13");
+    assert.ok(!calls.some((c) => c.argv?.[0] === "release"), "nothing is released");
+    assert.ok(logs.includes("already complete: the workspace head before is the task's pushed head, ahead of its base base; the harness changed nothing, so the checks run and that head is submitted without a new commit"), logs.join("\n"));
+    assert.ok(!logs.some((l) => l.startsWith("resumed:")), "a run that ran its harness is not a resumed one");
+    assert.equal(runOutcome(state), null, "an already-complete run is not reported as stalled");
+    assert.equal(failureCount(0, state), 0);
+  }
+});
+
+test("a resumed run finishes the dead run's commit and is not reported as stalled", async () => {
+  const { io, calls, logs } = fixture();
+  const state = await runTask({ ...assignment, item: heldItem({ head: "recorded", base: "base" }) }, config, "home:studio", io);
+  assert.equal(state.phase, "submitted");
+  assert.equal(state.head, "before");
+  assert.ok(!calls.some((c) => c.harness), "no harness for resumed work");
+  assert.ok(calls.some((c) => c.argv?.[0] === "finish"));
+  assert.ok(logs.some((l) => l.startsWith("resumed: an earlier run of this runner committed before")));
+  assert.ok(!logs.some((l) => l.startsWith("already complete:") || l.startsWith("nothing to submit:")), "a resumed run is finished as such, not weighed as an unchanged head");
+  assert.equal(runOutcome(state), null);
+  assert.equal(failureCount(0, state), 0);
+});
+
+test("a harness that changes nothing on a head that is not pushed work ahead of the base is released as stalled, and the report says why", async () => {
+  for (const [item, why, options = {}] of [
+    [assignment.item, "the task has no pushed head ahead of its base"],
+    [{ ...assignment.item, head: "before", base: "before" }, "the task has no pushed head ahead of its base"],
+    [{ ...assignment.item, head: "before" }, "the task has no pushed head ahead of its base"],
+    [{ ...assignment.item, head: "pushed12345", base: "base" }, "the workspace head before is not the task's pushed head pushed12"],
+    [{ ...assignment.item, state: "claimed", owner: "codex/other", head: "pushed12345", base: "base" }, "the workspace head before is not the task's pushed head pushed12"],
+    // The pushed head, but behind the base (a rollback recorded it): no work
+    // to submit, however the hashes differ.
+    [{ ...assignment.item, head: "before", base: "base" }, "the workspace head before is the task's pushed head but not ahead of its base base, which it does not descend from", { ancestor: false }],
+    [{ ...assignment.item, head: "before", base: "base" }, "whether the workspace head before is ahead of the task's base base could not be read: fatal: Not a valid commit name", { ancestor: new Error("fatal: Not a valid commit name") }],
+  ]) {
+    const { io, calls, logs } = fixture({ head: "before", ...options });
+    const state = await runTask({ ...assignment, item }, config, "home:studio", io);
+    if ("ancestor" in options) assert.deepEqual(calls.find((c) => c.isAncestor), { isAncestor: ["base", "before"], cwd: "/cache/work/atelier/t13" }, "the ancestry is read in the workspace, base to head");
+    assert.equal(state.phase, "failed", JSON.stringify(item));
+    assert.equal(state.reason, "harness made no new commit");
+    assert.equal(state.detail, `harness made no new commit: ${why}`);
+    assert.ok(calls.some((c) => c.argv?.[0] === "release"), "the claim is released");
+    assert.ok(!calls.some((c) => c.argv?.[0] === "finish"), "nothing is submitted");
+    assert.ok(logs.includes(`nothing to submit: ${why}, and the harness changed nothing`), logs.join("\n"));
+    assert.ok(logs.includes("released: no new commit"));
+    assert.equal(runOutcome(state), "stalled");
+    assert.equal(failureCount(0, state), 1);
+  }
+  // A harness that failed or timed out on the pushed head is no completion:
+  // the head is released or preserved as before, never submitted.
+  for (const options of [{ head: "before", code: 1 }, { head: "before", timedOut: true }]) {
+    const { io, calls, logs } = fixture(options);
+    const state = await runTask({ ...assignment, item: { ...assignment.item, head: "before", base: "base" } }, config, "home:studio", io);
+    assert.equal(state.phase, "failed");
+    assert.ok(calls.some((c) => c.argv?.[0] === "release"));
+    assert.ok(!calls.some((c) => c.argv?.[0] === "finish"));
+    assert.ok(!logs.some((l) => l.startsWith("already complete:")));
+    assert.equal(runOutcome(state), options.code === 1 ? "refused" : "timed-out");
+  }
+});
+
+test("alreadyComplete weighs the head against the task's record, its ancestry and the merges in progress", async () => {
+  const item = { head: "h".repeat(40), base: "b".repeat(40) };
+  const asked = [];
+  const ahead = async (base, head) => { asked.push([base, head]); return true; };
+  const behind = async () => false;
+  const unreadable = async () => { throw new Error("fatal: Not a valid commit name"); };
+  assert.deepEqual(await alreadyComplete(item, item.head, [], ahead), { complete: true, why: `the workspace head ${"h".repeat(8)} is the task's pushed head, ahead of its base ${"b".repeat(8)}` });
+  assert.deepEqual(asked, [[item.base, item.head]], "the ancestry asked is base to head");
+  assert.equal((await alreadyComplete(item, item.head, [{ state: "held" }, { state: "merged" }], ahead)).complete, true);
+  // Unequal hashes do not prove the head ahead: a rolled-back head is older
+  // than the base, and is released.
+  assert.deepEqual(await alreadyComplete(item, item.head, [], behind), { complete: false, why: `the workspace head ${"h".repeat(8)} is the task's pushed head but not ahead of its base ${"b".repeat(8)}, which it does not descend from` });
+  assert.deepEqual(await alreadyComplete(item, item.head, [], unreadable), { complete: false, why: `whether the workspace head ${"h".repeat(8)} is ahead of the task's base ${"b".repeat(8)} could not be read: fatal: Not a valid commit name` });
+  const never = async () => { throw new Error("ancestry must not be asked"); };
+  for (const merges of [[{ state: "conflicts", files: ["a.txt"] }], [{ state: "held" }, { state: "skipped" }]]) {
+    assert.deepEqual(await alreadyComplete(item, item.head, merges, never), { complete: false, why: "a merge is in progress" });
+  }
+  assert.equal((await alreadyComplete(item, "x".repeat(40), [], never)).why, `the workspace head ${"x".repeat(8)} is not the task's pushed head ${"h".repeat(8)}`);
+  for (const record of [{}, { head: item.head }, { base: item.base }, { head: item.base, base: item.base }]) {
+    assert.deepEqual(await alreadyComplete(record, record.head ?? item.head, [], never), { complete: false, why: "the task has no pushed head ahead of its base" }, JSON.stringify(record));
+  }
 });
 
 test("a release note over the server's cap is cut to its end, whatever failed", async () => {
@@ -408,6 +514,57 @@ test("a restarted runner retakes the claim a stop left held and finishes its com
   assert.ok(logs.includes("submitted"));
 });
 
+// t453, with real git: the task's earlier run committed and pushed (the
+// server records that commit as the head, ahead of the base), the task comes
+// back, and the harness exits 0 without committing. The runner submits the
+// head it found instead of releasing the task; a head at the base is released,
+// and so is a head behind the base (a rollback recorded it), which git's
+// ancestry check tells apart from one ahead, as unequal hashes cannot.
+test("a runner submits a task whose work is already committed and pushed when its harness changes nothing", async (t) => {
+  for (const pushed of [true, false, "behind"]) {
+    const { workspace, git, args } = gitWorkspace(t);
+    let base = git("rev-parse", "HEAD");
+    if (pushed === true) git("commit", "--quiet", "--allow-empty", "-m", "the earlier run's work");
+    const head = git("rev-parse", "HEAD");
+    if (pushed === "behind") {
+      // The base is a commit after the head; the workspace is rolled back to the head.
+      git("commit", "--quiet", "--allow-empty", "-m", "the base, rolled back from");
+      base = git("rev-parse", "HEAD");
+      git("reset", "--quiet", "--hard", head);
+      assert.equal(git("merge-base", head, base), head, "the head is an ancestor of the base, not the other way round");
+    }
+    const commands = [], logs = [], reports = [];
+    await runRunner({ ...args, once: true }, {
+      workspacePath: () => workspace,
+      queue: async () => [{ ...assignment, item: { ...assignment.item, head, base } }],
+      taskIO: { log: (s) => logs.push(s), harness: async () => ({ code: 0 }) },
+      executeChild: async (argv, options) => {
+        if (argv[0] === "git") return execute(argv, options);
+        commands.push(argv[2]);
+        return execute([process.execPath, "-e", ""], options);
+      },
+      async reportRun(body) { reports.push(body.outcome); },
+    });
+    assert.equal(git("rev-parse", "HEAD"), head, "the workspace is left at the head it held");
+    if (pushed === true) {
+      assert.deepEqual(commands, ["claim", "finish"], "the pushed head is checked and submitted");
+      assert.ok(logs.includes(`already complete: the workspace head ${head.slice(0, 8)} is the task's pushed head, ahead of its base ${base.slice(0, 8)}; the harness changed nothing, so the checks run and that head is submitted without a new commit`), logs.join("\n"));
+      assert.ok(logs.includes("submitted"));
+      assert.deepEqual(reports, [], "an already-complete run is not reported against the model");
+    } else if (pushed === "behind") {
+      assert.deepEqual(commands, ["claim", "release"], "a head behind the base is released");
+      assert.ok(logs.includes(`nothing to submit: the workspace head ${head.slice(0, 8)} is the task's pushed head but not ahead of its base ${base.slice(0, 8)}, which it does not descend from, and the harness changed nothing`), logs.join("\n"));
+      assert.ok(logs.includes("released: no new commit"));
+      assert.deepEqual(reports, ["stalled"]);
+    } else {
+      assert.deepEqual(commands, ["claim", "release"], "a head at the base is released as before");
+      assert.ok(logs.includes("nothing to submit: the task has no pushed head ahead of its base, and the harness changed nothing"), logs.join("\n"));
+      assert.ok(logs.includes("released: no new commit"));
+      assert.deepEqual(reports, ["stalled"]);
+    }
+  }
+});
+
 test("runRunner once polls once and handles SIGINT, SIGTERM and SIGHUP", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "atelier-runner-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -450,7 +607,7 @@ test("a queue poll that times out or meets a 5xx is transient: logged once, back
   let polls = 0;
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
     workspacePath: () => { throw new Error("no task should be claimed"); },
-    wait: async (ms) => { waits.push(ms); },
+    wait: async (ms) => { waits.push(ms); await tick(); },
     async queue() {
       polls++;
       if (polls <= errors.length) throw errors[polls - 1];
@@ -747,7 +904,7 @@ test("runner skips refused revisions across polls and tries the next offered tas
   };
   let polls = 0;
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
     async queue() {
       polls++;
       if (polls === 1) return [first, next];
@@ -796,7 +953,8 @@ test("CLI git failure output removes credential arguments and echoed values", ()
 
 test("CLI distinguishes server claim refusals from unknown failures without network", async () => {
   const source = readFileSync(new URL("../cli/atelier.mjs", import.meta.url), "utf8");
-  const callSource = source.slice(source.indexOf("async function call("), source.indexOf("const P ="));
+  // The helpers are exported for the command modules; the slice runs as a script.
+  const callSource = source.slice(source.indexOf("async function call("), source.indexOf("const P =")).replace(/^export /gm, "");
   for (const [status, method, path, expected] of [
     [403, "POST", "/projects/p/items/t1/claim", 3],
     [409, "POST", "/projects/p/items/t1/claim", 3],
@@ -819,7 +977,12 @@ test("SIGINT, SIGTERM and SIGHUP stop an active detached harness and release unc
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     const { dir, workspace, path, args } = gitWorkspace(t);
     const script = join(dir, "harness.mjs");
-    writeFileSync(script, `process.on('SIGTERM', () => {}); process.kill(process.ppid, '${signal}'); ${UNTIL_TEST_EXITS}`);
+    // The harness starts a sleeper in its group first, which must not outlive
+    // the run (t419).
+    const pidFile = join(dir, "sleeper.pid");
+    writeFileSync(script, `import { spawn } from "node:child_process"; import { writeFileSync } from "node:fs";
+      writeFileSync(${JSON.stringify(pidFile)}, String(spawn("sleep", ["300"], { stdio: "ignore" }).pid));
+      process.on('SIGTERM', () => {}); process.kill(process.ppid, '${signal}'); ${UNTIL_TEST_EXITS}`);
     writeFileSync(path, JSON.stringify({ agents: [{ ...entry, command: [process.execPath, script, "{model}", "{brief_file}"] }] }));
     const commands = [];
     const listeners = process.listenerCount(signal);
@@ -835,6 +998,11 @@ test("SIGINT, SIGTERM and SIGHUP stop an active detached harness and release unc
     });
     assert.deepEqual(commands, ["claim", "release"]);
     assert.equal(process.listenerCount(signal), listeners);
+    const sleeper = Number(readFileSync(pidFile, "utf8"));
+    const until = Date.now() + 2000;
+    const alive = () => { try { process.kill(sleeper, 0); return true; } catch { return false; } };
+    while (alive() && Date.now() < until) await new Promise((ok) => setTimeout(ok, 50));
+    assert.equal(alive(), false, `after ${signal}, the harness's sleeper ${sleeper} outlived the run`);
   }
 });
 
@@ -858,7 +1026,7 @@ test("runner remembers unsupported project names and claims the task behind them
   const { io, calls, logs } = fixture();
   let polls = 0;
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
     async queue() {
       if (++polls === 3) { process.emit("SIGINT"); return []; }
       return [{ ...assignment, project: "My Project" }, ...(polls === 1 ? [assignment] : [])];
@@ -878,7 +1046,7 @@ test("runner stops retrying after two failures even when the task revision chang
     if (failure === "spawn") io.harness = async () => { throw new Error("ENOENT"); };
     let polls = 0;
     await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
-      workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+      workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
       async queue() {
         if (++polls === 4) { process.emit("SIGINT"); return []; }
         return [{ ...assignment, item: { ...assignment.item, updatedAt: String(polls) } },
@@ -980,7 +1148,7 @@ test("claim child failures release possible claims and retire the task after thr
     const commands = [], logs = [];
     let polls = 0;
     await runRunner(args, {
-      workspacePath: () => workspace, wait: async () => {},
+      workspacePath: () => workspace, wait: () => tick(),
       queue: async () => {
         if (++polls === 5) { process.emit("SIGINT"); return []; }
         return [assignment];
@@ -1006,7 +1174,7 @@ test("runner resets tracked edits and untracked files before every harness attem
   const logs = [];
   let polls = 0, attempts = 0;
   await runRunner(args, {
-    workspacePath: () => workspace, wait: async () => {},
+    workspacePath: () => workspace, wait: () => tick(),
     queue: async () => {
       if (++polls === 3) { process.emit("SIGINT"); return []; }
       return [assignment];
@@ -1052,7 +1220,7 @@ test("the reset before a harness saves uncommitted work under refs/atelier/rescu
   const logs = [];
   let polls = 0, attempts = 0;
   await runRunner(args, {
-    workspacePath: () => workspace, wait: async () => {},
+    workspacePath: () => workspace, wait: () => tick(),
     queue: async () => {
       if (++polls === 3) { process.emit("SIGINT"); return []; }
       return [assignment];
@@ -1092,7 +1260,7 @@ test("the rescue stages around a file git cannot index, so every other untracked
   const logs = [];
   let polls = 0, attempts = 0;
   await runRunner(args, {
-    workspacePath: () => workspace, wait: async () => {},
+    workspacePath: () => workspace, wait: () => tick(),
     queue: async () => {
       if (++polls === 3) { process.emit("SIGINT"); return []; }
       // The second poll offers the claim back, as the queue does a runner that
@@ -1215,7 +1383,7 @@ test("server failures in finish retire the task after three failures", async (t)
   let polls = 0, finishes = 0, reads = 0;
   taskIO.head = async () => ++reads % 2 ? "before" : "after";
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO, wait: async () => {},
+    workspacePath: io.workspacePath, taskIO, wait: () => tick(),
     queue: async () => {
       if (++polls === 5) { process.emit("SIGINT"); return []; }
       return [assignment];
@@ -1231,7 +1399,8 @@ test("server failures in finish retire the task after three failures", async (t)
 
 test("CLI marks network and server failures distinctly from task errors", async () => {
   const source = readFileSync(new URL("../cli/atelier.mjs", import.meta.url), "utf8");
-  const callSource = source.slice(source.indexOf("async function call("), source.indexOf("const P ="));
+  // The helpers are exported for the command modules; the slice runs as a script.
+  const callSource = source.slice(source.indexOf("async function call("), source.indexOf("const P =")).replace(/^export /gm, "");
   for (const fetch of [
     async () => { throw new Error("offline"); },
     async () => ({ text: async () => { throw new Error("connection lost"); } }),
@@ -1281,7 +1450,7 @@ test("real runner caps reset, claim and finish failures while serving the next t
     const claims = [], releases = [], runs = [], finishes = [], logs = [];
     let polls = 0;
     await runRunner(args, {
-      workspacePath: (_, id) => join(dir, id), wait: async () => {},
+      workspacePath: (_, id) => join(dir, id), wait: () => tick(),
       queue: async () => {
         if (++polls === 5) { process.emit("SIGINT"); return []; }
         return [assignment, { ...assignment, item: { ...assignment.item, id: "t14" } }]
@@ -1352,7 +1521,7 @@ test("an opencode run gets a data folder beside the workspace, removed as the ha
     // Made after the claim, given to the harness alone, and removed before anything else runs.
     assert.deepEqual(homes.slice(0, 4), [{ cli: "claim" }, { made: home }, { ran: home }, { removed: home }], JSON.stringify(options));
     assert.equal(homes.filter((h) => h.made || h.removed).length, 2);
-    assert.deepEqual(calls.find((c) => c.harness).env, { XDG_DATA_HOME: home, CF_AIG_METADATA: '{"task":"t13","role":"build","runner":"home:studio"}' });
+    assert.deepEqual(calls.find((c) => c.harness).env, { XDG_DATA_HOME: home, ATELIER_TEST_TASK: "t13", ATELIER_TEST_ACTOR: assignment.actor, ATELIER_TEST_PROJECT: assignment.project, ATELIER_TEST_PRIORITY: "ordinary", CF_AIG_METADATA: '{"task":"t13","role":"build","runner":"home:studio"}' });
   }
 });
 
@@ -1362,7 +1531,7 @@ test("other harnesses run with no data folder", async () => {
   const state = await runTask({ ...assignment, agent: "claude-code", actor: `claude-code/${entry.models[0]}` }, { agents: [claude] }, "home:studio", io);
   assert.equal(state.phase, "submitted");
   assert.deepEqual(homes, [{ ran: undefined }]);
-  assert.deepEqual(calls.find((c) => c.harness).env, { PATH: "/bin", CF_AIG_METADATA: '{"task":"t13","role":"build","runner":"home:studio"}' });
+  assert.deepEqual(calls.find((c) => c.harness).env, { PATH: "/bin", ATELIER_TEST_TASK: "t13", ATELIER_TEST_ACTOR: `claude-code/${entry.models[0]}`, ATELIER_TEST_PROJECT: assignment.project, ATELIER_TEST_PRIORITY: "ordinary", CF_AIG_METADATA: '{"task":"t13","role":"build","runner":"home:studio"}' });
 });
 
 // The variables of a runner's environment on the owner's Mac, with dummy values.
@@ -1405,13 +1574,13 @@ test("runTask hands the harness the filtered environment, and reads the owner's 
   const { io, calls, logs } = fixture({ env: base, ownerTokens: [RUNNER_ENV.ATELIER_TOKEN] });
   assert.equal((await runTask(assignment, { agents: [named] }, "home:studio", io)).phase, "submitted");
   const home = "/cache/work/atelier/.atelier-t13-opencode-data-x";
-  assert.deepEqual(calls.find((c) => c.harness).env, { ...checkEnv(RUNNER_ENV), ZAI_API_KEY: "DUMMY-zai", XDG_DATA_HOME: home, CF_AIG_METADATA: '{"task":"t13","role":"build","runner":"home:studio"}' });
+  assert.deepEqual(calls.find((c) => c.harness).env, { ...checkEnv(RUNNER_ENV), ZAI_API_KEY: "DUMMY-zai", XDG_DATA_HOME: home, ATELIER_TEST_TASK: "t13", ATELIER_TEST_ACTOR: assignment.actor, ATELIER_TEST_PROJECT: assignment.project, ATELIER_TEST_PRIORITY: "ordinary", CF_AIG_METADATA: '{"task":"t13","role":"build","runner":"home:studio"}' });
   assert.ok(logs.includes("OWNER_COPY holds the Atelier owner token, so opencode does not get it; take it out of env in the runner config"));
   assert.equal(calls.filter((c) => c.ownerTokens).length, 1);
 
   const plain = fixture({ env: base });
   await runTask(assignment, config, "home:studio", plain.io);
-  assert.deepEqual(plain.calls.find((c) => c.harness).env, { ...checkEnv(RUNNER_ENV), XDG_DATA_HOME: home, CF_AIG_METADATA: '{"task":"t13","role":"build","runner":"home:studio"}' });
+  assert.deepEqual(plain.calls.find((c) => c.harness).env, { ...checkEnv(RUNNER_ENV), XDG_DATA_HOME: home, ATELIER_TEST_TASK: "t13", ATELIER_TEST_ACTOR: assignment.actor, ATELIER_TEST_PROJECT: assignment.project, ATELIER_TEST_PRIORITY: "ordinary", CF_AIG_METADATA: '{"task":"t13","role":"build","runner":"home:studio"}' });
   assert.equal(plain.calls.filter((c) => c.ownerTokens).length, 0, "no token is read when no variable is named");
 });
 
@@ -1419,8 +1588,8 @@ test("gatewayMetadata names the run the gateway's figures count, and harnessRunE
   assert.equal(gatewayMetadata("t13", "build", "home:studio"), '{"task":"t13","role":"build","runner":"home:studio"}');
   // A run with no task (a hand dispatch whose brief names none) sends the rest.
   assert.equal(gatewayMetadata("", "review", "home:mbp"), '{"role":"review","runner":"home:mbp"}');
-  assert.deepEqual(harnessRunEnv({ PATH: "/bin" }, null, "t7", "plan", "home:mbp"), { PATH: "/bin", CF_AIG_METADATA: '{"task":"t7","role":"plan","runner":"home:mbp"}' });
-  assert.deepEqual(harnessRunEnv({}, { dir: "/data" }, "t21", "review", "home:mbp"), { XDG_DATA_HOME: "/data", CF_AIG_METADATA: '{"task":"t21","role":"review","runner":"home:mbp"}' });
+  assert.deepEqual(harnessRunEnv({ PATH: "/bin" }, null, "t7", "plan", "home:mbp"), { PATH: "/bin", ATELIER_TEST_TASK: "t7", ATELIER_TEST_ACTOR: "home:mbp", ATELIER_TEST_PRIORITY: "ordinary", CF_AIG_METADATA: '{"task":"t7","role":"plan","runner":"home:mbp"}' });
+  assert.deepEqual(harnessRunEnv({}, { dir: "/data" }, "t21", "review", "home:mbp"), { XDG_DATA_HOME: "/data", ATELIER_TEST_TASK: "t21", ATELIER_TEST_ACTOR: "home:mbp", ATELIER_TEST_PRIORITY: "review", CF_AIG_METADATA: '{"task":"t21","role":"review","runner":"home:mbp"}' });
 });
 
 test("a real harness gets neither Atelier's credentials nor the owner's other keys, only what its entry names", async (t) => {
@@ -1442,8 +1611,12 @@ test("a real harness gets neither Atelier's credentials nor the owner's other ke
     import { execFileSync } from "node:child_process";
     writeFileSync(${JSON.stringify(seen)}, JSON.stringify(process.env));
     execFileSync("git", ["commit", "--quiet", "--allow-empty", "-m", "work"]);`);
+  // An executable stub with Codex's explicit unrestricted adapter contract.
+  const codex = join(dir, "codex");
+  writeFileSync(codex, `#!${process.execPath}\n${readFileSync(script, "utf8")}`, { mode: 0o755 });
   for (const agent of ["codex", "opencode"]) {
-    writeFileSync(path, JSON.stringify({ agents: [{ ...entry, agent, env: ["ZAI_API_KEY", "OWNER_COPY"], command: [process.execPath, script, "{model}", "{brief_file}"] }] }));
+    const command = agent === "codex" ? [codex, "exec", "--sandbox", "danger-full-access", "{model}", "{brief_file}"] : [process.execPath, script, "{model}", "{brief_file}"];
+    writeFileSync(path, JSON.stringify({ agents: [{ ...entry, agent, env: ["ZAI_API_KEY", "OWNER_COPY"], command }] }));
     const commands = [];
     await runRunner({ ...args, once: true }, {
       workspacePath: () => workspace, queue: async () => [{ ...assignment, agent, actor: `${agent}/${entry.models[0]}` }],
@@ -1560,7 +1733,7 @@ test("a run that timed out, stalled or was refused is reported under the runner'
   const cases = [
     [{ head: "before", timedOut: true }, "timed-out", "harness timed out"],
     [{ head: "after", timedOut: true }, "timed-out", "harness timed out"],
-    [{ head: "before" }, "stalled", "harness made no new commit"],
+    [{ head: "before" }, "stalled", "harness made no new commit: the task has no pushed head ahead of its base"],
     [{ head: "before", code: 1 }, "refused", "harness exited 1"],
     [{}, null],
     [{ failCommand: "finish" }, null],
@@ -1571,7 +1744,7 @@ test("a run that timed out, stalled or was refused is reported under the runner'
     const { io, logs } = fixture(options);
     const reports = [];
     await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
-      workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, queue: async () => [assignment],
+      workspacePath: io.workspacePath, taskIO: io, wait: () => tick(), queue: async () => [assignment],
       async reportRun(body, runner, signal) { reports.push({ body, runner, signalled: signal instanceof AbortSignal }); },
     });
     const expected = outcome ? [{ body: { actor: assignment.actor, role: "build", outcome, project: "atelier", item: "t13", detail }, runner: "home:studio", signalled: true }] : [];
@@ -1581,7 +1754,7 @@ test("a run that timed out, stalled or was refused is reported under the runner'
   // A report the server refuses is logged, and the runner goes on.
   const { io, logs } = fixture({ head: "before", code: 1 });
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, queue: async () => [assignment],
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(), queue: async () => [assignment],
     async reportRun() { throw new Error("403 this operation requires the owner token"); },
   });
   assert.ok(logs.includes("could not report atelier/t13 as refused: 403 this operation requires the owner token"));
@@ -1596,80 +1769,133 @@ test("a named variable the check allowlist already passes is withheld too when i
   assert.equal(env.PATH, undefined);
 });
 
-// t403: a saturated machine takes no new job. The runner holds back while the
-// load average is at or above the limit (the config's `loadLimit`, else the
-// core count), says so, and the next poll tries again.
-test("parseConfig accepts a positive loadLimit and refuses one that is not", () => {
-  assert.equal(parseConfig({ ...config, loadLimit: 4 }).loadLimit, 4);
-  assert.equal(parseConfig({ ...config, loadLimit: 1.5 }).loadLimit, 1.5, "a load average is a real number, so a fractional limit is allowed");
-  assert.equal("loadLimit" in parseConfig(config), false, "no loadLimit means the default, the core count");
-  for (const loadLimit of [0, -1, "4", Infinity, Number.NaN]) {
-    assert.match(parseConfig({ ...config, loadLimit }).errors.join(" "), /loadLimit/, String(loadLimit));
+test("Codex builds refuse restricted and opaque adapters before claiming", async () => {
+  for (const command of [["codex", "exec", "--full-auto"], ["codex", "exec", "--sandbox", "workspace-write"], ["wrapper", "{model}", "{brief_file}"], ["codex", "exec", "--sandbox=danger-full-access", "--sandbox=workspace-write"], ["codex", "exec", "--sandbox", "danger-full-access", "--approve-for-me"]]) {
+    const e = { ...entry, agent: "codex", command };
+    const a = { ...assignment, agent: "codex", actor: `codex/${assignment.model}` };
+    const { io, calls } = fixture();
+    const state = await runTask(a, { agents: [e] }, "home:studio", io);
+    assert.equal(runOutcome(state), "validation_blocked");
+    assert.equal(state.taskFailure, false);
+    assert.match(state.reason, /localhost listening, the npm cache and network/);
+    assert.deepEqual(calls, []);
   }
+  assert.equal(codexBuildRefusal({ ...entry, agent: "codex", command: ["codex", "exec", "--sandbox", "danger-full-access"] }), null);
+  assert.equal(codexBuildRefusal(entry), null);
 });
 
-test("a runner holds back while the load is at or above its limit and says so", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "atelier-load-gate-test-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const path = join(dir, "runner.json");
-  writeFileSync(path, JSON.stringify({ ...config, loadLimit: 2 }));
-  const { io, calls, logs } = fixture();
-  let polls = 0;
-  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
-    load: () => 5,
-    async queue() { polls++; return [assignment]; },
-  });
-  assert.equal(polls, 1);
-  assert.ok(!calls.some((c) => c.argv?.[0] === "claim"), "no job is claimed under load");
-  assert.ok(logs.some((s) => /load 5 is at or above the limit 2; waiting before taking a job/.test(s)), logs.join("\n"));
+test("a blocked final report preserves the commit without finish, including on restart", async () => {
+  const { io, calls } = fixture();
+  let saved;
+  io.harness = async () => ({ code: 0, output: "Committed the fix. npm test could not run: sandbox listen EPERM; npm cache permission denied." });
+  io.writeValidationBlock = async (workspace, block) => { saved = block; };
+  const state = await runTask(assignment, config, "home:studio", io);
+  assert.equal(runOutcome(state), "validation_blocked");
+  assert.equal(state.taskFailure, false);
+  assert.deepEqual([saved.actor, saved.head], [assignment.actor, "after"]);
+  assert.ok(saved.detail.includes("listen EPERM"));
+  assert.ok(!calls.some((c) => ["finish", "release"].includes(c.argv?.[0])));
+  const restart = (head) => {
+    const f = fixture();
+    f.io.readValidationBlock = async () => saved;
+    f.io.head = async () => head;
+    return f;
+  };
+  const held = restart("after");
+  const again = await runTask({ ...assignment, item: heldItem({ head: "recorded" }) }, config, "home:studio", held.io);
+  assert.equal(runOutcome(again), "validation_blocked");
+  assert.deepEqual(held.calls, []);
 });
 
-test("a runner takes a job while the load is under its limit", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "atelier-load-under-test-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const path = join(dir, "runner.json");
-  writeFileSync(path, JSON.stringify({ ...config, loadLimit: 2 }));
-  const { io, calls, logs } = fixture();
-  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
-    load: () => 1,
-    queue: async () => [assignment],
-  });
-  assert.ok(calls.some((c) => c.argv?.[0] === "claim"), "the job is claimed under the limit");
-  assert.ok(!logs.some((s) => s.includes("waiting before taking a job")));
+test("a blocked marker holds back only its own actor's unverified head", async () => {
+  const saved = { actor: assignment.actor, head: "after", detail: "npm test could not run: listen EPERM" };
+  // The same builder after its commit moved on (the owner verified and
+  // committed again) builds as usual.
+  const moved = fixture();
+  moved.io.readValidationBlock = async () => saved;
+  const heads = ["moved", "before", "after"];
+  moved.io.head = async () => heads.shift();
+  const state = await runTask(assignment, config, "home:studio", moved.io);
+  assert.equal(runOutcome(state), null);
+  assert.ok(moved.calls.some((c) => c.argv?.[0] === "finish"));
+  // Another builder dispatched to the same workspace runs its harness and checks.
+  const other = { ...entry, agent: "claude-code", models: [assignment.model] };
+  const handed = fixture();
+  handed.io.readValidationBlock = async () => ({ ...saved, head: "before" });
+  const next = await runTask({ ...assignment, agent: "claude-code", actor: `claude-code/${assignment.model}` }, { agents: [other] }, "home:studio", handed.io);
+  assert.equal(runOutcome(next), null);
+  assert.ok(handed.calls.some((c) => c.harness));
+  assert.ok(handed.calls.some((c) => c.argv?.[0] === "finish"));
 });
 
-test("a runner with no loadLimit holds back at the core count, and the reading is per job", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "atelier-load-default-test-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+test("the build brief asks for a validation_blocked line, and that line is read as blocked", () => {
+  assert.match(ROLE_PROMPTS.build, /validation_blocked: why/);
+  assert.match(validationBlockedReport("Implemented the change and committed it.\nvalidation_blocked: vitest could not listen on 127.0.0.1 (EPERM)"), /could not listen/);
+  assert.match(validationBlockedReport("Done.\n**validation_blocked:** the sandbox has no network"), /no network/);
+});
+
+test("a report that only mentions checks or validation_blocked in passing does not hold a build back", () => {
+  for (const report of [
+    "npm test and npm run typecheck pass. I did not run any atelier command and did not push.",
+    "Added the validation_blocked run outcome, with tests; npm test and npm run typecheck pass.",
+    "I could not reproduce the hang without a test, so I added one; all checks pass.",
+    "Did not run atelier done; the runner submits. Tests pass.",
+    "npm test failed once on an assertion; fixed it and the suite passes.",
+  ]) assert.equal(validationBlockedReport(report), null, report);
+  for (const report of [
+    "The tests could not be run here: listen EPERM 127.0.0.1.",
+    "I was unable to run npm test because the npm cache is read-only.",
+    "npm test failed: listen EPERM: operation not permitted 127.0.0.1",
+    "The sandbox prevented vitest from starting.",
+    "Didn't run the required checks; network access is disabled.",
+  ]) assert.ok(validationBlockedReport(report), report);
+});
+
+test("only the final agent message in a structured transcript blocks validation", () => {
+  const tool = JSON.stringify({ type: "item.completed", item: { type: "command_execution", aggregated_output: "npm test blocked by EPERM" } });
+  const message = (text) => JSON.stringify({ type: "item.completed", item: { type: "agent_message", text } });
+  assert.equal(validationBlockedReport(`${tool}\n${message("npm test and npm run typecheck passed.")}`), null);
+  assert.equal(validationBlockedReport(`${message("Tests blocked by sandbox")}\n${message("Retried: all required checks passed.")}`), null);
+  assert.match(validationBlockedReport(`${tool}\n${message("Unable to run the full test suite: listen EPERM.")}`), /listen EPERM/);
+  assert.equal(validationBlockedReport("npm test failed: assertion mismatch"), null);
+  assert.match(validationBlockedReport(`${"A long implementation summary. ".repeat(30)}\nI couldn’t run the required checks because network access was denied.`), /couldn.t run.*checks.*network/);
+});
+
+test("runner records blocked validation as a harness limitation", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-validation-report-"));
+  t.after(() => { rmSync(dir, { recursive: true, force: true }); process.exitCode = 0; });
   const path = join(dir, "runner.json");
   writeFileSync(path, JSON.stringify(config));
   const { io, calls } = fixture();
-  const readings = [];
+  io.harness = async () => ({ code: 0, output: "Required checks could not run: npm cache EACCES." });
+  io.writeValidationBlock = async () => {};
+  const reports = [];
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
-    load: () => { const v = 99; readings.push(v); return v; },
-    cores: () => 4,
-    queue: async () => [assignment],
+    workspacePath: io.workspacePath, taskIO: io, queue: async () => [assignment],
+    reportRun: async (body) => reports.push(body),
   });
-  assert.ok(!calls.some((c) => c.argv?.[0] === "claim"), "99 is above the 4 cores");
-  assert.deepEqual(readings, [99], "the load is read once for the offered job");
+  assert.equal(reports[0].outcome, "validation_blocked");
+  assert.equal(reports[0].item, assignment.item.id);
+  assert.ok(!calls.some((c) => c.argv?.[0] === "finish"));
 });
 
-test("the runner's own load reader holds back under load, not just an injected one", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "atelier-load-default-reader-test-"));
+// t403: a saturated machine takes no new job. The runner holds back while the
+// load average is at or above the limit (the config's `loadLimit`, else the
+// core count), says so, and the next poll tries again.
+
+// Test-slot admission replaces the retired runner load gate.
+test("retired loadLimit never gates runner admission", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-retired-load-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "runner.json");
-  writeFileSync(path, JSON.stringify({ ...config, loadLimit: 2 }));
-  const previous = process.env.ATELIER_LOAD;
-  t.after(() => { if (previous === undefined) delete process.env.ATELIER_LOAD; else process.env.ATELIER_LOAD = previous; });
-  process.env.ATELIER_LOAD = "5";
+  writeFileSync(path, JSON.stringify({ ...config, loadLimit: 0 }));
+  assert.equal("loadLimit" in parseConfig({ ...config, loadLimit: "retired" }), false);
   const { io, calls, logs } = fixture();
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
     workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    load: () => { throw new Error("must not consult load"); },
     queue: async () => [assignment],
   });
-  assert.ok(!calls.some((c) => c.argv?.[0] === "claim"), "no job is claimed while the runner's own reader reports load 5");
-  assert.ok(logs.some((s) => /load 5 is at or above the limit 2; waiting before taking a job/.test(s)), logs.join("\n"));
+  assert.ok(calls.some((c) => c.argv?.[0] === "claim"));
+  assert.ok(!logs.some((s) => s.includes("waiting before taking a job")));
 });

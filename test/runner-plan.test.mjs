@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { setImmediate as tick } from "node:timers/promises";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -7,10 +8,6 @@ import { join } from "node:path";
 import { parseConfig } from "../cli/runner-config.mjs";
 import { commandFor, offerFrom, planFilePath, runPlanTask, runTask, runRunner, runOutcome, execute } from "../cli/runner.mjs";
 import { ROLE_PROMPTS } from "../src/usage.ts";
-
-// Pin the load under the runner's limit so these tests are not held back by
-// this machine's real load; the gate is tested with an injected load.
-process.env.ATELIER_LOAD = "0";
 
 // The runner's plan job and a part's brief (docs/orchestrator.md, sections 2
 // and 3, build step 7b): the runner offers plan jobs, claims the plan item as
@@ -102,9 +99,11 @@ test("a plan job claims as the planner, fetches the brief, posts the plan file a
   assert.equal(state.head, "abc123");
   assert.deepEqual(calls[0].argv, ["claim", "t7", "--project", "atelier", "--as", "opencode/glm-5.3", "--runner", "home:studio"]);
   assert.deepEqual(calls.find((c) => c.jobBrief).jobBrief, ["atelier", "t7", "opencode/glm-5.3"]);
-  assert.equal(calls.find((c) => c.brief).brief, `${ROLE_PROMPTS.plan.trimEnd()}\n\nSERVER BRIEF`);
+  assert.ok(calls.find((c) => c.brief).brief.startsWith(`${ROLE_PROMPTS.plan.trimEnd()}\n\n`));
+  assert.match(calls.find((c) => c.brief).brief, /host slot wrapper:.*cli\/load\.mjs/);
+  assert.ok(calls.find((c) => c.brief).brief.endsWith("\n\nSERVER BRIEF"));
   assert.deepEqual(calls.find((c) => c.harness).harness.slice(6, 8), ["--plan-file", planFilePath(join(root, "t7"))]);
-  assert.deepEqual(calls.find((c) => c.harness).env, { XDG_DATA_HOME: join(root, "data-home"), CF_AIG_METADATA: '{"task":"t7","role":"plan","runner":"home:studio"}' });
+  assert.deepEqual(calls.find((c) => c.harness).env, { XDG_DATA_HOME: join(root, "data-home"), ATELIER_TEST_TASK: "t7", ATELIER_TEST_ACTOR: planJob.actor, ATELIER_TEST_PROJECT: planJob.project, ATELIER_TEST_PRIORITY: "ordinary", CF_AIG_METADATA: '{"task":"t7","role":"plan","runner":"home:studio"}' });
   const posted = calls.find((c) => c.postPlan);
   assert.deepEqual(posted.postPlan, ["atelier", "t7", "opencode/glm-5.3"]);
   assert.equal(posted.text, JSON.stringify(planDocument));
@@ -175,7 +174,10 @@ test("a part's build brief comes from the server, and any other task keeps brief
   const part = fixture(t);
   assert.equal((await runTask(partJob, buildConfig, "home:studio", part.io)).phase, "submitted");
   assert.deepEqual(part.calls.find((c) => c.jobBrief).jobBrief, ["atelier", "t5", "opencode/glm-5.3"]);
-  assert.equal(part.calls.find((c) => c.brief).brief, `${ROLE_PROMPTS.build.trimEnd()}\n\nSERVER BRIEF`);
+  const brief = part.calls.find((c) => c.brief).brief;
+  assert.ok(brief.startsWith(ROLE_PROMPTS.build.trimEnd()));
+  assert.match(brief, /host slot wrapper:.*load\.mjs/);
+  assert.ok(brief.endsWith("\n\nSERVER BRIEF"));
   const ordinary = fixture(t);
   assert.equal((await runTask(ordinaryJob, buildConfig, "home:studio", ordinary.io)).phase, "submitted");
   assert.ok(!ordinary.calls.some((c) => c.jobBrief));
@@ -264,7 +266,7 @@ test("a refused plan job is retried once before the runner retires it", async (t
   const claims = [], logs = [];
   let polls = 0;
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
-    workspacePath: () => workspace, wait: async () => {},
+    workspacePath: () => workspace, wait: () => tick(),
     queue: async () => { if (++polls === 4) { process.emit("SIGINT"); return []; } return [planJob]; },
     taskIO: {
       log: (s) => logs.push(s),

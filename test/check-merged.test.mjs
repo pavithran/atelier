@@ -1,3 +1,4 @@
+import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
@@ -87,6 +88,7 @@ const addFile = (name) => (cwd) => writeFileSync(join(cwd, name), `${name}\n`);
 const bothFiles = "test -f main.txt && test -f task.txt";
 
 test("check --merged runs the checks on the head merged with main's head, and records the result against both", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await fixture(t, { mainChange: addFile("main.txt"), taskChange: addFile("task.txt"), check: bothFiles });
   const r = await f.run(["check", "t1", "--project", "proj", "--merged"]);
   assert.equal(r.status, 0, r.stdout + r.stderr);
@@ -118,6 +120,7 @@ test("check --merged stops on a conflict with main, naming the path, and records
 });
 
 test("check --merged on a head that already holds main's head checks the head itself, bound to that main head", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await fixture(t, { mainChange: addFile("main.txt"), taskChange: addFile("task.txt"), onMain: true, check: bothFiles });
   const r = await f.run(["check", "t1", "--project", "proj", "--merged"]);
   assert.equal(r.status, 0, r.stdout + r.stderr);

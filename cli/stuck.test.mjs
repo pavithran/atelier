@@ -1,6 +1,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { stuckReport, reportLimits } from '../src/stuck/report.ts';
+import { FLAGS, HANDLERS, parseArgs } from './atelier.mjs';
+import stuckCommand from './commands/stuck.mjs';
+import { commandUsage, helpText } from '../src/usage.ts';
+
+test('stuck registers its extracted handler, flags and help', () => {
+  assert.equal(HANDLERS.get('stuck'), stuckCommand);
+  const flags = ['no-push-hours', 'unanswered-hours', 'lease-wait-minutes', 'runner-poll-minutes', 'review-answer-hours'];
+  for (const flag of flags) {
+    assert.equal(FLAGS.stuck[flag], false);
+    assert.equal(parseArgs(['stuck', `--${flag}`, '3'])[flag], '3');
+    assert.ok(commandUsage('stuck').includes(`--${flag} N`));
+  }
+  assert.equal(parseArgs(['stuck', '--json']).json, true);
+  assert.match(helpText(), /stuck \[--project P\]/);
+  assert.match(commandUsage('stuck'), /failed reads are unavailable/);
+});
 const now = new Date('2026-10-10T12:00:00Z');
 const at = ms => new Date(+now - ms).toISOString();
 const item = (over = {}) => ({ id: 't1', title: 'Task', scope: ['src/**'], state: 'claimed', owner: 'codex/model', head: 'a'.repeat(40), base: null, fork: null, acceptedHead: null, createdAt: at(0), updatedAt: at(0), lastPushAt: null, ...over });
