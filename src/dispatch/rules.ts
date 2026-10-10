@@ -179,9 +179,11 @@ export function holdText(h: CoreHold): string {
 // The live item a dispatched task's claim would be refused against, when the
 // project refuses overlapping claims (policy.refuseOverlap): a claimed or
 // submitted item outside the task's plan whose scope overlaps the task's.
-// Like coreHold, only a job that builds — a plain build or merge-main — is
-// ever refused an overlap; the plan, integrate, refresh and review jobs
-// change no workspace of their own.
+// It follows the claim (assertClaimAllowed in src/rules.ts), not coreHold:
+// the owner's --overlap-ok lets a dispatch past the core-file hold but not
+// past this refusal, and a plan's planner claim is refused like a build's.
+// Only atelier/integrator's integrate and refresh jobs, exempt from the
+// claim policy, and review requests, which claim nothing, are never refused.
 export interface OverlapRefusal {
   id: string;
   owner: string | null;
@@ -191,8 +193,7 @@ export interface OverlapRefusal {
 
 export function overlapRefusal(item: Item, items: readonly Item[]): OverlapRefusal | null {
   const d = item.dispatch;
-  if (!d || d.overlapOk || item.kind === "plan") return null;
-  if (d.job !== undefined && d.job !== "merge-main") return null;
+  if (!d || d.job === "review" || d.job === "integrate" || d.job === "refresh") return null;
   for (const o of items) {
     if (o.id === item.id || samePlan(item, o)) continue;
     if (o.state !== "claimed" && o.state !== "submitted") continue;
@@ -201,14 +202,36 @@ export function overlapRefusal(item: Item, items: readonly Item[]): OverlapRefus
   return null;
 }
 
-// The failed build runs a runner reported for one item, and how many of them
-// the runner gives up at (cli/runner.mjs skips the task once it has failed
-// twice, so the queue reports it as skipped rather than merely waiting).
+// The runners that gave one item up: cli/runner.mjs passes a task by for
+// the rest of its process once it has failed it SKIP_AFTER times
+// (failureCount), keyed by project and item alone, so dispatching it again
+// does not bring it back; only restarting that runner does. The server sees
+// those failures as the build run reports each runner sends (runOutcome),
+// counted per runner. A runner whose offer is no longer live skips nothing,
+// so with the offers known only live runners are named.
 export const SKIP_AFTER = 2;
 const FAILED_OUTCOMES = new Set(["stalled", "timed-out", "refused", "harness_failed"]);
 
-export function failedRunCount(runs: readonly { project: string | null; item: string | null; role: string; outcome: string }[], project: string, item: string): number {
-  return runs.filter((r) => r.project === project && r.item === item && r.role === "build" && FAILED_OUTCOMES.has(r.outcome)).length;
+export type RunSeen = { project: string | null; item: string | null; role: string; outcome: string; runner: string; at: string };
+
+export interface SkippedBy {
+  runner: string;
+  failures: number;
+  last: string;      // the newest failure's outcome
+}
+
+export function skippedBy(runs: readonly RunSeen[], project: string, item: string, offers?: readonly SeenOffer[] | null, now = new Date()): SkippedBy[] {
+  const live = offers ? new Set(liveOffers(offers, now).map((o) => o.runner)) : null;
+  const by = new Map<string, { failures: number; last: string; at: string }>();
+  for (const r of runs) {
+    if (r.project !== project || r.item !== item || r.role !== "build" || !FAILED_OUTCOMES.has(r.outcome)) continue;
+    const seen = by.get(r.runner) ?? { failures: 0, last: r.outcome, at: r.at };
+    // The index lists runs newest first, so a tie keeps the one seen first.
+    by.set(r.runner, { failures: seen.failures + 1, ...(r.at > seen.at ?{ last: r.outcome, at: r.at } : { last: seen.last, at: seen.at }) });
+  }
+  return [...by].filter(([runner, s]) => s.failures >= SKIP_AFTER && (!live || live.has(runner)))
+    .map(([runner, s]) => ({ runner, failures: s.failures, last: s.last }))
+    .sort((a, b) => a.runner.localeCompare(b.runner));
 }
 
 // Why a dispatched task the queue offers is not being taken, each reason in
@@ -229,7 +252,7 @@ export function unclaimed(
     held?: CoreHold | null;
     overlap?: OverlapRefusal | null;
     offers?: readonly SeenOffer[] | null;
-    runs?: readonly { project: string | null; item: string | null; role: string; outcome: string }[] | null;
+    runs?: readonly RunSeen[] | null;
     project?: string;
     now?: Date;
   },
@@ -237,8 +260,9 @@ export function unclaimed(
   const out: UnclaimedReason[] = [];
   if (input.held) out.push({ kind: "held", line: heldReasonLine(item, input.held) });
   if (input.overlap) out.push({ kind: "overlap", line: overlapReasonLine(input.overlap) });
-  const failed = input.runs && input.project ? failedRunCount(input.runs, input.project, item.id) : 0;
-  if (failed >= SKIP_AFTER) out.push({ kind: "skipped", line: skippedReasonLine(item, failed) });
+  if (input.runs && input.project) {
+    for (const s of skippedBy(input.runs, input.project, item.id, input.offers, input.now)) out.push({ kind: "skipped", line: skippedReasonLine(s) });
+  }
   if (item.dispatch && input.offers) {
     const dead = unoffered(item.dispatch, input.offers, input.now);
     if (dead) out.push({ kind: "unoffered", line: unofferedReasonLine(dead, item) });
@@ -255,8 +279,8 @@ function overlapReasonLine(o: OverlapRefusal): string {
   return `Overlap refused: ${o.id} (${o.owner ?? "unowned"}) holds a scope that overlaps this one, and the project refuses overlapping claims; a runner can take it once ${o.id} merges or is abandoned, or the owner allows overlaps with atelier init --refuse-overlap=false.`;
 }
 
-function skippedReasonLine(item: Item, n: number): string {
-  return `Skipped: a runner gave it up after ${n} failure${n === 1 ? "" : "s"}; fix the failure, then dispatch it again with atelier dispatch ${item.id}.`;
+function skippedReasonLine(s: SkippedBy): string {
+  return `Skipped by ${s.runner} after ${s.failures} failed runs (the last ${s.last}); that runner passes it by until it restarts: fix the cause, then restart it with atelier runner --name ${s.runner}.`;
 }
 
 function unofferedReasonLine(dead: string, item: Item): string {

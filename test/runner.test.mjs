@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, jobsLine, gatewayMetadata, harnessRunEnv } from "../cli/runner.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, passedBy, taskKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, jobsLine, gatewayMetadata, harnessRunEnv } from "../cli/runner.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
 import { helpText } from "../src/usage.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
@@ -493,7 +493,7 @@ test("an idle runner says, once per change, why dispatches it cannot take are wa
     async queue() { return []; },
     async idleWhy() {
       calls++;
-      return calls === 1 ? [held("t2")] : [held("t2"), { project: "atelier", item: { id: "t3", why: [{ kind: "skipped", line: "Skipped: a runner gave it up after 2 failures; fix the failure, then dispatch it again with atelier dispatch t3." }] } }];
+      return calls === 1 ? [held("t2")] : [held("t2"), { project: "atelier", item: { id: "t3", why: [{ kind: "skipped", line: "Skipped by home:desk after 2 failed runs (the last stalled); that runner passes it by until it restarts: fix the cause, then restart it with atelier runner --name home:desk." }] } }];
     },
   });
   const said = logs.filter((s) => s.includes("found nothing to claim"));
@@ -501,7 +501,69 @@ test("an idle runner says, once per change, why dispatches it cannot take are wa
   assert.ok(said[0].includes("1 dispatch waits"), said[0]);
   assert.ok(said[1].includes("2 dispatches wait"), said[1]);
   assert.ok(logs.some((s) => s.includes("atelier/t2  Held: waits on t1")));
-  assert.ok(logs.some((s) => s.includes("atelier/t3  Skipped: a runner gave it up after 2 failures")));
+  assert.ok(logs.some((s) => s.includes("atelier/t3  Skipped by home:desk after 2 failed runs")));
+});
+
+test("passedBy says why the loop passes an offered task by, with what lets it through", () => {
+  const empty = { refused: new Set(), failures: new Map(), infrastructureFailures: new Map() };
+  assert.equal(passedBy(assignment, ["build"], empty), null);
+  assert.match(passedBy({ ...assignment, item: { ...assignment.item, dispatch: { job: "review" } } }, ["build"], empty), /^Not taken here: a review job, which this runner's config does not offer; add it to the config's jobs/);
+  assert.match(passedBy(assignment, ["build"], { ...empty, refused: new Set([refusedKey(assignment)]) }), /^Passed by: its claim was refused or it was skipped here, and it has not changed since; it is tried again once it changes/);
+  assert.equal(passedBy(assignment, ["build"], { ...empty, failures: new Map([[taskKey(assignment), 1]]) }), null, "one failure is not yet a skip");
+  assert.match(passedBy(assignment, ["build"], { ...empty, failures: new Map([[taskKey(assignment), 2]]) }), /^Skipped after 2 failed runs in this process; fix the cause, then restart this runner\.$/);
+  assert.match(passedBy(assignment, ["build"], { ...empty, infrastructureFailures: new Map([[taskKey(assignment), 3]]) }), /^Skipped after 3 infrastructure failures in a row in this process; fix the runner's setup, then restart this runner\.$/);
+});
+
+test("a runner whose claim was refused says, once, that it passes the task by, beside the queue's reasons", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-runner-idle-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  const logs = [];
+  t.mock.method(console, "log", (s) => logs.push(s));
+  const { io } = fixture();
+  io.cli = async (argv) => { if (argv[0] === "claim") throw Object.assign(new Error("overlap"), { claimRefused: true }); };
+  const overlap = { kind: "overlap", line: "Overlap refused: t1 (codex/gpt-6) holds a scope that overlaps this one." };
+  let polls = 0;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async queue() {
+      if (++polls > 4) process.emit("SIGTERM");
+      return [assignment];
+    },
+    // The queue's own reason for the same task is not said twice; another
+    // project's held dispatch is said beside it.
+    async idleWhy() {
+      return [{ project: "atelier", item: { id: "t13", why: [overlap] } }, { project: "other", item: { id: "t5", why: [{ kind: "unoffered", line: "No live runner can take it." }] } }];
+    },
+  });
+  const said = logs.filter((s) => s.includes("found nothing to claim"));
+  assert.equal(said.length, 1, logs.join("\n"));
+  assert.ok(said[0].includes("2 dispatches wait"), said[0]);
+  assert.ok(logs.some((s) => s.includes("atelier/t13  Passed by: its claim was refused")));
+  assert.ok(!logs.some((s) => s.includes("atelier/t13  Overlap refused")));
+  assert.ok(logs.some((s) => s.includes("other/t5  No live runner can take it.")));
+});
+
+test("an idle runner says why with no queue reasons to read, from what it knows itself", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-runner-idle-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify({ ...config, jobs: ["build"] }));
+  const logs = [];
+  t.mock.method(console, "log", (s) => logs.push(s));
+  let polls = 0;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+    workspacePath: () => { throw new Error("no task should be claimed"); },
+    wait: async () => {},
+    async queue() {
+      if (++polls > 2) process.emit("SIGTERM");
+      return [{ ...assignment, item: { ...assignment.item, dispatch: { job: "review" } } }];
+    },
+    async idleWhy() { throw new Error("queue: 500"); },
+  });
+  assert.equal(logs.filter((s) => s.includes("found nothing to claim while 1 dispatch waits")).length, 1, logs.join("\n"));
+  assert.ok(logs.some((s) => s.includes("atelier/t13  Not taken here: a review job")));
 });
 
 test("versionRefusal names both levels and says to deploy, and clears a current server", () => {

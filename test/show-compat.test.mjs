@@ -12,7 +12,7 @@ const brief = {
 };
 
 // Exercise the CLI against the older server contract without opening sockets.
-function fixture(t, status = 404, error = "not_found", detail = "no such route") {
+function fixture(t, status = 404, error = "not_found", detail = "no such route", queue = null) {
   const root = mkdtempSync(join(process.cwd(), ".show-compat-test-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const preload = join(root, "server.mjs");
@@ -20,6 +20,7 @@ function fixture(t, status = 404, error = "not_found", detail = "no such route")
     globalThis.fetch = async (url, options) => {
       if (options.method !== "GET") throw new Error("show must be read-only");
       const path = new URL(url).pathname;
+      if (path === "/api/queue" && ${queue !== null}) return Response.json(${JSON.stringify(queue)});
       if (path === "/api/projects/proj/items/t1/brief") return Response.json(${JSON.stringify(brief)});
       if (path === "/api/projects/proj/items/t1") return Response.json(${JSON.stringify({ error, detail })}, { status: ${status} });
       throw new Error("unexpected route: " + path);
@@ -43,6 +44,24 @@ test("show preserves the plan brief, JSON and review output without a detail rou
       if (flags.includes("--reviews")) assert.match(r.stdout, /No reviews are recorded/);
     }
   }
+});
+
+// t420: show prints each reason the queue holds the task, with the command
+// that releases it, and --json carries them; another project's t1 does not count.
+test("show lists why the queue holds a dispatched task", (t) => {
+  const why = [
+    { kind: "held", line: "Held: waits on t9 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t9 merges or is abandoned, or at once with atelier dispatch t1 --overlap-ok." },
+    { kind: "skipped", line: "Skipped by home:studio after 2 failed runs (the last stalled); that runner passes it by until it restarts: fix the cause, then restart it with atelier runner --name home:studio." },
+  ];
+  const run = fixture(t, 404, "not_found", "no such route", [
+    { project: "other", item: { id: "t1", why: [{ kind: "overlap", line: "Overlap refused elsewhere." }] } },
+    { project: "proj", item: { id: "t1", why } },
+  ]);
+  const r = run();
+  assert.equal(r.status, 0, r.stderr);
+  for (const { line } of why) assert.ok(r.stdout.includes(`\n${line}`), r.stdout);
+  assert.ok(!r.stdout.includes("elsewhere"), r.stdout);
+  assert.deepEqual(JSON.parse(run(["--json"]).stdout).why, why);
 });
 
 for (const [status, error, detail, exitCode] of [

@@ -2105,12 +2105,12 @@ function isHeld(item: Item): boolean {
 // Why each queued dispatch the owner's listing shows is not being taken,
 // attached as `why` so `atelier status` and `atelier show` say it: the core
 // file hold and overlap refusal the Ledger already computed beside it, the
-// failures a runner gave up at (from the run reports), and the model or job
+// live runners that gave it up after failing it (from the run reports), and the model or job
 // no live runner offers (unclaimed in src/dispatch/rules.ts). A review
 // request is listed apart, so it carries none.
 async function queueWhy(env: Env, queued: { project: string; item: Item & { held?: CoreHold; overlap?: OverlapRefusal } }[]): Promise<{ project: string; item: Item & { why?: UnclaimedReason[] } }[]> {
   const [offers, runs] = await Promise.all([index(env).runnerOffers(), index(env).runs()]);
-  const reports = runs.map((r) => ({ project: r.project, item: r.item, role: r.role, outcome: r.outcome }));
+  const reports = runs.map((r) => ({ project: r.project, item: r.item, role: r.role, outcome: r.outcome, runner: r.runner, at: r.at }));
   return queued.map(({ project, item }) => {
     if (item.dispatch?.job === "review") return { project, item };
     const why = unclaimed(item, { held: item.held ?? null, overlap: item.overlap ?? null, offers, runs: reports, project });

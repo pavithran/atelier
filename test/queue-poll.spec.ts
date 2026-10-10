@@ -116,6 +116,16 @@ it("the queue attaches, in words, why a dispatch is held, refused an overlap or 
   const refused = await L.newItem("Also src", ["src/index.ts"], "owner");
   const free = await L.newItem("Docs", ["docs/**"], "owner");
   for (const id of [held.id, refused.id, free.id]) await L.dispatch(id, "owner", { to: "home", agent: "opencode" });
+  // A live runner offers opencode, and has failed the free task twice; a
+  // fourth task names a model no live runner offers.
+  const now = new Date().toISOString();
+  await index().putRunnerOffer({ runner: "home:why", kind: "home", agents: [{ agent: "opencode", models: ["glm-5.3"] }] }, now);
+  // Reported in the same instant: the newer report is still the last named.
+  for (const outcome of ["stalled", "timed-out"] as const) {
+    await index().putRun({ actor: "opencode/glm-5.3", role: "build", outcome, project: name, item: free.id, detail: "", runner: "home:why", at: now });
+  }
+  const nobody = await L.newItem("Elsewhere", ["video/**"], "owner");
+  await L.dispatch(nobody.id, "owner", { to: "home", agent: "codex", model: "gpt-6" });
 
   const { waiting } = await L.queued();
   const byId = new Map(waiting.map((i) => [i.id, i]));
@@ -135,6 +145,12 @@ it("the queue attaches, in words, why a dispatch is held, refused an overlap or 
   expect(kinds(refused.id)).not.toContain("held");
   expect(kinds(free.id)).not.toContain("held");
   expect(kinds(free.id)).not.toContain("overlap");
+  expect(kinds(free.id)).toEqual(["skipped"]);
+  expect(kinds(nobody.id)).toEqual(["unoffered"]);
+  const line = (id: string, kind: string) => (all.find((q) => q.project === name && q.item.id === id)?.item.why ?? []).find((r) => r.kind === kind)?.line ?? "";
+  expect(line(free.id, "skipped")).toBe("Skipped by home:why after 2 failed runs (the last timed-out); that runner passes it by until it restarts: fix the cause, then restart it with atelier runner --name home:why.");
+  expect(line(nobody.id, "unoffered")).toMatch(new RegExp(`^No live runner can take it: .*atelier dispatch ${nobody.id} --agent H --model M`));
+  expect(line(refused.id, "overlap")).toMatch(new RegExp(`^Overlap refused: ${live.id} \\(${A}\\) holds a scope`));
   const heldLine = (all.find((q) => q.project === name && q.item.id === held.id)?.item.why ?? []).find((r) => r.kind === "held")?.line ?? "";
   expect(heldLine).toMatch(/^Held: waits on .*; offered once .* merges or is abandoned, or at once with atelier dispatch .* --overlap-ok\.$/);
 });
