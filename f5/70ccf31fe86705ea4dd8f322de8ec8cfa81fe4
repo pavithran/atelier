@@ -1,0 +1,61 @@
+atelier atelier/t417 "A build whose agent could not run the checks says so before it is pushed"
+accepted head 3a359b903b289c176ba5e340cf1dc022bd7702eb
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-10T15:12:34.684Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-10T15:12:44.192Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-10T15:53:44.340Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-10T15:53:48.144Z
+REVIEW approve by antigravity/gemini-3.1-pro at 3a359b903b289c176ba5e340cf1dc022bd7702eb, recorded by antigravity/gemini-3.1-pro
+2026-10-09T21:33:07.423Z pavi item.created
+2026-10-10T01:46:21.278Z pavi item.dispatched
+2026-10-10T03:44:19.733Z codex/gpt-6.1-sol item.claimed
+2026-10-10T03:44:24.754Z codex/gpt-6.1-sol fork.created
+2026-10-10T04:00:27.356Z codex/gpt-6.1-sol push.observed
+2026-10-10T04:04:53.573Z codex/gpt-6.1-sol evidence.observed
+2026-10-10T04:04:55.967Z codex/gpt-6.1-sol evidence.observed
+2026-10-10T04:04:56.423Z codex/gpt-6.1-sol item.submitted
+2026-10-10T05:40:04.428Z pavi land.lease
+2026-10-10T05:40:10.345Z pavi land.merge
+2026-10-10T05:40:18.894Z pavi land.regenerate
+2026-10-10T05:40:21.357Z codex/gpt-6.1-sol push.observed
+2026-10-10T05:40:22.149Z pavi land.push
+2026-10-10T05:43:23.596Z codex/gpt-6.1-sol evidence.observed
+2026-10-10T05:43:26.034Z codex/gpt-6.1-sol evidence.observed
+2026-10-10T05:43:26.417Z pavi land.check
+2026-10-10T05:53:30.124Z pavi item.released
+2026-10-10T05:53:30.124Z pavi item.dispatched
+2026-10-10T05:53:31.060Z codex/gpt-6.1-sol item.claimed
+2026-10-10T05:59:50.007Z codex/gpt-6.1-sol push.observed
+2026-10-10T06:04:56.968Z codex/gpt-6.1-sol evidence.observed
+2026-10-10T06:04:59.247Z codex/gpt-6.1-sol evidence.observed
+2026-10-10T06:04:59.699Z codex/gpt-6.1-sol item.submitted
+2026-10-10T07:41:53.816Z pavi land.lease
+2026-10-10T07:42:10.353Z pavi land.merge
+2026-10-10T07:42:19.104Z pavi item.released
+2026-10-10T07:42:19.104Z pavi item.dispatched
+2026-10-10T12:38:39.623Z pavi item.dispatched
+2026-10-10T13:10:08.470Z claude-code/opus-5.5 item.claimed
+2026-10-10T13:32:10.139Z claude-code/opus-5.5 push.observed
+2026-10-10T13:36:33.008Z claude-code/opus-5.5 evidence.observed
+2026-10-10T13:36:35.728Z claude-code/opus-5.5 evidence.observed
+2026-10-10T13:36:36.195Z claude-code/opus-5.5 item.submitted
+2026-10-10T14:09:38.406Z pavi land.lease
+2026-10-10T14:09:57.630Z pavi land.merge
+2026-10-10T14:21:16.109Z pavi item.released
+2026-10-10T14:21:16.109Z pavi item.dispatched
+2026-10-10T14:38:28.531Z claude-code/opus-5.5 item.claimed
+2026-10-10T14:55:07.032Z claude-code/opus-5.5 push.observed
+2026-10-10T15:12:35.753Z claude-code/opus-5.5 evidence.observed
+2026-10-10T15:12:44.548Z claude-code/opus-5.5 evidence.observed
+2026-10-10T15:12:45.220Z claude-code/opus-5.5 item.submitted
+2026-10-10T15:45:19.793Z pavi land.merge
+2026-10-10T15:45:33.998Z pavi land.regenerate
+2026-10-10T15:45:36.559Z pavi land.push
+2026-10-10T15:53:45.187Z claude-code/opus-5.5 evidence.observed
+2026-10-10T15:53:48.368Z claude-code/opus-5.5 evidence.observed
+2026-10-10T15:53:48.745Z pavi land.check
+2026-10-10T15:53:51.787Z pavi review.requested
+2026-10-10T15:54:13.881Z antigravity/gemini-3.1-pro review.claimed
+2026-10-10T16:00:42.950Z antigravity/gemini-3.1-pro review.approved
+2026-10-10T16:00:55.854Z pavi land.review
+2026-10-10T16:00:56.854Z pavi item.accepted
+2026-10-10T16:00:56.881Z pavi land.accept
