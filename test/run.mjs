@@ -5,16 +5,40 @@
 // its parent (a check or a terminal gone). The cleanup lies here, outside the
 // test processes, because a test spinning on microtasks dies of a signal
 // before any cleanup of its own runs. Given test files, it runs node --test
-// on those alone; given none, the whole suite, then vitest.
+// on those alone; given none, every test file discovery finds (suites.mjs,
+// t466: *.test.mjs and *.test.ts anywhere but node_modules, cli/ included),
+// then vitest. A test file no runner owns, or more than one, ends the run
+// before anything starts, naming each path. `--discover [DIR]` only prints
+// that assignment, for DIR or the working directory, and runs nothing.
+// Prerequisites, from a clean clone: Node 24 or later, git, and `npm ci`;
+// then `npm test` and `npm run typecheck` (which generates
+// worker-configuration.d.ts itself). No owner credential, login or live
+// service is needed.
 import { runGroup } from "../cli/group.mjs";
 import { constants } from "node:os";
+import { assign, discover, rejections } from "./suites.mjs";
 
 const TIMEOUT_MS = Number(process.env.ATELIER_TEST_TIMEOUT_MS ?? 30 * 60_000);
 
-const files = process.argv.slice(2);
+const args = process.argv.slice(2);
+const listing = args[0] === "--discover";
+const files = listing ? [] : args;
+let found = null;
+if (!files.length) {
+  found = assign(discover(listing ? args[1] ?? "." : "."));
+  const rejected = rejections(found);
+  if (rejected.length) {
+    console.error(`test/run.mjs: ${rejected.length} test file(s) rejected before running anything:\n${rejected.map((l) => `  ${l}`).join("\n")}`);
+    process.exit(1);
+  }
+  if (listing) {
+    for (const [name, list] of Object.entries(found.byRunner)) for (const file of list) console.log(`${name}\t${file}`);
+    process.exit(0);
+  }
+}
 const node = [process.execPath, "--import", "./test/guard.mjs", "--test", "--test-timeout=180000"];
 const commands = files.length ? [[...node, ...files]]
-  : [[...node, "test/**/*.test.ts", "test/**/*.test.mjs"], ["node_modules/.bin/vitest", "run"]];
+  : [[...node, ...found.byRunner.node], ["node_modules/.bin/vitest", "run"]];
 
 // runGroup SIGKILLs the group on the way out of process.exit.
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, () => process.exit(128 + constants.signals[signal]));
