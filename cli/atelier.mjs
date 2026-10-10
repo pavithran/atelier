@@ -2693,7 +2693,21 @@ const commands = {
     }
     const as = await actor();
     const d = await call("GET", I(name, id), undefined, as);
-    await call("POST", `${I(name, id)}/evidence`, { kind: "report", claim, head: d.item.head }, as);
+    // The write is made once. A refusal ends the command nonzero with no
+    // acknowledgement, and a stale head is never retried against the newer
+    // one: the caller reviews the current revision and reports again. A
+    // transport failure leaves it unknown whether the server recorded the
+    // report, so the message does not say it was absent.
+    const again = `review the current revision of ${id}, then report again`;
+    let written;
+    try { written = await request("POST", `${I(name, id)}/evidence`, { kind: "report", claim, head: d.item.head }, as); }
+    catch (error) {
+      if (!(error instanceof RequestError)) throw error;
+      if (/^stale_head\b/.test(error.message)) die(`${error.message}\nnothing was recorded; ${again}`, error.code);
+      if (error.code === 4) die(`${error.message}\nthe report may or may not have been recorded; check ${id} before reporting again`, 4);
+      die(error.message, error.code);
+    }
+    if (written?.error) die(`${written.error}: ${written.detail ?? "the report was refused"}${written.error === "stale_head" ? `\nnothing was recorded; ${again}` : ""}`);
     console.log(`Recorded on ${id} as REPORTED at ${short(d.item.head)}. Reports are shown, never counted as checks.`);
   },
 
