@@ -1381,6 +1381,31 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
   const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
   for (const signal of signals) process.on(signal, stop);
   const refused = new Set(), failures = new Map(), infrastructureFailures = new Map();
+  // Review skip reports the server has not taken yet (t353), by the review's
+  // refusal key. A review this runner has refused or capped is left out of
+  // every later poll, so its report cannot ride on a later run: it is tried
+  // again on its own, each poll, until the server has it or refuses it.
+  const pendingSkips = new Map();
+  // Sends one skip report. Taken, or refused outright by the server (a 4xx:
+  // a request it does not have, a malformed head — one no retry would
+  // change), the report is done with; failed any other way (the server down,
+  // a timeout) it is kept for the next poll.
+  const reportSkip = async (key, body) => {
+    try {
+      await reportReviewSkip(body, offer.runner, controller.signal);
+      pendingSkips.delete(key);
+      io.log(`reported the review skip for ${body.project}/${body.item}`);
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      if (/^4\d\d\b/.test(String(error?.message ?? ""))) {
+        pendingSkips.delete(key);
+        io.log(`could not report the review skip for ${body.project}/${body.item}: ${error.message}`);
+      } else {
+        pendingSkips.set(key, body);
+        io.log(`could not report the review skip for ${body.project}/${body.item}: ${error.message}; trying again next poll`);
+      }
+    }
+  };
   const cleanupOptions = () => ({ timeoutMs: 5000, step: "cleanup" });
   // Resets a workspace to a commit and removes untracked files, saving any
   // uncommitted work first (rescueWork).
@@ -1484,6 +1509,14 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
         misses = 0;
         if (!Array.isArray(tasks)) throw new Error("queue did not return an array");
         if (controller.signal.aborted) break;
+        // Skip reports the server did not take last time are tried again
+        // first, each poll, until it has them (t353): the reviews they name
+        // are left out of the loop below, so nothing else would send them.
+        for (const [key, body] of [...pendingSkips]) {
+          await reportSkip(key, body);
+          if (controller.signal.aborted) break;
+        }
+        if (controller.signal.aborted) break;
         // Review jobs come first, in the queue's order, then the rest in
         // theirs, so a review atelier land waits on is not held behind builds
         // (t213). A job the offer does not name the runner never takes
@@ -1524,14 +1557,13 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
           if (infrastructureCount === 3) io.log(`${task.project}/${task.item.id} needs the owner's attention after 3 consecutive infrastructure failures: ${state.reason}; skipped for this process`);
           // A review this runner will not serve again in this process — a
           // refused claim, a skip, or the failure cap — is reported to the
-          // server, so the landing waiting on it can say, by runner name,
-          // when every runner that offers the reviewer has skipped, instead
-          // of waiting out the hour (t353).
+          // server, under the request's number, so the landing waiting on it
+          // can say, by runner name, when every runner that offers the
+          // reviewer has skipped, instead of waiting out the hour (t353). A
+          // report the server did not take is kept and tried again each poll
+          // (reportSkip), since this review is not run again in this process.
           if (task.item.dispatch?.job === "review" && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && reportReviewSkip) {
-            try {
-              await reportReviewSkip({ project: task.project, item: task.item.id, head: task.item.head, actor: task.actor, note: state.reason }, offer.runner, controller.signal);
-              io.log(`reported the review skip for ${task.project}/${task.item.id}`);
-            } catch (error) { io.log(`could not report the review skip for ${task.project}/${task.item.id}: ${error.message}`); }
+            await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note: state.reason });
           }
           if (state.claimRefused || state.skipped) refused.add(refusedKey(task));
           else if (args.once || state.phase !== "failed" || state.taskFailure) break;

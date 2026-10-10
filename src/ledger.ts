@@ -3324,25 +3324,32 @@ export class Ledger extends DurableObject<Env> {
     });
   }
 
-  // A runner's word that it will not serve the review of `head`, recorded as
-  // a `review.skipped` event under the runner's name (t353). The landing
-  // waiting on the review reads these to say, by runner, when every runner
-  // that offers the reviewer has skipped, instead of waiting out the hour.
-  recordReviewSkip(itemId: string, head: string, runner: string, actor: string, note: string, proved = false): void {
+  // A runner's word that it will not serve review request `request` of this
+  // item, recorded as a `review.skipped` event under the runner's name and
+  // the request's number (t353). The landing waiting on the review reads
+  // these to say, by runner, when every runner that offers the reviewer has
+  // skipped, instead of waiting out the hour. The request must be the item's
+  // and at `head`, so a report never lands against nothing; a request no
+  // longer open is still recorded, since a report may arrive late.
+  recordReviewSkip(itemId: string, request: number, head: string, runner: string, actor: string, note: string, proved = false): void {
     this.item(itemId);
+    const row = this.sql.exec(`SELECT head FROM review_requests WHERE id = ? AND item = ?`, request, itemId).toArray()[0];
+    if (!row) throw new RuleError("no_request", `no review request ${request} of ${itemId}`, 404);
+    if (row.head !== head) throw new RuleError("bad_head", `review request ${request} of ${itemId} is at ${(row.head as string).slice(0, 8)}, not ${head.slice(0, 8)}`, 409);
     const at = new Date().toISOString();
-    this.log(itemId, actor, "review.skipped", { head, runner, ...(note ? { note: note.slice(0, REASON_MAX) } : {}) }, at, proved);
+    this.log(itemId, actor, "review.skipped", { head, request, runner, ...(note ? { note: note.slice(0, REASON_MAX) } : {}) }, at, proved);
   }
 
-  // The runners that have skipped the review of `head` since `since`, as the
-  // landing's wait reads them; a skip from before the request (an earlier
-  // landing's) does not count.
-  reviewSkips(itemId: string, head: string, since: string): { runner: string; at: string; note?: string }[] {
+  // The runners that have skipped review request `request`, as the landing's
+  // wait reads them. Matched by the request's number alone: a skip of an
+  // earlier request at the same head (an earlier landing's, or one whose
+  // claim lapsed) is that request's and counts for nothing against this one,
+  // however late it was reported.
+  reviewSkips(itemId: string, request: number): { runner: string; at: string; note?: string }[] {
     const rows = this.sql.exec(`SELECT at, data FROM events WHERE item_id = ? AND kind = 'review.skipped' ORDER BY seq`, itemId).toArray();
     return rows.flatMap((r) => {
-      const data = JSON.parse(r.data as string) as { head?: unknown; runner?: unknown; note?: unknown };
-      if (data.head !== head) return [];
-      if (Date.parse(r.at as string) < Date.parse(since)) return [];
+      const data = JSON.parse(r.data as string) as { request?: unknown; runner?: unknown; note?: unknown };
+      if (data.request !== request) return [];
       return [{ runner: String(data.runner ?? ""), at: r.at as string, ...(typeof data.note === "string" && data.note ? { note: data.note } : {}) }];
     });
   }
@@ -3515,7 +3522,10 @@ export class Ledger extends DurableObject<Env> {
   // where the gate needs none; only a gate that cannot proceed (checks not
   // passing, a rejection at this head whose blocking findings the owner has
   // not refuted, no push) refuses, with its reason.
-  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean } {
+  // The answer names the request's number (`request`, t353), the one the
+  // queue gives runners in each review task, so the landing waiting on the
+  // verdict and the runner skipping the review name the same request.
+  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean; request?: number } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner asks for a review", 403);
     const item = this.item(id);
     // A named reviewer is judged even when a request already stands, so a
@@ -3550,7 +3560,7 @@ export class Ledger extends DurableObject<Env> {
     });
     // The newest live request: an older one at this head is one whose claim
     // lapsed, since a new request is made only when every earlier one has.
-    const live = this.sql.exec(`SELECT dispatch FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL ORDER BY id DESC LIMIT 1`, id, item.head).toArray()[0];
+    const live = this.sql.exec(`SELECT id, dispatch FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL ORDER BY id DESC LIMIT 1`, id, item.head).toArray()[0];
     if (!need.needed) {
       if (live) {
         const dispatch = JSON.parse(live.dispatch as string) as Dispatch;
@@ -3568,7 +3578,7 @@ export class Ledger extends DurableObject<Env> {
           throw new RuleError("review_requested", `a review of ${id} at ${item.head!.slice(0, 8)} is already requested from ${standing}; wait for its verdict, or let its claim lapse before naming ${reviewer}`, 409);
         }
         const recordedReason = records ? this.events(id, Number.MAX_SAFE_INTEGER).find((e) => e.kind === "review.requested" && e.data.head === item.head && e.data.reviewer === standing)?.data.reason : null;
-        return { needed: true, requested: false, reason: [need.reason, typeof recordedReason === "string" ? recordedReason : ""].filter(Boolean).join(" "), at: this.requestedAt(id, item.head!) ?? at, head: item.head!, reviewer: dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : undefined };
+        return { needed: true, requested: false, reason: [need.reason, typeof recordedReason === "string" ? recordedReason : ""].filter(Boolean).join(" "), at: this.requestedAt(id, item.head!) ?? at, head: item.head!, reviewer: dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : undefined, request: live.id as number };
       }
       if (wanted) throw new RuleError("review_blocked", `${id} cannot be reviewed now: ${need.reason}`, 409);
       return { needed: false, reason: need.reason };
@@ -3605,10 +3615,10 @@ export class Ledger extends DurableObject<Env> {
     const where = records ? pool.find((m) => sameActor(`${m.harness}/${m.id}`, chosen))?.where ?? "home" : "home";
     const dispatch = { ...makeDispatch({ to: where, agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
     const topTier = this.gateIsTier(item, need, chosen);
-    this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?)`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item));
+    const made = this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?) RETURNING id`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item)).one();
     this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: "land", ...(choiceReason ? { reason: choiceReason } : {}), ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
     this.askTierReview(item, need, chosen, actor, at, proved);
-    return { needed: true, requested: true, reason: [need.reason, choiceReason].filter(Boolean).join(" "), at, head: need.head, reviewer: chosen };
+    return { needed: true, requested: true, reason: [need.reason, choiceReason].filter(Boolean).join(" "), at, head: need.head, reviewer: chosen, request: made.id as number };
   }
 
   // When the newest review.requested event for a head was recorded, so a
