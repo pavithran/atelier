@@ -668,7 +668,7 @@ test("a signal ends a queued landing, leaving the queue and taking no lease", as
   });
   let output = ""; child.stdout.on("data", (s) => { output += s; }); child.stderr.on("data", (s) => { output += s; });
   const done = new Promise((ok) => child.on("close", (status, signal) => ok({ status, signal })));
-  await until(() => f.posts("/landing-lease").some((x) => x.body.queued === true && x.body.item === "t1"), 15_000, "the queued ask");
+  await until(() => f.posts("/landing-lease").some((x) => x.body.queued === true && x.body.item === "t1"), CEILING_MS, "the queued ask");
   child.kill("SIGTERM");
   const ended = await done;
   assert.equal(ended.status, 143, output);
@@ -1086,7 +1086,11 @@ test("a server that reports no route level refuses, saying to deploy", async (t)
 });
 
 // Waits until `ready()` holds, polling, or fails after `ms`.
-async function until(ready, ms = 15_000, what = "the condition") {
+// The deadline is only a ceiling for a machine under load (a landing spawns
+// node and runs git, which took over 15 s at load ~20); the wait ends as soon
+// as the event happens, so a quiet machine never waits for it.
+const CEILING_MS = 180_000;
+async function until(ready, ms = CEILING_MS, what = "the condition") {
   for (const t0 = Date.now(); !ready();) {
     if (Date.now() - t0 > ms) throw new Error(`${what} did not come within ${ms}ms`);
     await new Promise((ok) => setTimeout(ok, 25));
@@ -1097,7 +1101,7 @@ async function until(ready, ms = 15_000, what = "the condition") {
 // of the heartbeat's beats — and returns what it settled on. A stream that
 // keeps coming never settles, so this waits on the renewal calls themselves
 // rather than proving they stopped with a fixed sleep on the clock.
-async function settled(count, quiet, ms = 15_000, what = "the count") {
+async function settled(count, quiet, ms = CEILING_MS, what = "the count") {
   let last = count(), at = Date.now();
   for (const t0 = Date.now();;) {
     if (Date.now() - t0 > ms) throw new Error(`${what} did not settle within ${ms}ms`);
@@ -1125,7 +1129,7 @@ test("SIGINT and SIGTERM release the lease before the landing ends, with the sig
   for (const [signal, status] of [["SIGTERM", 143], ["SIGINT", 130]]) {
     const f = await landFixture(t);
     const landing = waitingLanding(f);
-    await until(() => f.box.review.pending, 15_000, "the review request");
+    await until(() => f.box.review.pending, CEILING_MS, "the review request");
     assert.equal(f.box.lease?.item, "t1");
     landing.child.kill(signal);
     const ended = await landing.done;
@@ -1140,7 +1144,7 @@ test("SIGINT and SIGTERM release the lease before the landing ends, with the sig
 test("the landing renews the lease while it waits, and the renewal moves renewedAt on", async (t) => {
   const f = await landFixture(t);
   const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: "40" });
-  await until(() => f.posts("/landing-lease").filter((x) => x.body.renew === true).length >= 3, 15_000, "three renewals");
+  await until(() => f.posts("/landing-lease").filter((x) => x.body.renew === true).length >= 3, CEILING_MS, "three renewals");
   assert.ok(f.posts("/landing-lease").some((x) => x.body.item === "t1" && x.body.renew !== true), "the lease was taken before it was renewed");
   for (const renew of f.posts("/landing-lease").filter((x) => x.body.renew === true)) assert.equal(renew.body.item, "t1");
   assert.equal(f.box.lease.item, "t1");
@@ -1285,27 +1289,27 @@ test("a refused renewal stops the heartbeat and is said once, and the lost lease
   const beatMs = 40;
   const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: String(beatMs) });
   const renewals = () => f.posts("/landing-lease").filter((x) => x.body.renew === true).length;
-  await until(() => renewals() >= 2, 15_000, "two renewals");
+  await until(() => renewals() >= 2, CEILING_MS, "two renewals");
   // The server cannot be reached for a while: one warning, renewals go on.
   f.box.renewFails = true;
-  await until(() => landing.output().includes("could not be renewed"), 15_000, "the warning");
+  await until(() => landing.output().includes("could not be renewed"), CEILING_MS, "the warning");
   const failed = renewals();
-  await until(() => renewals() >= failed + 3, 15_000, "three more renewals");
+  await until(() => renewals() >= failed + 3, CEILING_MS, "three more renewals");
   assert.equal(landing.output().split("could not be renewed").length - 1, 1);
   f.box.renewFails = false;
-  await until(() => landing.output().includes("renewed again"), 15_000, "the recovery");
+  await until(() => landing.output().includes("renewed again"), CEILING_MS, "the recovery");
   // Another landing took the lease over: the renewal is refused, said once,
   // and no renewal follows — the renewal calls themselves must settle, quiet
   // for several beats, at the count the refusal left them at.
   f.box.lease = { item: "t2", holder: "owner", at: new Date().toISOString(), renewedAt: new Date().toISOString() };
-  await until(() => landing.output().includes("no longer t1's"), 15_000, "the loss");
+  await until(() => landing.output().includes("no longer t1's"), CEILING_MS, "the loss");
   const after = renewals();
   // The landing stops on its own — every step, and each poll of the review
   // wait, asks the guard — so its end is waited for, not raced with a sleep.
   const ended = await landing.done;
   assert.equal(ended.status, 1, landing.output());
   assert.match(landing.output(), /run atelier land t1 again once the other landing ends/);
-  assert.equal(await settled(renewals, beatMs * 5, 15_000, "the renewals"), after, "renewals continued after the refusal");
+  assert.equal(await settled(renewals, beatMs * 5, CEILING_MS, "the renewals"), after, "renewals continued after the refusal");
   assert.equal(landing.output().split("no longer t1's").length - 1, 1);
   // The landing's end leaves t2's lease where it is.
   assert.equal(f.box.lease?.item, "t2");
@@ -1315,7 +1319,7 @@ test("a refused renewal stops the heartbeat and is said once, and the lost lease
 test("a landing that learns from its heartbeat that it lost the lease stops without accepting or merging", async (t) => {
   const f = await landFixture(t);
   const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: "40" });
-  await until(() => f.box.review.pending, 15_000, "the review request");
+  await until(() => f.box.review.pending, CEILING_MS, "the review request");
   const before = { checkout: git(f.checkout, "rev-parse", "HEAD"), baseline: git(f.p, "--git-dir", f.baseline, "rev-parse", "main") };
   // The Mac sleeps (t232): the renewals pause, the lease lapses, and t2's
   // landing, queued with --wait, takes it over.
@@ -1368,7 +1372,7 @@ test("a landing whose lease lapsed and was taken over releases nothing of the la
   // t1's landing waits for a review while its lease is renewed; then its
   // renewals stop reaching the server and t2's landing takes the lease over.
   const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: "40" });
-  await until(() => f.box.review.pending, 15_000, "the review request");
+  await until(() => f.box.review.pending, CEILING_MS, "the review request");
   f.box.renewFails = true;
   const taken = new Date().toISOString();
   f.box.lease = { item: "t2", holder: "owner", at: taken, renewedAt: taken };
