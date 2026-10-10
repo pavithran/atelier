@@ -1517,6 +1517,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json({ runId, state }, 202);
     }
     case "dispatch": {
+      // --overlap-ok alone on a waiting dispatch releases its hold and keeps
+      // everything else; a claimed task is refused, not redispatched.
+      if (body.retain === true) {
+        requireOwner(env, actor);
+        const waiting = await L.item(id);
+        if (waiting.dispatch || waiting.owner) return json(await L.releaseHold(id, actor, body));
+      }
       let suggestion;
       // atelier dispatch with no --agent asks for the suggestion; a dispatch
       // that names no agent without asking stays open to any runner's agent.
