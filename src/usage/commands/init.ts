@@ -2,6 +2,9 @@ import type { CommandSpec } from "../command.ts";
 
 const spec: CommandSpec = {
   name: "init",
+  // Registers the policy, --require-criteria among it, which an older
+  // server would drop without a word.
+  capabilities: ["projects.require-criteria.v1"],
   forms: [
     {
       group: "Setup", line: 1, slot: 30,

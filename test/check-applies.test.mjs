@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 // The CLI's side of path-conditioned checks: `atelier check` records a check
 // whose paths the change does not touch as not applicable instead of running
@@ -126,6 +127,7 @@ function initFixture(t, registered = null) {
 import { appendFileSync } from "node:fs";
 globalThis.fetch = async (url, options = {}) => {
   const path = new URL(url).pathname, method = options.method ?? "GET";
+  if (path === "/api/version") return Response.json({ capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
   const body = options.body ? JSON.parse(options.body) : undefined;
   appendFileSync(${JSON.stringify(log)}, JSON.stringify({ method, path, body }) + "\\n");
   let data = {};

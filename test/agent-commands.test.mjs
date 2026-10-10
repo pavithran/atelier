@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { doneReport, formatBrief, formatTask } from "../cli/atelier.mjs";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 const cli = resolve("cli/atelier.mjs");
 const actor = "codex/test";
@@ -78,6 +79,8 @@ async function fixture(t, { failed = false, dirtyWorkspace = false, blockers = [
   const server = createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk;
     const path = req.url;
+    // The capability check before new, edit and review (t458) reads the version.
+    if (path === "/api/version") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ capabilities: SERVER_CAPABILITIES })); }
     requests.push(path);
     if (req.method === "POST") posts.push({ path, body: JSON.parse(raw) });
     if (req.method === "POST" && path.endsWith("/submit")) item.state = "submitted";

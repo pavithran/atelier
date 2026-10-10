@@ -2,6 +2,8 @@ import type { CommandSpec } from "../command.ts";
 
 const spec: CommandSpec = {
   name: "new",
+  // Files the brief and the acceptance criteria apart from the title.
+  capabilities: ["items.brief-criteria.v1"],
   forms: [
     {
       group: "Items", line: 1, slot: 10,

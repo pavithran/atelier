@@ -2,6 +2,8 @@ import type { CommandSpec } from "../command.ts";
 
 const spec: CommandSpec = {
   name: "merge",
+  // --approve posts the owner's review with the criteria binding it read.
+  capabilities: ["reviews.criteria-binding.v1"],
   forms: [
     {
       group: "Owner", line: 1, slot: 20,

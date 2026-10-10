@@ -1,11 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { createServer } from "node:http";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import {
   CAPABILITIES, COMMAND_CAPABILITIES, JOB_CAPABILITIES, ROUTE_LEVEL, SERVER_CAPABILITIES,
-  buildCapabilities, capabilitiesForLevel, checkCapabilities, requiredForJobs,
+  buildCapabilities, capabilitiesForLevel, checkCapabilities, commandCapabilities, requiredForCommand, requiredForJobs,
 } from "../src/route-level.ts";
+import { COMMAND_MODULES } from "../src/usage/commands/index.ts";
+import { DEFAULT_JOBS } from "../cli/runner-config.mjs";
 
 const need = ["a.one.v1", "a.two.v1"];
+const cli = resolve("cli/atelier.mjs");
+const SHA = "a".repeat(40), BINDING = "b".repeat(64);
 
 test("declarations are well formed, unique, and every requirement is declared", () => {
   assert.equal(new Set(SERVER_CAPABILITIES).size, CAPABILITIES.length);
@@ -48,8 +57,9 @@ test("malformed and unavailable answers get their own errors", () => {
 });
 
 test("legacy route levels map to the documented guarantees only", () => {
-  assert.deepEqual(capabilitiesForLevel(13), []);
-  assert.deepEqual(capabilitiesForLevel(14), ["land.workflow.v1"]);
+  assert.deepEqual(capabilitiesForLevel(5), []);
+  assert.deepEqual(capabilitiesForLevel(13), ["plans.integration.v1"]);
+  assert.deepEqual(capabilitiesForLevel(14), ["plans.integration.v1", "land.workflow.v1"]);
   assert.deepEqual(capabilitiesForLevel(ROUTE_LEVEL), [...SERVER_CAPABILITIES]);
   assert.deepEqual(capabilitiesForLevel(ROUTE_LEVEL + 5), [...SERVER_CAPABILITIES]);
   assert.equal(checkCapabilities({ routeLevel: 17 }, ["reviews.unparsable.v1"]).ok, true);
@@ -77,4 +87,204 @@ test("old clients against the new server: the server's answer carries routeLevel
 test("a command or job with no declaration needs nothing", () => {
   assert.deepEqual(requiredForJobs(["unknown-job"]), []);
   assert.equal(COMMAND_CAPABILITIES.help, undefined);
+  assert.deepEqual(requiredForCommand("help"), []);
+  assert.deepEqual(requiredForCommand("status"), []);
+});
+
+// t458 rework: every command whose handler calls a route a named capability
+// stands for declares it in its module, src/usage/commands/NAME.ts, and the
+// CLI checks the declaration before the handler runs. The list here is the
+// set of commands that depend on one; a command dropped from it, or one that
+// starts depending on a capability without declaring it, fails here.
+test("each command that relies on a named capability declares it in its module", () => {
+  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["edit", "init", "land", "merge", "models", "new", "review", "review-claim", "review-unparsable", "token"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.land, ["land.workflow.v1", "items.brief-criteria.v1", "reviews.criteria-binding.v1", "projects.require-criteria.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.new, ["items.brief-criteria.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.edit, ["items.brief-criteria.v1", "reviews.criteria-binding.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.init, ["projects.require-criteria.v1"]);
+  for (const command of ["review", "review-claim", "merge"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["reviews.criteria-binding.v1"], command);
+  assert.deepEqual(COMMAND_CAPABILITIES["review-unparsable"], ["reviews.unparsable.v1"]);
+  // The declarations are the modules' own: the module says what the registry reads.
+  for (const { spec } of COMMAND_MODULES) {
+    const declared = [...new Set([...(spec.capabilities ?? []), ...Object.values(spec.subcommands ?? {}).flatMap((s) => s.capabilities ?? [])])];
+    assert.deepEqual(COMMAND_CAPABILITIES[spec.name] ?? [], declared, spec.name);
+  }
+  // land alone leaves the check to its handler, for --release-lease's sake.
+  assert.deepEqual(COMMAND_MODULES.filter(({ spec }) => spec.capabilityCheck === "handler").map(({ spec }) => spec.name), ["land"]);
+});
+
+test("a subcommand's capabilities are asked only when that subcommand runs", () => {
+  // atelier models lists the pool on any server; note and show need the notes.
+  assert.deepEqual(requiredForCommand("models"), []);
+  assert.deepEqual(requiredForCommand("models", "add"), []);
+  assert.deepEqual(requiredForCommand("models", "note"), ["models.note.v1"]);
+  assert.deepEqual(requiredForCommand("models", "show"), ["models.note.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.models, ["models.note.v1"]);
+  assert.deepEqual(requiredForCommand("token", "issue"), ["runners.scoped-token.v1"]);
+  assert.deepEqual(requiredForCommand("token", "store"), ["runners.scoped-token.v1"]);
+  assert.deepEqual(requiredForCommand("token", "ls"), []);
+  // A prototype key is not a subcommand.
+  assert.deepEqual(requiredForCommand("models", "constructor"), []);
+  // The command's own are asked under every word.
+  assert.deepEqual(requiredForCommand("edit", "t1"), ["items.brief-criteria.v1", "reviews.criteria-binding.v1"]);
+});
+
+test("a module that requires a name no declaration publishes is refused, naming the module", () => {
+  const module = (spec) => [{ path: `src/usage/commands/${spec.name}.ts`, spec: { forms: [], flags: {}, ...spec } }];
+  assert.throws(() => commandCapabilities(module({ name: "x", capabilities: ["items.brief-criteria.v9"] })), /src\/usage\/commands\/x\.ts: atelier x requires capability items\.brief-criteria\.v9, which src\/route-level\.ts does not declare/);
+  assert.throws(() => commandCapabilities(module({ name: "x", subcommands: { go: { capabilities: ["nope.thing.v1"] } } })), /atelier x go requires capability nope\.thing\.v1/);
+  assert.deepEqual(commandCapabilities(module({ name: "x" })), {});
+  assert.deepEqual(commandCapabilities(module({ name: "x", capabilities: ["models.note.v1", "models.note.v1"], subcommands: { go: {} } })), { x: { own: ["models.note.v1"], subcommands: {} } });
+});
+
+// t458 rework: the integrate and refresh jobs claim the task, read Git
+// through the runner's credential and post the integration routes, so the
+// integrator's start check has something to check.
+test("every runner job declares what it needs, the integrator's jobs included", () => {
+  for (const job of [...DEFAULT_JOBS, "review", "integrate", "refresh"]) assert.ok(JOB_CAPABILITIES[job]?.length, `${job} declares nothing`);
+  assert.deepEqual(requiredForJobs(["integrate", "refresh"]), ["plans.integration.v1", "runners.scoped-token.v1"]);
+  const required = requiredForJobs(["integrate", "refresh"]);
+  assert.equal(checkCapabilities({ capabilities: [] }, required).kind, "missing");
+  assert.equal(checkCapabilities({ routeLevel: 0 }, required).kind, "missing");
+  assert.deepEqual(checkCapabilities({ routeLevel: 0 }, required).missing, required);
+  assert.equal(checkCapabilities({ routeLevel: ROUTE_LEVEL }, required).ok, true);
+  assert.equal(checkCapabilities({ capabilities: SERVER_CAPABILITIES }, required).ok, true);
+  // A server with the routes but not the runner credential is short of one.
+  assert.deepEqual(checkCapabilities({ routeLevel: 19 }, required).missing, ["runners.scoped-token.v1"]);
+});
+
+test("the integration routes are guaranteed from legacy level 6, as the commits that added them document", () => {
+  assert.deepEqual(capabilitiesForLevel(5), []);
+  assert.deepEqual(capabilitiesForLevel(6), ["plans.integration.v1"]);
+  assert.deepEqual(capabilitiesForLevel(13), ["plans.integration.v1"]);
+  assert.deepEqual(capabilitiesForLevel(14), ["plans.integration.v1", "land.workflow.v1"]);
+});
+
+// The CLI against a stub server: what GET /api/version answers decides
+// whether the command's first request is made.
+async function stub(t, version, { status = 200 } = {}) {
+  const requests = [];
+  const server = createServer(async (req, res) => {
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    requests.push({ method: req.method, path: req.url });
+    if (req.url === "/api/version") {
+      res.writeHead(status, { "content-type": "application/json" });
+      return res.end(typeof version === "string" ? version : JSON.stringify(version));
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    // One answer for every route: an item, a pool entry, a token, a note.
+    res.end(JSON.stringify({ id: "t1", title: "x", scope: [], head: SHA, item: { id: "t1", head: SHA, state: "claimed", title: "x", scope: [] }, criteria: BINDING, at: "2026-10-10T00:00:00.000Z", by: "owner", text: "x", kept: true, expiresAt: "later", token: "atl_x", actor: "codex/x", remote: "https://fork.invalid/x.git", defaultBranch: "main" }));
+  });
+  t.after(() => server.close());
+  await new Promise((done, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", done); });
+  const root = mkdtempSync(join(tmpdir(), "atelier-capabilities-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const run = (argv) => new Promise((done) => {
+    const child = spawn(process.execPath, [cli, ...argv], { cwd: root, env: { ...process.env, ATELIER_ACTOR: "codex/x", ATELIER_CONFIG_DIR: root, ATELIER_CACHE: join(root, "cache"), ATELIER_TOKEN: "fake", ATELIER_SERVER: origin } });
+    let output = "";
+    child.stdout.on("data", (s) => (output += s));
+    child.stderr.on("data", (s) => (output += s));
+    child.on("close", (status) => done({ status, output }));
+  });
+  return { requests, run, root };
+}
+
+// One invocation of each command and subcommand that declares capabilities
+// and leaves the check to the CLI, with the words that reach its first
+// request. land checks for itself, after --release-lease and before the lease
+// is read (cli/land.mjs); test/land.test.mjs covers that refusal and that
+// --release-lease asks for no version.
+function invocations(root) {
+  const reply = join(root, "reply.txt");
+  writeFileSync(reply, "no verdict here");
+  return [
+    { argv: ["new", "A short title", "--project", "proj"], required: COMMAND_CAPABILITIES.new },
+    { argv: ["edit", "t1", "--title", "Another", "--project", "proj"], required: COMMAND_CAPABILITIES.edit },
+    { argv: ["init", "--title", "Proj"], required: COMMAND_CAPABILITIES.init },
+    { argv: ["merge", "t1", "--project", "proj"], required: COMMAND_CAPABILITIES.merge },
+    { argv: ["models", "note", "gpt", "a note"], required: ["models.note.v1"] },
+    { argv: ["models", "show", "gpt"], required: ["models.note.v1"] },
+    { argv: ["review", "t1", "--approve", "--criteria", BINDING, "--project", "proj"], required: COMMAND_CAPABILITIES.review },
+    { argv: ["review-claim", "t1", "--project", "proj"], required: COMMAND_CAPABILITIES["review-claim"] },
+    { argv: ["review-unparsable", "t1", "--head", SHA, "--note", "n", "--reply-file", reply, "--project", "proj"], required: COMMAND_CAPABILITIES["review-unparsable"] },
+    { argv: ["token", "issue", "--as", "codex/x"], required: ["runners.scoped-token.v1"] },
+    { argv: ["token", "store", "--runner", "home:x"], required: ["runners.scoped-token.v1"] },
+  ];
+}
+
+test("a server missing one capability a command needs refuses it before its first request, naming the capability", async (t) => {
+  for (const { argv, required } of invocations(mkdtempSync(join(tmpdir(), "atelier-capabilities-argv-")))) {
+    for (const missing of required) {
+      const f = await stub(t, { commit: "0123456789abcdef", routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES.filter((n) => n !== missing) });
+      const r = await f.run(argv);
+      assert.equal(r.status, 1, `${argv.join(" ")} without ${missing}: ${r.output}`);
+      assert.match(r.output, new RegExp(`^atelier: the server \\(main at 01234567\\) lacks capabilities ${missing.replaceAll(".", "\\.")}: it publishes .*Deploy the server from a checkout that declares them \\(npm run deploy, which records the commit it deploys\\), then run atelier ${argv[0]} again\\n$`), `${argv.join(" ")} without ${missing}`);
+      assert.deepEqual(f.requests, [{ method: "GET", path: "/api/version" }], `${argv.join(" ")} without ${missing} made a request beyond the version`);
+    }
+  }
+});
+
+test("a server with every capability a command needs, or more, lets its first request through", async (t) => {
+  const extra = { commit: "0123456789abcdef", routeLevel: ROUTE_LEVEL, capabilities: [...SERVER_CAPABILITIES, "future.thing.v1"] };
+  for (const argv of [["new", "A short title", "--project", "proj"], ["models", "note", "gpt", "a note"], ["review-claim", "t1", "--project", "proj"], ["token", "issue", "--as", "codex/x"]]) {
+    const f = await stub(t, extra);
+    const r = await f.run(argv);
+    assert.doesNotMatch(r.output, /lacks capabilities/, argv.join(" "));
+    assert.equal(f.requests[0].path, "/api/version", argv.join(" "));
+    assert.ok(f.requests.length > 1, `${argv.join(" ")} made no request after the version: ${r.output}`);
+  }
+  // A legacy server at this CLI's level is read through the level.
+  const legacy = await stub(t, { commit: "0123456789abcdef", routeLevel: ROUTE_LEVEL });
+  const r = await legacy.run(["models", "note", "gpt", "a note"]);
+  assert.doesNotMatch(r.output, /lacks capabilities/);
+  assert.deepEqual(legacy.requests.map((x) => x.path), ["/api/version", "/api/models/gpt/notes"]);
+  // A legacy server behind the capability is refused through the level.
+  const behind = await stub(t, { commit: "0123456789abcdef", routeLevel: 17 });
+  const b = await behind.run(["models", "note", "gpt", "a note"]);
+  assert.equal(b.status, 1);
+  assert.match(b.output, /lacks capabilities models\.note\.v1: it reports only route level 17/);
+  assert.deepEqual(behind.requests.map((x) => x.path), ["/api/version"]);
+});
+
+test("a subcommand with no capabilities asks nothing and runs against a server that lacks its siblings'", async (t) => {
+  const f = await stub(t, { commit: "0123456789abcdef", capabilities: [] });
+  for (const argv of [["models"], ["models", "add", "gpt", "--harness", "codex", "--where", "cloud"]]) {
+    const r = await f.run(argv);
+    assert.doesNotMatch(r.output, /lacks capabilities/, argv.join(" "));
+  }
+  assert.deepEqual(f.requests.map((x) => x.path), ["/api/models", "/api/models/gpt"]);
+});
+
+test("an unavailable or malformed version answer refuses with its own message and code", async (t) => {
+  const down = await stub(t, { error: "unavailable" }, { status: 503 });
+  const r = await down.run(["new", "A short title", "--project", "proj"]);
+  assert.equal(r.status, 4, r.output);
+  assert.match(r.output, /^atelier: the server did not answer GET \/api\/version with a version, so its capabilities \(items\.brief-criteria\.v1\) cannot be checked\. Check that the server is reachable and deployed\./);
+  assert.deepEqual(down.requests.map((x) => x.path), ["/api/version"]);
+  const text = await stub(t, "<html>not json</html>");
+  const n = await text.run(["new", "A short title", "--project", "proj"]);
+  assert.equal(n.status, 4, n.output);
+  assert.match(n.output, /did not answer GET \/api\/version with a version/);
+  for (const [version, message] of [[{ commit: "c0ffee" }, /reports neither capabilities nor a route level/], [{ capabilities: "items.brief-criteria.v1" }, /capabilities that are not a list/], [{ routeLevel: "20" }, /route level that is not a non-negative integer/]]) {
+    const f = await stub(t, version);
+    const m = await f.run(["new", "A short title", "--project", "proj"]);
+    assert.equal(m.status, 1, m.output);
+    assert.match(m.output, message);
+    assert.deepEqual(f.requests.map((x) => x.path), ["/api/version"], JSON.stringify(version));
+  }
+});
+
+test("help, --help and --version of a command that declares capabilities contact no server", async (t) => {
+  const f = await stub(t, { capabilities: [] });
+  for (const argv of [["help"], ["new", "--help"], ["models", "note", "--help"], ["land", "--version"], ["token", "issue", "-h"]]) {
+    const r = await f.run(argv);
+    assert.equal(r.status, 0, `${argv.join(" ")}: ${r.output}`);
+  }
+  // A flag the command does not take is refused before the server is asked.
+  const bad = await f.run(["new", "A title", "--bogus"]);
+  assert.equal(bad.status, 1);
+  assert.match(bad.output, /new does not take --bogus/);
+  assert.deepEqual(f.requests, []);
 });
