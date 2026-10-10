@@ -78,12 +78,14 @@ test("models show prints a model with its notes, oldest first, and says when it 
   assert.match(missing.output, /no-such-model is not in the pool/);
 });
 
-test("models lists the pool as before, without its notes", async (t) => {
+test("models lists the pool with each model's notes beneath its line, oldest first", async (t) => {
   const f = await stub(t, () => ({ data: pool }));
   const r = await f.run(["models"]);
   assert.equal(r.status, 0, r.output);
   assert.deepEqual(r.output.trim().split("\n"), [
     "home  codex/gpt-6.1-sol  openai  not checked",
+    "  2026-10-01 by owner: Stalls on long refactors.",
+    "  2026-10-09 by owner on t406: Commits without the full suite.",
     "cloud gemini-cli/gemini-3  google  not checked",
   ]);
 });
