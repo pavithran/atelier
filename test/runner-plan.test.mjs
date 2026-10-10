@@ -82,6 +82,7 @@ function fixture(t, options = {}) {
       calls.push({ postPlan: [project, id, actor], text });
       return options.refused ?? { valid: true, hash: "abc123", parts: 1 };
     },
+    async identityRefusals() { return []; },
     async harness(argv, cwd, env) {
       calls.push({ harness: argv, cwd, env });
       if (options.noDocument !== true) writeFileSync(planFilePath(cwd), JSON.stringify(planDocument));
