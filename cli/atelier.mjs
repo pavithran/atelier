@@ -23,6 +23,7 @@ import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } fr
 import { redactGitArgs } from "./runner.mjs";
 import { acceptancePolicy, controlPlaneChanges, mergeContext, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
 import { cleanSummary } from "../src/brief.ts";
+import { VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { assertEligible, checkApplies, checkFiles, pathCollisions, recordedText } from "../src/rules.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { holdText } from "../src/dispatch/rules.ts";
@@ -260,6 +261,7 @@ export const FLAGS = {
   review: { approve: true, reject: true, note: false, head: false, findings: false, criteria: false, request: false },
   "review-claim": { runner: false },
   "review-release": { note: false },
+  "review-unparsable": { head: false, note: false, "reply-file": false },
   "read-token": {},
   "base-token": {},
   integrated: { part: false, "merge-commit": false },
@@ -1262,16 +1264,23 @@ const newestReviews = (reviews) => [...reviews].sort((a, b) => b.at.localeCompar
 // learn why a review rejected the task (t173). One flattened line per field,
 // so no note or finding can pose as a line of Atelier's own. A separate tier
 // review (src/review/tier.ts), beside the gate's, is labelled, and so is a
-// gate review by a tier model, which gives the tier review too.
-export function formatReviews(reviews, owner = OWNER) {
+// gate review by a tier model, which gives the tier review too. After the
+// reviews come the replies no verdict could be read from (t407), newest
+// first, each with the reason it was refused and the reply itself, whole and
+// flattened the same way: what the reviewer actually said is the evidence.
+export function formatReviews(reviews, owner = OWNER, unparsable = []) {
   const ordered = newestReviews(reviews);
-  if (!ordered.length) return "No reviews are recorded.";
-  const lines = ["Reviews:"];
+  if (!ordered.length && !unparsable.length) return "No reviews are recorded.";
+  const lines = ordered.length ? ["Reviews:"] : [];
   for (const r of ordered) {
     const recorded = recordedText(r, owner);
     lines.push(`  ${r.tier ? "Tier review: " : r.topTier ? "Gate review, top tier: " : ""}${flat(r.by)} ${r.approve ? "approved" : "rejected"} at ${short(r.head)} (${at(r.at)}${recorded ? `; ${flat(recorded)}` : ""}).`);
     lines.push(`    Note: ${flat(r.note) || "(no note)"}`);
     for (const f of r.findings ?? []) lines.push(`    ${f.severity} ${flat(f.file)}${f.line ? `:${f.line}` : ""} ${flat(f.text)}`);
+  }
+  for (const r of newestReviews(unparsable)) {
+    lines.push(`  ${flat(r.by)} wrote a reply no verdict could be read from at ${short(r.head)} (${at(r.at)}): ${flat(r.note) || "(no reason recorded)"}`);
+    lines.push(`    Reply: ${flat(r.reply) || "(nothing written)"}`);
   }
   return lines.join("\n");
 }
@@ -2231,9 +2240,9 @@ const commands = {
       const label = event.kind === "item.reverts" ? "Reverts" : "Revert requested in";
       brief.evidence.push(`${label} ${itemId} (recorded merge ${mergeCommit}): ${server()}/p/${encodeURIComponent(name)}/${itemId}`);
     }
-    if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []) }, null, 2));
+    if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []) }, null, 2));
     const text = formatBrief(name, id, brief, server());
-    console.log(args.reviews ? `${text}\n\n${formatReviews(d?.reviews ?? [], d?.ownerActor)}` : text);
+    console.log(args.reviews ? `${text}\n\n${formatReviews(d?.reviews ?? [], d?.ownerActor, d?.unparsable ?? [])}` : text);
   },
 
   // The task's whole story from the ledger, in order (cli/receipt.mjs): one
@@ -2533,6 +2542,22 @@ const commands = {
     const name = project(), id = itemArg(), as = await actor();
     await call("POST", `${I(name, id)}/review-release`, { note: args.note ?? "" }, as);
     console.log(`${id}'s review request released.`);
+  },
+
+  // t407: a reviewer's reply no verdict could be read from is kept on the
+  // task, its last 100 KB with the reviewer and the head, as the request it
+  // held goes back to the queue. The reply travels as the file the harness
+  // wrote, never as an argument, which the operating system caps far below a
+  // long reply.
+  async "review-unparsable"() {
+    const name = project(), id = itemArg(), as = await actor();
+    if (typeof args.head !== "string" || !/^[a-f0-9]{40,64}$/.test(args.head)) die("--head needs the full revision the review read");
+    if (typeof args["reply-file"] !== "string" || !args["reply-file"]) die('--reply-file needs the path of the file the harness wrote its reply to');
+    let reply;
+    try { reply = readFileSync(args["reply-file"], "utf8"); }
+    catch (error) { die(`could not read the reply file: ${error.message}`); }
+    const r = await call("POST", `${I(name, id)}/review-unparsable`, { head: args.head, note: args.note ?? "", reply: reply.slice(-VERDICT_LIMITS.reply) }, as);
+    console.log(`Kept the unparsable review reply on ${id}${r.released === false ? "" : ", and released its review request"}.`);
   },
 
   // Read-only access tokens the runner uses outside a task or review job: the
