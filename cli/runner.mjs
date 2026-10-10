@@ -1205,6 +1205,22 @@ export function infrastructureFailureCount(count, state) {
   return state.phase === "failed" && !state.taskFailure && !state.claimRefused && !state.skipped && !state.recorded ? count + 1 : 0;
 }
 
+// Why the runner's loop passes an offered task by, in words with what lets it
+// through, or null when it takes it: a job its offer does not name (jobOf), a
+// claim refused or a task skipped since the task last changed (refusedKey),
+// or the failures that skip it for the rest of this process (failureCount,
+// infrastructureFailureCount). An idle runner says these (t420).
+export function passedBy(task, jobs, { refused, failures, infrastructureFailures }) {
+  const job = jobOf(task);
+  if (!jobs.includes(job)) return `Not taken here: a ${job} job, which this runner's config does not offer; add it to the config's jobs, or leave it for a runner that offers it.`;
+  if (refused.has(refusedKey(task))) return `Passed by: its claim was refused or it was skipped here, and it has not changed since; it is tried again once it changes (status or show names what refuses it).`;
+  const failed = failures.get(taskKey(task)) ?? 0;
+  if (failed >= 2) return `Skipped after ${failed} failed runs in this process; fix the cause, then restart this runner.`;
+  const broken = infrastructureFailures.get(taskKey(task)) ?? 0;
+  if (broken >= 3) return `Skipped after ${broken} infrastructure failures in a row in this process; fix the runner's setup, then restart this runner.`;
+  return null;
+}
+
 // The file a plan job's harness writes the plan document to, inside the
 // workspace: the runner's reset cleans a stale one away before each run, the
 // harness is told to commit nothing, and the runner reads it back as the
@@ -1451,20 +1467,24 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
     // lengthens the wait before the next poll (queueBackoffMs).
     let misses = 0;
     // Why this runner found nothing it may claim while dispatches wait (t420):
-    // the queue's GET lists every waiting dispatch with the reason, so an idle
-    // runner says once what holds each one, and stays quiet until that changes.
+    // first the tasks the queue offered that this process passes by
+    // (passedBy), then every other waiting dispatch with the queue GET's
+    // reason, so an idle runner says once what holds each one, and stays
+    // quiet until that changes.
     let lastWhy = null;
-    const sayIdleWhy = async () => {
-      if (!idleWhy) return;
-      let waiting;
-      try { waiting = await idleWhy(controller.signal); } catch { return; }
-      const held = (Array.isArray(waiting) ? waiting : []).filter((q) => q?.item?.why?.length);
-      if (!held.length) { lastWhy = null; return; }
-      const signature = held.map((q) => `${q.project}/${q.item.id}:${q.item.why.map((r) => `${r.kind}:${r.line}`).join("|")}`).sort().join("\n");
+    const sayIdleWhy = async (passed) => {
+      let waiting = [];
+      if (idleWhy) { try { waiting = await idleWhy(controller.signal); } catch { /* what the runner knows itself is still said */ } }
+      const own = new Set(passed.map((p) => p.task));
+      const reasons = [...passed, ...(Array.isArray(waiting) ? waiting : []).filter((q) => q?.item?.why?.length && !own.has(`${q.project}/${q.item.id}`))
+        .flatMap((q) => q.item.why.map((r) => ({ task: `${q.project}/${q.item.id}`, line: r.line })))];
+      if (!reasons.length) { lastWhy = null; return; }
+      const signature = reasons.map((r) => `${r.task}  ${r.line}`).join("\n");
       if (signature === lastWhy) return;
       lastWhy = signature;
-      line(`found nothing to claim while ${held.length} dispatch${held.length === 1 ? "" : "es"} wait${held.length === 1 ? "s" : ""}:`);
-      for (const q of held) for (const r of q.item.why) line(`  ${q.project}/${q.item.id}  ${r.line}`);
+      const n = new Set(reasons.map((r) => r.task)).size;
+      line(`found nothing to claim while ${n} dispatch${n === 1 ? "" : "es"} wait${n === 1 ? "s" : ""}:`);
+      for (const r of reasons) line(`  ${r.task}  ${r.line}`);
     };
     while (!controller.signal.aborted) {
       let state;
@@ -1491,8 +1511,8 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
         // runner that takes them.
         const ordered = [...tasks.filter((task) => task.item.dispatch?.job === "review"), ...tasks.filter((task) => task.item.dispatch?.job !== "review")];
         let ranTask = false;
-        for (const task of ordered.filter((task) => offer.jobs.includes(jobOf(task)) && !refused.has(refusedKey(task)) && (failures.get(taskKey(task)) ?? 0) < 2 &&
-          (infrastructureFailures.get(taskKey(task)) ?? 0) < 3)) {
+        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures });
+        for (const task of ordered.filter((task) => passBy(task) === null)) {
           ranTask = true;
           // A dispatch carrying job: "plan" asks for the plan job, one
           // carrying "review" for the review job, "integrate" for the
@@ -1526,7 +1546,7 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
           if (state.claimRefused || state.skipped) refused.add(refusedKey(task));
           else if (args.once || state.phase !== "failed" || state.taskFailure) break;
         }
-        if (!ranTask && !controller.signal.aborted) await sayIdleWhy();
+        if (!ranTask && !controller.signal.aborted) await sayIdleWhy(ordered.flatMap((task) => { const why = passBy(task); return why ? [{ task: `${task.project}/${task.item.id}`, line: why }] : []; }));
         state ??= { phase: "idle" };
       } catch (error) { state = nextStep({ phase: "idle" }, { error: error.message }); line(`failed: ${state.reason}`); }
       if (args.once) { if (state.phase === "failed" && !controller.signal.aborted) process.exitCode = 1; break; }
