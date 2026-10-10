@@ -729,7 +729,16 @@ export function harnessRefusal(harness: string, policy: ProjectPolicy, role: Age
     // agentOf reads the harness lowercased, so the fixed mapping matches the
     // claim's own, whatever letter case the dispatch carried.
     const fixed = harness.toLowerCase() === "claude-code" ? "claude" : harness.toLowerCase() === "codex" ? "codex" : harness.toLowerCase() === "zcode" ? "glm" : null;
-    if (!fixed) return null;
+    if (!fixed) {
+      // A harness whose governed agent depends on the model (opencode's glm
+      // models against its others) cannot be judged per model here, and the
+      // claim's own check applies once the runner names a model. But when no
+      // governed agent holds the role at all, no model under any harness
+      // could qualify, and the refusal is said now with the claim's reason.
+      const names = eligibleAgents(policy, role);
+      if (names.length) return null;
+      return `${harness} needs an available agent with the ${role} role; no agent is available with the ${role} role`;
+    }
     const agent = policy.agents[fixed];
     if (agent?.available && agent.eligible_roles.includes(role)) return null;
     const names = eligibleAgents(policy, role);
