@@ -53,12 +53,14 @@ for (const job of ["build", "plan"]) test(`the real runner completes ${job} with
   mkdirSync(workspace);
   const config = join(dir, "runner.json");
   const token = "runner-flow-secret";
-  writeFileSync(config, JSON.stringify({ agents: [{ agent: "codex", models: ["gpt-6-astra"], env: ["LEAK_ALIAS"], command: ["stub-harness", "{model}", "{brief_file}", "{workspace}", "{plan_file}"] }], jobs: ["build", "plan"] }));
+  // Not Codex: a Codex build is refused unless its command grants the checks
+  // full access (codexBuildRefusal, 3dc757f), and this stub harness is no such command.
+  writeFileSync(config, JSON.stringify({ agents: [{ agent: "claude-code", models: ["gpt-6-astra"], env: ["LEAK_ALIAS"], command: ["stub-harness", "{model}", "{brief_file}", "{workspace}", "{plan_file}"] }], jobs: ["build", "plan"] }));
   const previous = Object.fromEntries(["LEAK_ALIAS", "ATELIER_CONFIG_DIR", "ATELIER_SECRET_STORE"].map((key) => [key, process.env[key]]));
   Object.assign(process.env, { LEAK_ALIAS: token, ATELIER_CONFIG_DIR: dir, ATELIER_SECRET_STORE: "file" });
   t.after(() => { for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
-  const actor = "codex/gpt-6-astra";
-  const assignment = { project: "demo", actor, agent: "codex", model: "gpt-6-astra", item: { id: "t1", title: "Change", scope: ["src/**"], accept: ["works"], ...(job === "plan" ? { kind: "plan", dispatch: { job: "plan" } } : {}) } };
+  const actor = "claude-code/gpt-6-astra";
+  const assignment = { project: "demo", actor, agent: "claude-code", model: "gpt-6-astra", item: { id: "t1", title: "Change", scope: ["src/**"], accept: ["works"], ...(job === "plan" ? { kind: "plan", dispatch: { job: "plan" } } : {}) } };
   const calls = [], logs = [];
   let headReads = 0, posted = false, harness = false;
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config, once: true }, {
