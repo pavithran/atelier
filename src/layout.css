@@ -206,6 +206,8 @@ summary { cursor: pointer; }
 .check-row > summary { display: flex; align-items: center; gap: var(--space-md); }
 .check-row code { overflow-wrap: anywhere; white-space: normal; }
 .check-row > .meta { margin: 14px 0 var(--space-sm); }
+.check-runs { margin: var(--space-sm) 0; padding: 0; list-style: none; }
+.check-runs li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 2px 0; overflow-wrap: anywhere; }
 .review-note { padding: var(--space-lg) 0; border-top: 1px solid var(--line); }
 .review-note p { margin: var(--space-sm) 0; }
 .resting { min-height: 550px; display: grid; place-items: center; text-align: center; }
