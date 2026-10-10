@@ -432,6 +432,7 @@ function workflowRequest(project: string, id: string, method = "POST") {
 it("does not remember a failed create and can retry the landing", async () => {
   const project = "wf-create-retry";
   const { L, id } = await pushedTask(project, "expired-before-create");
+  await L.observeLandingWorkflowStatus(id, "expired-before-create", { status: "terminated" });
   let creates = 0;
   const binding = {
     ...workflowBinding(),
@@ -459,6 +460,7 @@ it("does not remember a failed create and can retry the landing", async () => {
 it("replaces an instance missing from the real binding while keeping its queue place", async () => {
   const project = "wf-expired-restart";
   const { L, id } = await pushedTask(project, "wf-expired-missing");
+  await L.observeLandingWorkflowStatus(id, "wf-expired-missing", { status: "terminated" });
   const blocker = (await L.newItem("Hold lease", [], "owner")).id;
   await L.beginProjectLanding(blocker, "owner");
   await L.queueProjectLanding(id, "owner");

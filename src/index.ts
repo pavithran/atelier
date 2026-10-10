@@ -1683,6 +1683,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "landing-workflow": {
       requireOwner(env, actor);
       const remembered = await L.landingWorkflowOf(id);
+      const replacementReport = (record: Pick<NonNullable<typeof remembered>, "instance" | "replaced">) => record.replaced ? { replaced: { ...record.replaced, to: record.instance } } : {};
       if (body.event !== undefined) {
         const event = body.event as { type?: unknown; payload?: unknown };
         if (!remembered) throw new RuleError("no_workflow", `${id} has no landing Workflow; start one with atelier land ${id} --workflow`, 404);
@@ -1712,8 +1713,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       let standing: InstanceStatus | null = null;
       let handle: WorkflowInstance | undefined;
       // The instance the record names when this request decides to start
-      // one: the remembered one, or none once it is cleared as missing.
-      let expected = remembered?.instance ?? null;
+      // one: the remembered one, or none for the first start.
+      const expected = remembered?.instance ?? null;
       if (remembered) {
         try {
           // Only a confirmed missing instance from get() permits replacement.
@@ -1722,8 +1723,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
             handle = await env.LANDING_WORKFLOW.get(remembered.instance);
           } catch (error) {
             if (!/\binstance\.not_found$/.test(String((error as Error)?.message ?? error))) throw error;
-            await L.clearLandingWorkflow(id, remembered.instance, actor);
-            expected = null;
+            // A claimed successor may not have reached create yet. Missing
+            // alone cannot distinguish that from an expired instance. Keep
+            // ownership intact unless an ended status was already recorded.
+            if (!remembered.lastStatus || !ENDED.includes(remembered.lastStatus.status)) {
+              throw new Error("instance is missing but its end is not confirmed; its create may still be in progress");
+            }
+            standing = remembered.lastStatus;
           }
           if (handle) {
             standing = await handle.status();
@@ -1740,10 +1746,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // an ineligible remembered one (t430, src/landing/replace.ts): then it
       // is terminated, its end confirmed, and replaced below.
       let replacing: (Replacement & { from: string }) | null = null;
+      if (remembered && standing && ENDED.includes(standing.status)) {
+        const decision = replacementFor(remembered, named, await L.item(id), Date.now());
+        if (decision.replace) replacing = { ...decision.replace, from: remembered.instance };
+      }
       if (standing && handle && remembered && !ENDED.includes(standing.status)) {
         const decision = replacementFor(remembered, named, await L.item(id), Date.now());
         if (!decision.replace) {
-          return json({ ...remembered, created: false, status: standing, ...(decision.refused ? { reviewerRefused: decision.refused } : {}) });
+          return json({ ...remembered, created: false, status: standing, ...replacementReport(remembered), ...(decision.refused ? { reviewerRefused: decision.refused } : {}) });
         }
         const end = await terminateConfirmed(handle);
         if ("unconfirmed" in end) {
@@ -1762,8 +1772,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (item.state === "accepted") throw new RuleError("accepted", `${id} is accepted at ${(item.acceptedHead ?? "").slice(0, 8)}; merge it with: atelier merge ${id}.`, 409);
       // The review options: the ones this run names, and for a replacement
       // that names none, the ones the replaced instance was started with.
-      const reviewer = named ?? (replacing && body.noReview !== true ? remembered?.reviewer ?? null : null);
-      const noReview = body.noReview === true || (!!replacing && named === null && remembered?.noReview === true);
+      const reviewer = named ?? (remembered && body.noReview !== true ? remembered?.reviewer ?? null : null);
+      const noReview = body.noReview === true || (!!remembered && named === null && remembered?.noReview === true);
       const options = { checks, ...(reviewer ? { reviewer } : {}), ...(noReview ? { noReview: true } : {}) };
       // Who starts the next instance is decided in the Ledger before anything
       // is created (t430). The instance that follows a remembered one has an
@@ -1773,8 +1783,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // the options it recorded, and every other answers that record and the
       // instance it names. A claim whose create fails is withdrawn.
       const instanceId = remembered ? replacementInstanceId(id, remembered.instance) : `land-${id}-${Date.now()}`;
-      const claim = await L.claimLandingWorkflow(id, expected, instanceId, actor, options, replacing ?? undefined);
-      const replaced = (to: string) => replacing ? { replaced: { from: replacing.from, to, reason: replacing.reason, detail: replacing.detail } } : {};
+      const claim = await L.claimLandingWorkflow(id, expected, instanceId, actor, options, replacing ?? remembered?.replaced);
       if (!claim.owner) {
         const record = claim.record;
         if (!record) throw new RuleError("landing_replaced", `${id}'s landing Workflow ${expected ?? "record"} was cleared meanwhile; run atelier land ${id} --workflow again to start one`, 409);
@@ -1786,7 +1795,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         }
         if (!status) throw new RuleError("landing_starting", `${id}'s landing Workflow ${record.instance} is being started by another request; run atelier land ${id} --workflow again to attach to it`, 409);
         await L.observeLandingWorkflowStatus(id, record.instance, status);
-        return json({ ...record, created: false, status, ...replaced(record.instance) });
+        return json({ ...record, created: false, status, ...replacementReport(record) });
       }
       let instance: WorkflowInstance;
       try {
@@ -1803,7 +1812,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       }
       const status = await instance.status();
       await L.observeLandingWorkflowStatus(id, instanceId, status);
-      return json({ ...claim.record, created: true, status, ...replaced(instanceId) }, 201);
+      return json({ ...claim.record, created: true, status, ...replacementReport(claim.record!) }, 201);
     }
     case "integrated": {
       // The integrator reports a merge of one part. The Worker verifies the
