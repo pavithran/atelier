@@ -120,6 +120,15 @@ and say nothing about the merge. Every observed
 check also records main's head as Atelier read it when the check was
 recorded, which is how the gate knows main moved.
 
+A local check waits for the machine's load average to fall under a limit
+before it runs, so a landing's required checks do not start on top of the
+home runners' jobs and starve them (or themselves) of CPU; the wait is said
+on the command's own output. The limit is the core count, or
+`ATELIER_LOAD_LIMIT` when set. Each result records the load it started at in
+its evidence, and a check that failed and then passed unchanged keeps both
+results, each with its load, so a failure under a saturated machine stays
+legible beside the later pass.
+
 The project owner's approval is never the independent review: the owner
 decides by accepting, and that decision is not also the second opinion. When
 no reviewer qualifies, because no model of another family is available or a

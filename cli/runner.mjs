@@ -7,6 +7,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { checkEnv } from "./check-env.mjs";
+import { formatLoad, envLoad, coreCount, loadLimitOf } from "./load.mjs";
 import { envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
 import { reviewBrief, BRIEF_LIMITS, criteriaCount } from "../src/review/brief.ts";
@@ -373,7 +374,8 @@ function gitAuth(token, base = process.env) {
 
 // The cf-aig-metadata header's value for one harness run, which the runner's
 // opencode configs send on every pay-per-use call through the AI Gateway (the
-// config's provider headers read "{env:CF_AIG_METADATA}"): whose run the call
+// config's provider headers read it, escaped for JSON by the opencode adapter,
+// as "{env:CF_AIG_METADATA_ESCAPED}"; cli/harness/providers.mjs): whose run the call
 // belongs to, so the gateway's analytics, and the Models page with them, can
 // count calls per task (src/usage/gateway.ts reads them back). The role is
 // the one run reports use: build, review or plan. The gateway keeps at most
@@ -1428,7 +1430,7 @@ export function runOutcome(state) {
 
 // `reportRun(body, runner, signal)` sends a run report; a report that fails
 // is logged and the loop goes on.
-export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun, version }) {
+export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun, version, load = envLoad(), cores = coreCount }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
@@ -1441,6 +1443,10 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
   const offer = integrating
     ? { runner: args.name.toLowerCase(), kind: "home", agents: [], jobs: ["integrate", "refresh"] }
     : offerFrom(config, args.name);
+  // The load average under which this runner takes a new job (t403): the
+  // config's `loadLimit`, else the machine's core count, so a saturated
+  // machine is not given another harness to run on top of the rest.
+  const loadLimit = loadLimitOf(config.loadLimit, cores());
   const controller = new AbortController();
   // The first interrupt ends the active child's group with its grace
   // period; a second kills every group at once and exits.
@@ -1569,6 +1575,16 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
         const ordered = [...tasks.filter((task) => task.item.dispatch?.job === "review"), ...tasks.filter((task) => task.item.dispatch?.job !== "review")];
         for (const task of ordered.filter((task) => offer.jobs.includes(jobOf(task)) && !refused.has(refusedKey(task)) && (failures.get(taskKey(task)) ?? 0) < 2 &&
           (infrastructureFailures.get(taskKey(task)) ?? 0) < 3)) {
+          // A saturated machine takes no new job (t403): while the load
+          // average is at or above the limit the runner holds back and says
+          // so, and the next poll tries again. One job at a time is started,
+          // and the check runs again before the next, so finishing a heavy
+          // job lets the load fall before another begins.
+          const current = load();
+          if (current >= loadLimit) {
+            io.log(`load ${formatLoad(current)} is at or above the limit ${formatLoad(loadLimit)}; waiting before taking a job`);
+            break;
+          }
           // A dispatch carrying job: "plan" asks for the plan job, one
           // carrying "review" for the review job, "integrate" for the
           // integrate job and "refresh" for the refresh job
