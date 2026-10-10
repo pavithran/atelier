@@ -10,14 +10,25 @@ import { reviewNotice } from "../src/review-notice.ts";
 export const INSTRUCTION_FILES = ["AGENTS.md", "CLAUDE.md", "GLM.md"];
 const EXECUTION_POLICY = "docs/control-plane/execution-policy.v1.json";
 
-// The paths the workspace's head changes from main, as far as the workspace
-// knows main (origin/main); null where it cannot be told.
-export function changedFromMain(git, dir) {
-  for (const base of ["origin/main", "main"]) {
-    const mb = git(["merge-base", base, "HEAD"], { cwd: dir, allowFail: true });
-    if (mb.status !== 0) continue;
+// The paths the workspace's head changes from the project baseline, as the
+// Worker measures them: the baseline's default branch is fetched with its
+// read grant and the merge base taken with it. The fork's origin/main is no
+// stand-in (a pushed task's own fork holds its head there), so it and a local
+// main serve only where no baseline is given. Null where it cannot be told.
+export function changedFromMain(git, dir, baseline) {
+  const diffFrom = (rev) => {
+    const mb = git(["merge-base", rev, "HEAD"], { cwd: dir, allowFail: true });
+    if (mb.status !== 0) return null;
     const diff = git(["diff", "--no-renames", "--name-only", "-z", mb.stdout.trim(), "HEAD"], { cwd: dir, allowFail: true });
-    if (diff.status === 0) return diff.stdout.split("\0").filter(Boolean);
+    return diff.status === 0 ? diff.stdout.split("\0").filter(Boolean) : null;
+  };
+  if (baseline) {
+    const fetched = git(["fetch", "--quiet", baseline.remote, baseline.defaultBranch], { cwd: dir, token: baseline.token, allowFail: true });
+    return fetched.status === 0 ? diffFrom("FETCH_HEAD") : null;
+  }
+  for (const base of ["origin/main", "main"]) {
+    const paths = diffFrom(base);
+    if (paths) return paths;
   }
   return null;
 }
@@ -33,10 +44,12 @@ export function policySource(dir) {
 
 // The notice's lines for the workspace at `dir`, or null where no review is
 // needed or the changed paths cannot be told.
-export function workspaceNotice(git, dir, policy) {
+// `baseline` is the read grant for the project baseline ({ remote,
+// defaultBranch, token }); `part` says the task is a plan's part.
+export function workspaceNotice(git, dir, policy, { baseline, part = false } = {}) {
   if (!policy) return null;
-  const paths = changedFromMain(git, dir);
-  return paths ? reviewNotice(paths, policy, policySource(dir)) : null;
+  const paths = changedFromMain(git, dir, baseline);
+  return paths ? reviewNotice(paths, policy, policySource(dir), part) : null;
 }
 
 // The instruction files the checkout holds.

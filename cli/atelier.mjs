@@ -2734,7 +2734,8 @@ const commands = {
     const head = git(["rev-parse","HEAD"]);
     // A review the change will need is said before the long steps run, with
     // the policy that requires it (t422).
-    const notice = workspaceNotice(git, process.cwd(), d.policy);
+    const baseline = await call("POST", `${I(name,id)}/base-token`, { scope: "read" }, as).catch(() => undefined);
+    const notice = workspaceNotice(git, process.cwd(), d.policy, { baseline, part: d.item.kind === "part" });
     if (notice) console.log(notice.join("\n"));
     if (doneStep) doneStep = "push";
     await commands.push();

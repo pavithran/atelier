@@ -46,16 +46,22 @@ export function controllingRule(paths: readonly string[], policy: ProjectPolicy)
 // The lines `atelier done` and `atelier land` print before the checks run,
 // or null where the change needs no review: a direct change, and a
 // coordinated one in a project without an execution policy, need none.
-export function reviewNotice(paths: readonly string[], policy: ProjectPolicy, source?: PolicySource | null): string[] | null {
+// A part of a plan is reviewed whatever its class (reviewNeeded's basis
+// "part"), so `part` keeps the notice for a direct change or a project
+// without an execution policy.
+export function reviewNotice(paths: readonly string[], policy: ProjectPolicy, source?: PolicySource | null, part = false): string[] | null {
   const rule = controllingRule(paths, policy);
-  if (!rule || rule.kind === "direct") return null;
-  if (rule.kind === "coordinated" && !policy.execution) return null;
+  if (!rule) return null;
+  if (!part && (rule.kind === "direct" || (rule.kind === "coordinated" && !policy.execution))) return null;
   const named = source ? `${source.file}${source.version ? ` (version ${source.version})` : ""}` : "the project's recorded policy, as stored on the server";
-  const why = rule.glob !== null
+  const classWhy = rule.glob !== null
     ? `${rule.path} matches the protected glob ${rule.glob}, from ${rule.origin}`
-    : `${rule.path ?? "this change"} is not within the execution policy's direct paths`;
+    : rule.kind === "direct"
+      ? `every changed path is within ${rule.origin}`
+      : `${rule.path ?? "this change"} is not within the execution policy's direct paths`;
+  const why = part ? `this task is a part of a plan, and every part of a plan is reviewed by another family than its contributors (${classWhy})` : classWhy;
   return [
-    `A review will be needed before this lands: ${rule.requirement}.`,
+    `A review will be needed before this lands: ${part ? classRequirement("protected") : rule.requirement}.`,
     `  Controlling policy: ${named}`,
     `  Rule: ${why}; class ${rule.kind}`,
   ];
@@ -69,7 +75,8 @@ export interface Instructions { file: string; text: string }
 // with. A heuristic on wording, so it names the line for a person to settle.
 export function reviewDisagreements(policy: ProjectPolicy, instructions: readonly Instructions[]): string[] {
   const requires: string[] = [];
-  if (policy.protected.length) requires.push(`a protected change (${policy.protected.slice(0, 4).join(", ")}${policy.protected.length > 4 ? ", …" : ""}) needs a review from another model family`);
+  const protectedGlobs = [...new Set([...policy.protected, ...(policy.execution?.protected_path_patterns ?? [])])];
+  if (protectedGlobs.length) requires.push(`a protected change (${protectedGlobs.slice(0, 4).join(", ")}${protectedGlobs.length > 4 ? ", …" : ""}) needs a review from another model family`);
   if (policy.execution?.allowed_classes.includes("coordinated")) requires.push("a coordinated change needs another agent's review");
   if (!requires.length) return [];
   const out: string[] = [];
