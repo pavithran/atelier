@@ -1335,6 +1335,10 @@ export interface InboxEntry {
   kind: "accept" | "assess" | "merge" | "ship" | "blocked" | "stale" | "overlap" | "scope" | "failing" | "approve-plan" | "plan-blocked";
   reason: string;
   weight: number;
+  // The reviewer `atelier land ID --reviewer H/M` would name for an assess
+  // entry, or null when the pool offers none; the Ledger fills it from the
+  // pool, since inboxFor is pure and has no pool (t395).
+  reviewer?: string | null;
 }
 
 // The inbox kinds that are the lead developer's own decisions — the calls only

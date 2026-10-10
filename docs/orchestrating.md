@@ -21,11 +21,12 @@ project, whatever its company; each is explained in the sections below.
   confirmation. Ask, and cite the owner's words; never infer them.
 - Judge each review finding against the code before acting, and record every
   verdict with `atelier finding`.
-- Land one task at a time with `atelier land ID --reviewer H/M`, which merges
-  main, checks, submits, waits for the independent review, then accepts and
-  merges. Never land two together. An override while accepting is the owner's
-  last resort when no reviewer qualifies, never the way to land another
-  agent's work.
+- Land one task at a time with `atelier land ID --reviewer H/M`, where
+  `H/M` names a reviewer of another family than every contributor; the
+  command merges main, checks, submits, waits for the independent review,
+  then accepts and merges. Never land two together. An override while
+  accepting is the owner's last resort when no reviewer qualifies, and
+  never the way to land another agent's work.
 - Report every run that ended without a result with `atelier run-report`.
 - On a stall (a claimed task with no progress), check whether the agent's
   process still runs, then `atelier handoff` the task to another model or

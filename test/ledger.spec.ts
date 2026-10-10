@@ -290,6 +290,24 @@ it("decision 2026-10-09: availableReviewer names the reviewer the pool offers, a
   expect(await L.availableReviewer("t1", [])).toBeNull();
 });
 
+it("decision 2026-10-09: availableReviewer asks the review tier first for a protected change", async () => {
+  const L = await setup("available-reviewer-tier", { ...policy, protected: ["AGENTS.md"], reviewTier: ["codex/gpt-6-astra"] });
+  await L.newItem("Touch a protected path", ["AGENTS.md"], "owner");
+  await L.claim("t1", A);   // A = claude-code/opus-5.5 (anthropic)
+  await L.setFork("t1", "available-reviewer-tier--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
+  await L.submit("t1", A);
+  const T = "2026-10-09T00:00:00.000Z";
+  const entry = (id: string, change: Partial<ModelEntry> = {}): ModelEntry => ({
+    id, harness: "codex", where: "home", provider: "subscription", aliases: [], family: familyOf(id), note: "", addedBy: "owner", addedAt: T, ...change,
+  });
+  // The tier model is asked first, ahead of the pool's own id order, so one
+  // review serves the gate and the tier.
+  expect(await L.availableReviewer("t1", [entry("glm-5.3", { harness: "opencode" }), entry("gpt-6-astra")]))
+    .toBe("codex/gpt-6-astra");
+});
+
 it("the holder under another letter case, profile or registered name cannot review, and that model's approval does not count", async () => {
   const L = await setup("same-model-names");
   await L.newItem("Touch a protected path", [], "owner");
