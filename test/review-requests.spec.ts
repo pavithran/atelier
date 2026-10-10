@@ -140,6 +140,44 @@ it("an approval answers the request and moves the part on", async () => {
   expect((await L.item(partId)).state).toBe("accepted");
 });
 
+// t407: a reviewer's reply with no verdict is kept on the task, its last
+// 100 KB with the reviewer and the head it judged, as the claimed request is
+// released for another reviewer. Before this the reply was discarded and the
+// only evidence was the runner's log.
+it("keeps an unparsable reply on the task and releases the request for another reviewer", async () => {
+  const L = await setup("review-unparsable");
+  const { partId } = await approved(L);
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  await L.claimReview(partId, GPT, RUNNER);
+  const reply = "I read the change.\nIt works as far as I can tell; nothing to add.";
+  const reason = "the reply states no verdict: it has no VERDICT line and no JSON verdict";
+  expect(await L.unparsableReview(partId, GPT, head, reason, reply, true)).toEqual({ released: true });
+  // The request is open again, so another reviewer may take it, and the kept
+  // reply is no review: the gate still waits for one.
+  expect(await reviewWaiting(L)).toEqual([{ id: partId, job: "review", agent: "codex", model: "gpt-6-astra" }]);
+  expect(await L.reviewsFor(partId)).toEqual([]);
+  // The reply, the reviewer and the head are on the task, whole.
+  expect((await L.unparsableFor(partId)).map((r) => ({ by: r.by, head: r.head, note: r.note, reply: r.reply }))).toEqual([{ by: GPT, head, note: reason, reply }]);
+  // The event says what was kept, and carries no reply text: the reliability
+  // record replays every event of every project.
+  const logged = (await events(L, partId)).find((e) => e.kind === "review.unparsable")!;
+  expect(logged).toMatchObject({ actor: GPT, data: { head, note: reason } });
+  expect(JSON.stringify(logged.data)).not.toContain(reply);
+  expect((await events(L, partId)).some((e) => e.kind === "review.released")).toBe(true);
+  // A reply of the next round is kept beside the first: the request is
+  // claimed and released again. A claim no longer held releases nothing,
+  // and the reply is kept anyway.
+  await L.claimReview(partId, GPT, RUNNER);
+  expect(await L.unparsableReview(partId, GPT, head, "again", "Still no verdict.", true)).toEqual({ released: true });
+  expect(await L.unparsableReview(partId, GPT, head, "late", "A late reply with no verdict.", true)).toEqual({ released: false });
+  expect(await L.unparsableFor(partId)).toHaveLength(3);
+  // A reply over the limit is refused, never silently cut: the caller keeps
+  // the last 100 KB, as the runner's review-unparsable does.
+  await refusal(L.unparsableReview(partId, GPT, head, "note", "x".repeat(100_001), true), "too_long", /keep its last 100000/);
+  await refusal(L.unparsableReview(partId, "not a model", head, "note", "", true), "bad_actor", /is not harness\/model/);
+});
+
 // The reviewer the queue routed for the part's current round, and the actor
 // the part is dispatched to.
 async function routedReviewer(L: L, id: string) {
