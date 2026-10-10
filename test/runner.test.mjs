@@ -189,6 +189,8 @@ function fixture(options = {}) {
       return { code: options.code ?? 0, timedOut: options.timedOut };
     },
     async removeBrief(brief) { calls.push({ removed: brief.file }); },
+    // The builder's commit identity (t451): allowed unless the test says otherwise.
+    async identityRefusals() { return options.identityRefusals ?? []; },
     async dataHome(workspace) {
       const dir = `${dirname(workspace)}/.atelier-${basename(workspace)}-opencode-data-x`;
       homes.push({ made: dir });
@@ -436,6 +438,9 @@ function gitWorkspace(t) {
   git("init", "--quiet");
   git("config", "user.name", "Runner test");
   git("config", "user.email", "runner@example.test");
+  // The policy a claim keeps beside that identity (t451), which the runner
+  // checks the builder's identity against.
+  writeFileSync(join(workspace, ".git", "atelier-identity.json"), JSON.stringify({ name: "Runner test", email: "runner@example.test", agentEmails: [] }));
   writeFileSync(join(workspace, "tracked"), "original");
   git("add", ".");
   git("commit", "--quiet", "-m", "initial");
@@ -1450,6 +1455,7 @@ test("real runner caps reset, claim and finish failures while serving the next t
     execFileSync("git", ["clone", "--quiet", workspace, healthy]);
     execFileSync("git", ["config", "user.name", "Runner test"], { cwd: healthy });
     execFileSync("git", ["config", "user.email", "runner@example.test"], { cwd: healthy });
+    writeFileSync(join(healthy, ".git", "atelier-identity.json"), readFileSync(join(workspace, ".git", "atelier-identity.json")));
     if (failure === "reset") writeFileSync(join(workspace, ".git", "index.lock"), "stale");
     const claims = [], releases = [], runs = [], finishes = [], logs = [];
     let polls = 0;
