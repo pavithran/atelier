@@ -902,3 +902,28 @@ it("a planner, builder or part reviewer the owner names while it is held from th
   await L.poolChanged(POOL.map((e) => e.id === id ? { ...e, roles: ["build" as const] } : e));
   await refusal(L.reroutePlan(partId, "owner", other), "model_held", new RegExp(`${other} is not a reviewer; its roles are build`));
 });
+
+// Every plan dispatch reads the saved routes through the owner's standing
+// now (standingRoute): a part waiting on a builder the owner then pauses,
+// reserves or keeps from building is taken back and goes to the next routed
+// builder, and the builder named by a profile is refused like its plain name.
+it("a part's builder held after approval is taken back and the part goes to the next routed builder", async () => {
+  for (const [name, change, why] of [
+    ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }, /paused since 2026-10-06 \(the owner's standing\): AI Studio down/],
+    ["reserved", { state: "reserved", stateAt: AT, note: "astra's credits" }, /reserved since 2026-10-06 \(the owner's standing\): astra's credits/],
+    ["review-only", { roles: ["review"] }, /not a builder; its roles are review/],
+  ] as const) {
+    const L = await setup(`plan-builder-held-${name}`);
+    const { id, partId, builder } = await approved(L);
+    const route = (await L.planView(id)).parts[0].route!;
+    const model = builder.split("/")[1];
+    await L.poolChanged(POOL.map((e) => e.id === model ? { ...e, ...change } : e));
+    const next = route.alternates[0].actor;
+    expect((await L.item(partId)).dispatch, name).toMatchObject({ agent: next.split("/")[0], model: next.split("/")[1] });
+    expect((await events(L, partId)).find((e) => e.kind === "item.undispatched"), name).toMatchObject({ data: { reason: expect.stringMatching(why) } });
+    await refusal(L.reroutePlan(partId, "owner", `${builder}:high`), "model_held", why);
+    // Back to available, the part stays with the builder it moved to.
+    await L.poolChanged(POOL);
+    expect((await L.item(partId)).dispatch, name).toMatchObject({ agent: next.split("/")[0], model: next.split("/")[1] });
+  }
+});

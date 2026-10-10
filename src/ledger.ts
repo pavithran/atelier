@@ -23,7 +23,7 @@ import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelecti
 import type { SecretHit, UnscannedFile } from "./secret-scan.ts";
 import { parsePlan, planHash, type Plan, type PlanPart } from "./plans/schema.ts";
 import { validatePlan } from "./plans/validate.ts";
-import { routeParts, type PartRoute } from "./plans/route.ts";
+import { routeParts, standingRoute, type PartRoute } from "./plans/route.ts";
 import { conflictedParts, integrationFailures, partAttempts, partReviewers, planActions, planPhase, type IntegrationFailureKind } from "./plans/phase.ts";
 import { findingsSection, jobBrief as buildBrief, plannerBrief, type Dependency, type ReviewFindings } from "./plans/brief.ts";
 import {
@@ -3166,6 +3166,18 @@ export class Ledger extends DurableObject<Env> {
       return;
     }
     if (done === "empty") return this.setBlocked(id, record, EMPTY_PLAN);
+    // A part still waiting on a builder the owner has since paused, reserved
+    // or kept from building is taken back, so the routing below picks again.
+    const standing = this.poolStanding();
+    for (const p of parts) {
+      const d = p.dispatch;
+      if (p.state !== "open" || p.owner || !d?.agent || !d.model || (d.job && d.job !== "merge-main")) continue;
+      const held = actorStanding(standing, `${d.agent}/${d.model}`, "build");
+      if (!held) continue;
+      this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, p.id);
+      this.log(p.id, ORCHESTRATOR, "item.undispatched", { reason: held }, at);
+      p.dispatch = null;
+    }
     const all = this.partEvents(id);
     const events = tickEvents(all, new Map(parts.map((p) => [p.id, p.partKey!])));
     // Automatic review (docs/orchestrator.md, section 4): a submitted part
@@ -3179,10 +3191,12 @@ export class Ledger extends DurableObject<Env> {
       const state = parts.find((p) => p.id === a.id)?.state;
       return state !== undefined && state !== "integrated" && state !== "merged" && state !== "abandoned";
     });
+    // The saved routes with the owner's standing as the pool has it now, so a
+    // builder paused, reserved or kept from building since is never dispatched.
     const result = planActions({
       plan: planWithAdded(this.approvedPlan(id, approval.hash), record),
       parts: parts.map((p) => ({ key: p.partKey!, state: p.state })),
-      routes: routesOf(record).map((r) => rerouted(r, record)),
+      routes: routesOf(record).map((r) => standingRoute(rerouted(r, record), standing)),
       events, maxParallel: approval.limits.maxParallel, deadline: approval.deadline, budget: null, now: at,
       reviewers: partReviewers(byPartKey(all, parts)),
       holds: added.map((a) => a.part.key),
