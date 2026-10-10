@@ -9,8 +9,11 @@
 // baseline's history from before a landing is not read: only the commits
 // that landing adds.
 //
-// Publishing to a public mirror asks more (publicRefusals): an address
-// allowed for landing, an agent's above all, is not thereby public.
+// Publishing to a public mirror asks more (publicRefusals): the owner
+// declares which remotes are public mirrors (publicMirrors), a project that
+// declares one must commit under a GitHub no-reply address, and every commit
+// such a remote lacks must carry that one address. An address allowed for
+// landing, an agent's above all, is not thereby public.
 import { RuleError } from "./rules.ts";
 
 export interface CommitIdentityPolicy {
@@ -21,6 +24,9 @@ export interface CommitIdentityPolicy {
   // Addresses the owner declares private: refused as an author or committer
   // everywhere, and refused as the project's or an agent's address.
   privateEmails?: string[];
+  // The names of the checkout's remotes that are public mirrors: atelier
+  // wrap --push publishes to one only commits under the project's address.
+  publicMirrors?: string[];
 }
 
 // What an init sends; a field absent keeps the recorded value.
@@ -29,6 +35,7 @@ export interface CommitIdentityInit {
   commitEmail?: string;
   agentEmails?: string[];
   privateEmails?: string[];
+  publicMirrors?: string[];
 }
 
 const NAME_MAX = 200, EMAIL_MAX = 254, LIST_MAX = 50;
@@ -75,6 +82,21 @@ function emailArg(value: unknown, field: string): string {
   return email;
 }
 
+// A Git remote's name, as git remote add takes one; never an option or a URL.
+const REMOTE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
+function remotesArg(value: unknown): string[] {
+  const raw = typeof value === "string" ? value.split(",") : value;
+  if (!Array.isArray(raw) || !raw.every((r) => typeof r === "string")) throw new RuleError("bad_identity", "publicMirrors must be a list of remote names, or [] to clear it", 400);
+  const out: string[] = [];
+  for (const entry of raw.map((r) => r.trim()).filter(Boolean)) {
+    if (!REMOTE.test(entry) || entry.endsWith(".lock")) throw new RuleError("bad_identity", `publicMirrors ${JSON.stringify(entry)} is not a remote name, such as github`, 400);
+    if (!out.includes(entry)) out.push(entry);
+  }
+  if (out.length > LIST_MAX) throw new RuleError("too_long", `publicMirrors lists at most ${LIST_MAX} remotes`, 400);
+  return out;
+}
+
 function emailsArg(value: unknown, field: string): string[] {
   const raw = typeof value === "string" ? value.split(",") : value;
   if (!Array.isArray(raw)) throw new RuleError("bad_identity", `${field} must be a list of email addresses, or [] to clear it`, 400);
@@ -95,7 +117,7 @@ function emailsArg(value: unknown, field: string): string[] {
 // Nothing named and nothing recorded leaves no identity (a project from
 // before t451; docs/setup.md says how to set one).
 export function settleCommitIdentity(init: CommitIdentityInit, current: CommitIdentityPolicy | undefined): CommitIdentityPolicy | undefined {
-  const named = init.commitName !== undefined || init.commitEmail !== undefined || init.agentEmails !== undefined || init.privateEmails !== undefined;
+  const named = init.commitName !== undefined || init.commitEmail !== undefined || init.agentEmails !== undefined || init.privateEmails !== undefined || init.publicMirrors !== undefined;
   if (!named) return current;
   const name = init.commitName ?? current?.name;
   const email = init.commitEmail ?? current?.email;
@@ -113,6 +135,13 @@ export function settleCommitIdentity(init: CommitIdentityInit, current: CommitId
   if (declared(policy.email)) throw new RuleError("bad_identity", `commitEmail ${policy.email} is declared private in privateEmails; the project cannot commit under it`, 400);
   const hidden = policy.agentEmails.filter(declared);
   if (hidden.length) throw new RuleError("bad_identity", `agentEmails ${hidden.join(", ")} ${hidden.length === 1 ? "is" : "are"} declared private in privateEmails; agents cannot commit under ${hidden.length === 1 ? "it" : "them"}`, 400);
+  const publicMirrors = init.publicMirrors !== undefined ? remotesArg(init.publicMirrors) : current?.publicMirrors ?? [];
+  if (publicMirrors.length) {
+    // A public mirror publishes the project's address, so it must be a
+    // no-reply one, as t433 asks of what a public mirror carries.
+    if (!isPublicEmail(policy.email)) throw new RuleError("bad_identity", `commitEmail ${policy.email} is not a GitHub no-reply address (such as 123+owner@users.noreply.github.com), and publicMirrors ${publicMirrors.join(", ")} would publish it; set commitEmail to one, or clear publicMirrors`, 400);
+    policy.publicMirrors = [...publicMirrors];
+  }
   return policy;
 }
 
@@ -199,16 +228,23 @@ export function commitRefusals(policy: CommitIdentityPolicy, commits: CommitIden
   return out;
 }
 
+// Whether the policy declares `remote` a public mirror (publicMirrors).
+export function isPublicMirror(policy: CommitIdentityPolicy | undefined | null, remote: string): boolean {
+  return !!policy?.publicMirrors?.includes(remote);
+}
+
 // Why these commits may not go to a public mirror: every author and
-// committer address must be a GitHub no-reply address. The landing's
-// allowance does not reach here: an agent address the policy allows is
-// refused like any other that is not public, and so is the project's own
-// when it is a personal one.
-export function publicRefusals(commits: CommitIdent[]): string[] {
+// committer address must be the project's own, and that a GitHub no-reply
+// address. The landing's allowance does not reach here: an agent address
+// the policy allows is refused like any other, and so is the project's own
+// when it is not a no-reply one.
+export function publicRefusals(policy: CommitIdentityPolicy, commits: CommitIdent[]): string[] {
   const out: string[] = [];
+  const publicOwn = isPublicEmail(policy.email);
   for (const c of commits) {
     for (const [, , emailField, email] of fields(c)) {
-      if (!isPublicEmail(email)) out.push(`commit ${c.commit.slice(0, 12)}: the ${emailField} ${email || "(empty)"} is not a public no-reply address (such as 123+name@users.noreply.github.com)`);
+      if (!sameEmail(email, policy.email)) out.push(`commit ${c.commit.slice(0, 12)}: the ${emailField} ${email || "(empty)"} is not the project's public address ${policy.email} (commitEmail), the only one a public mirror (publicMirrors) takes`);
+      else if (!publicOwn) out.push(`commit ${c.commit.slice(0, 12)}: the ${emailField} ${email} is not a GitHub no-reply address (such as 123+owner@users.noreply.github.com); set commitEmail to one before publishing to a public mirror`);
     }
   }
   return out;

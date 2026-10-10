@@ -255,12 +255,18 @@ atelier init --commit-name "Project Owner" --commit-email 123+owner@users.norepl
 - `--private-email`, once per address, declares addresses no commit may carry,
   such as the owner's personal one. Neither the project's address nor an
   agent's may be one of them.
+- `--public-mirror`, once per remote, names the checkout's remotes that are
+  public mirrors, such as `--public-mirror github`. A project that declares
+  one must have a GitHub no-reply `--commit-email`.
 
-Each flag replaces what is recorded; `--agent-email ""` or `--private-email ""`
-alone clears the list, and `--reset` drops the identity with the rest of the
-policy. The fields travel in `PUT /api/projects/NAME` as `commitName`,
-`commitEmail`, `agentEmails` and `privateEmails`, and are stored as
-`policy.commitIdentity`.
+Each flag replaces what is recorded; `--agent-email ""`, `--private-email ""`
+or `--public-mirror ""` alone clears the list, and `--reset` drops the
+identity with the rest of the policy. The fields travel in
+`PUT /api/projects/NAME` as `commitName`, `commitEmail`, `agentEmails`,
+`privateEmails` and `publicMirrors`, and are stored as
+`policy.commitIdentity`. They raise the route level to 21
+(`src/route-level.ts`): `atelier land` and the runner refuse a server below
+it, since one would not record or return the identity.
 
 Where the identity is enforced:
 
@@ -282,9 +288,12 @@ Where the identity is enforced:
   which it makes under the project's identity whatever the checkout or its
   environment says. Commits the baseline already holds are not read. A
   refusal names the commit and the field.
-- **A public mirror** asks more: `atelier wrap --push` pushes a remote only
-  when every commit it lacks carries a GitHub no-reply author and committer
-  address. An agent address allowed for landing is not thereby public.
+- **A public mirror** asks more: `atelier wrap --push` pushes a remote the
+  policy declares in `publicMirrors` only when every commit it lacks carries
+  the project's own no-reply address (`commitEmail`) as author and committer.
+  An agent address allowed for landing is not thereby public, nor is another
+  no-reply address. Remotes not declared are the owner's own and are pushed
+  as before.
 
 ### Migrating a project from before t451
 
@@ -297,7 +306,9 @@ land, each naming the command below. To migrate:
    `git config user.email` in the project checkout.
 2. Run `atelier init --commit-name NAME --commit-email EMAIL` there, adding
    `--agent-email` for each address the project's agents commit under, and
-   `--private-email` for addresses that must never appear.
+   `--private-email` for addresses that must never appear, and
+   `--public-mirror` for each remote that is a public mirror. Until a remote
+   is declared, `atelier wrap --push` checks it as no public mirror.
 3. Claim again (`atelier claim ID`) in any open workspace, so it takes the
    identity; a runner's next claim does this itself.
 

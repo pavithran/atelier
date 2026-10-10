@@ -129,7 +129,7 @@ export default async function initCommand() {
   // flag given once as "" clears its list.
   if (args["commit-name"] !== undefined) policy.commitName = args["commit-name"];
   if (args["commit-email"] !== undefined) policy.commitEmail = args["commit-email"];
-  for (const [flag, field] of [["agent-email", "agentEmails"], ["private-email", "privateEmails"]]) {
+  for (const [flag, field] of [["agent-email", "agentEmails"], ["private-email", "privateEmails"], ["public-mirror", "publicMirrors"]]) {
     const values = args.multi[flag];
     if (values) policy[field] = values.length === 1 && values[0] === "" ? [] : values;
   }
@@ -220,7 +220,7 @@ export default async function initCommand() {
   // A server older than core files ignores them and answers without any.
   if (core?.length && !pol.coreFiles?.length) console.log("Warning: the server did not record the core files; deploy the server, then run atelier init --core again.");
   const ci = pol.commitIdentity;
-  console.log(`Commits:    ${ci ? `${ci.name} <${ci.email}>${ci.agentEmails.length ? `; agents may also commit as ${ci.agentEmails.join(", ")}` : ""}${ci.privateEmails?.length ? `; declared private: ${ci.privateEmails.join(", ")}` : ""}` : "no identity named; claims fall back to the checkout's, and runners refuse to start a builder: set one with --commit-name NAME --commit-email EMAIL"}`);
+  console.log(`Commits:    ${ci ? `${ci.name} <${ci.email}>${ci.agentEmails.length ? `; agents may also commit as ${ci.agentEmails.join(", ")}` : ""}${ci.privateEmails?.length ? `; declared private: ${ci.privateEmails.join(", ")}` : ""}${ci.publicMirrors?.length ? `; public mirrors: ${ci.publicMirrors.join(", ")}` : ""}` :"no identity named; claims fall back to the checkout's, and runners refuse to start a builder: set one with --commit-name NAME --commit-email EMAIL"}`);
   if ((args["commit-email"] !== undefined || args["commit-name"] !== undefined) && !ci) console.log("Warning: the server did not record the commit identity; deploy the server, then run atelier init --commit-name NAME --commit-email EMAIL again.");
   if (pol.approval) console.log(`Approval:   ${pol.approval}`);
   let agentsMd = null;
