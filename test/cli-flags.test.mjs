@@ -569,3 +569,12 @@ test("show prints the task's criteria, the plan's for a part, and their binding 
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /\nAcceptance criterion 1: Nested lists parse\nPlan acceptance criterion 1: It works\nCriteria binding: c{64} \(a review of these criteria names it with --criteria\)\n/);
 });
+
+test("parseArgs: --brief is a switch only for status, found after flag values", () => {
+  const other = parseArgs(["--project", "status", "new", "--brief", "text"]);
+  assert.deepEqual(other._, ["new"]);
+  assert.equal(other.brief, "text");
+  const status = parseArgs(["--project", "demo", "status", "--brief"]);
+  assert.deepEqual(status._, ["status"]);
+  assert.equal(status.brief, true);
+});

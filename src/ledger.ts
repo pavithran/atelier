@@ -1563,7 +1563,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`INSERT INTO evidence (item_id, json) VALUES (?, ?)`, e.itemId, JSON.stringify(e));
     // A record that a check does not apply has no result, so it is logged as its own kind, not as a pass.
     // A check whose whole log is kept in R2 (t284) names it by reference in the event.
-    this.log(e.itemId, e.by, e.notApplicable ? "evidence.not_applicable" : `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.changedPaths !== undefined ? { changedPaths: e.changedPaths } : {}), ...(e.where ? { where: e.where } : {}), ...(e.log ? { log: e.log } : {}), ...(e.merged ? { merged: true, mainHead: e.mainHead } : {}) }, new Date().toISOString(), proved);
+    this.log(e.itemId, e.by, e.notApplicable ? "evidence.not_applicable" : `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.changedPaths !== undefined ? { changedPaths: e.changedPaths } : {}), ...(e.where ? { where: e.where } : {}), ...(e.log ? { log: e.log } : {}), ...(e.merged ? { merged: true, mainHead: e.mainHead } : {}), ...(e.load !== undefined ? { load: e.load } : {}) }, new Date().toISOString(), proved);
     if (e.grade === "observed") this.notify(e.itemId, origin);
     // Passing checks at a head the item moved to may be what the gate waited
     // on to need its review again: a request the move withdrew is carried.
