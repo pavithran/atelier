@@ -6,7 +6,7 @@ import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
-  assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, contributorsOf, DEFAULT_OWNER, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
+  assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, contributorsOf, DEFAULT_OWNER, changeClass, evidenceAt, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
   assertBlockable, assertNotBlocked, blockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
@@ -198,6 +198,7 @@ export interface LandingWorkflowRecord {
   // machine holding the workspace, "container" in the CheckRunner. The
   // executor reads it to know whether the checks are its to run.
   checks?: "local" | "container";
+  lastStatus?: { status: InstanceStatus["status"]; error?: { name: string; message: string } };
 }
 
 const LAND_STEPS = new Set(["lease", "merge", "regenerate", "push", "check", "submit", "review", "accept", "merged"]);
@@ -1922,6 +1923,26 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id);
   }
 
+  // A reviewer of another family than every contributor that the pool offers
+  // for this item, or null when none qualifies. Shown to the owner who
+  // overrides the independent review, so an override is their last resort,
+  // never a missed review: the command that would replace it is
+  // `atelier land ID --reviewer H/M` (t395). It picks as the gate's real
+  // selection does, so a protected change's review goes to the review tier
+  // first, one review serving the gate and the tier (src/review/tier.ts).
+  availableReviewer(id: string, pool: readonly ModelEntry[]): string | null {
+    const item = this.item(id);
+    const policy = this.project().policy;
+    const changedPaths = evidenceAt(policy, this.evidenceFor(id), item.head).changedPaths;
+    const kind = changedPaths === null ? null : changeClass(changedPaths, policy);
+    const pick = pickReviewer({
+      item, pool, policy, allowPaid: false, owner: this.owner,
+      precision: this.reviewPrecision(new Date().toISOString()),
+      tier: kind === "protected" ? policy.reviewTier : undefined,
+    });
+    return pick.reviewer?.actor ?? null;
+  }
+
   // A merge lands the accepted revision under a lease: while it is held,
   // the task's owner cannot push a new revision over the one being merged.
   // It has no expiry, because a merge may have published the revision even
@@ -2017,6 +2038,7 @@ export class Ledger extends DurableObject<Env> {
     const record = this.landingWorkflowOf(id);
     if (!record || record.instance !== instance) return null;
     const next: LandingWorkflowRecord = {
+      ...(record.lastStatus ? { lastStatus: record.lastStatus } : {}),
       instance, at: record.at, stage, stageAt: new Date().toISOString(), round,
       ...(record.checks ? { checks: record.checks } : {}),
       ...(detail ? { detail: detail.slice(0, 2000) } : {}),
@@ -2024,6 +2046,20 @@ export class Ledger extends DurableObject<Env> {
     };
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing-workflow:${id}`, JSON.stringify(next));
     return next;
+  }
+
+  // Fence observations to the recorded instance, as stage reports are fenced.
+  observeLandingWorkflowStatus(id: string, instance: string, status: NonNullable<LandingWorkflowRecord["lastStatus"]>): void {
+    const record = this.landingWorkflowOf(id);
+    if (!record || record.instance !== instance || status.status === "unknown") return;
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing-workflow:${id}`, JSON.stringify({ ...record, lastStatus: { status: status.status, ...(status.error ? { error: { name: status.error.name.slice(0, 200), message: status.error.message.slice(0, 2000) } } : {}) } }));
+  }
+
+  // Remove only the missing instance that the owner actually read.
+  clearLandingWorkflow(id: string, instance: string, actor: string): void {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
+    if (this.landingWorkflowOf(id)?.instance !== instance) return;
+    this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing-workflow:${id}`);
   }
 
   landingWorkflowOf(id: string): LandingWorkflowRecord | null {
@@ -2421,11 +2457,15 @@ export class Ledger extends DurableObject<Env> {
     return { item, criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, evidence, reviews, unparsable: this.unparsableFor(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
   }
 
-  inbox(now: string): InboxEntry[] {
+  inbox(now: string, pool: readonly ModelEntry[] = []): InboxEntry[] {
     const p = this.project();
     const all = this.sql.exec(`SELECT json FROM evidence`).toArray().map((r) => JSON.parse(r.json as string));
     const rv = this.sql.exec(`SELECT json FROM reviews`).toArray().map((r) => JSON.parse(r.json as string));
+    // An assess entry carries the reviewer the pool offers, so the owner sees
+    // the runnable `atelier land ID --reviewer H/M` command that replaces an
+    // override, not the placeholder alone (t395).
     return [...inboxFor(p.name, this.items(), p.policy, all, rv, new Date(now), this.owner), ...this.planEntries(p.name, now), ...this.shipEntries(p)]
+      .map((e) => (e.kind === "assess" ? { ...e, reviewer: this.availableReviewer(e.itemId, pool) } : e))
       .sort((a, b) => b.weight - a.weight);
   }
 
