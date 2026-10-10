@@ -77,14 +77,21 @@ export default async function runnerCommand() {
       // A run that stalled, timed out or was refused goes to the run
       // reports, under the runner's name, as a model's status does.
       reportRun: (body, runner, signal) => postAsRunner("/runs", body, runner, signal),
-      // Why an idle runner found nothing to claim: the queue's GET, which
-      // lists every waiting dispatch with its reason (t420). Asked only
-      // when a poll offers nothing, never on the busy path.
-      idleWhy: async (signal) => {
+      // Why an idle runner found nothing to claim: its poll asked with
+      // `why`, which lists each waiting dispatch of the token's projects
+      // with its reason (t420); a runner token may not GET the owner's
+      // listing. Asked only when a poll offers nothing, never on the busy
+      // path. A server older than this answers with the tasks offered,
+      // which carry no reason, so the runner says only its own.
+      idleWhy: async (offer, signal) => {
         await resolveTokenActor();
         let res;
         try {
-          res = await fetch(server() + "/api/queue", { signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]), headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER } });
+          res = await fetch(server() + "/api/queue", {
+            method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+            headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER, "content-type": "application/json" },
+            body: JSON.stringify({ ...offer, why: true }),
+          });
         } catch (error) {
           if (signal.aborted) throw error;
           throw Object.assign(new Error(`queue: ${error.message}`), { transient: true });

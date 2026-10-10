@@ -150,9 +150,21 @@ it("the queue attaches, in words, why a dispatch is held, refused an overlap or 
   expect(kinds(free.id)).toEqual(["skipped"]);
   expect(kinds(nobody.id)).toEqual(["unoffered"]);
   const line = (id: string, kind: string) => (all.find((q) => q.project === name && q.item.id === id)?.item.why ?? []).find((r) => r.kind === kind)?.line ?? "";
-  expect(line(free.id, "skipped")).toBe("Skipped by home:why after 2 failed runs (the last timed-out); that runner passes it by until it restarts: fix the cause, then restart it with atelier runner --name home:why.");
+  expect(line(free.id, "skipped")).toBe(`Skipped by home:why after 2 failed runs under this dispatch (the last timed-out); that runner passes it by until it is dispatched again or the runner restarts: fix the cause, then atelier dispatch ${free.id} --to home --agent opencode.`);
   expect(line(nobody.id, "unoffered")).toMatch(new RegExp(`^No live runner can take it: .*atelier dispatch ${nobody.id} --agent H --model M`));
   expect(line(refused.id, "overlap")).toMatch(new RegExp(`^Overlap refused: ${live.id} \\(${A}\\) holds a scope`));
   const heldLine = (all.find((q) => q.project === name && q.item.id === held.id)?.item.why ?? []).find((r) => r.kind === "held")?.line ?? "";
   expect(heldLine).toMatch(/^Held: waits on .*; offered once .* merges or is abandoned, or at once with atelier dispatch .* --overlap-ok\.$/);
+
+  // A runner on the owner's token names itself; its refused claim is kept
+  // with the refusal's own code and words.
+  const claim = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${refused.id}/claim`, {
+    method: "POST", body: "{}",
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "opencode/glm-5.3", "x-atelier-runner": "home:why", "content-type": "application/json" },
+  }), testEnv);
+  expect(claim.status).toBeGreaterThanOrEqual(400);
+  const { error, detail } = await claim.json() as { error: string; detail: string };
+  const after = await (await call("GET", "/queue")).json() as typeof all;
+  const refusedLine = (after.find((q) => q.project === name && q.item.id === refused.id)?.item.why ?? []).find((r) => r.kind === "refused")?.line ?? "";
+  expect(refusedLine).toBe(`Claim refused: home:why claimed it as opencode/glm-5.3 and was refused (${error}: ${detail.slice(0, 300)}); that runner passes it by until it changes, so once that is fixed, dispatch it again with atelier dispatch ${refused.id} --to home --agent opencode.`);
 });

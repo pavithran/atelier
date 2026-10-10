@@ -17,7 +17,7 @@ import { criteriaHash, criteriaOf, sameCriteria } from "./criteria.ts";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
 import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
-import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, makeDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
+import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, describe, holdText, makeDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
 import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
@@ -1389,11 +1389,16 @@ export class Ledger extends DurableObject<Env> {
   // accepted, the only states coreHold counts), in id order as items() lists
   // them, so the first holder found is the same. The event log is read only
   // for the waiting items' push actors.
-  waiting(): (Item & { held?: CoreHold; overlap?: OverlapRefusal })[] {
+  waiting(): (Item & { held?: CoreHold; overlap?: OverlapRefusal; refusals?: ClaimRefusal[] })[] {
     const rows = this.sql.exec(`SELECT * FROM items WHERE state = 'open' AND (owner IS NULL OR owner = '') AND dispatch IS NOT NULL AND dispatch != '' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
     if (!rows.length) return [];
+    const refused = this.claimRefusals();
     const open = this.withPushActors(rows)
-      .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at));
+      .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at))
+      .map((i) => {
+        const refusals = (refused.get(i.id) ?? []).filter((r) => r.dispatchAt === i.dispatch!.at);
+        return refusals.length ? { ...i, refusals } : i;
+      });
     const policy = this.project().policy;
     const coreFiles = policy.coreFiles;
     const refuseOverlap = policy.refuseOverlap === true;
@@ -1409,8 +1414,55 @@ export class Ledger extends DurableObject<Env> {
   // Both halves of the queue in one call, as a runner's poll reads them:
   // the open tasks waiting (waiting) and the open review requests
   // (reviewWaiting).
-  queued(): { waiting: (Item & { held?: CoreHold; overlap?: OverlapRefusal })[]; reviews: Item[] } {
+  queued(): { waiting: (Item & { held?: CoreHold; overlap?: OverlapRefusal; refusals?: ClaimRefusal[] })[]; reviews: Item[] } {
     return { waiting: this.waiting(), reviews: this.reviewWaiting() };
+  }
+
+  // The claims refused runners for dispatched tasks, by item id (t420): the
+  // runner passes a refused task by until it changes, so the refusal is
+  // kept here for status and show to name. One row per item and runner,
+  // under the dispatch it was refused for; waiting() keeps those of the
+  // task's current dispatch.
+  private claimRefusals(): Map<string, ClaimRefusal[]> {
+    const out = new Map<string, ClaimRefusal[]>();
+    for (const row of this.sql.exec(`SELECT key, value FROM meta WHERE key LIKE 'claim-refused:%'`).toArray()) {
+      const id = (row.key as string).split(":")[1];
+      out.set(id, [...out.get(id) ?? [], JSON.parse(row.value as string) as ClaimRefusal]);
+    }
+    return out;
+  }
+
+  // Records a claim refused a runner (the router calls it as the refusal
+  // goes back), for a task still open and dispatched; for any other nothing
+  // is kept. A runner_forbidden refusal of a runner token says only that the
+  // operation is not allowed, so the reason is worked out here as
+  // assertRunnerJob decided it. Rows of an older dispatch of the task go.
+  noteClaimRefusal(id: string, runner: string, actor: string, error: string, detail: string, token?: AgentToken): void {
+    let item: Item;
+    try { item = this.item(id); } catch { return; }
+    const d = item.dispatch;
+    if (item.state !== "open" || item.owner || !d) return;
+    const why = error === "runner_forbidden" && token ? this.runnerClaimWhy(token, item, actor) ?? detail : detail;
+    for (const row of this.sql.exec(`SELECT key, value FROM meta WHERE key LIKE ?`, `claim-refused:${id}:%`).toArray()) {
+      if ((JSON.parse(row.value as string) as ClaimRefusal).dispatchAt !== d.at) this.sql.exec(`DELETE FROM meta WHERE key = ?`, row.key);
+    }
+    const refusal: ClaimRefusal = { runner, actor, error, detail: why.slice(0, 300), dispatchAt: d.at, at: new Date().toISOString() };
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `claim-refused:${id}:${runner}`, JSON.stringify(refusal));
+  }
+
+  // Why assertRunnerJob refused a runner token's claim of an open dispatched
+  // task, in words, or null when its checks pass and the refusal came from
+  // elsewhere.
+  private runnerClaimWhy(token: AgentToken, item: Item, actor: string): string | null {
+    const d = item.dispatch!;
+    if (d.job === "review" || d.job === "integrate" || d.job === "refresh") return `a runner token does not claim a ${d.job} job`;
+    const offer = this.runnerMeta<SeenOffer>(`runner-offer:${token.id}`);
+    if (!offer) return `token ${token.id} has not polled this project's queue, so no offer of its runner is on record here`;
+    if (!liveOffers([offer]).length) return `the offer token ${token.id} last polled with is no longer live`;
+    const assigned = assign(d, offer)?.actor;
+    if (assigned !== actor) return assigned ? `its offer assigns this dispatch to ${assigned}, not ${actor}` : `its offer does not cover this dispatch (${describe(d)})`;
+    const held = coreHold(item, this.items(), this.project().policy.coreFiles);
+    return held ? `the core files hold it: it ${holdText(held)}` : null;
   }
 
   // Items as item() reads them, from their rows, with each one's push actors

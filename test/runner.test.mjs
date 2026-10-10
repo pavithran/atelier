@@ -587,7 +587,9 @@ test("runRunner once polls once and handles SIGINT, SIGTERM and SIGHUP", async (
       workspacePath: () => { throw new Error("no task should be claimed"); },
       async queue(offer, signal) {
         polls++;
-        assert.deepEqual(offer, offerFrom(config, "home:studio"));
+        const { started, ...rest } = offer;
+        assert.deepEqual(rest, offerFrom(config, "home:studio"));
+        assert.ok(Number.isFinite(Date.parse(started)));
         if (!once) { process.emit(signalName); assert.equal(signal.aborted, true); }
         return [];
       },
@@ -655,16 +657,22 @@ test("an idle runner says, once per change, why dispatches it cannot take are wa
   const logs = [];
   t.mock.method(console, "log", (s) => logs.push(s));
   const held = (id) => ({ project: "atelier", item: { id, why: [{ kind: "held", line: `Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned, or at once with atelier dispatch ${id} --overlap-ok.` }] } });
-  let calls = 0, waits = 0;
+  let calls = 0, waits = 0, polled = null;
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
     workspacePath: () => { throw new Error("no task should be claimed"); },
     async wait() { if (++waits >= 3) process.emit("SIGINT"); },
-    async queue() { return []; },
-    async idleWhy() {
+    async queue(offer) { polled = offer; return []; },
+    // Asked with the runner's own offer, as its poll is: a runner token may
+    // not read the owner's listing.
+    async idleWhy(offer) {
+      assert.equal(offer, polled);
       calls++;
       return calls === 1 ? [held("t2")] : [held("t2"), { project: "atelier", item: { id: "t3", why: [{ kind: "skipped", line: "Skipped by home:desk after 2 failed runs (the last stalled); that runner passes it by until it restarts: fix the cause, then restart it with atelier runner --name home:desk." }] } }];
     },
   });
+  // The offer says when this process started, so the server counts what
+  // names this runner only from then.
+  assert.ok(Number.isFinite(Date.parse(polled.started)), JSON.stringify(polled));
   const said = logs.filter((s) => s.includes("found nothing to claim"));
   assert.equal(said.length, 2, "said once per change, not once per poll");
   assert.ok(said[0].includes("1 dispatch waits"), said[0]);
@@ -679,8 +687,8 @@ test("passedBy says why the loop passes an offered task by, with what lets it th
   assert.match(passedBy({ ...assignment, item: { ...assignment.item, dispatch: { job: "review" } } }, ["build"], empty), /^Not taken here: a review job, which this runner's config does not offer; add it to the config's jobs/);
   assert.match(passedBy(assignment, ["build"], { ...empty, refused: new Set([refusedKey(assignment)]) }), /^Passed by: its claim was refused or it was skipped here, and it has not changed since; it is tried again once it changes/);
   assert.equal(passedBy(assignment, ["build"], { ...empty, failures: new Map([[taskKey(assignment), 1]]) }), null, "one failure is not yet a skip");
-  assert.match(passedBy(assignment, ["build"], { ...empty, failures: new Map([[taskKey(assignment), 2]]) }), /^Skipped after 2 failed runs in this process; fix the cause, then restart this runner\.$/);
-  assert.match(passedBy(assignment, ["build"], { ...empty, infrastructureFailures: new Map([[taskKey(assignment), 3]]) }), /^Skipped after 3 infrastructure failures in a row in this process; fix the runner's setup, then restart this runner\.$/);
+  assert.match(passedBy(assignment, ["build"], { ...empty, failures: new Map([[taskKey(assignment), 2]]) }), /^Skipped after 2 failed runs under this dispatch; fix the cause, then dispatch it again \(atelier dispatch t13\) or restart this runner\.$/);
+  assert.match(passedBy(assignment, ["build"], { ...empty, infrastructureFailures: new Map([[taskKey(assignment), 3]]) }), /^Skipped after 3 infrastructure failures in a row under this dispatch; fix the runner's setup, then dispatch it again \(atelier dispatch t13\) or restart this runner\.$/);
 });
 
 test("a runner whose claim was refused says, once, that it passes the task by, beside the queue's reasons", async (t) => {
@@ -733,6 +741,8 @@ test("an idle runner says why with no queue reasons to read, from what it knows 
   });
   assert.equal(logs.filter((s) => s.includes("found nothing to claim while 1 dispatch waits")).length, 1, logs.join("\n"));
   assert.ok(logs.some((s) => s.includes("atelier/t13  Not taken here: a review job")));
+  // A server that will not say is said too, once, not swallowed.
+  assert.equal(logs.filter((s) => s.includes("the server's reasons for the dispatches waiting could not be read (queue: 500)")).length, 1, logs.join("\n"));
 });
 
 test("versionRefusal names both levels and says to deploy, and clears a current server", () => {
@@ -1103,6 +1113,8 @@ test("SIGINT, SIGTERM and SIGHUP stop an active detached harness and release unc
 test("failure counts use task identity and exclude refusals and skipped tasks", () => {
   assert.equal(taskKey(assignment), taskKey({ ...assignment, item: { ...assignment.item, updatedAt: "later", head: "new" } }));
   assert.notEqual(taskKey(assignment), taskKey({ ...assignment, project: "other" }));
+  // t420: dispatching it again starts the count afresh.
+  assert.notEqual(taskKey(assignment), taskKey({ ...assignment, item: { ...assignment.item, dispatch: { ...assignment.item.dispatch, at: "2026-10-10T00:00:00.000Z" } } }));
   assert.equal(failureCount(1, { phase: "failed", taskFailure: true }), 2);
   for (const state of [{ phase: "failed" }, { phase: "submitted" }, { phase: "failed", claimRefused: true }, { phase: "failed", skipped: true }]) {
     assert.equal(failureCount(1, state), 1);

@@ -848,7 +848,10 @@ export async function runTask(assignment, config, name, io) {
   return state;
 }
 
-export const taskKey = (task) => JSON.stringify([task.project, task.item.id]);
+// A task's identity for the failure counts: its project, id and dispatch,
+// so dispatching it again starts the count afresh (t420), as the server's
+// skippedBy counts, while a release or a push under one dispatch does not.
+export const taskKey = (task) => JSON.stringify([task.project, task.item.id, task.item.dispatch?.at ?? null]);
 
 // The job an assignment is, as the offer names jobs: the dispatch's own, the
 // merge jobs a build carries (a task's merge-main under "merge-main-task",
@@ -1361,16 +1364,17 @@ export function infrastructureFailureCount(count, state) {
 // Why the runner's loop passes an offered task by, in words with what lets it
 // through, or null when it takes it: a job its offer does not name (jobOf), a
 // claim refused or a task skipped since the task last changed (refusedKey),
-// or the failures that skip it for the rest of this process (failureCount,
-// infrastructureFailureCount). An idle runner says these (t420).
+// or the failures that skip it until it is dispatched again or this process
+// ends (failureCount, infrastructureFailureCount, keyed by taskKey). An idle
+// runner says these (t420).
 export function passedBy(task, jobs, { refused, failures, infrastructureFailures }) {
   const job = jobOf(task);
   if (!jobs.includes(job)) return `Not taken here: a ${job} job, which this runner's config does not offer; add it to the config's jobs, or leave it for a runner that offers it.`;
   if (refused.has(refusedKey(task))) return `Passed by: its claim was refused or it was skipped here, and it has not changed since; it is tried again once it changes (status or show names what refuses it).`;
   const failed = failures.get(taskKey(task)) ?? 0;
-  if (failed >= 2) return `Skipped after ${failed} failed runs in this process; fix the cause, then restart this runner.`;
+  if (failed >= 2) return `Skipped after ${failed} failed runs under this dispatch; fix the cause, then dispatch it again (atelier dispatch ${task.item.id}) or restart this runner.`;
   const broken = infrastructureFailures.get(taskKey(task)) ?? 0;
-  if (broken >= 3) return `Skipped after ${broken} infrastructure failures in a row in this process; fix the runner's setup, then restart this runner.`;
+  if (broken >= 3) return `Skipped after ${broken} infrastructure failures in a row under this dispatch; fix the runner's setup, then dispatch it again (atelier dispatch ${task.item.id}) or restart this runner.`;
   return null;
 }
 
@@ -1521,9 +1525,13 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // The integrator runs no model: it offers the integrate and refresh jobs
   // alone, under the reserved actor, and takes no config.
   const config = integrating ? { agents: [] } : readConfig(args.config);
-  const offer = integrating
-    ? { runner: args.name.toLowerCase(), kind: "home", agents: [], jobs: ["integrate", "refresh"] }
-    : offerFrom(config, args.name);
+  // The offer says when this process started (t420): what it passes by
+  // after failures or a refused claim it forgets on a restart, so the
+  // server's reasons naming this runner count only from then.
+  const offer = {
+    ...(integrating ? { runner: args.name.toLowerCase(), kind: "home", agents: [], jobs: ["integrate", "refresh"] } : offerFrom(config, args.name)),
+    started: new Date().toISOString(),
+  };
   // The load average under which this runner takes a new job (t403): the
   // config's `loadLimit`, else the machine's core count, so a saturated
   // machine is not given another harness to run on top of the rest.
@@ -1645,23 +1653,25 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     let misses = 0;
     // Why this runner found nothing it may claim while dispatches wait (t420):
     // first the tasks the queue offered that this process passes by
-    // (passedBy), then every other waiting dispatch with the queue GET's
-    // reason, so an idle runner says once what holds each one, and stays
-    // quiet until that changes.
+    // (passedBy), then every other waiting dispatch with the reason the
+    // server gives this runner's poll asked with `why` (idleWhy), so an idle
+    // runner says once what holds each one, and stays quiet until that
+    // changes. A server that will not say is said too, once.
     let lastWhy = null;
     const sayIdleWhy = async (passed) => {
-      let waiting = [];
-      if (idleWhy) { try { waiting = await idleWhy(controller.signal); } catch { /* what the runner knows itself is still said */ } }
+      let waiting = [], unread = null;
+      if (idleWhy) { try { waiting = await idleWhy(offer, controller.signal); } catch (error) { if (controller.signal.aborted) return; unread = error.message; } }
       const own = new Set(passed.map((p) => p.task));
       const reasons = [...passed, ...(Array.isArray(waiting) ? waiting : []).filter((q) => q?.item?.why?.length && !own.has(`${q.project}/${q.item.id}`))
         .flatMap((q) => q.item.why.map((r) => ({ task: `${q.project}/${q.item.id}`, line: r.line })))];
-      if (!reasons.length) { lastWhy = null; return; }
-      const signature = reasons.map((r) => `${r.task}  ${r.line}`).join("\n");
+      if (!reasons.length && !unread) { lastWhy = null; return; }
+      const signature = [...reasons.map((r) => `${r.task}  ${r.line}`), unread ?? ""].join("\n");
       if (signature === lastWhy) return;
       lastWhy = signature;
       const n = new Set(reasons.map((r) => r.task)).size;
-      line(`found nothing to claim while ${n} dispatch${n === 1 ? "" : "es"} wait${n === 1 ? "s" : ""}:`);
+      if (n) line(`found nothing to claim while ${n} dispatch${n === 1 ? "" : "es"} wait${n === 1 ? "s" : ""}:`);
       for (const r of reasons) line(`  ${r.task}  ${r.line}`);
+      if (unread) line(`found nothing to claim; the server's reasons for the dispatches waiting could not be read (${unread}), so atelier status names them.`);
     };
     while (!controller.signal.aborted) {
       let state;
