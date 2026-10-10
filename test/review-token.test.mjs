@@ -7,6 +7,10 @@ import { join, resolve } from "node:path";
 import { execute, readAgentToken, reviewToken, runReview, runRunner, tokenFile } from "../cli/runner.mjs";
 import { parseConfig } from "../cli/runner-config.mjs";
 
+// Pin the load under the runner's limit so these tests are not held back by
+// this machine's real load; the gate is tested with an injected load.
+process.env.ATELIER_LOAD = "0";
+
 // t346: a runner records each review with the reviewing model's own agent
 // token, never the owner token it holds for its builds, so the ledger shows
 // the reviewer itself as the recorder. The runner config's `tokens` names,

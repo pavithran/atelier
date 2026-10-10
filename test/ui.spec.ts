@@ -28,6 +28,25 @@ it('a check Atelier ran reads as a runner in a clean clone or a Cloudflare conta
  expect(cloud).not.toContain('Runner, clean clone');
  expect(outsideBrief(cloud)).not.toMatch(/agent(&#39;|')s machine/i);
 });
+it('a check that failed and then passed unchanged keeps both results, each with the load it started at',()=>{
+  const diff={head,base:'b'.repeat(40),files:[],truncated:false};
+  const d=detail();
+  d.evidence=[
+    {itemId:'t1',claim:'npm test',grade:'observed',head,passed:false,by:'codex/gpt-6',at:'2026-10-09T10:00:00Z',changedPaths:['src/a.ts'],load:81.4},
+    {itemId:'t1',claim:'npm test',grade:'observed',head,passed:true,by:'codex/gpt-6',at:'2026-10-09T10:05:00Z',changedPaths:['src/a.ts'],load:2.1},
+  ];
+  const html=renderItem(project,d,'PAVI',diff);
+  expect(html).toContain('<span class="tag go">Passed</span><code>npm test</code>');
+  expect(html).toContain('class="check-runs"');
+  expect(html).toContain('<span class="tag bad">Failed</span>');
+  expect(html).toContain('load 81.4');
+  expect(html).toContain('load 2.1');
+  // A single run keeps the plain row, with no history list and the load in its detail.
+  const one=detail();
+  const single=renderItem(project,one,'PAVI',diff);
+  expect(single).not.toContain('class="check-runs"');
+});
+
 it('merged tasks show completion without actionable approval or a misleading closed gate',()=>{
  const d=detail();d.item.state='merged';d.item.acceptedHead=head;
  const html=renderItem(project,d,'PAVI',null);
