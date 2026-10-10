@@ -23,7 +23,7 @@ import { suggestBuilder } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { buildPrecision, precisionWindow } from "./models/precision.ts";
-import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow } from "./models/judgement.ts";
+import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, registeredActing } from "./models/judgement.ts";
 import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
@@ -2782,8 +2782,10 @@ export default {
         }
         // The acting harness/model is checked here, for every route, so a
         // malformed name, or one an agent or runner token sends, is refused
-        // before anything is recorded.
-        const acting = cleanActing(req.headers.get(ACTING_HEADER), ownerActor(env), !!token);
+        // before anything is recorded. A name must be a model in the pool;
+        // it is kept as declared, since the owner token cannot prove it.
+        const declaredActing = cleanActing(req.headers.get(ACTING_HEADER), ownerActor(env), !!token);
+        const acting = declaredActing === null ? null : registeredActing(declaredActing, await index(env).models());
         const body = req.method === "GET" ? {} : await req.json().catch(() => ({}));
         // Routes read fields from the body, so anything but a JSON object is refused here.
         if (typeof body !== "object" || body === null || Array.isArray(body)) {

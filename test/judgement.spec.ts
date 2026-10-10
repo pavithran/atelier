@@ -28,7 +28,16 @@ function call(method: string, path: string, actor: string | null, body?: unknown
 }
 const acting = (who: string) => ({ "x-atelier-acting": who });
 
+// The acting models the tests name, in the owner's pool; a name outside it
+// is refused (registeredActing).
+async function pool() {
+  for (const [harness, id] of [["claude-code", "opus-5.5"], ["codex", "gpt-6-astra"], ["zcode", "glm-judge-9"]]) {
+    expect((await call("PUT", `/models/${id}`, "owner", { harness, where: "cloud" })).status).toBe(200);
+  }
+}
+
 async function project(name: string, protect: string[] = []) {
+  await pool();
   const record = { name, repo: name, policy: { checks: [], protected: protect }, createdAt: new Date().toISOString() };
   await L(name).setProject(record, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
@@ -69,6 +78,11 @@ it("a finding's verdict keeps the acting model beside the owner; only the owner 
   for (const bad of ["", "opus", "owner", "atelier/events", "claude-code/opus 5.5"]) {
     const res = await call("POST", path, "owner", { head: H1, index: 1, verdict: "refuted" }, acting(bad));
     expect([bad, res.status, ((await res.json()) as { error: string }).error]).toEqual([bad, 400, "bad_acting"]);
+  }
+  // Well formed but not in the pool: refused, so a declared name is at least a registered model.
+  for (const unregistered of [GLM, "codex/opus-5.5"]) {
+    const res = await call("POST", path, "owner", { head: H1, index: 1, verdict: "refuted" }, acting(unregistered));
+    expect([unregistered, res.status, ((await res.json()) as { error: string }).error]).toEqual([unregistered, 400, "unregistered_acting"]);
   }
   expect((await events("judge-finding", id)).filter((e) => e.kind === "review.finding")).toEqual([]);
   // Named: the event's actor is the owner, the acting model beside it, and the answer gives the event's number.
@@ -184,6 +198,8 @@ it("the JSON route and the Models page show each acting model's verdicts, decisi
   const page = await (await worker.fetch(new Request("https://atelier.test/models", { headers: { cookie } }), testEnv)).text();
   expect(page).toContain('aria-label="Judgements by acting model"');
   expect(page).toContain("<code>glm-judge-9</code>");
+  expect(page).toContain("Acting model (declared)");
+  expect(page).toContain("The acting model is declared, not verified");
   expect(page).toMatch(new RegExp(`glm-judge-9</code>'s verdict \\(event ${seq}\\) on <code>judge-page/${id}</code> contradicted by a defect: the rows were dropped`));
 });
 
