@@ -23,6 +23,7 @@ import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } fr
 import { redactGitArgs } from "./runner.mjs";
 import { acceptancePolicy, controlPlaneChanges, mergeContext, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
 import { cleanSummary } from "../src/brief.ts";
+import { VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { assertEligible, checkApplies, checkFiles, pathCollisions, recordedText } from "../src/rules.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { holdText } from "../src/dispatch/rules.ts";
@@ -244,7 +245,7 @@ export const FLAGS = {
   new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry', brief: '--brief needs text: atelier new "short title" --brief "TEXT"', accept: '--accept needs text: atelier new --accept "TEXT", once per criterion', "non-goal": '--non-goal needs text: atelier new --non-goal "TEXT", once per entry', "stop-when": '--stop-when needs text: atelier new --stop-when "TEXT", once per entry', "next-gate": '--next-gate needs text: atelier new --next-gate "TEXT"' },
   // edit takes the same, and --title; one empty value clears the field, so
   // the owner can take a framing back.
-  edit: { title: '--title needs text: atelier edit ID --title "TEXT", at most 80 characters', brief: '--brief needs text: atelier edit ID --brief "TEXT", or --brief "" to clear it', accept: '--accept needs text: atelier edit ID --accept "TEXT", once per criterion, or --accept "" alone to clear', "non-goal": '--non-goal needs text: atelier edit ID --non-goal "TEXT", once per entry, or --non-goal "" alone to clear', "stop-when": '--stop-when needs text: atelier edit ID --stop-when "TEXT", once per entry, or --stop-when "" alone to clear', "next-gate": '--next-gate needs text: atelier edit ID --next-gate "TEXT", or --next-gate "" to clear' },
+  edit: { scope: '--scope needs text: atelier edit ID --scope "GLOB", once per entry, or --scope "" alone to clear', title: '--title needs text: atelier edit ID --title "TEXT", at most 80 characters', brief: '--brief needs text: atelier edit ID --brief "TEXT", or --brief "" to clear it', accept: '--accept needs text: atelier edit ID --accept "TEXT", once per criterion, or --accept "" alone to clear', "non-goal": '--non-goal needs text: atelier edit ID --non-goal "TEXT", once per entry, or --non-goal "" alone to clear', "stop-when": '--stop-when needs text: atelier edit ID --stop-when "TEXT", once per entry, or --stop-when "" alone to clear', "next-gate": '--next-gate needs text: atelier edit ID --next-gate "TEXT", or --next-gate "" to clear' },
   block: {},
   unblock: {},
   ls: { all: true, json: true },
@@ -262,6 +263,7 @@ export const FLAGS = {
   review: { approve: true, reject: true, note: false, head: false, findings: false, criteria: false, request: false },
   "review-claim": { runner: false },
   "review-release": { note: false },
+  "review-unparsable": { head: false, note: false, "reply-file": false },
   "read-token": {},
   "base-token": {},
   integrated: { part: false, "merge-commit": false },
@@ -611,6 +613,12 @@ function fieldsArg(cmd) {
   if (args.brief !== undefined) {
     if (typeof args.brief !== "string" || (!args.brief.trim() && cmd !== "edit")) die(FLAGS[cmd].brief);
     out.brief = args.brief.trim() || null;
+  }
+  if (cmd === "edit" && args.multi.scope !== undefined) {
+    const values = args.multi.scope;
+    if (values.length === 1 && values[0] === "") out.scope = [];
+    else if (values.some((v) => typeof v !== "string" || !v.trim())) die(FLAGS.edit.scope);
+    else out.scope = values.map((v) => v.trim());
   }
   for (const [flag, key] of [["accept", "accept"], ["non-goal", "nonGoals"], ["stop-when", "stopWhen"]]) {
     const values = args.multi[flag];
@@ -1230,16 +1238,23 @@ const newestReviews = (reviews) => [...reviews].sort((a, b) => b.at.localeCompar
 // learn why a review rejected the task (t173). One flattened line per field,
 // so no note or finding can pose as a line of Atelier's own. A separate tier
 // review (src/review/tier.ts), beside the gate's, is labelled, and so is a
-// gate review by a tier model, which gives the tier review too.
-export function formatReviews(reviews, owner = OWNER) {
+// gate review by a tier model, which gives the tier review too. After the
+// reviews come the replies no verdict could be read from (t407), newest
+// first, each with the reason it was refused and the reply itself, whole and
+// flattened the same way: what the reviewer actually said is the evidence.
+export function formatReviews(reviews, owner = OWNER, unparsable = []) {
   const ordered = newestReviews(reviews);
-  if (!ordered.length) return "No reviews are recorded.";
-  const lines = ["Reviews:"];
+  if (!ordered.length && !unparsable.length) return "No reviews are recorded.";
+  const lines = ordered.length ? ["Reviews:"] : [];
   for (const r of ordered) {
     const recorded = recordedText(r, owner);
     lines.push(`  ${r.tier ? "Tier review: " : r.topTier ? "Gate review, top tier: " : ""}${flat(r.by)} ${r.approve ? "approved" : "rejected"} at ${short(r.head)} (${at(r.at)}${recorded ? `; ${flat(recorded)}` : ""}).`);
     lines.push(`    Note: ${flat(r.note) || "(no note)"}`);
     for (const f of r.findings ?? []) lines.push(`    ${f.severity} ${flat(f.file)}${f.line ? `:${f.line}` : ""} ${flat(f.text)}`);
+  }
+  for (const r of newestReviews(unparsable)) {
+    lines.push(`  ${flat(r.by)} wrote a reply no verdict could be read from at ${short(r.head)} (${at(r.at)}): ${flat(r.note) || "(no reason recorded)"}`);
+    lines.push(`    Reply: ${flat(r.reply) || "(nothing written)"}`);
   }
   return lines.join("\n");
 }
@@ -2139,6 +2154,7 @@ const commands = {
     const lines = [
       ...(fields.title !== undefined ? [`Title: ${flat(item.title)}`] : []),
       ...(fields.brief !== undefined ? [item.brief ? `Brief: ${item.brief.length} characters, shown on the task's page.` : "Brief: cleared."] : []),
+      ...(fields.scope !== undefined ? [`Scope: ${item.scope.map(flat).join(", ") || "not specified (it overlaps every live task)"}`] : []),
       ...formatFields(item),
     ];
     console.log(`${id} edited.${lines.length ? `\n${lines.join("\n")}` : " No framing is set now."}`);
@@ -2200,9 +2216,9 @@ const commands = {
       const label = event.kind === "item.reverts" ? "Reverts" : "Revert requested in";
       brief.evidence.push(`${label} ${itemId} (recorded merge ${mergeCommit}): ${server()}/p/${encodeURIComponent(name)}/${itemId}`);
     }
-    if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []) }, null, 2));
+    if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []) }, null, 2));
     const text = formatBrief(name, id, brief, server());
-    console.log(args.reviews ? `${text}\n\n${formatReviews(d?.reviews ?? [], d?.ownerActor)}` : text);
+    console.log(args.reviews ? `${text}\n\n${formatReviews(d?.reviews ?? [], d?.ownerActor, d?.unparsable ?? [])}` : text);
   },
 
   // The task's whole story from the ledger, in order (cli/receipt.mjs): one
@@ -2502,6 +2518,22 @@ const commands = {
     const name = project(), id = itemArg(), as = await actor();
     await call("POST", `${I(name, id)}/review-release`, { note: args.note ?? "" }, as);
     console.log(`${id}'s review request released.`);
+  },
+
+  // t407: a reviewer's reply no verdict could be read from is kept on the
+  // task, its last 100 KB with the reviewer and the head, as the request it
+  // held goes back to the queue. The reply travels as the file the harness
+  // wrote, never as an argument, which the operating system caps far below a
+  // long reply.
+  async "review-unparsable"() {
+    const name = project(), id = itemArg(), as = await actor();
+    if (typeof args.head !== "string" || !/^[a-f0-9]{40,64}$/.test(args.head)) die("--head needs the full revision the review read");
+    if (typeof args["reply-file"] !== "string" || !args["reply-file"]) die('--reply-file needs the path of the file the harness wrote its reply to');
+    let reply;
+    try { reply = readFileSync(args["reply-file"], "utf8"); }
+    catch (error) { die(`could not read the reply file: ${error.message}`); }
+    const r = await call("POST", `${I(name, id)}/review-unparsable`, { head: args.head, note: args.note ?? "", reply: reply.slice(-VERDICT_LIMITS.reply) }, as);
+    console.log(`Kept the unparsable review reply on ${id}${r.released === false ? "" : ", and released its review request"}.`);
   },
 
   // Read-only access tokens the runner uses outside a task or review job: the
@@ -2942,7 +2974,7 @@ const commands = {
           catch(error){journal.clear();die(error.message);}
           if(runs.length){journal.clear();die(`the accepted change touches files that this checkout's Git configuration runs: ${runs.map(r=>r.changed.length===1&&r.changed[0]===r.path?`${r.path}, ${r.setting}`:`${r.changed.join(', ')}, which reach ${r.path}, ${r.setting}`).join('; ')}. Landing it would run them, during the merge or at your next Git command. Nothing was merged; review those files in the accepted change and land it by hand, or have the task's owner submit a revision that leaves them alone`);}
           const result=git(['merge','--no-ff','--no-commit',target],{cwd,allowFail:true});
-          if(result.status!==0){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();if(item.kind==='plan')await planConflicted(name,id,item);die('merge conflicts; the task owner must update, recheck, and submit a new revision');}
+          if(result.status!==0){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();if(item.kind==='plan')await planConflicted(name,id,item);die(`merge conflicts; nothing was merged and ${id} stays accepted. The project owner can send it back to a runner with atelier dispatch ${id} --job merge-main, or hand it to a builder with atelier handoff ${id} --to H/M. The builder resolves the conflicts, rechecks and submits a new revision for review and acceptance; earlier reviews and acceptance stay in the history`);}
           if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }
           const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote,changeClass:d.gate.changeClass});
           if(receipt)git(['add',receipt],{cwd});

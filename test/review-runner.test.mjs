@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runReview, runRunner, commandFor, execute } from "../cli/runner.mjs";
 import { BRIEF_LIMITS } from "../src/review/brief.ts";
+import { VERDICT_LIMITS } from "../src/review/verdict.ts";
 
 // The review job (docs/orchestrator.md, section 4, build step 10) driven
 // through the same stand-in io the other runner tests use: the server answers
@@ -121,11 +122,12 @@ test("runReview posts a rejection with its findings, and releases the request wh
   assert.ok(posted.includes("--findings"));
   assert.ok(posted.includes(JSON.stringify([{ file: "src/review/needed.ts", line: 88, severity: "blocking", text: "A lapsed claim is never retried." }])));
 
-  // A harness that writes no valid verdict releases the request.
+  // A harness that writes no valid verdict keeps the reply on the task (t407)
+  // and releases the request.
   const blank = fixture({ verdict: "Looks good, ship it." });
   const blankState = await runReview(assignment, config, "home:studio", blank.io);
   assert.equal(blankState.phase, "failed");
-  assert.ok(blank.calls.some((c) => c.argv && c.argv[0] === "review-release"));
+  assert.ok(blank.calls.some((c) => c.argv && c.argv[0] === "review-unparsable"), "the reply is kept on the task");
 });
 
 // t325: the claim's part carries acceptance criteria, so the reply must prove
@@ -136,8 +138,8 @@ test("runReview releases the request when an approval proves no acceptance crite
   const state = await runReview(assignment, config, "home:studio", bare.io);
   assert.equal(state.phase, "failed");
   assert.match(state.reason, /an approval needs a CRITERION line for each of the 1 acceptance criteria: criterion 1 has none/);
-  const release = bare.calls.find((c) => c.argv && c.argv[0] === "review-release").argv;
-  assert.ok(release.some((a) => a.includes("criterion 1 has none")), release.join(" "));
+  const unparsable = bare.calls.find((c) => c.argv && c.argv[0] === "review-unparsable").argv;
+  assert.ok(unparsable.some((a) => a.includes("criterion 1 has none")), unparsable.join(" "));
   assert.ok(!bare.calls.some((c) => c.argv && c.argv[0] === "review"), "no review is posted");
 
   // A task with no criteria and no plan is approved without CRITERION lines,
@@ -154,6 +156,57 @@ test("runReview releases the request when the harness fails or times out", async
     assert.equal(state.phase, "failed");
     assert.ok(calls.some((c) => c.argv && c.argv[0] === "review-release"), JSON.stringify(options));
   }
+});
+
+// t407: a reply with no verdict is kept on the task, its last 100 KB with the
+// reviewer and the head it judged, as the request is released for another
+// reviewer. Before this the reply was discarded and the only evidence was the
+// runner's log.
+test("runReview keeps an unparsable reply on the task and releases the request", async () => {
+  const noVerdict = "I read the change.\nIt works as far as I can tell; nothing to add.";
+  const { io, calls, logs } = fixture({ verdict: noVerdict });
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.phase, "failed");
+  assert.match(state.reason, /the reply states no verdict: it has no VERDICT line and no JSON verdict/);
+  const kept = calls.find((c) => c.argv && c.argv[0] === "review-unparsable");
+  assert.ok(kept, "the unparsable reply is posted");
+  const argv = kept.argv;
+  assert.equal(argv[argv.indexOf("--head") + 1], H1);
+  assert.equal(argv[argv.indexOf("--as") + 1], assignment.actor);
+  assert.match(argv[argv.indexOf("--note") + 1], /the reply states no verdict/);
+  // The reply itself travels as a file the CLI reads, never as an argument.
+  const written = calls.filter((c) => c.brief).find((c) => c.brief === noVerdict);
+  assert.ok(written, "the reply is written to a file whole");
+  assert.equal(argv[argv.indexOf("--reply-file") + 1], "/cache/work/atelier/brief.txt", "the CLI is pointed at the file the runner wrote");
+  assert.ok(!argv.some((a) => a === noVerdict), "the reply text is never an argument");
+  assert.ok(!calls.some((c) => c.argv && c.argv[0] === "review"), "no review is posted");
+  assert.ok(calls.some((c) => c.removed === written.file), "the reply file is removed after the call");
+  assert.ok(logs.some((l) => l.includes("review released")), logs.join("\n"));
+  assert.ok(kept.token === FAKE_TOKEN, "the reply is kept with the reviewer's own token");
+
+  // A reply longer than the 100 KB a verdict needs is kept as its last 100 KB.
+  const long = `${"a line of a reply that never reaches a verdict\n".repeat(3400)}the tail that matters`;
+  assert.ok(long.length > VERDICT_LIMITS.reply, `${long.length} characters`);
+  const longRun = fixture({ verdict: long });
+  const longState = await runReview(assignment, config, "home:studio", longRun.io);
+  assert.match(longState.reason, /over the 100000 a verdict needs/);
+  const tail = longRun.calls.filter((c) => c.brief).find((c) => c.brief.endsWith("the tail that matters"));
+  assert.ok(tail, "the kept reply is the reply's end");
+  assert.equal(tail.brief.length, VERDICT_LIMITS.reply, "exactly the last 100 KB");
+
+  // When the task cannot take the reply, the request is released as before
+  // and the run still fails with the parse's reason.
+  const refused = fixture({ verdict: noVerdict });
+  const cli = refused.io.cli;
+  refused.io.cli = async (argv, cwd, options) => {
+    if (argv[0] === "review-unparsable") throw new Error("server refused");
+    return cli(argv, cwd, options);
+  };
+  const failed = await runReview(assignment, config, "home:studio", refused.io);
+  assert.equal(failed.phase, "failed");
+  assert.match(failed.reason, /the reply states no verdict/);
+  assert.ok(refused.calls.some((c) => c.argv && c.argv[0] === "review-release"), "the request is still released");
+  assert.ok(refused.logs.some((l) => l.includes("could not keep the unparsable reply")), refused.logs.join("\n"));
 });
 
 test("runReview carries a diff too large for the brief by its R2 reference, not inline (t284)", async () => {
@@ -203,7 +256,7 @@ test("runReview releases the request when the harness wrote no verdict file at a
   io.readVerdict = () => { throw Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" }); };
   const state = await runReview(assignment, config, "home:studio", io);
   assert.equal(state.phase, "failed");
-  assert.ok(calls.some((c) => c.argv && c.argv[0] === "review-release"), "the request is released");
+  assert.ok(calls.some((c) => c.argv && c.argv[0] === "review-unparsable"), "the empty reply is kept on the task and the request released");
 });
 
 test("runReview clones into a folder of its own, never the builder's workspace, and removes it and the verdict file", async () => {
