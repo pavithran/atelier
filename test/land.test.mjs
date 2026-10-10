@@ -76,7 +76,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
   // the project's items and the runner queue, which the wait explains from.
   const box = {
     states: {}, reviews: { t1: [], t2: [] }, lease: null, waiting: [], version: null, routeLevel: ROUTE_LEVEL,
-    review: { needed: true, reviewer: "codex/gpt-6-astra", approve: true, pending: false, at: null, approveAfter: 0, claimed: false },
+    review: { needed: true, reviewer: "codex/gpt-6-astra", approve: true, pending: false, at: null, approveAfter: 0, claimed: false, skips: [] },
     requests: [], regen: "echo generated > gen-fixtures.txt", checks: ["exit 0"], items: [], queue: [], runners: null, renewFails: false, kinds: {},
     wf: { instance: null, stage: null, round: 0, checks: null, status: null, files: null, error: null, output: null, events: [], started: [], reads: 0, baseTokenAt: [], tick: null, onEvent: null },
   };
@@ -107,7 +107,12 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     const due = id === "t1" && box.review.pending && box.review.approveAfter !== null && box.review.approveAfter-- <= 0;
     const reviews = due ? (box.reviews.t1.push({ by: box.review.reviewer, approve: box.review.approve, head, note: box.review.approve ? "Land fixture approves." : "Land fixture rejects.", at: new Date().toISOString() }), box.review.pending = false, box.reviews.t1) : box.reviews[id];
     const state = box.states[id];
-    const events = id === "t1" && box.review.claimed && box.review.at ? [{ seq: 1, itemId: id, at: box.review.at, actor: box.review.reviewer, kind: "review.claimed", data: { head, runner: "home:mbp" } }] : [];
+    const events = [
+      ...(id === "t1" && box.review.claimed && box.review.at ? [{ seq: 1, itemId: id, at: box.review.at, actor: box.review.reviewer, kind: "review.claimed", data: { head, runner: "home:mbp" } }] : []),
+      // A skip names the request it refused (t353); the fixture's open
+      // request is number 1 unless a test asks for another.
+      ...(box.review.skips ?? []).map((s, i) => ({ seq: 100 + i, itemId: id, at: new Date().toISOString(), actor: s.runner, kind: "review.skipped", data: { head, runner: s.runner, request: s.request ?? 1 } })),
+    ];
     return {
       item: { id, title: `Fixture ${id}`, state, owner: "codex/test", ...(box.pushActors ? { pushActors: box.pushActors } : {}), head, ...(box.kinds[id] ? { kind: box.kinds[id] } : {}), acceptedHead: state === "accepted" || state === "merged" ? head : null },
       policy: { checks: box.checks, protected: ["work.txt"], regenerate: box.regen, ...(box.agents ? { agents: box.agents } : {}), ...(box.eligible ? { eligible: box.eligible } : {}) },
@@ -206,7 +211,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     else if (url.endsWith("/submit")) { box.states[item] = "submitted"; answer = detail(item); }
     else if (url.endsWith("/review-request")) {
       if (!box.review.needed && !(body.wanted === true && body.reviewer)) answer = { needed: false, reason: box.review.reason ?? "the gate counts an independent approval already" };
-      else { box.review.reviewer = body.reviewer ?? box.review.reviewer; box.review.pending = true; box.review.at = new Date().toISOString(); answer = { needed: true, requested: true, reason: `a protected change needs an independent review${!body.reviewer && box.review.why ? ` ${box.review.why}` : ""}`, at: box.review.at, head, reviewer: body.reviewer ?? box.review.reviewer }; }
+      else { box.review.reviewer = body.reviewer ?? box.review.reviewer; box.review.pending = true; box.review.at = new Date().toISOString(); answer = { needed: true, requested: true, reason: `a protected change needs an independent review${!body.reviewer && box.review.why ? ` ${box.review.why}` : ""}`, at: box.review.at, head, reviewer: body.reviewer ?? box.review.reviewer, request: box.review.request ?? 1 }; }
     }     else if (url.endsWith("/accept")) {
       assert.equal(body.head, head);
       box.states[item] = "accepted"; answer = detail(item).item;
@@ -1331,6 +1336,47 @@ test("while the review request is unclaimed and no live runner offers the review
   const none = await h.run(h.checkout, "land", "t1");
   assert.equal(none.status, 0, none.output);
   assert.match(none.output, /The review request is not claimed yet, and no runner has asked the server for work\. It will not be claimed until a runner that offers codex\/gpt-6-astra for the review job asks the server for work\./);
+  assert.equal(h.box.states.t1, "merged");
+});
+
+test("a landing whose sole review runner has skipped says so by runner name and stops, instead of waiting out the hour", async (t) => {
+  const f = await landFixture(t);
+  // No verdict will ever arrive: the landing must say the skip, not time out.
+  f.box.review.approveAfter = null;
+  f.box.runners = [{ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() }];
+  f.box.review.skips = [{ runner: "home:studio" }];
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /every runner that offers codex\/gpt-6-astra for the review of t1 at \w+ has skipped it: home:studio\./);
+  assert.equal(f.posts("/land").find((x) => x.body.step === "review")?.body.verdict, "skipped");
+  assert.equal(f.posts("/land").find((x) => x.body.step === "review")?.body.reviewer, "codex/gpt-6-astra");
+  assert.equal(f.posts("/accept").length, 0);
+  assert.equal(f.posts("/merged").length, 0);
+  assert.equal(f.box.states.t1, "submitted");
+  // A second runner offering the reviewer, still live, leaves one that has not
+  // skipped: the landing keeps waiting instead of naming a partial skip.
+  const g = await landFixture(t);
+  g.box.review.approveAfter = 3;
+  g.box.runners = [
+    { runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() },
+    { runner: "home:desk", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() },
+  ];
+  g.box.review.skips = [{ runner: "home:studio" }];
+  const offered = await g.run(g.checkout, "land", "t1");
+  assert.equal(offered.status, 0, offered.output);
+  assert.doesNotMatch(offered.output, /has skipped it/);
+  assert.equal(g.box.states.t1, "merged");
+  // A skip of an earlier review request at the same head — an earlier
+  // landing's — does not count against the request this landing made: the
+  // landing waits for the verdict as before.
+  const h = await landFixture(t);
+  h.box.review.approveAfter = 3;
+  h.box.review.request = 2;
+  h.box.runners = [{ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() }];
+  h.box.review.skips = [{ runner: "home:studio", request: 1 }];
+  const earlier = await h.run(h.checkout, "land", "t1");
+  assert.equal(earlier.status, 0, earlier.output);
+  assert.doesNotMatch(earlier.output, /has skipped it/);
   assert.equal(h.box.states.t1, "merged");
 });
 
