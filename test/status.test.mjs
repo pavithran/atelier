@@ -76,6 +76,14 @@ test("a plan's entries point to what the plan shows", () => {
   assert.equal(out.filter((l) => l === "      next: atelier plan show t2 --project demo").length, 1);
 });
 
+test("an assess entry names the reviewer the pool offers, and H/M when none is offered", () => {
+  const named = formatStatus([{ name: "demo", items: [item("t1", "submitted", { owner: "claude-code/opus-5.5" })], inbox: [entry("t1", "assess", { reviewer: "codex/gpt-6-astra" })] }]).split("\n");
+  assert.ok(named.includes("    t1  assess  Task t1"));
+  assert.ok(named.includes("      next: atelier land t1 --reviewer codex/gpt-6-astra --project demo"));
+  const placeholder = formatStatus([{ name: "demo", items: [item("t1", "submitted", { owner: "claude-code/opus-5.5" })], inbox: [entry("t1", "assess")] }]).split("\n");
+  assert.ok(placeholder.includes("      next: atelier land t1 --reviewer H/M --project demo"));
+});
+
 test("an undelivered merge's entry names the dry run, and the merged task itself stays out of In progress", () => {
   const out = formatStatus([{ name: "demo", items: [item("t1", "merged")], inbox: [entry("t1", "ship")] }]).split("\n");
   assert.ok(out.includes("    t1  ship  Task t1"));

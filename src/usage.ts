@@ -754,7 +754,12 @@ Standing rules:
   confirmation. Ask, and cite the owner's words; never infer them.
 - Judge each review finding against the code before acting, and record every
   verdict with \`atelier finding\`.
-- Land one task at a time with \`atelier land ID\`. Never land two together.
+- Land one task at a time with \`atelier land ID --reviewer H/M\`, which
+  merges main, checks, submits, waits for the independent review, then
+  accepts and merges; \`--reviewer H/M\` names a reviewer of another family
+  than every contributor. Never land two together. An override while
+  accepting is the owner's last resort when no reviewer qualifies, never the
+  way to land another agent's work.
 - After each landing, report to the owner with \`atelier status --brief\`: what
   merged, what is deployed, what is running and the spend.
 - Report every run that ended without a result with \`atelier run-report\`.

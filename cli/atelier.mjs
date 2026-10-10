@@ -455,6 +455,52 @@ export function insecureServer(url) {
   return `${url} is not https: the owner token goes with every request, and over plain http it would be readable on every network on the way. Name the server as https://HOST; plain http is accepted for a server on this machine alone (localhost, 127.0.0.1 or [::1])`;
 }
 
+// A session driving Atelier by hand reads the project's AGENTS.md and the
+// output of the commands it runs, not the briefs the build and review agents
+// get. Unless the project's AGENTS.md already states the review path (atelier
+// land --reviewer), status, ls and new end with one line that names
+// `atelier guide --role orchestrate`. Nothing is remembered between runs: the
+// CLI cannot tell one session from the next, so the line stays until the
+// AGENTS.md says it. A task workspace gets none: its agent has the brief.
+export function statesReviewPath(markdown) {
+  return typeof markdown === "string" && /atelier land\b[^\n]*--reviewer/.test(markdown);
+}
+
+function readAgentsMd(dir) {
+  try { return readFileSync(join(dir, "AGENTS.md"), "utf8"); } catch { return null; }
+}
+
+export function guidePointer(projects, names, inWorkspace = false, read = readAgentsMd) {
+  if (inWorkspace) return null;
+  const unread = names.filter((n) => !statesReviewPath(projects?.[n]?.path ? read(projects[n].path) : null));
+  if (!unread.length) return null;
+  const one = unread.length === 1;
+  return `Review path${one ? ` for ${unread[0]}` : ""}: atelier guide --role orchestrate${one ? ` --project ${unread[0]}` : ""} prints how to run, review and land work here, including atelier land --reviewer.`;
+}
+
+// The short AGENTS.md section atelier init offers: it points at the guide and
+// states the review path, so a session that reads only AGENTS.md finds both.
+export const AGENTS_SECTION = `## Working through Atelier
+
+Before driving this project's tasks by hand, run \`atelier guide --role orchestrate\`; it prints the whole orchestrator guide.
+
+Review path: a finished task is reviewed before it merges. \`atelier land ID --reviewer HARNESS/MODEL\` lands it with that model's review; do not merge around the review.
+`;
+
+export function agentsMdOffer(markdown) {
+  const pointsAtGuide = markdown !== null && /atelier guide/.test(markdown);
+  const statesReview = statesReviewPath(markdown);
+  if (pointsAtGuide && statesReview) return null;
+  const gap = markdown === null ? "This checkout has no AGENTS.md" : !pointsAtGuide ? "AGENTS.md does not mention atelier guide" : "AGENTS.md does not state the review path (atelier land --reviewer)";
+  return `${gap}, so a session that reads only it never sees the review path. atelier init did not edit it; add this section:\n\n${AGENTS_SECTION}`;
+}
+
+function pointToGuide(names) {
+  if (args.json) return;
+  const line = guidePointer(cfg.projects, names, Boolean(wsConfig("item")));
+  if (line) console.log(`\n${line}`);
+}
+
 function wsConfig(key, cwd = process.cwd()) {
   const r = spawnSync("git", ["config", "--local", `atelier.${key}`], { cwd, encoding: "utf8" });
   return r.status === 0 ? r.stdout.trim() : null;
@@ -2159,6 +2205,10 @@ const commands = {
     // A server older than core files ignores them and answers without any.
     if (core?.length && !pol.coreFiles?.length) console.log("Warning: the server did not record the core files; deploy the server, then run atelier init --core again.");
     if (pol.approval) console.log(`Approval:   ${pol.approval}`);
+    let agentsMd = null;
+    try { agentsMd = readFileSync(join(top, "AGENTS.md"), "utf8"); } catch {}
+    const offer = agentsMdOffer(agentsMd);
+    if (offer) console.log(`\n${offer}`);
   },
 
   // Move one project from ControlPlane to Atelier. This is itself an Atelier
@@ -2243,6 +2293,7 @@ const commands = {
       ...(item.derived ? [`The text is longer than a title, so it is kept as the brief and the title is its first clause; change it with atelier edit ${item.id} --title "TEXT".`] : []),
       ...formatFields(item),
     ].join("\n"));
+    pointToGuide([project()]);
   },
 
   // The project owner changes a task's framing; the server keeps every field
@@ -2291,6 +2342,7 @@ const commands = {
     for (const i of shown) {
       console.log(`${i.id.padEnd(5)} ${i.state.padEnd(10)} ${(i.owner ?? "—").padEnd(26)} ${short(i.head)}  ${i.title}`);
     }
+    pointToGuide([name]);
   },
 
   async show() {
@@ -2721,7 +2773,12 @@ const commands = {
     const name = project(), id = itemArg(), reason = overrideArg("accept ID");
     const d = await call("GET", I(name,id), undefined, OWNER);
     const item = await call("POST", `${I(name, id)}/accept`, {head: args.head ?? d.item.head, ...(reason !== undefined ? { overrideReview: reason } : {}), ...(typeof args.note === "string" ? { note: args.note } : {})}, OWNER);
-    console.log(`${id} accepted at ${short(item.acceptedHead)}${reason !== undefined ? ", with the independent review overridden" : ""}. Merge it with: atelier merge ${id}`);
+    const overridden = reason !== undefined
+      ? item.availableReviewer
+        ? `, with the independent review overridden; ${item.availableReviewer} was available to review it instead: atelier land ${id} --reviewer ${item.availableReviewer}`
+        : ", with the independent review overridden"
+      : "";
+    console.log(`${id} accepted at ${short(item.acceptedHead)}${overridden}. Merge it with: atelier merge ${id}`);
   },
 
   // The server clears the owner and revokes the holder's write token, as a
@@ -3644,7 +3701,10 @@ const commands = {
         landingLease(name, as),
       ]);
       const text = formatStatusBrief({ standing, version, queue, lease, usage });
-      return console.log(args.json ? JSON.stringify({ brief: text.split("\n") }, null, 2) : text);
+      if (args.json) return console.log(JSON.stringify({ brief: text.split("\n") }, null, 2));
+      console.log(text);
+      pointToGuide([name]);
+      return;
     }
     if (args.project !== undefined) {
       const name = args.project;
@@ -3654,6 +3714,7 @@ const commands = {
       const local = await localStanding(name, as);
       if (args.json) return console.log(JSON.stringify({ project: standing, checkout, ...(local ? { local } : {}) }, null, 2));
       console.log(formatStanding(standing, OWNER_NAME) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : ""));
+      pointToGuide([name]);
       return;
     }
     const known = await call("GET", "/projects", undefined, OWNER);
@@ -3674,6 +3735,7 @@ const commands = {
     }));
     if (args.json) return console.log(JSON.stringify(statusJson(views), null, 2));
     console.log(formatStatus(views, { queue, offers }));
+    pointToGuide(chosen.map((p) => p.name));
   },
 
   async open() {
