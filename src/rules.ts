@@ -754,6 +754,80 @@ export function hasRole(actor: string, policy: ProjectPolicy, role: AgentRole): 
   return name !== null && policy.agents[name].available && policy.agents[name].eligible_roles.includes(role);
 }
 
+// The agent names a governed policy marks available for a role, for a
+// refusal said ahead of a claim (a dispatch, a named reviewer) to name who
+// would pass (t405). Only governed policies have agents; without one,
+// eligibility is by harness and assertEligible names those.
+export function eligibleAgents(policy: ProjectPolicy, role: AgentRole): string[] {
+  if (!policy.agents) return [];
+  return Object.entries(policy.agents)
+    .filter(([, a]) => a.available && a.eligible_roles.includes(role))
+    .map(([name]) => name);
+}
+
+// Why a claim by `actor` under `role` would be refused by the project's
+// policy, or null when it would pass. The reason is the one assertEligible
+// gives, extended, under a governed policy, with the agents that would be
+// eligible, so a refusal said ahead of the claim names who would pass
+// (t405). A caller that refuses on this reason refuses the same rule the
+// claim would apply.
+export function roleRefusal(actor: string, policy: ProjectPolicy, role: AgentRole, owner = DEFAULT_OWNER): string | null {
+  if (policy.agents) {
+    if (hasRole(actor, policy, role)) return null;
+    const names = eligibleAgents(policy, role);
+    return `${actor} needs an available agent with the ${role} role${names.length ? `; available agents with the ${role} role: ${names.join(", ")}` : `; no agent is available with the ${role} role`}`;
+  }
+  try {
+    assertEligible(actor, policy, owner, role);
+    return null;
+  } catch (err) {
+    const rule = parseRuleError(err);
+    if (!rule) throw err;
+    return rule.detail;
+  }
+}
+
+// Why a dispatch that names only a harness, no model, would be refused by
+// the project's policy for every model under that harness, or null when the
+// policy has nothing to say about the harness alone. A claim names an actor
+// (harness/model), so a harness-only dispatch is checked only for the
+// restrictions the harness itself decides: under a governed policy the fixed
+// agent a harness runs (claude-code → claude, codex → codex, zcode → glm),
+// whose role and availability hold for every model of that harness; under
+// legacy eligibility the harness list, which names no model at all. A
+// harness whose agent depends on the model (opencode's glm models against
+// its others) cannot be judged here, and the claim's own check applies when
+// the runner names a model (t405).
+export function harnessRefusal(harness: string, policy: ProjectPolicy, role: AgentRole, owner = DEFAULT_OWNER): string | null {
+  if (policy.agents) {
+    // agentOf reads the harness lowercased, so the fixed mapping matches the
+    // claim's own, whatever letter case the dispatch carried.
+    const fixed = harness.toLowerCase() === "claude-code" ? "claude" : harness.toLowerCase() === "codex" ? "codex" : harness.toLowerCase() === "zcode" ? "glm" : null;
+    if (!fixed) {
+      // A harness whose governed agent depends on the model (opencode's glm
+      // models against its others) cannot be judged per model here, and the
+      // claim's own check applies once the runner names a model. But when no
+      // governed agent holds the role at all, no model under any harness
+      // could qualify, and the refusal is said now with the claim's reason.
+      const names = eligibleAgents(policy, role);
+      if (names.length) return null;
+      return `${harness} needs an available agent with the ${role} role; no agent is available with the ${role} role`;
+    }
+    const agent = policy.agents[fixed];
+    if (agent?.available && agent.eligible_roles.includes(role)) return null;
+    const names = eligibleAgents(policy, role);
+    return `${harness} needs an available agent with the ${role} role${names.length ? `; available agents with the ${role} role: ${names.join(", ")}` : `; no agent is available with the ${role} role`}`;
+  }
+  try {
+    assertEligible(`${harness}/x`, policy, owner, role);
+    return null;
+  } catch (err) {
+    const rule = parseRuleError(err);
+    if (!rule) throw err;
+    return rule.detail;
+  }
+}
+
 export function countingReviews(reviews: Review[], at: ReviewBinding, policy: ProjectPolicy, owner = DEFAULT_OWNER): Review[] {
   return latestReviews(reviews, at).filter((r) => r.by === owner || hasRole(r.by, policy, "assessor"));
 }
@@ -1045,21 +1119,29 @@ export function holdsScope(item: { state: string }): boolean {
 
 // Live items held by someone else whose scope overlaps this one. Items of
 // one plan are not counted against each other (samePlan).
-export function overlappingLive(item: Item, items: Item[], actor: string): Item[] {
+export function overlappingLive(item: Item, items: readonly Item[], actor: string): Item[] {
   return items.filter(
     (o) => o.id !== item.id && holdsScope(o) && o.owner !== actor && !samePlan(item, o) && scopesOverlap(item.scope, o.scope),
   );
+}
+
+// The reason a claim whose scope overlaps a live item is refused under a
+// refuseOverlap policy, or null when none overlaps. Shared between the claim
+// and the refusals said ahead of it (a dispatch, t405), so both name the
+// same live items with the same words.
+export function overlappingRefusal(item: Item, items: readonly Item[], actor: string): string | null {
+  const clash = overlappingLive(item, items, actor);
+  if (!clash.length) return null;
+  const names = clash.map((o) => `${o.id} (${o.owner})`).join(", ");
+  return `${item.id}'s scope overlaps live ${names}; this project refuses overlapping claims${item.scope.length ? "" : ", and an unscoped item overlaps everything"}. The project owner can narrow a scope with atelier edit ${clash.length === 1 ? clash[0].id : "ID"} --scope GLOB (or atelier edit ${item.id} --scope GLOB)`;
 }
 
 export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPolicy, actor: string, owner = DEFAULT_OWNER, role: AgentRole = "executor"): void {
   assertClaimable(item, actor);
   assertEligible(actor, policy, owner, role);
   if (policy.refuseOverlap && item.owner !== actor) {
-    const clash = overlappingLive(item, items, actor);
-    if (clash.length) {
-      const names = clash.map((o) => `${o.id} (${o.owner})`).join(", ");
-      throw new RuleError("overlap", `${item.id}'s scope overlaps live ${names}; this project refuses overlapping claims${item.scope.length ? "" : ", and an unscoped item overlaps everything"}. The project owner can narrow a scope with atelier edit ${clash.length === 1 ? clash[0].id : "ID"} --scope GLOB (or atelier edit ${item.id} --scope GLOB)`);
-    }
+    const refusal = overlappingRefusal(item, items, actor);
+    if (refusal) throw new RuleError("overlap", refusal);
   }
 }
 
