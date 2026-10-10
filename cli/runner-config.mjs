@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { redactKeys } from "../src/models/pool.ts";
@@ -64,12 +64,13 @@ export const defaultConfigDir = () => process.env.ATELIER_CONFIG_DIR ?? join(hom
 export const defaultConfigPath = () => join(defaultConfigDir(), "runner.json");
 
 // The folder of one runner config's opencode provider configs: opencode/NAME
-// beside it, NAME the config's file name without its extension. A folder per
+// beside it, NAME the config's whole file name (runner.json). A folder per
 // config, so setting up a second runner leaves the first one's index and
-// provider configs as they were.
+// provider configs as they were; the extension stays in NAME, so
+// runner.json and runner.backup never share one (the finding on 84644528).
 export function providersDir(configPath) {
   const path = resolve(configPath);
-  return join(dirname(path), "opencode", basename(path, extname(path)));
+  return join(dirname(path), "opencode", basename(path));
 }
 
 // `configPath` is the file the config was read from, beside which `runner

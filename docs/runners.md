@@ -74,7 +74,9 @@ harnesses themselves and the credentials, which live in the credential store
    (`claude`, signed in to its plan), Codex (`codex`, signed in), opencode
    (`opencode`) and Antigravity (`agy`, signed in to a Google account with
    Gemini). Setup finds each by its command on the PATH.
-3. `atelier login` as the owner.
+3. `atelier login --server https://YOUR-WORKER-ADDRESS` as the owner, the
+   address of the Atelier server the runner takes work from (Setup in
+   [setup.md](setup.md)); it asks for the owner's token without echo.
 4. Store the keys opencode's providers need, each by the name setup prints
    (the pool entry's `--keychain` name when it gives one): `zai.API_KEY`,
    `deepseek.API_KEY` and `openrouter.API_KEY`, and `CF_AIG_TOKEN` (a
@@ -128,8 +130,8 @@ unless `--config` names another file):
   model, `tokens` naming the Keychain entry `agent.MODEL`. No entry names a
   command, so the runner runs Atelier's adapter for each harness (The
   adapters, below). Setup refuses to overwrite a runner config that exists.
-- `opencode/NAME/PROVIDER.json`, NAME the runner config's file name without
-  `.json` (`opencode/runner/` for `runner.json`): one opencode provider
+- `opencode/NAME/PROVIDER.json`, NAME the runner config's whole file name
+  (`opencode/runner.json/` for `runner.json`): one opencode provider
   config per provider the opencode models use (`zai-coding`, `deepseek-api`,
   `openrouter-api`, and `ai-studio` for a local OpenAI-compatible server at
   the pool entry's endpoint), and `opencode/NAME/models.json`, the index the
@@ -203,7 +205,7 @@ brief and the diff, and the answer goes to the verdict file. Per harness:
 | --- | --- | --- |
 | `atelier-claude` | `claude -p --model claude-MODEL` (`opus-5.5` is `claude-opus-5-5`) | `--strict-mcp-config` with no server; edits accepted; Bash only for `git add`, `git commit` and other named Git, npm and Node commands; `git push`, `atelier` and the web denied; a review gets no edit tools |
 | `atelier-codex` | `codex exec --model MODEL -` | no MCP server; `workspace-write` sandbox with `.git` writable for a build, `read-only` for a review, whose last message is the verdict |
-| `atelier-opencode` | `opencode run --model PROVIDER/MODEL` | the provider config setup wrote (`OPENCODE_CONFIG`) and no other: an empty `XDG_CONFIG_HOME` of the run's own, `OPENCODE_DISABLE_PROJECT_CONFIG` and `OPENCODE_DISABLE_CLAUDE_CODE` set, `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG_CONTENT` and `OPENCODE_PERMISSION` dropped; its key and the gateway token read from the credential store at run time and given to opencode alone |
+| `atelier-opencode` | `opencode run --model PROVIDER/MODEL` | the provider config setup wrote (`OPENCODE_CONFIG`) and no other: an empty folder of the run's own, outside the workspace and removed as the run ends, as `HOME` and every XDG folder (`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`), so neither `~/.opencode` nor `~/.config/opencode` is read, with git given the owner's global git config as `GIT_CONFIG_GLOBAL` so commits keep their identity; `OPENCODE_DISABLE_PROJECT_CONFIG` and `OPENCODE_DISABLE_CLAUDE_CODE` set, `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG_CONTENT` and `OPENCODE_PERMISSION` dropped; its key and the gateway token read from the credential store at run time and given to opencode alone |
 | `atelier-agy` | `agy --model MODEL` (`gemini-3.1-pro` is `gemini-3.1-pro-high`) | `--sandbox`, the workspace its working folder; a review's answer is `agy`'s JSON `response` |
 
 A harness that needs no key (Claude Code, Codex and Antigravity on their
@@ -352,7 +354,7 @@ mkdir -p -m 700 ~/.config/atelier/tokens && (umask 077; cat > ~/.config/atelier/
 token revoke ID` ends one, and the runner's next review as that model is
 refused until a new token is stored. A config that carries something shaped
 like a token in `tokens` is refused, and so is one that names the owner's
-own credential there (`API_TOKEN`, the entry `atelier login` stores to, or
+own credential there (`API_TOKEN`, the entry `atelier login --server URL` stores to, or
 any name the store reads from `ATELIER_TOKEN`); an entry or file of another
 name that turns out to hold the owner's token is refused when the job
 starts, before anything is claimed, with a message naming the entry and
