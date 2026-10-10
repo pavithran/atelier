@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assertDispatchable, assertDispatchedClaim, assign, coreHold, describe, liveOffers, makeDispatch, OFFER_LIVE_MS, offeredActors, parseRunner, type RunnerOffer, type SeenOffer } from "../src/dispatch/rules.ts";
+import { assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, assign, coreHold, describe, liveOffers, makeDispatch, OFFER_LIVE_MS, offeredActors, parseRunner, type RunnerOffer, type SeenOffer } from "../src/dispatch/rules.ts";
+import type { ProjectPolicy } from "../src/rules.ts";
 
 const T = "2026-10-04T12:00:00.000Z";
 const item = (over: Record<string, unknown> = {}) => ({
@@ -186,4 +187,28 @@ test("a dispatch keeps the owner's overlap override only when it is asked for", 
   assert.equal(makeDispatch({ overlapOk: true }, "pavi", T).overlapOk, true);
   assert.equal("overlapOk" in makeDispatch({ overlapOk: false }, "pavi", T), false);
   assert.throws(() => makeDispatch({ overlapOk: "yes" }, "pavi", T), /overlapOk must be true or false/);
+});
+
+// A dispatch is refused now where the claim would refuse it later, with the
+// claim's own reason (t405): an agent and model the policy would not let
+// claim, or a scope a refuseOverlap policy would refuse against a live item.
+test("a dispatch refuses a named agent and model the claim would refuse, and an overlap the claim would refuse", () => {
+  const policy = (over: Partial<ProjectPolicy> = {}): ProjectPolicy => ({ checks: [], protected: [], ...over });
+  const d = (o: Record<string, unknown> = {}) => makeDispatch(o, "pavi", T);
+  const open = item({ id: "t2", scope: ["relay/test/foo.ts"] });
+  // A governed policy gives the named actor no executor role, so the claim
+  // would refuse it; the dispatch names the agent that would be eligible.
+  const governed = policy({ agents: { claude: { available: true, eligible_roles: ["executor"] }, codex: { available: true, eligible_roles: ["assessor"] } } });
+  assert.throws(() => assertDispatchClaimable(open, [], governed, d({ agent: "codex", model: "gpt-6" })), /codex\/gpt-6 needs an available agent with the executor role; available agents with the executor role: claude/);
+  assert.doesNotThrow(() => assertDispatchClaimable(open, [], governed, d({ agent: "claude-code", model: "opus-5.5" })));
+  // A legacy policy refuses an ineligible harness, naming the eligible ones.
+  assert.throws(() => assertDispatchClaimable(open, [], policy({ eligible: ["claude"] }), d({ agent: "codex", model: "gpt-6" })), /codex is not an eligible agent here \(eligible: claude\)/);
+  // A scope a refuseOverlap policy refuses is refused, naming the live item,
+  // whatever agent is named, and left alone where the policy does not refuse.
+  const live = item({ id: "t28", scope: ["relay/test/**"], state: "claimed", owner: "codex/gpt-6" });
+  assert.throws(() => assertDispatchClaimable(open, [live], policy({ refuseOverlap: true }), d({ agent: "claude-code", model: "opus-5.5" })), /t2's scope overlaps live t28 \(codex\/gpt-6\); this project refuses overlapping claims/);
+  assert.throws(() => assertDispatchClaimable(open, [live], policy({ refuseOverlap: true }), d()), /overlaps live t28/);
+  assert.doesNotThrow(() => assertDispatchClaimable(open, [live], policy(), d()));
+  // The holder of the overlapping item is not refused when named.
+  assert.doesNotThrow(() => assertDispatchClaimable(open, [live], policy({ refuseOverlap: true }), d({ agent: "codex", model: "gpt-6" })));
 });
