@@ -20,9 +20,15 @@ function tree(t, files) {
 }
 const discoverCli = (dir) => spawnSync(process.execPath, [run, "--discover", dir], { encoding: "utf8" });
 
-test("discovery finds test files recursively, cli/ included, and skips node_modules and dot-directories", (t) => {
-  const dir = tree(t, ["a.test.mjs", "cli/b.test.mjs", "test/c.test.ts", "new/deep/er/d.test.mjs", "node_modules/x/e.test.mjs", "test/node_modules/f.test.ts", ".cache/g.test.mjs", "cli/plain.mjs", "test/h.spec.ts"]);
-  assert.deepEqual(discover(dir), ["a.test.mjs", "cli/b.test.mjs", "new/deep/er/d.test.mjs", "test/c.test.ts"]);
+test("discovery finds test files recursively, cli/ and dot-directories included, skipping only node_modules", (t) => {
+  const dir = tree(t, ["a.test.mjs", "cli/b.test.mjs", "test/c.test.ts", "new/deep/er/d.test.mjs", "node_modules/x/e.test.mjs", "test/node_modules/f.test.ts", ".tracked/g.test.mjs", "cli/plain.mjs", "test/h.spec.ts"]);
+  assert.deepEqual(discover(dir), [".tracked/g.test.mjs", "a.test.mjs", "cli/b.test.mjs", "new/deep/er/d.test.mjs", "test/c.test.ts"]);
+});
+
+test("in a git work tree discovery lists git's files, dot-directories included, node_modules excluded", (t) => {
+  const dir = tree(t, [".hidden/a.test.mjs", "cli/b.test.mjs", "node_modules/x/c.test.mjs"]);
+  assert.equal(spawnSync("git", ["-C", dir, "init", "-q"]).status, 0);
+  assert.deepEqual(discover(dir), [".hidden/a.test.mjs", "cli/b.test.mjs"]);
 });
 
 test("every file is assigned to exactly one runner", (t) => {
