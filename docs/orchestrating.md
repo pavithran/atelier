@@ -250,6 +250,16 @@ before they start while the server's route level (`GET /api/version`) is
 older than the CLI's, naming both levels and saying to deploy. Deploy after
 such merges, before landing the next task or starting a runner.
 
+Since t458 they check named capabilities instead: each command and runner
+job declares what it needs (`COMMAND_CAPABILITIES`, `JOB_CAPABILITIES` in
+`src/route-level.ts`), the server lists what it supports in `capabilities`
+beside `routeLevel`, and a refusal names the missing capabilities and the
+server's revision. A change that adds API behaviour a command relies on
+declares a new capability and adds it to that command; an incompatible change
+takes a new name (`…v2`). Keep raising `ROUTE_LEVEL` for now, as the
+migration in [Landing](landing.md) says, since servers that predate
+capabilities are read through it.
+
 **Keep the machine's load down.** Checks run the whole suite. A dozen agents
 and checks at once pushed the load average past 100 and made timing tests
 fail at random; run checks one after another when the machine is busy.

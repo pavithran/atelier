@@ -10,7 +10,7 @@ import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOU
 import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, jobsLine, gatewayMetadata, harnessRunEnv, codexBuildRefusal, validationBlockedReport, alreadyComplete } from "../cli/runner.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
 import { helpText, ROLE_PROMPTS } from "../src/usage.ts";
-import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 // The runner's load gate (t403) reads the load through envLoad, which honours
 // ATELIER_LOAD. Pin it under the limit here, so a test that dispatches a job
@@ -647,16 +647,15 @@ test("transientQueueError takes timeouts, 5xx, 429 and marked errors, not a 4xx 
   assert.deepEqual([1, 2, 3, 4, 5, 10].map(queueBackoffMs), [30_000, 60_000, 120_000, 240_000, 300_000, 300_000]);
 });
 
-test("versionRefusal names both levels and says to deploy, and clears a current server", () => {
-  assert.match(versionRefusal(null), /reports no route level/);
-  assert.match(versionRefusal(null), /the server does not answer GET \/api\/version/);
-  assert.match(versionRefusal(null), new RegExp(`this CLI route level ${ROUTE_LEVEL}`));
-  assert.match(versionRefusal({ commit: "abcdef0123456789" }), /reports no route level/);
-  assert.match(versionRefusal({ commit: "abcdef0123456789" }), new RegExp(`this CLI route level ${ROUTE_LEVEL}`));
+test("versionRefusal names the missing capabilities and says to deploy, and clears a current server", () => {
+  assert.match(versionRefusal(null), /did not answer GET \/api\/version/);
+  assert.match(versionRefusal({ commit: "abcdef0123456789" }), /neither capabilities nor a route level/);
+  assert.equal(versionRefusal({ capabilities: [...SERVER_CAPABILITIES, "future.thing.v1"] }), null);
+  assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL }, ["merge-main"]), null);
+  assert.match(versionRefusal({ capabilities: ["items.brief-criteria.v1"] }, ["review"]), /reviews\.unparsable\.v1/);
   const behind = versionRefusal({ routeLevel: ROUTE_LEVEL - 1, commit: "abcdef0123456789" });
-  assert.match(behind, new RegExp(`runs route level ${ROUTE_LEVEL - 1}`));
-  assert.match(behind, new RegExp(`this CLI route level ${ROUTE_LEVEL}`));
-  assert.match(behind, /runs main at abcdef01/);
+  assert.match(behind, /lacks capabilities runners\.scoped-token\.v1/);
+  assert.match(behind, /main at abcdef01/);
   assert.match(behind, /then start the runner again/);
   assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL, commit: "abcdef0123456789" }), null);
   assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL + 1, commit: "abcdef0123456789" }), null);

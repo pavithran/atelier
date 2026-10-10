@@ -1038,13 +1038,13 @@ test("a server at the CLI's route level passes whatever commit it runs", async (
 
 test("a server a route level lower than the CLI's refuses, naming both levels and saying to deploy", async (t) => {
   const f = await landFixture(t);
-  f.box.routeLevel = ROUTE_LEVEL - 1;
+  f.box.routeLevel = 13;
   const before = git(f.workspace("t1"), "rev-parse", "HEAD");
   f.box.requests.length = 0;
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 1, r.output);
-  assert.match(r.output, new RegExp(`runs route level ${ROUTE_LEVEL - 1}`));
-  assert.match(r.output, new RegExp(`this CLI route level ${ROUTE_LEVEL}`));
+  assert.match(r.output, /lacks capabilities land\.workflow\.v1/);
+  assert.match(r.output, /route level 13/);
   assert.match(r.output, /Deploy the server/);
   assert.deepEqual(f.box.requests.filter((x) => x.method === "POST"), []);
   assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before);
@@ -1058,14 +1058,13 @@ test("a server a route level lower than the CLI's refuses, naming both levels an
 // above must reach --wait too, before any queued ask is made of it.
 test("a server a route level lower than the CLI's refuses --wait at start, saying to deploy, before any queued ask", async (t) => {
   const f = await landFixture(t);
-  f.box.routeLevel = ROUTE_LEVEL - 1;
+  f.box.routeLevel = 13;
   f.box.lease = { item: "t2", holder: "owner", at: "2026-10-07T09:00:00.000Z", renewedAt: new Date().toISOString() };
   f.box.waiting = [{ item: "t3", holder: "owner", at: "2026-10-07T09:14:00.000Z", renewedAt: new Date().toISOString() }];
   f.box.requests.length = 0;
   const r = await f.run(f.checkout, "land", "t1", "--wait");
   assert.equal(r.status, 1, r.output);
-  assert.match(r.output, new RegExp(`runs route level ${ROUTE_LEVEL - 1}`));
-  assert.match(r.output, new RegExp(`this CLI route level ${ROUTE_LEVEL}`));
+  assert.match(r.output, /lacks capabilities land\.workflow\.v1/);
   assert.match(r.output, /Deploy the server/);
   // Nothing was asked of the lease — no queued ask, no take — and the lease
   // and the queue stand exactly as they were.
@@ -1079,8 +1078,7 @@ test("a server that reports no route level refuses, saying to deploy", async (t)
   f.box.routeLevel = null;
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /reports no route level/);
-  assert.match(r.output, new RegExp(`this CLI route level ${ROUTE_LEVEL}`));
+  assert.match(r.output, /neither capabilities nor a route level/);
   assert.match(r.output, /Deploy the server/);
   assert.deepEqual(f.box.requests.filter((x) => x.method === "POST"), []);
   assert.equal(f.box.lease, null);
