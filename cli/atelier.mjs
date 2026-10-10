@@ -3677,7 +3677,10 @@ const commands = {
         landingLease(name, as),
       ]);
       const text = formatStatusBrief({ standing, version, queue, lease, usage });
-      return console.log(args.json ? JSON.stringify({ brief: text.split("\n") }, null, 2) : text);
+      if (args.json) return console.log(JSON.stringify({ brief: text.split("\n") }, null, 2));
+      console.log(text);
+      pointToGuide([name]);
+      return;
     }
     if (args.project !== undefined) {
       const name = args.project;
