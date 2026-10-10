@@ -236,19 +236,20 @@ export function cleanEntry(body: Record<string, unknown>, by: string, at: string
   if (aliases.some(pasted)) throw bad("an alias looks like a key; a key belongs in the Keychain");
   if (pasted(str(body.note))) throw bad("the note looks like it carries a key; a key belongs in the Keychain");
   const family = (str(body.family) || familyOf(id)) as PoolFamily;
-  const state = (str(body.state) || "available") as ModelState;
-  if (!MODEL_STATES.includes(state)) throw bad(`state must be one of ${MODEL_STATES.join(", ")}`);
-  const roles = cleanRoles(body.roles, bad);
-  const tier = cleanTier(body.tier, bad);
+  const given = (k: string) => body[k] !== undefined && body[k] !== null;
+  const state = given("state") ? (str(body.state) as ModelState) : undefined;
+  if (state !== undefined && !MODEL_STATES.includes(state)) throw bad(`state must be one of ${MODEL_STATES.join(", ")}`);
+  const roles = given("roles") ? cleanRoles(body.roles, bad) : undefined;
+  const tier = given("tier") ? cleanTier(body.tier, bad) : undefined;
   return {
     id, harness, where, provider,
     ...(endpoint ? { endpoint } : {}),
     ...(keychain ? { keychain } : {}),
     aliases, family: FAMILIES.some(([f]) => f === family) ? family : familyOf(id),
     note: str(body.note).slice(0, 300), addedBy: by, addedAt: at,
-    ...(state !== "available" ? { state, stateAt: at } : {}),
-    ...(roles ? { roles } : {}),
-    ...(tier ? { tier } : {}),
+    ...(state !== undefined ? (state !== "available" ? { state, stateAt: at } : { state: "available", stateAt: at }) : {}),
+    ...(given("roles") ? { roles } : {}),
+    ...(given("tier") ? { tier } : {}),
   };
 }
 

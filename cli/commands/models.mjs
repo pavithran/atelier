@@ -28,7 +28,8 @@ export default async function modelsCommand() {
       keychain: args.keychain, aliases: args.multi.alias ?? [], note: args.note,
       state: args.state, roles: args.roles, tier: args.tier,
     }, OWNER);
-    return console.log(`${entry.id} is in the pool: ${entry.harness}, ${entry.where}, ${entry.provider}${entry.keychain ? `, key in Keychain ${entry.keychain}` : ""}; family ${entry.family}.`);
+    const unreached = entry.unreached?.length ? `\nWarning: could not reach projects ${entry.unreached.join(", ")}` : "";
+    return console.log(`${entry.id} is in the pool: ${entry.harness}, ${entry.where}, ${entry.provider}${entry.keychain ? `, key in Keychain ${entry.keychain}` : ""}; family ${entry.family}.${unreached}`);
   }
   if (sub === "set") {
     if (!id) die("atelier models set ID --state paused|reserved|available [--note TEXT] [--roles build,review,plan] [--tier frontier|execution|budget]");
@@ -41,12 +42,14 @@ export default async function modelsCommand() {
     const state = entry.state && entry.state !== "available" ? ` ${entry.state}${entry.stateAt ? ` since ${entry.stateAt.slice(0, 16)}Z` : ""}` : "";
     const roles = entry.roles?.length ? ` roles ${entry.roles.join(",")}` : "";
     const tier = entry.tier ? ` tier ${entry.tier}` : "";
-    return console.log(`${entry.id}:${state}${roles}${tier}${entry.note ? ` (${entry.note})` : ""}.`);
+    const unreached = entry.unreached?.length ? `\nWarning: could not reach projects ${entry.unreached.join(", ")}` : "";
+    return console.log(`${entry.id}:${state}${roles}${tier}${entry.note ? ` (${entry.note})` : ""}.${unreached}`);
   }
   if (sub === "remove") {
     if (!id) die("atelier models remove ID");
-    const { removed } = await call("DELETE", `/models/${encodeURIComponent(id)}`, undefined, OWNER);
-    return console.log(removed ? `${id} is no longer in the pool.` : `${id} was not in the pool.`);
+    const { removed, unreached: ur } = await call("DELETE", `/models/${encodeURIComponent(id)}`, undefined, OWNER);
+    const unreached = ur?.length ? `\nWarning: could not reach projects ${ur.join(", ")}` : "";
+    return console.log((removed ? `${id} is no longer in the pool.` : `${id} was not in the pool.`) + unreached);
   }
   if (sub === "note") {
     if (!id || args._.length !== 4) die("atelier models note ID 'text' [--item tN]");
