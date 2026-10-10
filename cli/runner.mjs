@@ -7,6 +7,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { checkEnv } from "./check-env.mjs";
+import { killTree, treeGroups } from "./group.mjs";
 import { formatLoad, envLoad, coreCount, loadLimitOf } from "./load.mjs";
 import { runnerChildEnv, envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
@@ -173,20 +174,24 @@ const line = (message) => console.log(`runner: ${String(message).replace(/[\r\n]
 // The process groups execute() has started and not yet seen end.
 const liveGroups = new Set();
 
-// SIGKILL to every process group execute() started that has not ended. A
+// SIGKILL to every process group execute() started that has not ended, and
+// to every group started from one (killTree: a check's, npm test's). A
 // second interrupt calls it just before process.exit, which leaves no time
 // for a grace period.
 export function killGroups() {
-  for (const pid of liveGroups) { try { process.kill(-pid, "SIGKILL"); } catch { /* The group has ended. */ } }
+  for (const pid of liveGroups) killTree(pid);
   liveGroups.clear();
 }
 
 // The child leads a process group of its own, and the group ends with it.
 // When the child exits, whether it succeeded or failed, when its deadline
 // passes and when `signal` aborts, every process in the group gets SIGTERM,
-// then SIGKILL if any is left after `graceMs`. The result comes back once
-// the group is gone, so nothing the child started still runs in its folder.
-// A process that leaves the group (setsid) is beyond this.
+// then SIGKILL if any is left after `graceMs`. A group started from it (a
+// check's, npm test's), read before the SIGTERM while the tree is whole, is
+// SIGKILLed once the wait ends, should its leader not have ended it on the
+// SIGTERM. The result comes back once the group is gone, so nothing the
+// child started still runs in its folder. A process that leaves the group
+// (setsid) is beyond this.
 export function execute(argv, { cwd, signal, capture = false, captureError = false, stream = false, timeoutMs, env, graceMs = 5000 } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("interrupted"));
@@ -208,7 +213,11 @@ export function execute(argv, { cwd, signal, capture = false, captureError = fal
       if (ending || ended) return;
       ending = true;
       const until = Date.now() + graceMs;
-      const done = () => { liveGroups.delete(pid); ended = true; finish(); };
+      const nested = treeGroups(pid).filter((g) => g !== pid);
+      const done = () => {
+        for (const g of nested) { try { process.kill(-g, "SIGKILL"); } catch { /* The group has ended. */ } }
+        liveGroups.delete(pid); ended = true; finish();
+      };
       const wait = () => {
         if (!send(0)) return done();
         if (Date.now() >= until) { send("SIGKILL"); return done(); }
@@ -1470,6 +1479,8 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   };
   const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
   for (const signal of signals) process.on(signal, stop);
+  // However this process exits, no group it started outlives it.
+  process.on("exit", killGroups);
   const refused = new Set(), failures = new Map(), infrastructureFailures = new Map();
   const cleanupOptions = () => ({ timeoutMs: 5000, step: "cleanup" });
   // Resets a workspace to a commit and removes untracked files, saving any
@@ -1636,5 +1647,8 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       if (args.once) { if (state.phase === "failed" && !controller.signal.aborted) process.exitCode = 1; break; }
       await wait(30_000, undefined, { signal: controller.signal }).catch((error) => { if (error.name !== "AbortError") throw error; });
     }
-  } finally { for (const signal of signals) process.removeListener(signal, stop); }
+  } finally {
+    for (const signal of signals) process.removeListener(signal, stop);
+    process.removeListener("exit", killGroups);
+  }
 }
