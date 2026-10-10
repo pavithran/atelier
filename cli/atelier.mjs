@@ -38,6 +38,7 @@ import { pushHistory } from "./push-steps.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
 import { formatLocal, formatStatus, itemJson, statusJson } from "./status.mjs";
+import { formatTokenExpiryWarnings, parseExpiryDay, readTokenExpiries, recordTokenExpiryDay, TOKEN_EXPIRY_WARN_DAYS } from "./token-expiry.mjs";
 import { receiptJson, receiptText } from "./receipt.mjs";
 import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
 import { checkEnv } from "./check-env.mjs";
@@ -359,9 +360,9 @@ const isMain = process.argv[1] && realpathSync(process.argv[1]) === fileURLToPat
 // the findings ledger) live in a private toolkit, not in this public command.
 // `atelier ops ...` hands everything after `ops` to it before this command
 // parses anything, so no argument is changed on the way, and it exits as the
-// toolkit exits; only --version is read here first, like every other command,
-// so it never reaches the toolkit. The toolkit is the program ATELIER_OPS
-// names, or atelier-ops on PATH; only an executable file counts.
+// toolkit exits; only --version and the token-expiry command are read here
+// first, so they never reach the toolkit. The toolkit is the program
+// ATELIER_OPS names, or atelier-ops on PATH; only an executable file counts.
 const runnable = (path) => {
   try { return statSync(path).isFile() && (accessSync(path, fsConstants.X_OK), true); } catch { return false; }
 };
@@ -390,12 +391,40 @@ function runOps(argv) {
   }
   process.exit(r.status ?? 1);
 }
+// `atelier ops token-expiry NAME --on YYYY-MM-DD` records the day a named
+// token expires, for `atelier status` to warn before it lapses. It is handled
+// here, before anything reaches the private toolkit, because the record is
+// local to this machine and `status` (this command) reads it: it stores a
+// name and a day, never a token's value. Every other `ops` command still goes
+// to the toolkit.
+function runTokenExpiry(argv) {
+  if (argv.includes("-h") || argv.includes("--help")) {
+    process.stdout.write("usage: atelier ops token-expiry NAME --on YYYY-MM-DD\n\nRecords the day the named token expires, for `atelier status` to warn from 14 days before it. It stores the name and the day, never the token's value.\n");
+    process.exit(0);
+  }
+  let name = null, on = null;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--on") { on = argv[i + 1]; i++; continue; }
+    if (a.startsWith("--on=")) { on = a.slice(5); continue; }
+    if (a.startsWith("--")) die(`token-expiry does not take ${a}; use atelier ops token-expiry NAME --on YYYY-MM-DD`);
+    if (name !== null) die("token-expiry takes one name; use atelier ops token-expiry NAME --on YYYY-MM-DD");
+    name = a;
+  }
+  if (!name) die("token-expiry needs a name: atelier ops token-expiry NAME --on YYYY-MM-DD");
+  if (!on) die("token-expiry needs the expiry day: atelier ops token-expiry NAME --on YYYY-MM-DD");
+  if (!parseExpiryDay(on)) die(`--on takes a day, YYYY-MM-DD, not ${JSON.stringify(on)}`);
+  recordTokenExpiryDay(name, on);
+  console.log(`Recorded ${name} expires ${on}; atelier status warns from ${TOKEN_EXPIRY_WARN_DAYS} days before.`);
+  process.exit(0);
+}
 if (isMain && process.argv[2] === "ops") {
   const opsArgs = process.argv.slice(3);
   // --version stands before any parsing, so only the words up to a `--` are
   // read: an exact --version there is answered, like every other command.
   const version = opsArgs.indexOf("--version"), end = opsArgs.indexOf("--");
   if (version !== -1 && (end === -1 || version < end)) { console.log(VERSION_LINE); process.exit(0); }
+  if (opsArgs[0] === "token-expiry") runTokenExpiry(opsArgs.slice(1));
   runOps(opsArgs);
 }
 
@@ -1553,6 +1582,14 @@ async function reportUsage() {
       speed: async () => (await request("GET", "/reliability", undefined, OWNER)).speed,
     });
   } catch (error) { die(error.message); }
+}
+
+// The text `atelier status` prints, with the token-expiry warnings read from
+// this machine's record prepended when any token warns. Pure enough to test:
+// the record is read here, the wording lives in src/token-expiry.ts.
+function tokenExpiryWarningsText(text) {
+  const warnings = formatTokenExpiryWarnings(readTokenExpiries());
+  return warnings.length ? `${warnings.join("\n")}\n\n${text}` : text;
 }
 
 const commands = {
@@ -3489,7 +3526,7 @@ const commands = {
       const checkout = await checkoutStatus(name, as);
       const local = await localStanding(name, as);
       if (args.json) return console.log(JSON.stringify({ project: standing, checkout, ...(local ? { local } : {}) }, null, 2));
-      console.log(formatStanding(standing, OWNER_NAME) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : ""));
+      console.log(tokenExpiryWarningsText(formatStanding(standing, OWNER_NAME) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : "")));
       return;
     }
     const known = await call("GET", "/projects", undefined, OWNER);
@@ -3509,7 +3546,7 @@ const commands = {
       return { name: p.name, title: p.title, items, inbox };
     }));
     if (args.json) return console.log(JSON.stringify(statusJson(views), null, 2));
-    console.log(formatStatus(views, { queue, offers }));
+    console.log(tokenExpiryWarningsText(formatStatus(views, { queue, offers })));
   },
 
   async open() {
