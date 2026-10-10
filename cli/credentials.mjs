@@ -137,8 +137,13 @@ function readFileStore(d) {
   const file = secretsFile(d);
   if (!existsSync(file)) return {};
   checkMode(file, d);
-  try { return JSON.parse(readFileSync(file, "utf8")) ?? {}; }
+  let entries;
+  try { entries = JSON.parse(readFileSync(file, "utf8")); }
   catch { throw new Error(`${file} is not valid JSON`); }
+  if (!entries || typeof entries !== "object" || Array.isArray(entries)) {
+    throw new Error(`${file} must contain a secret entry object`);
+  }
+  return entries;
 }
 
 const fileStore = {
@@ -222,6 +227,7 @@ export function runnerCredential(server, name, deps = {}) {
     if (typeof env.ATELIER_RUNNER_TOKEN !== "string") throw new Error("ATELIER_RUNNER_TOKEN is malformed");
     const token = env.ATELIER_RUNNER_TOKEN.trim();
     if (!token) throw new Error("ATELIER_RUNNER_TOKEN is empty");
+    assertValue(token);
     return token;
   }
   if (!name) return null;
@@ -232,6 +238,7 @@ export function runnerCredential(server, name, deps = {}) {
   let record;
   try { record = JSON.parse(raw); } catch { throw new Error(`${key} has no server binding; store it again`); }
   if (!record || record.server !== server.replace(/\/+$/, "") || typeof record.token !== "string" || !record.token) throw new Error(`${key} is not bound to this server`);
+  assertValue(record.token.trim());
   return record.token;
 }
 
