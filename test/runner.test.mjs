@@ -959,7 +959,8 @@ test("CLI git failure output removes credential arguments and echoed values", ()
 
 test("CLI distinguishes server claim refusals from unknown failures without network", async () => {
   const source = readFileSync(new URL("../cli/atelier.mjs", import.meta.url), "utf8");
-  const callSource = source.slice(source.indexOf("async function call("), source.indexOf("const P ="));
+  // The helpers are exported for the command modules; the slice runs as a script.
+  const callSource = source.slice(source.indexOf("async function call("), source.indexOf("const P =")).replace(/^export /gm, "");
   for (const [status, method, path, expected] of [
     [403, "POST", "/projects/p/items/t1/claim", 3],
     [409, "POST", "/projects/p/items/t1/claim", 3],
@@ -1404,7 +1405,8 @@ test("server failures in finish retire the task after three failures", async (t)
 
 test("CLI marks network and server failures distinctly from task errors", async () => {
   const source = readFileSync(new URL("../cli/atelier.mjs", import.meta.url), "utf8");
-  const callSource = source.slice(source.indexOf("async function call("), source.indexOf("const P ="));
+  // The helpers are exported for the command modules; the slice runs as a script.
+  const callSource = source.slice(source.indexOf("async function call("), source.indexOf("const P =")).replace(/^export /gm, "");
   for (const fetch of [
     async () => { throw new Error("offline"); },
     async () => ({ text: async () => { throw new Error("connection lost"); } }),
