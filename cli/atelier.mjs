@@ -8,7 +8,7 @@
 // --allow-failing is given. Wrap commits and updates the baseline; checkout
 // remote pushes are opt-in.
 
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { accessSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -38,15 +38,17 @@ import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } f
 import { pushHistory } from "./push-steps.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
-import { formatLocal, formatStatus, formatStatusBrief, itemJson, statusJson } from "./status.mjs";
+import { formatLocal, formatStatus, formatStatusBrief, itemJson, statusJson, taskLink } from "./status.mjs";
+import { findStrays, formatStrays } from "./strays.mjs";
 import { formatTokenExpiryWarnings, parseExpiryDay, readTokenExpiries, recordTokenExpiryDay, TOKEN_EXPIRY_WARN_DAYS } from "./token-expiry.mjs";
 import { receiptJson, receiptText } from "./receipt.mjs";
-import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
+import { runnerCredential, storeRunnerCredential, normalizeRunner, describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
 import { checkEnv } from "./check-env.mjs";
+import { runGroup } from "./group.mjs";
 import { coreCount, envLoad, formatLoad, loadLimitOf, waitForLoad } from "./load.mjs";
 import { provenanceNote } from "./provenance.mjs";
 export { checkEnv } from "./check-env.mjs";
-import { COMMAND_USAGE, guideText, helpText, ROLES, rolePrompt } from "./help.mjs";
+import { COMMAND_USAGE, TOKEN_SUBCOMMANDS, guideText, helpText, ROLES, rolePrompt } from "./help.mjs";
 import { planText } from "../src/plans/show.ts";
 import { ACTION_KINDS, DEFAULT_EXPIRY, KIND, REVISION, expirySeconds } from "../src/actions.ts";
 import { decisionLines, decisionsSection } from "../src/decisions.ts";
@@ -96,6 +98,13 @@ const trimSlash = (url) => String(url).replace(/\/$/, "");
 // not sent, and the command says what to do instead.
 function apiToken() {
   if (loginToken) return loginToken;
+  try {
+    let name = process.env.ATELIER_RUNNER_NAME;
+    if (!name && args._[0] === "runner" && !args.integrate && !args.discover && !args.usage && args._[1] !== "setup") name = args.name;
+    if (!name && ["claim", "start"].includes(args._[0])) name = args.runner;
+    const runner = runnerCredential(server(), name);
+    if (runner) return runner;
+  } catch (error) { die(error.message); }
   const fromEnv = process.env.ATELIER_TOKEN?.trim();
   if (fromEnv) return fromEnv;
   let token;
@@ -241,7 +250,7 @@ export const FLAGS = {
   ops: {},
   runner: { name: false, once: true, config: false, discover: true, probe: true, "dry-run": true, usage: true, integrate: true },
   login: { server: false, store: true },
-  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', core: '--core needs a glob: atelier init --core "GLOB", once per entry, or --core "" alone to clear them', approval: false, reset: true, "refuse-overlap": true, "require-criteria": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default', "review-tier": '--review-tier needs models: atelier init --review-tier H/M,H/M,..., or --review-tier "" to clear it' },
+  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', core: '--core needs a glob: atelier init --core "GLOB", once per entry, or --core "" alone to clear them', approval: false, reset: true, "refuse-overlap": true, "require-criteria": true, "sandbox-only": true, "no-override": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default', "review-tier": '--review-tier needs models: atelier init --review-tier H/M,H/M,..., or --review-tier "" to clear it' },
   adopt: {},
   revert: {},
   publish: {},
@@ -367,7 +376,8 @@ export function parseArgs(argv, switches = switchesFor(argv)) {
 // and a switch given a word other than true or false are refused here, before
 // the command runs or contacts the server.
 function checkFlags(cmd) {
-  const row = { ...COMMON, ...FLAGS[cmd] };
+  const subcommand = cmd === "token" ? TOKEN_SUBCOMMANDS[args._[1]] : null;
+  const row = { ...COMMON, ...FLAGS[cmd], ...subcommand?.flags };
   const see = COMMAND_USAGE[cmd] ? `atelier ${cmd} --help` : "atelier help";
   for (const flag of Object.keys(args.multi)) if (!(flag in row)) die(`${cmd} does not take --${flag}; see ${see}`);
   if (args.rest && !REST.has(cmd)) die(`${cmd} does not take "--" and the words after it; see ${see}`);
@@ -536,6 +546,8 @@ function wsConfig(key, cwd = process.cwd()) {
 }
 
 let tokenActor;
+let tokenRunner;
+let resolvedCredential;
 
 async function actor(fallback) {
   await resolveTokenActor();
@@ -763,9 +775,11 @@ function requireWorkspace(cmd, name, id, as) {
 }
 
 async function resolveTokenActor() {
-  if (tokenActor || !apiToken().startsWith("atl_")) return;
+  if (resolvedCredential === apiToken() || !apiToken().startsWith("atl_")) return;
   const config = await call("GET", "/config");
   tokenActor = config.actor;
+  tokenRunner = config.runner;
+  resolvedCredential = apiToken();
   const declared = args.as ?? process.env.ATELIER_ACTOR;
   if (tokenActor && args._[0] !== "token" && declared !== undefined && declared !== tokenActor) die("--as and ATELIER_ACTOR must match the agent token actor");
 }
@@ -836,6 +850,17 @@ function workspacePath(name, id) {
   return join(CACHE, "work", name, id);
 }
 
+// Test processes over an hour old left from a workspace on this machine
+// (cli/strays.mjs), read under the cache's real path, the one ps and lsof
+// report. ATELIER_STRAY_AGE_S, in seconds, replaces the hour, so a test can
+// name a process it has just started.
+function localStrays() {
+  let cache = CACHE;
+  try { cache = realpathSync(CACHE); } catch { /* No cache yet: nothing ran from it. */ }
+  const minAge = process.env.ATELIER_STRAY_AGE_S ? Number(process.env.ATELIER_STRAY_AGE_S) : NaN;
+  return findStrays(cache, minAge >= 0 ? { minAge } : {});
+}
+
 // Where a checkout's landing lock and journal live (cli/landing.mjs): under
 // the cache, outside the iCloud checkout.
 const landingHome = (gitDir) => landingDir(CACHE, gitDir);
@@ -855,7 +880,10 @@ async function claimWorkspace(name, id, as, runner) {
   // configured header, and a revoked one alongside the fresh one is refused.
   storeWorkspaceToken(dir, r.workspace.remote, r.workspace.token);
   recordTokenExpiry(dir, r.workspace.expiresAt);
-  if (!fresh) git(["fetch", "--quiet", "origin"], { cwd: dir });
+  if (!fresh) {
+    git(["remote", "set-url", "origin", r.workspace.remote], { cwd: dir });
+    git(["fetch", "--quiet", "origin"], { cwd: dir });
+  }
   // Each claim writes the branch the server gives, the project's branch,
   // which is the one Atelier reads, and says so when that changes what the
   // workspace held. Local commits are untouched: only where the next push
@@ -986,74 +1014,31 @@ function mergeWithMain(dir, id) {
 // secret in `secrets` redacted. The output is redacted whole, before anything
 // cuts its tail, so no part of a secret survives at the cut, and the hash is
 // of the redacted text, the text a reader of the evidence is shown.
-// The check leads a process group of its own. When its shell exits, when its
-// time limit passes or when its output overruns, every process left in the
-// group (a test runner's worker, a watcher, anything started with &) gets
-// SIGTERM, then SIGKILL after `graceMs`, and the result comes back only once
-// the group is gone, so nothing the check started still writes in the clone
-// when it is removed. A process that leaves the group (setsid) is beyond this.
+// The check leads a process group of its own (runGroup in cli/group.mjs):
+// when its shell exits, when its time limit passes or when its output
+// overruns, every process left in the group is ended, and the result comes
+// back only once the group is gone, so nothing the check started still
+// writes in the clone when it is removed.
 async function runCheck(cmd, dir, secrets, graceMs = 5000) {
   process.stderr.write(`atelier: running \`${cmd}\` in a clean clone…\n`);
   const record = JSON.parse(readFileSync(markerPath(dir), "utf8"));
-  const r = await new Promise((done) => {
-    const child = spawn("/bin/sh", ["-c", cmd], { cwd: dir, env: checkEnv(), detached: true });
-    const pid = child.pid;
-    checkGroup = pid;
-    const onInt = interrupted("SIGINT"), onTerm = interrupted("SIGTERM");
-    process.once("SIGINT", onInt).once("SIGTERM", onTerm);
-    writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: pid }));
-    let stdout = "", stderr = "", error, bytes = 0, closed, ending = false, ended = !pid;
-    // A signal to every process in the group; false once none is left.
-    const send = (sig) => { try { process.kill(-pid, sig); return true; } catch { return false; } };
-    const finish = () => {
-      if (!closed || !ended) return;
-      clearTimeout(deadline);
-      if (checkGroup === pid) checkGroup = undefined;
-      process.off("SIGINT", onInt).off("SIGTERM", onTerm);
-      done({ ...closed, stdout, stderr, error: error ?? (closed.signal ? new Error(`check terminated by ${closed.signal}`) : undefined) });
-    };
-    const end = () => {
-      if (ending || ended) return;
-      ending = true;
-      const until = Date.now() + graceMs;
-      const wait = () => {
-        if (!send(0)) { ended = true; return finish(); }
-        if (Date.now() >= until) { send("SIGKILL"); ended = true; return finish(); }
-        setTimeout(wait, 50);
-      };
-      send("SIGTERM");
-      wait();
-    };
-    const deadline = setTimeout(() => { error ??= new Error(`check exceeded its time limit of ${Math.round(CHECK_TIMEOUT_MS / 1000)} s`); end(); }, CHECK_TIMEOUT_MS);
-    const append = (key, chunk) => {
-      if (error) return;
-      bytes += Buffer.byteLength(chunk);
-      if (key === "stdout") stdout += chunk; else stderr += chunk;
-      if (bytes > 64 * 1024 * 1024) {
-        error = new Error("check output exceeds 64 MiB");
-        end();
-        stdout = stdout.slice(-32 * 1024 * 1024);
-        stderr = stderr.slice(-32 * 1024 * 1024);
-      }
-    };
-    child.stdout.setEncoding("utf8").on("data", (s) => append("stdout", s));
-    child.stderr.setEncoding("utf8").on("data", (s) => append("stderr", s));
-    child.on("error", (e) => { error = e; });
-    // A process left in the group can hold the output pipes open, so the
-    // group is ended when the shell exits, not when the pipes close.
-    child.on("exit", end);
-    child.on("close", (status, signal) => { closed = { status, signal }; finish(); });
-  });
+  const r = await runGroupedCheck(cmd, { cwd: dir, graceMs, onSpawn: (pid) => writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: pid })) });
   writeFileSync(markerPath(dir), JSON.stringify(record));
-  const output = redact(`${r.stdout}${r.stderr}${r.error ? `\n[atelier] ${r.error.message}` : ""}`, secrets);
+  const output = redact(`${r.stdout}${r.stderr}${r.error ? `\n[atelier] check ${r.error.message}` : ""}`, secrets);
   return { passed: r.status === 0 && !r.error, output, sha: createHash("sha256").update(output).digest("hex") };
 }
 
-// The process group of the check running now. It is not the terminal's
-// foreground group, so an interrupt of this command does not reach it: this
-// process ends it on the way out instead.
-let checkGroup;
-process.on("exit", () => { if (checkGroup) { try { process.kill(-checkGroup, "SIGKILL"); } catch { /* The group has ended. */ } } });
+// One registered check through runGroup, bounded by CHECK_TIMEOUT_MS. An
+// interrupt, a terminal hang-up or a SIGTERM of this command does not reach
+// the check's group, so each ends this process, and runGroup ends the group
+// on the way out.
+async function runGroupedCheck(cmd, { cwd, env = checkEnv(), graceMs, onSpawn, maxBytes }) {
+  const onInt = interrupted("SIGINT"), onTerm = interrupted("SIGTERM"), onHup = interrupted("SIGHUP");
+  process.once("SIGINT", onInt).once("SIGTERM", onTerm).once("SIGHUP", onHup);
+  try { return await runGroup(["/bin/sh", "-c", cmd], { cwd, env, timeoutMs: CHECK_TIMEOUT_MS, graceMs, maxBytes, onSpawn }); }
+  finally { process.off("SIGINT", onInt).off("SIGTERM", onTerm).off("SIGHUP", onHup); }
+}
+
 const interrupted = (sig) => () => process.exit(128 + osConstants.signals[sig]);
 
 // Posts one check's result. A server that cannot answer (no connection, a
@@ -1256,7 +1241,8 @@ const flat = (value) => stripVTControlCharacters(String(value)).replace(/[\p{Cc}
 // Where a project stands, as plain text an agent can paste into a chat: one
 // line per item, and any text a person or agent wrote flattened.
 const at = (iso) => `${String(iso).slice(0, 16).replace("T", " ")} UTC`;
-export function formatStanding(s, ownerName = "the project owner") {
+// `origin` is the server in use, for the link to each merge by override.
+export function formatStanding(s, ownerName = "the project owner", origin = "") {
   const runner = (q) => `${q.to}${q.agent ? ` ${q.agent}` : ""}${q.model ? `/${q.model}` : ""}`;
   const lines = [`${flat(s.project.title)} (${flat(s.project.name)}) as of ${at(s.generatedAt)}, from Atelier's record`];
   const group = (title, rows) => { if (rows.length) lines.push("", `${title}:`, ...rows.map((r) => `  ${r}`)); };
@@ -1264,6 +1250,9 @@ export function formatStanding(s, ownerName = "the project owner") {
   group(`Waiting on ${flat(ownerName)}`, s.waiting.map((w) => `${w.id}  ${w.kind}  ${flat(w.title)}  ${flat(w.reason)}${w.brief ? `  brief, ${flat(w.brief.verdict)}: ${flat(w.brief.line)}` : ""}`));
   group("Queued for a runner", s.queued.map((q) => `${q.id}  for ${flat(runner(q))}  ${flat(q.title)}${q.note ? `  note: ${flat(q.note)}` : ""}`));
   group("Last merges", s.merged.map((m) => `${m.id}  ${at(m.at)}${m.commit ? `  ${m.commit.slice(0, 8)}` : ""}  ${flat(m.title)}${m.line ? `  summary: ${flat(m.line)}` : ""}`));
+  // Every merge by override, counted in the heading and one per line under
+  // it, each with the link to its page on the server in use (t371).
+  group(`Merged by override: ${(s.overrides ?? []).length}`, (s.overrides ?? []).map((o) => `${o.id}  ${taskLink(origin, s.project.name, o.id)}  ${at(o.at)}  ${flat(o.title)}  reason: ${flat(o.reason)}`));
   group("Handoff notes", s.handoffs.map((h) => `${h.id}  ${flat(h.from || "?")} to ${flat(h.to || "?")}, ${at(h.at)}  ${flat(h.note)}`));
   if (lines.length === 1) lines.push("", "Nothing is held, waiting, queued or recently merged.");
   if (s.partial?.length) lines.push("", "Part of this record is not shown:", ...s.partial.map((x) => `  ${flat(x)}`));
@@ -1744,7 +1733,7 @@ const commands = {
   async unwrap() {
     const name = project(), as = await actor(OWNER), cwd = sessionCheckout(name);
     const standing = await call("GET", `${P(name)}/standing`, undefined, as);
-    console.log(formatStanding(standing, OWNER_NAME));
+    console.log(formatStanding(standing, OWNER_NAME, server()));
     console.log(await checkoutStatusLine(name, as));
     if (cwd) for (const line of remoteStatusLines(name, cwd)) console.log(line);
     if (cwd) {
@@ -1786,10 +1775,11 @@ const commands = {
     if (refused.length) die(`${refused.join(".\n")}.\nwrap runs the registered checks in this checkout, so it stopped before running any. Replace the check with atelier init --check, or wrap with --no-check.`);
     const failing = [];
     if (!data.checksSkipped) for (const command of record.policy.checks) {
-      const result = spawnSync(command, { cwd, shell: true, encoding: "utf8", timeout: CHECK_TIMEOUT_MS, maxBuffer: 1024 * 1024 });
-      data.checks.push({ command, passed: result.status === 0, grade: "reported" });
-      console.log(`Reported: ${command}: ${result.status === 0 ? "passed" : "failed"} (owner's checkout, not a clean clone).`);
-      if (result.status !== 0) failing.push({ command, status: result.status, signal: result.signal, timedOut: result.error?.code === "ETIMEDOUT" });
+      const result = await runGroupedCheck(command, { cwd, env: process.env, maxBytes: 1024 * 1024 });
+      const passed = result.status === 0 && !result.error;
+      data.checks.push({ command, passed, grade: "reported" });
+      console.log(`Reported: ${command}: ${passed ? "passed" : "failed"} (owner's checkout, not a clean clone).`);
+      if (!passed) failing.push({ command, status: result.status, signal: result.signal, timedOut: result.timedOut });
     }
     // A failing registered check stops wrap here, with every result printed
     // and nothing staged, recorded or pushed: the checks ran in the checkout
@@ -1906,16 +1896,26 @@ const commands = {
 
   async token() {
     const action = args._[1];
+    if (action === "store" && args.runner) {
+      const name = normalizeRunner(args.runner);
+      const token = await promptSecret("Runner token: ");
+      const res = await fetch(`${server()}/api/config`, { headers: { authorization: `Bearer ${token}` } });
+      const config = await res.json();
+      if (!res.ok || config.runner !== name) die("credential is not an active token for this runner");
+      console.log(storeRunnerCredential(server(), name, token));
+      return;
+    }
     if (action === "issue") {
-      if (typeof args.as !== "string") die("token issue needs --as HARNESS/MODEL");
+      if (args.runner && args.as) die("a runner token takes --runner and exactly one --project, not --as");
+      if (!args.runner && typeof args.as !== "string") die("token issue needs --as HARNESS/MODEL");
       if (args.days !== undefined && (!Number.isInteger(Number(args.days)) || Number(args.days) < 1 || Number(args.days) > 365)) die("--days needs an integer from 1 to 365");
       const result = await call("POST", "/tokens", {
-        actor: args.as, ...(args.multi.project ? { projects: args.multi.project } : {}),
+        ...(args.runner ? { runner: args.runner } : { actor: args.as }), ...(args.multi.project ? { projects: args.multi.project } : {}),
         ...(args.days !== undefined ? { days: Number(args.days) } : {}),
         ...(args.label !== undefined ? { label: args.label } : {}),
       }, OWNER);
-      console.log(`Token ${result.id} for ${result.actor}, expires ${result.expiresAt}`);
-      console.log("This token is not shown again. Set ATELIER_TOKEN to this value in the agent's session:");
+      console.log(`Token ${result.id} for ${result.runner ?? result.actor}, expires ${result.expiresAt}`);
+      console.log(`This token is not shown again. Set ${result.runner ? "ATELIER_RUNNER_TOKEN" : "ATELIER_TOKEN"} to this value in the session:`);
       console.log(result.token);
     } else if (action === "ls") {
       const tokens = await call("GET", "/tokens", undefined, OWNER);
@@ -1942,10 +1942,11 @@ const commands = {
     // throw rather than die, so the runner's loop decides what a failure
     // means; a 422 from posting a plan is a result the runner reports, not an
     // error thrown here.
-    const auth = (actor) => ({ authorization: `Bearer ${apiToken()}`, "x-atelier-actor": actor, "content-type": "application/json" });
+    const auth = (actor) => ({ authorization: `Bearer ${apiToken()}`, "x-atelier-actor": actor, ...(tokenRunner ? { "x-atelier-runner": tokenRunner } : {}), "content-type": "application/json" });
     const readJson = async (res) => { try { return await res.json(); } catch { return null; } };
     try {
       await runRunner(args, {
+        credential: apiToken(),
         workspacePath,
         // The server's route level against the CLI's, checked once at start:
         // a server behind this CLI would fail the runner's calls one by one.
@@ -2176,6 +2177,10 @@ const commands = {
     if (cp || args["refuse-overlap"] !== undefined || reset) policy.refuseOverlap = cp?.refuseOverlap ?? args["refuse-overlap"] === true;
     if (args["require-criteria"] !== undefined || reset) policy.requireCriteria = args["require-criteria"] === true;
     if (args["sandbox-only"] !== undefined || reset) policy.sandboxOnly = args["sandbox-only"] === true;
+    // --no-override is a switch too (t371): given, overrides of the
+    // independent review are refused in the project; --no-override=false
+    // allows them again, with the owner's confirmation.
+    if (args["no-override"] !== undefined || reset) policy.noOverride = args["no-override"] === true;
     // --core names the core files, once per glob, replacing the recorded
     // ones; --core "" alone clears them, and --reset without it does too.
     const core = coreArg();
@@ -2257,6 +2262,9 @@ const commands = {
     console.log(`Protected:  ${[...new Set([...(pol.protected ?? []), ...checkInputs])].sort().join(", ")}`);
     console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
     console.log(`Overlap:    ${pol.refuseOverlap ? "refused" : "flagged"}`);
+    console.log(`Overrides:  ${pol.noOverride ? "refused; every change needs its independent review" : "allowed with a reason, once the owner confirms on the task's page with the Access sign-in or the server's confirmation secret"}`);
+    // A server older than --no-override ignores it and answers without it.
+    if (args["no-override"] === true && !pol.noOverride) console.log("Warning: the server did not record --no-override; deploy the server, then run atelier init --no-override again.");
     console.log(`Criteria:   ${pol.requireCriteria ? "required on every task" : "optional"}`);
     // A server older than the criteria requirement ignores it and answers without one.
     if (args["require-criteria"] === true && !pol.requireCriteria) console.log("Warning: the server did not record the criteria requirement; deploy the server, then run atelier init --require-criteria again.");
@@ -3774,8 +3782,9 @@ const commands = {
       const standing = await call("GET", `${P(name)}/standing`, undefined, as);
       const checkout = await checkoutStatus(name, as);
       const local = await localStanding(name, as);
-      if (args.json) return console.log(JSON.stringify({ project: standing, checkout, ...(local ? { local } : {}) }, null, 2));
-      console.log(tokenExpiryWarningsText(formatStanding(standing, OWNER_NAME) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : "")));
+      const strays = localStrays();
+      if (args.json) return console.log(JSON.stringify({ project: standing, checkout, ...(local ? { local } : {}), ...(strays.length ? { strayTests: strays } : {}) }, null, 2));
+      console.log(tokenExpiryWarningsText(formatStanding(standing, OWNER_NAME, server()) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : "") + (strays.length ? "\n\n" + formatStrays(strays) : "")));
       pointToGuide([name]);
       return;
     }
@@ -3795,8 +3804,9 @@ const commands = {
       const { items } = await call("GET", P(p.name), undefined, OWNER);
       return { name: p.name, title: p.title, items, inbox };
     }));
-    if (args.json) return console.log(JSON.stringify(statusJson(views), null, 2));
-    console.log(tokenExpiryWarningsText(formatStatus(views, { queue, offers })));
+    if (args.json) return console.log(JSON.stringify(statusJson(views, server()), null, 2));
+    const strays = formatStrays(localStrays());
+    console.log(tokenExpiryWarningsText(formatStatus(views, { queue, offers, server: server() }) + (strays ? "\n\n" + strays : "")));
     pointToGuide(chosen.map((p) => p.name));
   },
 
@@ -3844,7 +3854,8 @@ if (isMain) {
   // --help/-h anywhere prints the command's usage, or the general help, and
   // exits before any server contact.
   if (args.help) {
-    if (cmd !== "help" && COMMAND_USAGE[cmd]) console.log(COMMAND_USAGE[cmd]);
+    if (cmd === "token" && TOKEN_SUBCOMMANDS[args._[1]]) console.log(TOKEN_SUBCOMMANDS[args._[1]].usage);
+    else if (cmd !== "help" && COMMAND_USAGE[cmd]) console.log(COMMAND_USAGE[cmd]);
     else commands.help();
     process.exit(0);
   }
