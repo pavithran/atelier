@@ -1,3 +1,4 @@
+import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
@@ -130,6 +131,7 @@ test("CLI gc uses only GET requests, defaults to preview, and fails closed on AP
 });
 
 test("check records its running child, reports pass and failure, and cleans its clone and record", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = fixture(t), remote = f.workspace("t1"), evidence = [];
   const head = f.items[0].acceptedHead;
   const probe = `const fs = require('node:fs'); const r = JSON.parse(fs.readFileSync(process.cwd() + '.atelier.json')); if (r.project !== 'proj' || !r.childPid) process.exit(8); process.kill(r.pid, 0); process.kill(r.childPid, 0); console.log('record verified');`;
