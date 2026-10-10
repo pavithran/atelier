@@ -127,8 +127,9 @@ export const HARNESSES = {
   },
   codex: {
     executable: "codex",
-    command(args, kind) {
-      const common = ["exec", "--model", args.model, "--skip-git-repo-check", "--cd", args.workspace, "-c", "mcp_servers={}"];
+    command(args, kind, setup) {
+      const noMcp = setup.mcpServers.flatMap((name) => ["-c", `mcp_servers.${name}.enabled=false`]);
+      const common = ["exec", "--model", args.model, "--skip-git-repo-check", "--cd", args.workspace, ...noMcp];
       if (kind === "review") return { argv: [...common, "--sandbox", "read-only", "--output-last-message", args.verdict, "-"], verdictFrom: "file" };
       // Its workspace-write sandbox keeps .git read-only unless it is named
       // a writable root, and a build has to commit.
@@ -156,6 +157,28 @@ export const HARNESSES = {
 const OVERRIDE = { "claude-code": "ATELIER_CLAUDE", codex: "ATELIER_CODEX", opencode: "ATELIER_OPENCODE", antigravity: "ATELIER_AGY" };
 export function executableFor(harness, env = process.env) {
   return env[OVERRIDE[harness]] || HARNESSES[harness].executable;
+}
+
+// The MCP servers codex's configuration names for a run in `workspace` (the
+// user's and the project's), every one of which the run switches off by name:
+// `-c mcp_servers={}` leaves inherited servers enabled (the finding on
+// 71346e21, codex-cli 0.160.0). codex prints a list of { name, enabled, ... }
+// or, in older releases, an object keyed by name. A list that cannot be read,
+// or a name a -c key path cannot carry, stops the job rather than run it with
+// a server left on.
+const MCP_NAME = /^[A-Za-z0-9_-]+$/;
+export function codexMcpServers(exe, workspace, env, spawn = spawnSync) {
+  const r = spawn(exe, ["mcp", "list", "--json"], { cwd: workspace, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  if (r.error || r.status !== 0) throw new Error(`could not list codex's MCP servers (codex mcp list --json${r.error ? `: ${r.error.message}` : ` exited ${r.status}`}), so none could be switched off`);
+  let listed;
+  try { listed = JSON.parse(r.stdout || "[]"); } catch { throw new Error("codex mcp list --json printed no JSON, so no MCP server could be switched off"); }
+  if (listed && !Array.isArray(listed) && listed.servers) listed = listed.servers;
+  if (!listed || typeof listed !== "object") throw new Error("codex mcp list --json printed no list of MCP servers");
+  const names = Array.isArray(listed) ? listed.map((s) => s?.name) : Object.keys(listed);
+  for (const name of names) {
+    if (typeof name !== "string" || !MCP_NAME.test(name)) throw new Error(`the MCP server ${JSON.stringify(name)} cannot be switched off by name; rename it in codex's configuration`);
+  }
+  return names;
 }
 
 // The default folder of the provider configs `atelier runner setup` writes,
@@ -260,6 +283,7 @@ export function runAdapter(harness, argv, io = {}) {
       runDir = mkdtempSync(join(tmpdir(), "atelier-opencode-run-"));
       Object.assign(childEnv, runHome(env, runDir));
     }
+    if (harness === "codex") setup = { mcpServers: codexMcpServers(executableFor(harness, env), args.workspace, childEnv, io.spawn) };
   } catch (error) {
     if (runDir) rmSync(runDir, { recursive: true, force: true });
     return fail(error.message);
