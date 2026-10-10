@@ -156,8 +156,9 @@ The company is one of the families a model's name is recognised by
 ([`src/models/pool.ts`](../src/models/pool.ts): anthropic, openai, google,
 zai, deepseek, qwen, minimax, mistral, meta, moonshot, xai, xiaomi,
 bytedance, cohere). The policy records the mode as `familyMode`, with who set
-it and when. Under it, plan routing, a hand dispatch, the reviewer picker,
-the review tier and the landing take only that company's models; a claim or
+it and when. Under it, plan routing, a hand dispatch, the builder a dispatch
+without `--agent` is suggested, the reviewer picker, the review tier and the
+landing take only that company's models; a claim or
 handoff by another company's model is refused, so a dispatch that names no
 model cannot hand the work to one either. The gate counts an approval
 when the reviewer is a different model of the company from every recorded
