@@ -377,3 +377,24 @@ test("a failed fetch of current main does not fall back to the dispatched commit
   assert.equal(state.phase, "failed");
   assert.ok(!calls.some((c) => c.mergeMain || c.argv?.[0] === "finish"));
 });
+
+// t453: a merge-main task's record names its pushed head, ahead of its base,
+// and that head is what the workspace holds while the merge of main waits in
+// it with conflicts. A harness that exits 0 without committing the resolution
+// has left the merge in progress, not the task complete: the run is released,
+// never submitted on the strength of the task's record.
+test("a merge-main task whose harness leaves the conflicted merge uncommitted is released, not submitted as complete", async (t) => {
+  const { r, job, io, calls, logs } = fixture(t, { kind: "task", conflict: true, harness: () => ({ code: 0 }) });
+  const before = git(r.workspace, "rev-parse", "HEAD");
+  assert.equal(job.item.head, before, "the task's record names the workspace head");
+  assert.notEqual(job.item.head, job.item.base);
+  const state = await runTask(job, config, "home:studio", io);
+  assert.equal(state.phase, "failed", JSON.stringify(state));
+  assert.equal(state.reason, "harness made no new commit");
+  assert.equal(state.detail, "harness made no new commit: a merge is in progress");
+  assert.ok(calls.some((c) => c.harness), "the harness ran on the conflicts");
+  assert.ok(calls.some((c) => c.argv?.[0] === "release"), "the claim is released");
+  assert.ok(!calls.some((c) => c.argv?.[0] === "finish"), "nothing is submitted");
+  assert.ok(logs.includes("nothing to submit: a merge is in progress, and the harness changed nothing"), logs.join("\n"));
+  assert.equal(git(r.workspace, "rev-parse", "HEAD"), before);
+});

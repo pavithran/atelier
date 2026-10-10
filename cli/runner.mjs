@@ -613,13 +613,33 @@ export function validationBlockedReport(output) {
   return oneLine(report.slice(Math.max(start, match.index - 60), match.index + 240)).replace(/\s+/g, " ").trim();
 }
 
+// Whether a build whose harness exited 0 and committed nothing has left the
+// task complete all the same (t453): the workspace head is the task's pushed
+// head, and that head is ahead of the task's base, so an earlier run's work
+// is committed and pushed and this run found nothing to add. Such a run is
+// finished — the checks run and the head is submitted — not released as a
+// stall. The head is not complete while a merge the runner started is in
+// progress (conflicts left for the harness, or a plan merge skipped behind
+// one), whatever the task's record says: the resolution is the work asked
+// for. Returns {complete, why}, the reason written for the run's log either way.
+export function alreadyComplete(item, head, merges = []) {
+  const short = (hash) => String(hash).slice(0, 8);
+  if (merges.some((m) => m.state === "conflicts" || m.state === "skipped")) return { complete: false, why: "a merge is in progress" };
+  if (!item.head || !item.base || item.head === item.base) return { complete: false, why: "the task has no pushed head ahead of its base" };
+  if (head !== item.head) return { complete: false, why: `the workspace head ${short(head)} is not the task's pushed head ${short(item.head)}` };
+  return { complete: true, why: `the workspace head ${short(head)} is the task's pushed head, ahead of its base ${short(item.base)}` };
+}
+
 export async function runTask(assignment, config, name, io) {
   let state = nextStep({ phase: "idle" }, { type: "queue", assignment });
   const advance = (result) => { state = nextStep(state, result); io.log(`${state.phase}${state.reason ? `: ${state.reason}` : ""}`); };
   io.log("nothing claimed");
   if (!assignment) { advance({ type: "claim", empty: true }); return state; }
   const { project, item, agent, model, actor } = assignment;
-  let workspace, before, claimed = false, claimAttempted = false, taskFailure = false, brief, mergedMain;
+  let workspace, before, claimed = false, claimAttempted = false, taskFailure = false, brief, mergedMain, already = null;
+  // The merges the run started (startMergeMain, startMergePlan), kept for
+  // the exit: a head is not complete while one is in progress (alreadyComplete).
+  const merges = [];
   const finishArgs = () => ["finish", item.id, "--project", project, "--as", actor,
     ...(mergedMain ? ["--summary", `Merged main at ${mergedMain}`] : [])];
   try {
@@ -679,7 +699,6 @@ export async function runTask(assignment, config, name, io) {
       // The reset is what makes the merge-main job a task needs (t243): it
       // clears the conflicted merge a landing left in the workspace, and the
       // merge that follows puts main back in it for the builder to resolve.
-      const merges = [];
       const logMerge = (m) => io.log(m.state === "conflicts" ? `${mergedWhat(m)} merged with conflicts in ${m.files.join(", ")}` : m.state === "merged" ? `${mergedWhat(m)} merged cleanly as ${m.head.slice(0, 8)}` : m.state === "skipped" ? `${mergedWhat(m)} fetched, not merged, while the merge of main is in progress` : `the workspace already holds ${mergedWhat(m)}`);
       if (merging) {
         merges.push(await startMergeMain(assignment, workspace, io));
@@ -753,14 +772,27 @@ export async function runTask(assignment, config, name, io) {
     // work began at the recorded head, not at the workspace's before, so the
     // exit names that head as what the run moved from.
     const head = resumed ? before : await io.head(workspace);
+    // A harness that exited 0 and committed nothing (t453): when the head it
+    // left is the task's pushed head, ahead of the base, the work is already
+    // committed and pushed by an earlier run — a task sent back whose builder
+    // found nothing to add, say — so this run finishes it as a resumed run
+    // finishes a dead run's commit: the exit names the base as what the run
+    // moved from, the checks run, and that head is submitted. Any other
+    // unchanged head is a stall, released below; the log says which.
+    already = !resumed && result?.code === 0 && head === before ? alreadyComplete(item, head, merges) : null;
+    if (already?.complete) io.log(`already complete: ${already.why}; the harness changed nothing, so the checks run and that head is submitted without a new commit`);
+    else if (already) io.log(`nothing to submit: ${already.why}, and the harness changed nothing`);
     taskFailure = true;
-    advance(io.stopped() ? { error: "interrupted" } : { type: "exit", code: result?.code ?? 0, before: resumed ? item.head : before, head });
+    advance(io.stopped() ? { error: "interrupted" } : { type: "exit", code: result?.code ?? 0, before: resumed ? item.head : already?.complete ? item.base : before, head });
     if (state.phase === "failed") throw new Error(state.reason);
     await io.cli(finishArgs(), workspace);
     advance({ type: "finish" });
   } catch (error) {
     if (state.phase !== "failed") advance({ error: error.message });
     state = { ...state, taskFailure: taskFailure && !error.infrastructure && !io.stopped() };
+    // The stall's report to the server (runOutcome, reportRun) says why the
+    // unchanged head was nothing to submit, as the log does.
+    if (already && !already.complete && state.reason === "harness made no new commit") state = { ...state, detail: `${state.reason}: ${already.why}` };
     if (error.validationBlocked) state = { ...state, validationBlocked: true, taskFailure: false, skipped: true };
     if (!claimed && error.skipped) {
       state = { ...state, skipped: true };
