@@ -235,16 +235,23 @@ opencode merges the config `OPENCODE_CONFIG` names with the global one
 and Claude Code's files, so without the isolation above a global MCP server
 or a project's permissions would reach an Atelier run. With it, the
 generated config's permissions and empty `mcp` are the run's. The run's
-config folder is made under the system's temporary folder, outside the
-workspace, and removed as opencode ends; its data folder is the runner's
-(below).
+folder, which holds its home and its config, data, cache and state folders,
+is made under the system's temporary folder, outside the workspace, and
+removed as opencode ends. The adapter sets `XDG_DATA_HOME` to this folder's
+`data` whatever the runner gave it, so the data folder the runner makes
+beside the workspace (below) is not the one the shipped adapter's opencode
+uses; that folder serves an opencode entry with a custom `command`.
 
 ## Home runner
 
-`atelier runner --name home:NAME [--once] [--config PATH] [--integrate]` polls the queue every 30 seconds, claims one eligible job, and runs its configured harness. A runner offers `build`, `plan`, `merge-main`, `merge-main-task` and `merge-plan` jobs for every harness in its config, and `review` when its config lists it. A build or plan job runs the harness in the claimed workspace; a review job clones the head into a folder of its own, reads the diff and writes a verdict. The task brief is kept outside the workspace. A runner with `--integrate` runs no harness and takes no config: it offers only the `integrate` and `refresh` jobs, merging each part onto its plan's branch as `atelier/integrator`. Each opencode run also gets a data folder of its own
-(`XDG_DATA_HOME`) beside the workspace, removed as the harness ends, however
-it ends: opencode processes sharing `~/.local/share/opencode/opencode.db`
-deadlock on it. Such a run finds its provider keys in the variables its
+`atelier runner --name home:NAME [--once] [--config PATH] [--integrate]` polls the queue every 30 seconds, claims one eligible job, and runs its configured harness. A runner offers `build`, `plan`, `merge-main`, `merge-main-task` and `merge-plan` jobs for every harness in its config, and `review` when its config lists it. A build or plan job runs the harness in the claimed workspace; a review job clones the head into a folder of its own, reads the diff and writes a verdict. The task brief is kept outside the workspace. A runner with `--integrate` runs no harness and takes no config: it offers only the `integrate` and `refresh` jobs, merging each part onto its plan's branch as `atelier/integrator`. The runner gives each opencode run a data folder of
+its own (`XDG_DATA_HOME`) beside the workspace, removed as the harness ends,
+however it ends: opencode processes sharing
+`~/.local/share/opencode/opencode.db` deadlock on it. The shipped
+`atelier-opencode` adapter replaces that folder with the `data` folder of its
+own temporary run folder and reads its keys from the credential store
+(above), so the runner's folder matters only to an opencode entry with a
+custom `command`. Such a run finds its provider keys in the variables its
 config entry names and in opencode's config; a key saved with
 `opencode auth login` lives in the shared data folder and is not seen.
 A harness does not inherit the runner's environment. It gets what a local
