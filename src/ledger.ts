@@ -169,6 +169,7 @@ export interface ProjectInit {
   execution?: ProjectPolicy["execution"];
   eligible?: string[];
   refuseOverlap?: boolean;
+  requireCriteria?: boolean;
   coreFiles?: string[];       // replaces the core-file globs; [] clears them (see ProjectPolicy.coreFiles)
   sandboxOnly?: boolean;
   approval?: string | null;
@@ -357,6 +358,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       protected: i.protected ?? p?.protected ?? [...DEFAULT_PROTECTED],
       eligible: i.eligible ?? p?.eligible ?? [],
       refuseOverlap: i.refuseOverlap ?? p?.refuseOverlap ?? false,
+      ...((i.requireCriteria ?? p?.requireCriteria) ? { requireCriteria: true } : {}),
       ...(coreFiles.length ? { coreFiles } : {}),
       sandboxOnly: i.sandboxOnly ?? p?.sandboxOnly ?? false,
       ...(approval ? { approval } : {}),

@@ -1176,6 +1176,23 @@ it("an older CLI's long title still makes a task, and new and edit take a title,
   expect((await call("POST", "/projects/routes-text/items/t1/edit", "owner", { title: 7 })).status).toBe(400);
 });
 
+it("a project that requires criteria refuses a task filed or cleared without them, and no other", async () => {
+  await project("routes-open");
+  expect((await call("POST", "/projects/routes-open/items", "owner", { title: "Open", scope: [] })).status).toBe(201);
+  const name = "routes-strict";
+  const record = { name, repo: name, policy: { checks: ["npm test"], protected: [], requireCriteria: true }, createdAt: new Date().toISOString() };
+  await env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`)).setProject(record, "owner");
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
+  const refused = await call("POST", `/projects/${name}/items`, "owner", { title: "No criteria", scope: [] });
+  expect(refused.status).toBe(400);
+  expect(await refused.json()).toMatchObject({ error: "no_criteria" });
+  expect((await call("POST", `/projects/${name}/items`, "owner", { title: "Empty", accept: [], scope: [] })).status).toBe(400);
+  expect((await call("POST", `/projects/${name}/items`, "owner", { title: "Judged", accept: ["It works"], scope: [] })).status).toBe(201);
+  expect((await call("POST", `/projects/${name}/items/t1/edit`, "owner", { accept: [] })).status).toBe(400);
+  expect((await call("POST", `/projects/${name}/items/t1/edit`, "owner", { title: "Renamed" })).status).toBe(200);
+  expect((await call("POST", `/projects/${name}/items/t1/edit`, "owner", { accept: ["Still works"] })).status).toBe(200);
+});
+
 it("the task page shows the title, then the brief and the criteria; every list shows only the short title", async () => {
   const name = "text-pages";
   await project(name);
