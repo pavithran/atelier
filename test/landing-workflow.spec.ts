@@ -440,7 +440,7 @@ it("does not remember a failed create and can retry the landing", async () => {
       creates++;
       // The new id is claimed before the create (t430), and a failed
       // create withdraws the claim, so no record outlives it.
-      expect((await L.landingWorkflowOf(id))?.instance).toBe(options.id);
+      expect((await L.landingWorkflowOf(id))?.instance).toBe(options?.id);
       if (creates === 1) throw new Error("internal error");
       return env.LANDING_WORKFLOW.create(options);
     },
@@ -550,7 +550,7 @@ it("runs its first stage when execution starts before create returns and replace
       // Let the new Workflow reach its first stage before create returns;
       // its id was claimed before the create (t430).
       await new Promise((r) => setTimeout(r, 200));
-      expect((await L.landingWorkflowOf(id))?.instance).toBe(options.id);
+      expect((await L.landingWorkflowOf(id))?.instance).toBe(options?.id);
       return instance;
     },
   } } as typeof env;
