@@ -15,7 +15,7 @@ import { reviewBrief, BRIEF_LIMITS, criteriaCount } from "../src/review/brief.ts
 import { submission } from "../src/brief.ts";
 import { parseVerdict, VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
-import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { checkCapabilities, requiredForJobs } from "../src/route-level.ts";
 import { rolePrompt, ROLE_PROMPT_MAX } from "../src/usage.ts";
 
 export function offerFrom(config, name) {
@@ -53,18 +53,14 @@ export function jobsLine(jobs, known = [...DEFAULT_JOBS, "review"]) {
 
 const oneLine = (value) => String(value).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ");
 
-// Why the runner refuses to start, or null when the server's routes are new
-// enough. The same check atelier land makes (cli/land.mjs): a server behind
-// this CLI's route level would fail the runner's calls one by one, so it
-// refuses here, before the first poll, saying to deploy.
-export function versionRefusal(version) {
-  const level = Number.isInteger(version?.routeLevel) ? version.routeLevel : null;
-  const commit = typeof version?.commit === "string" && version.commit ? version.commit.slice(0, 8) : null;
-  const deploy = (why) => `the server ${commit ? `runs main at ${commit}, ` : ""}${level === null ? "reports no route level" : `runs route level ${level}`}, this CLI route level ${ROUTE_LEVEL}: ${why}. Deploy the server from a checkout at route level ${ROUTE_LEVEL} or newer (npm run deploy, which records the commit it deploys), then start the runner again`;
-  if (!version) return deploy("the server does not answer GET /api/version");
-  if (level === null) return deploy("the server is older than route levels");
-  if (level < ROUTE_LEVEL) return deploy("the server's routes are older than the ones this CLI calls");
-  return null;
+// Why the runner refuses to start, or null when the server has the
+// capabilities its jobs declare (JOB_CAPABILITIES, src/route-level.ts). The
+// same check atelier land makes (cli/land.mjs): a server short of them would
+// fail the runner's calls one by one, so it refuses here, before the first
+// poll, naming what is missing and saying to deploy.
+export function versionRefusal(version, jobs = [...DEFAULT_JOBS, "review"]) {
+  const check = checkCapabilities(version, requiredForJobs(jobs));
+  return check.ok ? null : `${check.message}, then start the runner again`;
 }
 
 export function briefFor(item, project) {
@@ -1610,12 +1606,12 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   };
   try {
     // The home runner refuses at start when the server's routes are older
-    // than the ones it will call, as atelier land does: the server's route
-    // level is checked against the CLI's (src/route-level.ts) before the
+    // than the ones it will call, as atelier land does: the server's
+    // capabilities are checked against its jobs' (src/route-level.ts) before the
     // first poll, so a runner that would fail its calls one by one stops
     // here instead, saying to deploy.
     if (version) {
-      const refusal = versionRefusal(await version(controller.signal));
+      const refusal = versionRefusal(await version(controller.signal), offer.jobs);
       if (refusal) throw new Error(refusal);
     }
     // Said once, before the first poll (t289): the jobs this runner takes

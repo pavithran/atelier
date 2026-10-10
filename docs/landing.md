@@ -138,6 +138,31 @@ The steps in between:
    a route the CLI already calls; the waiting queue the landing's `--wait`
    asks about (`{ item, queued: true }` on the landing-lease route) raised
    it to 10 (main had already reached 9 with another route change).
+
+   The landing now checks named capabilities rather than that number (t458):
+   `GET /api/version` also lists `capabilities`, names like
+   `land.workflow.v1` that each stand for one behaviour of the API, and
+   `atelier land` refuses, before the lease or any workspace changes, when
+   the list lacks one of `COMMAND_CAPABILITIES.land`, naming the missing
+   set, the revision the server runs and the deploy to run. Extra
+   capabilities are accepted; a reply with no usable version, and one whose
+   `capabilities` or `routeLevel` is the wrong shape, are refused with
+   their own messages. A capability is never changed incompatibly: the
+   change takes a new name (`…v2`), and a client that needs `v1` is not
+   satisfied by a server that publishes only `v2`.
+
+   **Migration.** The server publishes `routeLevel` beside `capabilities`
+   and the merge arithmetic on `ROUTE_LEVEL` stays, so a server that
+   predates capabilities still works: a reply with only `routeLevel` N
+   guarantees the capabilities declared with level N or lower
+   (`src/route-level.ts`: 14 `land.workflow.v1`, 15
+   `items.brief-criteria.v1`, 16 `reviews.criteria-binding.v1`, 17
+   `reviews.unparsable.v1`, 18 `models.note.v1`, 19
+   `projects.require-criteria.v1`, 20 `runners.scoped-token.v1`) and nothing
+   else; a capability added later has no level, so a legacy server is
+   refused for it. The route level, its raise by a change, and atelier
+   land's merge arithmetic may be removed once no server this CLI supports
+   answers with a route level alone, and the owner has said so.
 2. Main is fetched into the task's workspace and merged with `--no-ff`. On
    conflicts the landing stops, leaves the merge in the workspace for the
    owner to resolve, and names the files. After resolving and committing,
