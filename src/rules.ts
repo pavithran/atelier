@@ -233,6 +233,7 @@ export interface Review {
   // the tier review too (gateServesTier in src/review/tier.ts). It counts for
   // the gate as any review does.
   topTier?: boolean;
+  postMerge?: boolean; // an audit of the recorded landing, preserving its state
   // The binding of the acceptance criteria the reviewer was given
   // (src/criteria.ts): the hash its review claim captured, or that the
   // reviewer read with the task. A review counts only while it is the

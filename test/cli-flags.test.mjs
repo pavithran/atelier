@@ -559,3 +559,12 @@ test("show prints the task's criteria, the plan's for a part, and their binding 
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /\nAcceptance criterion 1: Nested lists parse\nPlan acceptance criterion 1: It works\nCriteria binding: c{64} \(a review of these criteria names it with --criteria\)\n/);
 });
+
+
+test("review-request sends a named reviewer as an owner-requested runner job", (t) => {
+  const f = fixture(t);
+  const r = f.run(f.checkout, ["review-request", "t1", "--reviewer", "codex/gpt-6-astra"]);
+  assert.equal(r.status, 0, r.stderr);
+  const sent = f.requests().find((r) => r.path.endsWith("/review-request"));
+  assert.deepEqual(sent.body, { reviewer: "codex/gpt-6-astra", wanted: true });
+});

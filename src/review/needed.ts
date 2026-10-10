@@ -119,6 +119,7 @@ export interface NeedInput {
   evidence: readonly Evidence[];
   reviews: readonly ReviewRecord[];            // every review of the item, at any head
   requests?: readonly ReviewRequestView[];
+  postMerge?: boolean;                        // explicit review of a recorded merge
   wanted?: boolean;                            // the owner asked for this review, so a gate that needs none does not end the need
   // The owner's verdicts on findings of the item's reviews, as review.finding
   // events record them (`atelier finding`); read so a rejection whose every
@@ -140,24 +141,27 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   const { item, policy } = input;
   const owner = input.owner ?? DEFAULT_OWNER;
   const no = (reason: string): ReviewNotNeeded => ({ needed: false, reason });
-  if (item.state !== "submitted") return no(`${item.id} is ${item.state}, not submitted`);
+  if (item.state !== "submitted" && !(input.postMerge && item.state === "merged")) return no(`${item.id} is ${item.state}, not submitted`);
   if (!item.head) return no(`${item.id} has no verified push`);
   const head = item.head;
 
-  const view = evidenceAt(policy, [...input.evidence], head);
+  const view = evidenceAt(policy, [...input.evidence], input.postMerge ? item.acceptedHead ?? head : head);
+  // Landed work is audited independently of its old check gate. The runner
+  // reads the actual merge diff, even when historical measurements are absent.
+  if (input.postMerge && view.changedPaths === null) view.changedPaths = [];
   const failed = view.checks.filter((c) => c.grade === "observed" && !c.passed).map((c) => c.claim);
-  if (failed.length) return no(`${list(failed)} failed at ${short(head)}; the builder fixes that before a review`);
+  if (!input.postMerge && failed.length) return no(`${list(failed)} failed at ${short(head)}; the builder fixes that before a review`);
   const pending = view.checks.filter((c) => c.grade === "pending").map((c) => c.claim);
-  if (pending.length) return no(`${list(pending)} not yet observed passing at ${short(head)}`);
+  if (!input.postMerge && pending.length) return no(`${list(pending)} not yet observed passing at ${short(head)}`);
   if (view.changedPaths === null) return no(`changed paths not yet observed at ${short(head)}`);
-  if (!view.changedPaths.length) return no(`${short(head)} changes no paths, so there is nothing to review`);
+  if (!input.postMerge && !view.changedPaths.length) return no(`${short(head)} changes no paths, so there is nothing to review`);
 
-  const kind = changeClass(view.changedPaths, policy)!;   // null only for no paths, refused above
+  const kind = changeClass(view.changedPaths, policy) ?? "direct";   // null only for no paths, refused above
   const governed = policy.execution !== undefined;
-  if (governed && !policy.execution!.allowed_classes.includes(kind)) {
+  if (!input.postMerge && governed && !policy.execution!.allowed_classes.includes(kind)) {
     return no(`${kind} changes are not allowed by this project's execution policy, and a review cannot make the change acceptable`);
   }
-  const basis: ReviewBasis | null = input.part ? "part" : kind === "protected" ? "protected" : governed && kind === "coordinated" ? "coordinated" : null;
+  const basis: ReviewBasis | null = input.postMerge ? null : input.part ? "part" : kind === "protected" ? "protected" : governed && kind === "coordinated" ? "coordinated" : null;
   if (!basis && !input.wanted) {
     return no(kind === "direct"
       ? "a direct change needs no review"
@@ -180,7 +184,7 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   // reviews were bound, neither ends the need nor blocks it.
   const atHead = countingReviews(reviews, bindingOf(item), policy, owner);
   const rejected = atHead.filter((r) => !r.approve && !refutedRejection(r, verdicts));
-  if (rejected.length) return no(`${rejected.map((r) => (r.by === owner ? "the project owner" : r.by)).join(", ")} rejected ${short(head)}; the builder reworks it before another review`);
+  if (!input.postMerge && rejected.length) return no(`${rejected.map((r) => (r.by === owner ? "the project owner" : r.by)).join(", ")} rejected ${short(head)}; the builder reworks it before another review`);
   const contributors = contributorsOf(item);
   if (input.tier) {
     // A tier review is asked beside the gate's; the gate's approval leaves it standing.

@@ -1528,13 +1528,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // base-token chooses), so the job can diff from the merge base of the
       // head and that branch rather than from the fork point, which a merge
       // of main into the task leaves behind (t230).
-      if (claim.item.fork) {
+      if (claim.item.fork || claim.item.state === "merged") {
         const p = await L.project();
         const branch = await projectBranch(env, p);
-        const t = await mint(env, claim.item.fork, "read", branch);
+        const landed = landingOf(claim.item, claim.events);
+        const repo = landed?.onPlanBranch ? await baseRepo(env, L, claim.item, p.repo) : p.repo;
+        const t = await mint(env, landed ? repo : claim.item.fork!, "read", branch);
         const b = await mint(env, await baseRepo(env, L, claim.item, p.repo), "read", branch);
         return json({
           ...claim,
+          ...(landed ? { landed } : {}),
           ...(diffRef ? { diffRef } : {}),
           readToken: { remote: t.remote, token: t.token, defaultBranch: t.defaultBranch },
           target: { remote: b.remote, token: b.token, branch: b.defaultBranch },
@@ -2064,7 +2067,10 @@ async function storedReviewDiff(
   if (!item.fork) return null;
   try {
     const p = await L.project();
-    const diff = await itemDiff(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork);
+    const landed = landingOf(item, claim.events);
+    const diff = landed
+      ? await mergedDiff(env.ARTIFACTS, landed.onPlanBranch ? await baseRepo(env, L, item, p.repo) : p.repo, item.fork, landed)
+      : await itemDiff(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork);
     if (!diff) return null;
     const text = renderDiffText(item.id, diff);
     if (text.length <= DIFF_INLINE_MAX) return null;

@@ -258,6 +258,7 @@ export const FLAGS = {
   submit: { summary: '--summary needs text: atelier submit ID --summary "TEXT"' },
   diff: {},
   review: { approve: true, reject: true, note: false, head: false, findings: false, criteria: false, request: false },
+  "review-request": { reviewer: false },
   "review-claim": { runner: false },
   "review-release": { note: false },
   "read-token": {},
@@ -2521,6 +2522,13 @@ const commands = {
       ...(findings !== undefined ? { findings } : {}),
     }, as);
     console.log(`${args.approve ? "Approved" : "Rejected"} ${id} @ ${short(d.item.head)} as ${as}.`);
+  },
+
+  async "review-request"() {
+    const name = project(), id = itemArg();
+    if (typeof args.reviewer !== "string" || !args.reviewer.includes("/")) die("review-request needs --reviewer H/M");
+    const r = await call("POST", `${I(name, id)}/review-request`, { reviewer: args.reviewer, wanted: true }, OWNER);
+    console.log(JSON.stringify(r));
   },
 
   async "review-claim"() {

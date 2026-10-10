@@ -17,4 +17,5 @@
 // takes a title (t315). 16: a review names the binding of the acceptance
 // criteria it judged and may name the request it claimed, the review claim
 // gives both, and edit says what a change of criteria withdrew (t326).
-export const ROUTE_LEVEL = 16;
+// 17: review-request and review-claim can audit a recorded merge (t396).
+export const ROUTE_LEVEL = 17;

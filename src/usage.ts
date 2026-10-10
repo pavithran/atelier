@@ -69,6 +69,7 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "unblock [ID]", about: "The holder or the project owner lifts the block, and the task returns to the state it was in." },
     { form: "diff ID", about: "For a reviewer: prints the task's commits and diff against the baseline, from a clean read-only clone." },
     { form: "review ID --approve|--reject --criteria BINDING [--request N] [--note TEXT] [--head SHA] [--findings JSON]", about: "Records a verdict on the task's current head, with `--note` giving the reason. `--head` names the revision the verdict is for, and the server refuses one for any head but the current. `--criteria` names the binding of the acceptance criteria the verdict judged, as `atelier show` or the review claim gives it; the server refuses a verdict that names none, or criteria the task no longer has, and the reviewer must read them again. `--request` names the review request the reviewer claimed, which the verdict then answers alone. `--findings` attaches a reviewer's structured findings. The rules say whose approval counts." },
+    { form: "review-request ID --reviewer H/M", about: "The project owner queues a review for a runner. A merged task is reviewed at its recorded merge commit against the merge's original parent (or fork point for a fast-forward), with the task's criteria. Verdicts and findings stay on the task and count on Models; blocking findings file a linked defect task. The merged task stays merged, including when it landed on an override." },
     { form: "review-claim ID [--runner home:NAME]", about: "A reviewer's runner claims the task's open review request and gets the part, its brief's inputs, the binding of the acceptance criteria the brief carries and the request's number, which the verdict names, and a read token for its fork." },
     { form: "review-release ID [--note T]", about: "A reviewer whose harness wrote no valid verdict lets the review request go, so another reviewer may take it." },
   ], [
@@ -388,6 +389,10 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   },
   block: { example: 'atelier block t3 "Waiting on the schema decision" --project demo' },
   unblock: { example: "atelier unblock t3 --project demo" },
+  "review-request": {
+    flags: { "--reviewer H/M": "the reviewer whose runner will audit the task; required" },
+    example: "atelier review-request t3 --reviewer codex/gpt-6-astra --project demo",
+  },
   "review-claim": {
     flags: { "--runner home:NAME": "names the runner that claims the review request" },
     example: "atelier review-claim t3 --runner home:studio --project demo",
