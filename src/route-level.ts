@@ -21,4 +21,6 @@
 // keep a reply no verdict could be read from on the task (t407).
 // 18: the owner keeps dated notes under a pool model, atelier models note
 // (t406).
-export const ROUTE_LEVEL = 18;
+// 19: a project that requires criteria refuses a task filed or cleared
+// without them, and init takes --require-criteria (t397).
+export const ROUTE_LEVEL = 19;
