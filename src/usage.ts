@@ -786,6 +786,9 @@ Standing rules:
 - On a stall (a claimed task with no progress), check whether the agent's
   process still runs, then \`atelier handoff\` the task to another model or
   \`atelier release\` it. Do not start the same work twice.
+- Land the tasks that touch core files first; add to a task's criteria any
+  case a confirmed finding names that they did not state; give each build
+  brief the past review findings on the files in its scope.
 - After two rejections on the same point, stop resending the task to the same
   builder: judge the findings, then hand it to a builder from another company
   or ask the owner.

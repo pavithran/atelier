@@ -358,8 +358,10 @@ bin/orchestrate/land-queue.sh            # once, in the background
 echo "t405:codex/gpt-6-astra" >> "$ATELIER_CACHE/land-queue/atelier.queue"
 ```
 
-Edit the queue file to reorder it, for example to put first the tasks that
-another piece of work waits on.
+Order the queue so the tasks that touch core files land first: everything
+else will merge around them, and a core-file change landed late conflicts
+with every task that landed before it. Within that, put first the tasks that
+another piece of work waits on. Edit the queue file to reorder it.
 
 Do not chain landings by having a shell wait on `pgrep -f "… tN"`: the
 waiting shell's own command line contains the pattern, so `pgrep` finds the
@@ -458,6 +460,10 @@ owner it read as a defect. The other half were real, and some were serious.
   one reviewer rejects the same task round after round on narrower and
   narrower points, a small change that meets the point usually costs less
   than another round; the refutation stays on the record either way.
+- When a confirmed finding names a case the criteria did not state, add the
+  case to the criteria (`atelier edit tN --accept "…"`, all criteria
+  restated) before sending the task back, so the review that follows, and the
+  next task like it, start with the case written down.
 - Read a review's findings with `atelier show tN --json` (the `reviews`
   list, each with its `head` and `findings`); the text summary shortens them.
   Send a confirmed finding back with
