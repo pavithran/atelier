@@ -1783,7 +1783,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const item = await L.release(id, actor, note, !!c.token, oldToken);
       return json(item);
     }
-    case "accept":
+    case "accept": {
       requireOwner(env, actor);
       await verifyRevision(env, ref.key, id, String(body.head ?? ""));
       await assertPlanMergeable(env, L, id);
@@ -1792,9 +1792,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // reason, which the Ledger refuses.
       // note, when sent, is the owner's own word on the acceptance, kept
       // with it in the ledger (land.sh records the session's note there).
-      return json(await L.accept(id, actor, String(body.head ?? ""),
-        body.overrideReview === undefined ? undefined : typeof body.overrideReview === "string" ? body.overrideReview : "",
-        typeof body.note === "string" ? body.note : undefined));
+      const overrideReview = body.overrideReview === undefined ? undefined : typeof body.overrideReview === "string" ? body.overrideReview : "";
+      const item = await L.accept(id, actor, String(body.head ?? ""), overrideReview, typeof body.note === "string" ? body.note : undefined);
+      // An override the owner records while a reviewer of another family was
+      // available is answered with that reviewer, so the owner sees the
+      // `atelier land ID --reviewer H/M` command that would have replaced it
+      // (t395).
+      const availableReviewer = overrideReview !== undefined ? await L.availableReviewer(id, await index(env).models()) : null;
+      return json({ ...item, ...(availableReviewer ? { availableReviewer } : {}) });
+    }
     case "merged": {
       requireOwner(env, actor);
       const p = await L.project();
@@ -2148,7 +2154,8 @@ function isHeld(item: Item): boolean {
 async function inbox(env: Env, token?: AgentToken) {
   const projects = (await index(env).projects()).filter((p) => inScope(token, namesOf(p)));
   const now = new Date().toISOString();
-  const lists = await Promise.all(projects.map((p) => ledgerOf(env, p).inbox(now)));
+  const pool = await index(env).models();
+  const lists = await Promise.all(projects.map((p) => ledgerOf(env, p).inbox(now, pool)));
   return lists.flat().sort((a, b) => b.weight - a.weight);
 }
 
