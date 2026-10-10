@@ -2,5 +2,8 @@
 # and Atelier installs the drivers in every clone it manages
 # (cli/merge-pipeline.mjs). Generated outputs are never merged as text: they
 # stay in conflict until the sources merge, then their generator writes them.
+cli/commands/index.mjs merge=atelier-generated
+src/usage/commands/index.ts merge=atelier-generated
 test/fixtures/cli/help.txt merge=atelier-generated
 test/fixtures/cli/usage.json merge=atelier-generated
+test/fixtures/cli/guide.txt merge=atelier-generated

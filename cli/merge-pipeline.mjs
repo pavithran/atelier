@@ -153,7 +153,7 @@ function declarationProblems(manifest, read, list, skip = new Set()) {
   for (const registry of manifest?.registries ?? []) {
     const match = registry.files ? globToRegExp(registry.files) : null;
     const seen = new Map();
-    for (const name of list(registry.dir).filter((n) => !match || match.test(n)).sort()) {
+    for (const name of list(registry.dir).filter((n) => (!match || match.test(n)) && !registry.exclude.includes(n)).sort()) {
       const path = `${registry.dir}/${name}`;
       const key = registry.pattern.exec(read(path) ?? "")?.[1];
       if (!key) problems.push(`${path} names no key for the ${registry.name} registry`);
