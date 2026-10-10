@@ -97,7 +97,8 @@ test("a command or job with no declaration needs nothing", () => {
 // set of commands that depend on one; a command dropped from it, or one that
 // starts depending on a capability without declaring it, fails here.
 test("each command that relies on a named capability declares it in its module", () => {
-  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["edit", "init", "land", "merge", "models", "new", "review", "review-claim", "review-unparsable", "token"]);
+  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["edit", "init", "integrated", "integration-failed", "land", "merge", "models", "new", "refresh-failed", "refreshed", "review", "review-claim", "review-unparsable", "token"]);
+  for (const command of ["integrated", "integration-failed", "refreshed", "refresh-failed"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["plans.integration.v1"], command);
   assert.deepEqual(COMMAND_CAPABILITIES.land, ["land.workflow.v1", "items.brief-criteria.v1", "reviews.criteria-binding.v1", "projects.require-criteria.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.new, ["items.brief-criteria.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.edit, ["items.brief-criteria.v1", "reviews.criteria-binding.v1"]);
