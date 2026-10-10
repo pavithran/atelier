@@ -381,13 +381,18 @@ test("init sends a switch as true or false, as it was written, and refuses any o
     const r = f.run(f.checkout, ["init", ...argv]);
     assert.equal(r.status, 0, r.stderr);
     const put = f.requests().find((q) => q.method === "PUT");
-    return { sandboxOnly: put.body.sandboxOnly, refuseOverlap: put.body.refuseOverlap };
+    return { sandboxOnly: put.body.sandboxOnly, refuseOverlap: put.body.refuseOverlap, noOverride: put.body.noOverride };
   };
-  assert.deepEqual(sent(["--sandbox-only"]), { sandboxOnly: true, refuseOverlap: undefined });
-  assert.deepEqual(sent(["--sandbox-only", "false"]), { sandboxOnly: false, refuseOverlap: undefined });
-  assert.deepEqual(sent(["--sandbox-only=false", "--refuse-overlap"]), { sandboxOnly: false, refuseOverlap: true });
-  assert.deepEqual(sent(["--refuse-overlap", "false"]), { sandboxOnly: undefined, refuseOverlap: false });
-  assert.deepEqual(sent([]), { sandboxOnly: undefined, refuseOverlap: undefined });
+  assert.deepEqual(sent(["--sandbox-only"]), { sandboxOnly: true, refuseOverlap: undefined, noOverride: undefined });
+  assert.deepEqual(sent(["--sandbox-only", "false"]), { sandboxOnly: false, refuseOverlap: undefined, noOverride: undefined });
+  assert.deepEqual(sent(["--sandbox-only=false", "--refuse-overlap"]), { sandboxOnly: false, refuseOverlap: true, noOverride: undefined });
+  assert.deepEqual(sent(["--refuse-overlap", "false"]), { sandboxOnly: undefined, refuseOverlap: false, noOverride: undefined });
+  // --no-override (t371) is a switch like the others: it sends noOverride
+  // true, false when turned off, and nothing when it is not given.
+  assert.deepEqual(sent(["--no-override"]), { sandboxOnly: undefined, refuseOverlap: undefined, noOverride: true });
+  assert.deepEqual(sent(["--no-override=false"]), { sandboxOnly: undefined, refuseOverlap: undefined, noOverride: false });
+  assert.deepEqual(sent(["--no-override", "false"]), { sandboxOnly: undefined, refuseOverlap: undefined, noOverride: false });
+  assert.deepEqual(sent([]), { sandboxOnly: undefined, refuseOverlap: undefined, noOverride: undefined });
   f.clear();
   const bad = f.run(f.checkout, ["init", "--sandbox-only=yes"]);
   assert.equal(bad.status, 1);
@@ -437,6 +442,7 @@ test("ls --json and status --json print each item with its times, for Observator
       { id: "t2", title: "Task t2", state: "submitted", owner: "codex/test", head: f.head, ...TIMES },
     ],
     overlaps: [],
+    mergedByOverride: [],
   }]);
 
   // The JSON listing honours --all as the text one does (test/status.test.mjs
