@@ -716,6 +716,36 @@ it("decision 2026-10-06: the accept route takes an override only from the owner,
   expect(detail.reviews).toHaveLength(1);
 });
 
+// PAVI's decision, 2026-10-09, through the Worker: when the owner overrides
+// a review the pool could have named a reviewer for, the accept answer names
+// that reviewer, so the owner sees the land command that would replace the
+// override; a plain accept, or an override with no reviewer in the pool,
+// names none.
+it("decision 2026-10-09: the accept route names the reviewer that could replace the override", async () => {
+  const name = "override-reviewer", A = "claude-code/opus-5.5", H0 = "0".repeat(40), H1 = "a".repeat(40), T0 = "1".repeat(40), T1 = "2".repeat(40);
+  await project(name, ["AGENTS.md"]);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).putModel({ id: "gpt-6-astra", harness: "codex", where: "home", provider: "subscription", aliases: [], family: "other", note: "", addedBy: "owner", addedAt: new Date().toISOString() } as never);
+  await L.newItem("Rewrite the agent instructions", [], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
+  await L.submit("t1", A);
+  const ARTIFACTS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }] }, {});
+  const as = (bearer: string, actor: string | null) => (method: string, path: string, body?: unknown) =>
+    worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }), { ...testEnv, ARTIFACTS } as typeof env);
+  const owner = as(TOKEN, "owner");
+  const reason = "No model of another family is available";
+  const accepted = await owner("POST", "/items/t1/accept", { head: H1, overrideReview: reason });
+  expect(accepted.status, await accepted.clone().text()).toBe(200);
+  expect(await accepted.json()).toMatchObject({ state: "accepted", acceptedHead: H1, availableReviewer: "codex/gpt-6-astra" });
+});
+
 it("the standing route is readable by any signed-in actor, and by no one else", async () => {
   const name = "standing-route", agent = "codex/gpt-6-astra", head = "a".repeat(40);
   await project(name);

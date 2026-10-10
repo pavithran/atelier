@@ -16,7 +16,7 @@ import { join, resolve } from "node:path";
 const cli = resolve("cli/atelier.mjs");
 const HEAD = "a".repeat(40);
 
-function fixture(t) {
+function fixture(t, { availableReviewer } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-override-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   writeFileSync(join(dir, "config.json"), JSON.stringify({ server: "https://fake.invalid", owner: "owner", ownerName: "Pavi", projects: {} }));
@@ -31,7 +31,7 @@ globalThis.fetch = async (url, options = {}) => {
   let data = {};
   if (path === "/api/config") data = { ownerActor: "owner", ownerName: "Pavi" };
   else if (method === "GET" && path.endsWith("/items/t9")) data = { item: { id: "t9", state: "submitted", head: ${JSON.stringify(HEAD)} } };
-  else if (method === "POST" && path.endsWith("/items/t9/accept")) data = { id: "t9", state: "accepted", acceptedHead: ${JSON.stringify(HEAD)} };
+  else if (method === "POST" && path.endsWith("/items/t9/accept")) data = { id: "t9", state: "accepted", acceptedHead: ${JSON.stringify(HEAD)}${availableReviewer ? `, availableReviewer: ${JSON.stringify(availableReviewer)}` : ""} };
   return new Response(JSON.stringify(data), { status: 200, headers: { "content-type": "application/json" } });
 };
 `);
@@ -78,4 +78,16 @@ test("decision 2026-10-06: accept --override-review sends its reason with the he
   f.clear();
   assert.equal(f.run(["accept", "t9", "--project", "demo"]).status, 0);
   assert.deepEqual(f.requests().find((q) => q.method === "POST").body, { head: HEAD });
+});
+
+test("decision 2026-10-09: accept --override-review names an available reviewer and the land command that replaces the override", (t) => {
+  const f = fixture(t, { availableReviewer: "codex/gpt-6-astra" });
+  const r = f.run(["accept", "t9", "--project", "demo", "--override-review", "No model of another family is available"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, "t9 accepted at aaaaaaaa, with the independent review overridden; codex/gpt-6-astra was available to review it instead: atelier land t9 --reviewer codex/gpt-6-astra. Merge it with: atelier merge t9\n");
+  // A plain accept never names a reviewer.
+  f.clear();
+  const plain = f.run(["accept", "t9", "--project", "demo"]);
+  assert.equal(plain.status, 0, plain.stderr);
+  assert.equal(plain.stdout, "t9 accepted at aaaaaaaa. Merge it with: atelier merge t9\n");
 });
