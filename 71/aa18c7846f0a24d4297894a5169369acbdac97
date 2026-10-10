@@ -1,0 +1,27 @@
+atelier atelier/t416 "Lesson: a builder hit by an unrelated failing test stops and reports it"
+accepted head 839954104e5c10aa92063bce74ce18c84763604c
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — antigravity/gemini-3.1-pro 2026-10-10T05:38:50.314Z
+OBSERVED pass npm run types && npm run typecheck — antigravity/gemini-3.1-pro 2026-10-10T05:38:52.712Z
+REVIEW approve by codex/gpt-6-astra at 839954104e5c10aa92063bce74ce18c84763604c, recorded by codex/gpt-6-astra
+2026-10-09T21:28:46.050Z pavi item.created
+2026-10-10T01:46:20.771Z pavi item.dispatched
+2026-10-10T03:44:10.582Z antigravity/gemini-3.1-pro item.claimed
+2026-10-10T03:44:16.731Z antigravity/gemini-3.1-pro fork.created
+2026-10-10T04:00:26.827Z antigravity/gemini-3.1-pro push.observed
+2026-10-10T04:04:53.206Z antigravity/gemini-3.1-pro evidence.observed
+2026-10-10T04:04:55.740Z antigravity/gemini-3.1-pro evidence.observed
+2026-10-10T04:04:56.216Z antigravity/gemini-3.1-pro item.submitted
+2026-10-10T05:35:16.319Z pavi land.lease
+2026-10-10T05:35:20.007Z pavi land.merge
+2026-10-10T05:35:29.100Z pavi land.regenerate
+2026-10-10T05:35:32.667Z antigravity/gemini-3.1-pro push.observed
+2026-10-10T05:35:33.070Z pavi land.push
+2026-10-10T05:38:50.575Z antigravity/gemini-3.1-pro evidence.observed
+2026-10-10T05:38:52.842Z antigravity/gemini-3.1-pro evidence.observed
+2026-10-10T05:38:53.251Z pavi land.check
+2026-10-10T05:38:53.950Z pavi review.requested
+2026-10-10T05:38:55.465Z codex/gpt-6-astra review.claimed
+2026-10-10T05:39:27.261Z codex/gpt-6-astra review.approved
+2026-10-10T05:39:39.459Z pavi land.review
+2026-10-10T05:39:40.176Z pavi item.accepted
+2026-10-10T05:39:40.203Z pavi land.accept
