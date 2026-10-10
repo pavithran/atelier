@@ -1636,10 +1636,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     // A runner's word that it will not serve the review of this head (t353):
     // the owner token the runner holds authorises it, as the run reports are,
-    // and the runner's name names it, so the landing waiting on the review can
-    // say, by runner, when every runner that offers the reviewer has skipped.
+    // or a runner token does, for a review job its poll was offered, under
+    // that job's actor (the gateway checks the offer as it checks a run
+    // report, and sets the runner's name from the token). The runner's name
+    // names it, so the landing waiting on the review can say, by runner,
+    // when every runner that offers the reviewer has skipped.
     case "review-skip": {
-      requireOwner(env, actor);
+      if (!c.token?.runner) requireOwner(env, actor);
       const runner = parseRunner(req.headers.get("x-atelier-runner"));
       if (!runner) throw new RuleError("bad_runner", "a review skip names its runner in X-Atelier-Runner", 400);
       const head = String(body.head ?? "");
@@ -2804,7 +2807,12 @@ export default {
           if (parts[1] === "queue" && String(input.runner).toLowerCase() !== token.runner) throw runnerDenied(token);
           if (ref && parts[3] === "items") {
             if (actor === ownerActor(env) || actor === INTEGRATOR) throw runnerDenied(token);
-            await ledger(env, ref.key).assertRunnerJob(token, parts[4], actor, parts[5] === "claim");
+            // A review skip (t353) is a report about a review job the
+            // runner's poll was offered, under that job's actor, checked as
+            // a run report for the review is; the runner never holds a
+            // review as a job of its own, so assertRunnerJob cannot judge it.
+            if (parts[5] === "review-skip") await ledger(env, ref.key).assertRunnerReport(token, parts[4], actor, "review");
+            else await ledger(env, ref.key).assertRunnerJob(token, parts[4], actor, parts[5] === "claim");
             // The authenticated runner, never a caller-selected identity, goes to the atomic claim.
             req = new Request(req.url, { method: req.method, headers: new Headers(req.headers) });
             req.headers.set("x-atelier-runner", token.runner);
