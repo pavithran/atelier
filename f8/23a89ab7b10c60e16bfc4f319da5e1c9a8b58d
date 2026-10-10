@@ -1,0 +1,28 @@
+atelier atelier/t399 "The owner can change a task's scope, and overlap blocks the same in every state"
+accepted head d16b599abbc0c527a9fafb2609d020a1befb8d4b
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-10T04:53:27.898Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-10T04:53:30.574Z
+REVIEW approve by codex/gpt-6-astra at d16b599abbc0c527a9fafb2609d020a1befb8d4b, recorded by codex/gpt-6-astra
+2026-10-09T19:42:19.474Z pavi item.created
+2026-10-09T19:45:52.262Z pavi item.dispatched
+2026-10-10T01:46:12.581Z pavi item.dispatched
+2026-10-10T02:29:26.104Z claude-code/sonnet-5.5 item.claimed
+2026-10-10T02:29:32.880Z claude-code/sonnet-5.5 fork.created
+2026-10-10T02:47:41.323Z claude-code/sonnet-5.5 push.observed
+2026-10-10T02:51:01.920Z claude-code/sonnet-5.5 evidence.observed
+2026-10-10T02:51:04.320Z claude-code/sonnet-5.5 evidence.observed
+2026-10-10T02:51:04.794Z claude-code/sonnet-5.5 item.submitted
+2026-10-10T04:49:25.401Z pavi land.lease
+2026-10-10T04:49:32.501Z pavi land.merge
+2026-10-10T04:49:42.967Z pavi land.regenerate
+2026-10-10T04:49:45.803Z claude-code/sonnet-5.5 push.observed
+2026-10-10T04:49:46.746Z pavi land.push
+2026-10-10T04:53:28.382Z claude-code/sonnet-5.5 evidence.observed
+2026-10-10T04:53:30.771Z claude-code/sonnet-5.5 evidence.observed
+2026-10-10T04:53:31.110Z pavi land.check
+2026-10-10T04:53:31.952Z pavi review.requested
+2026-10-10T04:53:32.687Z codex/gpt-6-astra review.claimed
+2026-10-10T04:54:34.491Z codex/gpt-6-astra review.approved
+2026-10-10T04:54:47.755Z pavi land.review
+2026-10-10T04:54:48.009Z pavi item.accepted
+2026-10-10T04:54:48.034Z pavi land.accept
