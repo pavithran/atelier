@@ -11,6 +11,7 @@ import { formatLoad, envLoad, coreCount, loadLimitOf } from "./load.mjs";
 import { envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
 import { reviewBrief, BRIEF_LIMITS, criteriaCount } from "../src/review/brief.ts";
+import { submission } from "../src/brief.ts";
 import { parseVerdict, VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
@@ -186,7 +187,7 @@ export function killGroups() {
 // then SIGKILL if any is left after `graceMs`. The result comes back once
 // the group is gone, so nothing the child started still runs in its folder.
 // A process that leaves the group (setsid) is beyond this.
-export function execute(argv, { cwd, signal, capture = false, captureError = false, timeoutMs, env, graceMs = 5000 } = {}) {
+export function execute(argv, { cwd, signal, capture = false, captureError = false, stream = false, timeoutMs, env, graceMs = 5000 } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("interrupted"));
     const child = spawn(argv[0], argv.slice(1), { cwd, shell: false, detached: true, ...(env ? { env } : {}),
@@ -218,7 +219,7 @@ export function execute(argv, { cwd, signal, capture = false, captureError = fal
     };
     const deadline = timeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; end(); }, timeoutMs);
     signal?.addEventListener("abort", end, { once: true });
-    child.stdout?.on("data", (chunk) => { output += chunk; });
+    child.stdout?.on("data", (chunk) => { output += chunk; if (stream) process.stdout.write(chunk); });
     child.stderr?.on("data", (chunk) => { stderr += chunk; });
     child.on("error", (e) => { error = e; });
     // Once the child has exited, a deadline not yet passed no longer applies, and what it left in its group goes.
@@ -465,7 +466,7 @@ export async function rescueWork(cwd, git, log, now = new Date()) {
 
 // A merge-main job's build (docs/orchestrator.md, section 5): a part's
 // workspace forks from the plan's branch, a task's is its own fork of main,
-// and before the harness runs the runner fetches main at the dispatch's head
+// and after claiming the runner fetches the current baseline branch
 // through a read token — the plan item's base for a part (the baseline: the
 // token the refresh job reads main with), the task's own for a task, whose
 // base is the baseline the same way — and merges it, leaving any conflict in
@@ -482,12 +483,15 @@ export const CONFLICTS_ARGS = ["git", "diff", "--name-only", "--diff-filter=U"];
 
 export async function startMergeMain(assignment, workspace, io) {
   const { project, item, actor } = assignment;
-  const mainHead = item.dispatch.head;
   // A part reads main through the plan item's base token, a task (t243)
   // through its own, whose base is the baseline the same way.
   const base = JSON.parse(await io.cli(["base-token", item.plan ?? item.id, "--project", project, "--as", actor]));
+  await io.fetch(workspace, base.remote, base.token, `refs/heads/${base.defaultBranch}`);
+  const mainHead = (await io.head(workspace, { ref: "FETCH_HEAD" })).trim();
+  if (!/^[a-f0-9]{40,64}$/.test(mainHead)) throw new Error("the fetched main head is not a commit hash");
+  io.log(`merge-main target: ${mainHead} (dispatched at ${item.dispatch.head})`);
   const into = item.kind === "part" ? "the plan's branch" : item.id;
-  return { mainHead, ...await mergeHead(workspace, io, base, mainHead, `Merge main at ${mainHead.slice(0, 8)} into ${into}\n\nAgent: ${actor}`, `main at ${mainHead.slice(0, 8)}`) };
+  return { mainHead, ...await mergeHead(workspace, io, base, mainHead, `Merge main at ${mainHead.slice(0, 8)} into ${into}\n\nAgent: ${actor}`, `main at ${mainHead.slice(0, 8)}`, { fetched: true }) };
 }
 
 // A part sent back because its integration conflicted with the plan's
@@ -508,8 +512,8 @@ export async function startMergePlan(assignment, workspace, io, { merge = true }
   return { planHead, ...await mergeHead(workspace, io, base, planHead, `Merge the plan's branch at ${planHead.slice(0, 8)} into part ${item.id}\n\nAgent: ${actor}`, `the plan's branch at ${planHead.slice(0, 8)}`) };
 }
 
-async function mergeHead(workspace, io, base, target, message, what) {
-  await io.fetch(workspace, base.remote, base.token, target);
+async function mergeHead(workspace, io, base, target, message, what, { fetched = false } = {}) {
+  if (!fetched) await io.fetch(workspace, base.remote, base.token, target);
   const before = await io.head(workspace);
   const merged = await io.mergeMain(workspace, target, message);
   const files = await io.conflicts(workspace);
@@ -557,13 +561,67 @@ export function mergeMainSection(merge) {
 }
 
 // Dependencies keep the task lifecycle testable without a server or a harness.
+// Restricted Codex sessions cannot promise localhost listeners, the npm cache
+// or network access. Opaque wrappers cannot establish those capabilities either.
+export function codexBuildRefusal(entry) {
+  if (entry.agent !== "codex") return null;
+  const args = entry.command;
+  if (basename(args[0]) === "codex" && args.includes("exec") &&
+      !args.some((a) => /^(--full-auto|--approve-for-me)$/.test(a) || /(?:workspace-write|read-only|sandbox_mode|sandbox_workspace_write)/.test(a)) &&
+      (args.includes("--dangerously-bypass-approvals-and-sandbox") ||
+       args.some((a, i) => (a === "--sandbox" || a === "-s") && args[i + 1] === "danger-full-access") || args.includes("--sandbox=danger-full-access"))) return null;
+  return "Codex build refused: its command does not establish access for required checks (localhost listening, the npm cache and network); restricted or opaque adapters cannot verify this project";
+}
+
+// What a final report says when the required checks could not run. The build
+// brief asks for a `validation_blocked: why` line; the rest are the ways
+// agents said it unasked (t417). Each names the checks right beside the verb
+// that failed to run them, or an environment error beside a failed check, so
+// "I did not run any atelier command" or a summary that merely mentions
+// validation_blocked does not hold back a good build.
+const CHECKS = String.raw`(?:required checks?|checks?|tests?|test suite|suite|typecheck|vitest|npm test|npm run [\w:-]+)`;
+const SANDBOX = String.raw`(?:EPERM|EACCES|permission denied|sandbox|no network|network access|ENOTFOUND|EAI_AGAIN)`;
+const VALIDATION_BLOCKED = [
+  /^[\s*_`>-]*validation[_ ]blocked[*_`]*\s*:/im,
+  new RegExp(String.raw`(?:could not|couldn't|cannot|can't|unable to|not able to|did not|didn't)\s+(?:fully\s+|successfully\s+)?(?:run|execute)\s+(?:(?:the|all|any|full|required|project's|whole|complete)\s+){0,3}${CHECKS}\b`, "i"),
+  new RegExp(String.raw`\b${CHECKS}\s+(?:could not|couldn't|cannot|can't|did not|didn't)\s+(?:be\s+)?(?:run|executed?|start|complete)`, "i"),
+  new RegExp(String.raw`\b${CHECKS}\b[^\n.]{0,80}\b(?:blocked|failed|fails|errored|refused)\b[^\n.]{0,80}${SANDBOX}`, "i"),
+  new RegExp(String.raw`${SANDBOX}[^\n.]{0,60}\b(?:blocked|prevented|stopped)\b[^\n.]{0,40}\b${CHECKS}\b`, "i"),
+];
+
+// JSON harness output contains tool transcripts too: only an agent's final
+// message is a report. Plain-text harnesses report through their stdout.
+export function validationBlockedReport(output) {
+  let report = String(output ?? "").replace(/[’‘]/g, "'");
+  const messages = [];
+  let structured = false;
+  for (const line of report.split("\n")) {
+    try {
+      const event = JSON.parse(line);
+      if (!event || typeof event.type !== "string") continue;
+      if (/^(thread\.|turn\.|item\.|system$|assistant$|result$)/.test(event.type)) structured = true;
+      if (event.type === "item.completed" && event.item?.type === "agent_message") messages.push(event.item.text);
+      if (event.type === "result" && typeof event.result === "string") messages.push(event.result);
+    } catch { /* plain output */ }
+  }
+  if (structured) report = messages.at(-1) ?? "";
+  const match = VALIDATION_BLOCKED.map((pattern) => pattern.exec(report)).find(Boolean);
+  if (!match) return null;
+  // Keep the actual blocker in the server's bounded detail even when the
+  // final report starts with a long summary of the implementation.
+  const start = report.lastIndexOf("\n", match.index) + 1;
+  return oneLine(report.slice(Math.max(start, match.index - 60), match.index + 240)).replace(/\s+/g, " ").trim();
+}
+
 export async function runTask(assignment, config, name, io) {
   let state = nextStep({ phase: "idle" }, { type: "queue", assignment });
   const advance = (result) => { state = nextStep(state, result); io.log(`${state.phase}${state.reason ? `: ${state.reason}` : ""}`); };
   io.log("nothing claimed");
   if (!assignment) { advance({ type: "claim", empty: true }); return state; }
   const { project, item, agent, model, actor } = assignment;
-  let workspace, before, claimed = false, claimAttempted = false, taskFailure = false, brief;
+  let workspace, before, claimed = false, claimAttempted = false, taskFailure = false, brief, mergedMain;
+  const finishArgs = () => ["finish", item.id, "--project", project, "--as", actor,
+    ...(mergedMain ? ["--summary", `Merged main at ${mergedMain}`] : [])];
   try {
     const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
     if (!entry || actor !== `${agent}/${model}`) throw new Error("queue returned an unsupported assignment");
@@ -577,7 +635,16 @@ export async function runTask(assignment, config, name, io) {
     if (mergingPlan && (item.kind !== "part" || !/^[a-f0-9]{40,64}$/.test(item.dispatch.planHead ?? ""))) {
       throw Object.assign(new Error("the queue returned an invalid plan head to merge"), { skipped: true });
     }
+    const refusal = codexBuildRefusal(entry);
+    if (refusal) throw Object.assign(new Error(refusal), { validationBlocked: true, skipped: true });
     workspace = io.workspacePath(project, item.id);
+    // The marker holds back only what it was written for: this actor's
+    // unverified commit, still the workspace's head. Another builder, or this
+    // one after the commit moved on, runs its harness and the checks as usual.
+    const priorBlock = await io.readValidationBlock?.(workspace);
+    if (priorBlock?.actor === actor && priorBlock.head && priorBlock.head === await io.head(workspace).catch(() => null)) {
+      throw Object.assign(new Error(priorBlock.detail), { validationBlocked: true, skipped: true });
+    }
     if (io.stopped()) throw new Error("interrupted");
     claimAttempted = true;
     await io.cli(["claim", item.id, "--project", project, "--as", actor, "--runner", name]);
@@ -614,7 +681,10 @@ export async function runTask(assignment, config, name, io) {
       // merge that follows puts main back in it for the builder to resolve.
       const merges = [];
       const logMerge = (m) => io.log(m.state === "conflicts" ? `${mergedWhat(m)} merged with conflicts in ${m.files.join(", ")}` : m.state === "merged" ? `${mergedWhat(m)} merged cleanly as ${m.head.slice(0, 8)}` : m.state === "skipped" ? `${mergedWhat(m)} fetched, not merged, while the merge of main is in progress` : `the workspace already holds ${mergedWhat(m)}`);
-      if (merging) merges.push(await startMergeMain(assignment, workspace, io));
+      if (merging) {
+        merges.push(await startMergeMain(assignment, workspace, io));
+        mergedMain = merges[0].mainHead;
+      }
       if (merges[0]) logMerge(merges[0]);
       if (io.stopped()) throw new Error("interrupted");
       if (mergingPlan) {
@@ -629,7 +699,7 @@ export async function runTask(assignment, config, name, io) {
         advance({ type: "start" });
         taskFailure = true;
         advance({ type: "exit", code: 0, before, head });
-        await io.cli(["finish", item.id, "--project", project, "--as", actor], workspace);
+        await io.cli(finishArgs(), workspace);
         advance({ type: "finish" });
         return state;
       }
@@ -660,13 +730,21 @@ export async function runTask(assignment, config, name, io) {
       try {
         advance({ type: "start" });
         taskFailure = true;
-        result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name));
+        result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name), { capture: true, stream: true });
       } finally {
         if (dataHome) {
           try { await io.removeDataHome(dataHome); }
           catch (error) { io.log(`could not remove ${dataHome.dir}: ${error.message}`); }
         }
       }
+    }
+    const blocked = validationBlockedReport(result?.output);
+    if (blocked) {
+      // Persist outside the reset's tracked/untracked tree: a later runner
+      // must not mistake this committed but unverified work for a dead run.
+      const head = await io.head(workspace).catch(() => null);
+      await io.writeValidationBlock?.(workspace, { actor, head, detail: blocked });
+      throw Object.assign(new Error(blocked), { validationBlocked: true });
     }
     if (result?.timedOut) throw new Error("harness timed out");
     if (io.stopped()) throw new Error("interrupted");
@@ -678,11 +756,12 @@ export async function runTask(assignment, config, name, io) {
     taskFailure = true;
     advance(io.stopped() ? { error: "interrupted" } : { type: "exit", code: result?.code ?? 0, before: resumed ? item.head : before, head });
     if (state.phase === "failed") throw new Error(state.reason);
-    await io.cli(["finish", item.id, "--project", project, "--as", actor], workspace);
+    await io.cli(finishArgs(), workspace);
     advance({ type: "finish" });
   } catch (error) {
     if (state.phase !== "failed") advance({ error: error.message });
     state = { ...state, taskFailure: taskFailure && !error.infrastructure && !io.stopped() };
+    if (error.validationBlocked) state = { ...state, validationBlocked: true, taskFailure: false, skipped: true };
     if (!claimed && error.skipped) {
       state = { ...state, skipped: true };
       io.log(`skipped: ${error.message}`);
@@ -928,17 +1007,22 @@ export const REMERGE_DIFF_ARGS = (head) => ["git", "show", "--remerge-diff", "--
 // it, or null when the reviewed item is no merge-main job. The signals are
 // the ones the server and the build side already use: the item's dispatch
 // naming the merge-main job (a task's under t243, or a part's, whose
-// dispatch names the main head it merges and is kept once claimed), or a
+// dispatch names the main head at dispatch and is kept once claimed), or a
 // plan part whose key is a merge-main part's (mergeMainKey in
 // src/plans/state.ts), which carries main's head's first 8 characters.
+// The current submission records the actual claim-time target. Prefer it
+// over either dispatch-time signal, but still verify it against Git below.
+// Older submissions fall back to the dispatch or part key.
 // `main` is that head, full or a prefix, or null when neither names it.
 export function mergeMainJob(claimed) {
   const d = claimed?.item?.dispatch;
   const hash = (h) => typeof h === "string" && /^[a-f0-9]{8,64}$/.test(h) ? h : null;
-  if (d?.job === "merge-main") return { main: hash(d.head) };
   const key = claimed?.plan?.part?.key ?? claimed?.item?.partKey;
-  if (typeof key === "string" && key.startsWith(MERGE_MAIN)) return { main: hash(key.slice(MERGE_MAIN.length)) };
-  return null;
+  const part = typeof key === "string" && key.startsWith(MERGE_MAIN);
+  if (d?.job !== "merge-main" && !part) return null;
+  const recorded = submission(claimed.events ?? [], claimed.item?.id, claimed.head);
+  const actual = /^Merged main at ([a-f0-9]{40,64})$/.exec(recorded?.summary ?? "")?.[1];
+  return { main: actual ?? (d?.job === "merge-main" ? hash(d.head) : hash(key.slice(MERGE_MAIN.length))) };
 }
 
 // A merge-main job's head is a merge of main into the part or task: its first
@@ -1349,6 +1433,7 @@ export async function runPlanTask(assignment, config, name, io) {
 // was refused, by the harness or its provider; a plan job whose harness
 // failed before posting a plan failed as a harness, not as an invalid proposal.
 export function runOutcome(state) {
+  if (state.validationBlocked) return "validation_blocked";
   if (state.phase !== "failed" || !state.taskFailure || state.claimRefused || state.skipped) return null;
   if (state.reason === "harness timed out") return "timed-out";
   if (state.reason === "harness made no new commit") return "stalled";
@@ -1406,7 +1491,7 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
       ...(options.token ? { env: { ...process.env, ATELIER_TOKEN: options.token } } : {}),
       step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
       ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild),
-    head: (cwd, { cleanup = false } = {}) => checked(["git", "rev-parse", "HEAD"],
+    head: (cwd, { cleanup = false, ref = "HEAD" } = {}) => checked(["git", "rev-parse", "--verify", `${ref}^{commit}`],
       { cwd, capture: true, ...(cleanup ? cleanupOptions() : { signal: controller.signal }) }, executeChild),
     // Every build, plan and merge job's workspace keeps .scratch/ out of Git
     // after the reset (excludeScratch).
@@ -1418,7 +1503,13 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
       await resetTo(cwd, `refs/remotes/origin/${branch}`);
     },
     // `env` is the harness's whole environment (harnessEnv); `io.env` is the runner's.
-    harness: (argv, cwd, env, { capture = false, captureError = false } = {}) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS, env, ...(capture ? { capture } : {}), ...(captureError ? { captureError } : {}) }),
+    harness: (argv, cwd, env, { capture = false, captureError = false, stream = false } = {}) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS, env, stream, ...(capture ? { capture } : {}), ...(captureError ? { captureError } : {}) }),
+    // { actor, head, detail }; a marker that does not parse holds nothing back.
+    readValidationBlock: async (cwd) => {
+      const file = join(cwd, ".git", "atelier-validation-blocked");
+      try { return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null; } catch { return null; }
+    },
+    writeValidationBlock: async (cwd, block) => writeFileSync(join(cwd, ".git", "atelier-validation-blocked"), JSON.stringify(block), { mode: 0o600 }),
     env: process.env, ownerTokens: () => ownerTokens(process.env),
     brief: writeBrief, removeBrief, dataHome: makeDataHome, removeDataHome,
     // The plan job's and a part's server calls (atelier.mjs wires them to
