@@ -869,8 +869,35 @@ export class Ledger extends DurableObject<Env> {
       const held = asked ? actorStanding(pool, asked, "review") : null;
       if (held) this.withdrawHeldRequest(r.item as string, r.id as number, r.head as string, asked!, held, r.tier === 1, at);
     }
+    // A queued build of a standalone task, or an unapproved plan's queued
+    // plan job, for a model the owner's standing now holds from that job is
+    // withdrawn too; an approved plan's parts are taken back by its tick.
+    for (const row of this.sql.exec(`SELECT id FROM items WHERE state = 'open' AND owner IS NULL AND dispatch IS NOT NULL AND (kind IS NULL OR kind = 'plan')`).toArray()) {
+      const item = this.item(row.id as string);
+      const d = item.dispatch!;
+      const role = claimRole(item);
+      if (!role || !d.agent || !d.model) continue;
+      const held = actorStanding(pool, `${d.agent}/${d.model}`, role);
+      if (held) this.withdrawHeldDispatch(item, held, at);
+    }
     const plans = this.sql.exec(`SELECT id FROM items WHERE kind = 'plan' AND state NOT IN ('merged', 'abandoned')`).toArray().map((r) => r.id as string);
     for (const id of plans) if (this.planRecord(id).approval) this.afterPlanChange(id);
+  }
+
+  // An unclaimed dispatch to a model the owner's standing now holds from its
+  // job, withdrawn with the reason. A task waits for the owner to dispatch it
+  // again; a plan whose plan job is withdrawn is blocked until the owner
+  // reroutes its planner; a part's plan ticks, which takes it back and
+  // routes it again.
+  private withdrawHeldDispatch(item: Item, reason: string, at: string): void {
+    if (!item.dispatch || item.state !== "open" || item.owner) return;
+    if (item.kind === "part") {
+      if (item.plan && this.planRecord(item.plan).approval) this.afterPlanChange(item.id);
+      return;
+    }
+    this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, item.id);
+    this.log(item.id, ORCHESTRATOR, "item.undispatched", { reason }, at);
+    if (item.kind === "plan") this.setBlocked(item.id, this.planRecord(item.id), `${reason}; name another planner with atelier plan reroute ${item.id} --to harness/model`);
   }
 
   // An unclaimed review request to a model the owner's standing now holds
@@ -1229,6 +1256,18 @@ export class Ledger extends DurableObject<Env> {
     } else {
       // A plan's planner claims its item to write the plan, under the planner role.
       assertClaimAllowed(item, this.items(), this.project().policy, actor, this.owner, item.kind === "plan" ? "planner" : "executor");
+      // A build or plan job dispatched before the owner paused, reserved or
+      // kept this model from the job is not claimable: a dispatch naming it
+      // is withdrawn, and the claim refused with the reason. A holder
+      // refreshing its claim keeps it.
+      const role = item.owner === actor ? null : claimRole(item);
+      const held = role ? actorStanding(this.poolStanding(), actor, role) : null;
+      if (held) {
+        const d = item.dispatch;
+        const named = !!d?.agent && !!d.model && sameActor(`${d.agent}/${d.model}`, actor);
+        if (named) this.withdrawHeldDispatch(item, held, at);
+        throw new RuleError("model_held", `${held}${named ? `; its dispatch of ${id} is withdrawn` : ""}`, 409);
+      }
     }
     if (item.owner === actor) {
       // Re-claiming refreshes the write token, so it is allowed only from where
@@ -4427,6 +4466,14 @@ function briefFingerprint(text: string): string {
     h = (h * 0x100000001b3n) & 0xffffffffffffffffn;
   }
   return h.toString(16).padStart(16, "0");
+}
+
+// The job claiming an item takes, as the owner's standing names roles: a
+// plan item's plan job is planning, a task or part is building, and a plan's
+// integrate or refresh job is the integrator's, which no standing holds.
+function claimRole(item: Item): ModelRole | null {
+  if (item.kind !== "plan") return "build";
+  return !item.dispatch || item.dispatch.job === "plan" ? "plan" : null;
 }
 
 function toItem(r: Row): Item {
