@@ -137,6 +137,16 @@ test("the repository's diff configuration changes nothing: with interHunkContext
   assert.deepEqual(s.detect().findings, plain.findings);
 });
 
+test("GIT_DIFF_OPTS cannot hide a move: context Git adds is never read as changed lines", (t) => {
+  const task = { "cli/atelier.mjs": T437.replace('console.log("status");', 'console.log("status!");') };
+  const s = scenario(t, { ...regression, task });
+  const plain = s.detect();
+  assert.equal(plain.findings.length, 1);
+  // Without DETECTOR_ENV, so the parser alone must cope with the context.
+  const withOpts = (args) => execFileSync("git", args, { cwd: s.dir, encoding: "utf8", maxBuffer: 1 << 28, env: { ...process.env, GIT_DIFF_OPTS: "-u50" }, stdio: ["ignore", "pipe", "pipe"] });
+  assert.deepEqual(detectMovedEdits(withOpts, s.revs).findings, plain.findings);
+});
+
 test("parseHunks reads a hunk with context lines to its end, counting each on both sides", () => {
   const out = ["@@ -1,4 +1,5 @@", " keep", "-gone", "+came", "+also", " keep2", " keep3", "@@ -9 +10 @@", "-x", "+y", ""].join("\n");
   const hunks = parseHunks(out);

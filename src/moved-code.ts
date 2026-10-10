@@ -100,18 +100,31 @@ export function parseHunks(out: string): Hunk[] | null {
   for (let i = 0; i < lines.length; i++) {
     const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(lines[i]);
     if (!m) { if (!hunks.length && /^Binary files /.test(lines[i])) binary = true; continue; }
-    const hunk: Hunk = { oldStart: Number(m[1]), oldCount: m[2] === undefined ? 1 : Number(m[2]), newStart: Number(m[3]), newCount: m[4] === undefined ? 1 : Number(m[4]), added: [] };
-    // A context line (" ") counts on both sides, so a diff that merged nearby
-    // hunks (diff.interHunkContext) is still read to its end.
+    const oldCount = m[2] === undefined ? 1 : Number(m[2]), newCount = m[4] === undefined ? 1 : Number(m[4]);
+    // Line numbers of the next old and new line; with no lines on a side,
+    // Git's header names the line before, so the next is one after it.
+    let oldLine = Number(m[1]) + (oldCount === 0 ? 1 : 0), newLine = Number(m[3]) + (newCount === 0 ? 1 : 0);
+    // A hunk Git printed with context lines (GIT_DIFF_OPTS, diff.interHunkContext)
+    // is split into its runs of changed lines, each numbered as -U0 would
+    // number it, so context is never read as changed.
+    let run: Hunk | null = null;
+    const close = () => {
+      if (!run) return;
+      if (run.oldCount === 0) run.oldStart -= 1;
+      if (run.newCount === 0) run.newStart -= 1;
+      hunks.push(run); run = null;
+    };
     let olds = 0, news = 0;
-    while ((olds < hunk.oldCount || news < hunk.newCount) && i + 1 < lines.length) {
+    while ((olds < oldCount || news < newCount) && i + 1 < lines.length) {
       const line = lines[++i];
       if (line.startsWith("\\")) continue;
-      if (line.startsWith("-")) olds++;
-      else if (line.startsWith("+")) { news++; hunk.added.push(line.slice(1)); }
-      else { olds++; news++; }
+      if (line.startsWith("-") || line.startsWith("+")) {
+        run ??= { oldStart: oldLine, oldCount: 0, newStart: newLine, newCount: 0, added: [] };
+        if (line.startsWith("-")) { olds++; oldLine++; run.oldCount++; }
+        else { news++; newLine++; run.newCount++; run.added.push(line.slice(1)); }
+      } else { close(); olds++; news++; oldLine++; newLine++; }
     }
-    hunks.push(hunk);
+    close();
   }
   return binary ? null : hunks;
 }
@@ -120,7 +133,10 @@ export const normalize = (line: string): string => line.trim();
 const splitLines = (text: string): string[] => { const l = text.split("\n"); if (l.at(-1) === "") l.pop(); return l; };
 
 // The diff of two blobs, as a landing's comparison reads it whatever the
-// repository's diff configuration says.
+// repository's diff configuration says. DETECTOR_ENV clears what the
+// environment could add (GIT_DIFF_OPTS, an external diff, -c overrides);
+// parseHunks reads context correctly in any case.
+export const DETECTOR_ENV = { GIT_DIFF_OPTS: "", GIT_EXTERNAL_DIFF: "", GIT_CONFIG_PARAMETERS: "", GIT_CONFIG_COUNT: "0" };
 const DIFF = ["diff", "-U0", "--inter-hunk-context=0", "--no-color", "--no-ext-diff", "--no-textconv", "--diff-algorithm=myers", "--indent-heuristic", "--src-prefix=a/", "--dst-prefix=b/"];
 const LIST = ["diff-tree", "-r", "-z", "--no-commit-id", `--find-renames=${RENAME_THRESHOLD}`];
 

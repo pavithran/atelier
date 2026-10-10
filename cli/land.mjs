@@ -10,7 +10,7 @@ import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-leas
 import { unoffered } from "../src/dispatch/rules.ts";
 import { contributorsOf, roleRefusal, sameActor } from "../src/rules.ts";
 import { landingVerdict } from "../src/landing-verdict.ts";
-import { describeAmbiguous, describeFinding, detectMovedEdits, findingKey } from "../src/moved-code.ts";
+import { DETECTOR_ENV, describeAmbiguous, describeFinding, detectMovedEdits, findingKey } from "../src/moved-code.ts";
 import { appendMovedCodeRecord } from "./landing.mjs";
 
 // atelier land (t187): the project owner lands one task whole, taking the
@@ -806,7 +806,7 @@ async function compareMoved(io, { dir, id, name, record, moved, t0, mainHead }) 
   const revs = `task ${taskHead}, main ${mainHead}, merge base ${mergeBase}`;
   const shortRevs = `task ${short(taskHead)}, main ${short(mainHead)}, merge base ${short(mergeBase)}`;
   let report;
-  try { report = detectMovedEdits((args) => git(args, { cwd: dir, raw: true }), { task: taskHead, main: mainHead, mergeBase }); }
+  try { report = detectMovedEdits((args) => git(args, { cwd: dir, raw: true, env: DETECTOR_ENV }), { task: taskHead, main: mainHead, mergeBase }); }
   catch (error) { throw await stop(`the comparison of ${id}'s edits with code main moved to another file failed (${shortRevs}), so the landing stops before merging main; Git and the workspace are unchanged: ${error.message}`); }
   // The workspace's moved-code log (cli/landing.mjs), flushed before the
   // landing goes on; one that cannot be written stops it.
