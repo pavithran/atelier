@@ -436,13 +436,17 @@ export function insecureServer(url) {
 
 // A session driving Atelier by hand reads the project's AGENTS.md and the
 // output of the commands it runs, not the briefs the build and review agents
-// get. Until `atelier guide --role orchestrate` has been fetched for a
-// project on this Mac (recorded as guideFetched on its config entry), status,
-// ls and new end with one line that names it. A task workspace gets none: its
-// agent has the brief.
-export function guidePointer(projects, names, inWorkspace = false) {
+// get. Unless `atelier guide --role orchestrate` was fetched for a project on
+// this Mac within GUIDE_FRESH_MS (recorded as guideFetched on its config
+// entry), status, ls and new end with one line that names it. A fetch counts
+// for one session's length, not for good: a later session sees the line again.
+// A task workspace gets none: its agent has the brief.
+export const GUIDE_FRESH_MS = 4 * 60 * 60 * 1000;
+
+export function guidePointer(projects, names, inWorkspace = false, now = Date.now()) {
   if (inWorkspace) return null;
-  const unread = names.filter((n) => projects?.[n] && !projects[n].guideFetched);
+  const fresh = (at) => { const t = Date.parse(at); return Number.isFinite(t) && now - t < GUIDE_FRESH_MS && t <= now + 60000; };
+  const unread = names.filter((n) => projects?.[n] && !fresh(projects[n].guideFetched));
   if (!unread.length) return null;
   const one = unread.length === 1;
   return `Not read yet${one ? ` for ${unread[0]}` : ""}: atelier guide --role orchestrate${one ? ` --project ${unread[0]}` : ""} prints how to run, review and land work here, including atelier land --reviewer.`;
@@ -464,8 +468,11 @@ Review path: a finished task is reviewed before it merges. \`atelier land ID --r
 `;
 
 export function agentsMdOffer(markdown) {
-  if (markdown !== null && /atelier guide/.test(markdown)) return null;
-  return `${markdown === null ? "This checkout has no AGENTS.md" : "AGENTS.md does not mention atelier guide"}, so a session that reads only it never sees the review path. atelier init did not edit it; add this section:\n\n${AGENTS_SECTION}`;
+  const pointsAtGuide = markdown !== null && /atelier guide/.test(markdown);
+  const statesReview = markdown !== null && /atelier land\b[^\n]*--reviewer/.test(markdown);
+  if (pointsAtGuide && statesReview) return null;
+  const gap = markdown === null ? "This checkout has no AGENTS.md" : !pointsAtGuide ? "AGENTS.md does not mention atelier guide" : "AGENTS.md does not state the review path (atelier land --reviewer)";
+  return `${gap}, so a session that reads only it never sees the review path. atelier init did not edit it; add this section:\n\n${AGENTS_SECTION}`;
 }
 
 function pointToGuide(names) {

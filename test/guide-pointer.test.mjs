@@ -13,10 +13,17 @@ test("a project whose orchestrator guide was not fetched gets one line naming it
 
 test("the pointer is gone once the guide was fetched for that project", () => {
   const projects = { ourai: { path: "/work/ourai" }, other: { path: "/work/other" } };
-  assert.equal(markGuideFetched(projects, "ourai", "2026-10-09T00:00:00Z"), true);
-  assert.equal(guidePointer(projects, ["ourai"]), null);
+  const now = Date.parse("2026-10-09T12:00:00Z");
+  assert.equal(markGuideFetched(projects, "ourai", "2026-10-09T11:00:00Z"), true);
+  assert.equal(guidePointer(projects, ["ourai"], false, now), null);
   // Another project's guide is still unread.
-  assert.match(guidePointer(projects, ["ourai", "other"]), /--project other/);
+  assert.match(guidePointer(projects, ["ourai", "other"], false, now), /--project other/);
+});
+
+test("a fetch from an earlier session does not silence a new one", () => {
+  const projects = { ourai: { guideFetched: "2026-10-08T09:00:00Z" } };
+  assert.match(guidePointer(projects, ["ourai"], false, Date.parse("2026-10-09T09:00:00Z")), /--project ourai/);
+  assert.match(guidePointer({ ourai: { guideFetched: "junk" } }, ["ourai"]), /atelier guide/);
 });
 
 test("the pointer is not printed in a task workspace or for an unregistered project", () => {
@@ -42,6 +49,12 @@ test("init offers an AGENTS.md section that points at the guide and states the r
   assert.match(agentsMdOffer(null), /no AGENTS\.md/);
 });
 
-test("init offers nothing when AGENTS.md already points at the guide", () => {
-  assert.equal(agentsMdOffer("# x\n\nRun `atelier guide --role orchestrate`.\n"), null);
+test("init offers nothing when AGENTS.md points at the guide and states the review path", () => {
+  assert.equal(agentsMdOffer("# x\n\nRun `atelier guide --role orchestrate`.\nLand with `atelier land t1 --reviewer a/b`.\n"), null);
+});
+
+test("init still offers the section when AGENTS.md mentions the guide but not the review path", () => {
+  const offer = agentsMdOffer("# x\n\nRun `atelier guide --role orchestrate`.\n");
+  assert.match(offer, /review path/);
+  assert.ok(offer.includes(AGENTS_SECTION));
 });
