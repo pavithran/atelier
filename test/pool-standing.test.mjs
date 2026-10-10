@@ -139,6 +139,7 @@ const PATHS = [
   ['src/ledger.ts', 'askTierReview', 'actorStanding(', 'tier reviews'],
   ['src/ledger.ts', 'reaskReview', 'actorStanding(', 'a request carried when the head moves'],
   ['src/ledger.ts', 'reaskForCriteria', 'actorStanding(', 'a request carried when the criteria change'],
+  ['src/ledger.ts', 'handoffAllowed', 'this.assertStanding(', 'a task handed off to a new owner'],
 ];
 
 // The body of a top-level function or a class method, up to the next one.

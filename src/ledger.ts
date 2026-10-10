@@ -1901,6 +1901,8 @@ export class Ledger extends DurableObject<Env> {
     assertNotBlocked(item);
     if (item.state === "accepted") this.acceptedReworkAllowed(item, from);
     else if (item.state !== "claimed" && item.state !== "submitted") throw new RuleError("closed", `${id} is ${item.state}`);
+    const role = claimRole(item);
+    if (role) this.assertStanding(to, role);
     return item;
   }
 
