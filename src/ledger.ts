@@ -9,7 +9,7 @@ import {
   assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, RuleError, sameActor, validActor,
   type OverrideConfirmation, type OwnerFactor,
   assertBlockable, assertNotBlocked, blockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
-  actorFamily, assertSingleFamily, contributed, independentReviewerText, singleFamily,
+  actorFamily, assertSingleFamily, companyRefusal, contributed, independentReviewerText, singleFamily,
   type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
 } from "./rules";
@@ -950,7 +950,27 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     const record = mergeProject(row ? JSON.parse(row.value as string) : null, init, at);
     this.setProject(record, actor, at);
+    this.withdrawForeignRequests(singleFamily(record.policy), actor, at);
     return record;
+  }
+
+  // Under single-family mode, every live review request, open or claimed,
+  // that another company's model holds or is asked to give is withdrawn
+  // (t394): a switch to the mode leaves none such for a runner to take or
+  // finish. A request that names no model stays; whoever claims it is
+  // checked against the mode then (bindReview).
+  private withdrawForeignRequests(single: PoolFamily | null, actor: string, at: string): void {
+    if (!single) return;
+    const live = this.sql.exec(`SELECT id, item, head, dispatch, tier, claimedBy FROM review_requests WHERE state IN ('open', 'claimed') ORDER BY id`).toArray();
+    for (const r of live) {
+      const d = JSON.parse(r.dispatch as string) as Dispatch;
+      const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
+      const holder = typeof r.claimedBy === "string" ? r.claimedBy : null;
+      const refusal = (holder && companyRefusal(holder, single)) || (asked && companyRefusal(asked, single)) || (!asked && d.model && companyRefusal(`any/${d.model}`, single));
+      if (!refusal) continue;
+      this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
+      this.log(r.item as string, actor, "review.withdrawn", { head: r.head as string, reviewer: holder ?? asked, reason: `the project switched to single-family mode (${single})`, ...(r.tier === 1 ? { tier: true } : {}) }, at);
+    }
   }
 
   setProject(record: ProjectRecord, actor: string, at = new Date().toISOString()): void {
@@ -1128,7 +1148,8 @@ export class Ledger extends DurableObject<Env> {
       const wanted = r.wanted === 1;
       const contributors = contributorsOf(item);
       if (asked.some((a) => sameActor(a, reviewer)) || contributed(reviewer, contributors)) continue;
-      if (!wanted && independenceRefusal(reviewer, contributors, singleFamily(this.project().policy))) continue;
+      const single = singleFamily(this.project().policy);
+      if (companyRefusal(reviewer, single) || (!wanted && independenceRefusal(reviewer, contributors, single))) continue;
       const need = reviewNeeded({
         item, part: false, policy: this.project().policy,
         evidence: this.evidenceFor(id), reviews: this.reviewsFor(id),
@@ -1628,6 +1649,10 @@ export class Ledger extends DurableObject<Env> {
     // only an assessor's; the executor role is for taking work, not reviewing.
     const policy = this.project().policy;
     if (!policy.agents) assertEligible(r.by, policy, this.owner);
+    // Under single-family mode no other company's model reviews, however its
+    // review comes (t394); the owner's own review is the owner's, not a model's.
+    const foreign = sameActor(r.by, this.owner) ? null : companyRefusal(r.by, singleFamily(policy));
+    if (foreign) throw new RuleError("single_family", `${foreign}: its review is not recorded; return to cross-family review with atelier init --cross-family`, 409);
     const item = this.item(r.itemId);
     assertReviewAllowed(item, proved);
     if (item.state !== "accepted") assertLive(item);
@@ -3396,7 +3421,7 @@ export class Ledger extends DurableObject<Env> {
         const d = JSON.parse(r.dispatch as string) as Dispatch;
         const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
         const refusal = !asked ? null
-          : r.tier === 1 ? (contributed(asked, contributors) ? `${asked} contributed to it, and nobody reviews their own work` : null)
+          : r.tier === 1 ? (contributed(asked, contributors) ? `${asked} contributed to it, and nobody reviews their own work` : companyRefusal(asked, single))
             : independenceRefusal(asked, contributors, single);
         if (!asked || !refusal) continue;
         this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
@@ -3569,6 +3594,10 @@ export class Ledger extends DurableObject<Env> {
     if (item.head) this.reaskReview(itemId, new Date().toISOString());
     if (item.owner && sameActor(item.owner, actor)) throw new RuleError("self_review", "an owner cannot review their own item", 403);
     if (contributed(actor, contributorsOf(item))) throw new RuleError("self_review", `${actor} contributed to ${itemId} and cannot review it`, 403);
+    // The company restriction in force now binds, whatever it was when the
+    // request was made (t394).
+    const foreign = companyRefusal(actor, singleFamily(this.project().policy));
+    if (foreign) throw new RuleError("single_family", `${foreign}: it cannot claim ${itemId}'s review`, 403);
     // The gate's request and a tier request may both be open: the one asked
     // of this actor is bound, or else the oldest, which refuses below.
     const rows = this.sql.exec(`SELECT id, head, dispatch, wanted, tier FROM review_requests WHERE item = ? AND state = 'open' ORDER BY id`, itemId).toArray();
@@ -3898,7 +3927,8 @@ export class Ledger extends DurableObject<Env> {
     const contributors = contributorsOf(item);
     if (contributed(reviewer, contributors)) return;
     const policy = this.project().policy;
-    if (!wanted && independenceRefusal(reviewer, contributors, singleFamily(policy))) return;
+    const single = singleFamily(policy);
+    if (companyRefusal(reviewer, single) || (!wanted && independenceRefusal(reviewer, contributors, single))) return;
     const need = reviewNeeded({
       item, part: false, policy,
       evidence: this.evidenceFor(itemId), reviews: this.reviewsFor(itemId),

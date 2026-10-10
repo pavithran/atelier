@@ -616,6 +616,14 @@ export function familyRefusal(reviewer: string, contributors: readonly string[],
   return same ? `same family as contributor ${same} (${family})` : null;
 }
 
+// Null unless the project runs in single-family mode and `actor` is not one
+// of that company's models; then why it may not review there. Every path a
+// review comes by asks it (t394): the gate, a review recorded directly, a
+// claimed request, and each request asked or carried.
+export function companyRefusal(actor: string, single: PoolFamily | null): string | null {
+  return single && actorFamily(actor) !== single ? `${actor} is not one of ${single}'s models, and this project runs in single-family mode (${single})` : null;
+}
+
 // Minimal glob: `**` crosses directories, `*` does not, everything else literal.
 // Case-sensitive, as Git's paths are; `matchesFolded` is the matcher that is not.
 // A newline is a path character like any other to Git, so `**` crosses one
@@ -897,7 +905,7 @@ export function changeClass(paths: string[], policy: ProjectPolicy): ChangeClass
 
 export function classRequirement(kind: ChangeClass, single: PoolFamily | null = null): string {
   if (kind === "protected") return single ? `Protected change: needs one review from a different ${single} model (single-family mode)` : "Protected change: needs one review from another model family";
-  if (kind === "coordinated") return "Coordinated change: needs one review from a different model than every contributor";
+  if (kind === "coordinated") return single ? `Coordinated change: needs one review from a different ${single} model than every contributor (single-family mode)` : "Coordinated change: needs one review from a different model than every contributor";
   return "Direct change: needs no review";
 }
 
@@ -920,12 +928,14 @@ export const protectedNeed = (single: PoolFamily | null): string => (single ? `t
 // review request that model claimed for that head (unprovedReview). A tier
 // review's approval never is: the tier reviews beside the gate, not for it.
 // Under single-family mode (`single`) a protected change needs instead a
-// different model of that company (familyRefusal); a contributor never
+// different model of that company (familyRefusal), and no other company's
+// model counts for any change, coordinated included; a contributor never
 // counts in either mode.
 export function independentApproval(r: Review, kind: "protected" | "coordinated", contributors: readonly string[], owner = DEFAULT_OWNER, single: PoolFamily | null = null): boolean {
   if (!r.approve || r.tier || sameActor(r.by, owner) || !validActor(r.by) || !r.by.includes("/")) return false;
   if (kind === "protected" && unprovedReview(r)) return false;
   if (contributed(r.by, contributors)) return false;
+  if (companyRefusal(r.by, single)) return false;
   return kind === "coordinated" || familyRefusal(r.by, contributors, single) === null;
 }
 
