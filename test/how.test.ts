@@ -68,7 +68,11 @@ test("the review code is called by the ledger and the runner, and the page says 
   // limits, and the CLI reads the reply limit alone, to cut what it keeps of
   // an unparsable reply (t407); neither calls any of the review code.
   const sharesTypes = new Set([join("src", "plans", "brief.ts"), join("cli", "commands", "review-unparsable.mjs")]);
-  const callers = [...sources("src"), ...sources("cli")].filter((file) => !file.startsWith(inside) && !sharesTypes.has(file) && imports.test(read(file)));
+  // The landing's triage before the review (t475) lives in src/review/triage.ts
+  // and is not review code: the landing imports it and nothing else here.
+  const triageOnly = (file: string) => file === join("cli", "land.mjs")
+    && [...read(file).matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*)["'](?:[^"']*\/)?review\/([^"']+)["']/g)].every((m) => m[1] === "triage.ts");
+  const callers = [...sources("src"), ...sources("cli")].filter((file) => !file.startsWith(inside) && !sharesTypes.has(file) && !triageOnly(file) && imports.test(read(file)));
   assert.deepEqual([...callers].sort(), ["cli/runner.mjs", "src/ledger.ts"], "the review code should be called by the ledger and the runner alone");
   const requests = ORCHESTRATOR.find((p) => p.name === "Review requests and runner job")!;
   assert.ok(requests.built);

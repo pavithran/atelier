@@ -1,5 +1,7 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
@@ -10,6 +12,8 @@ import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-leas
 import { unoffered } from "../src/dispatch/rules.ts";
 import { contributorsOf, roleRefusal, sameActor } from "../src/rules.ts";
 import { landingVerdict } from "../src/landing-verdict.ts";
+import { criteriaOf } from "../src/criteria.ts";
+import { decideTriage, parseTriage, recordedTriage, resolveTriage, sameBinding, triageBrief, triageCriteria, triageLines, triageModelRefusal, triageRecord } from "../src/review/triage.ts";
 
 // atelier land (t187): the project owner lands one task whole, taking the
 // project's landing lease on the server so two sessions never race main.
@@ -100,6 +104,23 @@ import { landingVerdict } from "../src/landing-verdict.ts";
 // still refused as expired is refreshed and tried once more. A refresh re-claims
 // the task as its current holder, or its workspace's builder when released,
 // never as the owner, whose claim would take the task over.
+//
+// Before the review is asked for, a landing with a triage model (t475:
+// --triage H/M, else the project's triage setting; neither is none) has
+// that model read the pushed head's diff against its merge base with main
+// and the task's acceptance criteria as they are now, and goes on only when
+// it calls every criterion met. Anything else — a criterion not met or
+// unsure, no criteria, a reply that cannot be read, a timeout, a model the
+// pool refuses or that cannot be run — stops the landing before the task is
+// submitted (in a Workflow landing, before the head is reported, so the
+// Workflow submits nothing): the findings are shown with the commands to
+// run it again, the lease is released and the task stays its holder's, its
+// work pushed. The owner may bypass the triage (--no-triage REASON) or go
+// past a stop (--override-triage REASON); either is recorded on the ledger,
+// with the head and the criteria binding, before the landing goes on, and a
+// record the server refuses stops it. Triage is kept as land.triage events
+// (src/review/triage.ts), never as reviews, so the gate, the review rounds
+// and the review rules after it are what they were.
 
 const POLL_MS = Number(process.env.ATELIER_LAND_POLL_MS ?? 5000);
 // The review wait outlasts a build on the runner (its task timeout is 45
@@ -113,6 +134,8 @@ const WAIT_TIMEOUT_MS = Number(process.env.ATELIER_LAND_WAIT_TIMEOUT ?? 3 * 60 *
 // A write token lapsing within this span is refreshed before the lease, so
 // it outlasts the merge, the regeneration and the push that follow.
 const TOKEN_WINDOW_MS = Number(process.env.ATELIER_LAND_TOKEN_WINDOW_MS ?? 30 * 60_000);
+// How long the triage model may take before the landing stops for it.
+const TRIAGE_TIMEOUT_MS = Number(process.env.ATELIER_LAND_TRIAGE_TIMEOUT ?? 30 * 60_000);
 // How Artifacts refuses a push whose token has lapsed or was revoked.
 const EXPIRED_TOKEN = /Invalid or expired token/i;
 
@@ -140,7 +163,8 @@ export async function runLand(io) {
   const checksMode = args.checks;
   if (checksMode !== undefined && !workflow) die("--checks says where a Workflow landing runs the required checks; give it with --workflow (the plain landing always runs them here, in a clean clone)");
   if (checksMode !== undefined && checksMode !== "local" && checksMode !== "container") die(`--checks takes local or container: atelier land ${id} --workflow --checks local|container`);
-  if (releaseLease && (dryRun || noReview || wait || reviewer !== undefined || workflow)) die("--release-lease frees the project's landing lease and does nothing else; give it alone");
+  const triageFlags = { triage: args.triage, noTriage: args["no-triage"], override: args["override-triage"] };
+  if (releaseLease && (dryRun || noReview || wait || reviewer !== undefined || workflow || Object.values(triageFlags).some((v) => v !== undefined))) die("--release-lease frees the project's landing lease and does nothing else; give it alone");
   if (workflow && dryRun) die("--dry-run and --workflow together say two things: --dry-run prints what a landing would do and changes nothing, and --workflow starts the landing as a Cloudflare Workflow that does it; give one or the other");
   if (reviewer !== undefined && (typeof reviewer !== "string" || !/^[^/\s]+\/[^/\s]+$/.test(reviewer))) {
     die(`--reviewer needs harness/model, such as codex/gpt-6-astra: atelier land ${id} --reviewer H/M`);
@@ -267,6 +291,11 @@ export async function runLand(io) {
     }
   }
   const regenerate = typeof d0.policy?.regenerate === "string" ? d0.policy.regenerate : null;
+  // The triage this landing runs: --triage, then the project's setting (its
+  // policy's, else this Mac's registration of the project), else none.
+  // Conflicting flags are refused here, before the lease or any change.
+  const triage = resolveTriage({ ...triageFlags, project: d0.policy?.triage ?? p?.triage ?? undefined });
+  if ("error" in triage) die(triage.error);
 
   if (dryRun) {
     // Where the dry run would wait: behind the holder of the lease, and
@@ -279,7 +308,7 @@ export async function runLand(io) {
     print(`  3. ${regenerate ? `regenerate the project's fixtures with \`${regenerate}\` and commit what changes; a merge that conflicts only in files that command rewrites is settled by taking either side and regenerating` : "regenerate nothing (the project declares no regenerate command)"}`);
     print(`  4. push the merged head to ${id}'s fork`);
     print(`  5. run the required checks (${d0.policy?.checks?.join(", ") || "none"}) in a clean clone of the pushed head`);
-    print(`  6. submit ${id} with a summary of the merge`);
+    print(`  6. ${await dryRunTriage(io, triage, d0.item)}submit ${id} with a summary of the merge`);
     print(noReview
       ? "  7. skip the review (--no-review): leave the task submitted for you to settle by hand"
       : `  7. ${reviewer ? `ask ${reviewer} to review` : "ask the server for the independent review the gate needs and wait for"} the verdict at the pushed head, for up to ${Math.round(REVIEW_TIMEOUT_MS / 60000)} minutes`);
@@ -300,7 +329,7 @@ export async function runLand(io) {
   if (workflow) {
     if (wait) print("--wait is the Workflow's own behaviour: it queues for the lease in the order the landings asked, and takes it when its turn comes.");
     await ensureWorkspaceToken(io, { dir, id, itemPath, item: d0.item });
-    return runLandWorkflow(io, { d0, itemPath, dir, regenerate });
+    return runLandWorkflow(io, { d0, itemPath, dir, regenerate, triage });
   }
   await ensureWorkspaceToken(io, { dir, id, itemPath, item: d0.item });
 
@@ -508,7 +537,7 @@ export async function runLand(io) {
     // regenerate command can settle, raise the merged route level where
     // both sides raised it and regenerate the fixtures — the workspace half
     // of a landing, shared with the Workflow executor (t280).
-    const { head, mainHead, mergedIn } = await mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, guard: guardLease, d0 });
+    const { head, mainHead, mergedIn, target } = await mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, guard: guardLease, d0 });
 
     // Push, checks and submission run as this CLI's own commands in the
     // workspace, so their output is their own and a failure still ends the
@@ -517,6 +546,11 @@ export async function runLand(io) {
     await pushRefreshing(io, { dir, id, itemPath }, () => step("push", ["push"], dir, { head }));
     print(`Pushed ${short(head)} to ${id}'s fork.`);
     await step("check", ["check"], dir);
+    // The triage, before the submission: a submitted task can draw an
+    // automatic review request, so a triage that stops leaves the task
+    // claimed by its holder and nothing asked of a reviewer (t475).
+    const triageAt = { triage, dir, id, itemPath, head, mainHead, target, record, guard: guardLease };
+    let triaged = await triageGate(io, triageAt);
     await step("submit", ["submit", "--summary", mergedIn ? `Merged with main at ${short(mainHead)}; the required checks pass.` : "The required checks pass."], dir);
 
     // The review: the server says whether the gate needs one and who reviews;
@@ -530,7 +564,10 @@ export async function runLand(io) {
     } else {
       // A named reviewer is a review the owner asks for, so the server makes
       // the request even where the gate needs none, and refuses, with its
-      // reason, where the gate cannot proceed at all.
+      // reason, where the gate cannot proceed at all. The triage is asked
+      // first whether it still stands: criteria changed since it ran (by
+      // the submission, or the owner meanwhile) triage again.
+      triaged = await triageGate(io, { ...triageAt, previous: triaged });
       guardLease();
       const ask = await request("POST", `${itemPath}/review-request`, reviewer ? { reviewer, wanted: true } : {});
       if (!ask.needed && reviewer) throw new StepError(`the server made no review request for ${reviewer} (${ask.reason}); ${id} stays submitted`);
@@ -651,6 +688,149 @@ function landRecorder(io, itemPath) {
     try { await io.request("POST", `${itemPath}/land`, { step, ms: Math.max(0, Math.round(ms)), ...data }); }
     catch (error) { io.print(`Warning: the landing's ${step} step could not be recorded: ${error.message}`); }
   };
+}
+
+// ── the triage before the review (t475) ─────────────────────────────────────
+
+// The adapter each harness's triage runs through (bin/harness), as a runner
+// runs a review: read-only, the prompt on standard input, the answer to a file.
+const TRIAGE_ADAPTERS = { "claude-code": "atelier-claude.mjs", codex: "atelier-codex.mjs", opencode: "atelier-opencode.mjs", antigravity: "atelier-agy.mjs" };
+
+// What the dry run says of the triage: the choice and where it came from,
+// and whether the pool would let the model triage, read without calling it.
+async function dryRunTriage(io, triage, item) {
+  if (triage.mode === "off") return "run no triage (no --triage, and the project sets no triage), then ";
+  if (triage.mode === "bypass") return `record your bypass of the triage (--no-triage: "${triage.reason}") with the pushed head and the criteria binding, stopping if the server does not record it, then `;
+  const count = triageCriteria(item?.accept ?? [], item?.partAccept ?? null).length;
+  let access = "";
+  try {
+    const refusal = triageModelRefusal(triage.actor, await io.request("GET", "/models"));
+    if (refusal) access = `; as the pool stands it would stop: ${refusal}`;
+  } catch (error) { access = `; the model pool could not be read (${error.message})`; }
+  const against = count ? `${io.id}'s ${count} acceptance criteri${count === 1 ? "on" : "a"}` : `${io.id}'s acceptance criteria, of which it has none, so the triage would stop and say so`;
+  return `triage the pushed head's diff against its merge base with main and ${against} with ${triage.actor} (from ${triage.source})${access}, going on only when every criterion is met and otherwise stopping before any review request${triage.override ? `, unless the stop is overridden (--override-triage: "${triage.override}"), which is recorded first` : ""}; then `;
+}
+
+// The triage gate. Answers the binding the triage stands for (null when the
+// landing runs none), or throws the StepError that stops the landing before
+// the review request. `previous` is a binding triaged earlier in this
+// landing: while the head, the merge base and the criteria are still those,
+// it stands and nothing is asked again.
+async function triageGate(io, { triage, dir, id, itemPath, head, mainHead, target, record, guard, previous = null }) {
+  if (triage.mode === "off") return null;
+  const { request, git, print } = io;
+  const retry = `atelier land ${id}${io.args?.workflow === true ? " --workflow" : ""}${triage.mode === "model" && triage.source === "--triage" ? ` --triage ${triage.actor}` : ""}`;
+  const base = git(["merge-base", head, mainHead], { cwd: dir });
+  // A record the landing cannot go on without: the owner's bypass or
+  // override. The server records it only from the signed-in project owner,
+  // with the actor it authenticated; any failure stops the landing.
+  const recordStrict = async (ms, data, what) => {
+    try { await request("POST", `${itemPath}/land`, { step: "triage", ms: Math.max(0, Math.round(ms)), ...data }); }
+    catch (error) { throw new StepError(`${what} could not be recorded on the ledger, so the landing stops before the review request: ${error.message}. Only the project owner, signed in, may record it; nothing was submitted for review, and ${id} stays with its holder. Run ${retry} again once the server records it`); }
+  };
+  let stale = previous;
+  for (let attempt = 1; ; attempt++) {
+    guard();
+    const d = await request("GET", itemPath);
+    const binding = { head, base, criteria: criteriaOf(d.item ?? {}) };
+    if (stale && sameBinding(stale, binding)) return stale;
+    if (stale) {
+      if (attempt > 3) throw new StepError(`${id}'s acceptance criteria kept changing while it was triaged (now bound to ${short(binding.criteria)}), so the landing stops before the review request; nothing was submitted for review, and ${id} stays with its holder. Run ${retry} again once the criteria settle`);
+      print(`${id}'s acceptance criteria changed since the triage (binding ${short(stale.criteria)}, now ${short(binding.criteria)}); triaging again at ${short(head)}.`);
+    }
+    const t0 = Date.now();
+    if (triage.mode === "bypass") {
+      guard();
+      await recordStrict(Date.now() - t0, triageRecord(binding, "bypassed", { reason: triage.reason }), "The bypass of the triage (--no-triage)");
+      print(`Triage bypassed by the project owner (--no-triage: ${triage.reason}); recorded at ${short(head)} with criteria binding ${short(binding.criteria)}. The review rules apply as before.`);
+      return binding;
+    }
+    const criteria = triageCriteria(d.item?.accept ?? [], d.item?.partAccept ?? null);
+    const outcome = await runTriage(io, { triage, dir, id, item: d.item ?? {}, events: d.events ?? [], binding, criteria, target });
+    // Criteria changed while the model read them: its result is for
+    // criteria no longer the task's, so the triage runs again on the new.
+    if (!outcome.reused) {
+      const now = await request("GET", itemPath);
+      if (criteriaOf(now.item ?? {}) !== binding.criteria) { stale = binding; continue; }
+    }
+    const lines = outcome.results ? triageLines(outcome.results, criteria) : [];
+    const unverified = outcome.unverified?.length ? [`Runtime behaviour the triage could not verify: ${outcome.unverified.join("; ")}`] : [];
+    guard();
+    if (outcome.passed) {
+      if (outcome.reused) print(`The triage by ${triage.actor} already found every criterion met at ${short(head)} (merge base ${short(base)}, criteria ${short(binding.criteria)}); it stands.`);
+      else {
+        await record("triage", Date.now() - t0, triageRecord(binding, "passed", { triager: triage.actor, statuses: outcome.results }));
+        print([`Triage by ${triage.actor}: every one of the ${criteria.length} criteri${criteria.length === 1 ? "on is" : "a are"} met at ${short(head)} (merge base ${short(base)}, criteria ${short(binding.criteria)}).`, ...lines, ...unverified].join("\n"));
+      }
+      return binding;
+    }
+    await record("triage", Date.now() - t0, triageRecord(binding, "stopped", { triager: triage.actor, statuses: outcome.results ?? undefined, reason: outcome.why }));
+    const findings = [`The triage of ${id} by ${triage.actor} stopped at ${short(head)} (merge base ${short(base)}, criteria ${short(binding.criteria)}): ${outcome.why}.`, ...lines, ...unverified];
+    if (triage.override) {
+      await recordStrict(Date.now() - t0, triageRecord(binding, "overridden", { triager: triage.actor, reason: triage.override }), "The override of the stopped triage (--override-triage)");
+      print([...findings, `The project owner overrode the stopped triage (--override-triage: ${triage.override}); recorded at ${short(head)} with criteria binding ${short(binding.criteria)}. The review rules apply as before.`].join("\n"));
+      return binding;
+    }
+    throw new StepError([...findings,
+      `The landing stops before the review request: nothing was submitted for review, the merged head stays pushed to ${id}'s fork, and ${id} stays with its holder. Fix what the triage found and run ${retry} again, which triages the new head; or, as the project owner, go past this stop with ${retry} --override-triage "REASON", or skip the triage with ${retry} --no-triage "REASON" — either is recorded with the head and the criteria binding before the landing goes on.`].join("\n"));
+  }
+}
+
+// One triage: the model's answer for the binding, or why there is none.
+// Answers { passed, results?, unverified?, why?, reused? }.
+async function runTriage(io, { triage, dir, id, item, events, binding, criteria, target }) {
+  if (!criteria.length) return { passed: false, why: `${id} has no acceptance criteria (its list is empty), so the triage has nothing to judge the change against` };
+  if (recordedTriage(events, binding, "passed", triage.actor)) return { passed: true, reused: true };
+  let pool;
+  try { pool = await io.request("GET", "/models"); }
+  catch (error) { return { passed: false, why: `the triage is unavailable: the model pool could not be read (${error.message})` }; }
+  const refusal = triageModelRefusal(triage.actor, Array.isArray(pool) ? pool : []);
+  if (refusal) return { passed: false, why: `the triage is unavailable: ${refusal}` };
+  const slash = triage.actor.indexOf("/");
+  const diff = io.git(["diff", binding.base, binding.head, "--"], { cwd: dir, raw: true });
+  const changedPaths = io.git(["diff", "--name-only", "-z", binding.base, binding.head, "--"], { cwd: dir, raw: true }).split("\0").filter(Boolean);
+  const brief = triageBrief({ project: io.name, id, title: String(item.title ?? id), brief: String(item.brief ?? ""), task: item.accept ?? [], part: item.partAccept ?? null, binding, target: target ?? "main", changedPaths });
+  const limit = io.triageTimeoutMs ?? TRIAGE_TIMEOUT_MS;
+  const ask = { actor: triage.actor, harness: triage.actor.slice(0, slash), model: triage.actor.slice(slash + 1), brief, diff, dir, timeoutMs: limit };
+  const run = io.triage ?? ((req) => runTriageModel(io, req));
+  let timer;
+  const answer = await Promise.race([
+    Promise.resolve().then(() => run(ask)).catch((error) => ({ error: error?.message ?? String(error) })),
+    new Promise((ok) => { timer = setTimeout(() => ok({ timedOut: true }), limit); timer.unref?.(); }),
+  ]);
+  clearTimeout(timer);
+  const minutes = limit < 1000 ? `${limit} ms` : limit < 60_000 ? `${Math.round(limit / 1000)} seconds` : `${Math.round(limit / 60_000)} minutes`;
+  if (answer?.timedOut) return { passed: false, why: `the triage timed out: ${triage.actor} gave no answer within ${minutes}` };
+  if (answer?.error || typeof answer?.reply !== "string") return { passed: false, why: `the triage is unavailable: ${triage.actor} could not be run (${answer?.error ?? "it gave no answer"})` };
+  const parsed = parseTriage(answer.reply, criteria.length);
+  if (!parsed.ok) return { passed: false, why: `the triage's reply could not be read: ${parsed.error}` };
+  const { proceed, notMet, unsure } = decideTriage(parsed.results);
+  if (proceed) return { passed: true, results: parsed.results, unverified: parsed.unverified };
+  const said = [notMet.length ? `${notMet.length === 1 ? "criterion" : "criteria"} ${notMet.join(", ")} not met` : null, unsure.length ? `unsure of ${unsure.length === 1 ? "criterion" : "criteria"} ${unsure.join(", ")}` : null].filter(Boolean).join("; ");
+  return { passed: false, why: said, results: parsed.results, unverified: parsed.unverified };
+}
+
+// The triage model, run through its harness's adapter as a read-only review
+// job in the workspace, its own process group bounded by the time limit.
+// The brief and the diff are written outside the workspace, so nothing the
+// triage reads is left in it to commit.
+async function runTriageModel(io, { harness, model, brief, diff, dir, timeoutMs }) {
+  const adapter = TRIAGE_ADAPTERS[harness];
+  if (!adapter) return { error: `no adapter for ${harness}` };
+  const tmp = mkdtempSync(join(tmpdir(), "atelier-triage-"));
+  try {
+    const briefPath = join(tmp, "brief.md"), diffPath = join(tmp, "diff.patch"), replyPath = join(tmp, "reply.txt");
+    writeFileSync(briefPath, brief);
+    writeFileSync(diffPath, diff);
+    const r = await runGroup([process.execPath, fileURLToPath(new URL(`../bin/harness/${adapter}`, import.meta.url)), model, briefPath, dir, "undefined", diffPath, replyPath], { cwd: dir, env: io.env ?? process.env, timeoutMs });
+    if (r.timedOut) return { timedOut: true };
+    if (r.error || r.status !== 0) {
+      const tail = io.redact ? io.redact(`${r.stderr ?? ""}`, io.secrets?.() ?? []) : `${r.stderr ?? ""}`;
+      return { error: `${r.error ? r.error.message : `exit ${r.status}`}${tail.trim() ? `: ${tail.trim().split("\n").slice(-3).join(" | ").slice(0, 400)}` : ""}` };
+    }
+    if (!existsSync(replyPath)) return { error: "it wrote no answer" };
+    return { reply: readFileSync(replyPath, "utf8") };
+  } finally { rmSync(tmp, { recursive: true, force: true }); }
 }
 
 // The workspace's write token, refreshed by re-claiming the task as the
@@ -918,7 +1098,7 @@ async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, g
     }
     await record("regenerate", Date.now() - start, { command: regenerate, changed });
   }
-  return { head: git(["rev-parse", "HEAD"], { cwd: dir }), mainHead, mergedIn };
+  return { head: git(["rev-parse", "HEAD"], { cwd: dir }), mainHead, mergedIn, target: base.defaultBranch };
 }
 
 // ── the landing as a Cloudflare Workflow (t280) ────────────────────────────
@@ -949,7 +1129,7 @@ async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, g
 // again attaches and goes on from the stage it reached.
 const LIVE = ["queued", "running", "waiting", "waitingForPause", "paused", "rollingBack"];
 
-async function runLandWorkflow(io, { d0, itemPath, dir, regenerate }) {
+async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, triage }) {
   const { args, name, id, p, request, git, die, print } = io;
   const reviewer = args.reviewer, noReview = args["no-review"] === true;
   const askedChecks = args.checks ?? "local";
@@ -1077,6 +1257,12 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate }) {
           guard();
           print(`The required checks pass at ${short(merged.head)}; reporting the head to the landing Workflow.`);
         } else print(`Pushed ${short(merged.head)} to ${id}'s fork; reporting it to the landing Workflow.`);
+        // The triage, before the head is reported: the Workflow submits and
+        // asks for the review only once it has the head, so a triage that
+        // stops ends the landing (the failed report below) with nothing
+        // submitted and no review asked for (t475).
+        await triageGate(io, { triage, dir, id, itemPath, head: merged.head, mainHead: merged.mainHead, target: merged.target, record, guard });
+        guard();
         await send("workspace", { round, head: merged.head, mainHead: merged.mainHead, mergedIn: merged.mergedIn });
       } catch (error) {
         const conflicts = Array.isArray(error.data?.conflicts) && error.data.conflicts.length ? error.data.conflicts : null;
