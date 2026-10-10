@@ -62,8 +62,9 @@ test("the review code is called by the ledger and the runner, and the page says 
   const inside = join("src", "review") + sep;
   const imports = /(?:\bfrom\s*|\bimport\s*\(\s*)["'](?:[^"']*\/)?review\//;
   // The part brief (src/plans/brief.ts) shares the verdict's finding type and
-  // limits; it calls none of the review code.
-  const sharesTypes = new Set([join("src", "plans", "brief.ts")]);
+  // limits, and the CLI reads the reply limit alone, to cut what it keeps of
+  // an unparsable reply (t407); neither calls any of the review code.
+  const sharesTypes = new Set([join("src", "plans", "brief.ts"), join("cli", "atelier.mjs")]);
   const callers = [...sources("src"), ...sources("cli")].filter((file) => !file.startsWith(inside) && !sharesTypes.has(file) && imports.test(read(file)));
   assert.deepEqual([...callers].sort(), ["cli/runner.mjs", "src/ledger.ts"], "the review code should be called by the ledger and the runner alone");
   const requests = ORCHESTRATOR.find((p) => p.name === "Review requests and runner job")!;

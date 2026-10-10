@@ -9,7 +9,7 @@ import {
   assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, contributorsOf, DEFAULT_OWNER, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
   assertBlockable, assertNotBlocked, blockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
-  type Block, type SecretFlag, type SecretClearance, type ItemFields,
+  type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
 } from "./rules";
 import { cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, sameCriteria } from "./criteria.ts";
@@ -37,6 +37,7 @@ import type { PlanPartReview, PlanView } from "./plans/show.ts";
 import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { listDecisions, recordDecision, standingDecisions, withdrawDecision, type Decision, type DecisionStore, type DecisionView } from "./decisions.ts";
 import { reviewBrief } from "./review/brief.ts";
+import { VERDICT_LIMITS } from "./review/verdict.ts";
 import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import type { SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
@@ -412,6 +413,12 @@ export class Ledger extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
+    // Reviewers' replies no verdict could be read from (t407) are kept in
+    // their own table, below beside the reviews, one row each in the order
+    // they were kept. A reply lives there and not in its event: the
+    // reliability record replays every event of every project for each page
+    // and each routing, and a reply of up to 100 KB there would bloat them
+    // all; the event says the rest.
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS projects (name TEXT PRIMARY KEY, json TEXT NOT NULL);
@@ -433,6 +440,9 @@ export class Ledger extends DurableObject<Env> {
         id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, json TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS reviews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS unparsable (
         id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, json TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS notifications (
@@ -1195,9 +1205,10 @@ export class Ledger extends DurableObject<Env> {
 
   // The project owner puts an open task in the queue for a kind of runner.
   // Only the owner, for now; an orchestrator with an approved plan comes later.
-  // A task held by an agent (claimed, or submitted and perhaps rejected) can
+  // A task held by an agent (claimed, submitted or accepted) can
   // be sent back to a runner too: the holder is released and the task queued
-  // in one step, keeping its workspace and commits for the next builder. The
+  // in one step, keeping its workspace, commits and acceptance history for
+  // the next builder. An accepted task must be submitted and accepted again. The
   // caller revokes the holder's write token first (see checkDispatch), and
   // passes its id as `token`. A dispatch naming the merge-main job sends a
   // task whose landing conflicted with main back to its builder (t243): the
@@ -1211,7 +1222,7 @@ export class Ledger extends DurableObject<Env> {
     const held = this.holds(item);
     if (held) {
       this.dropToken(id, token);
-      this.update(id, { owner: null, state: "open" }, d.at);
+      this.update(id, { owner: null, state: "open", accepted_head: null }, d.at);
       this.log(id, actor, "item.released", { from: item.owner, note: "dispatched again by the project owner" }, d.at);
     }
     this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), d.at, id);
@@ -1235,13 +1246,14 @@ export class Ledger extends DurableObject<Env> {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner dispatches", 403);
     const item = this.item(id);
     this.assertNotPlanned(item);
+    if (item.state === "accepted") this.acceptedReworkAllowed(item, actor);
     if (!this.holds(item)) assertDispatchable(item);
     if (input) this.assertMergeMainWorkspace(item, makeDispatch(input, actor, new Date().toISOString()));
     return item;
   }
 
   private holds(item: Item): boolean {
-    return !!item.owner && (item.state === "claimed" || item.state === "submitted");
+    return !!item.owner && ["claimed", "submitted", "accepted"].includes(item.state);
   }
 
   undispatch(id: string, actor: string): Item {
@@ -1664,8 +1676,16 @@ export class Ledger extends DurableObject<Env> {
     assertHandoffTarget(to, this.owner);
     assertEligible(to, this.project().policy, this.owner);
     assertNotBlocked(item);
-    if (item.state !== "claimed" && item.state !== "submitted") throw new RuleError("closed", `${id} is ${item.state}`);
+    if (item.state === "accepted") this.acceptedReworkAllowed(item, from);
+    else if (item.state !== "claimed" && item.state !== "submitted") throw new RuleError("closed", `${id} is ${item.state}`);
     return item;
+  }
+
+  private acceptedReworkAllowed(item: Item, actor: string): void {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner sends accepted work back to building", 403);
+    this.assertNotPlanned(item);
+    const landing = this.landing(item.id);
+    if (landing) throw new RuleError("landing", `${item.id} is being merged at ${landing.slice(0, 8)} and holds the landing lease; finish atelier merge ${item.id}, or cancel an unpublished merge with atelier merge ${item.id} --cancel before sending it back to building`, 409);
   }
 
   // The holder or the project owner blocks a task with the reason it cannot
@@ -1830,7 +1850,7 @@ export class Ledger extends DurableObject<Env> {
     const item = this.handoffAllowed(id, from, to, note);
     this.dropToken(id, token);
     const at = new Date().toISOString();
-    this.update(id, { owner: to, state: "claimed" }, at);
+    this.update(id, { owner: to, state: "claimed", accepted_head: null }, at);
     this.log(id, from, "item.handoff", { from: item.owner, to, note }, at, proved);
     return this.item(id);
   }
@@ -2289,6 +2309,12 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`SELECT json FROM reviews WHERE item_id = ? ORDER BY id`, id).toArray().map((r) => JSON.parse(r.json as string));
   }
 
+  // The unparsable replies kept on a task (t407), oldest first, as the detail
+  // route gives them to `atelier show ID --reviews`.
+  unparsableFor(id: string): UnparsableReply[] {
+    return this.sql.exec(`SELECT json FROM unparsable WHERE item_id = ? ORDER BY id`, id).toArray().map((r) => JSON.parse(r.json as string));
+  }
+
   wrapSession(value: Record<string, unknown>, actor: string): SessionNote {
     this.project();
     if (!validActor(actor)) throw new RuleError("bad_actor", "a session needs a valid actor", 400);
@@ -2402,7 +2428,7 @@ export class Ledger extends DurableObject<Env> {
       : null;
     // `criteria` is the binding of the item's acceptance criteria now, which a
     // review of it names (src/criteria.ts).
-    return { item, criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, evidence, reviews, ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
+    return { item, criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, evidence, reviews, unparsable: this.unparsableFor(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
   }
 
   inbox(now: string): InboxEntry[] {
@@ -3745,6 +3771,31 @@ export class Ledger extends DurableObject<Env> {
     if (!row) throw new RuleError("no_review", `${itemId} has no review request claimed by ${actor}`, 404);
     this.sql.exec(`UPDATE review_requests SET state = 'open', claimedBy = NULL, runner = NULL, claimedAt = NULL WHERE id = ?`, row.id);
     this.log(itemId, actor, "review.released", { note }, at, proved);
+  }
+
+  // A reviewer's reply parseVerdict could not read (t407): kept on the task,
+  // its last VERDICT_LIMITS.reply characters with the reviewer and the head it
+  // judged, while the request the reviewer claimed is released exactly as
+  // releaseReview releases it. Before this the runner discarded the reply and
+  // the only evidence was its log, which the owner read by hand (GLM lost
+  // four replies this way on t372). A claim no longer held, because it lapsed
+  // or was withdrawn while the harness ran, releases nothing, and the reply is
+  // kept anyway. Returns whether a request was released.
+  unparsableReview(itemId: string, actor: string, head: string, note: string, reply: string, proved = false): { released: boolean } {
+    if (!validActor(actor)) throw new RuleError("bad_actor", `"${actor}" is not harness/model`, 400);
+    assertLength(note, NOTE_MAX, "the review note");
+    if (reply.length > VERDICT_LIMITS.reply) {
+      throw new RuleError("too_long", `the reply is ${reply.length} characters; keep its last ${VERDICT_LIMITS.reply}, as the runner's review-unparsable does`, 400);
+    }
+    this.item(itemId);
+    const at = new Date().toISOString();
+    this.sql.exec(`INSERT INTO unparsable (item_id, json) VALUES (?, ?)`, itemId, JSON.stringify({ itemId, by: actor, head, note, reply, at } satisfies UnparsableReply));
+    this.log(itemId, actor, "review.unparsable", { head, note }, at, proved);
+    const row = this.sql.exec(`SELECT id FROM review_requests WHERE item = ? AND state = 'claimed' AND claimedBy = ? ORDER BY id LIMIT 1`, itemId, actor).toArray()[0];
+    if (!row) return { released: false };
+    this.sql.exec(`UPDATE review_requests SET state = 'open', claimedBy = NULL, runner = NULL, claimedAt = NULL WHERE id = ?`, row.id);
+    this.log(itemId, actor, "review.released", { note }, at, proved);
+    return { released: true };
   }
 
   // ── integration (docs/orchestrator.md, section 5) ────────────────────────
