@@ -10,6 +10,7 @@ import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-leas
 import { unoffered } from "../src/dispatch/rules.ts";
 import { contributorsOf, sameActor } from "../src/rules.ts";
 import { landingVerdict } from "../src/landing-verdict.ts";
+import { workspaceNotice } from "./review-notice.mjs";
 
 // atelier land (t187): the project owner lands one task whole, taking the
 // project's landing lease on the server so two sessions never race main.
@@ -258,6 +259,12 @@ export async function runLand(io) {
     if (contributed) die(`${reviewer} contributed to ${id} (as ${contributed}) and cannot review it; name another reviewer with --reviewer H/M, of another family than every contributor.`);
   }
   const regenerate = typeof d0.policy?.regenerate === "string" ? d0.policy.regenerate : null;
+  // A review the change will need is said now, before the lease, the merge
+  // and the checks, with the policy that requires it (t422).
+  if (!noReview) {
+    const notice = workspaceNotice((argv, o) => git(argv, { allowFail: true, ...o }), dir, d0.policy);
+    if (notice) for (const line of notice) print(line);
+  }
 
   if (dryRun) {
     // Where the dry run would wait: behind the holder of the lease, and

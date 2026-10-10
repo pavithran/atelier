@@ -38,6 +38,8 @@ import { pushHistory } from "./push-steps.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
 import { formatLocal, formatStatus, itemJson, statusJson } from "./status.mjs";
+import { readInstructions, workspaceNotice } from "./review-notice.mjs";
+import { reviewDisagreements } from "../src/review-notice.ts";
 import { receiptJson, receiptText } from "./receipt.mjs";
 import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
 import { checkEnv } from "./check-env.mjs";
@@ -2698,6 +2700,10 @@ const commands = {
     if (d.item.owner !== as || !["claimed","submitted"].includes(d.item.state)) die("this task must be live and owned by you");
     if (git(["status","--porcelain"])) die("commit your changes before finishing");
     const head = git(["rev-parse","HEAD"]);
+    // A review the change will need is said before the long steps run, with
+    // the policy that requires it (t422).
+    const notice = workspaceNotice(git, process.cwd(), d.policy);
+    if (notice) console.log(notice.join("\n"));
     if (doneStep) doneStep = "push";
     await commands.push();
     if (doneStep) doneStep = "check";
@@ -3505,8 +3511,12 @@ const commands = {
       request("GET", "/runners", undefined, OWNER).catch(() => null),
     ]);
     const views = await Promise.all(chosen.map(async (p) => {
-      const { items } = await call("GET", P(p.name), undefined, OWNER);
-      return { name: p.name, title: p.title, items, inbox };
+      const { items, project } = await call("GET", P(p.name), undefined, OWNER);
+      // Where the recorded policy and the checkout's instructions disagree
+      // about reviews (t422); the checkout is read where this Mac has one.
+      const path = cfg.projects?.[p.name]?.path;
+      const mismatches = project?.policy && path ? reviewDisagreements(project.policy, readInstructions(path)) : [];
+      return { name: p.name, title: p.title, items, inbox, mismatches };
     }));
     if (args.json) return console.log(JSON.stringify(statusJson(views), null, 2));
     console.log(formatStatus(views, { queue, offers }));

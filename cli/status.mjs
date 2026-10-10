@@ -39,6 +39,7 @@ export function statusJson(views) {
       ...(v.title ? { title: v.title } : {}),
       inbox: mine,
       items: v.items.map(itemJson),
+      ...(v.mismatches?.length ? { mismatches: v.mismatches } : {}),
       overlaps: overlapPairs(mine),
     };
   });
@@ -246,6 +247,11 @@ export function formatStatus(views, waiting = {}) {
     }
     if (own.length) lines.push("  Waiting for you", ...decisionLines(own, v.name));
     if (handled.length) lines.push("  Handled by the orchestrator", ...decisionLines(handled, v.name));
+    if (v.mismatches?.length) {
+      lines.push("  Policy and instructions disagree");
+      for (const m of v.mismatches) lines.push(`    ${m}`);
+      lines.push("    Settle which is right; agents are held to the recorded policy.");
+    }
     if (overlaps.length) {
       lines.push("  Overlapping scopes");
       for (const [a, b] of overlaps) lines.push(`    ${a} and ${b} name overlapping paths`);
