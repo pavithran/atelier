@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { COMMAND_USAGE, HELP_FOOTER, HELP_FORMS, HELP_GROUPS, guideText, helpText } from "../cli/help.mjs";
@@ -57,10 +57,9 @@ test("the help module renders the pinned CLI text", () => {
 // The page lists what the help lists. These two checks keep the help itself
 // complete: a command added to the CLI without a help entry, or a help entry
 // for a command that does not exist, fails here.
+// The commands the CLI defines: one handler module each in cli/commands/.
 function cliCommands() {
-  const source = readFileSync(cli, "utf8");
-  const body = source.slice(source.indexOf("\nconst commands = {\n"), source.indexOf("\n};\n", source.indexOf("\nconst commands = {\n")));
-  return [...body.matchAll(/^  (?:async )?"?([a-z-]+)"?\(\) \{/gm)].map((m) => m[1]);
+  return readdirSync(resolve("cli/commands")).filter((f) => f.endsWith(".mjs") && f !== "index.mjs").map((f) => f.slice(0, -".mjs".length));
 }
 
 test("every command the CLI defines is in the help, and every help entry is a command", () => {
