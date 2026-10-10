@@ -401,10 +401,11 @@ function index(env: Env) {
 // ticks that run there without the index (tier reviews, a plan's reviews)
 // skip a model just paused, reserved or kept from reviewing. A project that
 // cannot be reached keeps its last copy; the change itself stands.
-async function sendPool(env: Env): Promise<void> {
+async function sendPool(env: Env): Promise<string[]> {
   const I = index(env);
   const [pool, projects] = await Promise.all([I.models(), I.projects()]);
-  await Promise.allSettled(projects.map((p) => ledgerOf(env, p).poolChanged(pool)));
+  const results = await Promise.allSettled(projects.map((p) => ledgerOf(env, p).poolChanged(pool).then(() => null).catch(() => p.name)));
+  return results.filter((r) => r.status === "fulfilled" && r.value !== null).map((r) => (r as any).value as string);
 }
 function resolveProject(env: Env, name: string): Promise<ProjectRef> {
   return index(env).resolveProject(name);
@@ -913,14 +914,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (parts.length === 2 && m === "PUT") {
       requireOwner(env, actor);
       const entry = await I.putModel(cleanEntry({ ...body, id }, actor, new Date().toISOString()));
-      await sendPool(env);
-      return json(entry);
+      const unreached = await sendPool(env);
+      return json({ ...entry, unreached });
     }
     if (parts.length === 2 && m === "DELETE") {
       requireOwner(env, actor);
       const removed = await I.removeModel(id);
-      await sendPool(env);
-      return json({ removed });
+      const unreached = await sendPool(env);
+      return json({ removed, unreached });
     }
     if (parts.length === 3 && parts[2] === "notes" && m === "POST") {
       requireOwner(env, actor);
@@ -934,8 +935,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (parts.length === 3 && parts[2] === "set" && m === "POST") {
       requireOwner(env, actor);
       const entry = await I.setModel(id, cleanModelSet(body), new Date().toISOString());
-      await sendPool(env);
-      return json(entry);
+      const unreached = await sendPool(env);
+      return json({ ...entry, unreached });
     }
     throw new RuleError("not_found", "no such route", 404);
   }

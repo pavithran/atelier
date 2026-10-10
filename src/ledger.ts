@@ -812,6 +812,14 @@ export class Ledger extends DurableObject<Env> {
     const kept = row ? (JSON.parse(row.json as string) as ModelEntry) : undefined;
     const status = kept && OBSERVED_UNDER.every((k) => kept[k] === entry[k]) ? kept.status : undefined;
     const record = { ...entry, ...(status ? { status } : {}) };
+    if (kept) {
+      if (!("state" in entry) && "state" in kept) {
+        record.state = kept.state;
+        if ("stateAt" in kept) record.stateAt = kept.stateAt;
+      }
+      if (!("roles" in entry) && "roles" in kept) record.roles = kept.roles;
+      if (!("tier" in entry) && "tier" in kept) record.tier = kept.tier;
+    }
     this.sql.exec(`INSERT OR REPLACE INTO models (id, json) VALUES (?, ?)`, entry.id, JSON.stringify(record));
     return record;
   }
@@ -1350,7 +1358,7 @@ export class Ledger extends DurableObject<Env> {
       // kept this model from the job is not claimable: a dispatch naming it
       // is withdrawn, and the claim refused with the reason. A holder
       // refreshing its claim keeps it.
-      const role = item.owner === actor ? null : claimRole(item);
+      const role = claimRole(item);
       const held = role ? actorStanding(this.poolStanding(), actor, role) : null;
       if (held) {
         const d = item.dispatch;
