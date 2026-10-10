@@ -227,7 +227,7 @@ export function renderLogin(error?: string, showcase = false, backdrop?: { stori
     : "";
   return publicPage({
     title: "Sign in · Atelier",
-    description: `Sign in to Atelier, a Git platform for many coding agents: claim, fork, prove, review, land. ${TAKEAWAYS}`,
+    description: `Sign in to Atelier, a Git platform for multiple coding agents: claim, fork, prove, review, land. ${TAKEAWAYS}`,
     brand: "/",
     nav: [["How it works", "/how"], ["Source on GitHub", REPO_URL]],
     mainClass: "login-page",
@@ -696,7 +696,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     main: `
   <header class="flow-hero">
     <div><span class="kicker">Public showcase · read only · from the ledger</span>
-      <h1>A Git platform for many coding agents</h1>
+      <h1>A Git platform for multiple coding agents</h1>
       <p class="lead"><strong>${e(TAKEAWAYS)}</strong> ${e(TAGLINE)} Each card below is a project ${e(who)} chose to show, with its last two weeks of activity beside its all-time merges; under them, task stories drawn as threads, from claim to merge.</p>
       <p class="subhead">${headline(total, who)}</p>${allMerged === undefined ? "" : `<p class="meta tally-window">The figures in the tally are the last two weeks; all time, ${allMerged} merged across ${plural(cards.length, "project")}.</p>`}</div>
     ${tallyBlock(total, who)}
@@ -1785,6 +1785,26 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
         </form></details>`
     : "";
 
+  // A standing secret flag (t332) names its file and line, never the value,
+  // and offers the one way on: the owner clears it with a reason, which is
+  // recorded.
+  const secrets = (item.secret ?? []).filter((f) => f.head === item.head && !f.cleared);
+  // A scan still pending for the head blocks the same way, with nothing to
+  // clear: it completes on the next push event retry or `atelier push`.
+  const scanPending = !!item.head && item.secretScan === item.head;
+  const secretBox = scanPending
+    ? `<div class="notice" role="status"><h3>Secret scan pending</h3>
+        <p class="meta">The push at <code>${e(item.head!.slice(0, 8))}</code> has not been scanned for key patterns yet. Acceptance and merge are refused until the scan completes; it is retried on its own, and <code>atelier push</code> runs it again.</p></div>`
+    : secrets.length
+    ? `<div class="notice" role="status"><h3>Secret flagged</h3>
+        <ul>${secrets.map((f) => `<li><code>${e(f.file)}${f.unscanned ? "" : `:${f.line}`}</code>${f.unscanned ? ` not scanned${f.reason ? `: ${e(f.reason)}` : ""}` : ""}</li>`).join("")}</ul>
+        <p class="meta">A key pattern was found in the added lines. Acceptance and merge are refused until it is cleared. Clear it only after checking the line is not a real secret; the reason you give is recorded.</p>
+        <form class="stack" method="post" action="${action("clear-secret")}">${revision}
+          <label>Why is this line not a secret?<textarea name="note" required rows="2" maxlength="${REASON_MAX}"></textarea></label>
+          <button class="primary">Clear the flag</button>
+        </form></div>`
+    : "";
+
   // A blocked task shows who blocked it, why, and the one way on; any task
   // that is waiting, in progress or in review offers the block form.
   const blockBox = item.state === "blocked" && item.blocked
@@ -1813,6 +1833,7 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   <p class="decision-status ${decision.tone}">${trustLine(view.checks)}<strong>${e(decision.title)}</strong></p>
   ${evidenceNotice}
   <div class="actions">${approve}${accept}${override}${reject}${dispatchBox}${blockBox}</div>
+  ${secretBox}
   ${askReview}${merge}${reaccept}
   <p class="meta revision">${item.head ? `Revision <code>${short(item.head)}</code>` : "No revision pushed yet"}${item.owner ? ` · ${e(item.owner)}` : ""}</p>
 </header>`;

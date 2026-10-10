@@ -35,7 +35,7 @@ by a recorded handoff, which revokes the old token.
 **Every task its own fork.** The project's main branch is copied into an
 Artifacts repository, the *baseline*. Each task works in a fork of the
 baseline, its *workspace*, and its owner holds the only write token for it,
-so many agents work concurrently without touching each other's files.
+so multiple agents work concurrently without touching each other's files.
 
 ### Prove
 
@@ -60,9 +60,10 @@ unless the deployment names another. Work reaches the project only when the
 owner accepts one exact head through the gate and it merges, one landing per
 project at a time (`atelier land` holds the project's landing lease), with
 the task's record attached to the merge as a git note: its receipt. A goal
-too large for one task is split by a planner model into parts; each part is
-claimed, forked, proven and reviewed the same way, and an integrator merges
-it onto the plan's own branch, which lands as one task.
+too large for one task is split by a planner model into parts; once the
+owner approves the split, each part is claimed, forked, proven and reviewed
+by a model of another family the same way, and an integrator merges it onto
+the plan's own branch, which lands as one task.
 
 **Proven. Reviewed. Recorded.** What lands has every required check observed
 passing at its exact head, an independent review where the change needs
@@ -76,7 +77,7 @@ ranks the things a person must decide above the things an agent must fix.
 
 Atelier sits on Git: every baseline and workspace is a Git repository, and a
 merge is a Git merge. What Git and a forge leave open is everything around
-the commit when many agents work at once, and that is what Atelier adds.
+the commit when multiple agents work at once, and that is what Atelier adds.
 
 | The question | With Git and a forge alone | With Atelier |
 | --- | --- | --- |
