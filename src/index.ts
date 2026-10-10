@@ -1,5 +1,6 @@
+import { runnerGitRequest } from "./runner-git.ts";
 import { assertCriteriaAllowed, assertReviewAllowed } from "./rules.ts";
-import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
+import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
 import { scanCommit } from "./secret-scan.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
@@ -9,7 +10,7 @@ import { accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
-import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, type Evidence, type Item } from "./rules";
+import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, type Evidence, type Item, type OwnerFactor } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
@@ -52,7 +53,13 @@ const READ_TTL = 3600;
 
 // `ref` is the project an API path names, resolved once at the entry (see
 // resolveProject); null when the path names none.
-type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null; waitUntil?: (p: Promise<unknown>) => void };
+// `signedIn` is set on a browser request a session cookie from /login
+// answers for, never on one the owner token alone authorises; `access` on
+// one Cloudflare Access vouched for as the owner's (checked at the entry).
+// The override forms need the first and, as the owner's confirmation (t371),
+// the second or the confirmation secret (ownerFactorIn): a session alone is
+// not that confirmation, since without Access the owner token buys one.
+type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null; waitUntil?: (p: Promise<unknown>) => void; signedIn?: boolean; access?: boolean };
 
 // ── auth ───────────────────────────────────────────────────────────────────
 // The owner bearer token may declare any actor for orchestration. Agent tokens
@@ -79,7 +86,41 @@ type Settings = {
   // as the token's email claim must name it. All three set, and every owner
   // route — /login among them — must carry an assertion Access signed.
   CF_ACCESS_ISS?: string; CF_ACCESS_AUD?: string; CF_ACCESS_OWNER_EMAIL?: string;
+  // The confirmation secret an override needs on a server not behind Access
+  // (t371): a Worker secret the owner types into the task page's override
+  // forms, and never gives a session. Behind Access it is not read: the
+  // owner's Access identity is the factor there (ownerFactorOf).
+  OVERRIDE_SECRET?: string;
 };
+
+// The factor no agent holds, which an override's confirmation rests on
+// (OwnerFactor in src/rules.ts): the Access identity where the server names
+// its Access team, since every owner page then carries one the entry
+// verified; else the confirmation secret where one is set; else none, and
+// no override can be confirmed until one is. The owner token and the browser
+// session it buys at /login are neither.
+function ownerFactorOf(env: Env): OwnerFactor | null {
+  if (accessSettings(env as unknown as Record<string, string | undefined>)) return "access";
+  if ((env as unknown as Settings).OVERRIDE_SECRET?.trim()) return "secret";
+  return null;
+}
+
+// The factor the override forms carry, checked (t371): behind Access, the
+// request's vouched identity (`c.access`, set at the entry); else the secret
+// the form's `confirmation` field holds, compared in constant time. Refused,
+// naming how to confirm on this server, when the form carries no factor, or
+// the server takes none.
+function ownerFactorIn(env: Env, c: Ctx, form: FormData, project: string, id: string): OwnerFactor {
+  const factor = ownerFactorOf(env);
+  const hint = overrideConfirmationHint(project, id, c.url.origin, factor);
+  if (factor === "access" && c.access) return "access";
+  if (factor === "secret") {
+    const given = String(form.get("confirmation") ?? "");
+    if (given && sameString(given, (env as unknown as Settings).OVERRIDE_SECRET!.trim())) return "secret";
+    throw new RuleError("override_unconfirmed", `an override of the independent review needs the confirmation secret, which was ${given ? "not this server's" : "not given"}: ${hint}`, 403);
+  }
+  throw new RuleError("override_unconfirmed", `an override of the independent review needs the owner's confirmation, which ${factor === null ? "this server cannot take" : "this request does not carry"}: ${hint}`, 403);
+}
 
 function thresholds(env: Env): Thresholds {
   return thresholdsFrom(env as unknown as Record<string, string | undefined>);
@@ -307,7 +348,8 @@ async function authorised(req: Request, env: Env): Promise<"api" | "ui" | AgentT
   if (!want) return null;
   const bearer = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
   if (bearer && sameString(bearer, want)) return "api";
-  if (bearer) {
+  if (req.headers.has("authorization")) {
+    if (!bearer) return null;
     const token = await index(env).agentToken(await sha256(bearer));
     return token && tokenActive(token, Date.now()) ? token : null;
   }
@@ -767,7 +809,7 @@ const TOKEN_GONE = /NOT_FOUND|not found|expired|already revoked/i;
 // it: the holder keeps the item, the token stays recorded, and a retry
 // revokes it.
 async function revoke(env: Env, repo: string | null, tokenId: string | null) {
-  if (!repo || !tokenId) return;
+  if (!repo || !tokenId || tokenId.startsWith("runner:")) return;
   const gone = (err: unknown) => TOKEN_GONE.test(codeOf(err));
   try {
     // A transient failure is retried first (t349); revoking twice is harmless.
@@ -808,6 +850,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (parts.length === 1 && m === "GET") return json(await I.agentTokens());
     if (parts.length === 1 && m === "POST") {
       const options = tokenOptions(body, ownerActor(env), Date.now());
+      if (options.runner) {
+        const ref = await resolveProject(env, options.projects![0]);
+        if (!ref.registered) throw new RuleError("no_project", "runner tokens require an existing project", 400);
+      }
       const token = tokenFromBytes(crypto.getRandomValues(new Uint8Array(32)));
       const hash = await sha256(token);
       const record = { ...options, id: crypto.randomUUID().replaceAll("-", "").slice(0, 16), hash };
@@ -921,6 +967,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // src/dispatch/rules.ts).
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const offer = m === "POST" ? runnerOffer(body) : null;
+    if (c.token?.runner && (!offer || offer.runner !== c.token.runner)) throw runnerDenied(c.token);
     // Each step's time in milliseconds goes out in a server-timing header
     // (index, projects, total), so a slow poll can be measured live.
     const started = Date.now();
@@ -941,6 +988,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // over settles it, finishing the commits the dead run made, before
         // it starts new work.
         const L = ledgerOf(env, p);
+        if (c.token?.runner && offer) await L.runnerPoll(c.token, offer);
         const [held, { waiting, reviews }] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), L.queued()]);
         return [...held, ...waiting, ...reviews].map((item) => ({ project: p.name, item }));
       }
@@ -958,7 +1006,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // A held job is offered only as the claim it already is: the
           // assignment must name its holder, or the re-claim would be refused
           // as another's claim (claim guards the runner name; assign the actor).
-          return a && (!c.token || a.actor === actor) && (!isHeld(item) || item.owner === a.actor) ? [{ project, item, ...a }] : [];
+          return a && (!c.token?.runner || !["integrate", "refresh"].includes(item.dispatch?.job ?? "")) && (!c.token || c.token.runner || a.actor === actor) && (!isHeld(item) || item.owner === a.actor) ? [{ project, item, ...a }] : [];
         })
       : queued;
     // A project that could not be read is named, so a missing task is never silent.
@@ -1037,6 +1085,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // The core-file globs the queue holds overlapping dispatches on; [] clears them.
       ...(has("coreFiles") ? { coreFiles: asStrings(body.coreFiles, "coreFiles") } : {}),
       ...(has("sandboxOnly") ? { sandboxOnly: Boolean(body.sandboxOnly) } : {}),
+      // Overrides of the independent review refused in this project (t371).
+      ...(has("noOverride") ? { noOverride: Boolean(body.noOverride) } : {}),
       ...(has("approval") ? { approval: approvalArg(body.approval) } : {}),
     };
     // A check that is not read-only is refused before the baseline is made;
@@ -1066,6 +1116,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     return json({ removed: true });
   }
   if (parts.length === 2 && m === "GET") {
+    // Runner clients need policy/configuration here, not unrelated tasks or
+    // their history. Job detail routes below enforce the claim binding.
+    if (c.token?.runner) return json({ project: await L.project(), items: [], events: [] });
     return json({ project: await L.project(), items: await L.items(), events: await L.events(undefined, 50) });
   }
   // The owner gives the project a new name. The index decides and refuses a
@@ -1265,7 +1318,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           throw new RuleError("conflict_predicted", `the part conflicts with the plan's branch: ${conflict}; it was sent back to its builder`, 409);
         }
       }
-      const { item, needsFork, generation, replaces } = await L.claim(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token);
+      const { item, needsFork, generation, replaces } = await L.claim(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token, c.token?.runner ? c.token : undefined);
       const p = await L.project();
       let fork = item.fork, moved = false;
       if (needsFork) {
@@ -1317,6 +1370,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // its tokens with the repository it replaced.
       if (!moved) await revoke(env, fork, replaces);
       const branch = await projectBranch(env, p);
+      if (c.token?.runner) {
+        const secret = tokenFromBytes(crypto.getRandomValues(new Uint8Array(32)));
+        const hash = await sha256(secret);
+        if (!await L.recordRunnerGit(id, actor, generation, replaces, hash, c.token)) {
+          throw new RuleError("claim_superseded", "the claim changed before its Git credential was recorded", 409);
+        }
+        const b = await mint(env, p.repo, "read", branch);
+        return json({ item: await L.item(id), workspace: {
+          remote: `${c.url.origin}/git/runner/${encodeURIComponent(ref.key)}/${id}.git`, token: secret,
+          expiresAt: c.token.expiresAt, defaultBranch: branch,
+        }, baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch } });
+      }
       const w = await mint(env, fork!, "write", branch);
       // The Ledger records the token only if this claim still stands (see
       // recordToken). If it does not, the token is revoked and never
@@ -1808,8 +1873,21 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // reason, which the Ledger refuses.
       // note, when sent, is the owner's own word on the acceptance, kept
       // with it in the ledger (land.sh records the session's note there).
+      // An override through the API comes with the owner token, which an
+      // agent session may hold, so the Ledger takes it only under the
+      // owner's standing permission from the task's page (t371); the
+      // refusal names that page on this server and the factor it takes.
       const overrideReview = body.overrideReview === undefined ? undefined : typeof body.overrideReview === "string" ? body.overrideReview : "";
-      const item = await L.accept(id, actor, String(body.head ?? ""), overrideReview, typeof body.note === "string" ? body.note : undefined);
+      let item: Item;
+      try {
+        item = await L.accept(id, actor, String(body.head ?? ""), overrideReview, typeof body.note === "string" ? body.note : undefined);
+      } catch (err) {
+        const rule = parseRuleError(err);
+        if (rule?.code === "override_unconfirmed") {
+          throw new RuleError(rule.code, `an override of the independent review needs the owner's confirmation: ${overrideConfirmationHint(ref.name, id, c.url.origin, ownerFactorOf(env))}`, rule.status);
+        }
+        throw err;
+      }
       // An override the owner records while a reviewer of another family was
       // available is answered with that reviewer, so the owner sees the
       // `atelier land ID --reviewer H/M` command that would have replaced it
@@ -2320,8 +2398,17 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const before = await L.item(id);
     const expected = String(form.get("head") ?? "");
     if (before.head) assertRevision(before, expected);
-    if (["accept", "override", "approve", "reject"].includes(verb)) await verifyRevision(env, ref.key, id, expected);
+    if (["accept", "override", "allow-override", "approve", "reject"].includes(verb)) await verifyRevision(env, ref.key, id, expected);
     if (verb === "accept" || verb === "override") await assertPlanMergeable(env, L, id);
+    // The override forms are the owner's confirmation only with the factor
+    // no agent holds (t371, ownerFactorIn): posted with the owner token as a
+    // bearer, as an agent could, or from a session alone, which that token
+    // buys, they are refused as the API's override is.
+    let factor: OwnerFactor | undefined;
+    if (verb === "override" || verb === "allow-override") {
+      if (!c.signedIn) throw new RuleError("override_unconfirmed", `an override of the independent review needs the owner's own sign-in, not the owner token: ${overrideConfirmationHint(project, id, c.url.origin, ownerFactorOf(env))}`, 403);
+      factor = ownerFactorIn(env, c, form, project, id);
+    }
     // A change of owner takes the write token with it, as on the API routes:
     // the Ledger clears the id read here only if it is still the one recorded.
     const oldToken = await L.tokenId(id);
@@ -2346,7 +2433,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     else if (verb === "accept") await L.accept(id, owner, expected);
     // The page's override form: accept with the owner's override of a missing
     // independent review, its reason in the note.
-    else if (verb === "override") await L.accept(id, owner, expected, note);
+    else if (verb === "override") await L.accept(id, owner, expected, note, undefined, factor);
+    // The page's permission for an override from the command line (t371).
+    else if (verb === "allow-override") await L.confirmOverride(id, owner, expected, factor!);
     else if (verb === "abandon") await L.abandon(id, owner, note, oldToken);
     else if (verb === "block") await L.block(id, owner, note);
     else if (verb === "unblock") await L.unblock(id, owner);
@@ -2583,7 +2672,10 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
   if (parts.length === 3) {
     const p = await L.project();
     const item = await L.item(parts[2]);
-    const detail: Detail = await L.detail(parts[2]);
+    // The page's override forms ask for the factor this server takes (t371).
+    const read: Detail = await L.detail(parts[2]);
+    const detail: Detail = { ...read, ownerFactor: ownerFactorOf(env) };
+    detail.runs = await index(env).runsForItem(p.name, parts[2]);
     return html(renderItem(p, detail, ownerName(env), await diffFor(env, L, p.repo, item, detail.events), live), 200, nonce);
   }
   return html("Not found.", 404);
@@ -2640,6 +2732,7 @@ export default {
     // Pages show times in the owner's zone (src/time.ts).
     setTimeZone((env as unknown as Settings).TIMEZONE);
     try {
+      if (pathname.startsWith("/git/runner/")) return await runnerGitRequest(req, url, { ledger: (key) => ledger(env, key), token: (hash) => index(env).agentToken(hash), artifacts: env.ARTIFACTS });
       // The front door: atelier.zone itself is the public showcase, for a
       // visitor or a judge who types the domain, answered before the sign-in
       // check as every public page is. /showcase serves the same page, so the
@@ -2705,12 +2798,19 @@ export default {
         }
         const token = typeof how === "object" && how ? how : undefined;
         const declared = req.headers.get("x-atelier-actor");
-        if (token && (token.actor === ownerActor(env) || declared !== null && declared !== token.actor)) {
+        if (token?.runner) {
+          const named = req.headers.get("x-atelier-runner");
+          if (named !== null && named.toLowerCase() !== token.runner) throw runnerDenied(token);
+        }
+        if (token && !token.runner && (token.actor === ownerActor(env) || declared !== null && declared !== token.actor)) {
           return json({ error: "actor_mismatch", detail: "X-Atelier-Actor must equal the agent token actor" }, 403);
         }
-        if (parts.length === 2 && parts[1] === "config" && req.method === "GET") return json({ ownerActor: ownerActor(env), ownerName: ownerName(env), ...(token ? { actor: token.actor } : {}) });
-        const actor = token?.actor ?? declared ?? "";
-        if (!validActor(actor)) return json({ error: "bad_actor", detail: "set X-Atelier-Actor to harness/model, or the project owner's actor" }, 400);
+        if (parts.length === 2 && parts[1] === "config" && req.method === "GET") return json({ ownerActor: ownerActor(env), ownerName: ownerName(env), ...(token?.runner ? { runner: token.runner, tokenId: token.id } : token ? { actor: token.actor } : {}) });
+        const actor = token?.runner ? declared ?? token.actor : token?.actor ?? declared ?? "";
+        if (!validActor(actor)) {
+          if (token?.runner) throw runnerDenied(token);
+          return json({ error: "bad_actor", detail: "set X-Atelier-Actor to harness/model, or the project owner's actor" }, 400);
+        }
         const body = req.method === "GET" ? {} : await req.json().catch(() => ({}));
         // Routes read fields from the body, so anything but a JSON object is refused here.
         if (typeof body !== "object" || body === null || Array.isArray(body)) {
@@ -2720,11 +2820,36 @@ export default {
         // reaches the project as the current one does, for a token limited to
         // either, and the answer names the project as it is called now.
         const ref = parts[1] === "projects" && parts[2] !== undefined ? await resolveProject(env, parts[2]) : null;
-        if (token) {
+        if (token?.runner) {
+          const input = body as Record<string, unknown>;
+          if (!runnerRoute(req.method, parts.slice(1), input) || ref && !inScope(token, ref.names)) throw runnerDenied(token);
+          if (parts[1] === "queue" && String(input.runner).toLowerCase() !== token.runner) throw runnerDenied(token);
+          if (ref && parts[3] === "items") {
+            if (actor === ownerActor(env) || actor === INTEGRATOR) throw runnerDenied(token);
+            await ledger(env, ref.key).assertRunnerJob(token, parts[4], actor, parts[5] === "claim");
+            // The authenticated runner, never a caller-selected identity, goes to the atomic claim.
+            req = new Request(req.url, { method: req.method, headers: new Headers(req.headers) });
+            req.headers.set("x-atelier-runner", token.runner);
+          }
+          if (parts[1] === "runs") {
+            if (typeof input.project !== "string" || typeof input.item !== "string" || typeof input.actor !== "string") throw runnerDenied(token);
+            const project = await resolveProject(env, input.project);
+            if (!inScope(token, project.names)) throw runnerDenied(token);
+            await ledger(env, project.key).assertRunnerReport(token, input.item, input.actor, String(input.role ?? "build"));
+            req = new Request(req.url, { method: req.method, headers: new Headers(req.headers) });
+            req.headers.set("x-atelier-runner", token.runner);
+          }
+        } else if (token) {
           if (!agentRoute(req.method, parts.slice(1), body as Record<string, unknown>)) return json({ error: "owner_token_required", detail: "this operation requires the owner token" }, 403);
           if (ref && !inScope(token, ref.names)) return json({ error: "project_scope", detail: "this project is outside the agent token scope" }, 403);
         }
-        const res = await api({ env, req, url, actor, body, token, ref, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
+        let res: Response;
+        try {
+          res = await api({ env, req, url, actor, body, token, ref, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
+        } catch (error) {
+          if (token?.runner && parseRuleError(error)?.status === 403) throw runnerDenied(token);
+          throw error;
+        }
         if (ref?.former) res.headers.set("x-atelier-project", ref.name);
         return res;
       }
@@ -2735,6 +2860,7 @@ export default {
       // else asked under the name is sent to sign in like the app's own
       // pages. Every path under /p/ is sent to sign in alike (below).
       if (!how) {
+        if (req.headers.has("authorization")) return json({ error: "unauthorised" }, 401);
         // A path under /p/ is answered the same whether or not a project is
         // registered under the name it holds: the visitor is sent to sign in
         // either way, so a guessed name learns nothing — a 404 for the rest
@@ -2744,8 +2870,10 @@ export default {
         if (!knownUI) return html("Not found.", 404);
         return Response.redirect(new URL("/login", url).toString(), 303);
       }
-      if (typeof how === "object") return html("Agent tokens cannot use browser routes.", 403);
-      return await ui({ env, req, url, actor: ownerActor(env), body: null }, parts);
+      if (typeof how === "object") return how.runner ? json({ error: "runner_forbidden", detail: runnerDenied(how).message }, 403) : html("Agent tokens cannot use browser routes.", 403);
+      // Every request past the check above is one Access vouched for, where
+      // the server names its Access team.
+      return await ui({ env, req, url, actor: ownerActor(env), body: null, signedIn: how === "ui", access: access !== null }, parts);
     } catch (err) {
       const rule = parseRuleError(err);
       // The error page keeps the owner's name on the pages only the owner
