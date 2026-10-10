@@ -92,6 +92,18 @@ import { landingVerdict } from "../src/landing-verdict.ts";
 // warns, for then the lease really does stand in this task's name until it
 // lapses.
 //
+// Integration boundary for post-merge work (t477, not implemented here):
+// keeping this CLI's lease until a hook finishes cannot serialize landings.
+// landingLive already frees it at merged state, expiry frees it after an
+// executor dies, and the owner can release it manually. The Ledger needs a
+// separate durable reservation checked by every merge entry point, created
+// atomically before another merge is allowed. CLI and Workflow must resolve
+// that same reservation; the Workflow currently ends when it sees merged.
+// Its run identity, member tasks, policy and before/after branch SHAs must
+// survive either executor. Per-merge completion is the t477 boundary; t460
+// batching would need an explicit policy. Confirm the t462 contract before
+// implementing that shared state or its recovery transitions.
+//
 // The push uses the workspace's write token, which lapses 8 hours after the
 // claim that minted it (t275), and a push refused for it would end a landing
 // that already holds the lease and has merged main. So before the lease (the
