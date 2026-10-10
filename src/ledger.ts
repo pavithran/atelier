@@ -63,6 +63,14 @@ export interface LedgerEvent {
   data: Record<string, unknown>;
 }
 
+// Whether a reviewer that qualified was available when the owner overrode the
+// independent review (t457), kept in review.overridden: the reviewer the
+// source offered (null: none qualified), where it was looked for and when;
+// or, when it could not be looked for, an explicit unknown and why.
+export type ReviewerAvailability =
+  | { known: true; reviewer: string | null; source: string; at: string }
+  | { known: false; reviewer: null; source: string; at: string; why: string };
+
 // What a review claim returns: the part, the head under review, the review
 // need (null when it no longer holds), the plan account for the brief, the
 // part's events for the builder's summary and the owner's verdicts on earlier
@@ -1985,8 +1993,10 @@ export class Ledger extends DurableObject<Env> {
   // is refused, naming how to confirm, before anything is written; the owner
   // token alone, which an agent session holds, never confirms, and nor does
   // a browser session, which that token buys. A project that forbids
-  // overrides refuses every override first.
-  accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string, confirmedBy?: OwnerFactor): Item {
+  // overrides refuses every override first. `availability`, the reviewer the
+  // route found available as the override was made, is kept with it; an
+  // override made without one says so, as unknown (t457).
+  accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string, confirmedBy?: OwnerFactor, availability?: ReviewerAvailability): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner accepts", 403);
     if (note !== undefined) assertLength(note, NOTE_MAX, "the acceptance note");
     const item = this.item(id);
@@ -2029,6 +2039,7 @@ export class Ledger extends DurableObject<Env> {
       this.log(id, actor, "review.overridden", {
         head: item.head, reason: override.override.reason, waived: override.waived, contributors: override.contributors,
         confirmed: confirmedBy ? "page" : "command line", confirmedAt: override.override.confirmedAt, ...(factor ? { factor } : {}),
+        availability: availability ?? { known: false, reviewer: null, source: "none", at, why: "no reviewer was looked for as the override was made" },
       }, at);
     }
     this.update(id, { state: "accepted", accepted_head: item.head }, at);

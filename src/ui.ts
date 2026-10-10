@@ -11,7 +11,7 @@ import { TEXT_CONTROLS } from "./text.ts";
 import { appliesText, checkClasses, classText, type CheckClass } from "./checks.ts";
 import theme from "./theme.css";
 import layout from "./layout.css";
-import type { ProjectRecord, LedgerEvent } from "./ledger";
+import type { ProjectRecord, LedgerEvent, ReviewerAvailability } from "./ledger";
 import type { FileChange, ItemDiff, Landed } from "./diff";
 import { ago, position, splitActor, staggers, type Bench, type Floor, type MarkKind } from "./floor";
 import { briefFor, submission, type Verdict } from "./brief";
@@ -1605,11 +1605,26 @@ export function renderHistory(views: ProjectView[], ownerName: string | null = n
 </div>`, "Home", ownerName);
 }
 
+// Whether a qualifying reviewer was available when the owner overrode the
+// independent review, as review.overridden keeps it (t457). An override
+// recorded before availability was kept says that it was not recorded.
+function availabilityText(a: unknown): string {
+  const r = (a ?? {}) as Partial<ReviewerAvailability>;
+  if (r.known === true) {
+    const at = typeof r.at === "string" ? `, ${when(r.at)}` : "";
+    return r.reviewer
+      ? `Reviewer availability: ${r.reviewer} qualified and was available (${str(r.source)}${at})`
+      : `Reviewer availability: no qualifying reviewer was available (${str(r.source)}${at})`;
+  }
+  if (r.known === false) return `Reviewer availability: unknown, ${str(r.why)}${typeof r.at === "string" ? ` (${when(r.at)})` : ""}`;
+  return "Reviewer availability: unknown, not recorded with this override";
+}
+
 function eventTable(events: LedgerEvent[], withItem = false): string {
   if (!events.length) return '<p class="empty">No activity recorded yet.</p>';
   return `<ol class="timeline">${events.map((v) => `<li><span class="timeline-dot"></span><div>
     <strong>${e(v.kind.replaceAll(".", " ").replaceAll("_", " "))}</strong>${withItem && v.itemId ? ` · ${e(v.itemId)}` : ""}
-    <p class="meta">${e(v.actor)}${v.proved ? " · token proved" : ""} · ${when(v.at)}</p>
+    <p class="meta">${e(v.actor)}${v.proved ? " · token proved" : ""} · ${when(v.at)}</p>${v.kind === "review.overridden" ? `<p class="meta">${e(availabilityText(v.data.availability))}</p>` : ""}
     <details><summary>Details</summary><pre>${e(JSON.stringify(v.data, null, 2))}</pre></details></div></li>`).join("")}</ol>`;
 }
 
@@ -1683,8 +1698,9 @@ const shell = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
 //   independent   a review from a qualifying model, the owner's override of it,
 //                 or that this change needs none.
 //   permission    `atelier accept --override-review` from the command line:
-//                 active (revision, expiry), expired, used, invalidated by a
-//                 new revision, never given, forbidden or not confirmable.
+//                 active (revision, expiry), expired, consumed, invalidated by
+//                 a new revision or a page override, never given, forbidden
+//                 or not confirmable.
 //   acceptance    accepted, ready, not ready (blockers), unavailable while the
 //                 changes shown are not the recorded revision, or terminal.
 //
@@ -1694,29 +1710,36 @@ export interface StateCell { label: string; text: string; tone: StateTone }
 export interface OwnerState {
   approval: StateCell & { review: Review | null };
   independent: StateCell;
-  permission: StateCell & { status: "active" | "expired" | "used" | "invalidated" | "none" | "forbidden" | "unconfirmable" | "not-applicable" };
+  permission: StateCell & { status: "active" | "expired" | "consumed" | "invalidated" | "none" | "forbidden" | "unconfirmable" | "not-applicable" };
   acceptance: StateCell;
   next: { kind: "next" | "waiting" | "complete"; text: string };
 }
 
 // The CLI permission as the record shows it. The Ledger clears a permission
-// when an override spends it, so a used one is read from the events: an
-// `override.allowed` followed by a `review.overridden` confirmed from the
-// command line.
+// when any override is made, from the command line (which consumes it) or
+// from this page (which leaves it unused and ends it), so a cleared one is
+// read from the events: an `override.allowed` followed by a
+// `review.overridden`, whose `confirmed` says which. Expired is said only
+// once its time has passed.
 function permissionState(d: Detail, now: number, owner: string): OwnerState["permission"] {
   const { item } = d;
   const label = "Command-line permission";
   const cell = (status: OwnerState["permission"]["status"], text: string, tone: StateTone = "") => ({ label, status, text, tone });
   const events = [...d.events].sort((a, b) => a.seq - b.seq);
   const allowed = events.filter((v) => v.kind === "override.allowed").at(-1);
-  const used = allowed && events.find((v) => v.seq > allowed.seq && v.kind === "review.overridden" && v.data.confirmed === "command line");
-  if (used && str(used.data.head) === item.head) return cell("used", `Used once by an override at ${short(item.head)}, ${when(used.at)}; it allows nothing more`);
+  const spent = allowed && events.find((v) => v.seq > allowed.seq && v.kind === "review.overridden");
+  if (spent && str(spent.data.head) === item.head) {
+    return spent.data.confirmed === "command line"
+      ? cell("consumed", `Consumed by the command-line override at ${short(item.head)}, ${when(spent.at)}; it allows nothing more`)
+      : cell("invalidated", `Invalidated by your override on this page at ${short(item.head)}, ${when(spent.at)}; it was never used`);
+  }
   const active = confirmationAt(item, now, owner);
   if (active) return cell("active", `Active for revision ${short(active.head)} until ${when(active.until)}, for one override`, "ask");
   // A permission spent at an earlier revision says nothing about this one.
-  const standing = item.overrideConfirmation ?? (allowed && !used ? { head: str(allowed.data.head), until: str(allowed.data.until) } : null);
+  const standing = item.overrideConfirmation ?? (allowed && !spent ? { head: str(allowed.data.head), until: str(allowed.data.until) } : null);
   if (standing && standing.head !== item.head) return cell("invalidated", `Invalidated: given for revision ${short(standing.head)}, and the revision has changed since`);
-  if (standing && standing.until) return cell("expired", `Expired ${when(standing.until)}, unused`);
+  if (standing && standing.until && Date.parse(standing.until) <= now) return cell("expired", `Expired ${when(standing.until)}, unused`);
+  if (standing) return cell("invalidated", "Invalidated: no longer on record, so it allows nothing");
   if (d.policy.noOverride) return cell("forbidden", "Forbidden: this project refuses every override");
   if (item.state !== "submitted" || !d.gate.needsAssessor) return cell("not-applicable", "Not given; there is no missing independent review to override");
   if ((d.ownerFactor ?? null) === null) return cell("unconfirmable", "Unavailable: this server takes no owner confirmation");
@@ -1804,7 +1827,10 @@ function ownerStateBlock(s: OwnerState): string {
 // nothing was recorded, and the way on. Linked to the form's button.
 function formErrorText(err: FormError | undefined, verb: FormError["verb"], reload: string): string {
   if (err?.verb !== verb) return "";
-  return `<p class="error form-error" role="alert" id="error-${verb}">${e(err.message)} Nothing was recorded from this attempt. <a href="${reload}">Reload this task</a> to see its current revision, then try again.</p>`;
+  // The Ledger's refusals are clauses ("this task changed since…"); drawn as
+  // a sentence, leaving one that opens on a task id ("t1's…") as it is.
+  const said = /^[a-z]+[\s,;:]/.test(err.message) ? err.message.charAt(0).toUpperCase() + err.message.slice(1) : err.message;
+  return `<p class="error form-error" role="alert" id="error-${verb}">${e(/[.!?]$/.test(said) ? said : `${said}.`)} Nothing was recorded from this attempt. <a href="${reload}">Reload this task</a> to see its current revision, then try again.</p>`;
 }
 
 function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext): string {
@@ -1924,6 +1950,12 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
         <button>Accept this revision again</button>
       </form></details>`
     : "";
+  // A refused form the page no longer draws (an Accept refused as not ready,
+  // an override the project now forbids) has its refusal said first among
+  // the actions, so no refusal is lost.
+  const unplaced = d.formError && ![approve, accept, override, reject].some((f) => f.includes(`id="error-${d.formError!.verb}"`))
+    ? formErrorText(d.formError, d.formError.verb, reload)
+    : "";
 
   // An open task can be sent to a runner; a queued one shows who it waits for.
   const dispatchBox = item.state === "open" && !item.owner
@@ -1989,7 +2021,7 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   <p class="decision-status ${decision.tone}">${trustLine(view.checks)}<strong>${e(decision.title)}</strong></p>
   ${evidenceNotice}
   ${ownerStateBlock(state)}
-  <div class="actions">${approved}${approve}${accept}${override}${reject}${dispatchBox}${blockBox}</div>
+  <div class="actions">${unplaced}${approved}${approve}${accept}${override}${reject}${dispatchBox}${blockBox}</div>
   ${secretBox}
   ${askReview}${merge}${reaccept}
   <p class="meta revision">${item.head ? `Revision <code>${short(item.head)}</code>` : "No revision pushed yet"}${item.owner ? ` · ${e(item.owner)}` : ""}</p>
@@ -2094,9 +2126,10 @@ ${framing}${openScope}
   // for nothing on a task still in hand, as gate counts none; a merged task's
   // went in on it, and keeps its label.
   const voided = !!overridden && !!d.policy.noOverride && item.state !== "merged";
+  const overrideEvent = overridden ? d.events.filter((v) => v.kind === "review.overridden" && str(v.data.head) === overridden.head).sort((a, b) => a.seq - b.seq).at(-1) : undefined;
   const overrideNote = overridden
     ? `<div class="review-note">${tag(voided ? "Override not counted" : "Review overridden", "ask")}
-    <p>${e(overridden.reason)}</p><p class="meta">${e(overridden.by)} · ${when(overridden.at)} · the project owner's override, not a review${voided ? "; this project now forbids overrides, so the change waits for its independent review" : ""}</p></div>`
+    <p>${e(overridden.reason)}</p><p class="meta">${e(overridden.by)} · ${when(overridden.at)} · the project owner's override, not a review${voided ? "; this project now forbids overrides, so the change waits for its independent review" : ""}</p>${overrideEvent ? `<p class="meta">${e(availabilityText(overrideEvent.data.availability))}</p>` : ""}</div>`
     : "";
   const blockers = live && !gate.ready
     ? `<details class="disclosure"><summary>Readiness details</summary><ul>${gate.blockers.map((b) => `<li>${e(b)}</li>`).join("")}</ul></details>`

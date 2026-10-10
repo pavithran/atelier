@@ -116,16 +116,26 @@ it("criterion 3: the override is a native disclosure with a marker that turns, a
   const start = html.indexOf('<details class="override-disclosure">');
   expect(start).toBeGreaterThan(-1);
   const box = html.slice(start, html.indexOf("</details>", start));
+  // The summary is the details' first child, so the browser's own toggle
+  // (pointer, Enter and Space) opens it; nothing else is scripted.
+  expect(box.startsWith('<details class="override-disclosure"><summary>')).toBe(true);
   const summary = box.slice(box.indexOf("<summary>"), box.indexOf("</summary>"));
-  // The summary holds no button and no form: opening it submits nothing.
-  expect(summary).not.toMatch(/<button|<form/);
+  // The summary holds no control at all and no form: opening it submits nothing.
+  expect(summary).not.toMatch(/<button|<form|<input|<a\b|type="submit"|tabindex|onclick|role=/);
+  // Every submit button lies after the summary, inside one of its two forms.
+  const body = box.slice(box.indexOf("</summary>"));
+  expect(body.match(/<button/g)).toHaveLength(2);
+  expect(body.match(/<form /g)).toHaveLength(2);
+  expect(html).not.toContain("<script");
   expect(summary).toContain('<span class="disclosure-marker" aria-hidden="true"></span>Accept without an independent review');
   expect(summary).toContain('<span class="when-closed">show the override and command-line permission</span><span class="when-open">hide</span>');
   // The override-and-accept stays its own explicit button, as does the permission.
   expect(box).toContain('action="/ui/example/t1/override"');
   expect(box).toContain("<button>Override the review and accept</button>");
   expect(box).toContain("<button>Allow an override from the command line</button>");
-  // Its stylesheet rules are checked in test/layout.test.ts, which reads the file.
+  // Its stylesheet rules are checked in test/layout.test.ts, which reads the
+  // file. Pointer, keyboard and Safari behaviour is checked by the
+  // orchestrator after deploy (test/owner-state-smoke.md).
 });
 
 it("criterion 4: the override asks why the owner is overriding, and still requires a bounded reason", () => {
@@ -134,7 +144,7 @@ it("criterion 4: the override asks why the owner is overriding, and still requir
   expect(html).not.toContain("Why is no independent review possible?");
 });
 
-it("criterion 5: the CLI permission reads active with revision and zoned expiry, expired, used or invalidated", () => {
+it("criterion 5: the CLI permission reads active with revision and zoned expiry, expired, consumed or invalidated", () => {
   setTimeZone("America/New_York");
   const until = "2026-10-10T18:10:00Z";
   const allowed = event(1, "override.allowed", { head, until, factor: "access" });
@@ -143,8 +153,12 @@ it("criterion 5: the CLI permission reads active with revision and zoned expiry,
     ["active", (d) => { d.item.overrideConfirmation = { head, by: "pavi", at: time, until, factor: "access" }; d.events = [allowed]; }, "active", "Active for revision aaaaaaaa until 2026-10-10 14:10 EDT, for one override"],
     ["expired", (d) => { d.item.overrideConfirmation = { head, by: "pavi", at: time, until: "2026-10-10T17:56:00Z", factor: "access" }; }, "expired", "Expired 2026-10-10 13:56 EDT, unused"],
     ["invalidated", (d) => { d.item.overrideConfirmation = { head: other, by: "pavi", at: time, until, factor: "access" }; }, "invalidated", "Invalidated: given for revision cccccccc, and the revision has changed since"],
-    ["used", (d) => { d.item.state = "accepted"; d.item.acceptedHead = head; d.events = [event(2, "review.overridden", { head, confirmed: "command line" }, "2026-10-10T17:58:00Z"), allowed]; }, "used", "Used once by an override at aaaaaaaa, 2026-10-10 13:58 EDT; it allows nothing more"],
-    ["page override does not spend it", (d) => { d.item.overrideConfirmation = { head, by: "pavi", at: time, until, factor: "access" }; d.events = [event(2, "review.overridden", { head, confirmed: "page" }), allowed]; }, "active", "Active for revision aaaaaaaa until 2026-10-10 14:10 EDT, for one override"],
+    ["consumed", (d) => { d.item.state = "accepted"; d.item.acceptedHead = head; d.events = [event(2, "review.overridden", { head, confirmed: "command line" }, "2026-10-10T17:58:00Z"), allowed]; }, "consumed", "Consumed by the command-line override at aaaaaaaa, 2026-10-10 13:58 EDT; it allows nothing more"],
+    // As the Ledger leaves it: a page override clears the confirmation too.
+    // Its expiry is still ahead, and it is never said to have expired.
+    ["cleared by a page override", (d) => { d.item.state = "accepted"; d.item.acceptedHead = head; d.item.reviewOverride = { head, by: "pavi", reason: "none qualifies", at: "2026-10-10T17:52:00Z" }; d.events = [event(2, "review.overridden", { head, confirmed: "page", factor: "access" }, "2026-10-10T17:52:00Z"), allowed]; }, "invalidated", "Invalidated by your override on this page at aaaaaaaa, 2026-10-10 13:52 EDT; it was never used"],
+    ["given and not yet expired, though cleared", (d) => { d.events = [allowed]; }, "invalidated", "Invalidated: no longer on record, so it allows nothing"],
+    ["expired by its time", (d) => { d.events = [event(1, "override.allowed", { head, until: "2026-10-10T17:56:00Z", factor: "access" })]; }, "expired", "Expired 2026-10-10 13:56 EDT, unused"],
     ["used at an earlier revision", (d) => { d.item.head = other; d.events = [event(2, "review.overridden", { head, confirmed: "command line" }), allowed]; }, "none", "Not given"],
     ["forbidden", (d) => { d.policy = { ...d.policy, noOverride: true }; }, "forbidden", "Forbidden: this project refuses every override"],
     ["no factor", (d) => { d.ownerFactor = null; }, "unconfirmable", "Unavailable: this server takes no owner confirmation"],
@@ -158,7 +172,8 @@ it("criterion 5: the CLI permission reads active with revision and zoned expiry,
   expect(renderItem(project, detail(), "PAVI", diff)).toContain("Allowing it approves, overrides and accepts nothing by itself.");
 });
 
-it("criterion 6: a refused submission is said beside its form, keeps the reason, never the secret, and claims no success", () => {
+// The drawing alone; test/owner-forms.spec.ts drives the real handlers to it.
+it("criterion 6 (drawing): a refused submission is said beside its form, keeps the reason, never the secret, and claims no success", () => {
   const secretDetail = () => ({ ...detail(), ownerFactor: "secret" as const });
   // A refused override: the disclosure reopens, the reason is kept, the secret field is empty.
   const d = secretDetail(); d.formError = { verb: "override", message: "t1 has moved: the revision shown is not the one recorded.", note: "No <other> family is available" };
@@ -177,7 +192,7 @@ it("criterion 6: a refused submission is said beside its form, keeps the reason,
   // A refused approval (a stale head or criteria) leaves Approve in place with its error, and no claim of approval.
   const stale = detail(); stale.formError = { verb: "approve", message: "the criteria have changed since this page was drawn." };
   const staleHtml = renderItem(project, stale, "PAVI", diff);
-  expect(staleHtml).toContain('<button aria-describedby="error-approve">Approve revision</button><p class="error form-error" role="alert" id="error-approve">the criteria have changed since this page was drawn.');
+  expect(staleHtml).toContain('<button aria-describedby="error-approve">Approve revision</button><p class="error form-error" role="alert" id="error-approve">The criteria have changed since this page was drawn.');
   expect(staleHtml).not.toContain("Approved by you");
   // A refused request for changes keeps its note.
   const reject = detail(); reject.formError = { verb: "reject", message: "refused", note: "tighten the copy" };
