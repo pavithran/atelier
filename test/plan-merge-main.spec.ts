@@ -163,7 +163,7 @@ it("its brief says main is merged with conflicts left, and failing checks add no
   const brief = await L.jobBrief(m.id, builder);
   expect(brief.job).toBe("build");
   expect(brief.text).toContain(`# Build part \`${KEY}\`: Merge main at 11111111 into the plan's branch`);
-  expect(brief.text).toContain(`## Merging main\n\nMain at 11111111 (${M1}) conflicts with the plan's branch.`);
+  expect(brief.text).toContain(`## Merging main\n\nThis part was queued for main at 11111111 (${M1}); that is dispatch context, not the merge target.`);
   expect(brief.text).toContain(`it already ends with the line Agent: ${builder}`);
   // Main moves on while the part is built and its builder gives up: the part goes again, with no refresh before it.
   await L.noteMainHead(M2);

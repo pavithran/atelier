@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { expect, it, vi } from "vitest";
 import { generateKeyPair, exportJWK, SignJWT } from "jose";
 import worker from "../src/index.ts";
+import { NO_CRITERIA } from "../src/criteria.ts";
 import { signIn } from "./signin.ts";
 
 // Cloudflare Access in front of the owner's pages (t270), driven through the
@@ -172,5 +173,64 @@ it("with Access on, / is the public showcase to anyone, and every owner route st
       expect(res.status, `${method} ${path}`).toBe(401);
       expect(await res.text(), `${method} ${path}`).not.toContain("Front door secret");
     }
+  } finally { send.mockRestore(); }
+});
+
+// t371: behind Access, the owner's Access identity is the factor an
+// override's confirmation rests on. The task page's override forms carry it
+// and ask for no secret, the API's refusal names it, a session without the
+// assertion is refused at the door as every owner route is, and the record
+// says which factor confirmed the override.
+it("behind Access, the owner's Access sign-in confirms an override, and the record says so", async () => {
+  const send = serveKeys();
+  try {
+    const name = "access-override", A = "claude-code/opus-5.5", H0 = "0".repeat(40), H1 = "a".repeat(40), T0 = "1".repeat(40), T1 = "2".repeat(40);
+    const record = { name, repo: name, policy: { checks: ["npm test"], protected: ["AGENTS.md"] }, createdAt: "2026-10-08T00:00:00.000Z" };
+    const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+    await L.setProject(record, "owner");
+    await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
+    await L.newItem("Rewrite the agent instructions", [], "owner");
+    await L.claim("t1", A);
+    await L.setFork("t1", `${name}--t1`, H0, A);
+    await L.recordPush("t1", A, H1, H1);
+    await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
+    await L.submit("t1", A);
+    // The fork's log, enough for the forms' check that the revision shown is the one pushed.
+    const log = [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }];
+    const ARTIFACTS = { get: async () => ({
+      log: async (o: { limit?: number } = {}) => log.slice(0, o.limit ?? 50), readCommit: async (h: string) => log.find((c) => c.hash === h) ?? null,
+      readTree: async () => null, readBlob: async () => null, info: async () => ({ remote: "https://git.test/r.git", defaultBranch: "main" }), [Symbol.dispose]() {},
+    }) } as unknown as typeof env.ARTIFACTS;
+    const on = { ...bindings, ARTIFACTS } as typeof env;
+    const jwt = await assertion();
+    const cookie = await signIn(TOKEN, on, { "cf-access-jwt-assertion": jwt });
+    // The API's refusal names the Access sign-in as the factor this server takes.
+    const api = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/accept`, {
+      method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ head: H1, overrideReview: "No other family" }),
+    }), on);
+    expect(api.status).toBe(403);
+    expect((await api.json() as { detail: string }).detail).toContain(`open https://atelier.test/p/${name}/t1 as the owner, press "Allow an override from the command line" under your Cloudflare Access sign-in, which is the confirmation`);
+    // The page's forms ask for no secret: the sign-in is the factor.
+    const task = await (await worker.fetch(new Request(`https://atelier.test/p/${name}/t1`, { headers: { cookie, "cf-access-jwt-assertion": jwt } }), on)).text();
+    expect(task).toContain("Your Cloudflare Access sign-in is the confirmation an override needs");
+    expect(task).toContain("Allow an override from the command line");
+    expect(task).not.toContain('name="confirmation"');
+    const form = (verb: string, headers: Record<string, string>) => worker.fetch(new Request(`https://atelier.test/ui/${name}/t1/${verb}`, {
+      method: "POST", headers: { origin: "https://atelier.test", cookie, ...headers }, body: new URLSearchParams({ head: H1, criteria: NO_CRITERIA, note: "No other family" }),
+    }), on);
+    // The session alone, without the assertion, does not reach the form.
+    expect((await form("allow-override", {})).status).toBe(401);
+    expect((await L.item("t1")).overrideConfirmation).toBeUndefined();
+    // With the owner's assertion the permission is given, with the factor on record.
+    expect((await form("allow-override", { "cf-access-jwt-assertion": jwt })).status).toBe(303);
+    expect((await L.item("t1")).overrideConfirmation).toMatchObject({ head: H1, by: "owner", factor: "access" });
+    // The page's own override form overrides and accepts under the same factor.
+    expect((await form("override", { "cf-access-jwt-assertion": jwt })).status).toBe(303);
+    const item = await L.item("t1");
+    expect(item.state).toBe("accepted");
+    expect(item.reviewOverride).toMatchObject({ head: H1, by: "owner", reason: "No other family" });
+    const events = await L.events("t1") as unknown as { kind: string; data: Record<string, unknown> }[];
+    expect(events.find((e) => e.kind === "review.overridden")?.data).toMatchObject({ head: H1, confirmed: "page", factor: "access" });
+    expect(events.find((e) => e.kind === "override.allowed")?.data).toMatchObject({ head: H1, factor: "access" });
   } finally { send.mockRestore(); }
 });

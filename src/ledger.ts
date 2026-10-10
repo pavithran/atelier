@@ -6,7 +6,8 @@ import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
-  assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, contributorsOf, DEFAULT_OWNER, changeClass, evidenceAt, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
+  assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, RuleError, sameActor, validActor,
+  type OverrideConfirmation, type OwnerFactor,
   assertBlockable, assertNotBlocked, blockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
@@ -16,7 +17,7 @@ import { criteriaHash, criteriaOf, sameCriteria } from "./criteria.ts";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
 import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
-import { assign, assertDispatchable, assertDispatchedClaim, coreHold, makeDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
+import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, makeDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
 import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
@@ -172,6 +173,7 @@ export interface ProjectInit {
   requireCriteria?: boolean;
   coreFiles?: string[];       // replaces the core-file globs; [] clears them (see ProjectPolicy.coreFiles)
   sandboxOnly?: boolean;
+  noOverride?: boolean;       // overrides of the independent review are refused (see ProjectPolicy.noOverride)
   approval?: string | null;
 }
 
@@ -361,6 +363,8 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       ...((i.requireCriteria ?? p?.requireCriteria) ? { requireCriteria: true } : {}),
       ...(coreFiles.length ? { coreFiles } : {}),
       sandboxOnly: i.sandboxOnly ?? p?.sandboxOnly ?? false,
+      // Carried only when set, so a project that allows overrides records nothing new.
+      ...((i.noOverride ?? p?.noOverride) ? { noOverride: true } : {}),
       ...(approval ? { approval } : {}),
     },
     createdAt: current?.createdAt ?? at,
@@ -468,6 +472,8 @@ export class Ledger extends DurableObject<Env> {
     if (!columns.includes("dispatch")) this.sql.exec(`ALTER TABLE items ADD COLUMN dispatch TEXT`);
     if (!columns.includes("runner")) this.sql.exec(`ALTER TABLE items ADD COLUMN runner TEXT`);
     if (!columns.includes("review_override")) this.sql.exec(`ALTER TABLE items ADD COLUMN review_override TEXT`);
+    // The owner's standing permission for an override from the command line (t371).
+    if (!columns.includes("override_confirmation")) this.sql.exec(`ALTER TABLE items ADD COLUMN override_confirmation TEXT`);
     // The claim generation: one more on every claim and every change of
     // owner. A write token is recorded only under the generation its claim
     // reserved (see recordToken).
@@ -884,6 +890,10 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`SELECT json FROM runs ORDER BY id DESC LIMIT ?`, limit).toArray().map((r) => JSON.parse(r.json as string));
   }
 
+  runsForItem(project: string, item: string): RunReport[] {
+    return this.sql.exec(`SELECT json FROM runs WHERE json_extract(json, '$.project') = ? AND json_extract(json, '$.item') = ? ORDER BY id DESC LIMIT 20`, project, item).toArray().map((r) => JSON.parse(r.json as string));
+  }
+
   // ── runner offers ─────────────────────────────────────────────────────────
   // What each runner can run, as it last said when it asked the queue for
   // work, on the index instance beside the model pool: one row per runner,
@@ -1076,8 +1086,9 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`UPDATE review_requests SET superseded = 1 WHERE item = ?`, id);
     const accepted = before.state === "accepted";
     const overridden = !!before.reviewOverride;
-    if (accepted || overridden) {
-      this.update(id, { ...(accepted ? { state: "claimed", accepted_head: null } : {}), ...(overridden ? { review_override: null } : {}) }, at);
+    // A standing permission for an override goes with the criteria it was given under.
+    if (accepted || overridden || before.overrideConfirmation) {
+      this.update(id, { ...(accepted ? { state: "claimed", accepted_head: null } : {}), ...(overridden ? { review_override: null } : {}), ...(before.overrideConfirmation ? { override_confirmation: null } : {}) }, at);
     }
     this.log(id, actor, "item.criteria_changed", {
       from, to, head: before.head, withdrawn: { reviews, requests: live.length },
@@ -1305,6 +1316,7 @@ export class Ledger extends DurableObject<Env> {
     const item = this.checkDispatch(id, actor);
     const d = makeDispatch(input, actor, new Date().toISOString());
     this.assertMergeMainWorkspace(item, d);
+    assertDispatchClaimable(item, this.items(), this.project().policy, d, this.owner);
     const held = this.holds(item);
     if (held) {
       this.dropToken(id, token);
@@ -1334,7 +1346,11 @@ export class Ledger extends DurableObject<Env> {
     this.assertNotPlanned(item);
     if (item.state === "accepted") this.acceptedReworkAllowed(item, actor);
     if (!this.holds(item)) assertDispatchable(item);
-    if (input) this.assertMergeMainWorkspace(item, makeDispatch(input, actor, new Date().toISOString()));
+    if (input) {
+      const d = makeDispatch(input, actor, new Date().toISOString());
+      this.assertMergeMainWorkspace(item, d);
+      assertDispatchClaimable(item, this.items(), this.project().policy, d, this.owner);
+    }
     return item;
   }
 
@@ -1960,17 +1976,29 @@ export class Ledger extends DurableObject<Env> {
   // nothing else: a failing or pending check, a rejection or a disallowed
   // class still refuses the acceptance, and so nothing is recorded.
   // `note` is the owner's word on the acceptance, recorded with its event.
-  accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string): Item {
+  // An override needs the owner's own confirmation (t371): `confirmedBy` is
+  // the factor the page's own override form carried, an Access identity or
+  // the confirmation secret (OwnerFactor), which the route checked and which
+  // confirms the override in itself; otherwise the override is taken only
+  // while the owner's standing permission for this head (confirmOverride)
+  // has not run out, and that permission is spent by it. Without either it
+  // is refused, naming how to confirm, before anything is written; the owner
+  // token alone, which an agent session holds, never confirms, and nor does
+  // a browser session, which that token buys. A project that forbids
+  // overrides refuses every override first.
+  accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string, confirmedBy?: OwnerFactor): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner accepts", 403);
     if (note !== undefined) assertLength(note, NOTE_MAX, "the acceptance note");
     const item = this.item(id);
     if (expected !== undefined) assertRevision(item, expected);
-    const policy = this.project().policy;
+    const project = this.project(), policy = project.policy;
     const evidence = this.evidenceFor(id), reviews = this.reviewsFor(id);
     const current: Item = item.state === "accepted" ? { ...item, state: "submitted" } : item;
-    const at = new Date().toISOString();
+    const now = Date.now(), at = new Date(now).toISOString();
+    const confirmation = overrideReason === undefined || confirmedBy ? null : confirmationAt(current, now, this.owner);
     const override = overrideReason === undefined ? null
       : reviewOverrideFor(current, policy, evidence, reviews, this.owner, overrideReason, at);
+    if (override) override.override.confirmedAt = confirmation?.at ?? at;
     // A plan item is accepted through planGate (docs/orchestrator.md, section
     // 5), which adds its own blockers: every part integrated or landed, each
     // integrated at its recorded head, and the branch at the integration head,
@@ -1986,9 +2014,22 @@ export class Ledger extends DurableObject<Env> {
         })
       : gate(override ? { ...current, reviewOverride: override.override } : current, policy, evidence, reviews, this.owner);
     if (!g.ready) throw new RuleError("not_ready", `not ready: ${g.blockers.join("; ")}`);
+    // Last, once the override would otherwise go through, the owner's
+    // confirmation: a forbidden override, a missing reason, nothing to
+    // override or another blocker are told first, so the owner is sent to
+    // the page only for an override that is ready to be made.
+    if (override && !confirmedBy && !confirmation) {
+      throw new RuleError("override_unconfirmed", `an override of the independent review needs the owner's confirmation: ${overrideConfirmationHint(project.name, id)}`, 403);
+    }
     if (override) {
-      this.update(id, { review_override: JSON.stringify(override.override) }, at);
-      this.log(id, actor, "review.overridden", { head: item.head, reason: override.override.reason, waived: override.waived, contributors: override.contributors }, at);
+      // The permission, when one was used, is spent: one confirmation, one override.
+      this.update(id, { review_override: JSON.stringify(override.override), ...(item.overrideConfirmation ? { override_confirmation: null } : {}) }, at);
+      // The record says where the owner confirmed and with what factor.
+      const factor = confirmedBy ?? confirmation?.factor;
+      this.log(id, actor, "review.overridden", {
+        head: item.head, reason: override.override.reason, waived: override.waived, contributors: override.contributors,
+        confirmed: confirmedBy ? "page" : "command line", confirmedAt: override.override.confirmedAt, ...(factor ? { factor } : {}),
+      }, at);
     }
     this.update(id, { state: "accepted", accepted_head: item.head }, at);
     this.withdrawTierRequests(id, "the change was accepted; a tier review never holds a landing", at);
@@ -2000,6 +2041,32 @@ export class Ledger extends DurableObject<Env> {
       ...(override ? { reviewOverridden: true } : {}),
       ...(note?.trim() ? { note: note.trim() } : {}),
     }, at);
+    return this.item(id);
+  }
+
+  // The owner allows an override from the command line (t371): recorded from
+  // the task's page with the factor no agent holds, `factor`, the owner's
+  // Access identity or the confirmation secret (the route checks it, and
+  // says which), for the submitted head the page showed, and good for
+  // OVERRIDE_CONFIRMATION_MS. It overrides nothing itself: `atelier accept
+  // --override-review REASON` within that time does, and spends it. A
+  // project that forbids overrides refuses it; so does a task that is not
+  // submitted, or one whose gate is not missing the independent review,
+  // since there would be nothing to allow.
+  confirmOverride(id: string, actor: string, expected: string | undefined, factor: OwnerFactor): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner allows an override", 403);
+    if (factor !== "access" && factor !== "secret") throw new RuleError("override_unconfirmed", "an override is allowed only with the owner's Access identity or the confirmation secret", 403);
+    const policy = this.project().policy;
+    assertOverridesAllowed(policy);
+    const item = this.item(id);
+    if (expected !== undefined) assertRevision(item, expected);
+    if (item.state !== "submitted" || !item.head) throw new RuleError("not_submitted", `${id} is ${item.state}; an override is allowed only on a submitted revision`, 409);
+    const g = gate({ ...item, reviewOverride: null }, policy, this.evidenceFor(id), this.reviewsFor(id), this.owner);
+    if (!g.needsAssessor) throw new RuleError("override_unneeded", `${id} at ${item.head.slice(0, 8)} is not missing an independent review, so there is nothing to allow an override of`);
+    const now = Date.now(), at = new Date(now).toISOString();
+    const confirmation: OverrideConfirmation = { head: item.head, by: actor, at, until: new Date(now + OVERRIDE_CONFIRMATION_MS).toISOString(), factor };
+    this.update(id, { override_confirmation: JSON.stringify(confirmation) }, at);
+    this.log(id, actor, "override.allowed", { head: item.head, until: confirmation.until, factor }, at);
     return this.item(id);
   }
 
@@ -4400,6 +4467,8 @@ function toItem(r: Row): Item {
     runner: (r.runner as string | null) ?? null,
     // Only an item the owner has overridden carries the field.
     ...(r.review_override ? { reviewOverride: JSON.parse(r.review_override as string) as ReviewOverride } : {}),
+    // Only an item the owner has allowed a command-line override on carries it.
+    ...(r.override_confirmation ? { overrideConfirmation: JSON.parse(r.override_confirmation as string) as OverrideConfirmation } : {}),
     nonGoals: r.non_goals ? (JSON.parse(r.non_goals as string) as string[]) : [],
     stopWhen: r.stop_when ? (JSON.parse(r.stop_when as string) as string[]) : [],
     nextGate: (r.next_gate as string | null) ?? null,

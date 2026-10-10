@@ -8,7 +8,8 @@
 // waiting section also names each open review request and its reviewer, and
 // says of any queued job no live runner offers that it can never be claimed,
 // which is not a wait but a mismatch between the dispatch and the runners
-// (unoffered in src/dispatch/rules.ts). A queued job the project's core
+// (unoffered in src/dispatch/rules.ts); `waiting.server` is the server in
+// use, which the link to each merge by override names. A queued job the project's core
 // files hold (coreHold there) says which live item it waits on, as the
 // queue's entry for it carries that. The offers (GET /runners) are each
 // { runner, kind, agents: [{ agent, models }], jobs?, at }, `at` saying when
@@ -17,9 +18,16 @@
 // (jobsLine in cli/runner.mjs): the jobs it takes and, behind them, the known
 // jobs it does not.
 import { holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
-import { isOwnCall } from "../src/rules.ts";
+import { isOwnCall, mergedByOverride } from "../src/rules.ts";
 import { daySpend } from "../src/usage/report.ts";
 import { jobsLine } from "./runner.mjs";
+
+// The address of a task's page on the server in use, the link `status` prints
+// beside each merge by override (t371); with no server known, the page's
+// path alone.
+export function taskLink(server, project, id) {
+  return `${server ? String(server).replace(/\/+$/, "") : ""}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`;
+}
 
 // An item as `ls --json` and `status --json` print it: what the text listings
 // show, with the times a machine reader such as Observatory draws on.
@@ -32,7 +40,8 @@ export function itemJson(i) {
 // carrying its times, and the project's overlapping pairs of tasks, each
 // pair once and sorted. Merged and abandoned items are included; a reader
 // that wants only live work filters by state.
-export function statusJson(views) {
+// `server` is the server in use, for the link to each merge by override.
+export function statusJson(views, server = "") {
   return views.map((v) => {
     const mine = v.inbox.filter((x) => x.project === v.name);
     return {
@@ -41,6 +50,9 @@ export function statusJson(views) {
       inbox: mine,
       items: v.items.map(itemJson),
       overlaps: overlapPairs(mine),
+      // The merges that went in on the owner's override, each with the link
+      // to its page (t371).
+      mergedByOverride: mergedByOverride(v.items).map((i) => ({ id: i.id, url: taskLink(server, v.name, i.id) })),
     };
   });
 }
@@ -256,6 +268,14 @@ export function formatStatus(views, waiting = {}) {
     if (working.length) {
       lines.push("  In progress");
       for (const i of working) lines.push(`    ${i.id}  ${i.state}  held by ${i.owner ?? "nobody"}  ${i.title}`);
+    }
+    // How many merges went in on the owner's override of the independent
+    // review, wherever the project has merged anything, then each under it
+    // with the link to its page on the server in use (t371).
+    const merged = v.items.filter((i) => i.state === "merged"), byOverride = mergedByOverride(merged);
+    if (merged.length) {
+      lines.push(`  Merged by override: ${byOverride.length} of ${merged.length} ${merged.length === 1 ? "merge" : "merges"}`);
+      for (const i of byOverride) lines.push(`    ${i.id}  ${taskLink(waiting.server, v.name, i.id)}  ${i.title}`);
     }
     if (queued.length || reviews.length) {
       lines.push("  Waiting for a runner");

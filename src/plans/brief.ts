@@ -89,7 +89,7 @@ export interface JobBriefInput {
   reason?: string | null;                      // why this actor now, from planActions
   findings?: ReviewFindings | null;            // rework after a rejection
   failure?: CheckFailure | null;               // rework after a failing check
-  mergeMain?: { head: string } | null;         // a merge-main part: the main head the runner merges into the workspace
+  mergeMain?: { head: string } | null;         // a merge-main part: the main head recorded as dispatch context
   mergePlan?: { head: string } | null;         // a part whose integration conflicted: the plan branch's head the runner merges into the workspace
   limits?: Partial<JobBriefLimits> | null;
 }
@@ -304,7 +304,7 @@ function render(r: Resolved): string {
     section(
       "## Merging main",
       "",
-      `Main at ${short(merge.head)} (${merge.head}) conflicts with the plan's branch. This workspace forks from the plan's branch, and the runner has merged main at ${short(merge.head)} into it before you start. The conflicts remain in the files listed under "Conflicts in this workspace" at the end of this brief, with git's conflict markers in place and the merge in progress; \`git diff --name-only --diff-filter=U\` lists them too. When that section says the workspace already holds main, an earlier attempt committed the merge, and what to fix is under "Rework".`,
+      `This part was queued for main at ${short(merge.head)} (${merge.head}); that is dispatch context, not the merge target. This workspace forks from the plan's branch, and the runner fetches and merges the baseline's current main head at claim time. The commit actually merged is named in the runner's log and the "Conflicts in this workspace" section at the end of this brief; it may be newer than the dispatch head. The conflicts remain in the files listed under "Conflicts in this workspace" at the end of this brief, with git's conflict markers in place and the merge in progress; \`git diff --name-only --diff-filter=U\` lists them too. When that section says the workspace already holds main, an earlier attempt committed the merge, and what to fix is under "Rework".`,
       "",
       "- Resolve each conflict keeping both sides' behaviour: what the plan's branch does and what main does must both still hold. Where the conflict is prose, keep both sides' claims and merge their meaning; do not pick one side.",
       "- Remove every conflict marker, and stage each resolved file with git add.",

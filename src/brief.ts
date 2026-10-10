@@ -222,7 +222,7 @@ function recommend(d: Detail, p: Picture): Brief["recommendation"] {
       verdict: "review",
       // The override is offered only when the missing review is all that
       // blocks, since it waives that and nothing else.
-      reason: `${gate.requirement ?? "This revision touches a protected path and needs an approval from a model of another family than every contributor"}${also.length ? `; ${also.join("; ")}` : ""}.${gate.blockers.length === 1 ? " Your own approval is not that review; if no reviewer qualifies, accept with an override and its reason." : ""}`,
+      reason: `${gate.requirement ?? "This revision touches a protected path and needs an approval from a model of another family than every contributor"}${also.length ? `; ${also.join("; ")}` : ""}.${gate.blockers.length === 1 ? ` Your own approval is not that review${d.policy.noOverride ? "" : "; if no reviewer qualifies, accept with an override and its reason"}.` : ""}${d.policy.noOverride ? " This project forbids overrides of that review." : ""}`,
     };
   }
   if (asked.length) return { verdict: "send back", reason: `${upper(asked.join(" and "))}.` };
