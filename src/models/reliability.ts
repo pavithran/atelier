@@ -28,7 +28,7 @@ import { matchesAny, modelKey, pushAuthors, RuleError, sameActor, validActor } f
 import { TEXT_CONTROLS } from "../text.ts";
 import { SERVED, servedActor, servedBy } from "./served.ts";
 
-export const RUN_OUTCOMES = ["stalled", "timed-out", "refused", "harness_failed", "early_stop", "permission_stop", "duplicate_design", "incomplete_merge"] as const;
+export const RUN_OUTCOMES = ["stalled", "timed-out", "refused", "harness_failed", "early_stop", "permission_stop", "duplicate_design", "incomplete_merge", "validation_blocked"] as const;
 export type RunOutcome = (typeof RUN_OUTCOMES)[number];
 export const RUN_ROLES = ["build", "plan", "review"] as const;
 export type RunRole = (typeof RUN_ROLES)[number];
@@ -149,7 +149,7 @@ export interface ModelReliability {
 export type Reliability = ReadonlyMap<string, ModelReliability>;
 export interface ProjectEvents { project: string; events: readonly LedgerEvent[] }
 
-const emptyRuns = (): Record<RunOutcome, number> => ({ stalled: 0, "timed-out": 0, refused: 0, harness_failed: 0, early_stop: 0, permission_stop: 0, duplicate_design: 0, incomplete_merge: 0 });
+const emptyRuns = (): Record<RunOutcome, number> => ({ stalled: 0, "timed-out": 0, refused: 0, harness_failed: 0, early_stop: 0, permission_stop: 0, duplicate_design: 0, incomplete_merge: 0, validation_blocked: 0 });
 
 const empty = (model: string): ModelReliability => ({
   model, family: familyOf(model), actors: [], projects: [],
@@ -174,8 +174,9 @@ function median(xs: number[]): number | null {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
-// How many runs a model had in all, for the tie-breaker's against side.
-export const runTotal = (r: ModelReliability): number => Object.values(r.runs).reduce((a, b) => a + b, 0);
+// Runs attributable to the model, for the tie-breaker's against side.
+// A harness unable to validate is recorded, but is not a model failure.
+export const runTotal = (r: ModelReliability): number => Object.entries(r.runs).reduce((total, [outcome, count]) => total + (outcome === "validation_blocked" ? 0 : count), 0);
 
 // An agent: harness/model, not Atelier's own recorder and not the owner.
 export function isAgent(actor: string, owner: string): boolean {
@@ -222,7 +223,7 @@ export function buildReliability(projects: readonly ProjectEvents[], runs: reado
     if (!isAgent(run.actor, owner)) continue;
     const r = get(run.actor, run.project ?? undefined);
     r.runs[run.outcome]++;
-    if (run.role === "review") r.unfinishedReviews++;
+    if (run.role === "review" && run.outcome !== "validation_blocked") r.unfinishedReviews++;
     r.runCauses.push({ project: run.project ?? "", item: run.item, by: run.runner, note: `${run.role} run ${run.outcome}${run.detail ? `: ${run.detail}` : ""}`, at: run.at });
     if (run.project && run.item) binOf(run.actor, kindsByProject.get(run.project)?.get(run.item) ?? "unknown").runs[run.outcome]++;
   }

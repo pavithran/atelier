@@ -185,7 +185,7 @@ export function killGroups() {
 // then SIGKILL if any is left after `graceMs`. The result comes back once
 // the group is gone, so nothing the child started still runs in its folder.
 // A process that leaves the group (setsid) is beyond this.
-export function execute(argv, { cwd, signal, capture = false, captureError = false, timeoutMs, env, graceMs = 5000 } = {}) {
+export function execute(argv, { cwd, signal, capture = false, captureError = false, stream = false, timeoutMs, env, graceMs = 5000 } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("interrupted"));
     const child = spawn(argv[0], argv.slice(1), { cwd, shell: false, detached: true, ...(env ? { env } : {}),
@@ -217,7 +217,7 @@ export function execute(argv, { cwd, signal, capture = false, captureError = fal
     };
     const deadline = timeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; end(); }, timeoutMs);
     signal?.addEventListener("abort", end, { once: true });
-    child.stdout?.on("data", (chunk) => { output += chunk; });
+    child.stdout?.on("data", (chunk) => { output += chunk; if (stream) process.stdout.write(chunk); });
     child.stderr?.on("data", (chunk) => { stderr += chunk; });
     child.on("error", (e) => { error = e; });
     // Once the child has exited, a deadline not yet passed no longer applies, and what it left in its group goes.
@@ -555,6 +555,43 @@ export function mergeMainSection(merge) {
 }
 
 // Dependencies keep the task lifecycle testable without a server or a harness.
+// Restricted Codex sessions cannot promise localhost listeners, the npm cache
+// or network access. Opaque wrappers cannot establish those capabilities either.
+export function codexBuildRefusal(entry) {
+  if (entry.agent !== "codex") return null;
+  const args = entry.command;
+  if (basename(args[0]) === "codex" && args.includes("exec") &&
+      !args.some((a) => /^(--full-auto|--approve-for-me)$/.test(a) || /(?:workspace-write|read-only|sandbox_mode|sandbox_workspace_write)/.test(a)) &&
+      (args.includes("--dangerously-bypass-approvals-and-sandbox") ||
+       args.some((a, i) => (a === "--sandbox" || a === "-s") && args[i + 1] === "danger-full-access") || args.includes("--sandbox=danger-full-access"))) return null;
+  return "Codex build refused: its command does not establish access for required checks (localhost listening, the npm cache and network); restricted or opaque adapters cannot verify this project";
+}
+
+// JSON harness output contains tool transcripts too: only an agent's final
+// message is a report. Plain-text harnesses report through their stdout.
+export function validationBlockedReport(output) {
+  let report = String(output ?? "").replace(/[’‘]/g, "'");
+  const messages = [];
+  let structured = false;
+  for (const line of report.split("\n")) {
+    try {
+      const event = JSON.parse(line);
+      if (!event || typeof event.type !== "string") continue;
+      if (/^(thread\.|turn\.|item\.|system$|assistant$|result$)/.test(event.type)) structured = true;
+      if (event.type === "item.completed" && event.item?.type === "agent_message") messages.push(event.item.text);
+      if (event.type === "result" && typeof event.result === "string") messages.push(event.result);
+    } catch { /* plain output */ }
+  }
+  if (structured) report = messages.at(-1) ?? "";
+  const blocked = /validation_blocked|(?:could not|couldn't|cannot|can't|unable to|blocked|not run|did not run|could not complete)[^\n.]{0,180}(?:checks?|tests?|suite|typecheck|vitest|npm)|(?:checks?|tests?|suite|typecheck|vitest|npm)[^\n.]{0,180}(?:could not|couldn't|cannot|can't|unable|blocked|not run|unavailable|EPERM|EACCES|permission denied)/i;
+  const match = blocked.exec(report);
+  if (!match) return null;
+  // Keep the actual blocker in the server's bounded detail even when the
+  // final report starts with a long summary of the implementation.
+  const start = report.lastIndexOf("\n", match.index) + 1;
+  return oneLine(report.slice(Math.max(start, match.index - 60), match.index + 240)).replace(/\s+/g, " ").trim();
+}
+
 export async function runTask(assignment, config, name, io) {
   let state = nextStep({ phase: "idle" }, { type: "queue", assignment });
   const advance = (result) => { state = nextStep(state, result); io.log(`${state.phase}${state.reason ? `: ${state.reason}` : ""}`); };
@@ -575,7 +612,11 @@ export async function runTask(assignment, config, name, io) {
     if (mergingPlan && (item.kind !== "part" || !/^[a-f0-9]{40,64}$/.test(item.dispatch.planHead ?? ""))) {
       throw Object.assign(new Error("the queue returned an invalid plan head to merge"), { skipped: true });
     }
+    const refusal = codexBuildRefusal(entry);
+    if (refusal) throw Object.assign(new Error(refusal), { validationBlocked: true, skipped: true });
     workspace = io.workspacePath(project, item.id);
+    const priorBlock = await io.readValidationBlock?.(workspace);
+    if (priorBlock) throw Object.assign(new Error(priorBlock), { validationBlocked: true, skipped: true });
     if (io.stopped()) throw new Error("interrupted");
     claimAttempted = true;
     await io.cli(["claim", item.id, "--project", project, "--as", actor, "--runner", name]);
@@ -658,13 +699,20 @@ export async function runTask(assignment, config, name, io) {
       try {
         advance({ type: "start" });
         taskFailure = true;
-        result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name));
+        result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name), { capture: true, stream: true });
       } finally {
         if (dataHome) {
           try { await io.removeDataHome(dataHome); }
           catch (error) { io.log(`could not remove ${dataHome.dir}: ${error.message}`); }
         }
       }
+    }
+    const blocked = validationBlockedReport(result?.output);
+    if (blocked) {
+      // Persist outside the reset's tracked/untracked tree: a later runner
+      // must not mistake this committed but unverified work for a dead run.
+      await io.writeValidationBlock?.(workspace, blocked);
+      throw Object.assign(new Error(blocked), { validationBlocked: true });
     }
     if (result?.timedOut) throw new Error("harness timed out");
     if (io.stopped()) throw new Error("interrupted");
@@ -681,6 +729,7 @@ export async function runTask(assignment, config, name, io) {
   } catch (error) {
     if (state.phase !== "failed") advance({ error: error.message });
     state = { ...state, taskFailure: taskFailure && !error.infrastructure && !io.stopped() };
+    if (error.validationBlocked) state = { ...state, validationBlocked: true, taskFailure: false, skipped: true };
     if (!claimed && error.skipped) {
       state = { ...state, skipped: true };
       io.log(`skipped: ${error.message}`);
@@ -1331,6 +1380,7 @@ export async function runPlanTask(assignment, config, name, io) {
 // was refused, by the harness or its provider; a plan job whose harness
 // failed before posting a plan failed as a harness, not as an invalid proposal.
 export function runOutcome(state) {
+  if (state.validationBlocked) return "validation_blocked";
   if (state.phase !== "failed" || !state.taskFailure || state.claimRefused || state.skipped) return null;
   if (state.reason === "harness timed out") return "timed-out";
   if (state.reason === "harness made no new commit") return "stalled";
@@ -1396,7 +1446,12 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
       await resetTo(cwd, `refs/remotes/origin/${branch}`);
     },
     // `env` is the harness's whole environment (harnessEnv); `io.env` is the runner's.
-    harness: (argv, cwd, env, { capture = false, captureError = false } = {}) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS, env, ...(capture ? { capture } : {}), ...(captureError ? { captureError } : {}) }),
+    harness: (argv, cwd, env, { capture = false, captureError = false, stream = false } = {}) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS, env, stream, ...(capture ? { capture } : {}), ...(captureError ? { captureError } : {}) }),
+    readValidationBlock: async (cwd) => {
+      const file = join(cwd, ".git", "atelier-validation-blocked");
+      return existsSync(file) ? readFileSync(file, "utf8") : null;
+    },
+    writeValidationBlock: async (cwd, detail) => writeFileSync(join(cwd, ".git", "atelier-validation-blocked"), detail, { mode: 0o600 }),
     env: process.env, ownerTokens: () => ownerTokens(process.env),
     brief: writeBrief, removeBrief, dataHome: makeDataHome, removeDataHome,
     // The plan job's and a part's server calls (atelier.mjs wires them to

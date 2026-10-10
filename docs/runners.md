@@ -285,3 +285,26 @@ server's: 0 success, 1 a refusal or failure of the command, 2 a required
 check that failed, 3 a claim the server refused, 4 the server unavailable or
 a request that failed in transit (retry later). `atelier ops` has exit codes
 of its own (see [Operations](owner.md#operations)).
+
+
+### Build validation blocked by the harness
+
+Codex build commands must explicitly establish unrestricted check execution:
+`codex exec --sandbox danger-full-access` (or the explicit sandbox bypass).
+The runner refuses restricted defaults, `--full-auto`, `workspace-write`,
+`read-only`, and opaque wrappers before claiming, naming localhost listening,
+the npm cache and network access as the unavailable check capabilities. This
+is a refusal, not a request to silently weaken an adapter's confinement.
+
+Build stdout is captured while it streams. A final report that required checks
+could not run records `validation_blocked` rather than a model test failure.
+This outcome is excluded from the model reliability penalty.
+The runner does not call `finish`, so it does not push that build. The task page
+shows the report above clean-clone results, with the actor, runner and reason.
+Structured Codex transcripts use the final agent message, excluding tool logs.
+
+Committed work remains local. A `.git/atelier-validation-blocked` marker stops
+a restarted runner from automatically finishing it as an interrupted build.
+After fixing the harness and running the required checks successfully, the
+operator can remove this marker to resume. Changing the command configuration
+alone does not clear a blocked validation report or prove that checks passed.

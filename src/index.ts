@@ -2481,6 +2481,7 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
     const p = await L.project();
     const item = await L.item(parts[2]);
     const detail: Detail = await L.detail(parts[2]);
+    detail.runs = await index(env).runsForItem(p.name, parts[2]);
     return html(renderItem(p, detail, ownerName(env), await diffFor(env, L, p.repo, item, detail.events), live), 200, nonce);
   }
   return html("Not found.", 404);

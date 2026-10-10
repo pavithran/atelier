@@ -1440,3 +1440,13 @@ it('a merged task shows its change as it landed, with no merge preview or confli
  const ff=renderItem(project,d,'PAVI',{head,base:'b'.repeat(40),files:[],truncated:false,merged:{commit:head,from:'fork-point'}});
  expect(ff).toContain("the task's fork point");expect(ff).not.toContain('No workspace yet');
 });
+
+
+it('shows the blocked build report before clean-clone check results and escapes its detail',()=>{
+ const d=detail();
+ d.runs=[{actor:'codex/gpt-6-astra',role:'build',outcome:'validation_blocked',project:project.name,item:d.item.id,runner:'home:studio',at:time,detail:'npm test could not run: listen EPERM <script>'}];
+ const html=renderItem(project,d,'PAVI',null);
+ expect(html).toContain('Validation blocked');
+ expect(html).toContain('listen EPERM &lt;script&gt;');
+ expect(html.indexOf('Validation blocked')).toBeLessThan(html.indexOf('Runner, clean clone'));
+});
