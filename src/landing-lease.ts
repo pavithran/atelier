@@ -26,3 +26,10 @@ export interface WaitingLanding { item: string; holder: string; at: string; rene
 export function waitingLandingGone(waiting: WaitingLanding, now: number): boolean {
   return now - Date.parse(waiting.renewedAt ?? waiting.at) >= LANDING_LEASE_EXPIRY_MS;
 }
+
+// A Workflow may wait for the lease for hours. Keep the usual queue to a
+// few hundred durable polls, with a heartbeat no slower than five minutes
+// even when its requested poll is longer than the queue's expiry.
+export function landingLeasePollMs(waitMs: number, requestedMs: number): number {
+  return Math.min(5 * 60_000, Math.max(requestedMs, Math.ceil(waitMs / 256)));
+}
