@@ -62,7 +62,7 @@ it("--overlap-ok on a held dispatch keeps its builder and place, is idempotent, 
   // A runner claims it first: the hold-only release is refused, not redispatched.
   const claimed = await make();
   await dispatchOf(claimed, { to: "home", agent: "opencode" });
-  await L.claim(claimed, "opencode/glm-5.3-flash");
+  await L.claim(claimed, "opencode/glm-5.3-flash", { runner: "home:studio", kind: "home" });
   const late = await dispatchOf(claimed, { retain: true, overlapOk: true });
   expect(late.status).toBe(409);
   const after = (await L.item(claimed)) as { owner: string | null; dispatch: { overlapOk?: boolean } };
