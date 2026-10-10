@@ -1130,7 +1130,7 @@ it("the framing is stored with the item, carried by its brief, and edited only b
   expect(await L.newItem("Plain", [], "owner")).toMatchObject({ nonGoals: [], stopWhen: [], nextGate: null });
 
   await refusal(L.editItem(item.id, A, { nextGate: "mine" }), "not_project_owner", /only the project owner edits/);
-  await refusal(L.editItem(item.id, "owner", {}), "nothing_to_edit", /give --title, --brief, --accept, --non-goal, --stop-when or --next-gate/);
+  await refusal(L.editItem(item.id, "owner", {}), "nothing_to_edit", /give --title, --brief, --scope, --accept, --non-goal, --stop-when or --next-gate/);
   // A field given replaces; one left out is kept; an empty list or a null gate clears.
   const edited = await L.editItem(item.id, "owner", { nonGoals: ["no new routes", "no CSS changes"], nextGate: null });
   expect(edited).toMatchObject({ nonGoals: ["no new routes", "no CSS changes"], stopWhen: ["a check fails twice"], nextGate: null });
@@ -1143,6 +1143,24 @@ it("the framing is stored with the item, carried by its brief, and edited only b
 
   await L.abandon(item.id, "owner", "done elsewhere");
   await refusal(L.editItem(item.id, "owner", { nextGate: "x" }), "closed", /its fields stay as they were/);
+});
+
+it("the owner changes a live task's scope, an empty list clears it, and the change is recorded", async () => {
+  const L = await setup("rescope");
+  const item = await L.newItem("Wide", [], "owner");
+  await refusal(L.editItem(item.id, A, {}, ["src/**"]), "not_project_owner", /only the project owner edits/);
+  expect((await L.editItem(item.id, "owner", {}, ["src/**", "test/**"])).scope).toEqual(["src/**", "test/**"]);
+  // The same scope again records nothing new; a field beside it is kept.
+  await L.editItem(item.id, "owner", { nextGate: "review" }, ["src/**", "test/**"]);
+  expect((await L.editItem(item.id, "owner", {}, [])).scope).toEqual([]);
+  const events = (await L.events(item.id)) as unknown as LedgerEvent[];
+  expect(events.filter((e) => e.kind === "item.edited").map((e) => e.data)).toEqual([
+    { scope: [], scopeWas: ["src/**", "test/**"] },
+    { nextGate: "review" },
+    { scope: ["src/**", "test/**"], scopeWas: [] },
+  ]);
+  await L.abandon(item.id, "owner", "done elsewhere");
+  await refusal(L.editItem(item.id, "owner", {}, ["src/**"]), "closed", /its fields stay as they were/);
 });
 
 // t315: a task's short title, its brief and its acceptance criteria. The
