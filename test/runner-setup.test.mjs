@@ -118,6 +118,21 @@ test("two runner configs that differ only by extension keep provider configs of 
   }
 });
 
+test("a runner config whose name ends in models.json is not taken for the provider index", async () => {
+  // The finding on 71346e21: /cfg/models.json and /cfg/home-models.json threw
+  // before anything was written, read as the index and its missing .models.
+  for (const name of ["models.json", "home-models.json"]) {
+    const written = new Map();
+    const lines = [];
+    const io = { pool: async () => POOL, which: everything, fetchJson, env: {}, print: (t) => lines.push(t), writeFile: (p, t) => written.set(p, t), exists: (p) => written.has(p) };
+    const configPath = `/cfg/${name}`;
+    await runSetup({ _: ["runner", "setup"], multi: { config: [configPath] }, config: configPath }, io);
+    assert.deepEqual(parseConfig(written.get(configPath), { configPath }).errors, [], name);
+    assert.ok(written.has(`/cfg/opencode/${name}/models.json`), `${name}: the index is written beside its configs`);
+    assert.match(lines.join("\n"), /Keys are read at run time from the credential store: /, name);
+  }
+});
+
 test("the catalogue's own limits fit what it says each provider serves", () => {
   for (const [provider, models] of Object.entries(CONFIGURED)) {
     for (const [model, limit] of Object.entries(models)) assert.equal(checkLimits(model, limit, SERVED[provider]?.[model]), null, `${provider}/${model}`);

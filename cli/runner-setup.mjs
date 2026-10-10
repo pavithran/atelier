@@ -89,7 +89,7 @@ export async function planSetup({ configPath, pool, env, which, fetchJson, catal
   // Each runner config's provider configs have a folder of their own, so a
   // second runner's setup leaves the first's as they were.
   const providers = providersDir(configPath);
-  const agents = [], files = [], refused = [];
+  const agents = [], files = [], refused = [], keys = new Set();
   const notFound = [...new Set(home.map((m) => m.harness))].filter((h) => !found.includes(h));
   for (const harness of found) {
     const entries = home.filter((m) => m.harness === harness);
@@ -107,6 +107,7 @@ export async function planSetup({ configPath, pool, env, which, fetchJson, catal
       files.push({ path: join(providers, `${provider}.json`), text: JSON.stringify(config, null, 2) + "\n" });
       for (const m of models) {
         const key = m.keychain ?? spec.key;
+        if (key) keys.add(key);
         index[m.atelierId] = { provider, providerModel: m.providerModel, config: `${provider}.json`, ...(key ? { key, keyVar: spec.keyVar } : {}), gateway: !!(gateway && spec.gateway), limit: m.limit };
       }
     }
@@ -131,8 +132,7 @@ export async function planSetup({ configPath, pool, env, which, fetchJson, catal
   if (refused.length) lines.push("Refused:", ...refused.map((r) => `  ${r.harness}/${r.id}: ${r.why}`));
   if (agents.some((a) => a.agent === "opencode")) {
     lines.push(gateway ? `Pay-per-use providers go through the AI Gateway ${gateway.account}/${gateway.id}; store its token as CF_AIG_TOKEN.` : "No AI Gateway is named (ATELIER_GATEWAY or CF_ACCOUNT_ID), so providers are reached direct and the gateway counts nothing.");
-    const keys = [...new Set(files.filter((f) => f.path.endsWith("models.json")).flatMap((f) => Object.values(JSON.parse(f.text).models).map((m) => m.key).filter(Boolean)))];
-    if (keys.length) lines.push(`Keys are read at run time from the credential store: ${keys.join(", ")}.`);
+    if (keys.size) lines.push(`Keys are read at run time from the credential store: ${[...keys].join(", ")}.`);
   }
   lines.push(`Reviewer tokens are read from: ${Object.values(tokens).join(", ") || "none"} (atelier token issue --as HARNESS/MODEL, then store each).`);
   return { files, config, refused, found, lines };

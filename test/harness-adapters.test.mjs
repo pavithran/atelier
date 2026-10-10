@@ -25,8 +25,15 @@ const OVERRIDE = { "claude-code": "ATELIER_CLAUDE", codex: "ATELIER_CODEX", open
 function standIn(path, record) {
   writeFileSync(path, `#!${process.execPath}
 const fs = require("node:fs");
-const input = fs.readFileSync(0, "utf8");
 const argv = process.argv.slice(2);
+// codex mcp list --json: the servers its configuration names, as codex prints them.
+if (argv[0] === "mcp") {
+  if (process.env.FAKE_MCP_FAIL) process.exit(2);
+  fs.writeFileSync(${JSON.stringify(record)} + ".mcp", JSON.stringify({ argv, cwd: process.cwd() }));
+  process.stdout.write(process.env.FAKE_MCP_LIST ?? "[]");
+  process.exit(0);
+}
+const input = fs.readFileSync(0, "utf8");
 const pick = ["OPENCODE_CONFIG", "DEEPSEEK_API_KEY", "CF_AIG_TOKEN", "CF_AIG_METADATA", "${METADATA_VAR}", "ATELIER_SECRET_STORE", "ATELIER_CONFIG_DIR",
   "XDG_CONFIG_HOME", "OPENCODE_DISABLE_PROJECT_CONFIG", "OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT", "OPENCODE_PERMISSION",
   "HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "GIT_CONFIG_GLOBAL"];
@@ -121,6 +128,44 @@ test("the harnesses are started with their own permission rules", (t) => {
   assert.deepEqual(run("opencode", s, { model: "deepseek-v4-pro" }).seen.argv, ["run", "--model", "deepseek-api/deepseek-v4-pro"]);
   assert.equal(claudeModel("sonnet-5.5"), "claude-sonnet-5-5");
   assert.equal(claudeModel("claude-fable-5-1"), "claude-fable-5-1");
+});
+
+test("codex runs with every MCP server its configuration names switched off by name", (t) => {
+  // The finding on 71346e21: -c mcp_servers={} left codex-cli 0.160.0's
+  // inherited servers enabled; only mcp_servers.NAME.enabled=false turns one off.
+  const s = setup(t);
+  const servers = [
+    { name: "browser", enabled: true, transport: { type: "stdio", command: "npx" } },
+    { name: "computer-use", enabled: true, transport: { type: "stdio", command: "cu" } },
+    { name: "old_repl", enabled: false, transport: { type: "stdio", command: "repl" } },
+  ];
+  for (const review of [false, true]) {
+    const { r, seen } = run("codex", s, { model: "gpt-6-astra", review, env: { FAKE_MCP_LIST: JSON.stringify(servers) } });
+    assert.equal(r.status, 0, r.stderr);
+    const overrides = seen.argv.filter((a, i) => seen.argv[i - 1] === "-c");
+    for (const name of ["browser", "computer-use", "old_repl"]) assert.ok(overrides.includes(`mcp_servers.${name}.enabled=false`), `${name} is switched off (review: ${review})`);
+    assert.ok(!overrides.includes("mcp_servers={}"), "the override that does nothing is gone");
+    const listed = JSON.parse(readFileSync(s.record + ".mcp", "utf8"));
+    assert.deepEqual(listed.argv, ["mcp", "list", "--json"]);
+    assert.equal(realpathSync(listed.cwd), realpathSync(s.ws), "listed from the workspace, so a project's own servers are found too");
+  }
+  // An object keyed by name, as older releases print it, is read as well.
+  const { seen } = run("codex", s, { model: "gpt-6-astra", env: { FAKE_MCP_LIST: JSON.stringify({ browser: { command: "npx" } }) } });
+  assert.ok(seen.argv.includes("mcp_servers.browser.enabled=false"));
+});
+
+test("codex does not run when its MCP servers cannot be listed or named safely", (t) => {
+  const s = setup(t);
+  for (const env of [{ FAKE_MCP_FAIL: "1" }, { FAKE_MCP_LIST: "not json" }, { FAKE_MCP_LIST: JSON.stringify([{ name: "a.b" }]) }]) {
+    rmSync(s.record, { force: true });
+    const verdict = join(s.dir, "verdict.md");
+    const r = spawnSync(process.execPath, [join(repo, "bin", "harness", ADAPTERS.codex), "gpt-6-astra", s.brief, s.ws, "undefined", "undefined", "undefined"],
+      { encoding: "utf8", env: { PATH: process.env.PATH, HOME: s.dir, ATELIER_CODEX: s.fake, ...env } });
+    assert.notEqual(r.status, 0, JSON.stringify(env));
+    assert.match(r.stderr, /MCP server/);
+    assert.throws(() => readFileSync(s.record), "codex was never started for the job");
+    assert.throws(() => readFileSync(verdict));
+  }
 });
 
 test("a plan job is told where to write the plan and to commit nothing", (t) => {

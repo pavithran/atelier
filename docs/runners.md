@@ -204,13 +204,20 @@ brief and the diff, and the answer goes to the verdict file. Per harness:
 | Adapter | Runs | Permissions |
 | --- | --- | --- |
 | `atelier-claude` | `claude -p --model claude-MODEL` (`opus-5.5` is `claude-opus-5-5`) | `--strict-mcp-config` with no server; edits accepted; Bash only for `git add`, `git commit` and other named Git, npm and Node commands; `git push`, `atelier` and the web denied; a review gets no edit tools |
-| `atelier-codex` | `codex exec --model MODEL -` | no MCP server; `workspace-write` sandbox with `.git` writable for a build, `read-only` for a review, whose last message is the verdict |
+| `atelier-codex` | `codex exec --model MODEL -` | no MCP server: each one `codex mcp list --json` names from the workspace is switched off by name (`-c mcp_servers.NAME.enabled=false`); `workspace-write` sandbox with `.git` writable for a build, `read-only` for a review, whose last message is the verdict |
 | `atelier-opencode` | `opencode run --model PROVIDER/MODEL` | the provider config setup wrote (`OPENCODE_CONFIG`) and no other: an empty folder of the run's own, outside the workspace and removed as the run ends, as `HOME` and every XDG folder (`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`), so neither `~/.opencode` nor `~/.config/opencode` is read, with git given the owner's global git config as `GIT_CONFIG_GLOBAL` so commits keep their identity; `OPENCODE_DISABLE_PROJECT_CONFIG` and `OPENCODE_DISABLE_CLAUDE_CODE` set, `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG_CONTENT` and `OPENCODE_PERMISSION` dropped; its key and the gateway token read from the credential store at run time and given to opencode alone |
 | `atelier-agy` | `agy --model MODEL` (`gemini-3.1-pro` is `gemini-3.1-pro-high`) | `--sandbox`, the workspace its working folder; a review's answer is `agy`'s JSON `response` |
 
 A harness that needs no key (Claude Code, Codex and Antigravity on their
 plans) uses its own login. A key the opencode adapter cannot find stops the
 run before opencode starts, naming the entry to store and never a value.
+
+Codex keeps the MCP servers of its user and project configuration even when a
+run sets `-c mcp_servers={}` (codex-cli 0.160.0), so the codex adapter lists
+them before each job and switches every one off by name. If the list cannot be
+read, or a server's name is not letters, digits, `-` and `_` (which a `-c` key
+cannot carry), the job stops before codex starts rather than run with a server
+on.
 
 opencode merges the config `OPENCODE_CONFIG` names with the global one
 (`~/.config/opencode`), the workspace's own (`opencode.json`, `.opencode/`)
