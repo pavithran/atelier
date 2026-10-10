@@ -52,10 +52,10 @@ export function leaseTimeout(item: string, waitMs: number, last: LeaseAttempt): 
   return `the landing lease was not ${item}'s within ${span}: at the final attempt${last.at ? ` (${when(last.at)})` : ""} ${holder}; the server said: ${last.why}. Nothing was changed; run atelier land ${item} --workflow again to queue once more`;
 }
 
-// The id of the instance that replaces `old`. It is derived from the old id
-// alone, so two requests that replace the same instance at once name the
-// same new one, and the Workflows binding creates it once: the second
-// create is refused as a duplicate and that request attaches to it.
+// The id of the instance that follows `old`, replaced or found ended. It is
+// derived from the old id alone, so every request that follows the same
+// instance at once names the same new one, and the Ledger's claim on it
+// (claimLandingWorkflow) decides the one request that creates it.
 export function replacementInstanceId(item: string, old: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < old.length; i++) h = Math.imul(h ^ old.charCodeAt(i), 0x01000193) >>> 0;

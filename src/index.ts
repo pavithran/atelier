@@ -1711,6 +1711,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const named = typeof body.reviewer === "string" && body.reviewer ? body.reviewer : null;
       let standing: InstanceStatus | null = null;
       let handle: WorkflowInstance | undefined;
+      // The instance the record names when this request decides to start
+      // one: the remembered one, or none once it is cleared as missing.
+      let expected = remembered?.instance ?? null;
       if (remembered) {
         try {
           // Only a confirmed missing instance from get() permits replacement.
@@ -1720,6 +1723,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           } catch (error) {
             if (!/\binstance\.not_found$/.test(String((error as Error)?.message ?? error))) throw error;
             await L.clearLandingWorkflow(id, remembered.instance, actor);
+            expected = null;
           }
           if (handle) {
             standing = await handle.status();
@@ -1761,14 +1765,30 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const reviewer = named ?? (replacing && body.noReview !== true ? remembered?.reviewer ?? null : null);
       const noReview = body.noReview === true || (!!replacing && named === null && remembered?.noReview === true);
       const options = { checks, ...(reviewer ? { reviewer } : {}), ...(noReview ? { noReview: true } : {}) };
-      // Remember only a successfully created instance. The first stage retries
-      // if execution reaches it before this request has saved the record. A
-      // replacement's id is derived from the instance it replaces, so two
-      // requests replacing it at once create it once: the second create is
-      // refused, and that request records and answers the instance that exists.
-      const instanceId = replacing ? replacementInstanceId(id, replacing.from) : `land-${id}-${Date.now()}`;
+      // Who starts the next instance is decided in the Ledger before anything
+      // is created (t430). The instance that follows a remembered one has an
+      // id derived from it, so every request that follows it (two replacing
+      // it, or one replacing it and one that found it already ended) claims
+      // the same successor: the one whose claim is recorded creates it, with
+      // the options it recorded, and every other answers that record and the
+      // instance it names. A claim whose create fails is withdrawn.
+      const instanceId = remembered ? replacementInstanceId(id, remembered.instance) : `land-${id}-${Date.now()}`;
+      const claim = await L.claimLandingWorkflow(id, expected, instanceId, actor, options, replacing ?? undefined);
+      const replaced = (to: string) => replacing ? { replaced: { from: replacing.from, to, reason: replacing.reason, detail: replacing.detail } } : {};
+      if (!claim.owner) {
+        const record = claim.record;
+        if (!record) throw new RuleError("landing_replaced", `${id}'s landing Workflow ${expected ?? "record"} was cleared meanwhile; run atelier land ${id} --workflow again to start one`, 409);
+        // The owner may not have created it yet: it is waited for briefly.
+        let status: InstanceStatus | null = null;
+        for (let i = 0; i < 25 && !status; i++) {
+          try { status = await (await env.LANDING_WORKFLOW.get(record.instance)).status(); }
+          catch { await new Promise((ok) => setTimeout(ok, 200)); }
+        }
+        if (!status) throw new RuleError("landing_starting", `${id}'s landing Workflow ${record.instance} is being started by another request; run atelier land ${id} --workflow again to attach to it`, 409);
+        await L.observeLandingWorkflowStatus(id, record.instance, status);
+        return json({ ...record, created: false, status, ...replaced(record.instance) });
+      }
       let instance: WorkflowInstance;
-      let created = true;
       try {
         instance = await env.LANDING_WORKFLOW.create({
           id: instanceId,
@@ -1778,21 +1798,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           },
         });
       } catch (error) {
-        if (!replacing) throw error;
-        try { instance = await env.LANDING_WORKFLOW.get(instanceId); await instance.status(); } catch { throw error; }
-        created = false;
-      }
-      const record = replacing
-        ? await L.replaceLandingWorkflow(id, replacing.from, instanceId, actor, options, replacing.reason, replacing.detail)
-        : await L.setLandingWorkflow(id, instanceId, actor, options);
-      if (!record) {
-        const now = await L.landingWorkflowOf(id);
-        throw new RuleError("landing_replaced", `${id}'s landing Workflow ${replacing!.from} was replaced meanwhile by ${now?.instance ?? "nothing"}; run atelier land ${id} --workflow again to attach to it`, 409);
+        await L.clearLandingWorkflow(id, instanceId, actor);
+        throw error;
       }
       const status = await instance.status();
       await L.observeLandingWorkflowStatus(id, instanceId, status);
-      const replaced = replacing ? { replaced: { from: replacing.from, to: instanceId, reason: replacing.reason, detail: replacing.detail } } : {};
-      return json({ ...record, created, status, ...replaced }, created ? 201 : 200);
+      return json({ ...claim.record, created: true, status, ...replaced(instanceId) }, 201);
     }
     case "integrated": {
       // The integrator reports a merge of one part. The Worker verifies the

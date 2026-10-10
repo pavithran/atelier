@@ -10,9 +10,11 @@
 // it was started with.
 //
 // A replacement is created only once the old instance has been terminated
-// and its status read back as ended (terminated, errored or complete). A
-// terminate that fails, a status that cannot be read, or one still live
-// after the terminate refuses the replacement: an executor whose state
+// and its status read back as ended (terminated, errored or complete). The
+// status read back decides, not the terminate's answer: a terminate that
+// fails still allows the replacement once the status confirms the end, and
+// a status that cannot be read, or one still live after the terminate,
+// refuses it whether the terminate failed or not. An executor whose state
 // cannot be established is never run beside a second one.
 
 import { BEFORE_ACCEPTANCE, LANDING_LEASE_WAIT_LIMIT_MS, leaseWaitElapsed, leaseWaitExpired, reviewerIneligibility } from "./lease-wait.ts";

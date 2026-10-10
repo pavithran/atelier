@@ -318,10 +318,23 @@ What this protects against, and what it does not:
   boundary included) is not attached to: `atelier land t9 --workflow`
   terminates it, reads its status back until it has ended, and only then
   starts a replacement, which keeps the task's place in the queue (t430).
-  A terminate that fails, a status that cannot be read, or one still live
-  is refused with a 503 and nothing is started. The replacement's id is
-  derived from the old one, so two runs at once create one replacement.
-  The answer and the command name the reason and the old and new
+  What counts is the status read after the terminate, not the terminate's
+  own answer: a terminate that throws still allows the replacement when
+  the status read back afterwards confirms the instance ended (terminated,
+  errored or complete), and the failed terminate is ignored. A status that
+  cannot be read, or one still live after the reads, is refused with a 503
+  and nothing is started, whether the terminate succeeded or failed.
+- Who starts the next instance is decided in the Ledger before anything
+  is created (`claimLandingWorkflow`). The instance that follows a
+  remembered one, whether that one was replaced or found already ended,
+  has an id derived from it, and the claim is made only while the record
+  still names the old instance. So of runs at once (two replacing it, or
+  one replacing it and one that finds it already terminated) exactly one
+  records the successor with its review options and creates it with those
+  options; the others answer that record (`created: false`), so the
+  options recorded are always those of the instance created. A claim whose
+  create fails is withdrawn, leaving no record, and the next run starts
+  afresh. The answer and the command name the reason and the old and new
   instances (`replaced`), and the record keeps them.
 - The record keeps the review options an instance was started with
   (`reviewer`, `noReview`), and a replacement that names none keeps them.
