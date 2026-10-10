@@ -14,7 +14,8 @@
 // and gives them to opencode alone; the others use their harness's own login.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 
 import { readSecret } from "../credentials.mjs";
@@ -157,9 +158,10 @@ export function executableFor(harness, env = process.env) {
   return env[OVERRIDE[harness]] || HARNESSES[harness].executable;
 }
 
-// The default folder of the provider configs `atelier runner setup` writes.
+// The default folder of the provider configs `atelier runner setup` writes,
+// for the default runner config, runner.json (providersDir in runner-config.mjs).
 export function defaultProvidersDir(env = process.env, home = env.HOME ?? "") {
-  return join(env.ATELIER_CONFIG_DIR ?? join(home, ".config", "atelier"), "opencode");
+  return join(env.ATELIER_CONFIG_DIR ?? join(home, ".config", "atelier"), "opencode", "runner");
 }
 
 // What the opencode adapter needs for one model, from the index setup wrote
@@ -173,11 +175,28 @@ export function opencodeSetup(model, dir) {
   return { ...entry, config: join(dir, entry.config) };
 }
 
+// The variables through which opencode would read a config other than the
+// generated one; none reaches it.
+export const OPENCODE_CONFIG_VARS = ["OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT", "OPENCODE_PERMISSION"];
+
 // The environment opencode runs with: the runner's (already filtered of every
 // secret), the config, the gateway metadata escaped for the config's raw text,
 // and the two secrets read from the credential store by name.
+//
+// The generated config is the only one. opencode merges OPENCODE_CONFIG with
+// the global config ($XDG_CONFIG_HOME/opencode), the project's (opencode.json
+// and .opencode in the workspace) and ~/.claude, so their MCP servers and
+// permissions would reach the run (the finding on 84358a17). So project
+// config and Claude Code's files are turned off, the variables that name more
+// config are dropped, and runAdapter gives each run an empty XDG_CONFIG_HOME
+// of its own, removed as the run ends.
 export function opencodeEnv(env, setup, secret = (name) => readSecret(name, { env })) {
-  const out = { ...env, OPENCODE_CONFIG: setup.config, [METADATA_VAR]: metadataEscaped(env.CF_AIG_METADATA) };
+  const out = { ...env };
+  for (const name of OPENCODE_CONFIG_VARS) delete out[name];
+  Object.assign(out, {
+    OPENCODE_CONFIG: setup.config, [METADATA_VAR]: metadataEscaped(env.CF_AIG_METADATA),
+    OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DISABLE_CLAUDE_CODE: "1",
+  });
   if (setup.key) {
     const key = secret(setup.key);
     if (!key) throw new Error(`no key for ${setup.provider}: store it in the credential store as ${setup.key} (on macOS: security add-generic-password -U -T /usr/bin/security -s atelier.${setup.key} -a "$USER" -w)`);
@@ -207,19 +226,32 @@ export function storeEnv(env, options = {}) {
 // spawn, environment, output and secret reads in tests.
 export function runAdapter(harness, argv, io = {}) {
   const env = io.env ?? process.env;
-  const spawn = io.spawn ?? spawnSync;
   const err = io.stderr ?? ((text) => process.stderr.write(text));
   const fail = (message) => { err(`atelier-${harness}: ${message}\n`); return 1; };
   let args;
   try { args = parseArgs(argv); } catch (error) { return fail(error.message); }
   const kind = jobKind(args);
-  let childEnv = env, setup;
+  let childEnv = env, setup, configHome;
   try {
     if (harness === "opencode") {
       setup = opencodeSetup(args.model, args.options.providers ?? defaultProvidersDir(env));
-      childEnv = opencodeEnv(env, setup, io.secret ?? ((name) => readSecret(name, { env: storeEnv(env, args.options) })));
+      const secret = io.secret ?? ((name) => readSecret(name, { env: storeEnv(env, args.options) }));
+      childEnv = opencodeEnv(env, setup, secret);
+      // Outside the workspace, so nothing opencode leaves in it is committed.
+      configHome = mkdtempSync(join(tmpdir(), "atelier-opencode-config-"));
+      childEnv.XDG_CONFIG_HOME = configHome;
     }
   } catch (error) { return fail(error.message); }
+  try {
+    return runHarness(harness, args, kind, setup, childEnv, io, fail);
+  } finally {
+    if (configHome) rmSync(configHome, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+  }
+}
+
+function runHarness(harness, args, kind, setup, childEnv, io, fail) {
+  const env = io.env ?? process.env;
+  const spawn = io.spawn ?? spawnSync;
   const { argv: harnessArgv, verdictFrom } = HARNESSES[harness].command(args, kind, setup);
   let prompt;
   try { prompt = promptFor(harness, args); } catch (error) { return fail(`could not read the brief or diff: ${error.message}`); }

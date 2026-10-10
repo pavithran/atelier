@@ -58,8 +58,7 @@ export const CONFIGURED = {
   "deepseek-api": { "deepseek-v4-pro": { context: 128_000, output: 32_000 } },
 };
 
-// The output a model is configured for when its provider gives a context but
-// no output limit.
+// The most output a model Atelier does not list is configured for.
 const DEFAULT_OUTPUT = 32_000;
 
 // The provider a pool entry runs through, from what the pool records:
@@ -95,19 +94,22 @@ export function openRouterServed(listed) {
 // What a local OpenAI-compatible server says it serves for one model, from
 // its model list: LM Studio's max_context_length (or the context it loaded
 // the model with, which is what it actually serves), vLLM's max_model_len, or
-// a context_length field.
+// a context_length field. A local server has no output cap of its own: it
+// generates until the context it serves is full, so the output it serves is
+// that context, stated by the server itself.
 export function localServed(listed) {
   const context = listed.loaded_context_length ?? listed.max_context_length ?? listed.max_model_len ?? listed.context_length;
-  return Number.isInteger(context) ? { context } : null;
+  return Number.isInteger(context) ? { context, output: context } : null;
 }
 
 // Whether a model's configured limits fit: null when they do, else why not.
-// An output the provider does not state is bounded by the served context.
+// A provider that states no output limit is refused, not guessed: its context
+// is no bound on what it will return (the finding on 84358a17).
 export function checkLimits(model, configured, served, harness = "opencode") {
   if (!served) return `Atelier cannot tell what its provider serves for ${model}, so it cannot check the limits it would configure`;
+  if (!Number.isInteger(served.output)) return `its provider states no output limit for ${model}, so Atelier cannot check the output it would configure`;
   if (configured.context > served.context) return `${model} would be configured for a context of ${configured.context} tokens, but its provider serves ${served.context}`;
-  const outputCap = served.output ?? served.context;
-  if (configured.output > outputCap) return `${model} would be configured for ${configured.output} output tokens, but its provider serves ${outputCap}`;
+  if (configured.output > served.output) return `${model} would be configured for ${configured.output} output tokens, but its provider serves ${served.output}`;
   if (configured.output >= configured.context) return `${model} would be configured for ${configured.output} output tokens, no less than its context of ${configured.context}`;
   const start = HARNESS_START[harness] ?? 0;
   if (configured.context < start) return `${model}'s context of ${configured.context} tokens is below the ${start} that ${harness} itself starts with, so the model would have no room to work`;
@@ -116,12 +118,12 @@ export function checkLimits(model, configured, served, harness = "opencode") {
 
 // The limits Atelier would configure for a model: its CONFIGURED entry, else
 // what the provider serves (its output capped at DEFAULT_OUTPUT and below the
-// context).
+// context). Nothing without a served output; checkLimits says why.
 export function configuredLimits(provider, providerModel, served, configured = CONFIGURED) {
   const known = configured[provider]?.[providerModel];
   if (known) return { ...known };
-  if (!served) return null;
-  const output = Math.min(served.output ?? DEFAULT_OUTPUT, DEFAULT_OUTPUT, Math.floor(served.context / 4));
+  if (!served || !Number.isInteger(served.output)) return null;
+  const output = Math.min(served.output, DEFAULT_OUTPUT, Math.floor(served.context / 4));
   return { context: served.context, output };
 }
 

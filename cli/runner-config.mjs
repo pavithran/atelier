@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { redactKeys } from "../src/models/pool.ts";
@@ -41,18 +41,19 @@ const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 // which an entry runs when it gives no command of its own. Each is started by
 // this Node with every placeholder, so the one command builds, plans and
 // reviews; opencode's also names the folder of the provider configs `atelier
-// runner setup` wrote beside the runner config, and the credential store the
+// runner setup` wrote for this runner config (providersDir), and the
+// credential store the
 // runner itself reads (ATELIER_SECRET_STORE, ATELIER_CONFIG_DIR): the runner
 // passes a harness no ATELIER_ variable (check-env.mjs), so without these the
 // adapter would look for its keys in another store than the one they were
 // put in.
 const ADAPTERS = { "claude-code": "atelier-claude.mjs", codex: "atelier-codex.mjs", opencode: "atelier-opencode.mjs", antigravity: "atelier-agy.mjs" };
 const BIN = fileURLToPath(new URL("../bin/harness/", import.meta.url));
-export function defaultCommand(agent, configDir = defaultConfigDir(), env = process.env) {
+export function defaultCommand(agent, configPath = defaultConfigPath(), env = process.env) {
   const adapter = ADAPTERS[agent];
   if (!adapter) return null;
   const store = agent !== "opencode" ? [] : [
-    "--providers", join(configDir, "opencode"),
+    "--providers", providersDir(configPath),
     ...(env.ATELIER_SECRET_STORE ? ["--secret-store", env.ATELIER_SECRET_STORE] : []),
     ...(env.ATELIER_CONFIG_DIR ? ["--secrets-dir", env.ATELIER_CONFIG_DIR] : []),
   ];
@@ -60,11 +61,22 @@ export function defaultCommand(agent, configDir = defaultConfigDir(), env = proc
     "{model}", "{brief_file}", "{workspace}", "{plan_file}", "{diff_file}", "{verdict_file}"];
 }
 export const defaultConfigDir = () => process.env.ATELIER_CONFIG_DIR ?? join(homedir(), ".config", "atelier");
+export const defaultConfigPath = () => join(defaultConfigDir(), "runner.json");
 
-// `configDir` is the folder the config was read from, where `runner setup`
-// keeps the opencode provider configs a default command names; `env` the
-// runner's environment, which names its credential store.
-export function parseConfig(json, { configDir, env } = {}) {
+// The folder of one runner config's opencode provider configs: opencode/NAME
+// beside it, NAME the config's file name without its extension. A folder per
+// config, so setting up a second runner leaves the first one's index and
+// provider configs as they were.
+export function providersDir(configPath) {
+  const path = resolve(configPath);
+  return join(dirname(path), "opencode", basename(path, extname(path)));
+}
+
+// `configPath` is the file the config was read from, beside which `runner
+// setup` keeps the opencode provider configs a default command names
+// (providersDir); `env` the runner's environment, which names its credential
+// store.
+export function parseConfig(json, { configPath, env } = {}) {
   const agents = [], errors = [];
   let value;
   try { value = typeof json === "string" ? JSON.parse(json) : json; }
@@ -162,7 +174,7 @@ export function parseConfig(json, { configDir, env } = {}) {
         new Set(entry.models).size !== entry.models.length) bad("models must be distinct claimable model ids");
     // No command: the adapter Atelier ships for the harness, where it ships one.
     if (entry.command === undefined && HARNESSES.includes(entry.agent)) {
-      const command = defaultCommand(entry.agent, configDir, env);
+      const command = defaultCommand(entry.agent, configPath, env);
       if (command) entry = { ...entry, command };
       else bad(`Atelier ships no adapter for ${entry.agent}; give its command`);
     }
@@ -192,8 +204,8 @@ export function parseConfig(json, { configDir, env } = {}) {
     ...(jobs !== undefined ? { jobs } : {}) };
 }
 
-export function readConfig(path = join(defaultConfigDir(), "runner.json")) {
-  const config = parseConfig(readFileSync(path, "utf8"), { configDir: dirname(resolve(path)) });
+export function readConfig(path = defaultConfigPath()) {
+  const config = parseConfig(readFileSync(path, "utf8"), { configPath: path });
   if (config.errors.length) throw new Error(config.errors.join("; "));
   return config;
 }
