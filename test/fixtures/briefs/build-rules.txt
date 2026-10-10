@@ -3,5 +3,6 @@
 - Run no rm and no mktemp, and make no temporary folders.
 - Commit first when the work is done, before anything else, with plain single git commands, one per call: git add FILES, then git commit. No heredoc, no -F -, no && chain and no redirection: a harness refuses them, and the run ends without a commit.
 - A run that ends without a commit counts as stalled, whatever it did.
+- If a test outside the task's scope fails on main, do not change it; report the failing test and its output in the summary and stop.
 - A fix comes with a test that fails without it.
 - A change that depends on a platform limit or runtime behaviour local tests cannot reproduce names it in the task, and the project declares a remote smoke check run before and after deploy.
