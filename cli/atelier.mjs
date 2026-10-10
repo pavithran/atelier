@@ -453,7 +453,7 @@ function readAgentsMd(dir) {
 
 export function guidePointer(projects, names, inWorkspace = false, read = readAgentsMd) {
   if (inWorkspace) return null;
-  const unread = names.filter((n) => projects?.[n] && !statesReviewPath(projects[n].path ? read(projects[n].path) : null));
+  const unread = names.filter((n) => !statesReviewPath(projects?.[n]?.path ? read(projects[n].path) : null));
   if (!unread.length) return null;
   const one = unread.length === 1;
   return `Review path${one ? ` for ${unread[0]}` : ""}: atelier guide --role orchestrate${one ? ` --project ${unread[0]}` : ""} prints how to run, review and land work here, including atelier land --reviewer.`;

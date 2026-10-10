@@ -15,8 +15,10 @@ project, whatever its company; each is explained in the sections below.
 
 A session that drives Atelier by hand reads the project's AGENTS.md and what
 its commands print, so Atelier reaches it there: `atelier status`, `ls` and
-`new` end with one line naming this guide until it has been fetched for the
-project on this Mac, and `atelier init` offers a short AGENTS.md section that
+`new` end with one line naming this guide until the project's AGENTS.md states
+the review path (`atelier land --reviewer`); fetching the guide does not
+silence it, and a project with no checkout on this Mac always gets it.
+`atelier init` offers a short AGENTS.md section that
 points at it and states the review path (it does not edit the file).
 
 - Use builders from several companies, chosen by tier, and not one company's
