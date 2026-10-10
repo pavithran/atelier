@@ -486,7 +486,7 @@ test("ls and new name the orchestrator guide until it was fetched, and not in a 
   assert.doesNotMatch(f.run(f.checkout, ["ls", "--json", "--project", "demo"]).stdout, /atelier guide/);
   assert.doesNotMatch(f.run(f.workspace, ["ls"]).stdout, /atelier guide/);
   const config = JSON.parse(readFileSync(join(f.dir, "config.json"), "utf8"));
-  config.projects.demo.guideFetched = "2026-10-09T00:00:00.000Z";
+  config.projects.demo.guideFetched = new Date().toISOString();
   writeFileSync(join(f.dir, "config.json"), JSON.stringify(config));
   for (const argv of [["ls", "--project", "demo"], ["new", "A task", "--project", "demo"]]) {
     const r = f.run(f.checkout, argv);
