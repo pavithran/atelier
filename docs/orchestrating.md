@@ -260,8 +260,10 @@ This section is the procedure, step by step, as one session ran it on
 10 October 2026 to land Atelier's own tasks: runners build and review, and
 the session watches, chooses reviewers, lands, judges findings, resolves
 what the runners cannot, deploys and publishes. Atelier always runs with an
-AI in this role beside the lead developer; this is what that AI does all
-day. Each step names the command and what each of its outcomes means. The
+AI in this role beside the lead developer, a frontier model such as Fable,
+Opus or GPT-6 Astra; this is what that AI does all day. The steps assume
+its judgement (of findings, conflicts and reviewers) but no one company's
+tools: every step is an Atelier command, git, or the shell. Each step names the command and what each of its outcomes means. The
 open tasks named here replace a manual step; when one merges, the step
 becomes a command.
 
