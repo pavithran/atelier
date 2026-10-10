@@ -9,7 +9,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 
-import { DEFAULT_JOBS, defaultConfigDir, parseConfig } from "./runner-config.mjs";
+import { DEFAULT_JOBS, defaultConfigPath, parseConfig, providersDir } from "./runner-config.mjs";
 import { HARNESSES } from "./harness/adapter.mjs";
 import {
   PROVIDERS, SERVED, checkLimits, configuredLimits, localServed, opencodeConfig, openRouterId, openRouterServed, providerFor,
@@ -86,8 +86,9 @@ export async function planSetup({ configPath, pool, env, which, fetchJson, catal
   const found = Object.keys(HARNESSES).filter((h) => which(HARNESSES[h].executable));
   const home = (Array.isArray(pool) ? pool : []).filter((m) => m.where === "home");
   const gateway = gatewayFrom(env);
-  const configDir = dirname(configPath);
-  const providersDir = join(configDir, "opencode");
+  // Each runner config's provider configs have a folder of their own, so a
+  // second runner's setup leaves the first's as they were.
+  const providers = providersDir(configPath);
   const agents = [], files = [], refused = [];
   const notFound = [...new Set(home.map((m) => m.harness))].filter((h) => !found.includes(h));
   for (const harness of found) {
@@ -103,13 +104,13 @@ export async function planSetup({ configPath, pool, env, which, fetchJson, catal
       const models = resolved.accepted.filter((m) => m.provider === provider);
       const spec = PROVIDERS[provider];
       const config = opencodeConfig(provider, models, { baseURL: models[0].baseURL, gateway });
-      files.push({ path: join(providersDir, `${provider}.json`), text: JSON.stringify(config, null, 2) + "\n" });
+      files.push({ path: join(providers, `${provider}.json`), text: JSON.stringify(config, null, 2) + "\n" });
       for (const m of models) {
         const key = m.keychain ?? spec.key;
         index[m.atelierId] = { provider, providerModel: m.providerModel, config: `${provider}.json`, ...(key ? { key, keyVar: spec.keyVar } : {}), gateway: !!(gateway && spec.gateway), limit: m.limit };
       }
     }
-    files.push({ path: join(providersDir, "models.json"), text: JSON.stringify({ models: index }, null, 2) + "\n" });
+    files.push({ path: join(providers, "models.json"), text: JSON.stringify({ models: index }, null, 2) + "\n" });
   }
   if (!agents.length) {
     throw new Error(found.length
@@ -120,7 +121,7 @@ export async function planSetup({ configPath, pool, env, which, fetchJson, catal
   // agent token (docs/runners.md, Reviewers post under their own agent token).
   const tokens = Object.fromEntries(agents.flatMap((a) => a.models).filter((m) => KEYCHAIN_ENTRY.test(`agent.${m}`)).map((m) => [m, `agent.${m}`]));
   const config = { jobs: [...DEFAULT_JOBS, "review"], agents, tokens };
-  const parsed = parseConfig(config, { configDir });
+  const parsed = parseConfig(config, { configPath });
   if (parsed.errors.length) throw new Error(`the config setup would write is refused: ${parsed.errors.join("; ")}`);
   files.unshift({ path: configPath, text: JSON.stringify(config, null, 2) + "\n" });
 
@@ -142,7 +143,7 @@ export async function runSetup(args, io) {
   if (args._.length !== 2 || Object.keys(args.multi).some((k) => !["config", "dry-run"].includes(k) || args.multi[k].length !== 1) ||
       (args.config !== undefined && typeof args.config !== "string") || (args["dry-run"] !== undefined && args["dry-run"] !== true)) throw new Error(USAGE);
   const env = io.env ?? process.env;
-  const configPath = resolve(args.config ?? join(defaultConfigDir(), "runner.json"));
+  const configPath = resolve(args.config ?? defaultConfigPath());
   if (!args["dry-run"] && (io.exists ?? existsSync)(configPath)) throw new Error(`${configPath} exists; setup does not overwrite a runner config. Move it aside, or name another file with --config PATH`);
   const plan = await planSetup({
     configPath, env, pool: await io.pool(),

@@ -113,7 +113,8 @@ reviews as any of them, so a build by one company's model and its review by
 another's can both run on this machine. `atelier runner setup --config PATH`
 writes the config to PATH instead; a second runner with a config of its own,
 `"jobs": ["review"]`, keeps reviews from waiting behind a build (One job at a
-time, below).
+time, below). Each config's opencode provider configs have a folder of their
+own, so setting up the second runner leaves the first one's as they were.
 
 ### What setup writes
 
@@ -127,11 +128,14 @@ unless `--config` names another file):
   model, `tokens` naming the Keychain entry `agent.MODEL`. No entry names a
   command, so the runner runs Atelier's adapter for each harness (The
   adapters, below). Setup refuses to overwrite a runner config that exists.
-- `opencode/PROVIDER.json`, one opencode provider config per provider the
-  opencode models use (`zai-coding`, `deepseek-api`, `openrouter-api`, and
-  `ai-studio` for a local OpenAI-compatible server at the pool entry's
-  endpoint), and `opencode/models.json`, the index the opencode adapter reads
-  to find each model's provider, config and key name.
+- `opencode/NAME/PROVIDER.json`, NAME the runner config's file name without
+  `.json` (`opencode/runner/` for `runner.json`): one opencode provider
+  config per provider the opencode models use (`zai-coding`, `deepseek-api`,
+  `openrouter-api`, and `ai-studio` for a local OpenAI-compatible server at
+  the pool entry's endpoint), and `opencode/NAME/models.json`, the index the
+  opencode adapter reads to find each model's provider, config and key name.
+  The runner's default opencode command names this folder
+  (`--providers`), so two runner configs never share an index.
 
 A pool model for a harness this machine lacks is named and left out. An
 opencode model is refused, and left out with the reason printed, when:
@@ -143,6 +147,11 @@ opencode model is refused, and left out with the reason printed, when:
   a `context_length`), and otherwise from the dated figures in
   `cli/harness/providers.mjs` (`SERVED`). A model whose served limits cannot
   be read is refused, not guessed.
+- its provider states no output limit for it (OpenRouter listing a model
+  with no `max_completion_tokens`, say): the context is no bound on what a
+  provider returns, so the output Atelier would configure cannot be checked.
+  A local server has no output cap of its own; it generates until the
+  context it serves is full, so its served output is that context.
 - its context is below what the harness itself starts with
   (`HARNESS_START`: opencode's system prompt and tool definitions with room
   for the brief, 24,000 tokens), which would leave the model no room to work.
@@ -194,12 +203,21 @@ brief and the diff, and the answer goes to the verdict file. Per harness:
 | --- | --- | --- |
 | `atelier-claude` | `claude -p --model claude-MODEL` (`opus-5.5` is `claude-opus-5-5`) | `--strict-mcp-config` with no server; edits accepted; Bash only for `git add`, `git commit` and other named Git, npm and Node commands; `git push`, `atelier` and the web denied; a review gets no edit tools |
 | `atelier-codex` | `codex exec --model MODEL -` | no MCP server; `workspace-write` sandbox with `.git` writable for a build, `read-only` for a review, whose last message is the verdict |
-| `atelier-opencode` | `opencode run --model PROVIDER/MODEL` | the provider config setup wrote (`OPENCODE_CONFIG`); its key and the gateway token read from the credential store at run time and given to opencode alone |
+| `atelier-opencode` | `opencode run --model PROVIDER/MODEL` | the provider config setup wrote (`OPENCODE_CONFIG`) and no other: an empty `XDG_CONFIG_HOME` of the run's own, `OPENCODE_DISABLE_PROJECT_CONFIG` and `OPENCODE_DISABLE_CLAUDE_CODE` set, `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG_CONTENT` and `OPENCODE_PERMISSION` dropped; its key and the gateway token read from the credential store at run time and given to opencode alone |
 | `atelier-agy` | `agy --model MODEL` (`gemini-3.1-pro` is `gemini-3.1-pro-high`) | `--sandbox`, the workspace its working folder; a review's answer is `agy`'s JSON `response` |
 
 A harness that needs no key (Claude Code, Codex and Antigravity on their
 plans) uses its own login. A key the opencode adapter cannot find stops the
 run before opencode starts, naming the entry to store and never a value.
+
+opencode merges the config `OPENCODE_CONFIG` names with the global one
+(`~/.config/opencode`), the workspace's own (`opencode.json`, `.opencode/`)
+and Claude Code's files, so without the isolation above a global MCP server
+or a project's permissions would reach an Atelier run. With it, the
+generated config's permissions and empty `mcp` are the run's. The run's
+config folder is made under the system's temporary folder, outside the
+workspace, and removed as opencode ends; its data folder is the runner's
+(below).
 
 ## Home runner
 

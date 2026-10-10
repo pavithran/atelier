@@ -27,8 +27,10 @@ function standIn(path, record) {
 const fs = require("node:fs");
 const input = fs.readFileSync(0, "utf8");
 const argv = process.argv.slice(2);
-const pick = ["OPENCODE_CONFIG", "DEEPSEEK_API_KEY", "CF_AIG_TOKEN", "CF_AIG_METADATA", "${METADATA_VAR}", "ATELIER_SECRET_STORE", "ATELIER_CONFIG_DIR"];
-fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv, input, cwd: process.cwd(), env: Object.fromEntries(pick.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]])) }));
+const pick = ["OPENCODE_CONFIG", "DEEPSEEK_API_KEY", "CF_AIG_TOKEN", "CF_AIG_METADATA", "${METADATA_VAR}", "ATELIER_SECRET_STORE", "ATELIER_CONFIG_DIR",
+  "XDG_CONFIG_HOME", "OPENCODE_DISABLE_PROJECT_CONFIG", "OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT", "OPENCODE_PERMISSION"];
+const configHome = process.env.XDG_CONFIG_HOME && fs.existsSync(process.env.XDG_CONFIG_HOME) ? fs.readdirSync(process.env.XDG_CONFIG_HOME) : null;
+fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv, input, cwd: process.cwd(), configHome, env: Object.fromEntries(pick.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]])) }));
 const answer = "VERDICT: APPROVE\\nSUMMARY: fine";
 const at = argv.indexOf("--output-last-message");
 if (at !== -1) fs.writeFileSync(argv[at + 1], answer);
@@ -60,14 +62,14 @@ function setup(t) {
   return { dir, ws, record, fake, brief, diff, providers, store };
 }
 
-function run(harness, s, { model, review = false, plan = false }) {
+function run(harness, s, { model, review = false, plan = false, env: extraEnv = {} }) {
   const verdict = join(s.dir, "verdict.md");
   const args = [model, s.brief, s.ws, plan ? join(s.ws, "plan.json") : "undefined", review ? s.diff : "undefined", review ? verdict : "undefined"];
   // The store is named as the runner's default command names it: the runner
   // gives a harness no ATELIER_ variable.
   const extra = harness === "opencode" ? ["--providers", s.providers, "--secret-store", "file", "--secrets-dir", s.store] : [];
   const env = { PATH: process.env.PATH, HOME: s.dir, [OVERRIDE[harness]]: s.fake,
-    CF_AIG_METADATA: gatewayMetadata("t9", review ? "review" : "build", "home:mbp") };
+    CF_AIG_METADATA: gatewayMetadata("t9", review ? "review" : "build", "home:mbp"), ...extraEnv };
   const r = spawnSync(process.execPath, [join(repo, "bin", "harness", ADAPTERS[harness]), ...extra, ...args], { encoding: "utf8", env });
   return { r, seen: JSON.parse(readFileSync(s.record, "utf8")), verdict };
 }
@@ -145,6 +147,30 @@ test("the opencode adapter reads its key and the gateway token from the credenti
   assert.deepEqual(JSON.parse(options.headers["cf-aig-metadata"]), { task: "t9", role: "build", runner: "home:mbp" });
 });
 
+test("opencode runs with the generated config alone: no global, project or inherited config reaches it", (t) => {
+  // The finding on 84358a17: OPENCODE_CONFIG merges with the global config
+  // (~/.config/opencode) and the project's, so their MCP servers and
+  // permissions reached the run.
+  const s = setup(t);
+  const global = join(s.dir, ".config", "opencode");
+  mkdirSync(global, { recursive: true });
+  writeFileSync(join(global, "opencode.json"), JSON.stringify({ mcp: { leak: { type: "local", command: ["leak"] } } }));
+  writeFileSync(join(s.ws, "opencode.json"), JSON.stringify({ permission: { external_directory: "allow" } }));
+  const { r, seen } = run("opencode", s, { model: "deepseek-v4-pro", env: {
+    XDG_CONFIG_HOME: join(s.dir, ".config"), OPENCODE_CONFIG_DIR: global, OPENCODE_CONFIG_CONTENT: '{"mcp":{"x":{}}}', OPENCODE_PERMISSION: '{"bash":"allow"}',
+  } });
+  assert.equal(r.status, 0, r.stderr);
+  const home = seen.env.XDG_CONFIG_HOME;
+  assert.ok(home && home !== join(s.dir, ".config"), "a config folder of the run's own");
+  assert.ok(!realpathSync(join(home, "..")).startsWith(realpathSync(s.ws)), "outside the workspace");
+  assert.deepEqual(seen.configHome, [], "and empty: no global config in it");
+  assert.equal(seen.env.OPENCODE_DISABLE_PROJECT_CONFIG, "1", "the workspace's own opencode config is not read");
+  assert.equal(seen.env.OPENCODE_DISABLE_CLAUDE_CODE, "1", "nor ~/.claude");
+  for (const name of ["OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT", "OPENCODE_PERMISSION"]) assert.equal(seen.env[name], undefined, name);
+  assert.equal(seen.env.OPENCODE_CONFIG, join(s.providers, "deepseek-api.json"));
+  assert.throws(() => readdirSync(home), /ENOENT/, "removed as the run ends");
+});
+
 test("a missing key stops the opencode adapter, naming the entry and never a value", (t) => {
   const s = setup(t);
   writeFileSync(join(s.store, "secrets.json"), JSON.stringify({ CF_AIG_TOKEN: "DUMMY-gateway" }), { mode: 0o600 });
@@ -180,15 +206,16 @@ test("no adapter or catalogue file holds a key", () => {
 });
 
 test("an entry with no command runs the adapter Atelier ships, with every placeholder", () => {
-  const { agents, errors } = parseConfig({ jobs: ["build", "review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }, { agent: "opencode", models: ["glm-5.3"] }] }, { configDir: "/cfg" });
+  const { agents, errors } = parseConfig({ jobs: ["build", "review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }, { agent: "opencode", models: ["glm-5.3"] }] }, { configPath: "/cfg/runner.json" });
   assert.deepEqual(errors, []);
   assert.equal(agents[0].command[0], process.execPath);
   assert.equal(agents[0].command[1], join(repo, "bin", "harness", "atelier-codex.mjs"));
-  assert.deepEqual(agents[1].command.slice(2, 4), ["--providers", "/cfg/opencode"]);
+  // Each runner config has a provider folder of its own, named after it.
+  assert.deepEqual(agents[1].command.slice(2, 4), ["--providers", "/cfg/opencode/runner"]);
   // The runner's credential store goes to the opencode adapter as arguments.
-  const named = parseConfig({ agents: [{ agent: "opencode", models: ["glm-5.3"] }] }, { configDir: "/cfg", env: { ATELIER_SECRET_STORE: "file", ATELIER_CONFIG_DIR: "/secrets" } });
-  assert.deepEqual(named.agents[0].command.slice(2, 8), ["--providers", "/cfg/opencode", "--secret-store", "file", "--secrets-dir", "/secrets"]);
-  assert.deepEqual(parseConfig({ agents: [{ agent: "opencode", models: ["glm-5.3"] }] }, { configDir: "/cfg", env: {} }).agents[0].command.slice(4, 5), ["{model}"]);
+  const named = parseConfig({ agents: [{ agent: "opencode", models: ["glm-5.3"] }] }, { configPath: "/cfg/review.json", env: { ATELIER_SECRET_STORE: "file", ATELIER_CONFIG_DIR: "/secrets" } });
+  assert.deepEqual(named.agents[0].command.slice(2, 8), ["--providers", "/cfg/opencode/review", "--secret-store", "file", "--secrets-dir", "/secrets"]);
+  assert.deepEqual(parseConfig({ agents: [{ agent: "opencode", models: ["glm-5.3"] }] }, { configPath: "/cfg/runner.json", env: {} }).agents[0].command.slice(4, 5), ["{model}"]);
   const argv = commandFor(agents[0], { model: "gpt-6-astra", briefFile: "/b", workspace: "/w", planFile: undefined, diffFile: undefined, verdictFile: undefined });
   assert.deepEqual(argv.slice(2), ["gpt-6-astra", "/b", "/w", "undefined", "undefined", "undefined"]);
   assert.deepEqual(parseArgs(argv.slice(2)).plan, null);
