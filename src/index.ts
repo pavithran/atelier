@@ -5,7 +5,7 @@ import { itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repo
 import { scanCommit } from "./secret-scan.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
-import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
+import { assertNameFree, assertProjectRemovable, LANDING_DETAIL_MAX, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
 import { accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
@@ -1297,7 +1297,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       readError = String((error as Error)?.message ?? error);
     }
     const queued = (await L.readLandingQueue()).some((row) => row.item === id);
-    return json({ ...remembered, status, lastStatus: status && status.status !== "unknown" ? { status: status.status, ...(status.error ? { error: { name: status.error.name.slice(0, 200), message: status.error.message.slice(0, 2000) } } : {}) } : remembered.lastStatus ?? null, ...(readError ? { readError } : {}), queued });
+    return json({ ...remembered, status, lastStatus: status && status.status !== "unknown" ? { status: status.status, ...(status.error ? { error: { name: status.error.name.slice(0, 200), message: status.error.message.slice(0, LANDING_DETAIL_MAX) } } : {}) } : remembered.lastStatus ?? null, ...(readError ? { readError } : {}), queued });
   }
   if (m !== "POST") throw new RuleError("not_found", "no such route", 404);
 

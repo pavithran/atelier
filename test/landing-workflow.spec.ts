@@ -2,8 +2,10 @@ import { env } from "cloudflare:workers";
 import { introspectWorkflow, introspectWorkflowInstance } from "cloudflare:test";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
-import type { LedgerEvent } from "../src/ledger.ts";
+import { LANDING_DETAIL_MAX, type LedgerEvent } from "../src/ledger.ts";
 import { putLarge } from "../src/large.ts";
+import { effectiveFailures, failureSummary, resolveFailures } from "../src/check-failure.ts";
+import type { Evidence } from "../src/rules.ts";
 
 // The landing Workflow (t280, src/landing-workflow.ts) run in workerd against
 // the real Ledger Durable Object, with the Workflows test helpers standing in
@@ -303,6 +305,103 @@ it("local checks: a failing observed check ends the landing, recorded, with the 
   expect((await L.landingWorkflowOf(id))?.detail).toMatch(/the required checks failed at aaaaaaaa in a clean clone on the machine holding the workspace: npm test\. /);
   const events = (await L.events(id)) as unknown as LedgerEvent[];
   expect(events.find((e) => e.kind === "land.check")?.data).toMatchObject({ failed: true, head: H1, reason: "npm test" });
+  expect(await L.readProjectLanding()).toBeNull();
+  expect(await L.landingWorkflowOf(id)).toMatchObject({ stage: "failed" });
+  expect((await L.item(id)).state).not.toBe("submitted");
+});
+
+// ── the failure summary the Workflow writes (t436) ──────────────────────────
+// A landing whose checks fail ends with the summary every landing prints
+// (src/check-failure.ts), read from the Ledger's evidence and the stored
+// log in R2, after the line naming the failed checks; the Ledger keeps the
+// error as the stage's detail, LANDING_DETAIL_MAX characters at most, and
+// the summary is fitted to that size so the cut never drops a failed check
+// or the check-log line.
+
+// The vitest output of a check whose two tests failed: the whole log a
+// container stored in R2, of which the inline tail holds the end.
+const VITEST = [
+  " RUN  v4.1.11 /work", "",
+  " ❯ test/sample.spec.ts (3 tests | 2 failed) 8ms",
+  "   ✓ adds numbers 1ms",
+  "   × fails: the cap is enforced 4ms",
+  "   × a suite > fails inside: names are read 1ms", "",
+  " FAIL  test/sample.spec.ts > fails: the cap is enforced",
+  "AssertionError: expected 1 to be 2",
+  " FAIL  test/sample.spec.ts > a suite > fails inside: names are read",
+  "Error: boom", "",
+  " Test Files  1 failed (1)",
+  "      Tests  2 failed | 1 passed (3)",
+].join("\n") + "\n";
+
+it("local checks: the landing ends with the failure summary every landing prints, its tests read from the stored log, whole within the record", async () => {
+  const project = "wf-local-summary", instance = "wf-local-summary-1";
+  const { L, id } = await localTask(project, instance);
+  const stored = await putLarge(env.LARGE, "logs", project, id, VITEST);
+  expect(stored).not.toBeNull();
+  await check(L, id, "npm test", false, { where: "sandbox", by: "atelier/sandbox", run: "k:1", outputTail: "      Tests  2 failed | 1 passed (3)\n[atelier] ran in a Cloudflare container in 9s, exit 1", log: stored });
+  await check(L, id, "npm run types", false, { outputTail: "src/a.ts(1,1): error TS2322: Type 'string' is not assignable to type 'number'.\n" });
+  await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, instance);
+  await wf.modify(async (m) => { await m.disableSleeps(); });
+  await env.LANDING_WORKFLOW.create({ id: instance, params: local(project, id) });
+  await send(instance, "workspace", { round: 0, head: H1, mainHead: null, mergedIn: false });
+  await wf.waitForStatus("errored");
+  const detail = (await L.landingWorkflowOf(id))?.detail ?? "";
+  // The summary fit the record: the detail ends as the summary does, uncut.
+  expect(detail.length).toBeLessThanOrEqual(LANDING_DETAIL_MAX);
+  const lines = detail.split("\n");
+  expect(lines[0]).toBe(`the required checks failed at aaaaaaaa in a clean clone on the machine holding the workspace: npm test; npm run types. The merge of main stays in the workspace; fix the failures, commit, and run atelier land ${id} --workflow again.`);
+  expect(lines[1]).toBe("Failed checks at aaaaaaaa, as the gate reads them (the latest counting run of each required check at this head):");
+  expect(lines[2]).toMatch(/^ {2}`npm test` failed in a Cloudflare container at \d{4}-\d\d-\d\d \d\d:\d\d UTC: evidence #\d+, run k:1, attempt 1 of 1 at this head$/);
+  expect(lines[3]).toBe("    failing tests (vitest): test/sample.spec.ts > fails: the cap is enforced; test/sample.spec.ts > a suite > fails inside: names are read");
+  expect(lines[4]).toBe(`    log: whole log, stored (${stored!.bytes} bytes, ${stored!.sha256.slice(0, 12)}); 11 lines, whole:`);
+  expect(detail).toContain("\n      FAIL  test/sample.spec.ts > fails: the cap is enforced\n");
+  expect(detail).not.toContain("[atelier] ran in");
+  expect(detail).toMatch(/\n {2}`npm run types` failed on a runner, in a clean clone at .*: evidence #\d+, attempt 1 of 1 at this head\n {4}failing tests: none named \(the output holds 1 TypeScript error, which name no test\)\n {4}log: whole output, inline; 1 line, whole:\n {6}src\/a\.ts\(1,1\): error TS2322/);
+  expect(lines.at(-1)).toBe(`  Whole logs of every attempt at this head: atelier check-log ${id}`);
+  expect(await L.readProjectLanding()).toBeNull();
+  expect((await L.item(id)).state).not.toBe("submitted");
+});
+
+it("container checks: a summary too long for the record is fitted to it, so every failed check and the check-log line are kept", async () => {
+  const project = "wf-container-summary", instance = "wf-container-summary-1";
+  const L = ledger(project);
+  const claims = ["npm test", "npm run types", "npm run lint"];
+  const record = { name: project, repo: `${project}--baseline`, policy: { checks: claims, protected: [] }, createdAt: new Date().toISOString() };
+  await L.setProject(record, "owner");
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
+  const id = (await L.newItem("Land with the checks run in a container", [], "owner")).id;
+  await L.claim(id, OPUS); await L.setFork(id, `${project}--${id}`, H0, OPUS); await L.recordPush(id, OPUS, H1, H1);
+  await L.setLandingWorkflow(id, instance, "owner", "container");
+  // What the container run recorded: three failures, each naming fifty
+  // tests in an inline tail longer than a container keeps whole; said in
+  // full, far over the record's size.
+  const tail = (claim: string) => `${Array.from({ length: 50 }, (_, i) => `not ok ${i + 1} - ${claim} test ${i + 1} ${"#".repeat(80)}`).join("\n")}\n[atelier] ran in a Cloudflare container in 9s, exit 1`;
+  for (const claim of claims) await check(L, id, claim, false, { where: "sandbox", by: "atelier/sandbox", run: "r:1", outputTail: tail(claim) });
+  const unfitted = failureSummary(id, H1, await resolveFailures(effectiveFailures(record.policy, (await L.evidenceFor(id)) as Evidence[], H1), async () => null));
+  expect(unfitted.length).toBeGreaterThan(2 * LANDING_DETAIL_MAX);
+  await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, instance);
+  await wf.modify(async (m) => {
+    await m.disableSleeps();
+    await m.mockStepResult({ name: "run the required checks in a Cloudflare container" }, { none: false, t0: Date.now(), runId: "r", seconds: 1 });
+    await m.mockStepResult({ name: "read the check run #0" }, { status: "done", error: "", recorded: true, results: claims.map((claim) => ({ claim, passed: false, outputTail: "" })) });
+  });
+  await env.LANDING_WORKFLOW.create({ id: instance, params: params(project, id) });
+  await send(instance, "workspace", { round: 0, head: H1, mainHead: H2, mergedIn: true });
+  await wf.waitForStatus("errored");
+  // The record holds the whole error, fitted: every check, then the check-log line, uncut.
+  const detail = (await L.landingWorkflowOf(id))?.detail ?? "";
+  expect(detail.length).toBeLessThanOrEqual(LANDING_DETAIL_MAX);
+  expect(detail.length).toBeGreaterThan(LANDING_DETAIL_MAX - 400);
+  expect(detail.startsWith(`the required checks failed at aaaaaaaa in the Cloudflare container: ${claims.join("; ")}. The merge of main stays in the workspace; fix the failures, commit, and run atelier land ${id} --workflow again.\nFailed checks at aaaaaaaa, as the gate reads them (the latest counting run of each required check at this head):\n`)).toBe(true);
+  for (const claim of claims) {
+    expect(detail).toMatch(new RegExp(`\n {2}\`${claim}\` failed in a Cloudflare container at [^\n]*: evidence #\\d+, run r:1, attempt 1 of 1 at this head\n {4}failing tests \\(tap, read from a tail of the output, so names cut with the rest are not listed\\): ${claim} test 1(?:;| )[^\n]*; and \\d+ more\n {4}log: inline tail only \\(a container keeps its last 4,000 characters inline, and this output was longer\\); `));
+  }
+  expect(detail).toMatch(/for this summary's size/);
+  expect(detail).not.toMatch(/And \d+ more failed checks/);
+  expect(detail.endsWith(`\n  Whole logs of every attempt at this head: atelier check-log ${id}`)).toBe(true);
+  const events = (await L.events(id)) as unknown as LedgerEvent[];
+  expect(events.find((e) => e.kind === "land.check")?.data).toMatchObject({ failed: true, reason: claims.join(", ") });
   expect(await L.readProjectLanding()).toBeNull();
   expect(await L.landingWorkflowOf(id)).toMatchObject({ stage: "failed" });
   expect((await L.item(id)).state).not.toBe("submitted");
