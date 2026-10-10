@@ -44,6 +44,23 @@ pushed. Wrap never deploys or publishes a release. The note records the commit
 and each remote result. A remote that fails is named in the relay line, and
 wrap exits 1 once the note and the baseline are recorded.
 
+`atelier publish REMOTE` publishes the registered branch to a public mirror
+declared in `.atelier/publication.json` in the checkout:
+`{"mirrors": {"github": {"destination": "URL", "email": "ADDRESS"}}, "privatePaths": ["GLOB"], "privatePatterns": ["REGEX"]}`.
+Bare `publish` still pushes the baseline only. It fetches the mirror's branch,
+then checks every commit the mirror lacks (all history when it is empty,
+merged ancestry included, content deleted later included): author and committer
+email must equal `email`; no line may match the push scan's secret rules, a
+private address (RFC 1918, carrier-grade NAT, link-local, unique-local IPv6,
+`.internal`, `.local`, `.lan`, `.corp`, `.intranet`, `.home.arpa` hosts) or a
+`privatePatterns` regex; no path may match a `privatePaths` glob (a glob with no
+`/` matches a name at any depth). Findings name commit, path and line, never
+the matched text. Binary, oversized, unreadable or submodule content is refused
+with its path and reason. A missing or invalid policy, a remote whose URL is not
+the declared destination, and a diverged or ahead mirror are refused before any
+push. The push sends only the scanned commit to the branch at the declared
+destination, never forced; tags, notes and rescue refs are not pushed.
+
 When `docs/control-plane/context-budget.v1.json` is committed at HEAD, wrap
 counts lines in its named surfaces. Any absolute ceiling exceeded refuses the
 commit, even with an advisory policy. Move history into `docs/history/` rather
