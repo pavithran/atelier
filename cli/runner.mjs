@@ -1210,6 +1210,23 @@ export function queueBackoffMs(misses) {
   return misses <= 1 ? 30_000 : Math.min(30_000 * 2 ** (misses - 1), 5 * 60_000);
 }
 
+// Whether a failed review skip report (t353) is refused for good: a 4xx no
+// retry would change (a request the server does not have, a malformed head).
+// A 408 (the server timed the request out) and a 429 (it was busy) are as
+// temporary as a 5xx, a dropped connection or a timeout, and the report is
+// kept for another try.
+export function skipRefusedForGood(error) {
+  const status = /^(4\d\d)\b/.exec(String(error?.message ?? ""))?.[1];
+  return status !== undefined && status !== "408" && status !== "429";
+}
+
+// How many polls a kept skip report waits after `misses` failed attempts in a
+// row: the queue backoff (queueBackoffMs) in polls of 30 seconds — the next
+// poll, then two, four and eight on, at most ten (five minutes).
+export function skipRetryPolls(misses) {
+  return Math.ceil(queueBackoffMs(misses) / 30_000);
+}
+
 // A failure the job recorded on the item (`recorded`: runRefresh posted
 // refresh-failed, and the server handles it) counts toward neither cap
 // (t273): it is no task failure and no infrastructure failure, so the loop
@@ -1382,27 +1399,31 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
   for (const signal of signals) process.on(signal, stop);
   const refused = new Set(), failures = new Map(), infrastructureFailures = new Map();
   // Review skip reports the server has not taken yet (t353), by the review's
-  // refusal key. A review this runner has refused or capped is left out of
-  // every later poll, so its report cannot ride on a later run: it is tried
-  // again on its own, each poll, until the server has it or refuses it.
+  // refusal key: the report's body, how many tries in a row have failed, and
+  // the poll (`polls`, counting the answered ones) on which it is next due.
+  // A review this runner has refused or capped is left out of every later
+  // poll, so its report cannot ride on a later run: it is tried again on its
+  // own, with the queue backoff in polls, until the server has it or refuses
+  // it for good.
   const pendingSkips = new Map();
-  // Sends one skip report. Taken, or refused outright by the server (a 4xx:
-  // a request it does not have, a malformed head — one no retry would
-  // change), the report is done with; failed any other way (the server down,
-  // a timeout) it is kept for the next poll.
-  const reportSkip = async (key, body) => {
+  let polls = 0;
+  // Sends one skip report. Taken, or refused for good (skipRefusedForGood),
+  // the report is done with; failed any other way (the server down, busy or
+  // slow, a timeout) it is kept, due again skipRetryPolls on.
+  const reportSkip = async (key, body, misses = 0) => {
     try {
       await reportReviewSkip(body, offer.runner, controller.signal);
       pendingSkips.delete(key);
       io.log(`reported the review skip for ${body.project}/${body.item}`);
     } catch (error) {
       if (controller.signal.aborted) return;
-      if (/^4\d\d\b/.test(String(error?.message ?? ""))) {
+      if (skipRefusedForGood(error)) {
         pendingSkips.delete(key);
         io.log(`could not report the review skip for ${body.project}/${body.item}: ${error.message}`);
       } else {
-        pendingSkips.set(key, body);
-        io.log(`could not report the review skip for ${body.project}/${body.item}: ${error.message}; trying again next poll`);
+        const after = skipRetryPolls(misses + 1);
+        pendingSkips.set(key, { body, misses: misses + 1, due: polls + after });
+        io.log(`could not report the review skip for ${body.project}/${body.item}: ${error.message}; trying again ${after === 1 ? "next poll" : `in ${after} polls`}`);
       }
     }
   };
@@ -1509,11 +1530,14 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
         misses = 0;
         if (!Array.isArray(tasks)) throw new Error("queue did not return an array");
         if (controller.signal.aborted) break;
-        // Skip reports the server did not take last time are tried again
-        // first, each poll, until it has them (t353): the reviews they name
-        // are left out of the loop below, so nothing else would send them.
-        for (const [key, body] of [...pendingSkips]) {
-          await reportSkip(key, body);
+        polls++;
+        // Skip reports the server did not take are tried again first, once
+        // their backoff has passed, until it has them (t353): the reviews
+        // they name are left out of the loop below, so nothing else would
+        // send them.
+        for (const [key, pending] of [...pendingSkips]) {
+          if (pending.due > polls) continue;
+          await reportSkip(key, pending.body, pending.misses);
           if (controller.signal.aborted) break;
         }
         if (controller.signal.aborted) break;

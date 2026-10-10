@@ -422,6 +422,76 @@ test("a review skip report that fails is tried again each poll until the server 
   assert.ok(logs.some((l) => /^reported the review skip for atelier\/t21/.test(l)), logs.join("\n"));
 });
 
+// t353: a 408 (the server timed the request out) or a 429 (it was busy) is as
+// temporary as a 5xx, not a refusal: the report is kept and lands on a later
+// poll, so a busy moment never strands the landing for the hour.
+for (const status of ["408", "429 slow down"]) {
+  test(`a review skip report that meets a ${status.slice(0, 3)} is tried again and lands, not dropped`, async (t) => {
+    const args = { ...runnerConfig(t), once: undefined };
+    const { io, calls, logs } = fixture({ code: 1 });
+    const attempts = [], persisted = [];
+    const previous = process.exitCode;
+    t.after(() => { process.exitCode = previous; });
+    const task = { ...assignment, item: { ...assignment.item, head: "a".repeat(40), request: 1, dispatch: { job: "review" } } };
+    let polls = 0;
+    await runRunner(args, {
+      workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+      async reportReviewSkip(body) {
+        attempts.push(body);
+        if (attempts.length === 1) throw new Error(status);
+        persisted.push(body);
+      },
+      async queue() {
+        polls++;
+        if (polls <= 5) return [task];
+        process.emit("SIGINT");
+        return [];
+      },
+    });
+    assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 2);
+    assert.equal(attempts.length, 2, JSON.stringify(attempts));
+    assert.equal(persisted.length, 1, JSON.stringify(persisted));
+    assert.equal(persisted[0].request, 1);
+    assert.ok(logs.some((l) => new RegExp(`could not report the review skip for atelier/t21: ${status}; trying again next poll`).test(l)), logs.join("\n"));
+    assert.ok(logs.some((l) => /^reported the review skip for atelier\/t21/.test(l)), logs.join("\n"));
+  });
+}
+
+// t353: a report that keeps failing is retried with the queue backoff, in
+// polls — the next poll, then two, four and eight polls on, at most ten (five
+// minutes) — not every poll, so a server that is down or busy is not asked
+// every 30 seconds for as long as the runner lives.
+test("a review skip report that keeps failing backs off in polls, and lands when the server answers", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { io, logs } = fixture({ code: 1 });
+  const attemptPolls = [], persisted = [];
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const task = { ...assignment, item: { ...assignment.item, head: "a".repeat(40), request: 1, dispatch: { job: "review" } } };
+  let polls = 0;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async reportReviewSkip(body) {
+      attemptPolls.push(polls);
+      // 429, 503, 408, a dropped connection, then the server answers.
+      if (attemptPolls.length <= 4) throw new Error(["429", "503", "408", "fetch failed"][attemptPolls.length - 1]);
+      persisted.push(body);
+    },
+    async queue() {
+      polls++;
+      if (polls <= 20) return [task];
+      process.emit("SIGINT");
+      return [];
+    },
+  });
+  // The cap is reached on poll 2 and the first report fails there; the retries
+  // come 1, 2, 4 and 8 polls after each failure, and the fifth lands.
+  assert.deepEqual(attemptPolls, [2, 3, 5, 9, 17]);
+  assert.equal(persisted.length, 1, JSON.stringify(persisted));
+  assert.ok(logs.some((l) => /could not report the review skip for atelier\/t21: 503; trying again in 2 polls$/.test(l)), logs.join("\n"));
+  assert.ok(logs.some((l) => /could not report the review skip for atelier\/t21: 408; trying again in 4 polls$/.test(l)), logs.join("\n"));
+});
+
 // t353: a skip report the server refuses outright — a request it does not
 // have, a malformed head — would never land however often it is tried, so it
 // is said once and dropped rather than sent every poll.
