@@ -6,6 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runIntegrate, runRefresh, runRunner, execute, readsOutput, checked, failureCount, infrastructureFailureCount } from "../cli/runner.mjs";
 
+// Pin the load under the runner's limit so these tests are not held back by
+// this machine's real load; the gate is tested with an injected load.
+process.env.ATELIER_LOAD = "0";
+
 // The integrate and refresh jobs (docs/orchestrator.md, section 5, build step
 // 14) driven through a stand-in io, as the review runner tests are: the server
 // answers claim, read-token, push, check, integrated, integration-failed,
