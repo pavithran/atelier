@@ -23,7 +23,8 @@
 // (t406).
 // 19: a project that requires criteria refuses a task filed or cleared
 // without them, and init takes --require-criteria (t397).
-// 20: the criteria-review routes, which the runner's criteria-review job
+// 20: runner-scoped API credentials and revocable Git gateway (t444).
+// 21: the criteria-review routes, which the runner's criteria-review job
 // calls to claim a review of a task's acceptance criteria and record its
 // verdict or failure, and init takes --require-criteria-review (t438).
-export const ROUTE_LEVEL = 20;
+export const ROUTE_LEVEL = 21;
