@@ -1733,7 +1733,11 @@ function permissionState(d: Detail, now: number, owner: string): OwnerState["per
       ? cell("consumed", `Consumed by the command-line override at ${short(item.head)}, ${when(spent.at)}; it allows nothing more`)
       : cell("invalidated", `Invalidated by your override on this page at ${short(item.head)}, ${when(spent.at)}; it was never used`);
   }
+  // A permission given before the project turned on noOverride stays on the
+  // record, but the Ledger refuses its use, so it is said to be prohibited,
+  // never active.
   const active = confirmationAt(item, now, owner);
+  if (active && d.policy.noOverride) return cell("forbidden", `Prohibited by policy: given for revision ${short(active.head)} until ${when(active.until)}, but this project now refuses every override, so it allows nothing`, "bad");
   if (active) return cell("active", `Active for revision ${short(active.head)} until ${when(active.until)}, for one override`, "ask");
   // A permission spent at an earlier revision says nothing about this one.
   const standing = item.overrideConfirmation ?? (allowed && !spent ? { head: str(allowed.data.head), until: str(allowed.data.until) } : null);
@@ -1952,9 +1956,12 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
     : "";
   // A refused form the page no longer draws (an Accept refused as not ready,
   // an override the project now forbids) has its refusal said first among
-  // the actions, so no refusal is lost.
+  // the actions, so no refusal is lost, and the reason typed into it is shown
+  // beside it, unrecorded, so it can be copied rather than typed again.
   const unplaced = d.formError && ![approve, accept, override, reject].some((f) => f.includes(`id="error-${d.formError!.verb}"`))
-    ? formErrorText(d.formError, d.formError.verb, reload)
+    ? formErrorText(d.formError, d.formError.verb, reload) + (d.formError.note
+      ? `<div class="kept-note"><p class="meta">The reason you typed, which was not recorded:</p><blockquote>${e(d.formError.note)}</blockquote></div>`
+      : "")
     : "";
 
   // An open task can be sent to a runner; a queued one shows who it waits for.

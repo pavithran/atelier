@@ -161,6 +161,7 @@ it("criterion 5: the CLI permission reads active with revision and zoned expiry,
     ["expired by its time", (d) => { d.events = [event(1, "override.allowed", { head, until: "2026-10-10T17:56:00Z", factor: "access" })]; }, "expired", "Expired 2026-10-10 13:56 EDT, unused"],
     ["used at an earlier revision", (d) => { d.item.head = other; d.events = [event(2, "review.overridden", { head, confirmed: "command line" }), allowed]; }, "none", "Not given"],
     ["forbidden", (d) => { d.policy = { ...d.policy, noOverride: true }; }, "forbidden", "Forbidden: this project refuses every override"],
+    ["active, then noOverride", (d) => { d.item.overrideConfirmation = { head, by: "pavi", at: time, until, factor: "access" }; d.events = [allowed]; d.policy = { ...d.policy, noOverride: true }; }, "forbidden", "Prohibited by policy: given for revision aaaaaaaa until 2026-10-10 14:10 EDT, but this project now refuses every override, so it allows nothing"],
     ["no factor", (d) => { d.ownerFactor = null; }, "unconfirmable", "Unavailable: this server takes no owner confirmation"],
   ];
   for (const [what, set, status, text] of states) {
