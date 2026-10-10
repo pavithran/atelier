@@ -159,6 +159,30 @@ test("a plan harness failure is counted as harness_failed, not refused", () => {
   assert.deepEqual(opus.runCauses.map((c) => c.note), ["plan run harness_failed: the CLI is too old"]);
 });
 
+// t407: a reply no verdict could be read from, kept on the task as a
+// review.unparsable event, counts against the reviewer as a review that never
+// reached a verdict, beside the runs the runners report; the owner's own and
+// Atelier's own records are no model's.
+test("an unparsable reply counts against the reviewer as a review without a verdict", () => {
+  const events = history(
+    ["t1", GEMINI, "review.unparsable", { head: H1, note: "the reply states no verdict: it has no VERDICT line and no JSON verdict" }],
+    ["t2", OPUS, "review.unparsable", { head: H2, note: "the reply is 131074 characters, over the 100000 a verdict needs" }],
+    ["t3", OPUS, "review.unparsable", { head: H3, note: "again" }],
+    ["t4", OWNER, "review.unparsable", { head: H1, note: "the owner by hand" }],
+    ["t5", "atelier/sandbox", "review.unparsable", { head: H1, note: "no model" }],
+  );
+  const rel = buildReliability([{ project: "a", events }], [], OWNER);
+  assert.equal(one(rel, "opus-5.5").unfinishedReviews, 2);
+  assert.equal(one(rel, "gemini-3.1-pro").unfinishedReviews, 1);
+  assert.match(reliabilityLine(one(rel, "opus-5.5")), /2 reviews without a verdict/);
+  assert.equal(rel.has(OWNER), false);
+  assert.equal(rel.has("sandbox"), false);
+  // It is the reviewer's record alone: no run outcome and no cause is invented.
+  const opus = one(rel, "opus-5.5");
+  assert.deepEqual(opus.runs, { stalled: 0, "timed-out": 0, refused: 0, harness_failed: 0, early_stop: 0, permission_stop: 0, duplicate_design: 0, incomplete_merge: 0 });
+  assert.deepEqual(opus.runCauses, []);
+});
+
 test("the tie-breaker is the share of outcomes in a model's favour, one half with no record", () => {
   const events = history(
     ["t1", OPUS, "item.claimed"], ["t1", OPUS, "item.submitted", { head: H1 }], ["t1", GPT, "review.approved", { head: H1 }], ["t1", OWNER, "item.merged", { head: H1 }],

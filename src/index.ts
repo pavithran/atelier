@@ -1490,7 +1490,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // route, and requireOwner refuses any other actor the owner token names.
     case "edit":
       requireOwner(env, actor);
-      return json(await L.editItem(id, actor, { ...itemFields(body), ...(body.title !== undefined ? { title: titleLine(body.title) } : {}) }));
+      return json(await L.editItem(id, actor, { ...itemFields(body), ...(body.title !== undefined ? { title: titleLine(body.title) } : {}) }, body.scope !== undefined ? asStrings(body.scope, "scope") : undefined));
     // The holder or the owner blocks and unblocks; the Ledger checks which.
     case "block":
       return json(await L.block(id, actor, body.reason, !!c.token));
@@ -1545,6 +1545,17 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review-release": {
       await L.releaseReview(id, actor, String(body.note ?? ""), !!c.token);
       return json({ released: true });
+    }
+    // t407: a reviewer's reply parseVerdict could not read is kept on the
+    // task, its last VERDICT_LIMITS.reply characters with the reviewer and
+    // the head, as the request the reviewer claimed is released. The runner
+    // calls this in place of a bare review-release whenever a reply exists
+    // but states no verdict, so the evidence is on the task and not only in
+    // the runner's log.
+    case "review-unparsable": {
+      const head = String(body.head ?? "");
+      if (!/^[a-f0-9]{40,64}$/.test(head)) throw new RuleError("bad_head", "--head must be the full revision the review read", 400);
+      return json({ kept: true, ...await L.unparsableReview(id, actor, head, String(body.note ?? ""), String(body.reply ?? ""), !!c.token) });
     }
     // A review request for an item outside a plan (atelier land): the owner
     // asks for the independent review the gate needs, naming the reviewer or

@@ -34,7 +34,8 @@ test("the pinned rules state what every agent must be told", () => {
   assert.equal(BUILD_RULES, BUILD);
   for (const rule of [
     /no path outside this workspace/, /scratch files only under \.scratch\//, /no rm and no mktemp, and make no temporary folders/,
-    /Commit first .* plain single git commands/, /without a commit counts as stalled/, /fix comes with a test that fails without it/,
+    /Commit first .* plain single git commands/, /without a commit counts as stalled/,
+    /If a test outside the task's scope fails on main/, /fix comes with a test that fails without it/,
   ]) assert.match(BUILD, rule);
   assert.equal(REVIEW_RULES, REVIEW);
   for (const rule of [
