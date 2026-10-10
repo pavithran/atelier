@@ -1387,6 +1387,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         by: actor,
         at: new Date().toISOString(),
         ...(check ? { changedPaths: null, outputTail, where: "runner" as const } : {}),
+        // The load the caller read when the check started (t403); a number or
+        // nothing, never a value the caller made up for it.
+        ...(check && Number.isFinite(Number(body.load)) ? { load: Number(body.load) } : {}),
       };
       if (!e.claim) throw new RuleError("bad_claim", "evidence needs a claim", 400);
       // Atelier counts no result from a command that is never read-only.

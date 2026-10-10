@@ -48,6 +48,14 @@ export function parseConfig(json) {
   if (!Number.isInteger(taskTimeoutMs) || taskTimeoutMs <= 0 || taskTimeoutMs > 2_147_483_647) errors.push("taskTimeoutMs must be a positive timer-safe integer");
   const finishTimeoutMs = value.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS;
   if (!Number.isInteger(finishTimeoutMs) || finishTimeoutMs <= 0 || finishTimeoutMs > 2_147_483_647) errors.push("finishTimeoutMs must be a positive timer-safe integer");
+  // Optional (t403): the load average under which the runner takes a new job.
+  // Without it the limit is the machine's core count (cli/load.mjs), so the
+  // runner holds off once the machine is more than fully busy.
+  let loadLimit;
+  if (value.loadLimit !== undefined) {
+    if (typeof value.loadLimit !== "number" || !Number.isFinite(value.loadLimit) || value.loadLimit <= 0) errors.push("loadLimit must be a positive number");
+    else loadLimit = value.loadLimit;
+  }
   // Optional: for each model that needs an API key, the name of the Keychain
   // entry that holds it. The key itself is refused here, and never echoed.
   let keychain;
@@ -155,7 +163,7 @@ export function parseConfig(json) {
     if (errors.length === start) agents.push({ agent: entry.agent, models: [...entry.models], command: [...entry.command], ...(entry.env ? { env: [...entry.env] } : {}) });
   }
   return { agents, errors, taskTimeoutMs, finishTimeoutMs, ...(keychain ? { keychain } : {}), ...(balances ? { balances } : {}), ...(tokens ? { tokens } : {}),
-    ...(jobs !== undefined ? { jobs } : {}) };
+    ...(jobs !== undefined ? { jobs } : {}), ...(loadLimit !== undefined ? { loadLimit } : {}) };
 }
 
 export function readConfig(path = join(process.env.ATELIER_CONFIG_DIR ?? join(homedir(), ".config", "atelier"), "runner.json")) {
