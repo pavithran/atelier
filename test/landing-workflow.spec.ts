@@ -3,6 +3,7 @@ import { introspectWorkflow, introspectWorkflowInstance } from "cloudflare:test"
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
+import { putLarge } from "../src/large.ts";
 
 // The landing Workflow (t280, src/landing-workflow.ts) run in workerd against
 // the real Ledger Durable Object, with the Workflows test helpers standing in

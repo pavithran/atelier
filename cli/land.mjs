@@ -10,6 +10,7 @@ import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-leas
 import { unoffered } from "../src/dispatch/rules.ts";
 import { contributorsOf, roleRefusal, sameActor } from "../src/rules.ts";
 import { landingVerdict } from "../src/landing-verdict.ts";
+import { effectiveFailures, failureSummary, resolveFailures } from "../src/check-failure.ts";
 
 // atelier land (t187): the project owner lands one task whole, taking the
 // project's landing lease on the server so two sessions never race main.
@@ -516,7 +517,7 @@ export async function runLand(io) {
     const step = (kind, argv, cwd, data = {}) => { guardLease(); return landStep(io, record, kind, argv, cwd, data); };
     await pushRefreshing(io, { dir, id, itemPath }, () => step("push", ["push"], dir, { head }));
     print(`Pushed ${short(head)} to ${id}'s fork.`);
-    await step("check", ["check"], dir);
+    await checkStep(io, itemPath, id, step, dir);
     await step("submit", ["submit", "--summary", mergedIn ? `Merged with main at ${short(mainHead)}; the required checks pass.` : "The required checks pass."], dir);
 
     // The review: the server says whether the gate needs one and who reviews;
@@ -733,6 +734,29 @@ async function runRegenerateIn(dir, regenerate, io) {
   const output = io.redact(`${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? `\n[atelier] ${r.error.message}` : ""}`, io.secrets());
   if (output.trim()) process.stdout.write(output.slice(-4000) + "\n");
   return { ok: !r.error && r.status === 0, why: r.error ? r.error.message : `exit ${r.status}` };
+}
+
+// The check step of either landing (t436): `atelier check` as a step of its
+// own, whose failure is said as the failure summary every landing and
+// `atelier show` print (src/check-failure.ts): the failed checks as the gate
+// reads them at the head the server records, from the server's evidence,
+// each stored log read by reference where the run kept one. The step's own
+// output stands, as before, when the server records no failure at that head
+// (the check died before it posted, or the server is older than the
+// summary), and the step is recorded by `step` as any other.
+async function checkStep(io, itemPath, id, step, dir) {
+  try { await step("check", ["check"], dir); }
+  catch (error) {
+    if (!(error instanceof StepError)) throw error;
+    let summary = null;
+    try {
+      const d = await io.request("GET", itemPath);
+      const failures = d?.item?.head && Array.isArray(d.policy?.checks) ? effectiveFailures(d.policy, d.evidence ?? [], d.item.head) : [];
+      if (failures.length) summary = failureSummary(id, d.item.head, await resolveFailures(failures, io.readLog ?? (async () => null)));
+    } catch (read) { io.print(`Warning: the failed checks could not be read from the server (${read.message}); the check's own output follows.`); }
+    if (!summary) throw error;
+    throw new StepError(`${String(error.message).split("\n")[0]}\n${summary}`, error.data);
+  }
 }
 
 // One step of a landing that runs a CLI command of its own (the push, or
@@ -1073,7 +1097,7 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate }) {
         if (checksMode === "local") {
           print(`Pushed ${short(merged.head)} to ${id}'s fork; running the required checks in a clean clone.`);
           guard();
-          await landStep(io, record, "check", ["check"], dir);
+          await checkStep(io, itemPath, id, (kind, argv, cwd) => landStep(io, record, kind, argv, cwd), dir);
           guard();
           print(`The required checks pass at ${short(merged.head)}; reporting the head to the landing Workflow.`);
         } else print(`Pushed ${short(merged.head)} to ${id}'s fork; reporting it to the landing Workflow.`);

@@ -50,6 +50,7 @@ import { provenanceNote } from "./provenance.mjs";
 export { checkEnv } from "./check-env.mjs";
 import { COMMAND_USAGE, guideText, helpText, ROLES, rolePrompt } from "./help.mjs";
 import { planText } from "../src/plans/show.ts";
+import { attemptHeader, checkAttemptsAt, effectiveFailures, failureJson, failureSummary, headsWithChecks, LOCAL_OUTPUT_TAIL, plainLines, readCheckLog, resolveFailures } from "../src/check-failure.ts";
 import { ACTION_KINDS, DEFAULT_EXPIRY, KIND, REVISION, expirySeconds } from "../src/actions.ts";
 import { decisionLines, decisionsSection } from "../src/decisions.ts";
 import { formatApprovals, knownKinds, runCommand, ship as runShip, shipPolicy, shipSecrets } from "./ship.mjs";
@@ -255,6 +256,7 @@ export const FLAGS = {
   unblock: {},
   ls: { all: true, json: true },
   show: { reviews: true, json: true },
+  "check-log": { head: false },
   receipt: { json: true },
   start: { runner: false },
   claim: { runner: false },
@@ -814,9 +816,35 @@ async function request(method, path, body, as, extra = {}) {
   return data;
 }
 
+// A text payload the server serves as it is (a stored check log, GET
+// .../logs/SHA, src/large.ts): the text, or null when nothing is stored
+// under the name; any other refusal is a RequestError with the server's
+// words.
+async function requestText(path, as) {
+  await resolveTokenActor();
+  if (tokenActor) as = args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
+  let res, text;
+  try {
+    res = await fetch(server() + "/api" + path, { headers: { authorization: `Bearer ${apiToken()}`, ...(as ? { "x-atelier-actor": as } : {}) } });
+    text = await res.text();
+  } catch (error) { throw new RequestError(`server request failed: ${error.message}`, 4); }
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    let data = {};
+    try { data = JSON.parse(text); } catch { /* not the server's JSON refusal */ }
+    throw new RequestError(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`, res.status >= 500 ? 4 : 1);
+  }
+  return text;
+}
+
 const P = (name) => `/projects/${encodeURIComponent(name)}`;
 const I = (name, id) => `${P(name)}/items/${encodeURIComponent(id)}`;
 const short = (s) => (s ? s.slice(0, 8) : "—");
+
+// The reader readCheckLog (src/check-failure.ts) takes: a stored check log
+// by its reference, from the item's own logs route, which rebuilds the key
+// from the project and item it names.
+const logReader = (name, id, as) => (ref) => requestText(`${I(name, id)}/logs/${ref.sha256}`, as);
 
 // The owner's approval recorded on the project, or null when the project is
 // not registered yet or records none. Asked with a plain request rather than
@@ -2411,9 +2439,49 @@ const commands = {
       const label = event.kind === "item.reverts" ? "Reverts" : "Revert requested in";
       brief.evidence.push(`${label} ${itemId} (recorded merge ${mergeCommit}): ${server()}/p/${encodeURIComponent(name)}/${itemId}`);
     }
-    if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []) }, null, 2));
-    const text = formatBrief(name, id, brief, server());
-    console.log(args.reviews ? `${text}\n\n${formatReviews(d?.reviews ?? [], d?.ownerActor, d?.unparsable ?? [])}` : text);
+    // The failed checks at the current head, as the gate reads them (t436,
+    // src/check-failure.ts): each named by command, head and evidence id,
+    // with the failing tests its reporter named and a bounded tail of its
+    // log, the stored whole log read by reference where the run kept one.
+    // `failedChecks` carries the same in --json.
+    const failures = d.item?.head && d.policy?.checks
+      ? await resolveFailures(effectiveFailures(d.policy, d.evidence ?? [], d.item.head), logReader(name, id, as))
+      : [];
+    if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), failedChecks: failures.map(failureJson) }, null, 2));
+    const blocks = [formatBrief(name, id, brief, server())];
+    if (failures.length) blocks.push(failureSummary(id, d.item.head, failures));
+    if (args.reviews) blocks.push(formatReviews(d?.reviews ?? [], d?.ownerActor, d?.unparsable ?? []));
+    console.log(blocks.join("\n\n"));
+  },
+
+  // The retained logs of every check attempt at a head (t436): the ledger
+  // head unless --head names one the task stood at earlier, each attempt
+  // labelled by check, number among the runs of that check, outcome, where
+  // and when it ran and its evidence id (and container run id), with the
+  // stored whole log read by reference where the run kept one and the
+  // inline tail, labelled as such, where it did not. Terminal control
+  // sequences are dropped from the log; its lines are otherwise printed as
+  // the check wrote them, redacted as they were when recorded.
+  async "check-log"() {
+    const name = project(), id = itemArg(), as = await actor(OWNER);
+    if (args.head !== undefined && (typeof args.head !== "string" || !/^[a-f0-9]{7,64}$/i.test(args.head))) die(`--head needs a revision, 7 to 64 hex digits: atelier check-log ${id} --head SHA`);
+    const d = await call("GET", I(name, id), undefined, as);
+    const evidence = d.evidence ?? [];
+    const asked = typeof args.head === "string" ? args.head.toLowerCase() : null;
+    const head = asked ? headsWithChecks(evidence).find((h) => h.head.startsWith(asked))?.head ?? asked : d.item.head;
+    if (!head) die(`${id} records no head: nothing has been pushed, so no check has run`);
+    const attempts = checkAttemptsAt(evidence, head);
+    if (!attempts.length) {
+      const others = headsWithChecks(evidence).filter((h) => h.head !== head);
+      die(`no check is recorded at ${short(head)} for ${id}${others.length ? `. Heads with recorded checks, newest first: ${others.map((h) => `${short(h.head)} (${count(h.runs, "attempt")})`).join(", ")}; name one with --head SHA` : ""}`);
+    }
+    console.log(`${name}/${id} at ${head}${head === d.item.head ? " (the ledger head)" : " (an earlier head)"}: ${count(attempts.length, "check attempt")} recorded for ${count(new Set(attempts.map((a) => a.claim)).size, "check")}.`);
+    for (const a of attempts) {
+      const log = await readCheckLog(a.evidence, logReader(name, id, as));
+      console.log(`\n${attemptHeader(a)}\n   log: ${log.label}`);
+      const text = plainLines(log.text).join("\n").replace(/\n+$/, "");
+      console.log(text || "   (no output retained)");
+    }
   },
 
   // The task's whole story from the ledger, in order (cli/receipt.mjs): one
@@ -2617,7 +2685,7 @@ const commands = {
         // when the reply carries none. A merged check measures no paths.
         const d = await postEvidence(`${I(name, id)}/evidence`, {
           kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed,
-          outputTail: `${r.output.slice(-3500)}\n[sha256 of full output: ${r.sha}]`,
+          outputTail: `${r.output.slice(-LOCAL_OUTPUT_TAIL)}\n[sha256 of full output: ${r.sha}]`,
           load: startLoad,
           ...(mainHead ? { merged: true, mainHead } : {}),
         }, as);
@@ -3294,6 +3362,8 @@ const commands = {
       await runLand({
         args, name, id, p, request, git: gitOrThrow, die,
         print: (line) => console.log(line),
+        // A stored check log by its reference, for the failure summary (t436).
+        readLog: logReader(name, id),
         workspacePath, atelier: fileURLToPath(import.meta.url), env: process.env,
         redact, secrets: () => [apiToken(), ...workspaceTokens(workspace)],
         // The token a landing's re-claim minted, kept as claimWorkspace keeps
