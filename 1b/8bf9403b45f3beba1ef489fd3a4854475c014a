@@ -1,0 +1,30 @@
+atelier atelier/t414 "land refreshes an expired write token for a released task"
+accepted head 0a172250d426273d98a895270a12d4ac5b270392
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — codex/gpt-6.1-sol 2026-10-10T05:15:14.776Z
+OBSERVED pass npm run types && npm run typecheck — codex/gpt-6.1-sol 2026-10-10T05:15:20.080Z
+REVIEW approve by claude-code/opus-5.5 at 0a172250d426273d98a895270a12d4ac5b270392, recorded by claude-code/opus-5.5
+2026-10-09T20:51:53.271Z pavi item.created
+2026-10-10T01:46:20.259Z pavi item.dispatched
+2026-10-10T03:28:34.555Z codex/gpt-6.1-sol item.claimed
+2026-10-10T03:28:43.027Z codex/gpt-6.1-sol fork.created
+2026-10-10T03:37:18.150Z codex/gpt-6.1-sol push.observed
+2026-10-10T03:43:36.129Z codex/gpt-6.1-sol evidence.observed
+2026-10-10T03:43:39.244Z codex/gpt-6.1-sol evidence.observed
+2026-10-10T03:43:39.873Z codex/gpt-6.1-sol item.submitted
+2026-10-10T05:08:01.965Z pavi land.lease
+2026-10-10T05:08:08.648Z pavi land.merge
+2026-10-10T05:09:35.430Z pavi land.regenerate
+2026-10-10T05:09:40.010Z codex/gpt-6.1-sol push.observed
+2026-10-10T05:09:40.514Z pavi land.push
+2026-10-10T05:15:15.381Z codex/gpt-6.1-sol evidence.observed
+2026-10-10T05:15:20.208Z codex/gpt-6.1-sol evidence.observed
+2026-10-10T05:15:21.136Z pavi land.check
+2026-10-10T05:15:38.191Z pavi review.requested
+2026-10-10T05:15:38.191Z pavi review.requested
+2026-10-10T05:15:46.712Z claude-code/opus-5.5 review.claimed
+2026-10-10T05:16:06.914Z codex/gpt-6-astra review.claimed
+2026-10-10T05:16:57.053Z claude-code/opus-5.5 review.approved
+2026-10-10T05:17:08.939Z pavi land.review
+2026-10-10T05:17:09.709Z atelier/orchestrator review.withdrawn
+2026-10-10T05:17:09.709Z pavi item.accepted
+2026-10-10T05:17:09.738Z pavi land.accept
