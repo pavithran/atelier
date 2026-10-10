@@ -26,3 +26,22 @@ test("the back link is hidden on the desktop and shown only with a selection", (
 test("the review navigation wraps instead of widening the page", () => {
   assert.match(css, /\.review-nav \{\s*display:\s*flex;\s*flex-wrap:\s*wrap/);
 });
+
+// t457: the override's disclosure looked like a button that did nothing. It
+// is drawn as a disclosure on its own row: no button border, Safari's own
+// marker hidden in favour of one that turns when it opens, and a hint whose
+// words change from "show" to "hide".
+test("the override disclosure is drawn as a disclosure, not a button, and shows when it is open", () => {
+  const rule = (selector: string) => css.match(new RegExp(`${selector.replace(/[.[\]()>:]/g, "\\$&")} \\{([^}]*)\\}`))?.[1] ?? "";
+  assert.match(rule(".override-disclosure > summary"), /border:\s*0/);
+  assert.match(rule(".override-disclosure > summary"), /list-style:\s*none/);
+  // No selector list styles it together with the buttons.
+  const selectors = css.replace(/\/\*[\s\S]*?\*\//g, "").split("{").map((s) => s.slice(s.lastIndexOf("}") + 1));
+  assert.deepEqual(selectors.filter((s) => /\bbutton\b/.test(s) && s.includes("override-disclosure")), []);
+  assert.match(rule(".override-disclosure"), /flex-basis:\s*100%/);
+  assert.match(rule(".override-disclosure > summary::-webkit-details-marker"), /display:\s*none/);
+  assert.match(rule(".disclosure-marker"), /transform:\s*rotate\(-45deg\)/);
+  assert.match(rule(".override-disclosure[open] > summary .disclosure-marker"), /transform:\s*rotate\(45deg\)/);
+  assert.match(css, /\.override-disclosure \.when-open, \.override-disclosure\[open\] \.when-closed \{ display: none; \}/);
+  assert.match(rule(".override-disclosure[open] .when-open"), /display:\s*inline/);
+});
