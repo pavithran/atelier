@@ -122,7 +122,8 @@ globalThis.fetch = async (url, options = {}) => {
   else if (m) {
     const rest = m[1] ?? "";
     const project = { name: "demo", title: "Demo", repo: "demo", policy: { checks: body?.checks ?? ["exit 0"], protected: body?.protected ?? [], eligible: [], refuseOverlap: body?.refuseOverlap ?? false, sandboxOnly: body?.sandboxOnly ?? false } };
-    if (rest === "" && method === "GET") data = { project, items: [item("t1"), item("t2")], events: [] };
+    if (rest === "standing") data = { project: { name: "demo", title: "Demo" }, generatedAt: "2026-10-09T12:34:56Z", live: [], waiting: [], merged: [] };
+    else if (rest === "" && method === "GET") data = { project, items: [item("t1"), item("t2")], events: [] };
     else if (rest === "" && method === "PUT") data = { project, baseline: { remote: BASELINE, token: "fake-baseline-token", defaultBranch: "main" } };
     // As the server answers an older CLI's long title: kept as the brief, the title derived.
     else if (rest === "items" && method === "POST") data = { id: "t9", title: body.title, scope: body.scope, ...(body.accept ? { accept: body.accept } : {}), ...(body.title.length > 80 && !body.brief ? { title: "Derived title", brief: body.title, derived: true } : {}) };
@@ -501,6 +502,17 @@ test("ls and new name the orchestrator guide until AGENTS.md states the review p
     assert.equal(r.status, 0, r.stderr);
     assert.doesNotMatch(r.stdout, /atelier guide/, argv[0]);
   }
+});
+
+test("status --brief names the orchestrator guide until AGENTS.md states the review path, and not with --json", (t) => {
+  const f = fixture(t);
+  const brief = f.run(f.checkout, ["status", "--brief", "--project", "demo"]);
+  assert.equal(brief.status, 0, brief.stderr);
+  assert.ok(brief.stdout.endsWith(`\n\n${POINTER}`), brief.stdout);
+  assert.equal(brief.stdout.split("atelier guide --role orchestrate").length, 2, "one line");
+  assert.doesNotMatch(f.run(f.checkout, ["status", "--brief", "--json", "--project", "demo"]).stdout, /atelier guide/);
+  writeFileSync(join(f.checkout, "AGENTS.md"), "Land with `atelier land ID --reviewer H/M`.\n");
+  assert.doesNotMatch(f.run(f.checkout, ["status", "--brief", "--project", "demo"]).stdout, /atelier guide/);
 });
 
 test("new sends a title, a brief and repeatable criteria; one long string alone is said to become the brief; edit takes --title, --brief and --accept", (t) => {
