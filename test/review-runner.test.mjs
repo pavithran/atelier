@@ -328,6 +328,8 @@ test("runReview gives an opencode reviewer its own data folder for the length of
     const home = calls.find((c) => c.dataHome);
     assert.ok(home, "a data folder is made");
     assert.equal(harness.env.XDG_DATA_HOME, `${home.dataHome}-opencode-data`);
+    assert.equal(harness.env.ATELIER_TEST_PRIORITY, "review");
+    assert.equal(harness.env.ATELIER_TEST_TASK, "t21");
     assert.equal(harness.env.CF_AIG_METADATA, '{"task":"t21","role":"review","runner":"home:studio"}');
     assert.ok(calls.indexOf(home) < calls.indexOf(harness));
     assert.ok(calls.findIndex((c) => c.removedDataHome === harness.env.XDG_DATA_HOME) > calls.indexOf(harness), "the folder is removed after the harness");
