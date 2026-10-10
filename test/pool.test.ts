@@ -1,8 +1,43 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cleanEntry, cleanStatus, familyOf, LOCAL_BUILD } from "../src/models/pool.ts";
+import { cleanEntry, cleanNote, cleanStatus, familyOf, latestNote, LOCAL_BUILD, noteLine } from "../src/models/pool.ts";
 
 const AT = "2026-10-04T12:00:00.000Z";
+
+test("a note is dated text under a model, naming the task it concerns when it does", () => {
+  assert.deepEqual(cleanNote({ text: "  Commits\nwithout the full suite.  ", item: "t406", project: "atelier" }, "pavi", AT), { at: AT, by: "pavi", text: "Commits without the full suite.", item: "t406", project: "atelier" });
+  assert.deepEqual(cleanNote({ text: "Stalls on long refactors." }, "pavi", AT), { at: AT, by: "pavi", text: "Stalls on long refactors." });
+  for (const [body, why] of [
+    [{ text: " \u0001 " }, /needs text/],
+    [{ text: "x".repeat(501) }, /at most 500/],
+    [{ text: `key ${["sk-proj-", "AbC123xyzQrS456"].join("")}` }, /carries a key/],
+    [{ text: "fine", item: "406", project: "alpha" }, /such as t406/],
+    [{ text: "fine", item: "t1 and t2", project: "alpha" }, /such as t406/],
+    [{ text: "fine", item: "t1" }, /names its project/],
+    [{ text: "fine", project: "alpha" }, /names a project only with the task/],
+    [{ text: "fine", item: "t1", project: "p".repeat(101) }, /at most 100/],
+  ] as const) assert.throws(() => cleanNote(body as Record<string, unknown>, "pavi", AT), why);
+});
+
+test("the latest note that bears on a task names its project and id, so another project's same id is not it", () => {
+  const entry = {
+    notes: [
+      { at: "2026-10-01T09:00:00.000Z", by: "pavi", text: "Stalls on long refactors." },
+      { at: "2026-10-02T09:00:00.000Z", by: "pavi", text: "Only alpha t1 is affected.", item: "t1", project: "alpha" },
+      { at: "2026-10-03T09:00:00.000Z", by: "pavi", text: "Only beta t1 is affected.", item: "t1", project: "beta" },
+      { at: "2026-10-04T09:00:00.000Z", by: "pavi", text: "Only alpha t9 is affected.", item: "t9", project: "alpha" },
+      { at: "2026-10-05T09:00:00.000Z", by: "pavi", text: "Legacy, no project.", item: "t1" },
+    ],
+  };
+  assert.equal(latestNote(entry, "alpha", "t1")?.text, "Only alpha t1 is affected.");
+  assert.equal(latestNote(entry, "beta", "t1")?.text, "Only beta t1 is affected.");
+  assert.equal(latestNote(entry, "gamma", "t1")?.text, "Stalls on long refactors.");
+  assert.equal(latestNote(entry, "alpha", "t9")?.text, "Only alpha t9 is affected.");
+  assert.equal(latestNote({}, "alpha", "t1"), undefined);
+  assert.equal(noteLine(entry.notes[1]), "Latest note, 2026-10-02 by pavi on alpha/t1: Only alpha t1 is affected.");
+  assert.equal(noteLine(entry.notes[0]), "Latest note, 2026-10-01 by pavi: Stalls on long refactors.");
+  assert.equal(noteLine({ ...entry.notes[1], projectName: "alpha-renamed" }), "Latest note, 2026-10-02 by pavi on alpha-renamed/t1: Only alpha t1 is affected.");
+});
 
 test("families are recognised by name, so new releases need no update", () => {
   for (const [name, family] of [
