@@ -91,7 +91,11 @@ export function parseManifest(text) {
     names.add(g?.name);
     if (!plainPath(g?.dir)) problems.push(`${where} needs the plain path of its folder`);
     const re = keyPattern(g?.key, where, problems);
-    return { name: g?.name, dir: g?.dir, key: g?.key, pattern: re, ...(typeof g?.files === "string" ? { files: g.files } : {}) };
+    // exclude: file names in the folder that are not entries, such as an
+    // index generated from them.
+    if (g?.exclude !== undefined && !(Array.isArray(g.exclude) && g.exclude.every((n) => typeof n === "string" && n && !n.includes("/")))) problems.push(`${where}'s exclude must be a list of file names in its folder`);
+    const exclude = Array.isArray(g?.exclude) ? g.exclude : [];
+    return { name: g?.name, dir: g?.dir, key: g?.key, pattern: re, exclude, ...(typeof g?.files === "string" ? { files: g.files } : {}) };
   });
   if (problems.length) throw new Error(`${MANIFEST_PATH} is misdeclared:\n${problems.map((p) => `  - ${p}`).join("\n")}`);
   return { generators, records, registries };

@@ -2,12 +2,33 @@
   "version": 1,
   "generators": [
     {
-      "name": "cli-fixtures",
-      "command": ["zsh", "bin/orchestrate/regen-fixtures.sh"],
-      "inputs": ["cli/**", "src/**", "bin/orchestrate/regen-fixtures.sh"],
-      "outputs": ["test/fixtures/cli/help.txt", "test/fixtures/cli/usage.json"]
+      "name": "command-indexes",
+      "command": ["node", "cli/regenerate.mjs"],
+      "inputs": ["cli/**", "src/**"],
+      "outputs": [
+        "cli/commands/index.mjs",
+        "src/usage/commands/index.ts",
+        "test/fixtures/cli/help.txt",
+        "test/fixtures/cli/usage.json",
+        "test/fixtures/cli/guide.txt"
+      ]
     }
   ],
   "records": [],
-  "registries": []
+  "registries": [
+    {
+      "name": "command-handlers",
+      "dir": "cli/commands",
+      "files": "*.mjs",
+      "exclude": ["index.mjs"],
+      "key": "^// atelier (\\S+?)[.:]?(?: |$)"
+    },
+    {
+      "name": "command-declarations",
+      "dir": "src/usage/commands",
+      "files": "*.ts",
+      "exclude": ["index.ts"],
+      "key": "^  name: \"([^\"]+)\","
+    }
+  ]
 }
