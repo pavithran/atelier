@@ -764,7 +764,7 @@ async function triageGate(io, { triage, dir, id, itemPath, head, mainHead, targe
       }
       return binding;
     }
-    await record("triage", Date.now() - t0, triageRecord(binding, "stopped", { triager: triage.actor, statuses: outcome.results ?? undefined, reason: outcome.why }));
+    if (!outcome.reused) await record("triage", Date.now() - t0, triageRecord(binding, "stopped", { triager: triage.actor, statuses: outcome.results ?? undefined, reason: outcome.why }));
     const findings = [`The triage of ${id} by ${triage.actor} stopped at ${short(head)} (merge base ${short(base)}, criteria ${short(binding.criteria)}): ${outcome.why}.`, ...lines, ...unverified];
     if (triage.override) {
       await recordStrict(Date.now() - t0, triageRecord(binding, "overridden", { triager: triage.actor, reason: triage.override }), "The override of the stopped triage (--override-triage)");
@@ -781,6 +781,10 @@ async function triageGate(io, { triage, dir, id, itemPath, head, mainHead, targe
 async function runTriage(io, { triage, dir, id, item, events, binding, criteria, target }) {
   if (!criteria.length) return { passed: false, why: `${id} has no acceptance criteria (its list is empty), so the triage has nothing to judge the change against` };
   if (recordedTriage(events, binding, "passed", triage.actor)) return { passed: true, reused: true };
+  // The stop the owner saw and now overrides, recorded at this very binding
+  // by this model: it is overridden as recorded, not asked for again.
+  const stop = triage.override ? recordedTriage(events, binding, "stopped", triage.actor) : null;
+  if (stop) return { passed: false, reused: true, why: `${String(stop.data?.reason ?? "it stopped")} (as recorded at this head, merge base and criteria)` };
   let pool;
   try { pool = await io.request("GET", "/models"); }
   catch (error) { return { passed: false, why: `the triage is unavailable: the model pool could not be read (${error.message})` }; }
