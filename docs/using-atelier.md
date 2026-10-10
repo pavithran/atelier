@@ -61,6 +61,14 @@ would have no criteria to judge its change against. `atelier init
 --require-criteria` makes that a refusal for the project, and under it
 `atelier edit ID --accept ""` is refused too.
 
+The owner also changes a live task's scope with `atelier edit ID --scope GLOB`
+(once per glob, or `--scope ""` to clear it); the change is recorded. In a
+project that refuses overlapping claims (`atelier init --refuse-overlap`), a
+claim is refused while its scope overlaps a claimed, submitted or accepted
+task's, in each of those states alike (a cancelled merge leaves a task
+accepted), and an unscoped task overlaps every other. The refusal names the
+overlapping task and points to `atelier edit --scope`.
+
 Give it to a session ("get this done"), or queue it for a runner with
 `atelier dispatch ID`.
 
