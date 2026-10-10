@@ -369,6 +369,45 @@ it("ownership moves by handoff, ends by release or abandonment", async () => {
   expect(await L.abandon("t2", "owner", "obsolete")).toMatchObject({ state: "abandoned", owner: null });
 });
 
+it("the owner returns accepted work to a builder without losing reviews or acceptance history", async () => {
+  for (const action of ["handoff", "dispatch"] as const) {
+    const L = await setup(`accepted-rework-${action}`);
+    await L.newItem("Conflicted", ["src/**"], "owner");
+    await L.claim("t1", A);
+    await L.setFork("t1", `accepted-rework-${action}--t1`, H0, A);
+    await L.recordPush("t1", A, H1, H1);
+    await L.addEvidence(observed("t1", H1));
+    await L.addReview(review("t1", B, H1, true, "Reviewed before conflict"));
+    await L.submit("t1", A);
+    await L.accept("t1", "owner", H1);
+    const reviews = await L.reviewsFor("t1");
+    const history = await L.events("t1") as unknown as LedgerEvent[];
+    const move = () => action === "handoff"
+      ? L.handoff("t1", "owner", B, "Resolve main conflict")
+      : L.dispatch("t1", "owner", { job: "merge-main", head: H2, agent: "codex", model: "gpt-5.5" });
+    await refusal(L.handoff("t1", A, B, "Not the project owner"), "not_project_owner", /only the project owner/);
+    await L.beginLanding("t1", "owner", H1);
+    await refusal(move(), "landing", /holds the landing lease/);
+    expect(await L.events("t1")).toEqual(history);
+    await L.cancelLanding("t1", "owner");
+    await L.checkHandoff("t1", "owner", B, "Resolve main conflict");
+    const moved = await move();
+    expect(moved).toMatchObject({ state: action === "handoff" ? "claimed" : "open", owner: action === "handoff" ? B : null, head: H1, acceptedHead: null, fork: `accepted-rework-${action}--t1` });
+    expect(await L.reviewsFor("t1")).toEqual(reviews);
+    const events = await L.events("t1") as unknown as LedgerEvent[];
+    expect(events).toEqual(expect.arrayContaining(history));
+    expect(events.find((e) => e.kind === "item.accepted")?.data.head).toBe(H1);
+    if (action === "handoff") expect(events.find((e) => e.kind === "item.handoff")).toMatchObject({ actor: "owner", kind: "item.handoff", data: { from: A, to: B, note: "Resolve main conflict" } });
+    else await L.claim("t1", B, { runner: "home:studio", kind: "home" });
+    await refusal(L.accept("t1", "owner", H1), "not_ready", /submitted/);
+    await L.recordPush("t1", B, H2, H2);
+    await L.addEvidence(observed("t1", H2));
+    await L.submit("t1", B);
+    expect(await L.accept("t1", "owner", H2)).toMatchObject({ state: "accepted", acceptedHead: H2 });
+    expect((await L.events("t1") as unknown as LedgerEvent[]).filter((e) => e.kind === "item.accepted").sort((a, b) => a.seq - b.seq).map((e) => e.data.head)).toEqual([H1, H2]);
+  }
+});
+
 it("a task is closed as delivered by a merged task, which the event records", async () => {
   const L = await setup("delivered-by");
   await L.newItem("One", ["src/**"], "owner");
@@ -1091,7 +1130,7 @@ it("the framing is stored with the item, carried by its brief, and edited only b
   expect(await L.newItem("Plain", [], "owner")).toMatchObject({ nonGoals: [], stopWhen: [], nextGate: null });
 
   await refusal(L.editItem(item.id, A, { nextGate: "mine" }), "not_project_owner", /only the project owner edits/);
-  await refusal(L.editItem(item.id, "owner", {}), "nothing_to_edit", /give --title, --brief, --accept, --non-goal, --stop-when or --next-gate/);
+  await refusal(L.editItem(item.id, "owner", {}), "nothing_to_edit", /give --title, --brief, --scope, --accept, --non-goal, --stop-when or --next-gate/);
   // A field given replaces; one left out is kept; an empty list or a null gate clears.
   const edited = await L.editItem(item.id, "owner", { nonGoals: ["no new routes", "no CSS changes"], nextGate: null });
   expect(edited).toMatchObject({ nonGoals: ["no new routes", "no CSS changes"], stopWhen: ["a check fails twice"], nextGate: null });
@@ -1104,6 +1143,24 @@ it("the framing is stored with the item, carried by its brief, and edited only b
 
   await L.abandon(item.id, "owner", "done elsewhere");
   await refusal(L.editItem(item.id, "owner", { nextGate: "x" }), "closed", /its fields stay as they were/);
+});
+
+it("the owner changes a live task's scope, an empty list clears it, and the change is recorded", async () => {
+  const L = await setup("rescope");
+  const item = await L.newItem("Wide", [], "owner");
+  await refusal(L.editItem(item.id, A, {}, ["src/**"]), "not_project_owner", /only the project owner edits/);
+  expect((await L.editItem(item.id, "owner", {}, ["src/**", "test/**"])).scope).toEqual(["src/**", "test/**"]);
+  // The same scope again records nothing new; a field beside it is kept.
+  await L.editItem(item.id, "owner", { nextGate: "review" }, ["src/**", "test/**"]);
+  expect((await L.editItem(item.id, "owner", {}, [])).scope).toEqual([]);
+  const events = (await L.events(item.id)) as unknown as LedgerEvent[];
+  expect(events.filter((e) => e.kind === "item.edited").map((e) => e.data)).toEqual([
+    { scope: [], scopeWas: ["src/**", "test/**"] },
+    { nextGate: "review" },
+    { scope: ["src/**", "test/**"], scopeWas: [] },
+  ]);
+  await L.abandon(item.id, "owner", "done elsewhere");
+  await refusal(L.editItem(item.id, "owner", {}, ["src/**"]), "closed", /its fields stay as they were/);
 });
 
 // t315: a task's short title, its brief and its acceptance criteria. The

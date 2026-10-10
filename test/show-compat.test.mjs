@@ -37,7 +37,7 @@ test("show preserves the plan brief, JSON and review output without a detail rou
     const r = run(flags);
     assert.equal(r.status, 0, r.stderr);
     assert.equal(r.stderr, "");
-    if (flags.includes("--json")) assert.deepEqual(JSON.parse(r.stdout), { ...brief, reviews: [] });
+    if (flags.includes("--json")) assert.deepEqual(JSON.parse(r.stdout), { ...brief, reviews: [], unparsable: [] });
     else {
       assert.ok(r.stdout.startsWith(`proj/t1  ${brief.title}\n${brief.decided}\nPhase: proposed.\nRecommendation: decide. ${brief.recommendation.reason}\n`), r.stdout);
       if (flags.includes("--reviews")) assert.match(r.stdout, /No reviews are recorded/);
