@@ -16,7 +16,7 @@ import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, R
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
-import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
+import { cleanEntry, cleanNote, cleanStatus, type ModelEntry } from "./models/pool";
 import { suggestionRecords } from "./models/suggestion-records.ts";
 import { suggestBuilder } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
@@ -863,6 +863,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       requireOwner(env, actor);
       return json({ removed: await I.removeModel(id) });
     }
+    if (parts.length === 3 && parts[2] === "notes" && m === "POST") {
+      requireOwner(env, actor);
+      return json(await I.addModelNote(id, cleanNote(body, actor, new Date().toISOString())));
+    }
     if (parts.length === 3 && parts[2] === "status" && m === "POST") {
       const runner = parseRunner(req.headers.get("x-atelier-runner"));
       if (!runner) throw new RuleError("bad_runner", "a status report names its runner in X-Atelier-Runner", 400);
@@ -1472,7 +1476,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (body.suggest === true && !body.agent && body.job !== "merge-main") {
         requireOwner(env, actor);
         const [pool, track, item, p] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project()]);
-        suggestion = suggestBuilder({ ...track, item, project: p.name, pool, policy: p.policy, owner: ownerActor(env) }, body);
+        suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env) }, body);
         const slash = suggestion.actor.indexOf("/");
         body.agent = suggestion.actor.slice(0, slash);
         body.model = suggestion.actor.slice(slash + 1);
@@ -1576,7 +1580,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review-request": {
       requireOwner(env, actor);
       const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
-      const track = reviewer === null ? await suggestionRecords(index(env), (p) => ledgerOf(env, p)) : undefined;
+      const track = reviewer === null ? { ...await suggestionRecords(index(env), (p) => ledgerOf(env, p)), project: ref.key } : undefined;
       return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true, false, track));
     }
     // One recorded step of a landing (atelier land): what it was, how long it

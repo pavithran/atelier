@@ -19,4 +19,6 @@
 // gives both, and edit says what a change of criteria withdrew (t326).
 // 17: the review-unparsable route, which the runner's review job calls to
 // keep a reply no verdict could be read from on the task (t407).
-export const ROUTE_LEVEL = 17;
+// 18: the owner keeps dated notes under a pool model, atelier models note
+// (t406).
+export const ROUTE_LEVEL = 18;
