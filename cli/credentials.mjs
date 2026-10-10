@@ -197,3 +197,38 @@ export async function promptSecret(question, input = process.stdin, output = pro
     input.on("data", onData);
   });
 }
+
+export function normalizeRunner(name) {
+  const value = String(name).includes(":") ? String(name).toLowerCase() : `home:${String(name).toLowerCase()}`;
+  if (!/^(home|cloud):[a-z0-9][a-z0-9._-]{0,63}$/.test(value)) throw new Error("runner needs home:NAME or cloud:NAME");
+  return value;
+}
+
+// A stored runner credential carries its server in the same secret entry.
+// An explicit empty/invalid environment credential is an error, never a
+// request to try the owner's credential instead.
+export function runnerCredential(server, name, deps = {}) {
+  const env = deps.env ?? process.env;
+  if (Object.hasOwn(env, "ATELIER_RUNNER_TOKEN") && env.ATELIER_RUNNER_TOKEN !== undefined) {
+    const token = env.ATELIER_RUNNER_TOKEN.trim();
+    if (!token) throw new Error("ATELIER_RUNNER_TOKEN is empty");
+    return token;
+  }
+  if (!name) return null;
+  const key = `runner.${normalizeRunner(name)}`;
+  const raw = (deps.read ?? readSecret)(key, { ...deps, env: { ...env, [envNameFor(key)]: undefined } });
+  if (!raw) throw new Error(`no runner credential in ${key}; store one with token store --runner ${name}`);
+  let record;
+  try { record = JSON.parse(raw); } catch { throw new Error(`${key} has no server binding; store it again`); }
+  if (record.server !== server.replace(/\/+$/, "") || typeof record.token !== "string" || !record.token) throw new Error(`${key} is not bound to this server`);
+  return record.token;
+}
+
+export function storeRunnerCredential(server, name, token, deps = {}) {
+  return writeSecret(`runner.${normalizeRunner(name)}`, JSON.stringify({ server: server.replace(/\/+$/, ""), token }), deps);
+}
+
+export function runnerChildEnv(base, name, credential, override) {
+  return { ...base, ATELIER_RUNNER_NAME: normalizeRunner(name), ...(credential ? { ATELIER_RUNNER_TOKEN: credential } : {}),
+    ...(override ? { ATELIER_TOKEN: override, ATELIER_RUNNER_TOKEN: override } : {}) };
+}
