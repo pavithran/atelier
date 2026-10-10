@@ -249,14 +249,15 @@ test("a merge-main brief says main is merged with conflicts left, to keep both s
     `- Commit the merge with git commit and keep the merge message as it stands; it already ends with the line Agent: ${GLM}.`,
     "Do not start the merge again, abort it, rebase or reset it.",
     "## Merging main",
-    `Main at cccccccc (${M}) conflicts with the plan's branch.`,
-    "the runner has merged main at cccccccc into it before you start. The conflicts remain in the files listed under \"Conflicts in this workspace\"",
+    `This part was queued for main at cccccccc (${M}); that is dispatch context, not the merge target.`,
+    "the runner fetches and merges the baseline's current main head at claim time.",
     "keeping both sides' behaviour",
     "keep both sides' claims and merge their meaning; do not pick one side.",
     "- Remove every conflict marker",
     "- Run the checks, fix what the merge broke, then commit the merge.",
   );
-  lacks(brief, "- Write tests for new behaviour.", "- Commit your work in this workspace");
+  has(brief, "The commit actually merged is named in the runner's log", "it may be newer than the dispatch head.");
+  lacks(brief, "the runner has merged main at cccccccc", "- Write tests for new behaviour.", "- Commit your work in this workspace");
   assert.ok(brief.indexOf("## Rules") < brief.indexOf("## Merging main") && brief.indexOf("## Merging main") < brief.indexOf("## The plan"));
   // Any other part's brief, and its hash, are as they were without the field.
   assert.equal(await hash({ mergeMain: null }), await hash());
