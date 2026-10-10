@@ -174,6 +174,49 @@ them beside it (`fromMainCount`); the hashes themselves are in the merge,
 which names main's head. `--dry-run` prints the steps and the refusals
 without changing anything.
 
+### Triage before the review
+
+A landing can have one model triage the change before the review is asked
+for (t475), so a change that plainly misses a criterion goes back to its
+holder without spending a review round. The model is `--triage H/M`, or else
+the project's `triage` setting (the policy's, or `"triage": "H/M"` in this
+Mac's registration of the project in the Atelier config); with neither, no
+triage runs. A model of the builder's own company may triage, since triage
+is not the independent review; the pool's rules still apply: the model must
+be in the pool, not refused, and not paid per token. It runs on the owner's
+Mac through its harness's adapter (`bin/harness`), read-only, for at most 30
+minutes (`ATELIER_LAND_TRIAGE_TIMEOUT` milliseconds).
+
+The triage reads the pushed head — after the merge of main and the
+regeneration — as a diff against its merge base with main, with the task's
+acceptance criteria (and a part's, numbered after them) as they are now.
+For each criterion it answers met, not-met or unsure, with its evidence and
+a file and line, or the reason no location applies. Its brief has it trace
+the production request paths the change touches and list the runtime
+behaviour it could not verify. A result is bound to the head, the merge base
+and the criteria binding: criteria that change before the review request
+are triaged again, and a pass recorded at the same binding by the same model
+is not asked for twice.
+
+Only every criterion met goes on. A criterion not met or unsure, a task with
+no criteria, a reply that cannot be read, a timeout, or a model that is
+unavailable stops the landing before the task is submitted (through the
+Workflow, before the head is reported, so the Workflow submits nothing): the
+findings are printed with the command to run again, the lease is released,
+and the task stays with its holder, its merged head pushed. The project
+owner can skip the triage with `--no-triage "REASON"`, or go past a stop with
+`--override-triage "REASON"`; either is recorded with the head and the
+criteria binding before the landing goes on, and a record the server
+refuses — it takes one only from the signed-in project owner — stops the
+landing. Neither stands in for the independent review.
+
+Triage is recorded as `land.triage` events (the binding, the model, the
+outcome — passed, stopped, bypassed or overridden — each criterion's status,
+and the owner's reason), never as a review: it adds no approval, rejection
+or round, and the gate decides as it did. After a pass or a bypass the
+landing goes on under the review rules as they are, whether no review is
+needed, an approval already covers the change, or `--no-review` was given.
+
 ## Landing through a Cloudflare Workflow
 
 `atelier land t9 --workflow` lands the task through a Cloudflare Workflow

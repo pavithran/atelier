@@ -185,8 +185,10 @@ export interface ProjectInit {
 export const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*", ".atelier/prompts/**"];
 
 // The steps a landing records (landEvent): taking the lease, merging main,
-// regenerating the project's fixtures, pushing, checking, the review, the
-// acceptance and the merge that lands the task.
+// regenerating the project's fixtures, pushing, checking, the triage before
+// the review (t475: its own record, never one of the reviews the gate counts,
+// src/review/triage.ts), the review, the acceptance and the merge that lands
+// the task.
 // Where a landing Workflow stands (t280, setLandingWorkflowStage).
 export type LandingWorkflowStage = "lease" | "workspace" | "conflict" | "checks" | "review" | "merge" | "done" | "failed";
 export interface LandingWorkflowRecord {
@@ -204,7 +206,7 @@ export interface LandingWorkflowRecord {
   lastStatus?: { status: InstanceStatus["status"]; error?: { name: string; message: string } };
 }
 
-const LAND_STEPS = new Set(["lease", "merge", "regenerate", "push", "check", "submit", "review", "accept", "merged"]);
+const LAND_STEPS = new Set(["lease", "merge", "regenerate", "push", "check", "submit", "triage", "review", "accept", "merged"]);
 
 // What a land.* event may carry beside its duration, and as what: hashes and
 // actors, the commits that came from main, the files a conflict stopped on,
@@ -216,6 +218,9 @@ const LAND_DATA: Record<string, "string" | "boolean" | "strings"> = {
   head: "string", mergeCommit: "string", fromMain: "strings", conflicts: "strings",
   resolvedBy: "string", reviewer: "string", verdict: "string", command: "string",
   reason: "string", changed: "boolean", failed: "boolean", skipped: "boolean", requested: "boolean",
+  // A triage's binding (the merge base and the criteria hash beside the
+  // head), its model, how it ended and each criterion's status (t475).
+  base: "string", criteria: "string", triager: "string", outcome: "string", statuses: "strings",
 };
 export const LAND_JSON_MAX = 4000;
 
