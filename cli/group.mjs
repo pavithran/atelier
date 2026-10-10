@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { constants as osConstants } from "node:os";
 
 // The process groups that hold group `pgid`'s processes and everything they
 // started: `pgid` itself, then the group of every process descended from a
@@ -29,6 +30,31 @@ export function killTree(pgid) {
   for (const g of treeGroups(pgid)) { try { process.kill(-g, "SIGKILL"); } catch { /* The group has ended. */ } }
 }
 
+// The groups runGroup has started and not yet seen end, and the signals
+// that end them. A detached group hears no SIGINT, SIGTERM or SIGHUP sent
+// to this process, and a signal this process takes by default ends it with
+// no "exit" event and with its timers, so a group left running would be
+// unbounded (t419). While any group runs, each of the three SIGKILLs every
+// live group; when no other listener takes the signal, this process then
+// ends with the signal's conventional status, as it would have unhandled.
+// A caller with a handler of its own (land releases its lease) still exits
+// in its own time, its groups already gone.
+const liveGroups = new Set();
+const STOP_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
+function onStopSignal(sig) {
+  for (const pid of liveGroups) killTree(pid);
+  if (process.listenerCount(sig) <= 1) process.exit(128 + osConstants.signals[sig]);
+}
+function track(pid) {
+  // First among the listeners, so a caller's `once` handler is still counted.
+  if (!liveGroups.size) for (const sig of STOP_SIGNALS) process.prependListener(sig, onStopSignal);
+  liveGroups.add(pid);
+}
+function untrack(pid) {
+  if (!liveGroups.delete(pid) || liveGroups.size) return;
+  for (const sig of STOP_SIGNALS) process.off(sig, onStopSignal);
+}
+
 // Runs `argv` as the leader of a process group of its own, bounded in time.
 // When the leader exits, whether it succeeded or failed, when `timeoutMs`
 // passes, when `signal` aborts and when the output passes `maxBytes`, the
@@ -39,7 +65,8 @@ export function killTree(pgid) {
 // command runs (process.exit, or a signal handler that calls it), the tree
 // is SIGKILLed on the way out: the group is not the terminal's foreground
 // group, so no interrupt reaches it there. `onSpawn(pid)` is told the
-// group's id as soon as it exists. With `stdio: "inherit"` the command
+// group's id as soon as it exists. A SIGINT, SIGTERM or SIGHUP of this
+// process SIGKILLs the tree too (onStopSignal). With `stdio: "inherit"` the command
 // writes to this process's output and none is captured. Given
 // `onData(key, chunk)`, each piece of output ("stdout" or "stderr") goes to
 // it as it comes and none is kept here.
@@ -54,10 +81,11 @@ export function runGroup(argv, { cwd, env, timeoutMs, graceMs = 5000, maxBytes =
     let stdout = "", stderr = "", error, timedOut = false, bytes = 0, closed, ending = false, ended = !pid;
     const left = () => { try { process.kill(-pid, 0); return true; } catch { return false; } };
     const onExit = () => killTree(pid);
-    if (pid) { process.on("exit", onExit); onSpawn?.(pid); }
+    if (pid) { process.on("exit", onExit); track(pid); onSpawn?.(pid); }
     const finish = () => {
       if (!closed || !ended) return;
       process.off("exit", onExit);
+      untrack(pid);
       clearTimeout(deadline);
       signal?.removeEventListener("abort", onAbort);
       done({ ...closed, stdout, stderr, timedOut, error: error ?? (closed.signal ? new Error(`terminated by ${closed.signal}`) : undefined) });

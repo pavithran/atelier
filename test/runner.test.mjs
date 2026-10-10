@@ -820,7 +820,12 @@ test("SIGINT, SIGTERM and SIGHUP stop an active detached harness and release unc
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     const { dir, workspace, path, args } = gitWorkspace(t);
     const script = join(dir, "harness.mjs");
-    writeFileSync(script, `process.on('SIGTERM', () => {}); process.kill(process.ppid, '${signal}'); ${UNTIL_TEST_EXITS}`);
+    // The harness starts a sleeper in its group first, which must not outlive
+    // the run (t419).
+    const pidFile = join(dir, "sleeper.pid");
+    writeFileSync(script, `import { spawn } from "node:child_process"; import { writeFileSync } from "node:fs";
+      writeFileSync(${JSON.stringify(pidFile)}, String(spawn("sleep", ["300"], { stdio: "ignore" }).pid));
+      process.on('SIGTERM', () => {}); process.kill(process.ppid, '${signal}'); ${UNTIL_TEST_EXITS}`);
     writeFileSync(path, JSON.stringify({ agents: [{ ...entry, command: [process.execPath, script, "{model}", "{brief_file}"] }] }));
     const commands = [];
     const listeners = process.listenerCount(signal);
@@ -836,6 +841,11 @@ test("SIGINT, SIGTERM and SIGHUP stop an active detached harness and release unc
     });
     assert.deepEqual(commands, ["claim", "release"]);
     assert.equal(process.listenerCount(signal), listeners);
+    const sleeper = Number(readFileSync(pidFile, "utf8"));
+    const until = Date.now() + 2000;
+    const alive = () => { try { process.kill(sleeper, 0); return true; } catch { return false; } };
+    while (alive() && Date.now() < until) await new Promise((ok) => setTimeout(ok, 50));
+    assert.equal(alive(), false, `after ${signal}, the harness's sleeper ${sleeper} outlived the run`);
   }
 });
 

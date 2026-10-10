@@ -1140,6 +1140,25 @@ test("SIGINT and SIGTERM release the lease before the landing ends, with the sig
   }
 });
 
+// t419: a landing signalled while its regenerate command runs ends that
+// command's process group, and what it started, as it releases the lease.
+test("SIGINT, SIGTERM and SIGHUP during the regenerate step end its process group with the landing", { timeout: 60_000 }, async (t) => {
+  for (const [signal, status] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]]) {
+    const f = await landFixture(t);
+    const pidFile = join(f.p, "regen-sleeper.pid");
+    f.box.regen = `sleep 300 & echo $! > ${JSON.stringify(pidFile)}; wait`;
+    const landing = waitingLanding(f);
+    await until(() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim(), 15_000, "the regenerate command's sleeper");
+    const sleeper = Number(readFileSync(pidFile, "utf8"));
+    landing.child.kill(signal);
+    const ended = await landing.done;
+    assert.equal(ended.status, status, landing.output());
+    assert.equal(f.box.lease, null, landing.output());
+    const alive = () => { try { process.kill(sleeper, 0); return true; } catch { return false; } };
+    await until(() => !alive(), 2000, `the end of the regenerate sleeper ${sleeper} after ${signal}`);
+  }
+});
+
 test("the landing renews the lease while it waits, and the renewal moves renewedAt on", async (t) => {
   const f = await landFixture(t);
   const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: "40" });

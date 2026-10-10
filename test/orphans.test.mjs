@@ -177,6 +177,34 @@ test("a ship step's background process ends with the step and at its timeout", {
   assert.match(missing.output, /could not run \/no\/such\/command/);
 });
 
+// The reviewer's probe of round 4 (t419): a ship step's parent, killed by a
+// signal it takes by default, ends the step's group with it, though no
+// "exit" event runs and its timers die with it. A parent with a handler of
+// its own (land's lease release) finds the group gone before it exits.
+test("a ship step's group ends when its parent gets SIGINT, SIGTERM or SIGHUP", { timeout: 30_000 }, async (t) => {
+  for (const handled of [false, true]) for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    const dir = scratch(t);
+    const pidFile = join(dir, "pid");
+    const script = `import { runCommand } from ${JSON.stringify(resolve("cli/ship.mjs"))};
+      ${handled ? `process.on(${JSON.stringify(signal)}, () => setTimeout(() => process.exit(9), 4000));` : ""}
+      runCommand(["/bin/sh", "-c", "sleep 300 & echo $! > ${pidFile}; wait"], { timeoutMs: 600_000, out: { write() {} }, err: { write() {} } });`;
+    const parent = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: "ignore" });
+    t.after(() => parent.kill("SIGKILL"));
+    const sleeper = await fileWritten(pidFile);
+    const ended = new Promise((ok) => parent.on("close", (status, sig) => ok({ status, sig })));
+    parent.kill(signal);
+    // A handled signal ends the group at once, while its parent still runs.
+    if (handled) {
+      assert.ok(await gone(sleeper, 2000), `${signal} to a parent with a handler left the step's sleeper ${sleeper} running`);
+      assert.ok(alive(parent.pid), "the parent's own handler decides when it exits");
+    }
+    const { status, sig } = await ended;
+    assert.equal(sig, null, `${signal} was taken by the parent, not left to end it unhandled`);
+    assert.equal(status, handled ? 9 : 128 + osConstants.signals[signal]);
+    assert.ok(await gone(sleeper, 2000), `after ${signal}${handled ? " to a parent with a handler" : ""}, the step's sleeper ${sleeper} outlived it`);
+  }
+});
+
 // The runner's execute, past a harness's deadline, ends a group the harness
 // started in turn (a check's, npm test's) whose leader ignores the SIGTERM.
 test("the runner's execute past its deadline SIGKILLs a group its child started", { timeout: 30_000 }, async (t) => {
