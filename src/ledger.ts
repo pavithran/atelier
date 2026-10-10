@@ -2196,21 +2196,22 @@ export class Ledger extends DurableObject<Env> {
     return record;
   }
 
-  // The replacement of one recorded instance by another (t430), made only
-  // while `from` is still the recorded one: of two requests that replace the
-  // same instance at once, the first records the new one and the second,
-  // naming the same new id, finds it recorded and answers it as it stands.
-  // Null when the record has moved to a third instance (or is gone), which
-  // the caller reports rather than overwrite.
-  replaceLandingWorkflow(id: string, from: string, to: string, actor: string, options: LandingWorkflowOptions, reason: string, detail: string): LandingWorkflowRecord | null {
+  // The claim on starting the instance that follows `from` (t430), decided
+  // here before any instance is created: it is made only while the record
+  // still names `from` (null: no record), and records `to` with the options
+  // the claimant will create it with and, for a replacement, why. Of
+  // requests that follow the same instance at once (two replacing it, or one
+  // replacing it and one that found it already ended), exactly one is the
+  // `owner` and creates `to`; every other is answered the record as it
+  // stands, whose options are the ones `to` is created with.
+  claimLandingWorkflow(id: string, from: string | null, to: string, actor: string, options: LandingWorkflowOptions, replaced?: { from: string; reason: string; detail: string }): { owner: boolean; record: LandingWorkflowRecord | null } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
     this.item(id);
     const current = this.landingWorkflowOf(id);
-    if (current?.instance === to) return current;
-    if (current?.instance !== from) return null;
-    const record: LandingWorkflowRecord = { ...landingWorkflowRecord(to, options), replaced: { from, reason, detail: detail.slice(0, 2000), at: new Date().toISOString() } };
+    if ((current?.instance ?? null) !== from) return { owner: false, record: current };
+    const record: LandingWorkflowRecord = { ...landingWorkflowRecord(to, options), ...(replaced ? { replaced: { ...replaced, detail: replaced.detail.slice(0, 2000), at: new Date().toISOString() } } : {}) };
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing-workflow:${id}`, JSON.stringify(record));
-    return record;
+    return { owner: true, record };
   }
 
   // The Workflow's own report of its stage. An instance that is no longer

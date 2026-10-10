@@ -438,8 +438,9 @@ it("does not remember a failed create and can retry the landing", async () => {
     get: async () => { throw new Error("instance.not_found"); },
     create: async (options: Parameters<typeof env.LANDING_WORKFLOW.create>[0]) => {
       creates++;
-      // Neither a stale record nor the new id may be recorded before success.
-      expect(await L.landingWorkflowOf(id)).toBeNull();
+      // The new id is claimed before the create (t430), and a failed
+      // create withdraws the claim, so no record outlives it.
+      expect((await L.landingWorkflowOf(id))?.instance).toBe(options.id);
       if (creates === 1) throw new Error("internal error");
       return env.LANDING_WORKFLOW.create(options);
     },
@@ -538,7 +539,7 @@ it("fences stale-record clearing to the owner and the instance read", async () =
   expect(await L.landingWorkflowOf(id)).toBeNull();
 });
 
-it("retries its first stage when execution starts before create returns and replaces a terminal record", async () => {
+it("runs its first stage when execution starts before create returns and replaces a terminal record", async () => {
   const project = "wf-create-race";
   const { L, id } = await pushedTask(project, "wf-old-terminal");
   const testEnv = { ...env, ATELIER_TOKEN: TOKEN, LANDING_WORKFLOW: {
@@ -546,10 +547,10 @@ it("retries its first stage when execution starts before create returns and repl
     get: async () => statusHandle(async () => ({ status: "errored" })),
     create: async (options: Parameters<typeof env.LANDING_WORKFLOW.create>[0]) => {
       const instance = await env.LANDING_WORKFLOW.create(options);
-      // Let the new Workflow reach its first stage before recording its id.
+      // Let the new Workflow reach its first stage before create returns;
+      // its id was claimed before the create (t430).
       await new Promise((r) => setTimeout(r, 200));
-      expect((await L.landingWorkflowOf(id))?.instance).toBe("wf-old-terminal");
-      expect(await L.readProjectLanding()).toBeNull();
+      expect((await L.landingWorkflowOf(id))?.instance).toBe(options.id);
       return instance;
     },
   } } as typeof env;

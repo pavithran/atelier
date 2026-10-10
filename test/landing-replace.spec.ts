@@ -154,6 +154,118 @@ it("a terminate that fails, a status still live, or one unreadable after the ter
   expect(await L.landingWorkflowOf(id)).toMatchObject({ instance: "wf-unconfirmed-old", stage: "lease" });
 });
 
+const gate = () => { let open!: () => void; const shut = new Promise<void>((ok) => { open = ok; }); return { shut, open }; };
+
+// A Workflows binding shared by concurrent requests over one old instance.
+// A `replacer` reads it live, terminates it and reads it back; an
+// `observer` reads it once. Each request's read taken after the terminate
+// is held at its own gate (`reached` opens when it gets there, `go` lets it
+// return), so a test fixes the order in which the requests reach the
+// Ledger. Every create is counted with its params.
+function racingBinding(old: string) {
+  let terminated = false;
+  const creates: { id: string; params: Record<string, unknown> }[] = [];
+  const unused = async () => { throw new Error("unexpected Workflow binding method"); };
+  const request = (role: "replacer" | "observer") => {
+    const reached = gate(), go = gate();
+    const testEnv = { ...env, LANDING_WORKFLOW: {
+      get: async (id: string) => {
+        if (id === old) {
+          return handle(async () => {
+            const seen = terminated;
+            if (role === "observer" || seen) { reached.open(); await go.shut; }
+            return { status: seen ? "terminated" : "waiting" };
+          }, async () => { terminated = true; });
+        }
+        if (!creates.some((c) => c.id === id)) throw new Error("instance.not_found");
+        return handle(async () => ({ status: "queued" }), unused);
+      },
+      create: async ({ id, params }: { id: string; params: Record<string, unknown> }) => {
+        if (creates.some((c) => c.id === id)) throw new Error("instance.already_exists");
+        creates.push({ id, params });
+        return handle(async () => ({ status: "queued" }), unused);
+      },
+      createBatch: unused, deleteBatch: unused,
+    } } as unknown as typeof env;
+    return { testEnv, reached: reached.shut, go: go.open };
+  };
+  return { request, creates };
+}
+
+for (const first of ["the request that found it terminated", "the replacing request"] as const) {
+  it(`a request that finds the replaced instance already terminated and the one replacing it create one successor, when ${first} reaches the Ledger first`, async () => {
+    const project = first.startsWith("the replacing") ? "wf-race-replacer-first" : "wf-race-observer-first";
+    const { L, id } = await task(project);
+    const old = `wf-${project}-old`;
+    await L.setLandingWorkflow(id, old, "owner", "local");
+    await enteredLeaseAgo(L, id, LANDING_LEASE_WAIT_LIMIT_MS + 1);
+    const race = racingBinding(old);
+    const fresh = replacementInstanceId(id, old);
+
+    // A has terminated the old instance and holds before reading it back;
+    // B then reads it terminated, before anything is recorded.
+    const A = race.request("replacer"), B = race.request("observer");
+    const a = call(project, id, { checks: "local" }, A.testEnv);
+    await A.reached;
+    const b = call(project, id, { checks: "local" }, B.testEnv);
+    await B.reached;
+    if (first === "the request that found it terminated") { B.go(); await b; A.go(); }
+    else { A.go(); await a; B.go(); }
+    const [ra, rb] = await Promise.all([a, b]);
+    const [ba, bb] = await Promise.all([ra.json(), rb.json()]) as { instance: string; created: boolean; replaced?: { from: string; to: string; reason: string } }[];
+
+    expect(race.creates.map((c) => c.id)).toEqual([fresh]);
+    expect([ba.instance, bb.instance]).toEqual([fresh, fresh]);
+    expect([ra.status, rb.status]).toEqual(first === "the replacing request" ? [201, 200] : [200, 201]);
+    // The replacing request names the reason and both instances either way.
+    expect(ba.replaced).toMatchObject({ from: old, to: fresh, reason: "lease-wait" });
+    expect((await L.landingWorkflowOf(id))?.instance).toBe(fresh);
+  });
+}
+
+for (const winner of ["codex/gpt-5.5", "gemini-cli/gemini-3-pro"] as const) {
+  it(`two requests naming different eligible reviewers at once record the options of the instance created (${winner} creates it)`, async () => {
+    const project = winner.startsWith("codex") ? "wf-race-options-codex" : "wf-race-options-gemini";
+    const { L, id } = await task(project);
+    const old = `wf-${project}-old`;
+    // Remembered with the task's own builder, who is never eligible.
+    await L.setLandingWorkflow(id, old, "owner", { checks: "local", reviewer: OPUS });
+    const loser = winner === "codex/gpt-5.5" ? "gemini-cli/gemini-3-pro" : "codex/gpt-5.5";
+    const race = racingBinding(old);
+    // Both are past the terminate before either reaches the Ledger; the
+    // winner's read back returns first, the loser's after it has created.
+    const W = race.request("replacer"), X = race.request("replacer");
+    const w = call(project, id, { checks: "local", reviewer: winner }, W.testEnv);
+    const x = call(project, id, { checks: "local", reviewer: loser }, X.testEnv);
+    await Promise.all([W.reached, X.reached]);
+    W.go();
+    const won = await w;
+    X.go();
+    const lost = await x;
+    expect(won.status).toBe(201);
+    expect(lost.status).toBe(200);
+    expect(race.creates).toHaveLength(1);
+    expect(race.creates[0].params.reviewer).toBe(winner);
+    expect(await L.landingWorkflowOf(id)).toMatchObject({ instance: race.creates[0].id, reviewer: winner });
+    expect(await lost.json()).toMatchObject({ instance: race.creates[0].id, created: false, reviewer: winner });
+  });
+}
+
+it("a create that fails withdraws its claim, so the next run starts afresh", async () => {
+  const project = "wf-race-create-fails";
+  const { L, id } = await task(project);
+  const old = "wf-create-fails-old";
+  await L.setLandingWorkflow(id, old, "owner", "local");
+  const failing = { ...env, LANDING_WORKFLOW: {
+    get: async () => handle(async () => ({ status: "complete" }), async () => {}),
+    create: async () => { throw new Error("internal error creating"); },
+    createBatch: env.LANDING_WORKFLOW.createBatch.bind(env.LANDING_WORKFLOW),
+    deleteBatch: env.LANDING_WORKFLOW.deleteBatch.bind(env.LANDING_WORKFLOW),
+  } } as typeof env;
+  expect((await call(project, id, { checks: "local" }, failing)).status).toBeGreaterThanOrEqual(500);
+  expect(await L.landingWorkflowOf(id)).toBeNull();
+});
+
 it("persists the review options, and before acceptance an eligible named reviewer replaces an ineligible remembered one", async () => {
   const project = "wf-replace-reviewer";
   const { L, id } = await task(project);
@@ -209,7 +321,7 @@ it("an instance whose record was replaced while it ran stops without releasing t
   await until(() => L.landingWorkflowOf(id), (r) => r?.stage === "workspace");
   expect(await L.readProjectLanding()).toMatchObject({ item: id });
   // Its termination failed to take, and the record names a replacement.
-  await L.replaceLandingWorkflow(id, "wf-stale-old", "wf-stale-new", "owner", { checks: "container" }, "lease-wait", "a test replacement");
+  await L.claimLandingWorkflow(id, "wf-stale-old", "wf-stale-new", "owner", { checks: "container" }, { from: "wf-stale-old", reason: "lease-wait", detail: "a test replacement" });
   await (await env.LANDING_WORKFLOW.get("wf-stale-old")).sendEvent({ type: "workspace", payload: { round: 0, head: H1 } });
   await wf.waitForStatus("errored");
   // Its failure handler found itself fenced: the lease and the record are the replacement's.
