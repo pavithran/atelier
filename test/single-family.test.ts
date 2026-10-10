@@ -6,9 +6,11 @@ import { routeParts } from "../src/plans/route.ts";
 import type { Plan, PlanPart } from "../src/plans/schema.ts";
 import { integrationBlockers, type Part } from "../src/plans/integrate.ts";
 import {
-  assertSingleFamily, classRequirement, familyRefusal, gate, independentApproval, independentReviewerText, protectedNeed, PROTECTED_NEED, singleFamily,
+  assertOverridesAllowed, assertSingleFamily, classRequirement, decisionFor, familyRefusal, gate, inboxFor, independentApproval, independentReviewerText, OVERRIDE_FORBIDDEN, overrideForbidden, protectedNeed, PROTECTED_NEED, singleFamily,
   type Evidence, type Item, type ProjectPolicy, type Review,
 } from "../src/rules.ts";
+import { briefFor } from "../src/brief.ts";
+import type { Detail } from "../src/ui.ts";
 import { reviewBrief } from "../src/review/brief.ts";
 import { independenceRefusal } from "../src/review/independence.ts";
 import { reviewNeeded, type NeedInput, type ReviewRequired } from "../src/review/needed.ts";
@@ -130,6 +132,37 @@ test("independentApproval and the gate: a different model of the company counts,
   assert.ok(gate(protectedItem, crossFamily, [pass()], [], OWNER).blockers.includes(PROTECTED_NEED));
   // A recorded return to the default is the default.
   assert.equal(gate(protectedItem, returned, [pass()], [review(SONNET)], OWNER).needsAssessor, true);
+});
+
+// t394 with t371: single-family mode and --no-override together. The mode
+// decides which reviewer counts; the prohibition counts no override, a stored
+// one included, and every refusal and request names both.
+test("single-family mode with overrides forbidden: a different model of the company still lands it, an override never does", () => {
+  const both: ProjectPolicy = { ...anthropic, noOverride: true };
+  const overridden = item({ reviewOverride: { head: H2, by: OWNER, reason: "No other model free", at: T } });
+  // Overrides allowed, single-family: the stored override stands.
+  assert.equal(gate(overridden, anthropic, [pass()], [], OWNER).ready, true);
+  // Forbidden: it counts for nothing, and the blocker is the mode's.
+  const refused = gate(overridden, both, [pass()], [], OWNER);
+  assert.deepEqual([refused.ready, refused.needsAssessor, refused.overridden], [false, true, undefined]);
+  assert.deepEqual(refused.blockers, [protectedNeed("anthropic")]);
+  // A different anthropic model's approval lands it; another company's or a contributor's does not.
+  assert.equal(gate(overridden, both, [pass()], [review(SONNET)], OWNER).ready, true);
+  assert.equal(gate(overridden, both, [pass()], [review(GPT)], OWNER).ready, false);
+  assert.equal(gate(overridden, both, [pass()], [review(OPUS)], OWNER).ready, false);
+  // The inbox asks for the mode's reviewer and says overrides are forbidden.
+  assert.deepEqual(inboxFor("proj", [overridden], both, [pass()], [], NOW, OWNER).filter((x) => x.kind === "assess").map((x) => [x.kind, x.reason]), [
+    ["assess", `${protectedNeed("anthropic")}; ask a reviewer with atelier land t21 --reviewer H/M; this project forbids overrides`],
+  ]);
+  // The refusal of an override names the mode's reviewer, not another family.
+  assert.throws(() => assertOverridesAllowed(both), (e: Error) => e.message.includes(overrideForbidden("anthropic")));
+  assert.match(overrideForbidden("anthropic"), /a different anthropic model from every contributor \(single-family mode\)/);
+  assert.equal(OVERRIDE_FORBIDDEN, overrideForbidden(null));
+  // The page and the owner's brief say what the mode needs, and that overrides are refused.
+  assert.match(decisionFor(item(), both, [pass()], [review(OWNER)], OWNER).detail, /needs an approval from a different anthropic model from every contributor \(single-family mode\)\. Your own approval does not count as that review\. This project forbids overrides of that review\.$/);
+  const reviews = [review(OWNER)];
+  const d: Detail = { item: item(), policy: both, evidence: [pass()], reviews, gate: gate(item(), both, [pass()], reviews, OWNER), events: [], ownerActor: OWNER };
+  assert.equal(briefFor(d, []).recommendation.reason, "This revision touches a protected path and needs an approval from a different anthropic model from every contributor (single-family mode). Your own approval is not that review. This project forbids overrides of that review.");
 });
 
 test("assertSingleFamily and pickTierReviewer: under the mode no other company's model builds or is asked for the tier", () => {
