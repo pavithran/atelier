@@ -1383,7 +1383,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         return json({ item: await L.item(id), workspace: {
           remote: `${c.url.origin}/git/runner/${encodeURIComponent(ref.key)}/${id}.git`, token: secret,
           expiresAt: c.token.expiresAt, defaultBranch: branch,
-        }, baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch } });
+        }, baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
+        // A runner's claim sets the same identity as any other (t451).
+        commitIdentity: p.policy.commitIdentity ?? null });
       }
       const w = await mint(env, fork!, "write", branch);
       // The Ledger records the token only if this claim still stands (see

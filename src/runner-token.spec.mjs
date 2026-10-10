@@ -9,10 +9,10 @@ const OWNER = "runner-tests-owner", ACTOR = "codex/gpt-6-astra", HEAD = "a".repe
 const I = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 let serial = 0;
 afterEach(() => vi.restoreAllMocks());
-async function setup() {
+async function setup(policy = {}) {
   const name = `runner-test-${++serial}`;
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  const p = { name, repo: name, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+  const p = { name, repo: name, policy: { checks: [], protected: [], ...policy }, createdAt: new Date().toISOString() };
   await L.setProject(p, "owner");
   await I().registerProject(p);
   await L.newItem("Build", [], "owner");
@@ -60,6 +60,14 @@ it("issues normalized runner/project credentials, requires owner and one existin
   expect(await config.json()).toMatchObject({ runner: "home:studio", tokenId: t.token.id });
   expect(tokenActive(t.token, Date.parse(t.token.expiresAt) - 1)).toBe(true);
   expect(tokenActive(t.token, Date.parse(t.token.expiresAt))).toBe(false);
+});
+
+it("a runner token's claim carries the project's commit identity, as any claim does (t451)", async () => {
+  const commitIdentity = { name: "Owner", email: "1+owner@users.noreply.github.com", agentEmails: [] };
+  const t = await setup({ commitIdentity });
+  expect((await t.claim()).commitIdentity).toEqual(commitIdentity);
+  const bare = await setup();
+  expect((await bare.claim()).commitIdentity).toBeNull();
 });
 
 it("denies every owner, review and integration operation with identity and no secret", async () => {
