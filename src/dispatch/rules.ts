@@ -4,7 +4,7 @@
 // claim it through the ordinary atomic claim. A runner at home therefore only
 // ever makes outgoing requests, and every runner's work is judged the same way.
 
-import { RuleError, samePlan, scopesOverlapWithin, validActor, type Item, type ItemState } from "../rules.ts";
+import { DEFAULT_OWNER, harnessRefusal, overlappingRefusal, roleRefusal, RuleError, samePlan, scopesOverlapWithin, validActor, type Item, type ItemState, type ProjectPolicy } from "../rules.ts";
 import { assertLength, OWNER_TEXT_MAX } from "../text.ts";
 
 export type RunnerKind = "cloud" | "home";
@@ -30,7 +30,9 @@ export interface Dispatch {
   job?: "plan" | "review" | "integrate" | "refresh" | "merge-main";
   // For an integrate job: the part key to merge, its verified head, and the
   // part's item id, so the integrator can fetch the head to merge. For a
-  // refresh or merge-main job, `head` is the main head to merge.
+  // refresh job, `head` is the main head to merge. For merge-main it is
+  // the dispatch-time head; the runner resolves the baseline branch after
+  // claiming and records the actual target in its submission summary.
   part?: string;
   head?: string;
   partId?: string;
@@ -179,6 +181,32 @@ export function holdText(h: CoreHold): string {
 export function assertDispatchable(item: Item): void {
   if (item.state !== "open" || item.owner) {
     throw new RuleError("not_open", `${item.id} is ${item.owner ? `owned by ${item.owner}` : item.state}; only an open task can be sent to a runner`);
+  }
+}
+
+// The claim rules a dispatch names ahead of the claim, so the owner is told
+// a dispatch no runner could claim is refused now rather than costing a
+// runner attempt (t405). A dispatch that names both agent and model is
+// checked against the project's policy exactly as a claim by that actor
+// would be: the executor role under a governed policy, or the eligible
+// harnesses otherwise. A dispatch that names only a harness is checked for
+// the restrictions that harness alone decides (harnessRefusal). A dispatch
+// whose scope overlaps a live item's under a refuseOverlap policy is refused
+// with the claim's own reason, naming the live item: no runner that does not
+// already hold the overlapping item could claim it, and the named actor is
+// used where one is named so a runner that does hold it is not refused.
+export function assertDispatchClaimable(item: Item, items: readonly Item[], policy: ProjectPolicy, d: Dispatch, owner = DEFAULT_OWNER): void {
+  if (d.agent && d.model) {
+    const refusal = roleRefusal(`${d.agent}/${d.model}`, policy, "executor", owner);
+    if (refusal) throw new RuleError("ineligible", refusal, 403);
+  } else if (d.agent) {
+    const refusal = harnessRefusal(d.agent, policy, "executor", owner);
+    if (refusal) throw new RuleError("ineligible", refusal, 403);
+  }
+  if (policy.refuseOverlap) {
+    const claimant = d.agent && d.model ? `${d.agent}/${d.model}` : "\u0000dispatch";
+    const refusal = overlappingRefusal(item, items, claimant);
+    if (refusal) throw new RuleError("overlap", refusal);
   }
 }
 
