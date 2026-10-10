@@ -6,9 +6,9 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, jobsLine, gatewayMetadata, harnessRunEnv } from "../cli/runner.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, jobsLine, gatewayMetadata, harnessRunEnv, codexBuildRefusal, validationBlockedReport } from "../cli/runner.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
-import { helpText } from "../src/usage.ts";
+import { helpText, ROLE_PROMPTS } from "../src/usage.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 
 // The runner's load gate (t403) reads the load through envLoad, which honours
@@ -1442,8 +1442,12 @@ test("a real harness gets neither Atelier's credentials nor the owner's other ke
     import { execFileSync } from "node:child_process";
     writeFileSync(${JSON.stringify(seen)}, JSON.stringify(process.env));
     execFileSync("git", ["commit", "--quiet", "--allow-empty", "-m", "work"]);`);
+  // An executable stub with Codex's explicit unrestricted adapter contract.
+  const codex = join(dir, "codex");
+  writeFileSync(codex, `#!${process.execPath}\n${readFileSync(script, "utf8")}`, { mode: 0o755 });
   for (const agent of ["codex", "opencode"]) {
-    writeFileSync(path, JSON.stringify({ agents: [{ ...entry, agent, env: ["ZAI_API_KEY", "OWNER_COPY"], command: [process.execPath, script, "{model}", "{brief_file}"] }] }));
+    const command = agent === "codex" ? [codex, "exec", "--sandbox", "danger-full-access", "{model}", "{brief_file}"] : [process.execPath, script, "{model}", "{brief_file}"];
+    writeFileSync(path, JSON.stringify({ agents: [{ ...entry, agent, env: ["ZAI_API_KEY", "OWNER_COPY"], command }] }));
     const commands = [];
     await runRunner({ ...args, once: true }, {
       workspacePath: () => workspace, queue: async () => [{ ...assignment, agent, actor: `${agent}/${entry.models[0]}` }],
@@ -1594,6 +1598,116 @@ test("a named variable the check allowlist already passes is withheld too when i
   const { env, withheld } = harnessEnv(base, ["PATH"], ["atl_ownertoken"]);
   assert.deepEqual(withheld, ["PATH"]);
   assert.equal(env.PATH, undefined);
+});
+
+test("Codex builds refuse restricted and opaque adapters before claiming", async () => {
+  for (const command of [["codex", "exec", "--full-auto"], ["codex", "exec", "--sandbox", "workspace-write"], ["wrapper", "{model}", "{brief_file}"], ["codex", "exec", "--sandbox=danger-full-access", "--sandbox=workspace-write"], ["codex", "exec", "--sandbox", "danger-full-access", "--approve-for-me"]]) {
+    const e = { ...entry, agent: "codex", command };
+    const a = { ...assignment, agent: "codex", actor: `codex/${assignment.model}` };
+    const { io, calls } = fixture();
+    const state = await runTask(a, { agents: [e] }, "home:studio", io);
+    assert.equal(runOutcome(state), "validation_blocked");
+    assert.equal(state.taskFailure, false);
+    assert.match(state.reason, /localhost listening, the npm cache and network/);
+    assert.deepEqual(calls, []);
+  }
+  assert.equal(codexBuildRefusal({ ...entry, agent: "codex", command: ["codex", "exec", "--sandbox", "danger-full-access"] }), null);
+  assert.equal(codexBuildRefusal(entry), null);
+});
+
+test("a blocked final report preserves the commit without finish, including on restart", async () => {
+  const { io, calls } = fixture();
+  let saved;
+  io.harness = async () => ({ code: 0, output: "Committed the fix. npm test could not run: sandbox listen EPERM; npm cache permission denied." });
+  io.writeValidationBlock = async (workspace, block) => { saved = block; };
+  const state = await runTask(assignment, config, "home:studio", io);
+  assert.equal(runOutcome(state), "validation_blocked");
+  assert.equal(state.taskFailure, false);
+  assert.deepEqual([saved.actor, saved.head], [assignment.actor, "after"]);
+  assert.ok(saved.detail.includes("listen EPERM"));
+  assert.ok(!calls.some((c) => ["finish", "release"].includes(c.argv?.[0])));
+  const restart = (head) => {
+    const f = fixture();
+    f.io.readValidationBlock = async () => saved;
+    f.io.head = async () => head;
+    return f;
+  };
+  const held = restart("after");
+  const again = await runTask({ ...assignment, item: heldItem({ head: "recorded" }) }, config, "home:studio", held.io);
+  assert.equal(runOutcome(again), "validation_blocked");
+  assert.deepEqual(held.calls, []);
+});
+
+test("a blocked marker holds back only its own actor's unverified head", async () => {
+  const saved = { actor: assignment.actor, head: "after", detail: "npm test could not run: listen EPERM" };
+  // The same builder after its commit moved on (the owner verified and
+  // committed again) builds as usual.
+  const moved = fixture();
+  moved.io.readValidationBlock = async () => saved;
+  const heads = ["moved", "before", "after"];
+  moved.io.head = async () => heads.shift();
+  const state = await runTask(assignment, config, "home:studio", moved.io);
+  assert.equal(runOutcome(state), null);
+  assert.ok(moved.calls.some((c) => c.argv?.[0] === "finish"));
+  // Another builder dispatched to the same workspace runs its harness and checks.
+  const other = { ...entry, agent: "claude-code", models: [assignment.model] };
+  const handed = fixture();
+  handed.io.readValidationBlock = async () => ({ ...saved, head: "before" });
+  const next = await runTask({ ...assignment, agent: "claude-code", actor: `claude-code/${assignment.model}` }, { agents: [other] }, "home:studio", handed.io);
+  assert.equal(runOutcome(next), null);
+  assert.ok(handed.calls.some((c) => c.harness));
+  assert.ok(handed.calls.some((c) => c.argv?.[0] === "finish"));
+});
+
+test("the build brief asks for a validation_blocked line, and that line is read as blocked", () => {
+  assert.match(ROLE_PROMPTS.build, /validation_blocked: why/);
+  assert.match(validationBlockedReport("Implemented the change and committed it.\nvalidation_blocked: vitest could not listen on 127.0.0.1 (EPERM)"), /could not listen/);
+  assert.match(validationBlockedReport("Done.\n**validation_blocked:** the sandbox has no network"), /no network/);
+});
+
+test("a report that only mentions checks or validation_blocked in passing does not hold a build back", () => {
+  for (const report of [
+    "npm test and npm run typecheck pass. I did not run any atelier command and did not push.",
+    "Added the validation_blocked run outcome, with tests; npm test and npm run typecheck pass.",
+    "I could not reproduce the hang without a test, so I added one; all checks pass.",
+    "Did not run atelier done; the runner submits. Tests pass.",
+    "npm test failed once on an assertion; fixed it and the suite passes.",
+  ]) assert.equal(validationBlockedReport(report), null, report);
+  for (const report of [
+    "The tests could not be run here: listen EPERM 127.0.0.1.",
+    "I was unable to run npm test because the npm cache is read-only.",
+    "npm test failed: listen EPERM: operation not permitted 127.0.0.1",
+    "The sandbox prevented vitest from starting.",
+    "Didn't run the required checks; network access is disabled.",
+  ]) assert.ok(validationBlockedReport(report), report);
+});
+
+test("only the final agent message in a structured transcript blocks validation", () => {
+  const tool = JSON.stringify({ type: "item.completed", item: { type: "command_execution", aggregated_output: "npm test blocked by EPERM" } });
+  const message = (text) => JSON.stringify({ type: "item.completed", item: { type: "agent_message", text } });
+  assert.equal(validationBlockedReport(`${tool}\n${message("npm test and npm run typecheck passed.")}`), null);
+  assert.equal(validationBlockedReport(`${message("Tests blocked by sandbox")}\n${message("Retried: all required checks passed.")}`), null);
+  assert.match(validationBlockedReport(`${tool}\n${message("Unable to run the full test suite: listen EPERM.")}`), /listen EPERM/);
+  assert.equal(validationBlockedReport("npm test failed: assertion mismatch"), null);
+  assert.match(validationBlockedReport(`${"A long implementation summary. ".repeat(30)}\nI couldn’t run the required checks because network access was denied.`), /couldn.t run.*checks.*network/);
+});
+
+test("runner records blocked validation as a harness limitation", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-validation-report-"));
+  t.after(() => { rmSync(dir, { recursive: true, force: true }); process.exitCode = 0; });
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  const { io, calls } = fixture();
+  io.harness = async () => ({ code: 0, output: "Required checks could not run: npm cache EACCES." });
+  io.writeValidationBlock = async () => {};
+  const reports = [];
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
+    workspacePath: io.workspacePath, taskIO: io, queue: async () => [assignment],
+    reportRun: async (body) => reports.push(body),
+  });
+  assert.equal(reports[0].outcome, "validation_blocked");
+  assert.equal(reports[0].item, assignment.item.id);
+  assert.ok(!calls.some((c) => c.argv?.[0] === "finish"));
 });
 
 // t403: a saturated machine takes no new job. The runner holds back while the

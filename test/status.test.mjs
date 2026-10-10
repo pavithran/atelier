@@ -35,7 +35,9 @@ test("lists decisions with the next command, work in progress and tasks waiting 
 
 test("a project with nothing to do says so, and other projects' decisions are ignored", () => {
   const out = formatStatus([{ name: "quiet", items: [item("t1", "merged")], inbox: [entry("t9", "accept", { project: "other" })] }]);
-  assert.equal(out, "quiet\n  Nothing waiting.");
+  // A project that has merged says how many merges went in by override (t371).
+  assert.equal(out, "quiet\n  Nothing waiting.\n  Merged by override: 0 of 1 merge");
+  assert.equal(formatStatus([{ name: "quiet", items: [item("t1", "open")], inbox: [] }]), "quiet\n  Nothing waiting.");
 });
 
 test("the waiting list splits the lead developer's own decisions from what the orchestrator handles", () => {

@@ -30,7 +30,9 @@ export interface Dispatch {
   job?: "plan" | "review" | "integrate" | "refresh" | "merge-main";
   // For an integrate job: the part key to merge, its verified head, and the
   // part's item id, so the integrator can fetch the head to merge. For a
-  // refresh or merge-main job, `head` is the main head to merge.
+  // refresh job, `head` is the main head to merge. For merge-main it is
+  // the dispatch-time head; the runner resolves the baseline branch after
+  // claiming and records the actual target in its submission summary.
   part?: string;
   head?: string;
   partId?: string;

@@ -7,8 +7,8 @@ import { join } from "node:path";
 import { CONFLICTS_ARGS, conflictsSection, mergeMainArgs, mergeMainSection, rescueWork, runTask } from "../cli/runner.mjs";
 
 // A merge-main part's build (docs/orchestrator.md, section 5): after the
-// claim and the workspace's reset, the runner fetches main at the dispatch's
-// head through the plan item's base token and merges it, leaving conflicts
+// claim and the workspace's reset, the runner fetches the baseline branch
+// through the plan item's base token and merges it, leaving conflicts
 // in place for the harness, whose brief lists them; a clean merge is
 // committed and finished with no harness. Git runs for real, in a temporary
 // repository standing in for the baseline and a clone of it for the
@@ -18,7 +18,7 @@ import { CONFLICTS_ARGS, conflictsSection, mergeMainArgs, mergeMainSection, resc
 // the baseline, and the brief is the local one with the job's instructions
 // and the conflicting files after it.
 
-const entry = { agent: "codex", models: ["gpt-6-astra"], command: ["codex", "{brief_file}", "{workspace}"] };
+const entry = { agent: "codex", models: ["gpt-6-astra"], command: ["codex", "exec", "--sandbox", "danger-full-access", "{brief_file}", "{workspace}"] };
 const config = { agents: [entry] };
 const ACTOR = "codex/gpt-6-astra";
 const ID = { name: "Test", email: "test@example.com" };
@@ -82,7 +82,7 @@ function fixture(t, { conflict, harness, kind = "part", findings = null, rescueR
       if (argv[0] === "base-token") return JSON.stringify({ remote: r.baseline, token: "read-token", defaultBranch: "main" });
       return "";
     },
-    async head(cwd) { return git(cwd, "rev-parse", "HEAD"); },
+    async head(cwd, { ref = "HEAD" } = {}) { return git(cwd, "rev-parse", ref); },
     // The real runner's reset (resetTo in cli/runner.mjs): the uncommitted
     // work — a conflicted merge a landing left, say — is saved under
     // refs/atelier/rescue, then the workspace is reset hard and cleaned.
@@ -128,7 +128,7 @@ test("a merge-main build merges main into the workspace and leaves the conflicts
   const order = calls.map((c) => c.argv?.[0] ?? Object.keys(c)[0]);
   assert.deepEqual(order.slice(0, 4), ["claim", "reset", "base-token", "fetch"]);
   assert.deepEqual(calls.find((c) => c.argv?.[0] === "base-token").argv, ["base-token", "t1", "--project", "atelier", "--as", ACTOR]);
-  assert.deepEqual(calls.find((c) => c.fetch).fetch, [r.baseline, "read-token", r.main]);
+  assert.deepEqual(calls.find((c) => c.fetch).fetch, [r.baseline, "read-token", "refs/heads/main"]);
   assert.equal(seen.merging, true);
   assert.match(seen.text, /^<<<<<<< HEAD\nONE \(plan\)\n=======\nONE \(main\)\n>>>>>>> /);
   assert.equal(seen.conflicts, "a.txt");
@@ -216,7 +216,7 @@ test("a merge-main task build reads main through its own base token, and its bri
   assert.ok(git(r.workspace, "for-each-ref", "--format=%(refname)", "refs/atelier/rescue/").startsWith("refs/atelier/rescue/"));
   // Main is read through the task's own base token, whose base is the baseline.
   assert.deepEqual(calls.find((c) => c.argv?.[0] === "base-token").argv, ["base-token", "t9", "--project", "atelier", "--as", ACTOR]);
-  assert.deepEqual(calls.find((c) => c.fetch).fetch, [r.baseline, "read-token", r.main]);
+  assert.deepEqual(calls.find((c) => c.fetch).fetch, [r.baseline, "read-token", "refs/heads/main"]);
   assert.equal(seen.merging, true);
   assert.match(seen.text, /^<<<<<<< HEAD\nONE \(plan\)\n=======\nONE \(main\)\n>>>>>>> /);
   assert.equal(seen.conflicts, "a.txt");
@@ -334,4 +334,46 @@ test("the cleanup's removal waits the filesystem out instead of dying on ENOTEMP
   writeFileSync(join(other, "a.txt"), "one\n");
   await assert.rejects(remove(other, () => { const error = new Error("permission denied"); error.code = "EACCES"; throw error; }, wait), (error) => error.code === "EACCES");
   assert.equal(waits, 2, "a cause outside the filesystem's settle is not waited on");
+});
+
+for (const kind of ["task", "part"]) for (const conflict of [false, true]) {
+  test(`a ${kind} dispatched before main moves merges the claim-time head (${conflict ? "conflicts" : "clean"}) and records it`, async (t) => {
+    const { r, job, io, calls, logs } = fixture(t, {
+      kind, conflict,
+      harness: (cwd) => {
+        assert.ok(conflict, "a clean merge needs no harness");
+        writeFileSync(join(cwd, "a.txt"), "ONE (plan, main)\ntwo\nthree\n");
+        git(cwd, "add", "a.txt");
+        git(cwd, "commit", "-q", "--no-edit");
+        return { code: 0 };
+      },
+    });
+    const dispatched = job.item.dispatch.head;
+    const current = commit(r.baseline, "later.txt", "landed after dispatch\n", "main moved");
+    // Use the registered baseline branch, not a hard-coded main or remote HEAD.
+    git(r.baseline, "branch", "-m", "release");
+    const cli = io.cli;
+    io.cli = async (argv) => {
+      const result = await cli(argv);
+      return argv[0] === "base-token" ? JSON.stringify({ ...JSON.parse(result), defaultBranch: "release" }) : result;
+    };
+    const before = git(r.workspace, "rev-parse", "HEAD");
+    const state = await runTask(job, config, "home:studio", io);
+    assert.equal(state.phase, "submitted", JSON.stringify(state));
+    assert.notEqual(current, dispatched);
+    assert.deepEqual(git(r.workspace, "rev-list", "--parents", "-n", "1", "HEAD").split(" ").slice(1), [before, current]);
+    assert.equal(readFileSync(join(r.workspace, "later.txt"), "utf8"), "landed after dispatch\n");
+    assert.ok(logs.includes(`merge-main target: ${current} (dispatched at ${dispatched})`));
+    const finish = calls.find((c) => c.argv?.[0] === "finish").argv;
+    assert.deepEqual(finish.slice(-2), ["--summary", `Merged main at ${current}`]);
+    if (conflict) assert.ok(calls.find((c) => c.brief).brief.includes(`main at ${current.slice(0, 8)}`));
+  });
+}
+
+test("a failed fetch of current main does not fall back to the dispatched commit", async (t) => {
+  const { job, io, calls } = fixture(t, { kind: "task", conflict: false, harness: () => assert.fail("no harness") });
+  io.fetch = async () => { throw new Error("main fetch unavailable"); };
+  const state = await runTask(job, config, "home:studio", io);
+  assert.equal(state.phase, "failed");
+  assert.ok(!calls.some((c) => c.mergeMain || c.argv?.[0] === "finish"));
 });
