@@ -82,6 +82,16 @@ it('where the owner\'s approval counts, Approve stays the primary action and no 
   const moved=detail();moved.item.reviewOverride={...reviewOverride,head:'c'.repeat(40)};
   expect(renderItem(project,moved,'PAVI',diff)).not.toContain('Review overridden');
  });
+ it('an override stored before the project forbade overrides is shown as not counted, until the task merged on it',()=>{
+  const diff={head,base:'b'.repeat(40),files:[],truncated:false};
+  const reviewOverride={head,by:'pavi',reason:'No other family is available',at:time};
+  const d=detail();d.item.reviewOverride=reviewOverride;d.policy={...d.policy,noOverride:true};
+  const html=renderItem(project,d,'PAVI',diff);
+  expect(html).toContain('Override not counted');expect(html).toContain('this project now forbids overrides');expect(html).not.toContain('Review overridden');
+  d.item.state='merged';d.item.acceptedHead=head;
+  const merged=renderItem(project,d,'PAVI',diff);
+  expect(merged).toContain('Review overridden');expect(merged).not.toContain('Override not counted');
+ });
 it('an accepted revision offers its re-acceptance under the current policy, which a merge refused after a policy change asks for',()=>{
  const diff={head,base:'b'.repeat(40),files:[],truncated:false};
  const d=detail();d.item.state='accepted';d.item.acceptedHead=head;d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[]};
