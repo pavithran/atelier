@@ -1,7 +1,7 @@
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
 import { sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
-import { actorStanding, modelState, OBSERVED_UNDER, withStanding, type ModelEntry, type ModelSet, type ModelStatus } from "./models/pool";
+import { actorStanding, modelState, OBSERVED_UNDER, withStanding, type ModelEntry, type ModelRole, type ModelSet, type ModelStatus } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -838,6 +838,17 @@ export class Ledger extends DurableObject<Env> {
     if (held) throw new RuleError("model_held", `${held}; name another, or change its standing with atelier models set`, 409);
   }
 
+  // Every dispatch and review request this ledger writes is made here, so
+  // none goes to a model the owner's standing holds from the job, whichever
+  // path asks: a planner retried or revised after it was paused, a builder or
+  // reviewer named, picked or carried over. test/standing-sites.test.mjs
+  // fails on a makeDispatch anywhere else in the ledger.
+  private standingDispatch(input: Parameters<typeof makeDispatch>[0], role: ModelRole, by: string, at: string, pool?: readonly ModelEntry[]): Dispatch {
+    const d = makeDispatch(input, by, at);
+    if (d.agent && d.model) this.assertStanding(`${d.agent}/${d.model}`, role, pool);
+    return d;
+  }
+
   private keepPool(pool: readonly ModelEntry[]): void {
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('pool', ?)`, JSON.stringify(pool));
   }
@@ -1137,7 +1148,7 @@ export class Ledger extends DurableObject<Env> {
         requests: this.reviewRequests(id), verdicts: this.findingVerdicts(id), wanted, now: new Date(at), owner: this.owner,
       });
       if (!need.needed) continue;
-      const dispatch = { ...makeDispatch({ to: "home", agent: d.agent, model: d.model }, ORCHESTRATOR, at), job: "review" as const };
+      const dispatch = { ...this.standingDispatch({ to: "home", agent: d.agent, model: d.model }, "review", ORCHESTRATOR, at), job: "review" as const };
       const topTier = this.gateIsTier(item, need, reviewer);
       this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, carried, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, 1, ?)`,
         id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item));
@@ -1274,7 +1285,7 @@ export class Ledger extends DurableObject<Env> {
   // workspace to a head that cannot reach main.
   dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null): Item {
     const item = this.checkDispatch(id, actor);
-    const d = makeDispatch(input, actor, new Date().toISOString());
+    const d = this.standingDispatch(input, "build", actor, new Date().toISOString());
     this.assertMergeMainWorkspace(item, d);
     const held = this.holds(item);
     if (held) {
@@ -1305,7 +1316,7 @@ export class Ledger extends DurableObject<Env> {
     this.assertNotPlanned(item);
     if (item.state === "accepted") this.acceptedReworkAllowed(item, actor);
     if (!this.holds(item)) assertDispatchable(item);
-    if (input) this.assertMergeMainWorkspace(item, makeDispatch(input, actor, new Date().toISOString()));
+    if (input) this.assertMergeMainWorkspace(item, this.standingDispatch(input, "build", actor, new Date().toISOString()));
     return item;
   }
 
@@ -2588,7 +2599,7 @@ export class Ledger extends DurableObject<Env> {
       reasons = pick.reasons;
     }
     const at = new Date().toISOString();
-    const d = this.planDispatch(chosen, actor, at);
+    const d = this.planDispatch(chosen, actor, at, pool);
     const id = this.insertItem(planTitle(text), scope, actor, at, { kind: "plan" }, { goal: text });
     this.savePlanRecord(id, { goal: text, scope, planner: chosen, plannerReasons: reasons, createdAt: at, blocked: null, approval: null, reroutes: {} });
     this.writeDispatch(id, d);
@@ -2779,8 +2790,9 @@ export class Ledger extends DurableObject<Env> {
     const { record } = this.planningPlan(id, actor, "revise");
     const text = cleanNote(note);
     const at = new Date().toISOString();
+    const d = this.planDispatch(record.planner, actor, at);
     this.log(id, actor, "plan.revised", { note: text }, at);
-    this.askPlanner(id, record, actor, at);
+    this.askPlanner(id, record, d);
     return this.item(id);
   }
 
@@ -2792,12 +2804,11 @@ export class Ledger extends DurableObject<Env> {
     if (item.kind === "plan") {
       const { record } = this.planningPlan(id, actor, "reroute");
       const planner = namedActor(to, policy, "planner", this.owner);
-      this.assertStanding(planner, "plan");
-      this.planDispatch(planner, actor, at);
+      const d = this.planDispatch(planner, actor, at);
       this.log(id, actor, "plan.rerouted", { to: planner, from: record.planner }, at);
       record.planner = planner;
       record.plannerReasons = ["Rerouted by the project owner"];
-      this.askPlanner(id, record, actor, at);
+      this.askPlanner(id, record, d);
       return this.item(id);
     }
     if (item.kind === "part" && (item.state === "submitted" || (item.state === "blocked" && item.blocked?.from === "submitted"))) return this.rerouteReviewer(item, actor, to, at);
@@ -2806,7 +2817,7 @@ export class Ledger extends DurableObject<Env> {
     this.assertStanding(builder, "build");
     const slash = builder.indexOf("/");
     // Refuses a name no runner could claim under, before anything is written.
-    makeDispatch({ to: "home", agent: builder.slice(0, slash), model: builder.slice(slash + 1) }, ORCHESTRATOR, at);
+    this.standingDispatch({ to: "home", agent: builder.slice(0, slash), model: builder.slice(slash + 1) }, "build", ORCHESTRATOR, at);
     const route = routesOf(record).find((r) => r.key === key)!;
     const from = rerouted(route, record).builder?.actor ?? null;
     record.reroutes[key] = builder;
@@ -2865,8 +2876,9 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     if (item.kind === "plan") {
       const { record } = this.planningPlan(id, actor, "retry");
+      const d = this.planDispatch(record.planner, actor, at);
       this.log(id, actor, "plan.retried", { planner: record.planner }, at);
-      this.askPlanner(id, record, actor, at);
+      this.askPlanner(id, record, d);
       return this.item(id);
     }
     this.openPart(item, "retry");
@@ -3136,21 +3148,24 @@ export class Ledger extends DurableObject<Env> {
     return { record, key: item.partKey! };
   }
 
-  // Asks the planner again: the plan job is dispatched to the record's
-  // planner, and a block on the planner is lifted, since its attempts now
-  // count from this request.
-  private askPlanner(id: string, record: PlanRecord, by: string, at: string): void {
-    this.writeDispatch(id, this.planDispatch(record.planner, by, at));
+  // Asks the planner again: the plan job, made by planDispatch for the
+  // record's planner before anything is logged, is put in the queue, and a
+  // block on the planner is lifted, since its attempts now count from this
+  // request.
+  private askPlanner(id: string, record: PlanRecord, d: Dispatch): void {
+    this.writeDispatch(id, d);
     this.savePlanRecord(id, record);
     this.setBlocked(id, record, null);
   }
 
   // The plan job's dispatch: to a home runner, for the planner's harness and
   // model. The full goal belongs to the plan record and its job brief, not
-  // the short dispatch note.
-  private planDispatch(planner: string, by: string, at: string): Dispatch {
+  // the short dispatch note. A planner the owner's standing now holds from
+  // planning is refused, so a retry or revision never asks one paused,
+  // reserved or kept from planning since the plan was started.
+  private planDispatch(planner: string, by: string, at: string, pool?: readonly ModelEntry[]): Dispatch {
     const slash = planner.indexOf("/");
-    return { ...makeDispatch({ to: "home", agent: planner.slice(0, slash), model: planner.slice(slash + 1), note: "Read the goal in the plan brief and propose a plan." }, by, at), job: "plan" };
+    return { ...this.standingDispatch({ to: "home", agent: planner.slice(0, slash), model: planner.slice(slash + 1), note: "Read the goal in the plan brief and propose a plan." }, "plan", by, at, pool), job: "plan" };
   }
 
   private writeDispatch(id: string, d: Dispatch, extra: Record<string, unknown> = {}): void {
@@ -3168,7 +3183,7 @@ export class Ledger extends DurableObject<Env> {
   // head as `planHead`, which the runner merges the same way.
   private dispatchPart(id: string, to: string, reason: string, hash: string, at: string, mainHead: string | null = null, planHead: string | null = null): void {
     const slash = to.indexOf("/");
-    const d = makeDispatch({ to: "home", agent: to.slice(0, slash), model: to.slice(slash + 1) }, ORCHESTRATOR, at);
+    const d = this.standingDispatch({ to: "home", agent: to.slice(0, slash), model: to.slice(slash + 1) }, "build", ORCHESTRATOR, at);
     const merging = mainHead ? { ...d, job: "merge-main" as const, head: mainHead } : d;
     this.writeDispatch(id, planHead ? { ...merging, planHead } : merging, { approval: hash, reason, ...(planHead ? { planHead } : {}) });
   }
@@ -3417,7 +3432,7 @@ export class Ledger extends DurableObject<Env> {
         this.log(p.id, ORCHESTRATOR, "plan.reviewer_changed", { from: routed, to: reviewer, reason: why }, at);
       }
       const slash = reviewer.indexOf("/");
-      const dispatch = { ...makeDispatch({ to: "home", agent: reviewer.slice(0, slash), model: reviewer.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
+      const dispatch = { ...this.standingDispatch({ to: "home", agent: reviewer.slice(0, slash), model: reviewer.slice(slash + 1) }, "review", ORCHESTRATOR, at), job: "review" as const };
       const brief = reviewBrief({
         need, item: p, events: this.briefEvents(p.id),
         plan: { goal: plan.goal, part }, diff: null, owner: this.owner, bar: policy.reviewBar ?? null,
@@ -3729,7 +3744,7 @@ export class Ledger extends DurableObject<Env> {
     }
     const slash = chosen.indexOf("/");
     const where = records ? pool.find((m) => sameActor(`${m.harness}/${m.id}`, chosen))?.where ?? "home" : "home";
-    const dispatch = { ...makeDispatch({ to: where, agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
+    const dispatch = { ...this.standingDispatch({ to: where, agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, "review", ORCHESTRATOR, at, pool), job: "review" as const };
     const topTier = this.gateIsTier(item, need, chosen);
     this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?)`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item));
     this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: "land", ...(choiceReason ? { reason: choiceReason } : {}), ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
@@ -3793,7 +3808,7 @@ export class Ledger extends DurableObject<Env> {
     const reviewer = pickTierReviewer(policy.reviewTier, contributorsOf(item), [gateReviewer, ...asked], (a) => mayAssess(a, policy, this.owner) && !actorStanding(standing, a, "review"), this.reviewPrecision(at));
     if (!reviewer) return;
     const slash = reviewer.indexOf("/");
-    const dispatch = { ...makeDispatch({ to: "home", agent: reviewer.slice(0, slash), model: reviewer.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
+    const dispatch = { ...this.standingDispatch({ to: "home", agent: reviewer.slice(0, slash), model: reviewer.slice(slash + 1) }, "review", ORCHESTRATOR, at), job: "review" as const };
     this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, tier, criteria) VALUES (?, ?, ?, ?, 'open', 1, ?)`, item.id, need.head, JSON.stringify(dispatch), null, criteriaOf(item));
     this.log(item.id, actor, "review.requested", { head: need.head, reviewer, round: need.round, tier: true }, at, proved);
   }
@@ -3867,7 +3882,7 @@ export class Ledger extends DurableObject<Env> {
       requests: this.reviewRequests(itemId), verdicts: this.findingVerdicts(itemId), wanted, now: new Date(at), owner: this.owner,
     });
     if (!need.needed) return;
-    const dispatch = { ...makeDispatch({ to: "home", agent: d.agent, model: d.model }, ORCHESTRATOR, at), job: "review" as const };
+    const dispatch = { ...this.standingDispatch({ to: "home", agent: d.agent, model: d.model }, "review", ORCHESTRATOR, at), job: "review" as const };
     const topTier = this.gateIsTier(item, need, reviewer);
     this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, carried, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, 1, ?)`,
       itemId, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item));
@@ -3944,7 +3959,7 @@ export class Ledger extends DurableObject<Env> {
     const policy = this.project().policy;
     const next = nextToIntegrate(this.integrationViews(parts), parts.flatMap((p) => this.reviewsFor(p.id)), policy, this.owner);
     if (!next) return;
-    const d = { ...makeDispatch({ to: "home", agent: "atelier", model: "integrator", note: `integrate ${next.key}` }, ORCHESTRATOR, at), job: "integrate" as const, part: next.key, head: next.head!, partId: next.id };
+    const d = { ...this.standingDispatch({ to: "home", agent: "atelier", model: "integrator", note: `integrate ${next.key}` }, "build", ORCHESTRATOR, at), job: "integrate" as const, part: next.key, head: next.head!, partId: next.id };
     this.writeDispatch(id, d, { reason: `integrate part ${next.key}` });
   }
 
@@ -4058,7 +4073,7 @@ export class Ledger extends DurableObject<Env> {
   // Puts the plan item's refresh job in the queue for the integrator, to
   // merge `mainHead`, and records it as the plan's latest refresh.
   private dispatchRefresh(id: string, record: PlanRecord, mainHead: string, by: string, at: string, reason: string): void {
-    const d = { ...makeDispatch({ to: "home", agent: "atelier", model: "integrator", note: `refresh from main at ${mainHead.slice(0, 8)}` }, by, at), job: "refresh" as const, head: mainHead };
+    const d = { ...this.standingDispatch({ to: "home", agent: "atelier", model: "integrator", note: `refresh from main at ${mainHead.slice(0, 8)}` }, "build", by, at), job: "refresh" as const, head: mainHead };
     this.writeDispatch(id, d, { reason });
     record.refresh = { mainHead, state: "dispatched", by, at };
     this.savePlanRecord(id, record);
