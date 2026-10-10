@@ -45,6 +45,8 @@ import { renderActions } from "./actions-page.ts";
 export { CheckRunner, Egress, Ledger };
 export { LandingWorkflow } from "./landing-workflow.ts";
 import { LANDING_CHECKS_MODES, type LandingChecksMode } from "./landing-workflow.ts";
+import { ENDED, replacementFor, terminateConfirmed, type Replacement } from "./landing/replace.ts";
+import { replacementInstanceId } from "./landing/lease-wait.ts";
 import { renderHow } from "./how.ts";
 
 const WRITE_TTL = 8 * 3600;
@@ -1160,14 +1162,17 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // place in the queue and answers the lease and the queue as the server
   // sees them (with leave: true it gives up its place instead), and {
   // cancel: true, item } releases that task's lease, answering which task
-  // held it since when, and leaves another task's lease alone.
+  // held it since when, and leaves another task's lease alone. A call that
+  // names the landing Workflow `instance` it acts for (the Workflow
+  // executor's) is refused once another instance replaced it (t430).
   if (parts[2] === "landing-lease" && parts.length === 3) {
     if (m === "GET") return json({ lease: await L.readProjectLanding(), waiting: await L.readLandingQueue() });
     requireOwner(env, actor);
-    if (body.cancel === true) return json(await L.cancelProjectLanding(String(body.item ?? ""), actor));
-    if (body.renew === true) return json({ lease: await L.renewProjectLanding(String(body.item ?? ""), actor) });
-    if (body.queued === true) return json(await L.queueProjectLanding(String(body.item ?? ""), actor, body.leave === true));
-    return json(await L.beginProjectLanding(String(body.item ?? ""), actor));
+    const instance = typeof body.instance === "string" && body.instance ? body.instance : undefined;
+    if (body.cancel === true) return json(await L.cancelProjectLanding(String(body.item ?? ""), actor, instance));
+    if (body.renew === true) return json({ lease: await L.renewProjectLanding(String(body.item ?? ""), actor, instance) });
+    if (body.queued === true) return json(await L.queueProjectLanding(String(body.item ?? ""), actor, body.leave === true, instance));
+    return json(await L.beginProjectLanding(String(body.item ?? ""), actor, instance));
   }
   if (parts[2] === "baseline-token" && m === "POST") {
     const scope = body.scope === "write" ? "write" : "read";
@@ -1662,6 +1667,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // the workspace steps, and the owner's resume after a conflict.
         if (event.type !== "workspace" && event.type !== "resume") throw new RuleError("bad_event", "a landing Workflow takes a workspace or a resume event", 400);
         if (typeof event.payload !== "object" || event.payload === null || !Number.isInteger((event.payload as { round?: unknown }).round)) throw new RuleError("bad_event", "an event's payload names the round it answers", 400);
+        // The executor names the instance it attached to (t430): one attached
+        // to an instance since replaced cannot advance the replacement with a
+        // report or a resume meant for the old one.
+        if (typeof body.instance !== "string" || !body.instance) throw new RuleError("bad_event", `an event names the instance it answers ({ event, instance }); update the atelier command and run atelier land ${id} --workflow again`, 400);
+        if (body.instance !== remembered.instance) throw new RuleError("stale_landing", `${body.instance} is no longer ${id}'s landing Workflow: ${remembered.instance} replaced it${remembered.replaced ? ` (${remembered.replaced.reason}: ${remembered.replaced.detail})` : ""}, so the ${event.type} event is not sent. Run atelier land ${id} --workflow again to attach to it`, 409);
         const type: string = event.type;
         try {
           await env.LANDING_WORKFLOW.get(remembered.instance).then((i) => i.sendEvent({ type, payload: event.payload ?? {} }));
@@ -1675,20 +1685,21 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // runs no checks on its machine.
       if (body.checks !== undefined && !LANDING_CHECKS_MODES.includes(body.checks as LandingChecksMode)) throw new RuleError("bad_checks", "checks must be local or container", 400);
       const checks: LandingChecksMode = body.checks === "local" ? "local" : "container";
+      const named = typeof body.reviewer === "string" && body.reviewer ? body.reviewer : null;
       let standing: InstanceStatus | null = null;
+      let handle: WorkflowInstance | undefined;
       if (remembered) {
         try {
           // Only a confirmed missing instance from get() permits replacement.
           // A status() failure still leaves an executor that might be running.
-          let instance;
           try {
-            instance = await env.LANDING_WORKFLOW.get(remembered.instance);
+            handle = await env.LANDING_WORKFLOW.get(remembered.instance);
           } catch (error) {
             if (!/\binstance\.not_found$/.test(String((error as Error)?.message ?? error))) throw error;
             await L.clearLandingWorkflow(id, remembered.instance, actor);
           }
-          if (instance) {
-            standing = await instance.status();
+          if (handle) {
+            standing = await handle.status();
             await L.observeLandingWorkflowStatus(id, remembered.instance, standing);
           }
         } catch (error) {
@@ -1697,8 +1708,22 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           throw new RuleError("workflow_unreadable", `the landing Workflow ${remembered.instance} cannot be read: ${String((error as Error)?.message ?? error)}; last status: ${remembered.lastStatus?.status ?? "unknown"}; last error: ${remembered.lastStatus?.error?.message ?? remembered.detail ?? "none recorded"}; ${id} ${(await L.readLandingQueue()).some((row) => row.item === id) ? "is still queued" : "is not queued"}`, 503);
         }
       }
-      if (standing && !["complete", "errored", "terminated"].includes(standing.status)) {
-        return json({ ...remembered!, created: false, status: standing });
+      // A live instance is attached to, unless it has waited for the lease
+      // past the limit or the owner names an eligible reviewer in place of
+      // an ineligible remembered one (t430, src/landing/replace.ts): then it
+      // is terminated, its end confirmed, and replaced below.
+      let replacing: (Replacement & { from: string }) | null = null;
+      if (standing && handle && remembered && !ENDED.includes(standing.status)) {
+        const decision = replacementFor(remembered, named, await L.item(id), Date.now());
+        if (!decision.replace) {
+          return json({ ...remembered, created: false, status: standing, ...(decision.refused ? { reviewerRefused: decision.refused } : {}) });
+        }
+        const end = await terminateConfirmed(handle);
+        if ("unconfirmed" in end) {
+          throw new RuleError("workflow_not_terminated", `${id}'s landing Workflow ${remembered.instance} is to be replaced (${decision.replace.detail}), but its end could not be confirmed: ${end.unconfirmed}. No replacement was started, so two never run at once; run atelier land ${id} --workflow again to retry`, 503);
+        }
+        await L.observeLandingWorkflowStatus(id, remembered.instance, end.ended);
+        replacing = { ...decision.replace, from: remembered.instance };
       }
       // The timeouts the landing waits with, each a positive number of
       // milliseconds; anything else keeps the Workflow's default.
@@ -1708,23 +1733,43 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const item = await L.item(id);
       if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; there is nothing to land.`, 409);
       if (item.state === "accepted") throw new RuleError("accepted", `${id} is accepted at ${(item.acceptedHead ?? "").slice(0, 8)}; merge it with: atelier merge ${id}.`, 409);
+      // The review options: the ones this run names, and for a replacement
+      // that names none, the ones the replaced instance was started with.
+      const reviewer = named ?? (replacing && body.noReview !== true ? remembered?.reviewer ?? null : null);
+      const noReview = body.noReview === true || (!!replacing && named === null && remembered?.noReview === true);
+      const options = { checks, ...(reviewer ? { reviewer } : {}), ...(noReview ? { noReview: true } : {}) };
       // Remember only a successfully created instance. The first stage retries
-      // if execution reaches it before this request has saved the record.
-      const instanceId = `land-${id}-${Date.now()}`;
-      const instance = await env.LANDING_WORKFLOW.create({
-        id: instanceId,
-        params: {
-          project, key: ref.key, item: id, actor,
-          ...(typeof body.reviewer === "string" && body.reviewer ? { reviewer: body.reviewer } : {}),
-          ...(body.noReview === true ? { noReview: true } : {}),
-          origin: c.url.origin, checks,
-          ...ms("checksTimeoutMs"), ...ms("pollMs"), ...ms("mergePollMs"), ...ms("waitTimeoutMs"), ...ms("workspaceTimeoutMs"), ...ms("conflictTimeoutMs"), ...ms("reviewTimeoutMs"), ...ms("mergeTimeoutMs"),
-        },
-      });
-      const record = await L.setLandingWorkflow(id, instanceId, actor, checks);
+      // if execution reaches it before this request has saved the record. A
+      // replacement's id is derived from the instance it replaces, so two
+      // requests replacing it at once create it once: the second create is
+      // refused, and that request records and answers the instance that exists.
+      const instanceId = replacing ? replacementInstanceId(id, replacing.from) : `land-${id}-${Date.now()}`;
+      let instance: WorkflowInstance;
+      let created = true;
+      try {
+        instance = await env.LANDING_WORKFLOW.create({
+          id: instanceId,
+          params: {
+            project, key: ref.key, item: id, actor, ...options, origin: c.url.origin,
+            ...ms("checksTimeoutMs"), ...ms("pollMs"), ...ms("mergePollMs"), ...ms("waitTimeoutMs"), ...ms("workspaceTimeoutMs"), ...ms("conflictTimeoutMs"), ...ms("reviewTimeoutMs"), ...ms("mergeTimeoutMs"),
+          },
+        });
+      } catch (error) {
+        if (!replacing) throw error;
+        try { instance = await env.LANDING_WORKFLOW.get(instanceId); await instance.status(); } catch { throw error; }
+        created = false;
+      }
+      const record = replacing
+        ? await L.replaceLandingWorkflow(id, replacing.from, instanceId, actor, options, replacing.reason, replacing.detail)
+        : await L.setLandingWorkflow(id, instanceId, actor, options);
+      if (!record) {
+        const now = await L.landingWorkflowOf(id);
+        throw new RuleError("landing_replaced", `${id}'s landing Workflow ${replacing!.from} was replaced meanwhile by ${now?.instance ?? "nothing"}; run atelier land ${id} --workflow again to attach to it`, 409);
+      }
       const status = await instance.status();
       await L.observeLandingWorkflowStatus(id, instanceId, status);
-      return json({ ...record, created: true, status }, 201);
+      const replaced = replacing ? { replaced: { from: replacing.from, to: instanceId, reason: replacing.reason, detail: replacing.detail } } : {};
+      return json({ ...record, created, status, ...replaced }, created ? 201 : 200);
     }
     case "integrated": {
       // The integrator reports a merge of one part. The Worker verifies the
