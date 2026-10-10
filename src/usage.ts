@@ -86,8 +86,8 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "merge ID --cancel [--discard-local]", about: "Ends an interrupted merge: the landing lease is released, so the task's owner can push again. An unpublished merge commit in the checkout is kept unless `--discard-local` removes it and returns the branch to where the merge began." },
     { form: "land ID [--reviewer H/M] [--no-review] [--wait] [--dry-run] [--release-lease] [--workflow [--checks local|container]]", about: "The project owner lands one task whole; a plan is refused before the lease, since it lands with `atelier merge ID --head H` at the integration head `plan show` prints and takes main through `plan refresh`. It takes the project's landing lease on the server, so two sessions never race main, then merges main into the task's workspace, stopping on conflicts and leaving them for the owner, naming the files. It regenerates the project's fixtures when the policy declares how (`init --regenerate`), pushes, runs the required checks and submits. It requests the independent review the gate needs through the review-request routes and waits for the verdict (up to 60 minutes, or ATELIER_LAND_REVIEW_TIMEOUT milliseconds), saying what the runners are busy with while the request is unclaimed, and, when no live runner offers the reviewer for the review job, that the request can never be claimed until one does, with the review by hand and the `--reviewer` that asks a model a runner offers, then accepts and merges. A named `--reviewer` is always asked, even where the gate needs no review, and a rejection stops the landing. Each step, its duration and the commits that came from main are recorded as land.* events, for the integration record. It refuses to start when the server's route level is lower than this CLI's, saying to deploy, and while another task's landing holds the lease, naming who holds it and since when, unless `--wait` queues behind it: the server keeps the landings waiting for the lease in the order they queued and hands it to the first of them when it frees, so one landing cannot take it ahead of another that waited longer, however their polls land. While it waits the landing asks the server again on every poll, says whose landing it waits behind and which landings are queued ahead, and starts when its turn comes (three hours at most, or ATELIER_LAND_WAIT_TIMEOUT milliseconds), so several landings started at once run in turn; a landing that stops asking drops out of the queue once 15 minutes pass without an ask. The lease is renewed while the landing runs, released on SIGINT or SIGTERM, and treated as free by the server once 15 minutes pass without a renewal, which the next landing reports when it takes the lease over. `--reviewer` names the reviewer; `--no-review` leaves the task submitted; `--wait` queues for the lease, in the order the landings queued; `--dry-run` prints the steps and the refusals without changing anything; `--release-lease` frees the project's lease, saying which task held it since when. `--workflow` lands through a Cloudflare Workflow instead: the lease, the submission, the review wait and the acceptance run on the server as durable steps, each retried through transient failures (an Artifacts 503, a lost connection) and needing no token, while this command shows the Workflow's stage and does the steps that need Git with a working tree when the Workflow asks: merging main and pushing (only once the Workflow holds the lease), and `atelier merge` once it has accepted. `--checks` says where the required checks run: `local` (the default) runs them on this machine in a clean clone of the pushed head before the head is reported, as the plain landing does, and the Workflow goes on only once the server has recorded every one passing, observed, at that head (failing ends the landing; no result within 30 minutes does too); `container` has the Workflow run them in a Cloudflare container, for a project whose suite finishes there. A conflict pauses the Workflow with the lease released and the files named; resolve and commit them, then run the same command again to resume. If the command stops (a closed laptop), the Workflow keeps its place: run it again to attach. `--dry-run` and `--workflow` together are refused." },
     { form: "abandon ID [--note TEXT] [--delivered-by tN]", about: "Closes the task without merging it. The holder's write token is revoked; the history and evidence stay. `--note` says why. `--delivered-by` records that the merged task tN delivered it, for work another task already brought in." },
-    { form: "defect ID --note TEXT [--found-in ID]", about: "The project owner traces a defect to the revision the task was accepted at. Nothing about the task changes; the reliability record counts the defect against the model that built that revision and against each model that approved it. `--found-in` names the task the defect was found or fixed in." },
-    { form: "finding ID --head SHA --index N --verdict confirmed|refuted|fixed [--note TEXT]", about: "The project owner records a verdict on one finding of a review: confirmed, that the finding was right and a fix followed; fixed, that it was right and is fixed; refuted, that it was wrong. `--head` names the review's revision and `--index` the finding's position in that review's findings, one based. The event is the record, and the reliability record counts the reviewer's findings confirmed and refuted, which measures its precision." },
+    { form: "defect ID --note TEXT [--found-in ID] [--contradicts SEQ#N]", about: "The project owner traces a defect to the revision the task was accepted at. Nothing about the task changes; the reliability record counts the defect against the model that built that revision and against each model that approved it. `--found-in` names the task the defect was found or fixed in. `--contradicts` names a refuted or fixed verdict on one of this task's findings, by its event number and the finding's position, that the defect shows was wrong; it is refused for another task's or project's verdict, a confirmed one, or a review at a revision this task was not submitted at before its acceptance. The Models page counts it against the model that recorded the verdict, once however many defects name it; a defect that names no verdict counts against none." },
+    { form: "finding ID --head SHA --index N --verdict confirmed|refuted|fixed [--note TEXT] [--as H/M]", about: "The project owner records a verdict on one finding of a review: confirmed, that the finding was right and a fix followed; fixed, that it was right and is fixed; refuted, that it was wrong. `--head` names the review's revision and `--index` the finding's position in that review's findings, one based. The event is the record, and the reliability record counts the reviewer's findings confirmed and refuted, which measures its precision. `--as` names the harness/model recording the verdict for the owner: the Models page counts its verdicts upheld, contradicted and unresolved. A later verdict on the same finding corrects it, and both stay in the record. It prints the verdict's event number, which `defect --contradicts` names." },
   ], [
     { form: "run-report --actor H/M --role build|review --outcome KIND [--project P] [--item ID] [--detail TEXT]", about: "The project owner records a run that ended without a result the ledger saw, for a run outside the runner: an early stop, a permission stop, a duplicate design or an incomplete merge, beside stalled, timed-out and refused, which the runner reports itself. The reliability record counts it against the actor, and a review run counts as a review that never reached a verdict." },
     { form: "served MODEL --recorded H/M --from TIME --to TIME [--item ID]... [--note T] [--apply]", about: "The project owner records which model served events recorded under another, as when zcode served deepseek-flash while its events named glm-5.3. Each event recorded as `--recorded` from `--from` up to `--to`, on the tasks `--item` names or on every task, gets an annotation of its own, and the track record, the reliability record and the graph count it under the served model; the event itself never changes. Without `--apply` it lists the matches and records nothing. `--note` says how the owner knows." },
@@ -95,7 +95,7 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "approvals [--all]", about: "Lists the approvals that stand, each with its kind, revision and expiry. `--all` adds the used, withdrawn and expired ones." },
     { form: "approvals withdraw ID [--note T]", about: "The project owner withdraws an approval no ship has used, so none can use it." },
   ], [
-    { form: 'decide "text" --quote "owner\'s words" [--project P]', about: "The project owner records a standing decision for the project, dated, with the owner's own words it rests on: another company reviews everywhere, the review bar, a spend limit, no overrides. Only the owner's token records one. Every review brief of the project and `atelier guide --role orchestrate` carry the decisions that stand, marked as decisions a reviewer must not overrule." },
+    { form: 'decide "text" --quote "owner\'s words" [--project P] [--as H/M]', about: "The project owner records a standing decision for the project, dated, with the owner's own words it rests on: another company reviews everywhere, the review bar, a spend limit, no overrides. Only the owner's token records one; `--as` names the harness/model recording it for the owner, kept beside the owner. Every review brief of the project and `atelier guide --role orchestrate` carry the decisions that stand, marked as decisions a reviewer must not overrule." },
     { form: "decisions [--all] [--project P]", about: "Lists the project's standing decisions, oldest first, each with its id, date, text and the owner's words. `--all` adds the withdrawn ones with their notes." },
     { form: 'decisions withdraw ID --note "why"', about: "The project owner withdraws a standing decision with a note saying why. It stops appearing in the briefs, the guide and the plain list; `--all` still shows it, withdrawn." },
   ], [
@@ -365,6 +365,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       "--head SHA": "the revision accepted; the task's current head unless given, and any other is refused",
       "--override-review REASON": "accepts without the independent review, when no reviewer qualifies; the reason is recorded",
       "--note TEXT": "the owner's word on the acceptance, kept with it in the ledger",
+      "--as H/M": "with --override-review, the harness/model overriding for the owner, kept beside the owner as its acting model",
     },
     example: "atelier accept t3 --project demo",
   },
@@ -373,7 +374,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       "--head SHA": "the full revision to accept first, when the task is submitted and not yet accepted",
       "--approve": "with --head, records the owner's review of that revision, which is not the independent review",
       "--note TEXT": "with --approve, the review's note",
-      "--override-review REASON": "with --head, accepts with the owner's override of a missing independent review",
+      "--override-review REASON": "with --head, accepts with the owner's override of a missing independent review; --as H/M names the harness/model overriding for the owner",
       "--policy-changed-ok": "lands a change that touches paths the ControlPlane policy began to protect after acceptance, once that change of policy is reviewed",
       "--cancel": "ends an interrupted merge, so the task's owner can push again",
       "--discard-local": "with --cancel, removes the unpublished merge commit from the checkout",
@@ -446,8 +447,9 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
     flags: {
       "--note TEXT": "what is wrong; required",
       "--found-in ID": "the task the defect was found or fixed in",
+      "--contradicts SEQ#N": "the verdict event (its number, as atelier finding and atelier receipt print it) and the finding it judged, which the defect shows was wrong; also tN@SEQ#N or PROJECT/tN@SEQ#N, naming this task and project",
     },
-    example: 'atelier defect t3 --note "It drops the last row" --found-in t9 --project demo',
+    example: 'atelier defect t3 --note "It drops the last row" --found-in t9 --contradicts 42#1 --project demo',
   },
   finding: {
     flags: {
@@ -455,6 +457,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       "--index N": "the finding's position in that review's findings, one based; required",
       "--verdict V": "confirmed, refuted or fixed; required",
       "--note TEXT": "why; kept with the verdict",
+      "--as H/M": "the harness/model recording the verdict for the owner, kept beside the owner as its acting model",
     },
     example: 'atelier finding t3 --head 0123456789abcdef0123456789abcdef01234567 --index 2 --verdict confirmed --note "fixed in t9"',
   },
@@ -499,6 +502,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
     flags: {
       "--quote TEXT": "the owner's own words the decision rests on; required, at most 2000 characters",
       "--project NAME": "the project the decision is for; this checkout's or workspace's project unless given",
+      "--as H/M": "the harness/model recording the decision for the owner, kept beside the owner as its acting model",
     },
     example: 'atelier decide "Every change is reviewed by a model of another company" --quote "another company reviews everywhere" --project demo',
   },
@@ -759,7 +763,9 @@ Standing rules:
 - Never override a review, a check or a block, except on the owner's own
   confirmation. Ask, and cite the owner's words; never infer them.
 - Judge each review finding against the code before acting, and record every
-  verdict with \`atelier finding\`.
+  verdict with \`atelier finding ... --as H/M\`, naming yourself, as you name
+  yourself on \`atelier decide\` and on an override: the Models page measures
+  your verdicts as it measures a reviewer's.
 - File every task with its acceptance criteria, written before the build:
   \`atelier new "title" --accept "TEXT" --scope GLOB\`, one \`--accept\` per
   observable criterion. A task filed without any draws a warning, and a
