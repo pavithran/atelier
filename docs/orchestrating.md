@@ -381,6 +381,11 @@ merge-main job merges main as it was when the job was dispatched (t429
 changes that to main as it is when a runner claims it); if main has moved a
 long way since, dispatch the job again.
 
+A build job, a fix after findings included, submits the head it built on
+the fork's old base without merging main first, so on 10 October nearly
+every resubmitted task stopped at the conflict stage and cost a further
+round; t435 has the runner merge main before submitting.
+
 ### Held dispatches
 
 `atelier status` shows `Held: waits on tX … both scopes reach core file F`
