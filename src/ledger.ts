@@ -11,6 +11,7 @@ import {
   assertBlockable, assertNotBlocked, blockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
+  CHECK_BY, type PostDeployCheck,
 } from "./rules";
 import { cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, NO_CRITERIA, sameCriteria } from "./criteria.ts";
@@ -47,7 +48,7 @@ import { buildPrecision, precisionWindow, type PrecisionRecord } from "./models/
 import { independenceRefusal } from "./review/independence.ts";
 import {
   attributionRefusal, authorsOf, buildJob, criteriaFindingsSection, criteriaIndependenceRefusal, criteriaReviewBrief, criteriaStatus, CRITERIA_REVIEW_TIMEOUT_MS, lapsedClaim,
-  pickCriteriaReviewer, RESOLUTION_VERDICTS, type CriteriaResolution, type CriteriaReview, type CriteriaReviewState, type CriteriaRevision, type CriteriaStatus, type ResolutionVerdict,
+  pickCriteriaReviewer, postDeployChecks, RESOLUTION_VERDICTS, type CriteriaResolution, type CriteriaReview, type CriteriaReviewState, type CriteriaRevision, type CriteriaStatus, type ResolutionVerdict,
 } from "./review/criteria.ts";
 import { gateServesTier, pickTierReviewer } from "./review/tier.ts";
 import type { LargeRef } from "./large.ts";
@@ -129,6 +130,10 @@ export interface CriteriaReviewView {
   revisions: CriteriaRevision[];
   reviews: CriteriaReview[];
   resolutions: CriteriaResolution[];
+  // The checks after deploy that stand for the criteria as they are now
+  // (t457, postDeployChecks): criteria the builder cannot verify in its
+  // workspace, each the project owner's or the orchestrator's to check.
+  checks: PostDeployCheck[];
 }
 
 // What a change of a task's acceptance criteria took back (Ledger.editItem):
@@ -603,8 +608,12 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS criteria_reviews (
       id INTEGER PRIMARY KEY AUTOINCREMENT, item TEXT NOT NULL, rev INTEGER NOT NULL, criteria TEXT NOT NULL, authors TEXT NOT NULL,
       reviewer TEXT NOT NULL, dispatch TEXT NOT NULL, state TEXT NOT NULL, requestedAt TEXT NOT NULL,
-      claimedBy TEXT, runner TEXT, claimedAt TEXT, decidedAt TEXT, summary TEXT, findings TEXT, failure TEXT
+      claimedBy TEXT, runner TEXT, claimedAt TEXT, decidedAt TEXT, summary TEXT, findings TEXT, failure TEXT, checks TEXT
     )`);
+    // The checks after deploy a criteria review flags (t457) came after the
+    // table; a ledger made before gains the column once.
+    const criteriaColumns = this.sql.exec(`PRAGMA table_info(criteria_reviews)`).toArray().map((c) => c.name);
+    if (!criteriaColumns.includes("checks")) this.sql.exec(`ALTER TABLE criteria_reviews ADD COLUMN checks TEXT`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS criteria_resolutions (
       id INTEGER PRIMARY KEY AUTOINCREMENT, item TEXT NOT NULL, review INTEGER NOT NULL, idx INTEGER NOT NULL,
       verdict TEXT NOT NULL, note TEXT NOT NULL, by TEXT NOT NULL, at TEXT NOT NULL
@@ -4164,7 +4173,8 @@ export class Ledger extends DurableObject<Env> {
     this.item(id);
     const status = this.criteriaReviewStatus(id);
     const revisions = this.criteriaRevisions(id);
-    return { required: !!this.project().policy.requireCriteriaReview, status, authors: authorsOf(revisions), revisions, reviews: this.criteriaReviewsFor(id), resolutions: this.criteriaResolutionsFor(id) };
+    const reviews = this.criteriaReviewsFor(id);
+    return { required: !!this.project().policy.requireCriteriaReview, status, authors: authorsOf(revisions), revisions, reviews, resolutions: this.criteriaResolutionsFor(id), checks: postDeployChecks(reviews, status.rev) };
   }
 
   private lapseCriteriaReviews(id: string, now: Date): void {
@@ -4322,14 +4332,26 @@ export class Ledger extends DurableObject<Env> {
   // the part when it is one, and the earlier criteria reviews with the
   // owner's resolutions.
   private criteriaBrief(item: Item, rev: number, authors: readonly string[], round: number): string {
-    let plan: { goal: string; part: PlanPart } | null = null;
-    if (item.plan) {
-      const record = this.planRecord(item.plan);
-      const document = record.approval ? planWithAdded(this.approvedPlan(item.plan, record.approval.hash), record) : null;
-      const part = document?.parts.find((p) => p.key === item.partKey);
-      if (document && part) plan = { goal: document.goal, part };
-    }
+    const plan = this.planAccountOf(item);
     return criteriaReviewBrief({ item, rev, authors, plan, previous: this.criteriaReviewsFor(item.id), resolutions: this.criteriaResolutionsFor(item.id), round, owner: this.owner });
+  }
+
+  // The approved plan's account of a part: its goal and the part, or null
+  // for an item outside a plan or a part the approved plan does not name.
+  private planAccountOf(item: Item): { goal: string; part: PlanPart } | null {
+    if (!item.plan) return null;
+    const record = this.planRecord(item.plan);
+    const document = record.approval ? planWithAdded(this.approvedPlan(item.plan, record.approval.hash), record) : null;
+    const part = document?.parts.find((p) => p.key === item.partKey);
+    return document && part ? { goal: document.goal, part } : null;
+  }
+
+  // How many acceptance criteria a criteria review brief numbers for an
+  // item: the task's own and, for a part, the plan's for it, as
+  // criteriaReviewBrief lists them, so a check's criterion number can be
+  // held to the list (t457).
+  private criteriaCountOf(item: Item): number {
+    return (item.accept?.length ?? 0) + (this.planAccountOf(item)?.part.acceptance ?? item.partAccept ?? []).length;
   }
 
   // Records a criteria reviewer's verdict on the review it claimed. The
@@ -4337,14 +4359,24 @@ export class Ledger extends DurableObject<Env> {
   // the criteria have left, or a review no longer claimed by the reviewer, is
   // refused and records nothing. An approval carries no blocking finding and
   // a rejection at least one.
-  addCriteriaReview(r: { itemId: string; by: string; rev: number; criteria: string; request: number; approve: boolean; summary: string; findings?: Finding[] }, proved = false): CriteriaReview {
+  addCriteriaReview(r: { itemId: string; by: string; rev: number; criteria: string; request: number; approve: boolean; summary: string; findings?: Finding[]; checks?: PostDeployCheck[] }, proved = false): CriteriaReview {
     if (!validActor(r.by)) throw new RuleError("bad_actor", `"${r.by}" is not harness/model`, 400);
     assertLength(r.summary, NOTE_MAX, "the review summary");
     if (r.findings !== undefined && !validFindings(r.findings)) {
       throw new RuleError("bad_findings", "findings must be a list of {file, line, severity, text}, severity blocking or follow-up", 400);
     }
+    if (r.checks !== undefined && !validChecks(r.checks)) {
+      throw new RuleError("bad_checks", "checks must be a list of {criterion, by, text}, the criterion its number from 1, by owner or orchestrator", 400);
+    }
     if (!Number.isInteger(r.request)) throw new RuleError("bad_request", "a criteria verdict names the review it answers, as the claim gave it", 400);
     const item = this.item(r.itemId);
+    // A check names one of the criteria the brief numbered, once (t457).
+    const checks = r.checks ?? [];
+    const count = this.criteriaCountOf(item);
+    const beyond = checks.find((c) => c.criterion > count);
+    if (beyond) throw new RuleError("bad_checks", `check after deploy names criterion ${beyond.criterion}, and ${r.itemId} has ${count === 1 ? "1 acceptance criterion" : `${count} acceptance criteria`}`, 400);
+    const twice = checks.map((c) => c.criterion).find((n, i, all) => all.indexOf(n) !== i);
+    if (twice !== undefined) throw new RuleError("bad_checks", `criterion ${twice} is flagged as a check after deploy twice; one check per criterion`, 400);
     const now = new Date();
     const at = now.toISOString();
     this.lapseCriteriaReviews(r.itemId, now);
@@ -4372,8 +4404,8 @@ export class Ledger extends DurableObject<Env> {
     if (r.approve && blocking) throw new RuleError("bad_verdict", `an approval of the acceptance criteria cannot carry ${blocking === 1 ? "a blocking finding" : `${blocking} blocking findings`}; reject, or mark the finding a follow-up`, 400);
     if (!r.approve && !blocking) throw new RuleError("bad_verdict", "a rejection of the acceptance criteria names at least one blocking finding", 400);
     const state: CriteriaReviewState = r.approve ? "approved" : "rejected";
-    this.sql.exec(`UPDATE criteria_reviews SET state = ?, decidedAt = ?, summary = ?, findings = ? WHERE id = ?`, state, at, r.summary, JSON.stringify(findings), row.id);
-    this.log(r.itemId, r.by, r.approve ? "criteria_review.approved" : "criteria_review.rejected", { review: row.id, rev, criteria: r.criteria, summary: r.summary, ...(findings.length ? { findings } : {}) }, at, proved);
+    this.sql.exec(`UPDATE criteria_reviews SET state = ?, decidedAt = ?, summary = ?, findings = ?, checks = ? WHERE id = ?`, state, at, r.summary, JSON.stringify(findings), JSON.stringify(checks), row.id);
+    this.log(r.itemId, r.by, r.approve ? "criteria_review.approved" : "criteria_review.rejected", { review: row.id, rev, criteria: r.criteria, summary: r.summary, ...(findings.length ? { findings } : {}), ...(checks.length ? { checks } : {}) }, at, proved);
     // An approval lets the plan dispatch the part it held (the tick); a
     // rejection with blocking findings waits for the owner.
     this.afterPlanChange(r.itemId);
@@ -4932,6 +4964,7 @@ function toCriteriaReview(r: Row): CriteriaReview {
     decidedAt: (r.decidedAt as string | null) ?? null,
     summary: (r.summary as string | null) ?? null,
     ...(r.findings ? { findings: JSON.parse(r.findings as string) as Finding[] } : {}),
+    ...(r.checks ? { checks: JSON.parse(r.checks as string) as PostDeployCheck[] } : {}),
     failure: (r.failure as string | null) ?? null,
   };
 }
@@ -4942,6 +4975,15 @@ function validFindings(findings: Finding[]): boolean {
   return Array.isArray(findings) && findings.every((f) => f !== null && typeof f === "object"
     && typeof f.file === "string" && (f.line === null || Number.isInteger(f.line))
     && (f.severity === "blocking" || f.severity === "follow-up") && typeof f.text === "string");
+}
+
+// Whether a checks list is the shape parseVerdict produces for a criteria
+// review's CHECK lines (t457): the criterion's number from 1, who checks it,
+// and the check's text, which the briefs carry whole.
+function validChecks(checks: PostDeployCheck[]): boolean {
+  return Array.isArray(checks) && checks.every((c) => c !== null && typeof c === "object"
+    && Number.isInteger(c.criterion) && c.criterion >= 1
+    && CHECK_BY.includes(c.by) && typeof c.text === "string" && c.text.trim().length > 0 && c.text.length <= NOTE_MAX);
 }
 
 // A deterministic fingerprint of a review brief, so two requests that ask the

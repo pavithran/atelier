@@ -37,7 +37,7 @@ import { DIFF_INLINE_MAX, TEXT_CONTROLS } from "../text.ts";
 import { DECISIONS_HEADING, DECISIONS_RULE, NO_DECISIONS, decisionLines, type Decision } from "../decisions.ts";
 import { findingKey, ownerVerdicts, refutedRejection, type OwnerVerdict, type ReviewRecord, type ReviewRequired } from "./needed.ts";
 import { DEFAULT_REVIEW_BAR, replyFormat } from "./verdict.ts";
-import { criteriaFindingsSection, type CriteriaResolution, type CriteriaReview } from "./criteria.ts";
+import { criteriaFindingsSection, deferredCriteria, type CriteriaResolution, type CriteriaReview } from "./criteria.ts";
 
 // An estimate of 10,000 tokens of diff, at about four characters a token, so
 // the brief fits a 32K window with room for the reply. A longer diff is not
@@ -352,8 +352,10 @@ export function reviewBrief(input: BriefInput): string {
   );
 
   // The reply numbers the criteria across both lists; the format says how
-  // the plan's numbers map onto it when both lists are carried.
-  section("## Reply format", "", replyFormat(criteria, accept.length));
+  // the plan's numbers map onto it when both lists are carried. The criteria
+  // the criteria review flagged as checks after deploy (t457) may be
+  // deferred in the reply; the runner hands parseVerdict the same numbers.
+  section("## Reply format", "", replyFormat(criteria, accept.length, deferredCriteria(input.criteriaReviews ?? [], input.criteriaRev ?? 0)));
   return out.join("\n\n");
 }
 

@@ -148,3 +148,62 @@ test("runCriteriaReview refuses an assignment outside its offer, and a claim tha
   assert.match(failed.reason, /no brief, revision, binding or request/);
   assert.ok(!bare.calls.some((c) => c.argv?.[0] === "criteria-review-failed"), "a claim that returned nothing usable has nothing to fail");
 });
+
+// A criterion the builder cannot verify in its workspace (t457): the
+// criteria reviewer flags it with a CHECK line, the runner posts the checks
+// with the verdict, and the code review job lets the reviewer defer exactly
+// those criteria.
+test("runCriteriaReview posts the CHECK lines as checks after deploy, and a malformed one fails the review", async () => {
+  const flagged = fixture({ verdict: "VERDICT: APPROVE\nSUMMARY: Clear; one needs the deployed app.\nCHECK: criterion-1 owner Signing in needs a real account; the owner signs in after deploy and sees the result." });
+  const state = await runCriteriaReview(assignment, config, "home:studio", flagged.io);
+  assert.deepEqual(state, { phase: "reviewed", verdict: "approve" });
+  const posted = flagged.calls.find((c) => c.argv?.[0] === "criteria-verdict").argv;
+  assert.ok(posted.includes("--approve"));
+  assert.equal(posted[posted.indexOf("--checks") + 1], JSON.stringify([{ criterion: 1, by: "owner", text: "Signing in needs a real account; the owner signs in after deploy and sees the result." }]));
+  // A CHECK line that names nobody to make the check is invalid model output: the review fails, and no verdict is posted.
+  const malformed = fixture({ verdict: "VERDICT: APPROVE\nSUMMARY: Clear.\nCHECK: criterion-1 Needs the deployed app." });
+  const failed = await runCriteriaReview(assignment, config, "home:studio", malformed.io);
+  assert.equal(failed.phase, "failed");
+  assert.match(failed.reason, /a CHECK line gives the criterion \(criterion-N\), owner or orchestrator/);
+  assert.ok(malformed.calls.some((c) => c.argv?.[0] === "criteria-review-failed"));
+  assert.ok(!malformed.calls.some((c) => c.argv?.[0] === "criteria-verdict"));
+});
+
+test("runReview lets the code reviewer defer a criterion the claim's criteria review flagged, and refuses deferral of any other", async () => {
+  const H0 = "0".repeat(40), H1 = "a".repeat(40);
+  const claimWith = (checks) => ({
+    item: { id: "t21", title: "Banner", base: H0, scope: ["src/**"], fork: "p--t21", head: H1, accept: ["Search answers within 200 ms", "A signed-in user sees the banner"] },
+    head: H1,
+    need: { needed: true, reason: "protected", head: H1, kind: "review", basis: "protected", changeClass: "protected", changedPaths: ["src/search.ts"], outOfScope: [], checks: [], round: 1, previous: [], previousReviewer: null, lapsed: [] },
+    plan: null, events: [], owner: "owner",
+    readToken: { remote: "https://artifacts.example/p--t21", token: "read-token", defaultBranch: "main" },
+    criteriaRev: 1,
+    criteriaReviews: [{ id: 3, itemId: "t21", rev: 1, criteria: CRITERIA, authors: ["owner"], reviewer: `opencode/${model}`, state: "approved", requestedAt: "2026-10-10T12:00:00.000Z", summary: "Clear.", checks }],
+    criteriaResolutions: [],
+  });
+  const run = async (claim, verdict) => {
+    const { io, calls } = fixture({ verdict });
+    io.cli = async (argv, cwd, callOptions) => { calls.push({ argv, cwd, token: callOptions?.token }); return argv[0] === "review-claim" ? JSON.stringify(claim) : "{}"; };
+    io.clone = async () => {};
+    io.diff = async () => "diff --git a/src/search.ts b/src/search.ts\n+fast\n";
+    io.writeDiff = async () => ({ file: "/cache/work/atelier/diff.txt" });
+    io.removeDiff = () => {};
+    const state = await runReview({ ...assignment, item: { id: "t21", dispatch: { job: "review" } } }, config, "home:studio", io);
+    return { state, calls, brief: calls.find((c) => c.brief).brief };
+  };
+  const deferred = "VERDICT: APPROVE\nSUMMARY: Fine.\nCRITERION 1: met — Broke the timing test and watched it fail.\nCRITERION 2: deferred — The banner is wired to the session; the owner sees it once signed in.";
+  const flagged = await run(claimWith([{ criterion: 2, by: "owner", text: "Signing in needs a real account." }]), deferred);
+  assert.equal(flagged.state.phase, "reviewed", flagged.state.reason);
+  assert.ok(flagged.brief.includes("### Checks after deploy"), flagged.brief);
+  assert.ok(flagged.brief.includes("criterion-2: the project owner's check. Signing in needs a real account."));
+  assert.ok(flagged.brief.includes("Criterion 2 was flagged by the review of the acceptance criteria as a check after deploy"));
+  const approved = flagged.calls.find((c) => c.argv?.[0] === "review").argv;
+  assert.ok(approved.includes("--approve"), approved.join(" "));
+  // With nothing flagged, the same reply is unparsable: deferred is no proof, and the request is released with the reply kept.
+  const unflagged = await run(claimWith([]), deferred);
+  assert.equal(unflagged.state.phase, "failed");
+  assert.match(unflagged.state.reason, /criterion 2 is not a check after deploy the review of the acceptance criteria flagged/);
+  assert.ok(!unflagged.brief.includes("deferred"));
+  assert.ok(unflagged.calls.some((c) => c.argv?.[0] === "review-unparsable"));
+  assert.ok(!unflagged.calls.some((c) => c.argv?.[0] === "review"));
+});

@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  attributionRefusal, authorsOf, buildJob, criteriaFindingsSection, criteriaIndependenceRefusal, criteriaReviewBrief, criteriaStatus, CRITERIA_REVIEW_TIMEOUT_MS,
-  pickCriteriaReviewer, unsettledFindings, type CriteriaResolution, type CriteriaReview, type CriteriaRevision,
+  attributionRefusal, authorsOf, buildJob, criteriaFindingsSection, criteriaIndependenceRefusal, criteriaReviewBrief, criteriaStatus, CRITERIA_REVIEW_BAR, CRITERIA_REVIEW_TIMEOUT_MS,
+  deferredCriteria, pickCriteriaReviewer, postDeployChecks, unsettledFindings, type CriteriaResolution, type CriteriaReview, type CriteriaRevision,
 } from "../src/review/criteria.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
-import { parseVerdict } from "../src/review/verdict.ts";
-import type { Finding, ProjectPolicy } from "../src/rules.ts";
+import { reviewBrief } from "../src/review/brief.ts";
+import { CRITERIA_REPLY_FORMAT, parseVerdict, replyFormat } from "../src/review/verdict.ts";
+import type { Finding, PostDeployCheck, ProjectPolicy } from "../src/rules.ts";
 
 // The rules of criteria review (t438): who may review a task's acceptance
 // criteria given who wrote them, when an approval stands for the revision the
@@ -193,4 +194,138 @@ test("the findings section build and code-review briefs carry names each review,
   assert.ok(text.includes("Criteria review 2, revision 2 (the criteria as they are now): zcode/glm-5.3 approved."));
   const failed = criteriaFindingsSection([review(3, { state: "failed", failure: "harness timed out" })], [], 1);
   assert.ok(failed.includes("reached no verdict (harness timed out)"));
+});
+
+// ── checks after deploy (t457) ───────────────────────────────────────────
+
+const check = (criterion: number, by: PostDeployCheck["by"] = "owner", text = "Needs a signed-in browser against the deployed app."): PostDeployCheck => ({ criterion, by, text });
+const errorOf = (parsed: ReturnType<typeof parseVerdict>): string => (parsed.ok ? "" : parsed.error);
+
+test("parseVerdict reads CHECK lines only when asked, one per criterion, naming the criterion and who checks it", () => {
+  const reply = "VERDICT: APPROVE\nSUMMARY: Clear, one needs the deployed app.\nCHECK: criterion-2 owner Signing in needs a real account; the owner signs in after deploy and sees the banner.\nCHECK: 3 orchestrator The smoke check calls /health on the deployed worker.";
+  const read = parseVerdict(reply, 0, { checks: true });
+  assert.equal(read.ok, true);
+  if (!read.ok) return;
+  assert.deepEqual(read.checks, [
+    { criterion: 2, by: "owner", text: "Signing in needs a real account; the owner signs in after deploy and sees the banner." },
+    { criterion: 3, by: "orchestrator", text: "The smoke check calls /health on the deployed worker." },
+  ]);
+  assert.deepEqual(read.findings, []);
+  // Not asked for, CHECK lines are prose: a code review's reply never carries checks.
+  const prose = parseVerdict(reply, 0);
+  assert.ok(prose.ok && prose.checks.length === 0);
+  // Markdown around the keyword and a bracketed number are read; a rejection may carry checks too.
+  const decorated = parseVerdict("- **CHECK**: criterion [1] Owner — a person must look at the deployed page.\nVERDICT: REJECT\nSUMMARY: One vague.\nFINDING: blocking criterion-2 Fast is not a measurement.", 0, { checks: true });
+  assert.ok(decorated.ok && decorated.checks.length === 1 && decorated.checks[0].criterion === 1 && decorated.checks[0].by === "owner", JSON.stringify(decorated));
+  // JSON carries them as {criterion, by, text}, and the two encodings are not mixed.
+  const json = parseVerdict('{"verdict": "approve", "summary": "ok", "checks": [{"criterion": "criterion-4", "by": "Orchestrator", "text": "Probe the deployed route."}]}', 0, { checks: true });
+  assert.ok(json.ok && json.checks[0].criterion === 4 && json.checks[0].by === "orchestrator", JSON.stringify(json));
+  assert.match(errorOf(parseVerdict('{"verdict": "approve", "checks": [{"criterion": 1, "by": "owner", "text": "x"}]}\nCHECK: criterion-1 owner x', 0, { checks: true })), /both as JSON and as CHECK lines/);
+  // A check that names no criterion, an unknown checker, no text, or the same criterion twice is refused, so the review fails rather than records a guess.
+  const bad: [string, RegExp][] = [
+    ["CHECK: owner Needs the deployed app.", /gives the criterion/],
+    ["CHECK: criterion-1 someone Needs the deployed app.", /gives the criterion \(criterion-N\), owner or orchestrator/],
+    ["CHECK: criterion-1 owner", /ends with why the builder cannot verify/],
+    ["CHECK: criterion-1 owner —", /ends with why the builder cannot verify/],
+    ["CHECK: criterion-1 owner A.\nCHECK: criterion-1 orchestrator B.", /flags criterion 1 as a check after deploy twice/],
+    ['{"verdict": "approve", "checks": [{"criterion": 0, "by": "owner", "text": "x"}]}', /names its criterion by number/],
+    ['{"verdict": "approve", "checks": [{"criterion": 1, "by": "tester", "text": "x"}]}', /made by owner or orchestrator, not "tester"/],
+  ];
+  for (const [lines, why] of bad) {
+    const refused = parseVerdict(`VERDICT: APPROVE\nSUMMARY: s.\n${lines}`, 0, { checks: true });
+    assert.equal(refused.ok, false, lines);
+    assert.match(errorOf(refused), why, lines);
+  }
+});
+
+test("parseVerdict lets a code review defer only a criterion the criteria review flagged, and an approval stands on met and deferred lines", () => {
+  const approve = (lines: string, deferred: number[] = []) => parseVerdict(`VERDICT: APPROVE\nSUMMARY: Fine.\n${lines}`, 2, { deferred });
+  const ok = approve("CRITERION 1: met — Broke the timing test and watched it fail.\nCRITERION 2: deferred — The banner is wired to the session; the owner sees it once signed in after deploy.", [2]);
+  assert.equal(ok.ok, true, JSON.stringify(ok));
+  // Deferred on a criterion nobody flagged is refused, whatever the verdict.
+  assert.match(errorOf(approve("CRITERION 1: met — Ran it.\nCRITERION 2: deferred — Could not run it.")), /criterion 2 is not a check after deploy the review of the acceptance criteria flagged, so it cannot be deferred/);
+  assert.match(errorOf(parseVerdict("VERDICT: REJECT\nSUMMARY: s.\nFINDING: blocking src/a.ts:1 Broken.\nCRITERION 1: deferred — skipped.", 2, { deferred: [2] })), /criterion 1 is not a check after deploy/);
+  // A flagged criterion may still be met when it was proved, and still unmet when it was disproved.
+  assert.equal(approve("CRITERION 1: met — Ran it.\nCRITERION 2: met — Ran it against a staging login.", [2]).ok, true);
+  assert.match(errorOf(approve("CRITERION 1: met — Ran it.\nCRITERION 2: unmet — The banner never renders.", [2])), /cannot declare criterion 2 unmet/);
+  // Deferred without its account is no proof, and the same criterion cannot be both met and deferred.
+  assert.match(errorOf(approve("CRITERION 1: met — Ran it.\nCRITERION 2: deferred", [2])), /ends with how the criterion was proved/);
+  assert.match(errorOf(approve("CRITERION 1: met — Ran it.\nCRITERION 2: met — Ran it.\nCRITERION 2: deferred — Could not.", [2])), /proves criterion 2 both met and deferred/);
+  // Without criteria to prove, CRITERION lines stay prose and deferred changes nothing.
+  assert.equal(parseVerdict("VERDICT: APPROVE\nSUMMARY: s.\nCRITERION 1: deferred — prose here.", 0).ok, true);
+});
+
+test("the reply formats: a criteria review is asked for CHECK lines, and a code review is told which criteria it may defer", () => {
+  assert.ok(CRITERIA_REPLY_FORMAT.includes("CHECK: criterion-3 owner Why the builder cannot verify it in its workspace"));
+  assert.ok(CRITERIA_REPLY_FORMAT.includes("Write one CHECK line for each criterion the builder cannot verify in its workspace"));
+  assert.ok(!CRITERIA_REPLY_FORMAT.includes("CRITERION 1"), "a criteria review proves nothing met");
+  const plain = replyFormat(3, 1);
+  assert.ok(!plain.includes("deferred"), "no flagged criterion, no deferral offered");
+  const flagged = replyFormat(3, 1, [3, 3, 9]);
+  assert.ok(flagged.includes("CRITERION 3: deferred — What the change built for criterion 3, which is checked after deploy."));
+  assert.ok(flagged.includes("Criterion 3 was flagged by the review of the acceptance criteria as a check after deploy"));
+  assert.ok(flagged.includes("Deferred is refused on any other criterion"));
+  assert.ok(replyFormat(3, 0, [1, 2]).includes("Criteria 1, 2 were flagged"));
+  assert.equal(replyFormat(0, 0, [1]).includes("deferred"), false, "no criteria, no CRITERION lines at all");
+});
+
+test("the checks that stand are the newest verdict's on the current revision, one per criterion, and name the criteria a code review may defer", () => {
+  const rejected = review(1, { state: "rejected", findings: [blocker()], checks: [check(2), check(3, "orchestrator")] });
+  const approved = review(2, { reviewer: GLM, claimedBy: GLM, checks: [check(3, "orchestrator", "Probe /health."), check(3, "owner"), check(1)] });
+  assert.deepEqual(postDeployChecks([rejected], 1).map((c) => c.criterion), [2, 3]);
+  // The newest verdict says which stand: the re-review restated 3 and added 1, and dropped 2.
+  assert.deepEqual(postDeployChecks([rejected, approved], 1).map((c) => [c.criterion, c.by]), [[1, "owner"], [3, "orchestrator"]]);
+  assert.deepEqual(deferredCriteria([rejected, approved], 1), [1, 3]);
+  // Another revision's checks, a failed review's, and a live request's do not stand.
+  assert.deepEqual(postDeployChecks([rejected, approved], 2), []);
+  assert.deepEqual(postDeployChecks([review(3, { state: "failed", failure: "harness timed out", checks: [check(1)] })], 1), []);
+  assert.deepEqual(postDeployChecks([review(4, { state: "claimed", checks: [check(1)] })], 1), []);
+  assert.deepEqual(postDeployChecks([review(5)], 1), []);
+});
+
+test("the criteria brief tells the reviewer to flag, not reject, a criterion the builder cannot verify in its workspace", () => {
+  assert.match(CRITERIA_REVIEW_BAR, /cannot be observed or tested by anyone/);
+  assert.match(CRITERIA_REVIEW_BAR, /not by the builder in its workspace \(it needs a signed-in browser, production data, a deployed service or a human step\), is not a defect: flag it as a check after deploy with a CHECK line/);
+  const earlier = review(1, { state: "rejected", summary: "One vague.", findings: [blocker()], checks: [check(2)] });
+  const brief = criteriaReviewBrief({
+    item: { id: "t7", title: "Banner", brief: "Show the banner to signed-in users.", scope: ["src/**"], accept: ["Search is fast", "A signed-in user sees the banner"] },
+    rev: 1, authors: ["owner"], plan: null, previous: [earlier], resolutions: [resolution(1, 1, "refuted")], round: 2,
+  });
+  assert.ok(brief.includes("Checks after deploy. The builder works in a clean workspace of its own"));
+  assert.ok(brief.includes("Flag it rather than reject it, and rather than leave it for the code review to reject as unproved."));
+  assert.ok(brief.includes(CRITERIA_REVIEW_BAR));
+  assert.ok(brief.includes("CHECK: criterion-3 owner Why the builder cannot verify it"));
+  assert.ok(brief.includes("A CHECK line names its criterion the same way, criterion-N."));
+  // The earlier review's checks are shown, and a re-review is told to restate the ones that still hold.
+  assert.ok(brief.includes("check after deploy: criterion-2 owner Needs a signed-in browser against the deployed app."));
+  assert.ok(brief.includes("repeat with a CHECK line each check after deploy that still holds"));
+});
+
+test("the findings section tells the builder and the code reviewer which criteria are checked after deploy, and by whom", () => {
+  const approved = review(1, { summary: "Clear.", checks: [check(2), check(1, "orchestrator", "The smoke check probes the deployed route.")] });
+  const text = criteriaFindingsSection([approved], [], 1);
+  assert.ok(text.includes("check after deploy: criterion-2 owner Needs a signed-in browser against the deployed app."));
+  assert.ok(text.includes("### Checks after deploy"));
+  assert.ok(text.includes("The criteria review flagged these criteria of revision 1 as ones the builder cannot verify in its workspace"));
+  assert.ok(text.includes("criterion-1: the orchestrator's check. The smoke check probes the deployed route.\ncriterion-2: the project owner's check. Needs a signed-in browser against the deployed app."));
+  assert.ok(text.includes("Builder: build for each and say in your summary what you built and what remains to be checked after deploy; do not claim to have verified them"));
+  assert.ok(text.includes("Reviewer of the change: judge what was built for each, and write its CRITERION line as deferred rather than unmet; the criterion is not a ground for rejection."));
+  // Checks of an earlier revision are listed with their review, but stand for nothing now.
+  const moved = criteriaFindingsSection([approved], [], 2);
+  assert.ok(moved.includes("check after deploy: criterion-2 owner"));
+  assert.ok(!moved.includes("### Checks after deploy"));
+  assert.ok(!criteriaFindingsSection([review(2)], [], 1).includes("Checks after deploy"));
+  // The code review brief offers deferral for exactly the flagged criteria of the current revision.
+  const H1 = "a".repeat(40);
+  type Input = Parameters<typeof reviewBrief>[0];
+  const input = (criteriaRev: number): Input => ({
+    need: { needed: true, reason: "protected", head: H1, kind: "review", basis: "protected", changeClass: "protected", changedPaths: ["src/a.ts"], outOfScope: [], checks: [], round: 1, previous: [], previousReviewer: null, lapsed: [] } as unknown as Input["need"],
+    item: { id: "t7", title: "Banner", base: "0".repeat(40), scope: ["src/**"], head: H1, accept: ["Search is fast", "A signed-in user sees the banner"] } as unknown as Input["item"],
+    events: [], plan: null, diff: "diff --git a/src/a.ts b/src/a.ts\n+x\n",
+    criteriaReviews: [approved], criteriaResolutions: [], criteriaRev,
+  });
+  const brief = reviewBrief(input(1));
+  assert.ok(brief.includes("### Checks after deploy"));
+  assert.ok(brief.includes("Criteria 1, 2 were flagged by the review of the acceptance criteria as checks after deploy"));
+  assert.ok(!reviewBrief(input(2)).includes("deferred"), "checks of an earlier revision offer no deferral");
 });

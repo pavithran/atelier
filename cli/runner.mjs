@@ -12,6 +12,7 @@ import { formatLoad, envLoad, coreCount, loadLimitOf } from "./load.mjs";
 import { runnerChildEnv, envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
 import { reviewBrief, BRIEF_LIMITS, criteriaCount } from "../src/review/brief.ts";
+import { deferredCriteria } from "../src/review/criteria.ts";
 import { submission } from "../src/brief.ts";
 import { parseVerdict, VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
@@ -983,8 +984,11 @@ export async function runReview(assignment, config, name, runnerIO) {
     try { reply = io.readVerdict(verdictFile); } catch { reply = ""; }
     // The reply was asked for one CRITERION line per acceptance criterion
     // (the brief's reply format), so the parser is told how many there are
-    // and refuses an approval that misses one or declares one unmet.
-    const parsed = parseVerdict(reply, criteriaCount(claimed.item, claimed.plan));
+    // and refuses an approval that misses one or declares one unmet. The
+    // criteria the criteria review flagged as checks after deploy (t457),
+    // which the brief let the reviewer defer, are named to the parser from
+    // the same claim the brief read them from.
+    const parsed = parseVerdict(reply, criteriaCount(claimed.item, claimed.plan), { deferred: deferredCriteria(claimed.criteriaReviews ?? [], claimed.criteriaRev ?? 0) });
     if (!parsed.ok) {
       // The reply is kept on the task, its last VERDICT_LIMITS.reply
       // characters with the reviewer and the head it judged, as the request
@@ -1091,8 +1095,10 @@ export async function runCriteriaReview(assignment, config, name, runnerIO) {
     let reply;
     try { reply = io.readVerdict(verdictFile); } catch { reply = ""; }
     // The brief asks for no CRITERION lines: the reply judges the criteria,
-    // it does not prove them met.
-    const parsed = parseVerdict(reply, 0);
+    // it does not prove them met. It asks for CHECK lines (t457), one per
+    // criterion the builder cannot verify in its workspace, and those are
+    // read and posted with the verdict.
+    const parsed = parseVerdict(reply, 0, { checks: true });
     if (!parsed.ok) {
       await fail(parsed.error);
       io.log(`criteria review failed: ${parsed.error}`);
@@ -1101,6 +1107,7 @@ export async function runCriteriaReview(assignment, config, name, runnerIO) {
     const argv = ["criteria-verdict", item.id, "--project", project, "--as", actor, "--rev", String(claimed.rev), "--criteria", claimed.criteria, "--request", String(claimed.request),
       parsed.verdict === "approve" ? "--approve" : "--reject", "--note", parsed.summary];
     if (parsed.findings.length) argv.push("--findings", JSON.stringify(parsed.findings));
+    if (parsed.checks.length) argv.push("--checks", JSON.stringify(parsed.checks));
     await io.cli(argv);
     io.log(`reviewed the acceptance criteria: ${parsed.verdict}`);
     return { phase: "reviewed", verdict: parsed.verdict };

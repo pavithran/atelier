@@ -384,3 +384,56 @@ it("the routes: a dispatch is refused until the criteria review the owner asks f
   const failed = await call("POST", `${P}/items/${id}/criteria-review-failed`, null, { request: claim2.request, note: "late" }, glmToken);
   expect(failed.status).toBe(409);
 });
+
+// A criterion the builder cannot verify in its workspace (t457): the
+// criteria review flags it as a check after deploy rather than rejecting it,
+// the flag is kept with the verdict and in its event, the approval stands,
+// and the build brief and the code review's brief carry it: the builder is
+// told not to claim it verified, and the reviewer may defer it.
+it("a criteria review flags a criterion the builder cannot verify as the owner's or orchestrator's check after deploy, and the briefs carry the flag", async () => {
+  // The change touches a protected path, so the gate needs a code review of it.
+  const L = await setup("criteria-checks", { ...gated, protected: ["src/**"] });
+  const { id } = await L.newItem("Banner for signed-in users", ["src/**"], "owner", { accept: ["Search answers within 200 ms", "A signed-in user sees the banner on the deployed site"] });
+  const asked = await L.requestCriteriaReview(id, "owner", null, POOL);
+  const claim = await L.claimCriteriaReview(id, asked.reviewer!, RUNNER) as unknown as CriteriaReviewClaim;
+  expect(claim.brief).toContain("Checks after deploy. The builder works in a clean workspace of its own");
+  expect(claim.brief).toContain("CHECK: criterion-3 owner Why the builder cannot verify it in its workspace");
+  const verdict = { itemId: id, by: asked.reviewer!, rev: claim.rev, criteria: claim.criteria, request: claim.request, approve: true, summary: "Clear; one needs the deployed site." };
+  // A check must name one of the criteria, once, with a known checker.
+  await refusal(L.addCriteriaReview({ ...verdict, checks: [{ criterion: 3, by: "owner", text: "Sign in." }] }, true), "bad_checks", /names criterion 3, and .* has 2 acceptance criteria/);
+  await refusal(L.addCriteriaReview({ ...verdict, checks: [{ criterion: 2, by: "owner", text: "A." }, { criterion: 2, by: "orchestrator", text: "B." }] }, true), "bad_checks", /criterion 2 is flagged as a check after deploy twice/);
+  await refusal(L.addCriteriaReview({ ...verdict, checks: [{ criterion: 2, by: "tester", text: "A." } as unknown as { criterion: number; by: "owner"; text: string }] }, true), "bad_checks", /by owner or orchestrator/);
+  await refusal(L.addCriteriaReview({ ...verdict, checks: [{ criterion: 0, by: "owner", text: "A." }] }, true), "bad_checks", /the criterion its number from 1/);
+  expect((await L.criteriaReviewsFor(id)).at(-1)?.state).toBe("claimed");
+  // The flag is recorded with the approval, which stands: a check blocks nothing.
+  const check = { criterion: 2, by: "owner" as const, text: "Signing in needs a real account; the owner signs in after deploy and sees the banner." };
+  const recorded = await L.addCriteriaReview({ ...verdict, checks: [check] }, true);
+  expect(recorded).toMatchObject({ state: "approved", checks: [check] });
+  expect(await status(L, id)).toMatchObject({ approved: true, need: "none" });
+  expect((await events(L, id)).find((e) => e.kind === "criteria_review.approved")?.data).toMatchObject({ review: claim.request, checks: [check] });
+  const view = (await L.detail(id) as unknown as { criteriaReview: CriteriaReviewView }).criteriaReview;
+  expect(view.checks).toEqual([check]);
+  // The build goes, and the builder's brief says what is checked after deploy and by whom.
+  await L.dispatch(id, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
+  await L.claim(id, OPUS, RUNNER);
+  const brief = await L.jobBrief(id, OPUS);
+  expect(brief.text).toContain("### Checks after deploy");
+  expect(brief.text).toContain("criterion-2: the project owner's check. Signing in needs a real account; the owner signs in after deploy and sees the banner.");
+  expect(brief.text).toContain("Builder: build for it and say in your summary what you built and what remains to be checked after deploy; do not claim to have verified it");
+  // The code review's claim carries the review with its check, and its brief lets the reviewer defer that criterion alone.
+  await L.setFork(id, `fork-${id}`, H0, OPUS);
+  await L.recordPush(id, OPUS, H1, H1);
+  await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: H1, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/banner.ts"] } satisfies Evidence);
+  await L.submit(id, OPUS);
+  await L.requestReview(id, "owner", GPT, POOL);
+  const review = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
+  expect(review.criteriaReviews?.at(-1)?.checks).toEqual([check]);
+  const text = reviewBrief({ need: review.need!, item: review.item, events: review.events, plan: review.plan, diff: "diff --git a/src/a.ts b/src/a.ts\n+x\n", owner: review.owner, criteriaReviews: review.criteriaReviews, criteriaResolutions: review.criteriaResolutions, criteriaRev: review.criteriaRev });
+  expect(text).toContain("### Checks after deploy");
+  expect(text).toContain("Criterion 2 was flagged by the review of the acceptance criteria as a check after deploy");
+  expect(text).toContain("CRITERION 2: deferred — What the change built for criterion 2, which is checked after deploy.");
+  // An edit of the criteria takes the flag with the approval: the new revision has no standing check until reviewed.
+  await L.editItem(id, "owner", { accept: ["Search answers within 200 ms", "A signed-in user sees the banner on the deployed site", "The banner names the user"] });
+  expect((await L.criteriaReviewView(id)).checks).toEqual([]);
+  expect(await status(L, id)).toMatchObject({ approved: false, rev: 2 });
+});
