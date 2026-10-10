@@ -2419,8 +2419,11 @@ export class Ledger extends DurableObject<Env> {
     return { matched, pending: pending.length, annotated: apply ? pending.length : 0, applied: apply };
   }
 
+  // Each row carries the ledger's own number for it (Evidence.id), so a
+  // result can be named exactly: `atelier show` and `atelier check-log`
+  // print it (t436). The number is read, never stored in the row's JSON.
   evidenceFor(id: string): Evidence[] {
-    return this.sql.exec(`SELECT json FROM evidence WHERE item_id = ? ORDER BY id`, id).toArray().map((r) => JSON.parse(r.json as string));
+    return this.sql.exec(`SELECT id, json FROM evidence WHERE item_id = ? ORDER BY id`, id).toArray().map((r) => ({ ...JSON.parse(r.json as string), id: r.id as number }));
   }
 
   reviewsFor(id: string): Review[] {
