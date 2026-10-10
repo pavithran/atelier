@@ -8,7 +8,7 @@ import { runCommand } from "./ship.mjs";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-lease.ts";
 import { unoffered } from "../src/dispatch/rules.ts";
-import { contributorsOf, sameActor } from "../src/rules.ts";
+import { contributorsOf, roleRefusal, sameActor } from "../src/rules.ts";
 import { landingVerdict } from "../src/landing-verdict.ts";
 
 // atelier land (t187): the project owner lands one task whole, taking the
@@ -256,6 +256,15 @@ export async function runLand(io) {
   if (reviewer !== undefined) {
     const contributed = contributorsOf(d0.item).find((c) => sameActor(c, reviewer));
     if (contributed) die(`${reviewer} contributed to ${id} (as ${contributed}) and cannot review it; name another reviewer with --reviewer H/M, of another family than every contributor.`);
+    // A reviewer the project's policy would not count is refused before the
+    // lease or a check runs (t405): under a governed policy an agent marked
+    // unavailable or without the assessor role, otherwise an ineligible
+    // harness, whose approval would not be the independent review the gate
+    // counts. The refusal names the agents that would count.
+    if (d0.policy) {
+      const refusal = roleRefusal(reviewer, d0.policy, "assessor", d0.ownerActor);
+      if (refusal) die(`${reviewer}'s approval would not count in ${name}: ${refusal}. Name another reviewer with --reviewer H/M.`);
+    }
   }
   const regenerate = typeof d0.policy?.regenerate === "string" ? d0.policy.regenerate : null;
 
