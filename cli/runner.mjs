@@ -1542,7 +1542,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   for (const signal of signals) process.on(signal, stop);
   // However this process exits, no group it started outlives it.
   process.on("exit", killGroups);
-  const refused = new Set(), failures = new Map(), infrastructureFailures = new Map();
+  const refused = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map();
   const cleanupOptions = () => ({ timeoutMs: 5000, step: "cleanup" });
   // Resets a workspace to a commit and removes untracked files, saving any
   // uncommitted work first (rescueWork).
@@ -1670,8 +1670,11 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         // before t252's fix still lists, and they stay in the queue for a
         // runner that takes them.
         const ordered = [...tasks.filter((task) => task.item.dispatch?.job === "review"), ...tasks.filter((task) => task.item.dispatch?.job !== "review")];
-        for (const task of ordered.filter((task) => offer.jobs.includes(jobOf(task)) && !refused.has(refusedKey(task)) && (failures.get(taskKey(task)) ?? 0) < 2 &&
+        for (const task of ordered.filter((task) => offer.jobs.includes(jobOf(task)) && !terminalTasks.has(taskKey(task)) && !refused.has(refusedKey(task)) && (failures.get(taskKey(task)) ?? 0) < 2 &&
           (infrastructureFailures.get(taskKey(task)) ?? 0) < 3)) {
+          // A poll can contain the same task more than once. Recheck after
+          // each job, since filtering the batch preceded its terminal result.
+          if (terminalTasks.has(taskKey(task))) continue;
           // A dispatch carrying job: "plan" asks for the plan job, one
           // carrying "review" for the review job, "integrate" for the
           // integrate job and "refresh" for the refresh job
@@ -1701,7 +1704,11 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           const infrastructureCount = infrastructureFailureCount(infrastructureFailures.get(key) ?? 0, state);
           infrastructureFailures.set(key, infrastructureCount);
           if (infrastructureCount === 3) io.log(`${task.project}/${task.item.id} needs the owner's attention after 3 consecutive infrastructure failures: ${state.reason}; skipped for this process`);
-          if (state.terminalState || state.claimRefused || state.skipped) refused.add(refusedKey(task));
+          // Closure survives changes to the head or updatedAt in later polls.
+          // Remember its exact state for this process, independently of the
+          // revision-specific refusals that a new dispatch can supersede.
+          if (state.terminalState) terminalTasks.set(key, state.terminalState);
+          else if (state.claimRefused || state.skipped) refused.add(refusedKey(task));
           else if (args.once || state.phase !== "failed" || state.taskFailure) break;
         }
         state ??= { phase: "idle" };

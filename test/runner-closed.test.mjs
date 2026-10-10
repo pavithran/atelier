@@ -67,7 +67,10 @@ for (const terminalState of ["merged", "abandoned"]) test(`runner continues othe
     credential: "test", workspacePath: () => dir,
     queue: async () => {
       if (++polls === 3) { process.emit("SIGINT"); return []; }
-      return [assignment, other];
+      // Both a duplicate in the current poll and a changed revision in the
+      // next poll must stay stopped once the server reported closure.
+      const offered = { ...assignment, item: { ...assignment.item, head: `head-${polls}`, updatedAt: `poll-${polls}` } };
+      return [offered, offered, other];
     },
     wait: async () => {}, reportRun: async (report) => reports.push(report),
     executeChild: async (argv) => {
