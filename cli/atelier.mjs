@@ -23,7 +23,7 @@ import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } fr
 import { redactGitArgs } from "./runner.mjs";
 import { acceptancePolicy, controlPlaneChanges, mergeContext, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
 import { cleanSummary } from "../src/brief.ts";
-import { assertEligible, checkApplies, checkFiles, pathCollisions, recordedText } from "../src/rules.ts";
+import { assertEligible, checkApplies, checkFiles, pathCollisions, recordedText, scopesOverlap } from "../src/rules.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { holdText } from "../src/dispatch/rules.ts";
 import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../src/checks.ts";
@@ -239,7 +239,7 @@ export const FLAGS = {
   adopt: {},
   revert: {},
   publish: {},
-  new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry', brief: '--brief needs text: atelier new "short title" --brief "TEXT"', accept: '--accept needs text: atelier new --accept "TEXT", once per criterion', "non-goal": '--non-goal needs text: atelier new --non-goal "TEXT", once per entry', "stop-when": '--stop-when needs text: atelier new --stop-when "TEXT", once per entry', "next-gate": '--next-gate needs text: atelier new --next-gate "TEXT"' },
+  new: { "duplicate-ok": true, scope: '--scope needs text: atelier new --scope "TEXT", once per entry', brief: '--brief needs text: atelier new "short title" --brief "TEXT"', accept: '--accept needs text: atelier new --accept "TEXT", once per criterion', "non-goal": '--non-goal needs text: atelier new --non-goal "TEXT", once per entry', "stop-when": '--stop-when needs text: atelier new --stop-when "TEXT", once per entry', "next-gate": '--next-gate needs text: atelier new --next-gate "TEXT"' },
   // edit takes the same, and --title; one empty value clears the field, so
   // the owner can take a framing back.
   edit: { title: '--title needs text: atelier edit ID --title "TEXT", at most 80 characters', brief: '--brief needs text: atelier edit ID --brief "TEXT", or --brief "" to clear it', accept: '--accept needs text: atelier edit ID --accept "TEXT", once per criterion, or --accept "" alone to clear', "non-goal": '--non-goal needs text: atelier edit ID --non-goal "TEXT", once per entry, or --non-goal "" alone to clear', "stop-when": '--stop-when needs text: atelier edit ID --stop-when "TEXT", once per entry, or --stop-when "" alone to clear', "next-gate": '--next-gate needs text: atelier edit ID --next-gate "TEXT", or --next-gate "" to clear' },
@@ -504,6 +504,19 @@ function roleOverride(role) {
   } catch {
     return null;
   }
+}
+
+// Two titles match when they share at least 60% of the words they hold between them.
+export function titlesMatch(a, b) {
+  const words = (title) => new Set(title.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean));
+  const x = words(a), y = words(b);
+  const shared = [...x].filter((w) => y.has(w)).length;
+  return shared > 0 && shared / (x.size + y.size - shared) >= 0.6;
+}
+
+// The live items whose scope overlaps the new task's and whose title matches it.
+export function liveDuplicates(title, scope, items) {
+  return items.filter((i) => i.state !== "merged" && i.state !== "abandoned" && scopesOverlap(scope, i.scope ?? []) && titlesMatch(title, i.title));
 }
 
 // What a command that needs a project says when this folder is neither a
@@ -2152,7 +2165,13 @@ const commands = {
     const fields = fieldsArg("new");
     if (!title && !fields.brief) die(COMMAND_USAGE.new);
     const scope = listArg("scope", "new");
-    const item = await call("POST", `${P(project())}/items`, { title, scope, ...fields }, await actor(OWNER));
+    const name = project(), as = await actor(OWNER);
+    if (args["duplicate-ok"] !== true) {
+      const { items } = await call("GET", P(name), undefined, as);
+      const twins = liveDuplicates(title, scope, items);
+      if (twins.length) die(`a live task already covers this work, so nothing was filed:\n${twins.map((i) => `  ${i.id}  ${flat(i.title)}  (${i.state}, ${i.owner ?? "unowned"})`).join("\n")}\nPass --duplicate-ok to file it anyway.`);
+    }
+    const item = await call("POST", `${P(name)}/items`, { title, scope, ...fields }, as);
     console.log([
       `${item.id}  ${item.title}${item.scope.length ? `  [${item.scope.join(" ")}]` : ""}`,
       ...(item.derived ? [`The text is longer than a title, so it is kept as the brief and the title is its first clause; change it with atelier edit ${item.id} --title "TEXT".`] : []),
