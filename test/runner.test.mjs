@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, failureKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, jobsLine, gatewayMetadata, harnessRunEnv } from "../cli/runner.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, failureKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, skipRefusedForGood, skipRetryPolls, jobsLine, gatewayMetadata, harnessRunEnv } from "../cli/runner.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
 import { helpText } from "../src/usage.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
@@ -476,6 +476,17 @@ test("transientQueueError takes timeouts, 5xx, 429 and marked errors, not a 4xx 
   for (const message of ["queue: 401", "queue: 404", "queue did not return an array"]) assert.equal(transientQueueError(new Error(message)), false);
   assert.equal(transientQueueError(Object.assign(new Error("queue: 403"), { transient: false })), false);
   assert.deepEqual([1, 2, 3, 4, 5, 10].map(queueBackoffMs), [30_000, 60_000, 120_000, 240_000, 300_000, 300_000]);
+});
+
+// t353: a skip report is dropped only on a 4xx no retry would change. A 408
+// (the server timed the request out) and a 429 (it was busy) are as temporary
+// as a 5xx, and the report is kept; the retry waits the queue backoff, in
+// polls, so a busy server is not asked every 30 seconds.
+test("skipRefusedForGood drops a 4xx other than 408 and 429, and skipRetryPolls follows the queue backoff in polls", () => {
+  for (const message of ["400 bad head", "401", "403", "404 no review request 1 of t21", "422 bad request"]) assert.equal(skipRefusedForGood(new Error(message)), true, message);
+  for (const message of ["408", "429 slow down", "500", "503", "fetch failed", "The operation was aborted due to timeout"]) assert.equal(skipRefusedForGood(new Error(message)), false, message);
+  assert.equal(skipRefusedForGood(Object.assign(new Error("x"), { name: "TimeoutError" })), false);
+  assert.deepEqual([1, 2, 3, 4, 5, 10].map(skipRetryPolls), [1, 2, 4, 8, 10, 10]);
 });
 
 test("versionRefusal names both levels and says to deploy, and clears a current server", () => {
