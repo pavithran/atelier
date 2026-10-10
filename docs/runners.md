@@ -164,6 +164,13 @@ owner token"), which undercuts the claim that another company's model
 reviewed the change independently; since 2026-10-08 (t346) a runner never
 records one.
 
+A reply the verdict parser refuses is kept, not discarded (t407): the runner
+posts `review-unparsable`, which keeps the reply on the task, its last
+100 KB with the reviewer and the head, and lets the request go for another
+reviewer. `atelier show ID --reviews` prints the kept replies, and the
+Models page counts each against the reviewer as a review that never reached
+a verdict.
+
 `tokens` in the runner config says, per model, where that model's token is
 stored, never the token itself: the name of a Keychain entry (read as
 `atelier.NAME`, the way `keychain` reads a model's key, through the store
