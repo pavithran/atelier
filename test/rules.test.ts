@@ -3,7 +3,7 @@ import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
 import assert from "node:assert/strict";
 import {
   pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, isOwnCall, matchesAny, modelKey, modelOf, sameActor,
-  assertClaimAllowed, assertEligible, checkFiles, eligibleAgents, foldPath, matchesFolded, overlappingLive, overlappingRefusal, parseRuleError, pathCollisions, repoName, roleRefusal, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
+  assertClaimAllowed, assertCriteriaAllowed, assertEligible, checkFiles, eligibleAgents, foldPath, matchesFolded, overlappingLive, overlappingRefusal, parseRuleError, pathCollisions, repoName, roleRefusal, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
   decisionFor, mergedBlockers, mergedChecksAt, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
   type Evidence, type InboxEntry, type Item, type ProjectPolicy, type Review, type ReviewOverride,
 } from "../src/rules.ts";
@@ -23,6 +23,15 @@ const policy: ProjectPolicy = { checks: ["npm test"], protected: ["AGENTS.md", "
 const pass = (over: Partial<Evidence> = {}): Evidence => ({
   itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true,
   by: "claude-code/opus-5.5", at: T, changedPaths: ["src/a.ts"], ...over,
+});
+
+test("a project that requires criteria refuses a task filed or cleared without them", () => {
+  assert.doesNotThrow(() => assertCriteriaAllowed({}, undefined));
+  assert.doesNotThrow(() => assertCriteriaAllowed({ requireCriteria: false }, []));
+  assert.doesNotThrow(() => assertCriteriaAllowed({ requireCriteria: true }, ["It works"]));
+  for (const accept of [undefined, []]) {
+    assert.throws(() => assertCriteriaAllowed({ requireCriteria: true }, accept), (err: unknown) => err instanceof RuleError && err.code === "no_criteria" && err.status === 400 && /--accept "TEXT"/.test(err.detail));
+  }
 });
 
 test("globs: ** crosses directories, * does not", () => {
