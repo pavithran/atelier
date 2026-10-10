@@ -38,7 +38,7 @@ import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } f
 import { pushHistory } from "./push-steps.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
-import { formatLocal, formatStatus, itemJson, statusJson } from "./status.mjs";
+import { formatLocal, formatStatus, formatStatusBrief, itemJson, statusJson } from "./status.mjs";
 import { receiptJson, receiptText } from "./receipt.mjs";
 import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
 import { checkEnv } from "./check-env.mjs";
@@ -303,7 +303,7 @@ export const FLAGS = {
   projects: { force: true },
   owners: { json: true },
   inbox: { json: true },
-  status: { json: true },
+  status: { json: true, brief: true },
   open: {},
   guide: { role: '--role needs a value: atelier guide --role build|review|plan|orchestrate' },
   help: {},
@@ -314,8 +314,23 @@ const PLAN_FLAGS = { "": ["scope", "planner"], show: ["json"], approve: ["hash",
 // version is a switch too, so --version=… is refused as a value it does not
 // take, instead of slipping through as a string that answers anyway.
 const SWITCHES = new Set(["version", ...Object.values(FLAGS).flatMap((row) => Object.keys(row).filter((flag) => row[flag] === true))]);
+// --brief is text for new and edit and a switch for status, so it is a switch
+// only when the command is status: the first word that is not a flag or a
+// flag's value.
+const commandOf = (argv) => {
+  const plain = new Set([...SWITCHES].filter((flag) => flag !== "brief"));
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--") return undefined;
+    if (!a.startsWith("-")) return a;
+    if (!a.startsWith("--") || a.includes("=")) continue;
+    const next = argv[i + 1];
+    if (plain.has(a.slice(2)) ? next === "true" || next === "false" : next !== undefined && !next.startsWith("--")) i++;
+  }
+};
+const switchesFor = (argv) => (commandOf(argv) === "status" ? SWITCHES : new Set([...SWITCHES].filter((flag) => flag !== "brief")));
 
-export function parseArgs(argv, switches = SWITCHES) {
+export function parseArgs(argv, switches = switchesFor(argv)) {
   const out = { _: [], multi: {}, bare: [], problems: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -3596,6 +3611,22 @@ const commands = {
 
   // The owner's queue: decisions waiting, tasks in progress, tasks waiting for a runner.
   async status() {
+    if (args.brief) {
+      const name = args.project ?? wsConfig("project") ?? registeredHere().name;
+      if (!name) die("--brief reports on one project: add --project NAME");
+      const as = await actor(OWNER);
+      // What cannot be read is said in the brief, not fatal to it.
+      const soft = (promise) => promise.catch(() => null);
+      const [standing, version, queue, usage, lease] = await Promise.all([
+        call("GET", `${P(name)}/standing`, undefined, as),
+        soft(fetch(server() + "/api/version").then((r) => (r.ok ? r.json() : null))),
+        soft(request("GET", "/queue", undefined, as)),
+        soft(request("GET", "/usage", undefined, as)),
+        landingLease(name, as),
+      ]);
+      const text = formatStatusBrief({ standing, version, queue, lease, usage });
+      return console.log(args.json ? JSON.stringify({ brief: text.split("\n") }, null, 2) : text);
+    }
     if (args.project !== undefined) {
       const name = args.project;
       const as = await actor(OWNER);
