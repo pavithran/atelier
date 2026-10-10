@@ -1,3 +1,4 @@
+import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
@@ -54,6 +55,7 @@ async function fixture(t, check) {
 }
 
 for (const exit of [0, 1]) test(`a clone that cannot be removed is a warning, and a ${exit ? "failing" : "passing"} check keeps its own result`, async (t) => {
+  if (!canInspectSlots(t)) return;
   // The check leaves a file in a folder it may not write, so removing the
   // clone fails (ENOTEMPTY on macOS) however often it is tried.
   const f = await fixture(t, () => `mkdir locked && touch locked/f && chmod 500 locked; exit ${exit}`);
@@ -69,6 +71,7 @@ for (const exit of [0, 1]) test(`a clone that cannot be removed is a warning, an
 });
 
 test("a process the check leaves behind is ended, and the clone is removed", { timeout: 60_000 }, async (t) => {
+  if (!canInspectSlots(t)) return;
   // A loop in the background, still writing into the clone after the check
   // has exited, as a test runner's worker or a watcher can. Its output goes
   // elsewhere, so the check's own output closes when the check exits.
