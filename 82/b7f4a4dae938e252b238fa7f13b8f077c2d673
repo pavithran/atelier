@@ -1,0 +1,47 @@
+atelier atelier/t453 "A runner submits a task whose work is already committed, instead of releasing it"
+accepted head 62d12b468afd1b589457eac0809e8cddb21fd1bb
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/fable-5.1 2026-10-10T17:41:47.627Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/fable-5.1 2026-10-10T17:41:51.178Z
+REVIEW approve by codex/gpt-6-astra at 62d12b468afd1b589457eac0809e8cddb21fd1bb, recorded by codex/gpt-6-astra
+2026-10-10T16:09:01.259Z pavi item.created
+2026-10-10T16:09:05.097Z pavi item.dispatched
+2026-10-10T16:10:32.824Z claude-code/fable-5.1 item.claimed
+2026-10-10T16:10:50.534Z claude-code/fable-5.1 fork.created
+2026-10-10T16:24:47.065Z claude-code/fable-5.1 push.observed
+2026-10-10T16:27:57.969Z claude-code/fable-5.1 evidence.observed
+2026-10-10T16:28:00.645Z claude-code/fable-5.1 evidence.observed
+2026-10-10T16:28:01.081Z claude-code/fable-5.1 item.submitted
+2026-10-10T16:53:54.027Z pavi land.lease
+2026-10-10T16:54:05.721Z pavi land.merge
+2026-10-10T16:54:21.743Z pavi land.regenerate
+2026-10-10T16:54:24.303Z claude-code/fable-5.1 push.observed
+2026-10-10T16:54:24.824Z pavi land.push
+2026-10-10T17:02:37.247Z claude-code/fable-5.1 evidence.observed
+2026-10-10T17:04:35.301Z claude-code/fable-5.1 evidence.observed
+2026-10-10T17:04:35.750Z pavi land.check
+2026-10-10T17:04:39.000Z pavi review.requested
+2026-10-10T17:04:51.583Z codex/gpt-6-astra review.claimed
+2026-10-10T17:06:27.114Z codex/gpt-6-astra review.rejected
+2026-10-10T17:06:40.783Z pavi land.review
+2026-10-10T17:08:38.974Z pavi item.released
+2026-10-10T17:08:38.974Z pavi item.dispatched
+2026-10-10T17:08:45.286Z pavi review.finding
+2026-10-10T17:08:53.536Z claude-code/fable-5.1 item.claimed
+2026-10-10T17:16:21.340Z claude-code/fable-5.1 push.observed
+2026-10-10T17:19:42.354Z claude-code/fable-5.1 evidence.observed
+2026-10-10T17:19:48.664Z claude-code/fable-5.1 evidence.observed
+2026-10-10T17:19:49.208Z claude-code/fable-5.1 item.submitted
+2026-10-10T17:35:57.294Z pavi land.lease
+2026-10-10T17:36:07.369Z pavi land.merge
+2026-10-10T17:36:17.391Z pavi land.regenerate
+2026-10-10T17:36:19.530Z claude-code/fable-5.1 push.observed
+2026-10-10T17:36:20.086Z pavi land.push
+2026-10-10T17:41:48.832Z claude-code/fable-5.1 evidence.observed
+2026-10-10T17:41:51.398Z claude-code/fable-5.1 evidence.observed
+2026-10-10T17:41:51.818Z pavi land.check
+2026-10-10T17:41:54.596Z pavi review.requested
+2026-10-10T17:41:56.139Z codex/gpt-6-astra review.claimed
+2026-10-10T17:43:15.561Z codex/gpt-6-astra review.approved
+2026-10-10T17:43:25.366Z pavi land.review
+2026-10-10T17:43:26.401Z pavi item.accepted
+2026-10-10T17:43:26.427Z pavi land.accept
