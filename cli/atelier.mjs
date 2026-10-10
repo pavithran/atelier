@@ -47,6 +47,7 @@ import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
 import { coreCount, envLoad, formatLoad, loadLimitOf, waitForLoad } from "./load.mjs";
 import { provenanceNote } from "./provenance.mjs";
+import { classify as classifyConflicts, describeConflicts, installMergeConfig, mergeThrough, previewMerge, readManifest } from "./merge-pipeline.mjs";
 export { checkEnv } from "./check-env.mjs";
 import { COMMAND_USAGE, TOKEN_SUBCOMMANDS, guideText, helpText, ROLES, rolePrompt } from "./help.mjs";
 import { planText } from "../src/plans/show.ts";
@@ -880,6 +881,10 @@ async function claimWorkspace(name, id, as, runner) {
   // configured header, and a revoked one alongside the fresh one is refused.
   storeWorkspaceToken(dir, r.workspace.remote, r.workspace.token);
   recordTokenExpiry(dir, r.workspace.expiresAt);
+  // The merge drivers .gitattributes names (cli/merge-pipeline.mjs), so a
+  // merge or rebase the builder runs by hand here merges declared outputs
+  // and records as Atelier's own merges do, never as plain text.
+  installMergeConfig(dir, { git });
   if (!fresh) {
     git(["remote", "set-url", "origin", r.workspace.remote], { cwd: dir });
     git(["fetch", "--quiet", "origin"], { cwd: dir });
@@ -971,6 +976,7 @@ function cleanClone(remote, token, head, baseline, name) {
   writeFileSync(markerPath(dir), JSON.stringify({ version: 1, project: name, pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
   git(["clone", "--quiet", remote, dir], { token });
   git(["checkout", "--quiet", "--detach", head], { cwd: dir });
+  installMergeConfig(dir, { git });
   let changed, againstMain;
   if (baseline) {
     git(["fetch", "--quiet", baseline.remote, baseline.defaultBranch], { cwd: dir, token: baseline.token });
@@ -993,19 +999,21 @@ function cleanClone(remote, token, head, baseline, name) {
 // of its own, and goes away with the clone; nothing pushes it. Returns main's
 // head, which the evidence is bound to. A merge that stops on conflicts ends
 // the command: the preview on the item page lists the same paths, and the
-// workspace's owner resolves them with atelier update.
-function mergeWithMain(dir, id) {
+// workspace's owner resolves them with atelier update. The merge goes
+// through the merge pipeline (cli/merge-pipeline.mjs), as a landing's
+// does, so the checks see the regenerated outputs the landing would push,
+// compared as they are with nothing exempted.
+async function mergeWithMain(dir, id) {
   const main = git(["rev-parse", "FETCH_HEAD"], { cwd: dir });
   if (git(["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true }).status === 0) {
     process.stderr.write(`atelier: main at ${short(main)} is already in this revision; the merge is the revision itself\n`);
     return main;
   }
-  const r = git(["-c", "user.name=atelier", "-c", "user.email=atelier@localhost", "-c", "commit.gpgsign=false", "merge", "--no-ff", "--no-verify", "--no-edit", "-m", `atelier check --merged: main at ${main}`, "FETCH_HEAD"], { cwd: dir, allowFail: true });
-  if (r.status !== 0) {
-    const conflicts = git(["diff", "--name-only", "--diff-filter=U"], { cwd: dir, allowFail: true }).stdout.trim();
-    git(["merge", "--abort"], { cwd: dir, allowFail: true });
-    die(`the merge of ${id} with main at ${short(main)} stops${conflicts ? ` on conflicts in:\n${conflicts}` : `:\n${(r.stderr || r.stdout).trim()}`}\nIn the workspace, run atelier update, resolve them, commit, and atelier push --force; then check again.`, 2);
-  }
+  const config = [["user.name", "atelier"], ["user.email", "atelier@localhost"], ["commit.gpgsign", "false"]];
+  const r = await mergeThrough(dir, "FETCH_HEAD", { git, config, verify: false, message: `atelier check --merged: main at ${main}`, log: (line) => process.stderr.write(`atelier: ${line}\n`) });
+  if (r.state === "conflicts") die(`the merge of ${id} with main at ${short(main)} stops on conflicts; nothing was regenerated.\n${describeConflicts(r, r.manifest)}\nIn the workspace, run atelier update, resolve them, commit, and atelier push --force; then check again.`, 2);
+  if (r.state === "stopped" || r.state === "failed") die(`the merge of ${id} with main at ${short(main)} stops:\n${r.reason}\nIn the workspace, run atelier update, resolve it, commit, and atelier push --force; then check again.`, 2);
+  for (const g of r.regenerated ?? []) process.stderr.write(`atelier: regenerated ${g.outputs.map((o) => `${o.path} (matches ${o.matches})`).join(", ")} with ${g.command.join(" ")}; log ${g.log}\n`);
   process.stderr.write(`atelier: merged with main at ${short(main)} in the clean clone\n`);
   return main;
 }
@@ -2568,8 +2576,18 @@ const commands = {
     // so the push needs --force, whose lease refuses to overwrite anything
     // pushed since (see push). Both ends of the rebase name that one command.
     const next = "Push with: atelier push --force";
+    // The rebase merges through the clone's merge drivers (cli/merge-pipeline.mjs):
+    // a stop says which conflicts are sources to resolve and which are
+    // generated outputs to regenerate once they are, never to edit by hand.
+    installMergeConfig(process.cwd(), { git });
     const r = git(["rebase", "FETCH_HEAD"], { allowFail: true });
-    if (r.status !== 0) die(`rebase stopped on a conflict. Resolve it, then git rebase --continue. ${next}\n${r.stdout}${r.stderr}`);
+    if (r.status !== 0) {
+      const conflicted = git(["diff", "--name-only", "--diff-filter=U", "-z"], { allowFail: true }).stdout.split("\0").filter(Boolean);
+      let manifest = null;
+      try { manifest = readManifest(process.cwd(), { git }); } catch { /* a conflicted manifest is a source conflict, listed below */ }
+      const sorted = classifyConflicts(conflicted, manifest);
+      die(`rebase stopped on a conflict. Resolve it, then git rebase --continue. ${next}\n${conflicted.length ? `${describeConflicts(sorted, manifest)}\n` : ""}${r.stdout}${r.stderr}`);
+    }
     console.log(`${id} rebased onto baseline ${short(git(["rev-parse", "FETCH_HEAD"]))}. ${next}`);
   },
 
@@ -2605,7 +2623,7 @@ const commands = {
       // --merged checks the would-be merge: the head merged with main's head,
       // in this clone. The evidence is bound to both revisions, and the
       // Worker refuses a main head that is not on main's line.
-      if (args.merged) mainHead = mergeWithMain(dir, id);
+      if (args.merged) mainHead = await mergeWithMain(dir, id);
       const on = mainHead ? ` merged with main ${short(mainHead)}` : "";
       // A landing's required checks compete with the home runners for this
       // machine (t403): while the load average is at or above the limit they
@@ -3226,12 +3244,23 @@ const commands = {
           try{runs=touchedExecutables(git(['diff','--name-only','--no-renames','-z',local,tree],{cwd,raw:true}).split('\0').filter(Boolean),executablePaths(cwd,gitEnv()));}
           catch(error){journal.clear();die(error.message);}
           if(runs.length){journal.clear();die(`the accepted change touches files that this checkout's Git configuration runs: ${runs.map(r=>r.changed.length===1&&r.changed[0]===r.path?`${r.path}, ${r.setting}`:`${r.changed.join(', ')}, which reach ${r.path}, ${r.setting}`).join('; ')}. Landing it would run them, during the merge or at your next Git command. Nothing was merged; review those files in the accepted change and land it by hand, or have the task's owner submit a revision that leaves them alone`);}
-          const result=git(['merge','--no-ff','--no-commit',target],{cwd,allowFail:true});
-          if(result.status!==0){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();if(item.kind==='plan')await planConflicted(name,id,item);die(`merge conflicts; nothing was merged and ${id} stays accepted. The project owner can send it back to a runner with atelier dispatch ${id} --job merge-main, or hand it to a builder with atelier handoff ${id} --to H/M. The builder resolves the conflicts, rechecks and submits a new revision for review and acceptance; earlier reviews and acceptance stay in the history`);}
+          // The merge onto the baseline goes through the merge pipeline
+          // (cli/merge-pipeline.mjs) and runs no generator here: outputs the
+          // baseline would hold that neither the accepted revision nor the
+          // baseline held were never checked or reviewed, so a merge that
+          // needs them regenerated is refused and goes back through a
+          // landing, whose workspace merge regenerates them, pushes a new
+          // head and has it checked and reviewed again. The approval stays
+          // bound to the accepted head and never carries over to outputs
+          // generated after it.
+          const preview=previewMerge(cwd,local,target,{git});
+          if(!preview.error&&(preview.regenerate.length||preview.generated.length)){journal.clear();die(`merging ${id} would regenerate ${[...new Set([...preview.generated,...(readManifest(cwd,{git,rev:preview.tree})?.generators??[]).filter(g=>preview.regenerate.includes(g.name)).flatMap(g=>g.outputs)])].join(', ')}, since the baseline and the accepted revision both changed what ${preview.regenerate.length===1?'its generator reads':'their generators read'} (${preview.regenerate.join(', ')}). The regenerated outputs were never checked or reviewed, so nothing was merged and ${id} stays accepted. Land it with atelier land ${id}: the landing merges main into its workspace, regenerates them there, and the new head is checked and reviewed before it merges`);}
+          const result=await mergeThrough(cwd,target,{git,commit:false,leave:false,generate:false});
+          if(result.state==='conflicts'||result.state==='stopped'||result.state==='failed'){journal.clear();if(item.kind==='plan')await planConflicted(name,id,item);die(`merge conflicts; nothing was merged and ${id} stays accepted.${result.state==='conflicts'?`\n${describeConflicts(result,result.manifest)}\n`:` ${result.reason}. `}The project owner can send it back to a runner with atelier dispatch ${id} --job merge-main, or hand it to a builder with atelier handoff ${id} --to H/M. The builder resolves the conflicts, rechecks and submits a new revision for review and acceptance; earlier reviews and acceptance stay in the history`);}
           if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }
           const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote,changeClass:d.gate.changeClass});
           if(receipt)git(['add',receipt],{cwd});
-          git(['commit','--quiet','-m',`Merge ${id}: ${item.title}\n\n${marker}\nWorked by: ${owners.join(' → ')||item.owner}`],{cwd});
+          git(['commit','--quiet','-m',[`Merge ${id}: ${item.title}\n\n${marker}\nWorked by: ${owners.join(' → ')||item.owner}`,...result.provenance].join('\n')],{cwd});
           journal.save({mergeCommit:git(['rev-parse','HEAD'],{cwd}),phase:'committed'});
         }
       }

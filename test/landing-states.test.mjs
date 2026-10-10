@@ -557,3 +557,55 @@ test('a landing overtaken by a merge made elsewhere: cancel restores the checkou
   assert.equal(f.box.lease, f.H1);
   assert.equal(f.tip(), other);
 });
+
+// ── generated outputs and records on the baseline (t463) ───────────────────
+
+// The project declares gen.txt as generated from in/*.txt and routes.tsv as
+// records keyed by their first word, on the baseline and in the task.
+function declareMerges(f) {
+  const manifest = JSON.stringify({ version: 1, generators: [{ name: 'gen', command: ['sh', '-c', 'cat in/*.txt > gen.txt'], inputs: ['in/**'], outputs: ['gen.txt'] }], records: [{ path: 'routes.tsv', key: '^(\\S+)\\t' }] });
+  mkdirSync(join(f.checkout, 'bin')); mkdirSync(join(f.checkout, 'in'));
+  writeFileSync(join(f.checkout, 'bin', 'merge-manifest.json'), manifest);
+  writeFileSync(join(f.checkout, '.gitattributes'), 'gen.txt merge=atelier-generated\nroutes.tsv merge=atelier-records\n');
+  writeFileSync(join(f.checkout, 'in', 'base.txt'), 'base\n'); writeFileSync(join(f.checkout, 'gen.txt'), 'base\n');
+  writeFileSync(join(f.checkout, 'routes.tsv'), '/a\tA\n');
+  f.git(f.checkout, 'add', '.'); f.git(f.checkout, 'commit', '-q', '-m', 'Declare merges');
+  f.git(f.checkout, 'push', '-q', f.baseline, 'HEAD:main');
+  f.git(f.workspace, 'fetch', '-q', f.baseline, 'main'); f.git(f.workspace, 'merge', '-q', '--no-edit', 'FETCH_HEAD');
+}
+// One side's commit: files written, committed and sent where that side lives.
+function side(f, dir, files, message) {
+  for (const [path, text] of Object.entries(files)) writeFileSync(join(dir, path), text);
+  f.git(dir, 'add', '.'); f.git(dir, 'commit', '-q', '-m', message);
+  if (dir === f.checkout) f.git(dir, 'push', '-q', f.baseline, 'HEAD:main');
+  else { f.git(dir, 'push', '-q', 'origin', 'main'); f.box.head = f.box.acceptedHead = f.git(dir, 'rev-parse', 'HEAD'); }
+}
+
+test('a merge onto the baseline that would regenerate outputs nobody checked or reviewed is refused, and nothing is merged', async (t) => {
+  const f = await landing(t);
+  declareMerges(f);
+  side(f, f.workspace, { 'in/task.txt': 'task\n', 'gen.txt': 'base\ntask\n' }, 'Task adds an input');
+  side(f, f.checkout, { 'in/main.txt': 'main\n', 'gen.txt': 'base\nmain\n' }, 'Main adds an input');
+  const before = { at: f.at(), tip: f.tip() };
+  const r = await f.run('merge', 't1');
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /merging t1 would regenerate gen\.txt, since the baseline and the accepted revision both changed what its generator reads \(gen\)\. The regenerated outputs were never checked or reviewed, so nothing was merged and t1 stays accepted\. Land it with atelier land t1/);
+  assert.deepEqual({ at: f.at(), tip: f.tip() }, before);
+  assert.equal(existsSync(join(f.checkout, '.git', 'MERGE_HEAD')), false);
+  assert.equal(f.journal(), null);
+  assert.equal(f.box.state, 'accepted');
+});
+
+test('records both sides added merge onto the baseline by key, with the union recorded in the merge commit', async (t) => {
+  const f = await landing(t);
+  declareMerges(f);
+  side(f, f.workspace, { 'routes.tsv': '/a\tA\n/task\tT\n' }, 'Task adds a route');
+  side(f, f.checkout, { 'routes.tsv': '/a\tA\n/main\tM\n' }, 'Main adds a route');
+  const r = await f.run('merge', 't1');
+  assert.equal(r.status, 0, r.output);
+  assert.equal(readFileSync(join(f.checkout, 'routes.tsv'), 'utf8'), '/a\tA\n/main\tM\n/task\tT\n');
+  assert.match(f.git(f.checkout, 'log', '-1', '--format=%B'), /Worked by: [^\n]*\nAtelier-Records-Merged: routes\.tsv, united by key$/);
+  assert.equal(f.tip(), f.at());
+  // The checkout's Git configuration now names the driver, copied under .git.
+  assert.match(f.git(f.checkout, 'config', 'merge.atelier-records.driver'), /\/\.git\/atelier\/merge-driver\.mjs' records %O %A %B %P$/);
+});

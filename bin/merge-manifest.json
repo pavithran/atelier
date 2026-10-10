@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "generators": [
+    {
+      "name": "cli-fixtures",
+      "command": ["zsh", "bin/orchestrate/regen-fixtures.sh"],
+      "inputs": ["cli/**", "src/**", "bin/orchestrate/regen-fixtures.sh"],
+      "outputs": ["test/fixtures/cli/help.txt", "test/fixtures/cli/usage.json"]
+    }
+  ],
+  "records": [],
+  "registries": []
+}
