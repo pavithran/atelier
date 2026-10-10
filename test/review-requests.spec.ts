@@ -926,6 +926,12 @@ it("a planner, builder or part reviewer the owner names while it is held from th
   await refusal(planning.newPlan("Ship it", ["src/**"], "owner", GLM, paused), "model_held", /zcode\/glm-5\.3 is paused since 2026-10-06 \(the owner's standing\): AI Studio down/);
   const reviewOnly = POOL.map((e) => e.id === "glm-5.3" ? { ...e, roles: ["review" as const] } : e);
   await refusal(planning.newPlan("Ship it", ["src/**"], "owner", GLM, reviewOnly), "model_held", /zcode\/glm-5\.3 is not a planner; its roles are review/);
+  // A new project's first plan keeps the pool it was started with, so a
+  // reroute of its planner, which reads no pool of its own, still refuses one
+  // the owner holds from planning.
+  const fresh = await setup("named-held-reroute");
+  const plan = await fresh.newPlan("Ship it", ["src/**"], "owner", OPUS, reviewOnly);
+  await refusal(fresh.reroutePlan(plan.item.id, "owner", GLM), "model_held", /zcode\/glm-5\.3 is not a planner; its roles are review/);
 
   const L = await setup("named-held-part");
   const { partId, builder } = await approved(L);
