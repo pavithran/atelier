@@ -354,9 +354,10 @@ it("asking again for a review every runner that offers the reviewer has skipped 
   const headB = "b".repeat(40);
   await submittedTask(L, b, headB);
   await index.putRunnerOffer({ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }] }, new Date().toISOString());
-  const token = { ...env, ATELIER_TOKEN: "land-routes-token" } as typeof env;
+  const ownerToken = "land-routes-token";
+  const token = { ...env, ATELIER_TOKEN: ownerToken } as typeof env;
   const ask = async () => (await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${b}/review-request`, {
-    method: "POST", headers: { authorization: `Bearer ${token.ATELIER_TOKEN}`, "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify({ reviewer: GPT, wanted: true }),
+    method: "POST", headers: { authorization: `Bearer ${ownerToken}`, "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify({ reviewer: GPT, wanted: true }),
   }), token)).json() as Promise<{ requested: boolean; request: number; reason: string }>;
   const asked = await ask();
   expect(asked).toMatchObject({ requested: true });
