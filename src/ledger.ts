@@ -16,7 +16,7 @@ import { criteriaHash, criteriaOf, sameCriteria } from "./criteria.ts";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
 import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
-import { assertDispatchable, assertDispatchedClaim, coreHold, makeDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
+import { assertDispatchable, assertDispatchedClaim, coreHold, makeDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
 import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
@@ -1275,24 +1275,27 @@ export class Ledger extends DurableObject<Env> {
   // accepted, the only states coreHold counts), in id order as items() lists
   // them, so the first holder found is the same. The event log is read only
   // for the waiting items' push actors.
-  waiting(): (Item & { held?: CoreHold })[] {
+  waiting(): (Item & { held?: CoreHold; overlap?: OverlapRefusal })[] {
     const rows = this.sql.exec(`SELECT * FROM items WHERE state = 'open' AND (owner IS NULL OR owner = '') AND dispatch IS NOT NULL AND dispatch != '' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
     if (!rows.length) return [];
     const open = this.withPushActors(rows)
       .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at));
-    const coreFiles = this.project().policy.coreFiles;
-    if (!coreFiles?.length) return open;
+    const policy = this.project().policy;
+    const coreFiles = policy.coreFiles;
+    const refuseOverlap = policy.refuseOverlap === true;
+    if (!coreFiles?.length && !refuseOverlap) return open;
     const live = this.sql.exec(`SELECT * FROM items WHERE state IN ('claimed', 'submitted', 'accepted') ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem);
     return open.map((i) => {
-      const held = coreHold(i, live, coreFiles);
-      return held ? { ...i, held } : i;
+      const held = coreFiles?.length ? coreHold(i, live, coreFiles) : null;
+      const overlap = refuseOverlap ? overlapRefusal(i, live) : null;
+      return held || overlap ? { ...i, ...(held ? { held } : {}), ...(overlap ? { overlap } : {}) } : i;
     });
   }
 
   // Both halves of the queue in one call, as a runner's poll reads them:
   // the open tasks waiting (waiting) and the open review requests
   // (reviewWaiting).
-  queued(): { waiting: (Item & { held?: CoreHold })[]; reviews: Item[] } {
+  queued(): { waiting: (Item & { held?: CoreHold; overlap?: OverlapRefusal })[]; reviews: Item[] } {
     return { waiting: this.waiting(), reviews: this.reviewWaiting() };
   }
 

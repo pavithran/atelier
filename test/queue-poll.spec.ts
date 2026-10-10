@@ -99,3 +99,42 @@ it("queued reads the waiting tasks, their push actors and their core-file holds 
   expect(waiting.find((i) => i.id === held.id)?.held).toMatchObject({ id: live.id, core: "src/ledger.ts" });
   expect(waiting.find((i) => i.id === pushed.id)?.pushActors).toContain("opencode/glm-5.3");
 });
+
+it("the queue attaches, in words, why a dispatch is held, refused an overlap or not taken", async () => {
+  const name = "queue-why";
+  const record = { name, repo: name, policy: { checks: ["npm test"], protected: [], coreFiles: ["src/ledger.ts"], refuseOverlap: true }, createdAt: new Date().toISOString() };
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.setProject(record, "owner");
+  await index().registerProject(record);
+  // One live item both reaches the core file and overlaps the dispatched scope.
+  const live = await L.newItem("Live work", ["src/**"], "owner");
+  await L.claim(live.id, A);
+  await L.setFork(live.id, `${name}--${live.id}`, H0, A);
+  // A task the core file holds and the policy refuses; one the policy refuses
+  // alone (its scope overlaps but reaches no core file); one neither holds.
+  const held = await L.newItem("Core edit", ["src/ledger.ts"], "owner");
+  const refused = await L.newItem("Also src", ["src/index.ts"], "owner");
+  const free = await L.newItem("Docs", ["docs/**"], "owner");
+  for (const id of [held.id, refused.id, free.id]) await L.dispatch(id, "owner", { to: "home", agent: "opencode" });
+
+  const { waiting } = await L.queued();
+  const byId = new Map(waiting.map((i) => [i.id, i]));
+  expect(byId.get(held.id)?.held).toMatchObject({ id: live.id, core: "src/ledger.ts" });
+  expect(byId.get(held.id)?.overlap).toMatchObject({ id: live.id });
+  expect(byId.get(refused.id)?.held).toBeUndefined();
+  expect(byId.get(refused.id)?.overlap).toMatchObject({ id: live.id });
+  expect(byId.get(free.id)?.held).toBeUndefined();
+  expect(byId.get(free.id)?.overlap).toBeUndefined();
+
+  // The owner's GET carries the reasons in words, ready for status and show.
+  const all = await (await call("GET", "/queue")).json() as { project: string; item: { id: string; why?: { kind: string; line: string }[] } }[];
+  const kinds = (id: string) => (all.find((q) => q.project === name && q.item.id === id)?.item.why ?? []).map((r) => r.kind);
+  expect(kinds(held.id)).toContain("held");
+  expect(kinds(held.id)).toContain("overlap");
+  expect(kinds(refused.id)).toContain("overlap");
+  expect(kinds(refused.id)).not.toContain("held");
+  expect(kinds(free.id)).not.toContain("held");
+  expect(kinds(free.id)).not.toContain("overlap");
+  const heldLine = (all.find((q) => q.project === name && q.item.id === held.id)?.item.why ?? []).find((r) => r.kind === "held")?.line ?? "";
+  expect(heldLine).toMatch(/^Held: waits on .*; offered once .* merges or is abandoned, or at once with atelier dispatch .* --overlap-ok\.$/);
+});

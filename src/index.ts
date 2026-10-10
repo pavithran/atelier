@@ -29,7 +29,7 @@ import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderB
 import { addTally, buildStory, emptyTally, VENDOR_NAMES, type Story } from "./graph";
 import { buildPulse } from "./pulse";
 import { projectKind } from "./kind";
-import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
+import { assign, parseRunner, unclaimed, type CoreHold, type OverlapRefusal, type RunnerOffer, type UnclaimedReason } from "./dispatch/rules";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
 import { readGatewayFigures, type GatewayView } from "./usage/gateway.ts";
@@ -956,7 +956,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // as another's claim (claim guards the runner name; assign the actor).
           return a && (!c.token || a.actor === actor) && (!isHeld(item) || item.owner === a.actor) ? [{ project, item, ...a }] : [];
         })
-      : queued;
+      : await queueWhy(env, queued);
     // A project that could not be read is named, so a missing task is never silent.
     const res = json(result);
     if (unreadable.length) res.headers.set("x-atelier-incomplete", unreadable.sort().join(","));
@@ -2100,6 +2100,22 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
 // heldJobs lists it: the queue offers it back to its holder alone.
 function isHeld(item: Item): boolean {
   return item.state === "claimed" && !!item.owner;
+}
+
+// Why each queued dispatch the owner's listing shows is not being taken,
+// attached as `why` so `atelier status` and `atelier show` say it: the core
+// file hold and overlap refusal the Ledger already computed beside it, the
+// failures a runner gave up at (from the run reports), and the model or job
+// no live runner offers (unclaimed in src/dispatch/rules.ts). A review
+// request is listed apart, so it carries none.
+async function queueWhy(env: Env, queued: { project: string; item: Item & { held?: CoreHold; overlap?: OverlapRefusal } }[]): Promise<{ project: string; item: Item & { why?: UnclaimedReason[] } }[]> {
+  const [offers, runs] = await Promise.all([index(env).runnerOffers(), index(env).runs()]);
+  const reports = runs.map((r) => ({ project: r.project, item: r.item, role: r.role, outcome: r.outcome }));
+  return queued.map(({ project, item }) => {
+    if (item.dispatch?.job === "review") return { project, item };
+    const why = unclaimed(item, { held: item.held ?? null, overlap: item.overlap ?? null, offers, runs: reports, project });
+    return why.length ? { project, item: { ...item, why } } : { project, item };
+  });
 }
 
 async function inbox(env: Env, token?: AgentToken) {

@@ -478,6 +478,32 @@ test("transientQueueError takes timeouts, 5xx, 429 and marked errors, not a 4xx 
   assert.deepEqual([1, 2, 3, 4, 5, 10].map(queueBackoffMs), [30_000, 60_000, 120_000, 240_000, 300_000, 300_000]);
 });
 
+test("an idle runner says, once per change, why dispatches it cannot take are waiting", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-runner-idle-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  const logs = [];
+  t.mock.method(console, "log", (s) => logs.push(s));
+  const held = (id) => ({ project: "atelier", item: { id, why: [{ kind: "held", line: `Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned, or at once with atelier dispatch ${id} --overlap-ok.` }] } });
+  let calls = 0, waits = 0;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+    workspacePath: () => { throw new Error("no task should be claimed"); },
+    async wait() { if (++waits >= 3) process.emit("SIGINT"); },
+    async queue() { return []; },
+    async idleWhy() {
+      calls++;
+      return calls === 1 ? [held("t2")] : [held("t2"), { project: "atelier", item: { id: "t3", why: [{ kind: "skipped", line: "Skipped: a runner gave it up after 2 failures; fix the failure, then dispatch it again with atelier dispatch t3." }] } }];
+    },
+  });
+  const said = logs.filter((s) => s.includes("found nothing to claim"));
+  assert.equal(said.length, 2, "said once per change, not once per poll");
+  assert.ok(said[0].includes("1 dispatch waits"), said[0]);
+  assert.ok(said[1].includes("2 dispatches wait"), said[1]);
+  assert.ok(logs.some((s) => s.includes("atelier/t2  Held: waits on t1")));
+  assert.ok(logs.some((s) => s.includes("atelier/t3  Skipped: a runner gave it up after 2 failures")));
+});
+
 test("versionRefusal names both levels and says to deploy, and clears a current server", () => {
   assert.match(versionRefusal(null), /reports no route level/);
   assert.match(versionRefusal(null), /the server does not answer GET \/api\/version/);
