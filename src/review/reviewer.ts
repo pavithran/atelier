@@ -138,6 +138,8 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
 
   // A contributor under another letter case, profile or registered name of
   // this entry's model, in the same harness, is this entry.
+  // The same model under another harness fails the family rule below, which
+  // names it as the contributor's model.
   if (contributors.some((c) => names.some((name) => sameActor(name, c)))) failed.push("contributed to this item, and nobody reviews their own work");
   else {
     const single = singleFamily(policy);

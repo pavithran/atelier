@@ -6,14 +6,14 @@ import { routeParts } from "../src/plans/route.ts";
 import type { Plan, PlanPart } from "../src/plans/schema.ts";
 import { integrationBlockers, type Part } from "../src/plans/integrate.ts";
 import {
-  classRequirement, familyRefusal, gate, independentApproval, independentReviewerText, protectedNeed, PROTECTED_NEED, singleFamily,
+  assertSingleFamily, classRequirement, familyRefusal, gate, independentApproval, independentReviewerText, protectedNeed, PROTECTED_NEED, singleFamily,
   type Evidence, type Item, type ProjectPolicy, type Review,
 } from "../src/rules.ts";
 import { reviewBrief } from "../src/review/brief.ts";
 import { independenceRefusal } from "../src/review/independence.ts";
 import { reviewNeeded, type NeedInput, type ReviewRequired } from "../src/review/needed.ts";
 import { pickReviewer, type PickInput } from "../src/review/reviewer.ts";
-import { gateServesTier } from "../src/review/tier.ts";
+import { gateServesTier, pickTierReviewer } from "../src/review/tier.ts";
 
 // t394: a project can opt in to one company's models for everything. The
 // default stays: a protected change needs approval from a model of another
@@ -108,6 +108,14 @@ test("independentApproval and the gate: a different model of the company counts,
   assert.equal(independentApproval(review(OPUS), "protected", contributors, OWNER), false);
   // The owner's approval is not this review in either mode.
   assert.equal(independentApproval(review(OWNER), "protected", contributors, OWNER, "anthropic"), false);
+  // A contributor's model under another harness is that contributor for a
+  // coordinated change too, in either mode; another model is not.
+  for (const single of [null, "anthropic"] as const) {
+    assert.equal(independentApproval(review("codex/claude-opus-5-5"), "coordinated", [OPUS], OWNER, single), false);
+    assert.equal(independentApproval(review("antigravity/OPUS-5.5:fast"), "coordinated", [OPUS], OWNER, single), false);
+    assert.equal(independentApproval(review(SONNET), "coordinated", [OPUS], OWNER, single), true);
+  }
+  assert.equal(independenceRefusal("codex/claude-opus-5-5", [OPUS]), "codex/claude-opus-5-5 contributed to it, and nobody reviews their own work");
 
   const protectedItem = item();
   const blocked = gate(protectedItem, anthropic, [pass()], [], OWNER);
@@ -122,6 +130,19 @@ test("independentApproval and the gate: a different model of the company counts,
   assert.ok(gate(protectedItem, crossFamily, [pass()], [], OWNER).blockers.includes(PROTECTED_NEED));
   // A recorded return to the default is the default.
   assert.equal(gate(protectedItem, returned, [pass()], [review(SONNET)], OWNER).needsAssessor, true);
+});
+
+test("assertSingleFamily and pickTierReviewer: under the mode no other company's model builds or is asked for the tier", () => {
+  assert.throws(() => assertSingleFamily(GPT, anthropic), /^RuleError: codex\/gpt-6-astra is not one of anthropic's models|codex\/gpt-6-astra is not one of anthropic's models/);
+  assertSingleFamily(SONNET, anthropic);
+  assertSingleFamily(GPT, crossFamily);
+  assertSingleFamily(GPT, returned);
+  assertSingleFamily(OWNER, anthropic);
+  const SOL = "codex/gpt-6.1-sol", FABLE = "claude-code/fable-5.1";
+  const all = () => true;
+  assert.equal(pickTierReviewer([SOL, FABLE], [OPUS], [SONNET], all, null, "anthropic"), FABLE);
+  assert.equal(pickTierReviewer([SOL, FABLE], [OPUS], [SONNET], all), SOL);
+  assert.equal(pickTierReviewer([SOL, "codex/claude-opus-5-5"], [OPUS], [SONNET], all, null, "anthropic"), null);
 });
 
 test("gateServesTier and integration blockers follow the mode", () => {

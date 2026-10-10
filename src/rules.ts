@@ -478,6 +478,13 @@ export function sameActor(a: string, b: string): boolean {
   return harness(a) === harness(b) && modelKey(a) === modelKey(b);
 }
 
+// Whether `actor` is one of `contributors` as review counts them: the same
+// agent, or the same model by modelKey under another harness. A model never
+// reviews a change it contributed to, in either family mode (t394), so
+// codex/claude-opus-5-5 is a contributor of claude-code/opus-5.5's work.
+export const contributed = (actor: string, contributors: readonly string[]): boolean =>
+  contributors.some((c) => sameActor(c, actor) || modelKey(c) === modelKey(actor));
+
 // Everyone an item's work came from, as review independence counts them:
 // every holder and push actor pushActors() recorded, and its current owner.
 export function contributorsOf(item: { owner: string | null; pushActors?: readonly string[] }): string[] {
@@ -733,7 +740,8 @@ export const protectedNeed = (single: PoolFamily | null): string => (single ? `t
 // harness/model actor that is not any contributor under another spelling.
 // A protected change, in every project, needs a model of a recognised family
 // that no contributor shares (familyRefusal); a coordinated change in a
-// governed project needs any other agent. In a protected change, a review
+// governed project needs any other agent running another model than every
+// contributor (contributed). In a protected change, a review
 // the owner token recorded in a model's name counts only when it answers a
 // review request that model claimed for that head (unprovedReview). A tier
 // review's approval never is: the tier reviews beside the gate, not for it.
@@ -743,7 +751,7 @@ export const protectedNeed = (single: PoolFamily | null): string => (single ? `t
 export function independentApproval(r: Review, kind: "protected" | "coordinated", contributors: readonly string[], owner = DEFAULT_OWNER, single: PoolFamily | null = null): boolean {
   if (!r.approve || r.tier || sameActor(r.by, owner) || !validActor(r.by) || !r.by.includes("/")) return false;
   if (kind === "protected" && unprovedReview(r)) return false;
-  if (contributors.some((actor) => sameActor(r.by, actor))) return false;
+  if (contributed(r.by, contributors)) return false;
   return kind === "coordinated" || familyRefusal(r.by, contributors, single) === null;
 }
 
@@ -966,9 +974,22 @@ export function overlappingLive(item: Item, items: Item[], actor: string): Item[
   );
 }
 
+// Under single-family mode only the company's models build (t394), whatever
+// named them: a dispatch that names no model leaves the runner to choose,
+// and the claim is where its choice is first known, so the claim and a
+// handoff's target are refused here as a dispatch naming another company's
+// model is. An actor that is not harness/model, the owner working by hand,
+// is no model and is not judged.
+export function assertSingleFamily(actor: string, policy: Pick<ProjectPolicy, "familyMode">, what = actor): void {
+  const single = singleFamily(policy);
+  if (!single || !actor.includes("/") || actorFamily(actor) === single) return;
+  throw new RuleError("single_family", `${what} is not one of ${single}'s models, and this project runs in single-family mode (${single}): use one of ${single}'s models, or return to cross-family review with atelier init --cross-family`, 409);
+}
+
 export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPolicy, actor: string, owner = DEFAULT_OWNER, role: AgentRole = "executor"): void {
   assertClaimable(item, actor);
   assertEligible(actor, policy, owner, role);
+  assertSingleFamily(actor, policy);
   if (policy.refuseOverlap && item.owner !== actor) {
     const clash = overlappingLive(item, items, actor);
     if (clash.length) {

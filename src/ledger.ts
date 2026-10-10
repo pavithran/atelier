@@ -8,7 +8,7 @@ import {
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
   assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, contributorsOf, DEFAULT_OWNER, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
   assertBlockable, assertNotBlocked, blockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
-  actorFamily, independentReviewerText, singleFamily,
+  actorFamily, assertSingleFamily, contributed, independentReviewerText, singleFamily,
   type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
   type Block, type SecretFlag, type SecretClearance, type ItemFields,
 } from "./rules";
@@ -1075,7 +1075,7 @@ export class Ledger extends DurableObject<Env> {
       const reviewer = `${d.agent}/${d.model}`;
       const wanted = r.wanted === 1;
       const contributors = contributorsOf(item);
-      if (asked.some((a) => sameActor(a, reviewer)) || contributors.some((c) => sameActor(c, reviewer))) continue;
+      if (asked.some((a) => sameActor(a, reviewer)) || contributed(reviewer, contributors)) continue;
       if (!wanted && independenceRefusal(reviewer, contributors, singleFamily(this.project().policy))) continue;
       const need = reviewNeeded({
         item, part: false, policy: this.project().policy,
@@ -1223,10 +1223,9 @@ export class Ledger extends DurableObject<Env> {
     // Under single-family mode a dispatch names only the company's models:
     // one for another company's model would hand the work to a builder no
     // reviewer of the company could then be shown independent of (t394).
-    const single = singleFamily(this.project().policy);
-    if (single && d.model && actorFamily(`${d.agent ?? "agent"}/${d.model}`) !== single) {
-      throw new RuleError("single_family", `${d.model} is not one of ${single}'s models, and this project runs in single-family mode (${single}): dispatch to one of ${single}'s models, or return to cross-family review with atelier init --cross-family`, 409);
-    }
+    // A dispatch naming no model is judged when the runner's choice claims it
+    // (assertClaimAllowed).
+    if (d.model) assertSingleFamily(`${d.agent ?? "agent"}/${d.model}`, this.project().policy, d.model);
     this.assertMergeMainWorkspace(item, d);
     const held = this.holds(item);
     if (held) {
@@ -1683,6 +1682,7 @@ export class Ledger extends DurableObject<Env> {
     if (from !== this.owner) assertOwner(item, from);
     assertHandoffTarget(to, this.owner);
     assertEligible(to, this.project().policy, this.owner);
+    assertSingleFamily(to, this.project().policy);
     assertNotBlocked(item);
     if (item.state !== "claimed" && item.state !== "submitted") throw new RuleError("closed", `${id} is ${item.state}`);
     return item;
@@ -3233,7 +3233,7 @@ export class Ledger extends DurableObject<Env> {
         const d = JSON.parse(r.dispatch as string) as Dispatch;
         const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
         const refusal = !asked ? null
-          : r.tier === 1 ? (contributors.some((c) => sameActor(c, asked)) ? `${asked} contributed to it, and nobody reviews their own work` : null)
+          : r.tier === 1 ? (contributed(asked, contributors) ? `${asked} contributed to it, and nobody reviews their own work` : null)
             : independenceRefusal(asked, contributors, single);
         if (!asked || !refusal) continue;
         this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
@@ -3405,7 +3405,7 @@ export class Ledger extends DurableObject<Env> {
     const closed = item.head ? this.withdrawStaleRequests(itemId, item.head, new Date().toISOString()) : [];
     if (item.head) this.reaskReview(itemId, new Date().toISOString());
     if (item.owner && sameActor(item.owner, actor)) throw new RuleError("self_review", "an owner cannot review their own item", 403);
-    if (contributorsOf(item).some((c) => sameActor(c, actor))) throw new RuleError("self_review", `${actor} contributed to ${itemId} and cannot review it`, 403);
+    if (contributed(actor, contributorsOf(item))) throw new RuleError("self_review", `${actor} contributed to ${itemId} and cannot review it`, 403);
     // The gate's request and a tier request may both be open: the one asked
     // of this actor is bound, or else the oldest, which refuses below.
     const rows = this.sql.exec(`SELECT id, head, dispatch, wanted, tier FROM review_requests WHERE item = ? AND state = 'open' ORDER BY id`, itemId).toArray();
@@ -3518,7 +3518,7 @@ export class Ledger extends DurableObject<Env> {
     if (wanted && reviewer === null) throw new RuleError("bad_request", "a wanted review names its reviewer", 400);
     if (reviewer !== null) {
       if (!validActor(reviewer)) throw new RuleError("bad_actor", `"${reviewer}" is not harness/model`, 400);
-      if (contributorsOf(item).some((c) => sameActor(c, reviewer))) {
+      if (contributed(reviewer, contributorsOf(item))) {
         throw new RuleError("self_review", `${reviewer} contributed to ${id} and cannot review it`, 403);
       }
       // Under single-family mode even a named reviewer is one of the
@@ -3559,11 +3559,12 @@ export class Ledger extends DurableObject<Env> {
         const standing = dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : null;
         // A landing that names no reviewer waits on the standing request only
         // while its reviewer is still of another company than every
-        // contributor; one who has since pushed or claimed is refused. The
+        // contributor (under single-family mode, a different model of the
+        // company); one who has since pushed or claimed is refused. The
         // reviewer the owner named earlier stays the owner's choice, in the
         // pool or not.
         if (records && standing) {
-          const refusal = independenceRefusal(standing, contributorsOf(item));
+          const refusal = independenceRefusal(standing, contributorsOf(item), singleFamily(policy));
           if (refusal) throw new RuleError("no_reviewer", `the review requested of ${standing} at ${item.head!.slice(0, 8)} cannot count: ${refusal}. Name another with atelier land ${id} --reviewer H/M`, 409);
         }
         if (reviewer !== null && standing && !sameActor(standing, reviewer)) {
@@ -3665,7 +3666,7 @@ export class Ledger extends DurableObject<Env> {
     const asked = this.sql.exec(`SELECT dispatch FROM review_requests WHERE item = ? AND head = ? AND tier IS NULL`, item.id, need.head).toArray()
       .map((r) => JSON.parse(r.dispatch as string) as Dispatch)
       .flatMap((d) => (d.agent && d.model ? [`${d.agent}/${d.model}`] : []));
-    const reviewer = pickTierReviewer(policy.reviewTier, contributorsOf(item), [gateReviewer, ...asked], (a) => mayAssess(a, policy, this.owner), this.reviewPrecision(at));
+    const reviewer = pickTierReviewer(policy.reviewTier, contributorsOf(item), [gateReviewer, ...asked], (a) => mayAssess(a, policy, this.owner), this.reviewPrecision(at), singleFamily(policy));
     if (!reviewer) return;
     const slash = reviewer.indexOf("/");
     const dispatch = { ...makeDispatch({ to: "home", agent: reviewer.slice(0, slash), model: reviewer.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
@@ -3732,7 +3733,7 @@ export class Ledger extends DurableObject<Env> {
     const reviewer = `${d.agent}/${d.model}`;
     const wanted = last.wanted === 1;
     const contributors = contributorsOf(item);
-    if (contributors.some((c) => sameActor(c, reviewer))) return;
+    if (contributed(reviewer, contributors)) return;
     const policy = this.project().policy;
     if (!wanted && independenceRefusal(reviewer, contributors, singleFamily(policy))) return;
     const need = reviewNeeded({

@@ -12,7 +12,7 @@
 // this module adds the wording the reviewer picker shows.
 
 import type { PoolFamily } from "../models/pool.ts";
-import { actorFamily, contributorsOf, familyRefusal, independentReviewerText, sameActor } from "../rules.ts";
+import { actorFamily, contributorsOf, familyRefusal, independentReviewerText, contributed } from "../rules.ts";
 
 export { actorFamily, contributorsOf, familyRefusal };
 
@@ -27,7 +27,7 @@ export const describeContributors = (contributors: readonly string[]): string =>
 // since a reviewer routed at approval or asked earlier may have claimed or
 // pushed to the part since.
 export function independenceRefusal(reviewer: string, contributors: readonly string[], single: PoolFamily | null = null): string | null {
-  if (contributors.some((c) => sameActor(c, reviewer))) return `${reviewer} contributed to it, and nobody reviews their own work`;
+  if (contributed(reviewer, contributors)) return `${reviewer} contributed to it, and nobody reviews their own work`;
   const family = familyRefusal(reviewer, contributors, single);
   return family ? `${reviewer} is not ${single ? independentReviewerText(single) : "of another family than every contributor"}: ${family}` : null;
 }
