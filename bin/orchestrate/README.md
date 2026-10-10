@@ -18,7 +18,7 @@ for `land.sh` and `queue.sh` (default `atelier`).
 | `land.sh TASK CONTEXT NOTE` | Pushes, checks, submits and reviews the head it read before the review; records the verdict with the reviewer's own summary and its findings either way, and on approval accepts at that head with NOTE on the acceptance and merges, then type-checks main. `REVIEW_MODEL` is `gemini-3.1-pro-high` (recorded as `antigravity/gemini-3.1-pro`) or `gpt-oss-120b-medium` (`antigravity/gpt-oss-120b`); any other is refused. |
 | `verdict.mjs ANSWERFILE` | Reads a reviewer's answer with Atelier's own parser (`src/review/verdict.ts`) and prints the verdict and findings as JSON; `land.sh` records them. |
 | `regen-fixtures.sh` | Rewrites the CLI's help fixtures from the CLI in the current directory. |
-| `land-queue.sh [TASK:H/M ...]` | Lands queued tasks one after another with `atelier land --workflow --wait --reviewer`, each once the five-minute load average is under `LAND_QUEUE_LOAD` (25), printing one `LANDQ tN: OUTCOME` line per landing for a watcher. Run it once in the background from the project's checkout; add a task with `land-queue.sh --add tN:harness/model`, which takes the queue's lock (a bare append to the queue file is not safe). `docs/orchestrating.md`, "The loop with runners", says how its outcomes are handled. It is a workaround until the server keeps a queue of landings itself (t432). |
+| `land-queue.sh [TASK:H/M ...]` | Lands queued tasks one after another with `atelier land --workflow --wait --reviewer`, each once the five-minute load average is under `LAND_QUEUE_LOAD` (25), printing one `LANDQ tN: OUTCOME` line per landing for a watcher. Run it once in the background from the project's checkout; add a task with `land-queue.sh --add tN:harness/model`, which takes the queue's lock (a bare append to the queue file is not safe). `docs/orchestrating.md`, "The loop with runners", says how its outcomes are handled. It is a workaround until the server keeps a queue of landings itself (t460). |
 
 `atelier land` (task t187) does what `queue.sh` and `land.sh` do inside
 Atelier, under a lease on the server; use it where the server's version
@@ -433,4 +433,4 @@ before the queue advances. Do not delete the marker. A successful run prints
 receiving TASK, but its zero status must certify checks, required deployment,
 verification and publication all completed; any failure must return nonzero.
 The default step repeats checks/deploy on retry. Run only one queue process.
-Open task **t432**, the server's landing queue, replaces this workaround.
+Open task **t460**, a merge queue that tests ahead in parallel and lands in batches, replaces this workaround (it superseded t432, abandoned).

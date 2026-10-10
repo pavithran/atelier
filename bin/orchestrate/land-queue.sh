@@ -27,7 +27,7 @@
 #
 # This is a workaround: a queue of landings kept by the server, so that a
 # session submits a task and its reviewer and the landings run in turn, is the
-# feature that replaces it (t432).
+# feature that replaces it (t460, which superseded t432).
 set -u
 project=${ATELIER_PROJECT:-atelier}
 cache=${ATELIER_CACHE:-$HOME/Library/Caches/ai-projects/cloudflare-git}
