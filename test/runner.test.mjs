@@ -693,6 +693,40 @@ test("the runner starts on a current route level and polls the queue", async (t)
   assert.equal(polls, 1);
 });
 
+// t458 rework: the integrator's jobs claim the task, read Git through the
+// runner's credential and post the integration routes, so a server short of
+// those is refused before the first poll, as a build runner's is.
+test("the integrator refuses a server lacking its jobs' capabilities and polls nothing", async (t) => {
+  t.mock.method(console, "log", () => {});
+  const integrator = { _: ["runner"], multi: { name: ["home:studio"], integrate: [true] }, name: "home:studio", integrate: true, once: true };
+  for (const [version, expected] of [
+    [null, /did not answer GET \/api\/version/],
+    [{ capabilities: [] }, /lacks capabilities plans\.integration\.v1, runners\.scoped-token\.v1/],
+    [{ routeLevel: 0 }, /lacks capabilities plans\.integration\.v1, runners\.scoped-token\.v1: it reports only route level 0/],
+    [{ routeLevel: 19 }, /lacks capabilities runners\.scoped-token\.v1/],
+    [{ capabilities: ["runners.scoped-token.v1"] }, /lacks capabilities plans\.integration\.v1/],
+  ]) {
+    let polls = 0;
+    await assert.rejects(runRunner(integrator, {
+      workspacePath: () => { throw new Error("no task should be claimed"); },
+      version: async () => version,
+      async queue() { polls++; return []; },
+    }), expected, JSON.stringify(version));
+    assert.equal(polls, 0, `${JSON.stringify(version)}: a runner that refuses at start never polls`);
+  }
+  for (const version of [{ routeLevel: ROUTE_LEVEL }, { capabilities: ["plans.integration.v1", "runners.scoped-token.v1"] }, { capabilities: [...SERVER_CAPABILITIES, "future.thing.v1"] }]) {
+    let polls = 0;
+    await runRunner(integrator, {
+      workspacePath: () => { throw new Error("no task should be claimed"); },
+      version: async () => version,
+      async queue() { polls++; return []; },
+    });
+    assert.equal(polls, 1, JSON.stringify(version));
+  }
+  assert.match(versionRefusal({ routeLevel: 5 }, ["integrate"]), /plans\.integration\.v1/);
+  assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL }, ["integrate", "refresh"]), null);
+});
+
 test("config validates task timeouts and honours ATELIER_CONFIG_DIR", (t) => {
   assert.equal(parseConfig(config).taskTimeoutMs, 45 * 60_000);
   assert.equal(parseConfig({ ...config, taskTimeoutMs: 100 }).taskTimeoutMs, 100);

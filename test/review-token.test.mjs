@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execute, readAgentToken, reviewToken, runReview, runRunner, tokenFile } from "../cli/runner.mjs";
 import { parseConfig } from "../cli/runner-config.mjs";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 // Pin the load under the runner's limit so these tests are not held back by
 // this machine's real load; the gate is tested with an injected load.
@@ -217,6 +218,8 @@ test("the review calls reach the server with the model's token in their Authoriz
     let body = "";
     req.on("data", (chunk) => { body += chunk; });
     req.on("end", () => {
+      // review-claim and review check the server's capabilities first (t458); the version needs no token.
+      if (req.url === "/api/version") { res.setHeader("content-type", "application/json"); return res.end(JSON.stringify({ capabilities: SERVER_CAPABILITIES })); }
       requests.push({ method: req.method, path: req.url, authorization: req.headers.authorization, actor: req.headers["x-atelier-actor"], runner: req.headers["x-atelier-runner"] });
       const answer = req.url === "/api/config" ? { ownerActor: "owner", ownerName: "The owner", actor }
         : req.url.endsWith("/review-claim") ? claimed

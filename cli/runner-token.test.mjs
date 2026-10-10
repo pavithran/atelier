@@ -99,7 +99,9 @@ test("runner token issue/store have subcommand help and the issue request contai
   }
   const script = `
     process.argv = [process.execPath, ${JSON.stringify(cli)}, "token", "issue", "--runner", "home:Studio", "--project", "demo"];
-    globalThis.fetch = async (_url, options) => {
+    globalThis.fetch = async (url, options) => {
+      // token issue checks the server's capabilities first (t458).
+      if (url === "https://one.test/api/version") return Response.json({ routeLevel: ${ROUTE_LEVEL} });
       const body = JSON.parse(options.body);
       if (body.actor !== undefined || body.runner !== "home:Studio" || body.projects[0] !== "demo") throw new Error("wrong issue body");
       return Response.json({ runner: "home:studio", id: "id", token: "issued-value", expiresAt: "later" }, { status: 201 });
@@ -121,6 +123,8 @@ test("the CLI stores and polls with server-bound runner credentials on an owner-
   const store = `
     process.argv = [process.execPath, ${JSON.stringify(cli)}, "token", "store", "--runner", "HOME:Studio"];
     globalThis.fetch = async (url, options) => {
+      // token store checks the server's capabilities first (t458); the version needs no credential.
+      if (url === "https://one.test/api/version") return Response.json({ routeLevel: ${ROUTE_LEVEL} });
       if (url !== "https://one.test/api/config" || options.headers.authorization !== "Bearer ${secret}") throw new Error("wrong credential");
       return Response.json({ runner: "home:studio", tokenId: "id" });
     };

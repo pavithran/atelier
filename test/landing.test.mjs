@@ -6,6 +6,9 @@ import {mkdtempSync,mkdirSync,writeFileSync,rmSync,existsSync,readFileSync,readd
 import {dirname,join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {adoptOldLanding,landingDir,landingJournal,landingJournalFile,landingLock,oldLandingJournalFile,oldLandingLockDir} from '../cli/landing.mjs';
+import {SERVER_CAPABILITIES} from '../src/route-level.ts';
+// merge checks the server's capabilities first (t458); each stand-in answers the version before anything is recorded.
+const versionAnswer=(req,res)=>{if(req.url!=='/api/version')return false;res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({capabilities:SERVER_CAPABILITIES}));return true;};
 const git=(cwd,...args)=>execFileSync('git',args,{cwd,encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
 
 function root(t){const p=mkdtempSync(join(tmpdir(),'atelier-land-'));t.after(()=>rmSync(p,{recursive:true,force:true}));return p;}
@@ -87,7 +90,7 @@ async function mergeFixture(t){
  writeFileSync(join(workspace,'work.txt'),'changed\n');git(workspace,'add','.');git(workspace,'commit','-m','Task');git(workspace,'push','origin','main');
  const head=git(workspace,'rev-parse','HEAD');const box={state:'submitted',failLanding:false,failMerge:false,failChecks:false,requests:[]};
  const server=createServer(async(req,res)=>{
-  let raw='';for await(const chunk of req)raw+=chunk;const body=raw?JSON.parse(raw):{};box.requests.push({path:req.url,body});
+  let raw='';for await(const chunk of req)raw+=chunk;const body=raw?JSON.parse(raw):{};if(versionAnswer(req,res))return;box.requests.push({path:req.url,body});
   const item={id:'t1',title:'Fixture task',state:box.state,owner:'codex/test',head,acceptedHead:box.state==='accepted'||box.state==='merged'?head:null};
   let answer={item,policy:{checks:[box.failChecks?'exit 9':'exit 0'],protected:[]},gate:{ready:true,outOfScope:[],blockers:[]},evidence:[],reviews:[],events:[]};
   const failOnce=()=>{res.writeHead(503,{'content-type':'application/json'});res.end(JSON.stringify({error:'temporary',detail:'retry'}));};
@@ -196,7 +199,7 @@ async function caseFixture(t,{files,advance,paths}){
  git(workspace,'commit','-m','Task');git(workspace,'push','-q','origin','main');
  const head=git(workspace,'rev-parse','HEAD'),before=git(checkout,'rev-parse','HEAD'),requests=[];
  const server=createServer(async(req,res)=>{
-  for await(const chunk of req);requests.push(req.url);
+  for await(const chunk of req);if(versionAnswer(req,res))return;requests.push(req.url);
   let answer={item:{id:'t1',title:'Fixture task',state:'accepted',owner:'codex/test',head,acceptedHead:head},policy:{checks:[],protected:[]},acceptanceProtected:[],gate:{ready:true,outOfScope:[],blockers:[]},evidence:[],reviews:[],events:[]};
   if(req.url.endsWith('/baseline-token')||req.url.endsWith('/base-token'))answer={remote:baseline,token:'fixture',defaultBranch:'main'};
   else if(req.url.endsWith('/read-token'))answer={remote:fork,token:'fixture',head,defaultBranch:'main'};

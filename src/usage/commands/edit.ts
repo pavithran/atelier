@@ -2,6 +2,9 @@ import type { CommandSpec } from "../command.ts";
 
 const spec: CommandSpec = {
   name: "edit",
+  // Sets the title, brief and criteria apart, and reads what a change of
+  // criteria withdrew.
+  capabilities: ["items.brief-criteria.v1", "reviews.criteria-binding.v1"],
   forms: [
     {
       group: "Items", line: 1, slot: 20,
