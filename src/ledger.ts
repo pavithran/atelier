@@ -5,7 +5,7 @@ import { OBSERVED_UNDER, type ModelEntry, type ModelNote, type ModelStatus } fro
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
-  assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
+  preparationPaths, assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
   assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, RuleError, sameActor, validActor,
   type OverrideConfirmation, type OwnerFactor,
   assertBlockable, assertNotBlocked, blockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
@@ -150,6 +150,7 @@ export interface ProjectInit {
   reset: boolean;
   branch?: string;
   title?: string | null;
+  prepare?: (Omit<NonNullable<ProjectPolicy["prepare"]>, "declaration"> & { declaration?: CheckDeclaration }) | null;
   checks?: string[];
   checkClasses?: CheckDeclaration[];  // declarations this init makes; see settleCheckClasses
   checkPaths?: ProjectPolicy["checkPaths"];  // replaces the paths checks apply to; see settleCheckPaths
@@ -333,6 +334,15 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   // An init that names the checks must show each one read-only; one that
   // does not keeps their classes and may declare the undeclared ones.
   const checkClasses = settleCheckClasses(checks, i.checkClasses, p?.checkClasses, i.checks !== undefined);
+  let prepare = i.prepare === undefined ? p?.prepare : undefined;
+  if (i.prepare) {
+    const { command, declaration } = i.prepare;
+    if (typeof command !== "string" || !command.trim()) throw new RuleError("bad_prepare", "prepare.command must be a nonempty command", 400);
+    const normalized = command.trim();
+    const declarations = settleCheckClasses([normalized], declaration ? [declaration] : undefined,
+      p?.prepare ? [p.prepare.declaration] : undefined, true);
+    prepare = { command: normalized, inputs: preparationPaths(i.prepare.inputs), outputs: preparationPaths(i.prepare.outputs), declaration: declarations[0]! };
+  }
   const checkPaths = settleCheckPaths(checks, i.checkPaths, p?.checkPaths);
   const shipRuns = i.shipRuns ?? p?.shipRuns ?? [];
   const shipKinds = i.shipKinds ?? p?.shipKinds ?? [];
@@ -350,6 +360,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       ...((i.agents ?? p?.agents) !== undefined ? { agents: i.agents ?? p?.agents } : {}),
       ...((i.execution ?? p?.execution) !== undefined ? { execution: i.execution ?? p?.execution } : {}),
       checks,
+      ...(prepare ? { prepare } : {}),
       ...(checkClasses.length ? { checkClasses } : {}),
       ...(checkPaths.length ? { checkPaths } : {}),
       ...(shipRuns.length ? { shipRuns } : {}),

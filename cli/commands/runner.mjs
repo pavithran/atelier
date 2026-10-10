@@ -1,5 +1,5 @@
 // atelier runner. Its forms, flags and help are declared in src/usage/commands/runner.ts.
-import { I, OWNER, actor, apiToken, args, auth, die, discoverModels, postAsRunner, project, readJson, reportUsage, resolveTokenActor, server, setupRunner, tokenActor, tokenRunner, workspacePath } from "../atelier.mjs";
+import { call, P, I, OWNER, actor, apiToken, args, auth, die, discoverModels, postAsRunner, project, readJson, reportUsage, resolveTokenActor, server, setupRunner, tokenActor, tokenRunner, workspacePath } from "../atelier.mjs";
 
 // `runner --discover` reports what each home model's harness serves (discover.mjs);
 // `runner --usage` reports each tool's windows, served models and balances (usage.mjs).
@@ -52,6 +52,9 @@ export default async function runnerCommand() {
         const incomplete = res.headers.get("x-atelier-incomplete");
         if (incomplete) console.log(`Could not read: ${incomplete}. Tasks waiting there are not listed.`);
         return res.json();
+      },
+      async hasPreparation(project, actor) {
+        return !!(await call("GET", P(project), undefined, actor)).project?.policy?.prepare;
       },
       async jobBrief(project, id, actor) {
         await resolveTokenActor();

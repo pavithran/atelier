@@ -192,3 +192,41 @@ test("check runs nothing, and clones nothing, when a registered check or the com
   assert.match(given.stderr, /`git push origin main` is not a check: it pushes/);
   assert.doesNotMatch(given.stderr, /replace the check/);
 });
+
+const PREPARE = "npm ci --prefer-offline --no-audit --no-fund && npm run types";
+test("init sends preparation with explicit inputs and outputs, omits it on re-init and clears it only when named", (t) => {
+  const f = initFixture(t);
+  const r = f.run("init", "--prepare", PREPARE, "--prepare-input", "package.json", "--prepare-input", "package-lock.json", "--prepare-output", "node_modules", "--prepare-output", "worker-configuration.d.ts");
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(f.requests().find((q) => q.method === "PUT").body.prepare, {
+    command: PREPARE, inputs: ["package.json", "package-lock.json"], outputs: ["node_modules", "worker-configuration.d.ts"],
+  });
+  f.clear();
+  assert.equal(f.run("init").status, 0);
+  assert.equal(f.requests().find((q) => q.method === "PUT").body.prepare, undefined);
+  f.clear();
+  assert.equal(f.run("init", "--prepare", "").status, 0);
+  assert.equal(f.requests().find((q) => q.method === "PUT").body.prepare, null);
+});
+
+test("init applies owner and adapter declarations to preparation and refuses unsafe commands and paths", (t) => {
+  const f = initFixture(t, { adapter: ADAPTER });
+  const paths = ["--prepare-input", "package.json", "--prepare-output", "node_modules", "--approval", "Pavi, today"];
+  for (const [command, extra, by] of [["bin/build.sh --release", [], "adapter"], ["./setup.sh", ["--declare-read-only", "writes only in the clone"], "owner"]]) {
+    f.clear();
+    const r = f.run("init", "--prepare", command, ...paths, ...extra);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(f.requests().find((q) => q.method === "PUT").body.prepare.declaration.by, by);
+  }
+  for (const args of [
+    ["--prepare", "npm ci && git push", ...paths],
+    ["--prepare", "bin/delivery.sh install", ...paths, "--declare-read-only", "trust me"],
+    ["--prepare", PREPARE],
+    ["--prepare", PREPARE, ...paths, "--prepare-input", "../escape"],
+    ["--prepare-input", "package.json"],
+  ]) {
+    f.clear();
+    assert.equal(f.run("init", ...args).status, 1);
+    assert.equal(f.requests().some((q) => q.method === "PUT"), false);
+  }
+});
