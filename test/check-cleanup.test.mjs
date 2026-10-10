@@ -1,3 +1,4 @@
+import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
@@ -42,9 +43,7 @@ async function fixture(t, check) {
   await new Promise((done, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", done); });
   writeFileSync(join(root, "config.json"), JSON.stringify({ projects: { proj: { path: source } } }));
   async function run() {
-    // Exercise cleanup under real CPU pressure without waiting for the CLI
-    // admission gate to decide the host is idle (covered by check-load tests).
-    const env = { ...process.env, ATELIER_LOAD: "0", ATELIER_ACTOR: actor, ATELIER_CONFIG_DIR: root, ATELIER_CACHE: cache, ATELIER_TOKEN: "api",
+    const env = { ...process.env, ATELIER_ACTOR: actor, ATELIER_CONFIG_DIR: root, ATELIER_CACHE: cache, ATELIER_TOKEN: "api",
       ATELIER_SERVER: `http://127.0.0.1:${server.address().port}` };
     const child = spawn(process.execPath, [cli, "check", "t1", "--project", "proj"], { cwd: root, env });
     t.after(() => child.kill("SIGKILL"));
@@ -57,6 +56,7 @@ async function fixture(t, check) {
 }
 
 for (const exit of [0, 1]) test(`a clone that cannot be removed is a warning, and a ${exit ? "failing" : "passing"} check keeps its own result`, async (t) => {
+  if (!canInspectSlots(t)) return;
   // The check leaves a file in a folder it may not write, so removing the
   // clone fails (ENOTEMPTY on macOS) however often it is tried.
   const f = await fixture(t, () => `mkdir locked && touch locked/f && chmod 500 locked; exit ${exit}`);
@@ -86,6 +86,7 @@ const gone = async (pid) => {
 };
 
 test("a process the check leaves behind is ended, and the clone is removed", { timeout: CEILING_MS }, async (t) => {
+  if (!canInspectSlots(t)) return;
   // A loop in the background that never ends by itself, so only the check's
   // cleanup can end it (a finite loop would end inside the wait and pass
   // without cleanup). It is still writing into the clone after the check
