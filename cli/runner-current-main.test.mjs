@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { prepareBuildSubmission, runTask, mergeMainArgs } from './runner.mjs';
 
 const actor = 'codex/gpt-6-astra';
-const config = { agents: [{ agent: 'codex', models: ['gpt-6-astra'], command: ['codex', '{brief_file}'] }] };
+const config = { agents: [{ agent: 'codex', models: ['gpt-6-astra'], command: ['codex', 'exec', '--dangerously-bypass-approvals-and-sandbox', '{brief_file}'] }] };
 const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const commit = (cwd, file, text) => {
   writeFileSync(join(cwd, file), text);
@@ -33,10 +33,10 @@ function fixture(t, { conflict = false, rework = false, resumed = false, unresol
   const fetchedTokens = new Set();
   const advanceMain = () => { latest = commit(main, conflict ? 'shared.txt' : 'main.txt', 'new main\n'); };
   if (resumed || mergeJob) advanceMain();
-  if (mergeJob) job.item.dispatch = { job: 'merge-main', head: latest };
+  if (mergeJob) job.item.dispatch = { job: 'merge-main', head: base };
   const io = {
     env: {}, ownerTokens: () => [], stopped: () => false, log: () => {}, workspacePath: () => workspace,
-    head: async (cwd) => git(cwd, 'rev-parse', 'HEAD'), reset: async () => {},
+    head: async (cwd, { ref = 'HEAD' } = {}) => git(cwd, 'rev-parse', ref), reset: async () => {},
     revParse: async (cwd, ref) => git(cwd, 'rev-parse', ref),
     mergeBase: async (cwd, a, b) => git(cwd, 'merge-base', a, b),
     mergePending: async (cwd) => existsSync(join(cwd, '.git', 'MERGE_HEAD')),
@@ -56,7 +56,7 @@ function fixture(t, { conflict = false, rework = false, resumed = false, unresol
     removeBrief: async () => {},
     harness: async (argv, cwd) => {
       harnessCalls++;
-      assert.deepEqual(argv, ['codex', join(root, `brief-${briefs.length}`)]);
+      assert.deepEqual(argv, ['codex', 'exec', '--dangerously-bypass-approvals-and-sandbox', join(root, `brief-${briefs.length}`)]);
       assert.equal(cwd, workspace, 'resolution stays in the build workspace');
       if (existsSync(join(cwd, '.git', 'MERGE_HEAD'))) {
         assert.match(briefs.at(-1), /Resolve the merge of main/);
@@ -103,6 +103,8 @@ for (const rework of [false, true]) test(`a ${rework ? 'fix after findings' : 'f
   assert.match(git(f.workspace, 'log', '-1', '--format=%B'), /Agent: codex\/gpt-6-astra$/);
   assert.equal(f.harnessCalls, 1);
   assert.ok(f.finished);
+  assert.deepEqual(f.calls.find((args) => args[0] === 'finish').slice(-2),
+    ['--summary', `Built t435 with main at ${f.latest} merged`]);
   if (rework) assert.match(f.briefs[0], /Review findings/);
 });
 
@@ -145,6 +147,8 @@ test('a clean explicit merge job also records current main before finishing', as
   assert.equal(state.phase, 'submitted', JSON.stringify(state));
   assert.equal(state.mainHead, f.latest);
   assert.equal(f.harnessCalls, 0);
+  assert.deepEqual(f.calls.find((args) => args[0] === 'finish').slice(-2),
+    ['--summary', `Merged main at ${f.latest}`]);
 });
 
 test('a resolver cannot submit main by discarding the committed build', async (t) => {
