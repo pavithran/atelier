@@ -251,6 +251,7 @@ export const FLAGS = {
   edit: { scope: '--scope needs text: atelier edit ID --scope "GLOB", once per entry, or --scope "" alone to clear', title: '--title needs text: atelier edit ID --title "TEXT", at most 80 characters', brief: '--brief needs text: atelier edit ID --brief "TEXT", or --brief "" to clear it', accept: '--accept needs text: atelier edit ID --accept "TEXT", once per criterion, or --accept "" alone to clear', "non-goal": '--non-goal needs text: atelier edit ID --non-goal "TEXT", once per entry, or --non-goal "" alone to clear', "stop-when": '--stop-when needs text: atelier edit ID --stop-when "TEXT", once per entry, or --stop-when "" alone to clear', "next-gate": '--next-gate needs text: atelier edit ID --next-gate "TEXT", or --next-gate "" to clear' },
   block: {},
   unblock: {},
+  stuck: { json: true, "no-push-hours": false, "unanswered-hours": false, "lease-wait-minutes": false, "runner-poll-minutes": false, "review-answer-hours": false },
   ls: { all: true, json: true },
   show: { reviews: true, json: true },
   receipt: { json: true },
@@ -2394,6 +2395,25 @@ const commands = {
 
   // The items as one line each, or as JSON for a machine reader such as
   // Observatory, which draws on the times each item carries.
+  async stuck() {
+    const name = project(), as = await actor(OWNER), query = new URLSearchParams();
+    for (const [flag, key] of Object.entries({ "no-push-hours": "noPushHours", "unanswered-hours": "unansweredHours", "lease-wait-minutes": "leaseWaitMinutes", "runner-poll-minutes": "runnerPollMinutes", "review-answer-hours": "reviewAnswerHours" })) {
+      if (args[flag] !== undefined) {
+        if (!Number.isFinite(Number(args[flag])) || Number(args[flag]) <= 0) die(`--${flag} must be a positive finite number`);
+        query.set(key, args[flag]);
+      }
+    }
+    const report = await call("GET", `${P(name)}/stuck?${query}`, undefined, as);
+    if (args.json) return console.log(JSON.stringify(report, null, 2));
+    console.log(`Stuck in ${report.project} — observed ${report.observedAt}`);
+    console.log(`Limits (age > limit): ${Object.entries(report.limits).map(([k, v]) => `${k}=${v}`).join(", ")}`);
+    for (const source of report.unavailable) console.log(`UNAVAILABLE: ${source}`);
+    for (const entry of report.entries) console.log(`${entry.subject}: ${entry.reason}\n  Since ${entry.since}; evidence age ${Math.floor(entry.ageMs / 1000)}s\n  Evidence: ${entry.evidence}\n  Recovery: ${entry.recovery}`);
+    if (!report.entries.length) console.log(!report.complete ? "No findings in available evidence; report incomplete." : "No stuck work observed.");
+    console.log(`Failed observed check commands in the preceding rolling day: ${report.failedChecksLastDay?.length ?? "unavailable"}`);
+    for (const entry of report.failedChecksLastDay ?? []) console.log(`${entry.subject}: ${entry.reason}\n  ${entry.since}; evidence age ${Math.floor(entry.ageMs / 1000)}s\n  Evidence: ${entry.evidence}\n  Recovery: ${entry.recovery}`);
+  },
+
   async ls() {
     const name = project();
     const { items } = await call("GET", P(name), undefined, await actor(OWNER));
