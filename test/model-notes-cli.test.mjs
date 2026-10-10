@@ -10,7 +10,7 @@ import { join, resolve } from "node:path";
 // the pool does: entries carry their notes, oldest first (t406).
 
 const cli = resolve("cli/atelier.mjs");
-const NOTE = { at: "2026-10-09T10:00:00.000Z", by: "owner", text: "Commits without the full suite.", item: "t406" };
+const NOTE = { at: "2026-10-09T10:00:00.000Z", by: "owner", text: "Commits without the full suite.", item: "t406", project: "atelier" };
 const pool = [
   { id: "gpt-6.1-sol", harness: "codex", where: "home", provider: "subscription", family: "openai", aliases: [], note: "", addedBy: "owner", addedAt: NOTE.at, notes: [
     { at: "2026-10-01T09:00:00.000Z", by: "owner", text: "Stalls on long refactors." }, NOTE,
@@ -34,7 +34,7 @@ async function stub(t, answer) {
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const run = (argv) => new Promise((done) => {
-    const child = spawn(process.execPath, [cli, ...argv], { env: { ...process.env, ATELIER_CONFIG_DIR: root, ATELIER_CACHE: join(root, "cache"), ATELIER_TOKEN: "fake", ATELIER_SERVER: origin } });
+    const child = spawn(process.execPath, [cli, ...argv], { cwd: root, env: { ...process.env, ATELIER_CONFIG_DIR: root, ATELIER_CACHE: join(root, "cache"), ATELIER_TOKEN: "fake", ATELIER_SERVER: origin } });
     let output = "";
     child.stdout.on("data", (s) => (output += s));
     child.stderr.on("data", (s) => (output += s));
@@ -45,10 +45,10 @@ async function stub(t, answer) {
 
 test("models note stores a dated note under the model, naming the task it concerns", async (t) => {
   const f = await stub(t, (method, path) => (method === "POST" ? { data: NOTE } : { data: pool }));
-  const r = await f.run(["models", "note", "gpt-6.1-sol", "Commits without the full suite.", "--item", "t406"]);
+  const r = await f.run(["models", "note", "gpt-6.1-sol", "Commits without the full suite.", "--item", "t406", "--project", "atelier"]);
   assert.equal(r.status, 0, r.output);
-  assert.equal(r.output.trim(), "gpt-6.1-sol has a new note, 2026-10-09 by owner on t406: Commits without the full suite.");
-  assert.deepEqual(f.requests, [{ method: "POST", path: "/api/models/gpt-6.1-sol/notes", body: { text: "Commits without the full suite.", item: "t406" } }]);
+  assert.equal(r.output.trim(), "gpt-6.1-sol has a new note, 2026-10-09 by owner on atelier/t406: Commits without the full suite.");
+  assert.deepEqual(f.requests, [{ method: "POST", path: "/api/models/gpt-6.1-sol/notes", body: { text: "Commits without the full suite.", item: "t406", project: "atelier" } }]);
 });
 
 test("models note without text, or with words that are not quoted, prints its usage and sends nothing", async (t) => {
@@ -61,13 +61,24 @@ test("models note without text, or with words that are not quoted, prints its us
   assert.deepEqual(f.requests, []);
 });
 
+test("models note on a task names the project it is in, and refuses one with no project to name", async (t) => {
+  const f = await stub(t, () => ({ data: NOTE }));
+  const plain = await f.run(["models", "note", "gpt-6.1-sol", "Stalls on long refactors."]);
+  assert.equal(plain.status, 0, plain.output);
+  assert.deepEqual(f.requests.at(-1).body, { text: "Stalls on long refactors." });
+  const unnamed = await f.run(["models", "note", "gpt-6.1-sol", "Commits without the full suite.", "--item", "t406"]);
+  assert.equal(unnamed.status, 1);
+  assert.match(unnamed.output, /which project\?/);
+  assert.equal(f.requests.length, 1);
+});
+
 test("models show prints a model with its notes, oldest first, and says when it has none", async (t) => {
   const f = await stub(t, () => ({ data: pool }));
   const shown = await f.run(["models", "show", "gpt-6.1-sol"]);
   assert.equal(shown.status, 0, shown.output);
   const lines = shown.output.trim().split("\n");
   assert.match(lines[0], /^home  codex\/gpt-6\.1-sol  openai/);
-  assert.deepEqual(lines.slice(1), ["  2026-10-01 by owner: Stalls on long refactors.", "  2026-10-09 by owner on t406: Commits without the full suite."]);
+  assert.deepEqual(lines.slice(1), ["  2026-10-01 by owner: Stalls on long refactors.", "  2026-10-09 by owner on atelier/t406: Commits without the full suite."]);
 
   const bare = await f.run(["models", "show", "gemini-3"]);
   assert.equal(bare.status, 0, bare.output);
@@ -85,7 +96,7 @@ test("models lists the pool with each model's notes beneath its line, oldest fir
   assert.deepEqual(r.output.trim().split("\n"), [
     "home  codex/gpt-6.1-sol  openai  not checked",
     "  2026-10-01 by owner: Stalls on long refactors.",
-    "  2026-10-09 by owner on t406: Commits without the full suite.",
+    "  2026-10-09 by owner on atelier/t406: Commits without the full suite.",
     "cloud gemini-cli/gemini-3  google  not checked",
   ]);
 });

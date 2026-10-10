@@ -25,6 +25,6 @@ export function suggestReviewer(input: ReviewerSuggestionInput, avoid: readonly 
   });
   if (!pick.reviewer) throw new RuleError("no_reviewer", `${strict ? "Security, concurrency or gate work requires a frontier reviewer. " : ""}${pick.unpicked}`, 409);
   const row = ordered.find(({ entry }) => actorOf(entry) === pick.reviewer!.actor)!;
-  const note = latestNote(row.entry, input.item.id);
+  const note = latestNote(row.entry, input.project, input.item.id);
   return { actor: pick.reviewer.actor, reasons: [strict ? "Frontier reviewer required for security, concurrency or gate work." : "Reviewer ranked by finding precision, then recorded outcomes.", row.reason, ...(note ? [noteLine(note)] : []), ...pick.reviewer.reasons] };
 }

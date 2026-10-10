@@ -27,9 +27,9 @@ function call(method: string, path: string, body?: unknown, actor = "owner") {
 
 it("the owner keeps dated notes under a pool model, listed oldest first with the entry", async () => {
   await index().putModel(entry("notes-model", "codex"));
-  const first = await call("POST", "/models/notes-model/notes", { text: "Stalled twice on long refactors.", item: "t12" });
+  const first = await call("POST", "/models/notes-model/notes", { text: "Stalled twice on long refactors.", item: "t12", project: "alpha" });
   expect(first.status).toBe(200);
-  expect(await first.json()).toMatchObject({ by: "owner", text: "Stalled twice on long refactors.", item: "t12" });
+  expect(await first.json()).toMatchObject({ by: "owner", text: "Stalled twice on long refactors.", item: "t12", project: "alpha" });
   await call("POST", "/models/notes-model/notes", { text: "Commits without the full suite; run it before submitting." });
 
   const pool = await (await call("GET", "/models")).json() as (ModelEntry & { notes?: ModelNote[] })[];
@@ -46,27 +46,33 @@ it("a note needs a pool model, the owner, text without a key, and a task name", 
   expect((await call("POST", "/models/refused-model/notes", { text: "fine" }, "codex/other")).status).toBe(403);
   expect((await call("POST", "/models/refused-model/notes", { text: "   " })).status).toBe(400);
   expect((await call("POST", "/models/refused-model/notes", { text: "key sk-proj-AbC123xyzQrS456" })).status).toBe(400);
-  expect((await call("POST", "/models/refused-model/notes", { text: "fine", item: "406" })).status).toBe(400);
+  expect((await call("POST", "/models/refused-model/notes", { text: "fine", item: "406", project: "alpha" })).status).toBe(400);
+  expect((await call("POST", "/models/refused-model/notes", { text: "fine", item: "t1" })).status).toBe(400);
   expect((await (await call("GET", "/models")).json() as ModelEntry[]).find((m) => m.id === "refused-model")?.notes).toBeUndefined();
 });
 
-it("a builder suggestion names the latest note that bears on the task", async () => {
-  const name = "notes-suggest";
-  const record = { name, repo: name, policy: { checks: ["npm test"], protected: ["src/**"] }, createdAt: AT };
-  await ledger(name).setProject(record, "owner");
-  await index().registerProject(record);
+it("a builder suggestion names the latest note that bears on the task in its own project, where another project has the same task id", async () => {
+  const projects = ["notes-alpha", "notes-beta", "notes-gamma"];
+  const items: Record<string, string> = {};
+  for (const name of projects) {
+    const record = { name, repo: name, policy: { checks: ["npm test"], protected: ["src/**"] }, createdAt: AT };
+    await ledger(name).setProject(record, "owner");
+    await index().registerProject(record);
+    items[name] = (await (await call("POST", `/projects/${name}/items`, { title: "Small edit", scope: ["docs/**"] })).json() as { id: string }).id;
+  }
+  expect(Object.values(items)).toEqual(["t1", "t1", "t1"]);
   await index().putModel(entry("suggest-note-model", "codex"));
-  const created = await (await call("POST", `/projects/${name}/items`, { title: "Small edit", scope: ["docs/**"] })).json() as { id: string };
-  const path = `/projects/${name}/items/${created.id}/dispatch`;
+  const suggest = async (name: string) => (await (await call("POST", `/projects/${name}/items/${items[name]}/dispatch`, { suggest: true, model: "suggest-note-model" })).json() as { suggestion: { reasons: string[] } }).suggestion.reasons;
+  const day = AT.slice(0, 10);
 
   await call("POST", "/models/suggest-note-model/notes", { text: "Stalls on refactors." });
-  const other = await (await call("POST", "/models/suggest-note-model/notes", { text: "Only another task is affected.", item: "t999" })).json() as ModelNote;
-  expect(other.item).toBe("t999");
-  const general = await (await call("POST", path, { suggest: true, model: "suggest-note-model" })).json() as { suggestion: { reasons: string[] } };
-  expect(general.suggestion.reasons).toContain(`Latest note, ${AT.slice(0, 10)} by owner: Stalls on refactors.`);
-  expect(general.suggestion.reasons.join(" ")).not.toMatch(/Only another task/);
+  await call("POST", "/models/suggest-note-model/notes", { text: "Only alpha's task is affected.", item: "t1", project: "notes-alpha" });
+  const beta = await (await call("POST", "/models/suggest-note-model/notes", { text: "Only beta's task is affected.", item: "t1", project: "notes-beta" })).json() as ModelNote;
+  expect(beta).toMatchObject({ item: "t1", project: "notes-beta" });
 
-  await call("POST", "/models/suggest-note-model/notes", { text: "Runs the full suite on this task.", item: created.id });
-  const named = await (await call("POST", path, { suggest: true, model: "suggest-note-model" })).json() as { suggestion: { reasons: string[] } };
-  expect(named.suggestion.reasons.some((r) => r.startsWith(`Latest note, ${AT.slice(0, 10)} by owner on ${created.id}: Runs the full suite`))).toBe(true);
+  expect(await suggest("notes-alpha")).toContain(`Latest note, ${day} by owner on notes-alpha/t1: Only alpha's task is affected.`);
+  expect(await suggest("notes-beta")).toContain(`Latest note, ${day} by owner on notes-beta/t1: Only beta's task is affected.`);
+  const gamma = await suggest("notes-gamma");
+  expect(gamma).toContain(`Latest note, ${day} by owner: Stalls on refactors.`);
+  expect(gamma.join(" ")).not.toMatch(/Only (alpha|beta)/);
 });
