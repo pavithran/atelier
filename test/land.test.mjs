@@ -225,8 +225,11 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
   await new Promise((ok) => server.listen(0, "127.0.0.1", ok)); t.after(() => server.close());
   const url = `http://127.0.0.1:${server.address().port}`;
   writeFileSync(join(config, "config.json"), JSON.stringify({ server: url, owner: "owner", projects: { proj: { path: checkout, branch: "main" } } }));
+  // Admission is deterministic: the host may stay busy throughout this test.
+  // check-load.test.mjs covers the load gate; these tests exercise landing.
   const run = async (cwd, ...args) => {
-    const child = spawn(process.execPath, [resolve("cli/atelier.mjs"), ...args, "--project", "proj"], { cwd, env: { ...process.env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: "fixture", ATELIER_CACHE: cache, ATELIER_SERVER: url, ATELIER_LAND_POLL_MS: "50", ...fx.env } });
+    const child = spawn(process.execPath, [resolve("cli/atelier.mjs"), ...args, "--project", "proj"], { cwd, env: { ...process.env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: "fixture", ATELIER_CACHE: cache, ATELIER_SERVER: url, ATELIER_LAND_POLL_MS: "50", ATELIER_LOAD: "0", ...fx.env } });
+    t.after(() => child.kill("SIGKILL"));
     let output = ""; child.stdout.on("data", (s) => { output += s; fx.onOutput?.(output); }); child.stderr.on("data", (s) => output += s);
     const status = await new Promise((ok) => child.on("close", ok));
     return { status, output };
@@ -1090,7 +1093,9 @@ test("a server that reports no route level refuses, saying to deploy", async (t)
 // The deadline is only a ceiling for a machine under load (a landing spawns
 // node and runs git, which took over 15 s at load ~20); the wait ends as soon
 // as the event happens, so a quiet machine never waits for it.
-const CEILING_MS = 180_000;
+// The expiry landing exceeded the runner's 180 s default under load (t389).
+// These two tests override that default as well as their event-wait deadlines.
+const CEILING_MS = 300_000;
 async function until(ready, ms = CEILING_MS, what = "the condition") {
   for (const t0 = Date.now(); !ready();) {
     if (Date.now() - t0 > ms) throw new Error(`${what} did not come within ${ms}ms`);
@@ -1119,7 +1124,7 @@ function waitingLanding(f, env = {}) {
   f.box.review.approveAfter = null;
   const child = spawn(process.execPath, [resolve("cli/atelier.mjs"), "land", "t1", "--project", "proj"], {
     cwd: f.checkout,
-    env: { ...process.env, ATELIER_CONFIG_DIR: join(f.p, "config"), ATELIER_TOKEN: "fixture", ATELIER_CACHE: join(f.p, "cache"), ATELIER_SERVER: f.url, ATELIER_LAND_POLL_MS: "30", ...env },
+    env: { ...process.env, ATELIER_CONFIG_DIR: join(f.p, "config"), ATELIER_TOKEN: "fixture", ATELIER_CACHE: join(f.p, "cache"), ATELIER_SERVER: f.url, ATELIER_LAND_POLL_MS: "30", ATELIER_LOAD: "0", ...env },
   });
   // Ended however the test ends, so a failed wait leaves no landing polling.
   f.after(() => child.kill("SIGKILL"));
@@ -1178,14 +1183,17 @@ test("the landing renews the lease while it waits, and the renewal moves renewed
   assert.equal(f.box.lease, null);
 });
 
-test("a lease not renewed for the expiry is taken over, and the landing says whose lapsed", async (t) => {
+test("a lease not renewed for the expiry is taken over, and the landing says whose lapsed", { timeout: CEILING_MS }, async (t) => {
   const f = await landFixture(t);
+  // Seed an already expired lease; do not wait for fifteen minutes to elapse.
+  // run() resolves on CLI close, after the observed takeover and merge.
   const at = new Date(Date.now() - LANDING_LEASE_EXPIRY_MS - 5 * 60_000).toISOString();
   f.box.lease = { item: "t2", holder: "owner", at, renewedAt: at };
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /Took over the landing lease of proj from owner, which had been landing t2 since .* and stopped renewing it 20 minutes ago; that landing is treated as ended/);
   assert.equal(f.box.states.t1, "merged");
+  assert.ok(f.posts("/landing-lease").some((r) => r.body.item === "t1" && !r.body.cancel && !r.body.renew));
   assert.equal(f.box.lease, null);
 });
 
@@ -1338,7 +1346,7 @@ test("a refused renewal stops the heartbeat and is said once, and the lost lease
   assert.ok(!f.posts("/landing-lease").some((x) => x.body.cancel === true));
 });
 
-test("a landing that learns from its heartbeat that it lost the lease stops without accepting or merging", async (t) => {
+test("a landing that learns from its heartbeat that it lost the lease stops without accepting or merging", { timeout: CEILING_MS }, async (t) => {
   const f = await landFixture(t);
   const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: "40" });
   await until(() => f.box.review.pending, CEILING_MS, "the review request");

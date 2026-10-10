@@ -42,9 +42,12 @@ async function fixture(t, check) {
   await new Promise((done, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", done); });
   writeFileSync(join(root, "config.json"), JSON.stringify({ projects: { proj: { path: source } } }));
   async function run() {
-    const env = { ...process.env, ATELIER_ACTOR: actor, ATELIER_CONFIG_DIR: root, ATELIER_CACHE: cache, ATELIER_TOKEN: "api",
+    // Exercise cleanup under real CPU pressure without waiting for the CLI
+    // admission gate to decide the host is idle (covered by check-load tests).
+    const env = { ...process.env, ATELIER_LOAD: "0", ATELIER_ACTOR: actor, ATELIER_CONFIG_DIR: root, ATELIER_CACHE: cache, ATELIER_TOKEN: "api",
       ATELIER_SERVER: `http://127.0.0.1:${server.address().port}` };
     const child = spawn(process.execPath, [cli, "check", "t1", "--project", "proj"], { cwd: root, env });
+    t.after(() => child.kill("SIGKILL"));
     let stdout = "", stderr = ""; child.stdout.on("data", (s) => stdout += s); child.stderr.on("data", (s) => stderr += s);
     const status = await new Promise((done) => child.on("close", done));
     return { status, stdout, stderr };
@@ -70,7 +73,7 @@ for (const exit of [0, 1]) test(`a clone that cannot be removed is a warning, an
 
 // The test waits on what happens (the CLI exiting, the process gone, the clone
 // removed), never on a fixed sleep. Its timeout is only a ceiling for a machine
-// under load: alone it takes under a second, but it clones and starts a node
+// under load: alone it takes a few seconds, but it clones and starts a node
 // process and a shell, and on a host at several times its cores that took over
 // 60 s (t371's landing, 2026-10-10), so the ceiling is five minutes.
 const CEILING_MS = 300_000;
@@ -89,11 +92,13 @@ test("a process the check leaves behind is ended, and the clone is removed", { t
   // has exited, as a test runner's worker or a watcher can. Its output goes
   // elsewhere, so the check's own output closes when the check exits.
   const f = await fixture(t, (root) => `(while :; do date > "$PWD/bg.txt"; sleep 0.05; done) >/dev/null 2>&1 & echo $! > '${join(root, "bg.pid")}'; exit 0`);
-  t.after(() => { try { process.kill(Number(readFileSync(join(f.root, "bg.pid"), "utf8")), "SIGKILL"); } catch { /* It has ended. */ } });
+  // Keep the PID in memory: fixture teardown removes bg.pid before this hook.
+  let pid;
+  t.after(() => { if (pid) { try { process.kill(pid, "SIGKILL"); } catch { /* It has ended. */ } } });
   const r = await f.run();
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /^PASS {2}/m);
-  const pid = Number(readFileSync(join(f.root, "bg.pid"), "utf8"));
+  pid = Number(readFileSync(join(f.root, "bg.pid"), "utf8"));
   assert.ok(pid > 0);
   assert.ok(await gone(pid), "the background process has ended");
   assert.deepEqual(f.clones(), [], "the clone is removed");
