@@ -490,7 +490,7 @@ it("under single-family mode no other company's model claims, takes a handoff or
   expect(await L.requestReview(id, "owner", SONNET, POOL)).toMatchObject({ requested: true, reviewer: SONNET });
   expect((await L.reviewWaiting()).map((i) => `${i.dispatch!.agent}/${i.dispatch!.model}`)).toEqual([SONNET, FABLE]);
   // The landing resumes on SONNET's open request: a different anthropic model is no refusal under the mode.
-  const records = { sources: [], runs: [] };
+  const records = { project: "land-single-family-guards", sources: [], runs: [] };
   expect(await L.requestReview(id, "owner", null, POOL, false, false, records)).toMatchObject({ requested: false, reviewer: SONNET, head });
 });
 
