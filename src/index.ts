@@ -1972,6 +1972,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         itemId: id, by: actor, rev: body.rev, criteria: String(body.criteria ?? ""), request: body.request,
         approve: Boolean(body.approve), summary: String(body.note ?? body.summary ?? ""),
         ...(body.findings !== undefined ? { findings: body.findings } : {}),
+        ...(body.checks !== undefined ? { checks: body.checks } : {}),
       }, !!c.token));
     }
     // A claimed criteria review that reached no verdict: the harness failed,

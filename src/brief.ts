@@ -37,7 +37,13 @@ export interface Brief {
 export function criteriaReviewLine(view: Detail["criteriaReview"] | undefined): string | null {
   if (!view) return null;
   const standing = view.status.approved ? `approved: ${view.status.reason}` : view.status.reason;
-  return `${view.required ? "required before a build is dispatched or claimed; " : "not required by the project; "}${standing}`;
+  // The criteria the review flagged as checks after deploy (t457): the
+  // builder cannot verify them in its workspace, and is told so here.
+  const checks = view.checks ?? [];
+  const flagged = checks.length
+    ? `; checks after deploy, not verified in the builder's workspace: ${checks.map((c) => `criterion ${c.criterion} (${c.by === "owner" ? "the project owner's" : "the orchestrator's"}: ${c.text})`).join("; ")}`
+    : "";
+  return `${view.required ? "required before a build is dispatched or claimed; " : "not required by the project; "}${standing}${flagged}`;
 }
 
 export const SUMMARY_MAX = 600;

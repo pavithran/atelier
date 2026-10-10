@@ -281,6 +281,21 @@ export interface Finding {
   text: string;
 }
 
+// A criterion the builder cannot verify in its workspace (t457): one that
+// needs a signed-in browser, production data, a deployed service or a human
+// step. A criteria review (src/review/criteria.ts) flags it as a check after
+// deploy, the project owner's (a human step) or the orchestrator's (a check a
+// script runs against the deployed project), rather than rejecting it; the
+// build brief tells the builder not to claim it verified, and the code
+// review marks it deferred rather than unmet. `criterion` numbers it as the
+// briefs do: the task's own criteria first, then the plan's for the part.
+export interface PostDeployCheck {
+  criterion: number;
+  by: "owner" | "orchestrator";
+  text: string;
+}
+export const CHECK_BY: readonly PostDeployCheck["by"][] = ["owner", "orchestrator"];
+
 export interface Review {
   itemId: string;
   by: string;

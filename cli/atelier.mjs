@@ -1368,6 +1368,13 @@ export function formatCriteriaReviews(view) {
       const v = latest.get(`${r.id}:${i + 1}`);
       lines.push(`    ${i + 1}. ${f.severity} ${flat(f.file)} ${flat(f.text)}${v ? ` [${flat(v.verdict)}${flat(v.note) ? `: ${flat(v.note)}` : ""}]` : " [no resolution recorded]"}`);
     });
+    // The criteria the review flagged as checks after deploy (t457).
+    for (const c of r.checks ?? []) lines.push(`    Check after deploy: criterion ${flat(String(c.criterion))}, ${c.by === "owner" ? "the project owner's" : "the orchestrator's"}: ${flat(c.text)}`);
+  }
+  // The checks that stand for the criteria as they are now.
+  if (view.checks?.length) {
+    lines.push(`  Checks after deploy for revision ${view.status?.rev ?? 0}, the builder cannot verify these in its workspace:`);
+    for (const c of view.checks) lines.push(`    criterion ${flat(String(c.criterion))}: ${c.by === "owner" ? "the project owner" : "the orchestrator"} checks it once deployed. ${flat(c.text)}`);
   }
   return lines.join("\n");
 }

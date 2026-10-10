@@ -13,14 +13,21 @@ export default async function criteriaVerdictCommand() {
   if (!/^[a-f0-9]{64}$/.test(String(args.criteria))) die("--criteria needs the 64-digit binding the criteria review claim gave");
   const request = Number(args.request);
   if (!Number.isInteger(request) || request < 1) die("--request needs the criteria review's number the claim gave");
-  let findings;
+  let findings, checks;
   if (args.findings !== undefined) {
     if (typeof args.findings !== "string" || !args.findings.trim()) die("--findings needs a JSON list of findings");
     try { findings = JSON.parse(args.findings); } catch { die("--findings is not valid JSON"); }
   }
+  // The criteria the builder cannot verify in its workspace (t457), each
+  // the owner's or the orchestrator's check after deploy.
+  if (args.checks !== undefined) {
+    if (typeof args.checks !== "string" || !args.checks.trim()) die("--checks needs a JSON list of checks after deploy");
+    try { checks = JSON.parse(args.checks); } catch { die("--checks is not valid JSON"); }
+  }
   await call("POST", `${I(name, id)}/criteria-review`, {
     approve: args.approve === true, rev, criteria: String(args.criteria), request, note: args.note ?? "",
     ...(findings !== undefined ? { findings } : {}),
+    ...(checks !== undefined ? { checks } : {}),
   }, as);
   console.log(`${args.approve ? "Approved" : "Rejected"} ${id}'s acceptance criteria at revision ${rev} as ${as}.`);
 }
