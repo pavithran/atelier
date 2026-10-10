@@ -30,8 +30,12 @@
 // reporter formats below, and from no other. Output no format fits, or that
 // fits a format naming no failing test (a suite that could not start, a
 // typecheck), says the names are unavailable; no name is ever derived from
-// the shape of a line a reporter did not write. The formats, each fixed by
-// a fixture:
+// the shape of a line a reporter did not write. When the log read is a tail
+// of the output rather than the whole (an inline tail only, or a stored log
+// that was cut), the lines naming the failing tests may have been cut with
+// the rest: the summary says so, both when it finds no name and beside the
+// names it does find, rather than concluding that the check failed for
+// another reason. The formats, each fixed by a fixture:
 //   node:test, spec reporter (Node's default): `✖ name (1.2ms)` lines, read
 //     from the `✖ failing tests:` summary when the output holds it, where
 //     only tests are listed; without that summary (an output cut before its
@@ -57,6 +61,14 @@
 // at most SUMMARY_TAIL_CHARS characters of the log, and it says how many
 // lines the log holds when more were cut. `atelier check-log ID` prints the
 // retained logs whole, for every attempt at the head.
+//
+// Where the summary itself must fit a size (the landing Workflow's record of
+// why it failed holds LANDING_DETAIL_MAX characters, src/ledger.ts), it is
+// fitted rather than cut at the size: the log tails give way first, then
+// the number of test names listed, then the later checks are counted and
+// named in one line; the heading, each check kept, and the check-log line
+// that points at the whole logs always remain, so a reader of the record
+// is never left without the command that prints what was left out.
 
 import { LARGE_MAX, type LargeRef } from "./large.ts";
 import { blockingMergedRuns, countingRunsAt, evidenceAt, mergedRunsAt, type Evidence, type ProjectPolicy } from "./rules.ts";
@@ -177,7 +189,7 @@ export async function readCheckLog(e: Pick<Evidence, "outputTail" | "log" | "whe
 export interface FailingTests {
   reporters: string[];   // the formats recognised in the output, in the order above
   names: string[];       // the failing tests they name, in the output's order, each once
-  note: string | null;   // why a recognised format names none, when it does not
+  note: string | null;   // what a format that names no test says the output holds (a typecheck's errors); null otherwise
 }
 
 interface Reporter {
@@ -274,16 +286,31 @@ export function failingTests(output: string): FailingTests | null {
     if (!found.length && r.note) { const n = r.note(lines); if (n) notes.push(n); }
   }
   if (!reporters.length) return null;
-  return { reporters, names, note: names.length ? null : notes.length ? notes.join("; ") : `the ${reporters.join(" and ")} output names no failing test, so the check failed for another reason` };
+  return { reporters, names, note: names.length || !notes.length ? null : notes.join("; ") };
 }
 
-// What the summary says of the failing tests, in one line.
-export function failingTestsLine(tests: FailingTests | null): string {
-  if (!tests) return "failing tests: names unavailable (no test reporter format this summary reads was recognised in the output)";
-  if (!tests.names.length) return `failing tests: none named (${tests.note})`;
-  const shown = tests.names.slice(0, SUMMARY_TEST_NAMES);
+// What the summary says of the failing tests, in one line. `whole` says
+// whether the log the names were read from is the check's whole output: a
+// tail may have lost the lines naming the tests, and the line says so
+// instead of concluding that the check failed for another reason. At most
+// `names` names are listed; the rest are counted.
+export function failingTestsLine(tests: FailingTests | null, whole = true, names = SUMMARY_TEST_NAMES): string {
+  if (!tests) {
+    return whole
+      ? "failing tests: names unavailable (no test reporter format this summary reads was recognised in the output)"
+      : "failing tests: names unavailable (no test reporter format this summary reads was recognised in the tail of the output that was kept; the lines naming them may have been cut with the rest)";
+  }
+  if (!tests.names.length) {
+    if (tests.note) return `failing tests: none named (${tests.note})`;
+    const reporters = tests.reporters.join(" and ");
+    return whole
+      ? `failing tests: none named (the ${reporters} output names no failing test, so the check failed for another reason)`
+      : `failing tests: none named in the tail of the output that was kept (the ${reporters} output in it names no failing test; the lines naming them may have been cut with the rest, or the check failed for another reason)`;
+  }
+  const shown = tests.names.slice(0, Math.max(1, names));
   const more = tests.names.length - shown.length;
-  return `failing tests (${tests.reporters.join(", ")}): ${shown.map(flatLine).join("; ")}${more ? `; and ${more} more` : ""}`;
+  const from = whole ? "" : ", read from a tail of the output, so names cut with the rest are not listed";
+  return `failing tests (${tests.reporters.join(", ")}${from}): ${shown.map(flatLine).join("; ")}${more ? `; and ${more} more` : ""}`;
 }
 
 // ── the summary ─────────────────────────────────────────────────────────────
@@ -325,29 +352,77 @@ export const WHERE_TEXT: Record<Where, string> = { sandbox: "in a Cloudflare con
 const short = (sha: string | null | undefined) => (sha ? sha.slice(0, 8) : "—");
 const when = (at: string) => `${at.slice(0, 16).replace("T", " ")} UTC`;
 
+// What one failed check's block may be fitted to: how many test names it
+// lists and how many of its bounded tail's lines it shows (the last ones).
+export interface FailureFit {
+  names?: number;
+  tailLines?: number;
+}
+
 // One failed check's lines of the summary, as every caller prints them.
-export function failureLines(f: ResolvedFailure): string[] {
+export function failureLines(f: ResolvedFailure, fit: FailureFit = {}): string[] {
   const ident = [f.id !== null ? `evidence #${f.id}` : "evidence row without an id", ...(f.run ? [`run ${flatLine(f.run)}`] : []), `attempt ${f.attempt} of ${f.attempts} at this head`].join(", ");
   const on = f.merged ? ` on the merge with main at ${short(f.mainHead)}` : "";
   const tail = boundedTail(f.logRead.text);
-  const shown = tail.lines.length < tail.total ? `last ${tail.lines.length} of ${thousands(tail.total)} lines` : tail.total ? `${count(tail.total, "line")}, whole` : "no output";
+  const lines = fit.tailLines === undefined ? tail.lines : fit.tailLines > 0 ? tail.lines.slice(-fit.tailLines) : [];
+  const fitted = lines.length < tail.lines.length;
+  const shown = !tail.total ? "no output"
+    : !lines.length ? `${count(tail.total, "line")}, left out of this summary for its size`
+    : lines.length < tail.total ? `last ${lines.length} of ${thousands(tail.total)} lines${fitted ? " (fewer, for this summary's size)" : ""}`
+    : `${count(tail.total, "line")}, whole`;
   return [
     `\`${flatLine(f.claim)}\` failed${on} ${WHERE_TEXT[f.where]} at ${when(f.at)}${f.load !== null ? `, load ${f.load}` : ""}: ${ident}`,
-    `  ${failingTestsLine(f.tests)}`,
-    `  log: ${f.logRead.label}; ${shown}${tail.lines.length ? ":" : ""}`,
-    ...tail.lines.map((line) => `    ${line}`),
+    `  ${failingTestsLine(f.tests, f.logRead.whole, fit.names)}`,
+    `  log: ${f.logRead.label}; ${shown}${lines.length ? ":" : ""}`,
+    ...lines.map((line) => `    ${line}`),
   ];
 }
 
 // The failure summary of a task at a head, as `atelier show`, the plain
 // landing and the landing Workflow all print it: the gate's reading, one
 // block per failed check, and the command that prints the whole logs.
-export function failureSummary(id: string, head: string, failures: ResolvedFailure[]): string {
+// Given `maxChars`, the summary is fitted to it (see the head of this file):
+// the tails give way first, then the names, then the later checks, which
+// one line then counts and names; the heading, every check kept and the
+// check-log line remain.
+export function failureSummary(id: string, head: string, failures: ResolvedFailure[], maxChars = Infinity): string {
   if (!failures.length) return `No required check fails at ${short(head)} as the gate reads it.`;
-  const lines = [`Failed checks at ${short(head)}, as the gate reads them (the latest counting run of each required check at this head):`];
-  for (const f of failures) lines.push(...failureLines(f).map((line) => `  ${line}`));
-  lines.push(`  Whole logs of every attempt at this head: atelier check-log ${id}`);
-  return lines.join("\n");
+  const heading = `Failed checks at ${short(head)}, as the gate reads them (the latest counting run of each required check at this head):`;
+  const pointer = `  Whole logs of every attempt at this head: atelier check-log ${id}`;
+  const tails = failures.map((f) => boundedTail(f.logRead.text).lines.length);
+  const text = (kept: number, names: number, shown: number[]): string => {
+    const left = failures.slice(kept);
+    return [
+      heading,
+      ...failures.slice(0, kept).flatMap((f, i) => failureLines(f, { names, tailLines: shown[i] }).map((line) => `  ${line}`)),
+      ...(left.length ? [`  And ${count(left.length, "more failed check")}, left out of this summary for its size: ${left.map((f) => `\`${flatLine(f.claim)}\``).join(", ")}`] : []),
+      pointer,
+    ].join("\n");
+  };
+  const full = text(failures.length, SUMMARY_TEST_NAMES, tails);
+  if (full.length <= maxChars) return full;
+  for (let kept = failures.length; kept >= 1; kept--) {
+    for (const names of [SUMMARY_TEST_NAMES, 10, 5, 2, 1]) {
+      const shown = failures.map(() => 0);
+      if (text(kept, names, shown).length > maxChars) continue;
+      // The bare blocks fit: the tails' last lines are given back one at a
+      // time, each check in turn, while the whole still fits.
+      const done = new Set<number>();
+      while (done.size < kept) {
+        for (let i = 0; i < kept; i++) {
+          if (done.has(i)) continue;
+          if (shown[i] >= tails[i]) { done.add(i); continue; }
+          shown[i]++;
+          if (text(kept, names, shown).length > maxChars) { shown[i]--; done.add(i); }
+        }
+      }
+      return text(kept, names, shown);
+    }
+  }
+  // Not even one check's bare block fits: the first check, cut at the size,
+  // and the check-log line kept whole.
+  const bare = text(1, 1, failures.map(() => 0));
+  return `${bare.slice(0, Math.max(0, maxChars - pointer.length - 2))}…\n${pointer}`;
 }
 
 // One failed check as `atelier show --json` carries it: the same facts the

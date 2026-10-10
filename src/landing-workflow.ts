@@ -67,7 +67,7 @@ import { evidenceAt, parseRuleError, type Evidence } from "./rules";
 import { effectiveFailures, failureSummary, resolveFailures } from "./check-failure.ts";
 import { getLarge } from "./large.ts";
 import { landingLeasePollMs, type LandingLease } from "./landing-lease.ts";
-import type { LandingWorkflowStage } from "./ledger.ts";
+import { LANDING_DETAIL_MAX, type LandingWorkflowStage } from "./ledger.ts";
 import { landingVerdict, type LandingReview } from "./landing-verdict.ts";
 import type { RunRequest } from "./sandbox/runner";
 
@@ -471,15 +471,15 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       if (state?.status === "done") {
         const failed = state.results.filter((r) => r.passed === false);
         // The failure is said as every landing says it (failureText): from
-        // the evidence the run recorded, read as the gate reads it.
+        // the evidence the run recorded, read as the gate reads it, after
+        // the line that names the checks, within the record's size.
+        const why = `the required checks failed at ${short(head)} in the Cloudflare container: ${failed.map((r) => r.claim).join("; ")}. The merge of main stays in the workspace; fix the failures, commit, and run atelier land ${p.item} --workflow again.`;
         const { summary } = await step.do("record the check step", RETRIES, async () => {
           await this.note(L, p, "check", Date.now() - started.t0, failed.length ? { failed: true, reason: failed.map((r) => r.claim).join(", ").slice(0, 500) } : {});
-          return { summary: failed.length && state.recorded ? await this.failureText(L, p, head) : "" };
+          return { summary: failed.length && state.recorded ? await this.failureText(L, p, head, why) : "" };
         });
         if (!state.recorded) throw new NonRetryableError(`the checks ran but the ledger did not record them; run atelier land ${p.item} --workflow again`);
-        if (failed.length) {
-          throw new NonRetryableError(`the required checks failed at ${short(head)} in the Cloudflare container: ${failed.map((r) => r.claim).join("; ")}. The merge of main stays in the workspace; fix the failures, commit, and run atelier land ${p.item} --workflow again.\n${summary}`);
-        }
+        if (failed.length) throw new NonRetryableError(`${why}\n${summary}`);
         return;
       }
       if (state?.status === "failed") throw new NonRetryableError(`the check run failed: ${state.error || "unknown error"}. Run atelier land ${p.item} --workflow again`);
@@ -513,11 +513,12 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       });
       const failed = seen.checks.filter((c) => c.observed && !c.passed);
       if (failed.length) {
+        const why = `the required checks failed at ${short(head)} in a clean clone on the machine holding the workspace: ${failed.map((c) => c.claim).join("; ")}. The merge of main stays in the workspace; fix the failures, commit, and run atelier land ${p.item} --workflow again.`;
         const { summary } = await step.do("record the failed observed checks", RETRIES, async () => {
           await this.note(L, p, "check", Date.now() - t0, { failed: true, head, reason: failed.map((c) => c.claim).join(", ").slice(0, 500) });
-          return { summary: await this.failureText(L, p, head) };
+          return { summary: await this.failureText(L, p, head, why) };
         });
-        throw new NonRetryableError(`the required checks failed at ${short(head)} in a clean clone on the machine holding the workspace: ${failed.map((c) => c.claim).join("; ")}. The merge of main stays in the workspace; fix the failures, commit, and run atelier land ${p.item} --workflow again.\n${summary}`);
+        throw new NonRetryableError(`${why}\n${summary}`);
       }
       const pending = seen.checks.filter((c) => !c.observed);
       if (!pending.length) return;
@@ -601,13 +602,19 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
 
   // The failure summary every landing prints (src/check-failure.ts, t436):
   // the failed checks as the gate reads them at the head, from the Ledger's
-  // evidence, each stored log read from R2 by its reference. A summary that
-  // cannot be read says so; the failure itself is already known.
-  private async failureText(L: LedgerStub, p: Landing, head: string): Promise<string> {
+  // evidence, each stored log read from R2 by its reference. It follows
+  // `why`, the line naming the failed checks, in the error that ends the
+  // instance, and the Ledger keeps that error as the stage's detail, cut at
+  // LANDING_DETAIL_MAX characters: the summary is fitted to what remains of
+  // that size, so the cut never drops a failed check or the check-log line.
+  // A summary that cannot be read says so; the failure itself is already
+  // known.
+  private async failureText(L: LedgerStub, p: Landing, head: string, why: string): Promise<string> {
     try {
       const { policy } = await L.project();
       const failures = effectiveFailures(policy, (await L.evidenceFor(p.item)) as Evidence[], head);
-      return failureSummary(p.item, head, await resolveFailures(failures, (ref) => getLarge(this.env.LARGE, ref.key)));
+      const resolved = await resolveFailures(failures, (ref) => getLarge(this.env.LARGE, ref.key));
+      return failureSummary(p.item, head, resolved, LANDING_DETAIL_MAX - why.length - 1);
     } catch (error) {
       return `The failure summary could not be read: ${String((error as Error)?.message ?? error).slice(0, 300)}`;
     }

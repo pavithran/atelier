@@ -88,10 +88,43 @@ test("one output can hold two reporters, as this project's npm test does, and co
   assert.deepEqual(coloured.names, ["red test"]);
 });
 
-test("the summary lists at most SUMMARY_TEST_NAMES names and counts the rest", () => {
+test("the summary lists at most SUMMARY_TEST_NAMES names and counts the rest, or fewer when asked", () => {
   const output = Array.from({ length: SUMMARY_TEST_NAMES + 3 }, (_, i) => `not ok ${i + 1} - test ${i + 1}`).join("\n");
   const line = failingTestsLine(failingTests(output));
   assert.ok(line.endsWith(`test ${SUMMARY_TEST_NAMES}; and 3 more`), line);
+  assert.equal(failingTestsLine(failingTests(output), true, 2), `failing tests (tap): test 1; test 2; and ${SUMMARY_TEST_NAMES + 1} more`);
+  assert.equal(failingTestsLine(failingTests(output), true, 0), `failing tests (tap): test 1; and ${SUMMARY_TEST_NAMES + 2} more`);
+});
+
+// The vitest summary lines alone, as the end of an output whose FAIL lines
+// and file tree were cut with the rest: recognised as vitest, naming no test.
+const VITEST_SUMMARY_ONLY = "\n Test Files  1 failed (1)\n      Tests  2 failed | 1 passed (3)\n   Start at  12:00:00\n   Duration  1.20s\n";
+
+test("a log kept as a tail says the names may have been cut with the rest, instead of concluding the check failed for another reason", async () => {
+  // Whole output: no FAIL line means no test is named, and the check failed for another reason.
+  const whole = failingTests(VITEST_SUMMARY_ONLY)!;
+  assert.deepEqual([whole.reporters, whole.names, whole.note], [["vitest"], [], null]);
+  assert.equal(failingTestsLine(whole), "failing tests: none named (the vitest output names no failing test, so the check failed for another reason)");
+  // The same lines at the end of a tail: the FAIL lines may be in the part cut.
+  assert.equal(failingTestsLine(whole, false), "failing tests: none named in the tail of the output that was kept (the vitest output in it names no failing test; the lines naming them may have been cut with the rest, or the check failed for another reason)");
+  assert.equal(failingTestsLine(null, false), "failing tests: names unavailable (no test reporter format this summary reads was recognised in the tail of the output that was kept; the lines naming them may have been cut with the rest)");
+  // Names found in a tail are listed, with the caveat that others may be cut.
+  const some = failingTests(`${VITEST_SUMMARY_ONLY} FAIL  test/sample.spec.ts > a suite > names are read\n`)!;
+  assert.equal(failingTestsLine(some, false), "failing tests (vitest, read from a tail of the output, so names cut with the rest are not listed): test/sample.spec.ts > a suite > names are read");
+  // A typecheck names no test whether or not its output was cut.
+  assert.equal(failingTestsLine(failingTests(fixture("tsc.txt")), false), "failing tests: none named (the output holds 2 TypeScript errors, which name no test)");
+  // As the summary reads it: an inline tail of a check run on a machine is a tail, a short inline output is whole.
+  const filler = `${"x".repeat(LOCAL_OUTPUT_TAIL)}\n`;
+  const [cut, wholeRun] = await resolveFailures(effectiveFailures(policy, [
+    ev({ passed: false, outputTail: `${filler}${VITEST_SUMMARY_ONLY}` }),
+    ev({ claim: "npm run typecheck", passed: false, outputTail: VITEST_SUMMARY_ONLY }),
+  ], H1), none);
+  assert.equal(cut.logRead.whole, false);
+  assert.ok(failureSummary("t1", H1, [cut]).includes("    failing tests: none named in the tail of the output that was kept (the vitest output in it names no failing test; the lines naming them may have been cut with the rest, or the check failed for another reason)\n    log: inline tail only"));
+  assert.ok(failureSummary("t1", H1, [wholeRun]).includes("    failing tests: none named (the vitest output names no failing test, so the check failed for another reason)\n    log: whole output, inline"));
+  // A stored log that was itself cut is a tail too.
+  const [stored] = await resolveFailures(effectiveFailures(policy, [ev({ passed: false, where: "sandbox", log: ref({ bytes: LARGE_MAX }), outputTail: "t" })], H1), async () => VITEST_SUMMARY_ONLY);
+  assert.ok(failureSummary("t1", H1, [stored]).includes("none named in the tail of the output that was kept"));
 });
 
 // ── which runs: the gate's own selection ───────────────────────────────────
@@ -247,6 +280,48 @@ test("a failure with no test names and no stored log says so, and a merged failu
   assert.ok(text.includes("      make: *** [Makefile:12: build] Error 1"), text);
   const empty = await resolveFailures(effectiveFailures(policy, [ev({ passed: false, outputTail: "" }), ownType], H1), none);
   assert.ok(failureSummary("t1", H1, empty).includes("    log: whole output, inline; no output\n"), failureSummary("t1", H1, empty));
+});
+
+test("fitted to a size, the summary keeps its heading, every failed check and the check-log line, giving up the tails, then names, then later checks", async () => {
+  const claims = ["npm test", "npm run typecheck", "npm run lint", "npm run build"];
+  // Each output is whole (shorter than what the recorder keeps inline): 30 failing tests, then 20 lines of log.
+  const log = (claim: string) => Array.from({ length: 20 }, (_, i) => `${claim} line ${i + 1} ${"#".repeat(20)}`).join("\n");
+  const names = Array.from({ length: 30 }, (_, i) => `not ok ${i + 1} - test ${i + 1} of the many`).join("\n");
+  const evidence = claims.map((claim) => ev({ claim, passed: false, outputTail: `${names}\n${log(claim)}` }));
+  const failures = await resolveFailures(effectiveFailures({ ...policy, checks: claims }, evidence, H1), none);
+  assert.ok(failures.every((f) => f.logRead.whole));
+  const pointer = "  Whole logs of every attempt at this head: atelier check-log t1";
+  const full = failureSummary("t1", H1, failures);
+  assert.ok(full.length > 4000, String(full.length));
+  assert.equal(failureSummary("t1", H1, failures, full.length), full);
+  assert.equal(failureSummary("t1", H1, failures, Infinity), full);
+  const named = (text: string) => claims.filter((claim) => text.includes(`\`${claim}\` failed on a runner`));
+  // Within the landing Workflow's record: the tails give way, every check stays, the pointer ends it.
+  const fitted = failureSummary("t1", H1, failures, 1800);
+  assert.ok(fitted.length <= 1800 && fitted.length > 1500, String(fitted.length));
+  assert.ok(fitted.startsWith("Failed checks at aaaaaaaa, as the gate reads them"));
+  assert.ok(fitted.endsWith(`\n${pointer}`), fitted);
+  assert.deepEqual(named(fitted), claims);
+  assert.match(fitted, /log: whole output, inline; (?:50 lines, left out of this summary for its size|last \d+ of 50 lines \(fewer, for this summary's size\):)/);
+  assert.ok(!fitted.includes("And "), fitted);
+  // Tighter: fewer names are listed and the rest counted, before any check is dropped.
+  const tight = failureSummary("t1", H1, failures, 1250);
+  assert.ok(tight.length <= 1250, String(tight.length));
+  assert.deepEqual(named(tight), claims);
+  assert.match(tight, /failing tests \(tap\): test 1 of the many(?:; test 2 of the many)?; and \d+ more\n/);
+  assert.ok(tight.endsWith(`\n${pointer}`), tight);
+  // Tighter still: the later checks are counted and named in one line, and the pointer stays.
+  const few = failureSummary("t1", H1, failures, 700);
+  assert.ok(few.length <= 700, String(few.length));
+  const kept = named(few), left = claims.slice(kept.length);
+  assert.ok(kept.length >= 1 && left.length >= 1, few);
+  assert.deepEqual(kept, claims.slice(0, kept.length));
+  assert.ok(few.includes(`\n  And ${left.length} more failed check${left.length > 1 ? "s" : ""}, left out of this summary for its size: ${left.map((c) => `\`${c}\``).join(", ")}\n`), few);
+  assert.ok(few.endsWith(`\n${pointer}`), few);
+  // Not even one check's block fits: the first is cut, and the pointer is kept whole.
+  const cut = failureSummary("t1", H1, failures, 200);
+  assert.ok(cut.length <= 200, String(cut.length));
+  assert.ok(cut.startsWith("Failed checks at aaaaaaaa") && cut.endsWith(`…\n${pointer}`), cut);
 });
 
 test("a log line or a command never poses as a line of the summary", async () => {
