@@ -23,7 +23,7 @@ import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } fr
 import { redactGitArgs } from "./runner.mjs";
 import { acceptancePolicy, controlPlaneChanges, mergeContext, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
 import { cleanSummary } from "../src/brief.ts";
-import { assertEligible, checkApplies, checkFiles, pathCollisions, recordedText, scopesOverlap } from "../src/rules.ts";
+import { assertEligible, checkApplies, checkFiles, pathCollisions, recordedText, scopesOverlap, shortTitle, TITLE_MAX } from "../src/rules.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { holdText } from "../src/dispatch/rules.ts";
 import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../src/checks.ts";
@@ -2168,7 +2168,8 @@ const commands = {
     const name = project(), as = await actor(OWNER);
     if (args["duplicate-ok"] !== true) {
       const { items } = await call("GET", P(name), undefined, as);
-      const twins = liveDuplicates(title, scope, items);
+      const filedTitle = title && (title.length <= TITLE_MAX || fields.brief) ? title : shortTitle(fields.brief ?? title);
+      const twins = liveDuplicates(filedTitle, scope, items);
       if (twins.length) die(`a live task already covers this work, so nothing was filed:\n${twins.map((i) => `  ${i.id}  ${flat(i.title)}  (${i.state}, ${i.owner ?? "unowned"})`).join("\n")}\nPass --duplicate-ok to file it anyway.`);
     }
     const item = await call("POST", `${P(name)}/items`, { title, scope, ...fields }, as);
