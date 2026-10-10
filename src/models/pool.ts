@@ -26,7 +26,8 @@ export interface ModelNote {
   by: string;                 // the owner who wrote it
   text: string;
   item?: string;              // the task it concerns; a note with none bears on every task
-  project?: string;           // the project that task is in: task ids repeat across projects
+  project?: string;           // the project's stable key, not its name: task ids repeat across projects
+  projectName?: string;       // the project's current name, read with the note and never stored
 }
 
 export interface ModelEntry {
@@ -174,11 +175,11 @@ export function cleanNote(body: Record<string, unknown>, by: string, at: string)
   return { at, by, text, ...(item ? { item, project } : {}) };
 }
 
-const noteTask = (n: ModelNote) => (n.project ? `${n.project}/${n.item}` : n.item ?? "");
+const noteTask = (n: ModelNote) => (n.project ? `${n.projectName ?? n.project}/${n.item}` : n.item ?? "");
 
-// The latest of an entry's notes that bears on a task: one that names no task, or that names this task in this project.
-export function latestNote(entry: Pick<ModelEntry, "notes">, project: string, item: string): ModelNote | undefined {
-  return (entry.notes ?? []).filter((n) => !n.item || (n.item === item && n.project === project)).at(-1);
+// The latest of an entry's notes that bears on a task: one that names no task, or that names this task in this project's key.
+export function latestNote(entry: Pick<ModelEntry, "notes">, projectKey: string, item: string): ModelNote | undefined {
+  return (entry.notes ?? []).filter((n) => !n.item || (n.item === item && n.project === projectKey)).at(-1);
 }
 
 export const noteLine = (n: ModelNote) => `Latest note, ${n.at.slice(0, 10)} by ${n.by}${n.item ? ` on ${noteTask(n)}` : ""}: ${n.text}`;

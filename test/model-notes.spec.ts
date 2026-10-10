@@ -76,3 +76,22 @@ it("a builder suggestion names the latest note that bears on the task in its own
   expect(gamma).toContain(`Latest note, ${day} by owner: Stalls on refactors.`);
   expect(gamma.join(" ")).not.toMatch(/Only (alpha|beta)/);
 });
+
+it("a renamed project keeps its task notes under its current name, and a note named by either name bears on the task", async () => {
+  const record = { name: "notes-old", repo: "notes-old", policy: { checks: ["npm test"], protected: ["src/**"] }, createdAt: AT };
+  await ledger("notes-old").setProject(record, "owner");
+  await index().registerProject(record);
+  const { id } = await (await call("POST", "/projects/notes-old/items", { title: "Small edit", scope: ["docs/**"] })).json() as { id: string };
+  await index().putModel(entry("rename-note-model", "codex"));
+  await call("POST", "/models/rename-note-model/notes", { text: "Only the renamed task is affected.", item: id, project: "notes-old" });
+  expect((await call("POST", "/projects/notes-old/rename", { to: "notes-new" })).status).toBe(200);
+
+  const suggest = async () => (await (await call("POST", `/projects/notes-new/items/${id}/dispatch`, { suggest: true, model: "rename-note-model" })).json() as { suggestion: { reasons: string[] } }).suggestion.reasons;
+  expect(await suggest()).toContain(`Latest note, ${AT.slice(0, 10)} by owner on notes-new/${id}: Only the renamed task is affected.`);
+
+  const former = await call("POST", "/models/rename-note-model/notes", { text: "Named by the former name.", item: id, project: "notes-old" });
+  expect(await former.json()).toMatchObject({ project: "notes-old", projectName: "notes-new" });
+  const pool = await (await call("GET", "/models")).json() as (ModelEntry & { notes?: ModelNote[] })[];
+  expect(pool.find((m) => m.id === "rename-note-model")!.notes!.map((n) => n.projectName)).toEqual(["notes-new", "notes-new"]);
+  expect(await suggest()).toContain(`Latest note, ${AT.slice(0, 10)} by owner on notes-new/${id}: Named by the former name.`);
+});

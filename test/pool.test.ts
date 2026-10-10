@@ -36,6 +36,7 @@ test("the latest note that bears on a task names its project and id, so another 
   assert.equal(latestNote({}, "alpha", "t1"), undefined);
   assert.equal(noteLine(entry.notes[1]), "Latest note, 2026-10-02 by pavi on alpha/t1: Only alpha t1 is affected.");
   assert.equal(noteLine(entry.notes[0]), "Latest note, 2026-10-01 by pavi: Stalls on long refactors.");
+  assert.equal(noteLine({ ...entry.notes[1], projectName: "alpha-renamed" }), "Latest note, 2026-10-02 by pavi on alpha-renamed/t1: Only alpha t1 is affected.");
 });
 
 test("families are recognised by name, so new releases need no update", () => {
