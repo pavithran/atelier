@@ -303,6 +303,27 @@ test("overlapping claims are refused when the project says so, and only then", (
   assert.throws(() => assertClaimAllowed(unscoped, [...all, unscoped], strict, "glm/glm-4.6"), /unscoped item overlaps everything/);
 });
 
+test("a live task blocks an overlapping claim by one rule in every state, and the refusal names the way out", () => {
+  const strict: ProjectPolicy = { checks: [], protected: [], refuseOverlap: true };
+  const want = item({ id: "t9", state: "open", owner: null, scope: ["src/ui/**"] });
+  // An accepted task whose merge was cancelled is accepted still, so it holds like the rest.
+  for (const state of ["claimed", "submitted", "accepted"] as const) {
+    const held = item({ id: "t14", state, owner: "glm/glm-4.6", scope: [] });
+    assert.deepEqual(overlappingLive(want, [held, want], "claude-code/opus-5.5").map((i) => i.id), ["t14"], state);
+    assert.throws(
+      () => assertClaimAllowed(want, [held, want], strict, "claude-code/opus-5.5"),
+      /overlaps live t14 \(glm\/glm-4\.6\).*atelier edit t14 --scope GLOB/,
+      state,
+    );
+    // Narrowed with atelier edit --scope, the same task no longer blocks.
+    const narrowed = { ...held, scope: ["docs/**"] };
+    assert.doesNotThrow(() => assertClaimAllowed(want, [narrowed, want], strict, "claude-code/opus-5.5"), state);
+  }
+  for (const state of ["open", "merged", "abandoned"] as const) {
+    assert.deepEqual(overlappingLive(want, [item({ id: "t14", state, owner: "glm/glm-4.6", scope: [] }), want], "claude-code/opus-5.5"), [], state);
+  }
+});
+
 test("gc removes clean workspaces at a head that proves nothing is unpublished", async () => {
   const { gcWorkspaceReason } = await import("../src/rules.ts");
   assert.equal(gcWorkspaceReason(item({ state: "merged", acceptedHead: H1 }), H1, false, false), null);
