@@ -884,6 +884,10 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`SELECT json FROM runs ORDER BY id DESC LIMIT ?`, limit).toArray().map((r) => JSON.parse(r.json as string));
   }
 
+  runsForItem(project: string, item: string): RunReport[] {
+    return this.sql.exec(`SELECT json FROM runs WHERE json_extract(json, '$.project') = ? AND json_extract(json, '$.item') = ? ORDER BY id DESC LIMIT 20`, project, item).toArray().map((r) => JSON.parse(r.json as string));
+  }
+
   // ── runner offers ─────────────────────────────────────────────────────────
   // What each runner can run, as it last said when it asked the queue for
   // work, on the index instance beside the model pool: one row per runner,

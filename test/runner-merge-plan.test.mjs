@@ -19,7 +19,7 @@ import { ROLE_PROMPTS } from "../src/usage.ts";
 // plan's fork and main, with a clone of the fork for the workspace; the CLI
 // and the server stand in through io, as in the other runner tests.
 
-const entry = { agent: "codex", models: ["gpt-6-astra"], command: ["codex", "{brief_file}", "{workspace}"] };
+const entry = { agent: "codex", models: ["gpt-6-astra"], command: ["codex", "exec", "--sandbox", "danger-full-access", "{brief_file}", "{workspace}"] };
 const config = { agents: [entry] };
 const ACTOR = "codex/gpt-6-astra";
 const ID = { name: "Test", email: "test@example.com" };
