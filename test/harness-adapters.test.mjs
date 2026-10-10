@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CODEX_FEATURES_OFF, agentRules, claudeModel, parseArgs, runAdapter } from "../cli/harness/adapter.mjs";
+import { CODEX_FEATURES_OFF, agentRules, codexNoMcpFlags, claudeModel, parseArgs, runAdapter } from "../cli/harness/adapter.mjs";
 import { METADATA_VAR, metadataEscaped, opencodeConfig, substituteEnv } from "../cli/harness/providers.mjs";
 import { defaultCommand, parseConfig } from "../cli/runner-config.mjs";
 import { commandFor, gatewayMetadata } from "../cli/runner.mjs";
@@ -187,6 +187,24 @@ test("the stand-in fails as codex does on enabled=false for a plugin's server, w
     { encoding: "utf8", env: { ...process.env, FAKE_MCP_LIST: JSON.stringify([{ name: "code-review", feature: "plugins", enabled: true }]) } });
   assert.equal(r.status, 1);
   assert.match(r.stderr, /invalid transport in mcp_servers\.code-review/);
+});
+
+// The owner's note on round 6: the generated flags are checked against the
+// codex installed on the machine, with its own configuration, when there is one.
+const realCodex = spawnSync("codex", ["--version"], { encoding: "utf8" }).status === 0;
+test("the real codex loads its configuration with the generated flags and lists no MCP server enabled", { skip: !realCodex && "codex is not installed" }, () => {
+  const ws = mkdtempSync(join(tmpdir(), "atelier-codex-"));
+  try {
+    const flags = codexNoMcpFlags("codex", ws, process.env);
+    assert.deepEqual(flags.slice(0, CODEX_FEATURES_OFF.length), CODEX_FEATURES_OFF);
+    const r = spawnSync("codex", [...flags, "mcp", "list", "--json"], { cwd: ws, encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    const listed = JSON.parse(r.stdout);
+    const servers = Array.isArray(listed) ? listed : Object.entries(listed.servers ?? listed).map(([name, s]) => ({ name, ...s }));
+    assert.deepEqual(servers.filter((s) => s.enabled !== false).map((s) => s.name), []);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
 });
 
 test("codex does not run when its MCP servers cannot be listed, named safely or all switched off", (t) => {
