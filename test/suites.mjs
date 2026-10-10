@@ -6,7 +6,8 @@
 // own, is rejected before anything runs, so no file is silently skipped or run
 // twice. The Vitest suites are *.spec.ts files, which its config
 // (vitest.config.ts) selects itself; they are not discovered here.
-import { readdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 // Every name that looks like a test file, so a misnamed one (x.test.js, say)
@@ -21,18 +22,24 @@ export const RUNNERS = [
 ];
 
 // Every test file under root, as slash-separated paths relative to it, sorted.
-// Dot-directories (.git, .cache, .wrangler) and node_modules are not walked.
+// In a git work tree the list is git's own (tracked files, plus untracked ones
+// not ignored, so a new file is found before it is committed), dot-directories
+// included. Elsewhere the tree is walked. Either way only node_modules is excluded.
 export function discover(root = ".") {
+  const listed = spawnSync("git", ["-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], { encoding: "utf8", maxBuffer: 1 << 28 });
+  const inRepo = listed.status === 0 && existsSync(join(root, ".git"));
+  const files = inRepo ? listed.stdout.split("\0").filter((f) => f && existsSync(join(root, f))) : walk(root, "");
+  return files.filter((f) => !f.split("/").some((part) => SKIPPED_DIRS.has(part)) && TEST_FILE.test(f.slice(f.lastIndexOf("/") + 1))).sort();
+}
+
+function walk(root, rel) {
   const found = [];
-  const walk = (rel) => {
-    for (const entry of readdirSync(join(root, rel), { withFileTypes: true })) {
-      const path = rel ? `${rel}/${entry.name}` : entry.name;
-      if (entry.isDirectory()) { if (!entry.name.startsWith(".") && !SKIPPED_DIRS.has(entry.name)) walk(path); }
-      else if (TEST_FILE.test(entry.name)) found.push(path);
-    }
-  };
-  walk("");
-  return found.sort();
+  for (const entry of readdirSync(join(root, rel), { withFileTypes: true })) {
+    const path = rel ? `${rel}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) { if (entry.name !== ".git" && !SKIPPED_DIRS.has(entry.name)) found.push(...walk(root, path)); }
+    else if (TEST_FILE.test(entry.name)) found.push(path);
+  }
+  return found;
 }
 
 // { byRunner: {name: [files]}, unassigned: [files], multiple: [{file, runners}] }
