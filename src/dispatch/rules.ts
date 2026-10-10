@@ -64,6 +64,10 @@ export interface RunnerOffer {
   kind: RunnerKind;
   agents: { agent: string; models: string[] }[];
   jobs?: string[];
+  // When the runner's process started, as it says: what it passes by after
+  // failures or a refused claim it forgets on a restart, so the reasons
+  // that name it count only from then (skippedBy, refusedBy).
+  started?: string;
 }
 
 export interface Assignment {
@@ -204,13 +208,15 @@ export function overlapRefusal(item: Item, items: readonly Item[]): OverlapRefus
   return null;
 }
 
-// The runners that gave one item up: cli/runner.mjs passes a task by for
-// the rest of its process once it has failed it SKIP_AFTER times
-// (failureCount), keyed by project and item alone, so dispatching it again
-// does not bring it back; only restarting that runner does. The server sees
-// those failures as the build run reports each runner sends (runOutcome),
-// counted per runner. A runner whose offer is no longer live skips nothing,
-// so with the offers known only live runners are named.
+// The runners that gave one item up: cli/runner.mjs passes a task by once
+// it has failed it SKIP_AFTER times under one dispatch (failureCount, keyed
+// by taskKey), until the task is dispatched again or that runner restarts.
+// The server sees those failures as the build run reports each runner sends
+// (runOutcome), counted per runner, and counts only those since the
+// dispatch (`since`, the dispatch's time) and since the runner's process
+// started (its offer's `started`), so a failure that runner has forgotten
+// never names it. A runner whose offer is no longer live skips nothing, so
+// with the offers known only live runners are named.
 export const SKIP_AFTER = 2;
 const FAILED_OUTCOMES = new Set(["stalled", "timed-out", "refused", "harness_failed"]);
 
@@ -222,11 +228,18 @@ export interface SkippedBy {
   last: string;      // the newest failure's outcome
 }
 
-export function skippedBy(runs: readonly RunSeen[], project: string, item: string, offers?: readonly SeenOffer[] | null, now = new Date()): SkippedBy[] {
+// When each runner's process started, from the offers that say so.
+function startedOf(offers: readonly SeenOffer[] | null | undefined): Map<string, string> {
+  return new Map((offers ?? []).flatMap((o) => typeof o.started === "string" ? [[o.runner, o.started] as [string, string]] : []));
+}
+
+export function skippedBy(runs: readonly RunSeen[], project: string, item: string, offers?: readonly SeenOffer[] | null, now = new Date(), since?: string): SkippedBy[] {
   const live = offers ? new Set(liveOffers(offers, now).map((o) => o.runner)) : null;
+  const started = startedOf(offers);
   const by = new Map<string, { failures: number; last: string; at: string }>();
   for (const r of runs) {
     if (r.project !== project || r.item !== item || r.role !== "build" || !FAILED_OUTCOMES.has(r.outcome)) continue;
+    if (since && r.at < since || r.at < (started.get(r.runner) ?? "")) continue;
     const seen = by.get(r.runner) ?? { failures: 0, last: r.outcome, at: r.at };
     // The index lists runs newest first, so a tie keeps the one seen first.
     by.set(r.runner, { failures: seen.failures + 1, ...(r.at > seen.at ?{ last: r.outcome, at: r.at } : { last: seen.last, at: seen.at }) });
@@ -236,12 +249,37 @@ export function skippedBy(runs: readonly RunSeen[], project: string, item: strin
     .sort((a, b) => a.runner.localeCompare(b.runner));
 }
 
+// A claim the server refused a runner for a dispatched task, as the Ledger
+// records it when the claim fails (noteClaimRefusal in src/ledger.ts): the
+// runner passes the task by until the task changes (refusedKey in
+// cli/runner.mjs), so without this record the refusal would be seen only in
+// that runner's log. It counts under the dispatch it was refused for, and
+// only from a live runner since its process started, as skippedBy counts.
+export interface ClaimRefusal {
+  runner: string;
+  actor: string;
+  error: string;        // the refusal's code, e.g. runner_forbidden, overlap_refused
+  detail: string;       // why, in words
+  dispatchAt: string;   // the dispatch the claim was refused under
+  at: string;
+}
+
+export function refusedBy(refusals: readonly ClaimRefusal[], item: Item, offers?: readonly SeenOffer[] | null, now = new Date()): ClaimRefusal[] {
+  const live = offers ? new Set(liveOffers(offers, now).map((o) => o.runner)) : null;
+  const started = startedOf(offers);
+  return refusals.filter((r) => r.dispatchAt === item.dispatch?.at && (!live || live.has(r.runner)) && r.at >= (started.get(r.runner) ?? ""))
+    .sort((a, b) => a.runner.localeCompare(b.runner));
+}
+
 // Why a dispatched task the queue offers is not being taken, each reason in
 // words, ready to print. The queue checks them in this order: the core-file
-// hold, the overlap the project's policy refuses, the failures a runner gave
-// up at, and no live runner offering the model or job. A task may carry
-// several; `atelier status` and `atelier show` print one line each.
-export type UnclaimedKind = "held" | "overlap" | "skipped" | "unoffered";
+// hold, the overlap the project's policy refuses, a claim a runner was
+// refused, the failures a runner gave up at, and no live runner offering the
+// model or job. Asked for one runner (`offer`, a runner's own poll with
+// `why`), a dispatch no other reason holds that this runner is not offered
+// says so: it is for another runner. A task may carry several; `atelier
+// status`, `atelier show` and an idle runner print one line each.
+export type UnclaimedKind = "held" | "overlap" | "refused" | "skipped" | "unoffered" | "elsewhere";
 
 export interface UnclaimedReason {
   kind: UnclaimedKind;
@@ -253,23 +291,43 @@ export function unclaimed(
   input: {
     held?: CoreHold | null;
     overlap?: OverlapRefusal | null;
+    refusals?: readonly ClaimRefusal[] | null;
     offers?: readonly SeenOffer[] | null;
     runs?: readonly RunSeen[] | null;
     project?: string;
+    offer?: RunnerOffer | null;
     now?: Date;
   },
 ): UnclaimedReason[] {
   const out: UnclaimedReason[] = [];
   if (input.held) out.push({ kind: "held", line: heldReasonLine(item, input.held) });
   if (input.overlap) out.push({ kind: "overlap", line: overlapReasonLine(input.overlap) });
+  for (const r of refusedBy(input.refusals ?? [], item, input.offers, input.now)) out.push({ kind: "refused", line: refusedReasonLine(r, item) });
   if (input.runs && input.project) {
-    for (const s of skippedBy(input.runs, input.project, item.id, input.offers, input.now)) out.push({ kind: "skipped", line: skippedReasonLine(s) });
+    for (const s of skippedBy(input.runs, input.project, item.id, input.offers, input.now, item.dispatch?.at)) out.push({ kind: "skipped", line: skippedReasonLine(s, item) });
   }
   if (item.dispatch && input.offers) {
     const dead = unoffered(item.dispatch, input.offers, input.now);
     if (dead) out.push({ kind: "unoffered", line: unofferedReasonLine(dead, item) });
   }
+  if (item.dispatch && input.offer && !out.length && !assign(item.dispatch, input.offer)) {
+    out.push({ kind: "elsewhere", line: `Not for ${input.offer.runner}: it is dispatched to ${describe(item.dispatch)}${item.dispatch.job ? ` (a ${item.dispatch.job} job)` : ""}, which this runner does not offer, and a live runner that does will take it.` });
+  }
   return out;
+}
+
+// The owner's command that dispatches a task again as it stands, which
+// clears what a runner remembers of it: a refused claim (the task changes)
+// and the failures it counted under the old dispatch.
+function redispatch(item: Item): string {
+  const d = item.dispatch;
+  if (!d) return `atelier dispatch ${item.id}`;
+  return [`atelier dispatch ${item.id}`, `--to ${d.to}`, d.agent ? `--agent ${d.agent}` : "", d.model ? `--model ${d.model}` : "",
+    d.job === "merge-main" ? `--job merge-main${d.head ? ` --head ${d.head}` : ""}` : "", d.overlapOk ? "--overlap-ok" : ""].filter(Boolean).join(" ");
+}
+
+function refusedReasonLine(r: ClaimRefusal, item: Item): string {
+  return `Claim refused: ${r.runner} claimed it as ${r.actor} and was refused (${r.error}: ${r.detail}); that runner passes it by until it changes, so once that is fixed, dispatch it again with ${redispatch(item)}.`;
 }
 
 function heldReasonLine(item: Item, h: CoreHold): string {
@@ -281,8 +339,8 @@ function overlapReasonLine(o: OverlapRefusal): string {
   return `Overlap refused: ${o.id} (${o.owner ?? "unowned"}) holds a scope that overlaps this one, and the project refuses overlapping claims; a runner can take it once ${o.id} merges or is abandoned, or the owner allows overlaps with atelier init --refuse-overlap=false.`;
 }
 
-function skippedReasonLine(s: SkippedBy): string {
-  return `Skipped by ${s.runner} after ${s.failures} failed runs (the last ${s.last}); that runner passes it by until it restarts: fix the cause, then restart it with atelier runner --name ${s.runner}.`;
+function skippedReasonLine(s: SkippedBy, item: Item): string {
+  return `Skipped by ${s.runner} after ${s.failures} failed runs under this dispatch (the last ${s.last}); that runner passes it by until it is dispatched again or the runner restarts: fix the cause, then ${redispatch(item)}.`;
 }
 
 function unofferedReasonLine(dead: string, item: Item): string {

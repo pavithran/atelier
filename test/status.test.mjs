@@ -498,7 +498,8 @@ test("each reason a queued task is not taken prints with the command that releas
   const why = (id) => [
     { kind: "held", line: `Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned, or at once with atelier dispatch ${id} --overlap-ok.` },
     { kind: "overlap", line: `Overlap refused: t1 (codex/gpt-6) holds a scope that overlaps this one, and the project refuses overlapping claims; a runner can take it once t1 merges or is abandoned, or the owner allows overlaps with atelier init --refuse-overlap=false.` },
-    { kind: "skipped", line: "Skipped by home:studio after 2 failed runs (the last stalled); that runner passes it by until it restarts: fix the cause, then restart it with atelier runner --name home:studio." },
+    { kind: "refused", line: `Claim refused: home:studio claimed it as codex/gpt-6 and was refused (runner_forbidden: its offer does not cover this dispatch); that runner passes it by until it changes, so once that is fixed, dispatch it again with atelier dispatch ${id} --to home --agent codex --model gpt-6.` },
+    { kind: "skipped", line: `Skipped by home:studio after 2 failed runs under this dispatch (the last stalled); that runner passes it by until it is dispatched again or the runner restarts: fix the cause, then atelier dispatch ${id} --to home --agent codex --model gpt-6.` },
     { kind: "unoffered", line: "No live runner can take it: home:studio offers build as opencode/glm-5.3." },
   ];
   const out = formatStatus([{
