@@ -7,7 +7,8 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { checkEnv } from "./check-env.mjs";
-import { killTree, treeGroups } from "./group.mjs";
+import { killTree, runGroup, treeGroups } from "./group.mjs";
+import { describeConflicts, installMergeConfig, mergeThrough } from "./merge-pipeline.mjs";
 import { formatLoad, envLoad, coreCount, loadLimitOf } from "./load.mjs";
 import { runnerChildEnv, envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
@@ -488,6 +489,23 @@ export async function rescueWork(cwd, git, log, now = new Date()) {
 // head, as after an earlier attempt committed the merge, the harness then
 // working on what came back.
 export const mergeMainArgs = (head, message) => ["git", "merge", "--no-ff", "-m", message, head];
+
+// A runner's merge (merge-main, integrate, refresh) through the merge
+// pipeline (cli/merge-pipeline.mjs), answered as a merge command's result:
+// code 0 when merged or already held; otherwise 1 with what stopped it. A
+// merge stopped on conflicts is left in progress (the caller resolves it
+// or aborts it), with the generated outputs among them named apart; a
+// generator's failure has already aborted it. Its generators run as a
+// process group ended with `signal`.
+export async function pipelineMerge(cwd, head, message, { signal, log = () => {} } = {}) {
+  const run = (argv, opts) => runGroup(argv, { ...opts, signal, timeoutMs: DEFAULT_TASK_TIMEOUT_MS });
+  let r;
+  try { r = await mergeThrough(cwd, head, { message, leave: true, run, log }); }
+  catch (error) { return { code: 1, output: `the merge pipeline could not run: ${error.message}` }; }
+  if (r.state === "merged" || r.state === "held") return { code: 0, output: (r.provenance ?? []).join("\n") };
+  if (r.state === "conflicts") return { code: 1, output: describeConflicts(r, r.manifest), generated: r.generated, source: r.source };
+  return { code: 1, output: r.reason };
+}
 export const CONFLICTS_ARGS = ["git", "diff", "--name-only", "--diff-filter=U"];
 
 export async function startMergeMain(assignment, workspace, io) {
@@ -526,7 +544,7 @@ async function mergeHead(workspace, io, base, target, message, what, { fetched =
   const before = await io.head(workspace);
   const merged = await io.mergeMain(workspace, target, message);
   const files = await io.conflicts(workspace);
-  if (files.length) return { state: "conflicts", files };
+  if (files.length) return { state: "conflicts", files, ...(merged.generated?.length ? { generated: merged.generated } : {}) };
   if (merged.code !== 0) throw new Error(`merging ${what} failed: ${oneLine(merged.output ?? "").slice(0, 500) || `git exited ${merged.code}`}`);
   const head = await io.head(workspace);
   return head === before ? { state: "held" } : { state: "merged", head };
@@ -546,7 +564,11 @@ export function conflictsSection(...merges) {
     if (merge.state !== "conflicts") return `The workspace already holds ${mergedWhat(merge)}; no merge was left in progress.`;
     const body = merge.files.map(oneLine).join("\n");
     const fence = "`".repeat(Math.max(3, ...[...body.matchAll(/`+/g)].map((m) => m[0].length + 1)));
-    return `The merge of ${mergedWhat(merge)} is in progress and left conflicts in ${merge.files.length === 1 ? "this file" : `these ${merge.files.length} files`}:\n${fence}\n${body}\n${fence}`;
+    // Generated outputs (t463) are told apart from the sources: they are
+    // regenerated once the sources are resolved, never edited by hand.
+    const generated = (merge.generated ?? []).filter((file) => merge.files.includes(file));
+    const regen = generated.length ? `\n\nOf these, ${generated.length === 1 ? "this is a generated output" : "these are generated outputs"}, declared in bin/merge-manifest.json: ${generated.map(oneLine).join(", ")}. Do not edit ${generated.length === 1 ? "it" : "them"} by hand. Resolve the other files first, then run ${generated.length === 1 ? "its" : "each one's"} declared generator command and git add ${generated.length === 1 ? "it" : "them"}.` : "";
+    return `The merge of ${mergedWhat(merge)} is in progress and left conflicts in ${merge.files.length === 1 ? "this file" : `these ${merge.files.length} files`}:\n${fence}\n${body}\n${fence}${regen}`;
   });
   return `## Conflicts in this workspace\n\n${lines.join("\n\n")}`;
 }
@@ -1568,7 +1590,14 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // The plan job's and a part's server calls (atelier.mjs wires them to
     // fetch); a runner started without them takes no plan job and no part.
     ...(jobBrief ? { jobBrief } : {}), ...(postPlan ? { postPlan } : {}),
-    clone: (remote, token, dir) => checked(["git", "clone", "--quiet", remote, dir], { env: gitAuth(token), signal: controller.signal, step: "clone" }, executeChild),
+    // Each clone gets the merge configuration its .gitattributes needs
+    // (cli/merge-pipeline.mjs) before anything merges in it, the harness's
+    // own merges included.
+    clone: async (remote, token, dir) => {
+      const out = await checked(["git", "clone", "--quiet", remote, dir], { env: gitAuth(token), signal: controller.signal, step: "clone" }, executeChild);
+      installMergeConfig(dir);
+      return out;
+    },
     diff: (dir, base, head) => checked(["git", "diff", base, head], { cwd: dir, capture: true, signal: controller.signal, step: "diff" }, executeChild),
     mergeBase: (dir, a, b) => checked(["git", "merge-base", a, b], { cwd: dir, capture: true, signal: controller.signal, step: "merge-base" }, executeChild),
     // Whether `base` is an ancestor of `head` (alreadyComplete): git exits 0
@@ -1597,12 +1626,16 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // onto the plan's branch, and reset the workspace for a rollback. Their
     // pushes go through atelier push.
     fetch: (cwd, remote, token, head) => checked(["git", "fetch", "--quiet", remote, head], { cwd, env: gitAuth(token), signal: controller.signal, step: "fetch" }, executeChild),
-    merge: (cwd, head, message = `Merge part ${head.slice(0, 8)} onto the plan's branch`) => executeChild(["git", "merge", "--no-ff", "--quiet", "-m", message, head], { cwd, capture: true, captureError: true, signal: controller.signal, step: "merge" }),
-    // A merge-main part's merge (startMergeMain), which leaves conflicts in
-    // place, and the files it left in conflict.
-    mergeMain: (cwd, head, message) => executeChild(mergeMainArgs(head, message), { cwd, capture: true, captureError: true, signal: controller.signal, step: "merge" }),
+    // The integrate and refresh merges and a merge-main part's merge
+    // (startMergeMain) all go through the merge pipeline (pipelineMerge);
+    // a merge-main merge leaves its conflicts in place, and the files it
+    // left in conflict are listed.
+    merge: (cwd, head, message = `Merge part ${head.slice(0, 8)} onto the plan's branch`) => pipelineMerge(cwd, head, message, { signal: controller.signal, log: line }),
+    mergeMain: (cwd, head, message) => pipelineMerge(cwd, head, message, { signal: controller.signal, log: line }),
     conflicts: async (cwd) => (await checked(CONFLICTS_ARGS, { cwd, capture: true, signal: controller.signal, step: "conflicts" }, executeChild)).split("\n").map((l) => l.trim()).filter(Boolean),
-    abortMerge: (cwd) => checked(["git", "merge", "--abort"], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild),
+    // A merge the pipeline stopped is already aborted; only one still in
+    // progress is aborted here.
+    abortMerge: async (cwd) => (existsSync(join(cwd, ".git", "MERGE_HEAD")) ? checked(["git", "merge", "--abort"], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild) : ""),
     // The workspace half of a rollback; runIntegrate and runRefresh push it with atelier push --rollback.
     rollback: (cwd, before) => checked(["git", "reset", "--hard", before], { cwd, capture: true, captureError: true, signal: controller.signal, step: "rollback" }, executeChild),
     writeDiff, removeDiff, verdictPath, readVerdict,

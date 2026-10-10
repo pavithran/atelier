@@ -213,10 +213,17 @@ function commandFixture(run) {
     writeFileSync(gitLog, "");
     writeFileSync(join(dir, "config.json"), JSON.stringify({ projects: { example: { path: dir, branch: "main" } } }));
     writeFileSync(join(dir, "git"), `#!/usr/bin/env node
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(gitLog)}, JSON.stringify(args) + '\\n');
-if (args.includes('--show-toplevel')) console.log(${JSON.stringify(dir)});
+// Settings are kept in a file of their own, so the merge configuration the
+// merge installs (cli/merge-pipeline.mjs) reads back as written.
+const settings = ${JSON.stringify(join(gitDir, "settings.json"))};
+const held = existsSync(settings) ? JSON.parse(readFileSync(settings, 'utf8')) : {};
+if (args[0] === 'config' && args.includes('--get')) { if (args.at(-1) in held) console.log(held[args.at(-1)]); else process.exit(1); }
+else if (args[0] === 'config' && args[1] === '--local') writeFileSync(settings, JSON.stringify({ ...held, [args.at(-2)]: args.at(-1) }));
+else if (args.includes('--git-common-dir')) console.log(${JSON.stringify(gitDir)});
+else if (args.includes('--show-toplevel')) console.log(${JSON.stringify(dir)});
 else if (args.includes('status') && process.env.TEST_DIRTY) console.log(' M file');
 else if (args.includes('--absolute-git-dir')) console.log(${JSON.stringify(gitDir)});
 else if (args.includes('--abbrev-ref')) console.log('main');

@@ -112,7 +112,7 @@ test("check --merged stops on a conflict with main, naming the path, and records
   const f = await fixture(t, { mainChange: edit("main's line one\nline two\n"), taskChange: edit("the task's line one\nline two\n"), check: "true" });
   const r = await f.run(["check", "t1", "--project", "proj", "--merged"]);
   assert.equal(r.status, 2, r.stdout + r.stderr);
-  assert.match(r.stderr, new RegExp(`the merge of t1 with main at ${f.mainHead.slice(0, 8)} stops on conflicts in:\\nSTATE.md`));
+  assert.match(r.stderr, new RegExp(`the merge of t1 with main at ${f.mainHead.slice(0, 8)} stops on conflicts; nothing was regenerated\\.\\nSource conflicts to resolve:\\n  STATE\\.md\\n`));
   assert.match(r.stderr, /run atelier update, resolve them, commit, and atelier push --force; then check again/);
   assert.deepEqual(f.evidence(), []);
 });

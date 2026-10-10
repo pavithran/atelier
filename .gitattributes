@@ -1,0 +1,6 @@
+# Merge routing (t463). Each path here is declared in bin/merge-manifest.json,
+# and Atelier installs the drivers in every clone it manages
+# (cli/merge-pipeline.mjs). Generated outputs are never merged as text: they
+# stay in conflict until the sources merge, then their generator writes them.
+test/fixtures/cli/help.txt merge=atelier-generated
+test/fixtures/cli/usage.json merge=atelier-generated
