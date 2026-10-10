@@ -9,7 +9,7 @@ import { accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
-import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, type Evidence, type Item } from "./rules";
+import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, type Evidence, type Item, type OwnerFactor } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
@@ -52,7 +52,13 @@ const READ_TTL = 3600;
 
 // `ref` is the project an API path names, resolved once at the entry (see
 // resolveProject); null when the path names none.
-type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null; waitUntil?: (p: Promise<unknown>) => void };
+// `signedIn` is set on a browser request a session cookie from /login
+// answers for, never on one the owner token alone authorises; `access` on
+// one Cloudflare Access vouched for as the owner's (checked at the entry).
+// The override forms need the first and, as the owner's confirmation (t371),
+// the second or the confirmation secret (ownerFactorIn): a session alone is
+// not that confirmation, since without Access the owner token buys one.
+type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null; waitUntil?: (p: Promise<unknown>) => void; signedIn?: boolean; access?: boolean };
 
 // ── auth ───────────────────────────────────────────────────────────────────
 // The owner bearer token may declare any actor for orchestration. Agent tokens
@@ -79,7 +85,41 @@ type Settings = {
   // as the token's email claim must name it. All three set, and every owner
   // route — /login among them — must carry an assertion Access signed.
   CF_ACCESS_ISS?: string; CF_ACCESS_AUD?: string; CF_ACCESS_OWNER_EMAIL?: string;
+  // The confirmation secret an override needs on a server not behind Access
+  // (t371): a Worker secret the owner types into the task page's override
+  // forms, and never gives a session. Behind Access it is not read: the
+  // owner's Access identity is the factor there (ownerFactorOf).
+  OVERRIDE_SECRET?: string;
 };
+
+// The factor no agent holds, which an override's confirmation rests on
+// (OwnerFactor in src/rules.ts): the Access identity where the server names
+// its Access team, since every owner page then carries one the entry
+// verified; else the confirmation secret where one is set; else none, and
+// no override can be confirmed until one is. The owner token and the browser
+// session it buys at /login are neither.
+function ownerFactorOf(env: Env): OwnerFactor | null {
+  if (accessSettings(env as unknown as Record<string, string | undefined>)) return "access";
+  if ((env as unknown as Settings).OVERRIDE_SECRET?.trim()) return "secret";
+  return null;
+}
+
+// The factor the override forms carry, checked (t371): behind Access, the
+// request's vouched identity (`c.access`, set at the entry); else the secret
+// the form's `confirmation` field holds, compared in constant time. Refused,
+// naming how to confirm on this server, when the form carries no factor, or
+// the server takes none.
+function ownerFactorIn(env: Env, c: Ctx, form: FormData, project: string, id: string): OwnerFactor {
+  const factor = ownerFactorOf(env);
+  const hint = overrideConfirmationHint(project, id, c.url.origin, factor);
+  if (factor === "access" && c.access) return "access";
+  if (factor === "secret") {
+    const given = String(form.get("confirmation") ?? "");
+    if (given && sameString(given, (env as unknown as Settings).OVERRIDE_SECRET!.trim())) return "secret";
+    throw new RuleError("override_unconfirmed", `an override of the independent review needs the confirmation secret, which was ${given ? "not this server's" : "not given"}: ${hint}`, 403);
+  }
+  throw new RuleError("override_unconfirmed", `an override of the independent review needs the owner's confirmation, which ${factor === null ? "this server cannot take" : "this request does not carry"}: ${hint}`, 403);
+}
 
 function thresholds(env: Env): Thresholds {
   return thresholdsFrom(env as unknown as Record<string, string | undefined>);
@@ -1036,6 +1076,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // The core-file globs the queue holds overlapping dispatches on; [] clears them.
       ...(has("coreFiles") ? { coreFiles: asStrings(body.coreFiles, "coreFiles") } : {}),
       ...(has("sandboxOnly") ? { sandboxOnly: Boolean(body.sandboxOnly) } : {}),
+      // Overrides of the independent review refused in this project (t371).
+      ...(has("noOverride") ? { noOverride: Boolean(body.noOverride) } : {}),
       ...(has("approval") ? { approval: approvalArg(body.approval) } : {}),
     };
     // A check that is not read-only is refused before the baseline is made;
@@ -1804,8 +1846,21 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // reason, which the Ledger refuses.
       // note, when sent, is the owner's own word on the acceptance, kept
       // with it in the ledger (land.sh records the session's note there).
+      // An override through the API comes with the owner token, which an
+      // agent session may hold, so the Ledger takes it only under the
+      // owner's standing permission from the task's page (t371); the
+      // refusal names that page on this server and the factor it takes.
       const overrideReview = body.overrideReview === undefined ? undefined : typeof body.overrideReview === "string" ? body.overrideReview : "";
-      const item = await L.accept(id, actor, String(body.head ?? ""), overrideReview, typeof body.note === "string" ? body.note : undefined);
+      let item: Item;
+      try {
+        item = await L.accept(id, actor, String(body.head ?? ""), overrideReview, typeof body.note === "string" ? body.note : undefined);
+      } catch (err) {
+        const rule = parseRuleError(err);
+        if (rule?.code === "override_unconfirmed") {
+          throw new RuleError(rule.code, `an override of the independent review needs the owner's confirmation: ${overrideConfirmationHint(ref.name, id, c.url.origin, ownerFactorOf(env))}`, rule.status);
+        }
+        throw err;
+      }
       // An override the owner records while a reviewer of another family was
       // available is answered with that reviewer, so the owner sees the
       // `atelier land ID --reviewer H/M` command that would have replaced it
@@ -2279,8 +2334,17 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const before = await L.item(id);
     const expected = String(form.get("head") ?? "");
     if (before.head) assertRevision(before, expected);
-    if (["accept", "override", "approve", "reject"].includes(verb)) await verifyRevision(env, ref.key, id, expected);
+    if (["accept", "override", "allow-override", "approve", "reject"].includes(verb)) await verifyRevision(env, ref.key, id, expected);
     if (verb === "accept" || verb === "override") await assertPlanMergeable(env, L, id);
+    // The override forms are the owner's confirmation only with the factor
+    // no agent holds (t371, ownerFactorIn): posted with the owner token as a
+    // bearer, as an agent could, or from a session alone, which that token
+    // buys, they are refused as the API's override is.
+    let factor: OwnerFactor | undefined;
+    if (verb === "override" || verb === "allow-override") {
+      if (!c.signedIn) throw new RuleError("override_unconfirmed", `an override of the independent review needs the owner's own sign-in, not the owner token: ${overrideConfirmationHint(project, id, c.url.origin, ownerFactorOf(env))}`, 403);
+      factor = ownerFactorIn(env, c, form, project, id);
+    }
     // A change of owner takes the write token with it, as on the API routes:
     // the Ledger clears the id read here only if it is still the one recorded.
     const oldToken = await L.tokenId(id);
@@ -2305,7 +2369,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     else if (verb === "accept") await L.accept(id, owner, expected);
     // The page's override form: accept with the owner's override of a missing
     // independent review, its reason in the note.
-    else if (verb === "override") await L.accept(id, owner, expected, note);
+    else if (verb === "override") await L.accept(id, owner, expected, note, undefined, factor);
+    // The page's permission for an override from the command line (t371).
+    else if (verb === "allow-override") await L.confirmOverride(id, owner, expected, factor!);
     else if (verb === "abandon") await L.abandon(id, owner, note, oldToken);
     else if (verb === "block") await L.block(id, owner, note);
     else if (verb === "unblock") await L.unblock(id, owner);
@@ -2542,7 +2608,9 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
   if (parts.length === 3) {
     const p = await L.project();
     const item = await L.item(parts[2]);
-    const detail: Detail = await L.detail(parts[2]);
+    // The page's override forms ask for the factor this server takes (t371).
+    const read: Detail = await L.detail(parts[2]);
+    const detail: Detail = { ...read, ownerFactor: ownerFactorOf(env) };
     detail.runs = await index(env).runsForItem(p.name, parts[2]);
     return html(renderItem(p, detail, ownerName(env), await diffFor(env, L, p.repo, item, detail.events), live), 200, nonce);
   }
@@ -2705,7 +2773,9 @@ export default {
         return Response.redirect(new URL("/login", url).toString(), 303);
       }
       if (typeof how === "object") return html("Agent tokens cannot use browser routes.", 403);
-      return await ui({ env, req, url, actor: ownerActor(env), body: null }, parts);
+      // Every request past the check above is one Access vouched for, where
+      // the server names its Access team.
+      return await ui({ env, req, url, actor: ownerActor(env), body: null, signedIn: how === "ui", access: access !== null }, parts);
     } catch (err) {
       const rule = parseRuleError(err);
       // The error page keeps the owner's name on the pages only the owner
