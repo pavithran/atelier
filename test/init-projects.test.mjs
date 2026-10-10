@@ -34,6 +34,7 @@ globalThis.fetch = async (url, options) => {
   if (options.method === 'PUT') policy = { ...policy, ...JSON.parse(options.body) };
   return Response.json(options.method === 'DELETE' ? { removed: true } : {
     project: { repo: 'weblog', policy: { ...policy, ...(process.env.TEST_APPROVED ? { approval: process.env.TEST_APPROVED } : {}) } },
+    item: { state: 'open', owner: null, dispatch: null },
     remote: 'https://git.test/weblog', token: 'test-token',
     baseline: { remote: 'https://git.test/weblog', token: 'test-token' }
   });

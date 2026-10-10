@@ -20,8 +20,14 @@ export default async function dispatchCommand() {
   // --overlap-ok with no destination, note or job releases a waiting
   // dispatch's hold and keeps its builder, job and place in the queue; the
   // server dispatches it as usual when none is waiting.
-  if (args["overlap-ok"] === true && args.to === undefined && args.note === undefined && args.job === undefined) body.retain = true;
-  const suggest = args.agent === undefined && args.job === undefined;
+  if (args["overlap-ok"] === true && args.to === undefined && args.note === undefined && args.job === undefined) {
+    const { item: before } = await call("GET", I(name, id), undefined, OWNER);
+    if (before.state === "open" && !before.owner && before.dispatch) {
+      body.retain = true;
+      body.retainAt = before.dispatch.at;
+    }
+  }
+  const suggest = !body.retain && args.agent === undefined && args.job === undefined;
   if (suggest) body.suggest = true;
   const item = await call("POST", `${I(name, id)}/dispatch`, body, OWNER);
   const d = item.dispatch;
