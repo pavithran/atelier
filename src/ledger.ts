@@ -1,7 +1,7 @@
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
 import { sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
-import { actorStanding, modelState, OBSERVED_UNDER, withStanding, type ModelEntry, type ModelRole, type ModelSet, type ModelStatus } from "./models/pool";
+import { actorStanding, modelState, OBSERVED_UNDER, withStanding, type ModelEntry, type ModelNote, type ModelRole, type ModelSet, type ModelStatus } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -169,6 +169,7 @@ export interface ProjectInit {
   execution?: ProjectPolicy["execution"];
   eligible?: string[];
   refuseOverlap?: boolean;
+  requireCriteria?: boolean;
   coreFiles?: string[];       // replaces the core-file globs; [] clears them (see ProjectPolicy.coreFiles)
   sandboxOnly?: boolean;
   approval?: string | null;
@@ -357,6 +358,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       protected: i.protected ?? p?.protected ?? [...DEFAULT_PROTECTED],
       eligible: i.eligible ?? p?.eligible ?? [],
       refuseOverlap: i.refuseOverlap ?? p?.refuseOverlap ?? false,
+      ...((i.requireCriteria ?? p?.requireCriteria) ? { requireCriteria: true } : {}),
       ...(coreFiles.length ? { coreFiles } : {}),
       sandboxOnly: i.sandboxOnly ?? p?.sandboxOnly ?? false,
       ...(approval ? { approval } : {}),
@@ -428,6 +430,7 @@ export class Ledger extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS showcase (name TEXT PRIMARY KEY, mode TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS model_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT NOT NULL, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS usage (tool TEXT NOT NULL, runner TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (tool, runner));
       CREATE TABLE IF NOT EXISTS usage_alerts (key TEXT PRIMARY KEY, tool TEXT NOT NULL, runner TEXT NOT NULL, since TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL);
@@ -770,8 +773,30 @@ export class Ledger extends DurableObject<Env> {
 
   // The model pool, on the index instance like the project list: shared by
   // every project, written by the owner, read by runners.
+  // Each entry carries its notes, oldest first (src/models/pool.ts).
   models(): ModelEntry[] {
-    return this.sql.exec(`SELECT json FROM models ORDER BY id`).toArray().map((r) => JSON.parse(r.json as string));
+    const names = new Map(this.projects().map((p) => [p.key ?? p.name, p.name]));
+    const notes = new Map<string, ModelNote[]>();
+    for (const r of this.sql.exec(`SELECT model, json FROM model_notes ORDER BY id`).toArray()) {
+      const list = notes.get(r.model as string) ?? [];
+      const note: ModelNote = JSON.parse(r.json as string);
+      list.push(note.project ? { ...note, projectName: names.get(note.project) ?? note.project } : note);
+      notes.set(r.model as string, list);
+    }
+    return this.sql.exec(`SELECT json FROM models ORDER BY id`).toArray().map((r) => {
+      const entry: ModelEntry = JSON.parse(r.json as string);
+      const mine = notes.get(entry.id);
+      return mine ? { ...entry, notes: mine } : entry;
+    });
+  }
+
+  // Stored under the project's key, so a rename never detaches the note.
+  addModelNote(id: string, note: ModelNote): ModelNote {
+    if (!this.sql.exec(`SELECT id FROM models WHERE id = ?`, id).toArray().length) throw new RuleError("no_model", `${id} is not in the model pool`, 404);
+    const named = note.project ? this.resolveProject(note.project) : undefined;
+    const stored = named ? { ...note, project: named.key } : note;
+    this.sql.exec(`INSERT INTO model_notes (model, json) VALUES (?, ?)`, id, JSON.stringify(stored));
+    return named ? { ...stored, projectName: named.name } : stored;
   }
 
   putModel(entry: ModelEntry): ModelEntry {
@@ -849,8 +874,10 @@ export class Ledger extends DurableObject<Env> {
     return d;
   }
 
+  // Notes are read with the pool and never stored on an entry, so the copy drops them.
   private keepPool(pool: readonly ModelEntry[]): void {
-    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('pool', ?)`, JSON.stringify(pool));
+    const kept = pool.map(({ notes: _notes, ...entry }) => entry);
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('pool', ?)`, JSON.stringify(kept));
   }
 
   // The index sends the pool here when the owner changes it, and every open
@@ -3719,7 +3746,7 @@ export class Ledger extends DurableObject<Env> {
   // where the gate needs none; only a gate that cannot proceed (checks not
   // passing, a rejection at this head whose blocking findings the owner has
   // not refuted, no push) refuses, with its reason.
-  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean } {
+  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner asks for a review", 403);
     const item = this.item(id);
     this.keepPool(pool);
@@ -3786,7 +3813,7 @@ export class Ledger extends DurableObject<Env> {
     } else if (records) {
       // The suggestion asks the previous round's reviewer and, for a
       // protected change, the review tier first, as the pool pick below does.
-      const pick = suggestReviewer({ ...records, item: { ...item, scope: [...item.scope, ...need.changedPaths] }, project: this.project().name, pool, policy, owner: this.owner, frontierRequired: need.changeClass === "protected",
+      const pick = suggestReviewer({ ...records, item: { ...item, scope: [...item.scope, ...need.changedPaths] }, pool, policy, owner: this.owner, frontierRequired: need.changeClass === "protected",
         previous: need.previousReviewer, tier: need.changeClass === "protected" ? policy.reviewTier : undefined },
         need.lapsed.map((actor) => ({ actor, reason: "its claim on a review of this head lapsed" })), new Date(at));
       chosen = pick.actor;
