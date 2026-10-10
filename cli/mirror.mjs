@@ -89,6 +89,118 @@ export function globMatcher(glob) {
 const sameUrl = (a, b) => a.trim().replace(/\/+$/, "") === b.trim().replace(/\/+$/, "");
 const firstLine = (text) => (text || "").trim().split("\n")[0];
 
+// The paths one commit changes, with each one's new mode, blob and size (null
+// when the object is missing): the file list `git log --name-only` would give,
+// read in raw form so the mode and the blob come with it. A merge lists what
+// differs from every parent, as its patch does. `raw` is a git runner that
+// returns the result (cwd set, failure allowed).
+export function changedFiles(raw, commit) {
+  const tree = raw(["diff-tree", "-r", "-z", "--no-renames", "--root", "--no-commit-id", "-c", commit]);
+  if (tree.status !== 0) return { ok: false, why: firstLine(tree.stderr) || "git diff-tree failed" };
+  const parts = tree.stdout.split("\0"), list = [];
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const header = parts[i], path = parts[i + 1];
+    const parents = header.match(/^:+/)?.[0].length;
+    if (!parents) return { ok: false, why: "unexpected diff-tree output" };
+    const f = header.slice(parents).split(" ");
+    const mode = f[parents], sha = f[2 * parents + 1];
+    if (!mode || !sha) return { ok: false, why: "unexpected diff-tree output" };
+    list.push({ path, mode, sha, size: null });
+  }
+  const blobs = list.filter((f) => !/^0+$/.test(f.mode) && f.mode !== "160000");
+  if (blobs.length) {
+    const sizes = raw(["cat-file", "--batch-check=%(objectname) %(objectsize)"], { input: blobs.map((f) => `${f.sha}\n`).join("") });
+    if (sizes.status !== 0) return { ok: false, why: firstLine(sizes.stderr) || "git cat-file failed" };
+    const known = new Map();
+    for (const line of sizes.stdout.split("\n")) {
+      const [sha, size] = line.split(" ");
+      if (sha && /^\d+$/.test(size ?? "")) known.set(sha, Number(size));
+    }
+    for (const f of blobs) f.size = known.has(f.sha) ? known.get(f.sha) : null;
+  }
+  return { ok: true, list };
+}
+
+// A path as git prints it in a patch header: quoted C-style when it holds a
+// quote, a control character or (under core.quotepath) a non-ASCII byte.
+// It returns the path and what follows the quoted string, or null when the
+// text is not one; unquoted text is the path itself, whole.
+export function unquotePath(text) {
+  if (!text.startsWith('"')) return { path: text, rest: "" };
+  const bytes = [], escapes = { a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11, "\\": 92, '"': 34 };
+  for (let i = 1; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') return { path: Buffer.from(bytes).toString("utf8"), rest: text.slice(i + 1) };
+    if (c !== "\\") { bytes.push(...Buffer.from(c, "utf8")); continue; }
+    const next = text[++i];
+    if (/[0-7]/.test(next ?? "")) {
+      const oct = text.slice(i, i + 3).match(/^[0-7]{1,3}/)[0];
+      bytes.push(parseInt(oct, 8)); i += oct.length - 1;
+    } else if (next in escapes) bytes.push(escapes[next]);
+    else return null;
+  }
+  return null;
+}
+
+// The path a `diff --git a/P b/P` or `diff --combined P` header names. With
+// renames off both sides of a git header are the same path, so its length
+// gives the split even when the path holds a space.
+export function headerPath(line) {
+  if (line.startsWith("diff --git ")) {
+    const rest = line.slice("diff --git ".length);
+    if (rest.startsWith('"')) {
+      const q = unquotePath(rest);
+      return q && q.path.startsWith("a/") && q.rest.startsWith(" ") ? q.path.slice(2) : null;
+    }
+    const n = (rest.length - 5) / 2;
+    if (!Number.isInteger(n) || n < 0 || rest.slice(0, 2) !== "a/" || rest.slice(n + 2, n + 5) !== " b/" || rest.slice(2, n + 2) !== rest.slice(n + 5)) return null;
+    return rest.slice(2, n + 2);
+  }
+  for (const prefix of ["diff --combined ", "diff --cc "]) if (line.startsWith(prefix)) {
+    const q = unquotePath(line.slice(prefix.length));
+    return q && q.rest === "" ? q.path : null;
+  }
+  return null;
+}
+
+// One commit's patch, as `git log -p` shows it (a merge as a combined diff),
+// read file by file: for each path, whether git could only call it binary, and
+// each line the commit adds with its line number in the commit's version of
+// the file. A line a parent already held is not an added line; one the merge
+// alone holds is.
+export function commitPatch(raw, commit) {
+  const shown = raw(["-c", "core.quotepath=true", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false", "-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/", "-c", "diff.suppressBlankEmpty=false",
+    "diff-tree", "-p", "-c", "-r", "--root", "--no-commit-id", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "-U0", commit]);
+  if (shown.status !== 0) return { ok: false, why: firstLine(shown.stderr) || "git diff-tree failed" };
+  const files = new Map();
+  let file = null, columns = 0, line = 0, inHunk = false;
+  for (const text of shown.stdout.split("\n")) {
+    if (text.startsWith("diff ")) {
+      const path = headerPath(text);
+      if (path === null) return { ok: false, why: `unreadable patch header: ${text.slice(0, 40)}` };
+      file = files.get(path) ?? { path, binary: false, added: [] };
+      files.set(path, file);
+      inHunk = false;
+      continue;
+    }
+    if (!file) { if (text === "") continue; return { ok: false, why: "patch text before any file header" }; }
+    if (!inHunk) {
+      if (/^Binary files /.test(text) || /^GIT binary patch/.test(text)) { file.binary = true; continue; }
+      const hunk = text.match(/^(@+) (?:-\d+(?:,\d+)? )+\+(\d+)(?:,\d+)? @+/);
+      if (hunk) { columns = hunk[1].length - 1; line = Number(hunk[2]); inHunk = true; }
+      continue;
+    }
+    const hunk = text.match(/^(@+) (?:-\d+(?:,\d+)? )+\+(\d+)(?:,\d+)? @+/);
+    if (hunk) { columns = hunk[1].length - 1; line = Number(hunk[2]); continue; }
+    if (text.startsWith("\\")) continue; // "\ No newline at end of file"
+    const prefix = text.slice(0, columns), body = text.slice(columns);
+    if (prefix.includes("-")) continue; // in a parent, not in the commit
+    if (prefix.includes("+")) file.added.push({ line, text: body });
+    line++;
+  }
+  return { ok: true, files: [...files.values()] };
+}
+
 // Publishes. `git(args, opts)` is atelier's runner; `say` prints. It returns
 // { ok } and never exits itself, so the caller chooses the status.
 export function publishMirror({ git, dir, branch, remote, say }) {
@@ -146,39 +258,48 @@ export function publishMirror({ git, dir, branch, remote, say }) {
     if (wrong.length) findings.push(`${c.slice(0, 12)}: ${wrong.join(" and ")} email is not ${mirror.email}`);
   }
 
-  // Each blob at a path is read once, in the first commit that carries it. A
-  // blob a later commit deleted is still read: the commit that added it is
-  // published whole.
-  const seen = new Set();
+  // Each commit is read on its own, as `git log -p --name-only` over the
+  // range would show it, never as the net difference between the mirror and
+  // the branch: a push publishes every commit, so a line added in one commit
+  // and deleted in a later one is published and is scanned where it was
+  // added. The file list names every path the commit changes (a private-path
+  // glob is checked against it, and a submodule, a missing or an oversized
+  // blob is refused from it); the patch gives the lines the commit adds, with
+  // their line numbers in the commit. A merge is read as a combined diff:
+  // what it holds that no parent held, and the parents are read as commits
+  // of their own, published or outgoing.
   for (const c of commits) {
-    const tree = raw(["diff-tree", "-r", "-z", "--no-renames", "--root", "--no-commit-id", "-c", c]);
-    if (tree.status !== 0) { refusals.push(`${c.slice(0, 12)}: the commit's changes cannot be read (${firstLine(tree.stderr)})`); continue; }
-    const parts = tree.stdout.split("\0");
-    for (let i = 0; i + 1 < parts.length; i += 2) {
-      const header = parts[i], path = parts[i + 1];
-      const parents = header.match(/^:+/)?.[0].length;
-      if (!parents) { refusals.push(`${c.slice(0, 12)}: the commit's changes cannot be read`); break; }
-      const f = header.slice(parents).split(" ");
-      const mode = f[parents], sha = f[2 * parents + 1];
+    const files = changedFiles(raw, c);
+    if (!files.ok) { refusals.push(`${c.slice(0, 12)}: the commit's file list cannot be read (${files.why})`); continue; }
+    const scan = new Set();
+    for (const { path, mode, sha, size } of files.list) {
       if (/^0+$/.test(mode)) continue; // a deletion adds nothing; the commit that added the path is scanned
       const at = `${c.slice(0, 12)} ${path}`;
       if (policy.paths.some((m) => m(path))) findings.push(`${at}: the path matches a private path glob`);
       if (mode === "160000") { refusals.push(`${at}: a submodule, whose content is in another repository`); continue; }
-      const key = `${sha}\0${path}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const blob = raw(["cat-file", "blob", sha]);
-      if (blob.status !== 0) { refusals.push(`${at}: unreadable (${firstLine(blob.stderr) || "object missing"})`); continue; }
-      if (blob.stdout.length > SCAN_BYTES) { refusals.push(`${at}: ${blob.stdout.length} characters, over the ${SCAN_BYTES} the scan reads`); continue; }
-      if (blob.stdout.includes("\0")) { refusals.push(`${at}: binary content`); continue; }
-      blob.stdout.split(/\r?\n/).forEach((text, n) => {
+      if (size === null) { refusals.push(`${at}: unreadable (object ${sha.slice(0, 12)} is missing)`); continue; }
+      if (size > SCAN_BYTES) { refusals.push(`${at}: ${size} bytes, over the ${SCAN_BYTES} the scan reads`); continue; }
+      scan.add(path);
+    }
+    if (!scan.size) continue;
+    const patch = commitPatch(raw, c);
+    if (!patch.ok) { refusals.push(`${c.slice(0, 12)}: the commit's patch cannot be read (${patch.why})`); continue; }
+    for (const file of patch.files) {
+      if (!scan.has(file.path)) continue;
+      scan.delete(file.path);
+      const at = `${c.slice(0, 12)} ${file.path}`;
+      if (file.binary) { refusals.push(`${at}: binary content`); continue; }
+      for (const { line, text } of file.added) {
         const rules = [];
         if (scanLine(text)) rules.push("secret");
         for (const [name, rx] of PRIVATE_ADDRESS) if (rx.test(text)) rules.push(name);
         if (policy.patterns.some((rx) => rx.test(text))) rules.push("private-pattern");
-        if (rules.length) findings.push(`${at}:${n + 1}: ${rules.join(", ")}`);
-      });
+        if (rules.length) findings.push(`${at}:${line}: ${rules.join(", ")}`);
+      }
     }
+    // A path the file list names whose patch did not come back is not
+    // stepped over: nothing was read for it.
+    for (const path of scan) refusals.push(`${c.slice(0, 12)} ${path}: no patch for the path in the commit's diff`);
   }
 
   const problems = findings.length + refusals.length;

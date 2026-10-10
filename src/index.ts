@@ -1,5 +1,6 @@
+import { runnerGitRequest } from "./runner-git.ts";
 import { assertCriteriaAllowed, assertReviewAllowed } from "./rules.ts";
-import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
+import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
 import { scanCommit } from "./secret-scan.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
@@ -347,7 +348,8 @@ async function authorised(req: Request, env: Env): Promise<"api" | "ui" | AgentT
   if (!want) return null;
   const bearer = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
   if (bearer && sameString(bearer, want)) return "api";
-  if (bearer) {
+  if (req.headers.has("authorization")) {
+    if (!bearer) return null;
     const token = await index(env).agentToken(await sha256(bearer));
     return token && tokenActive(token, Date.now()) ? token : null;
   }
@@ -807,7 +809,7 @@ const TOKEN_GONE = /NOT_FOUND|not found|expired|already revoked/i;
 // it: the holder keeps the item, the token stays recorded, and a retry
 // revokes it.
 async function revoke(env: Env, repo: string | null, tokenId: string | null) {
-  if (!repo || !tokenId) return;
+  if (!repo || !tokenId || tokenId.startsWith("runner:")) return;
   const gone = (err: unknown) => TOKEN_GONE.test(codeOf(err));
   try {
     // A transient failure is retried first (t349); revoking twice is harmless.
@@ -848,6 +850,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (parts.length === 1 && m === "GET") return json(await I.agentTokens());
     if (parts.length === 1 && m === "POST") {
       const options = tokenOptions(body, ownerActor(env), Date.now());
+      if (options.runner) {
+        const ref = await resolveProject(env, options.projects![0]);
+        if (!ref.registered) throw new RuleError("no_project", "runner tokens require an existing project", 400);
+      }
       const token = tokenFromBytes(crypto.getRandomValues(new Uint8Array(32)));
       const hash = await sha256(token);
       const record = { ...options, id: crypto.randomUUID().replaceAll("-", "").slice(0, 16), hash };
@@ -961,6 +967,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // src/dispatch/rules.ts).
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const offer = m === "POST" ? runnerOffer(body) : null;
+    if (c.token?.runner && (!offer || offer.runner !== c.token.runner)) throw runnerDenied(c.token);
     // Each step's time in milliseconds goes out in a server-timing header
     // (index, projects, total), so a slow poll can be measured live.
     const started = Date.now();
@@ -981,6 +988,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // over settles it, finishing the commits the dead run made, before
         // it starts new work.
         const L = ledgerOf(env, p);
+        if (c.token?.runner && offer) await L.runnerPoll(c.token, offer);
         const [held, { waiting, reviews }] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), L.queued()]);
         return [...held, ...waiting, ...reviews].map((item) => ({ project: p.name, item }));
       }
@@ -998,7 +1006,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // A held job is offered only as the claim it already is: the
           // assignment must name its holder, or the re-claim would be refused
           // as another's claim (claim guards the runner name; assign the actor).
-          return a && (!c.token || a.actor === actor) && (!isHeld(item) || item.owner === a.actor) ? [{ project, item, ...a }] : [];
+          return a && (!c.token?.runner || !["integrate", "refresh"].includes(item.dispatch?.job ?? "")) && (!c.token || c.token.runner || a.actor === actor) && (!isHeld(item) || item.owner === a.actor) ? [{ project, item, ...a }] : [];
         })
       : queued;
     // A project that could not be read is named, so a missing task is never silent.
@@ -1107,6 +1115,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     return json({ removed: true });
   }
   if (parts.length === 2 && m === "GET") {
+    // Runner clients need policy/configuration here, not unrelated tasks or
+    // their history. Job detail routes below enforce the claim binding.
+    if (c.token?.runner) return json({ project: await L.project(), items: [], events: [] });
     return json({ project: await L.project(), items: await L.items(), events: await L.events(undefined, 50) });
   }
   // The owner gives the project a new name. The index decides and refuses a
@@ -1303,7 +1314,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           throw new RuleError("conflict_predicted", `the part conflicts with the plan's branch: ${conflict}; it was sent back to its builder`, 409);
         }
       }
-      const { item, needsFork, generation, replaces } = await L.claim(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token);
+      const { item, needsFork, generation, replaces } = await L.claim(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token, c.token?.runner ? c.token : undefined);
       const p = await L.project();
       let fork = item.fork, moved = false;
       if (needsFork) {
@@ -1355,6 +1366,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // its tokens with the repository it replaced.
       if (!moved) await revoke(env, fork, replaces);
       const branch = await projectBranch(env, p);
+      if (c.token?.runner) {
+        const secret = tokenFromBytes(crypto.getRandomValues(new Uint8Array(32)));
+        const hash = await sha256(secret);
+        if (!await L.recordRunnerGit(id, actor, generation, replaces, hash, c.token)) {
+          throw new RuleError("claim_superseded", "the claim changed before its Git credential was recorded", 409);
+        }
+        const b = await mint(env, p.repo, "read", branch);
+        return json({ item: await L.item(id), workspace: {
+          remote: `${c.url.origin}/git/runner/${encodeURIComponent(ref.key)}/${id}.git`, token: secret,
+          expiresAt: c.token.expiresAt, defaultBranch: branch,
+        }, baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch } });
+      }
       const w = await mint(env, fork!, "write", branch);
       // The Ledger records the token only if this claim still stands (see
       // recordToken). If it does not, the token is revoked and never
@@ -2668,6 +2691,7 @@ export default {
     // Pages show times in the owner's zone (src/time.ts).
     setTimeZone((env as unknown as Settings).TIMEZONE);
     try {
+      if (pathname.startsWith("/git/runner/")) return await runnerGitRequest(req, url, { ledger: (key) => ledger(env, key), token: (hash) => index(env).agentToken(hash), artifacts: env.ARTIFACTS });
       // The front door: atelier.zone itself is the public showcase, for a
       // visitor or a judge who types the domain, answered before the sign-in
       // check as every public page is. /showcase serves the same page, so the
@@ -2733,12 +2757,19 @@ export default {
         }
         const token = typeof how === "object" && how ? how : undefined;
         const declared = req.headers.get("x-atelier-actor");
-        if (token && (token.actor === ownerActor(env) || declared !== null && declared !== token.actor)) {
+        if (token?.runner) {
+          const named = req.headers.get("x-atelier-runner");
+          if (named !== null && named.toLowerCase() !== token.runner) throw runnerDenied(token);
+        }
+        if (token && !token.runner && (token.actor === ownerActor(env) || declared !== null && declared !== token.actor)) {
           return json({ error: "actor_mismatch", detail: "X-Atelier-Actor must equal the agent token actor" }, 403);
         }
-        if (parts.length === 2 && parts[1] === "config" && req.method === "GET") return json({ ownerActor: ownerActor(env), ownerName: ownerName(env), ...(token ? { actor: token.actor } : {}) });
-        const actor = token?.actor ?? declared ?? "";
-        if (!validActor(actor)) return json({ error: "bad_actor", detail: "set X-Atelier-Actor to harness/model, or the project owner's actor" }, 400);
+        if (parts.length === 2 && parts[1] === "config" && req.method === "GET") return json({ ownerActor: ownerActor(env), ownerName: ownerName(env), ...(token?.runner ? { runner: token.runner, tokenId: token.id } : token ? { actor: token.actor } : {}) });
+        const actor = token?.runner ? declared ?? token.actor : token?.actor ?? declared ?? "";
+        if (!validActor(actor)) {
+          if (token?.runner) throw runnerDenied(token);
+          return json({ error: "bad_actor", detail: "set X-Atelier-Actor to harness/model, or the project owner's actor" }, 400);
+        }
         const body = req.method === "GET" ? {} : await req.json().catch(() => ({}));
         // Routes read fields from the body, so anything but a JSON object is refused here.
         if (typeof body !== "object" || body === null || Array.isArray(body)) {
@@ -2748,11 +2779,36 @@ export default {
         // reaches the project as the current one does, for a token limited to
         // either, and the answer names the project as it is called now.
         const ref = parts[1] === "projects" && parts[2] !== undefined ? await resolveProject(env, parts[2]) : null;
-        if (token) {
+        if (token?.runner) {
+          const input = body as Record<string, unknown>;
+          if (!runnerRoute(req.method, parts.slice(1), input) || ref && !inScope(token, ref.names)) throw runnerDenied(token);
+          if (parts[1] === "queue" && String(input.runner).toLowerCase() !== token.runner) throw runnerDenied(token);
+          if (ref && parts[3] === "items") {
+            if (actor === ownerActor(env) || actor === INTEGRATOR) throw runnerDenied(token);
+            await ledger(env, ref.key).assertRunnerJob(token, parts[4], actor, parts[5] === "claim");
+            // The authenticated runner, never a caller-selected identity, goes to the atomic claim.
+            req = new Request(req.url, { method: req.method, headers: new Headers(req.headers) });
+            req.headers.set("x-atelier-runner", token.runner);
+          }
+          if (parts[1] === "runs") {
+            if (typeof input.project !== "string" || typeof input.item !== "string" || typeof input.actor !== "string") throw runnerDenied(token);
+            const project = await resolveProject(env, input.project);
+            if (!inScope(token, project.names)) throw runnerDenied(token);
+            await ledger(env, project.key).assertRunnerReport(token, input.item, input.actor, String(input.role ?? "build"));
+            req = new Request(req.url, { method: req.method, headers: new Headers(req.headers) });
+            req.headers.set("x-atelier-runner", token.runner);
+          }
+        } else if (token) {
           if (!agentRoute(req.method, parts.slice(1), body as Record<string, unknown>)) return json({ error: "owner_token_required", detail: "this operation requires the owner token" }, 403);
           if (ref && !inScope(token, ref.names)) return json({ error: "project_scope", detail: "this project is outside the agent token scope" }, 403);
         }
-        const res = await api({ env, req, url, actor, body, token, ref, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
+        let res: Response;
+        try {
+          res = await api({ env, req, url, actor, body, token, ref, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
+        } catch (error) {
+          if (token?.runner && parseRuleError(error)?.status === 403) throw runnerDenied(token);
+          throw error;
+        }
         if (ref?.former) res.headers.set("x-atelier-project", ref.name);
         return res;
       }
@@ -2763,6 +2819,7 @@ export default {
       // else asked under the name is sent to sign in like the app's own
       // pages. Every path under /p/ is sent to sign in alike (below).
       if (!how) {
+        if (req.headers.has("authorization")) return json({ error: "unauthorised" }, 401);
         // A path under /p/ is answered the same whether or not a project is
         // registered under the name it holds: the visitor is sent to sign in
         // either way, so a guessed name learns nothing — a 404 for the rest
@@ -2772,7 +2829,7 @@ export default {
         if (!knownUI) return html("Not found.", 404);
         return Response.redirect(new URL("/login", url).toString(), 303);
       }
-      if (typeof how === "object") return html("Agent tokens cannot use browser routes.", 403);
+      if (typeof how === "object") return how.runner ? json({ error: "runner_forbidden", detail: runnerDenied(how).message }, 403) : html("Agent tokens cannot use browser routes.", 403);
       // Every request past the check above is one Access vouched for, where
       // the server names its Access team.
       return await ui({ env, req, url, actor: ownerActor(env), body: null, signedIn: how === "ui", access: access !== null }, parts);
