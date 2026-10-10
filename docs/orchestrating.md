@@ -214,6 +214,12 @@ time), the session can start a second runner (`atelier runner --name
 home:NAME-2`, see "The home runner" in `bin/orchestrate/README.md`) or
 review by hand.
 
+**Report after each landing.** The report the owner gets after every landing
+is `atelier status --brief`, under 20 lines: the recent merges, the commit
+the server is deployed at, live builds, reviews and the landing running, and
+the last 24 hours' spend against the daily limit. Give it as it prints; do
+not assemble it by hand.
+
 **Deploy when the CLI needs it.** On a machine where the CLI runs from the
 project's own checkout, a merge that adds a route the CLI calls, or changes
 the meaning of a route the CLI already calls, breaks every check until the
