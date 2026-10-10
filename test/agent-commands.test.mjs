@@ -128,8 +128,9 @@ test("inbox and show print the owner brief and preserve JSON output", async (t) 
     assert.equal(r.output.trim(), formatBrief("proj", "t1", brief, f.origin));
     const json = await f.run([...argv, "--json"]);
     assert.equal(json.status, 0, json.output);
-    // show's JSON carries the reviews; this fixture records none.
-    assert.deepEqual(JSON.parse(json.output), argv[0] === "show" ? { ...brief, reviews: [] } : [{ project: "proj", itemId: "t1", title: brief.title }]);
+    // show's JSON carries the reviews and any unparsable replies kept on the
+    // task (t407); this fixture records none.
+    assert.deepEqual(JSON.parse(json.output), argv[0] === "show" ? { ...brief, reviews: [], unparsable: [] } : [{ project: "proj", itemId: "t1", title: brief.title }]);
   }
 });
 
