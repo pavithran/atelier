@@ -17,6 +17,7 @@ import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./c
 import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
 import { assertDispatchable, assertDispatchedClaim, coreHold, makeDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
+import { allSkipped } from "./landing-verdict";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
 import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
@@ -3354,6 +3355,28 @@ export class Ledger extends DurableObject<Env> {
     });
   }
 
+  // Withdraws the open gate request at `head` when every live runner that
+  // offers its reviewer for the review job has skipped it (t353), recording
+  // a `review.withdrawn` event that names the request and the runners, and
+  // says so for the new request's reason; null when no open request stands
+  // there, or a runner is left that may still serve it. A claimed request is
+  // being served and is never judged here; without live offers nothing is
+  // known to have skipped, as the landing's own wait reads it (allSkipped).
+  private renewSkippedRequest(id: string, head: string, offers: readonly SeenOffer[], actor: string, at: string, proved: boolean): string | null {
+    const open = this.sql.exec(`SELECT id, dispatch FROM review_requests WHERE item = ? AND head = ? AND state = 'open' AND tier IS NULL ORDER BY id DESC LIMIT 1`, id, head).toArray()[0];
+    if (!open) return null;
+    const d = JSON.parse(open.dispatch as string) as Dispatch;
+    const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
+    if (!asked) return null;
+    const request = open.id as number;
+    const runners = allSkipped(asked, offers, this.reviewSkips(id, request));
+    if (!runners) return null;
+    const names = runners.join(", ");
+    this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, request);
+    this.log(id, actor, "review.withdrawn", { head, reviewer: asked, request, runners, reason: `every runner that offers ${asked} skipped review request ${request} (${names}); the owner asked again` }, at, proved);
+    return `The earlier request at this head (${request}) was withdrawn: every runner that offers ${asked} had skipped it (${names}), so the review is asked anew for them to serve.`;
+  }
+
   // The live review request for a part, as planView shows it: the reviewer
   // asked, the head asked about, and whether a runner claimed it. Null when
   // the part has no open or claimed request. With `tier`, the live tier
@@ -3524,8 +3547,11 @@ export class Ledger extends DurableObject<Env> {
   // not refuted, no push) refuses, with its reason.
   // The answer names the request's number (`request`, t353), the one the
   // queue gives runners in each review task, so the landing waiting on the
-  // verdict and the runner skipping the review name the same request.
-  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean; request?: number } {
+  // verdict and the runner skipping the review name the same request. With
+  // the live runner offers (`offers`), an open request at this head that
+  // every runner offering its reviewer has skipped is withdrawn and asked
+  // anew (renewSkippedRequest), so the runners serve the new request.
+  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords, offers?: readonly SeenOffer[]): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean; request?: number } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner asks for a review", 403);
     const item = this.item(id);
     // A named reviewer is judged even when a request already stands, so a
@@ -3553,6 +3579,14 @@ export class Ledger extends DurableObject<Env> {
         this.log(id, actor, "review.withdrawn", { head: item.head, reviewer: asked, reason: `the project owner named ${reviewer} to review it` }, at, proved);
       }
     }
+    // An open request at this head that every runner offering its reviewer
+    // has skipped (t353) will never be claimed: each runner keeps its skip
+    // until the request changes, and the landing that waited on it said so
+    // by runner name. The owner asking again is the attention the skip asked
+    // for, so the request is withdrawn here and asked anew below, under a
+    // fresh number the runners serve again. Judged only when the caller has
+    // the live offers; a claimed request is being served and stays.
+    const renewed = item.head && offers ? this.renewSkippedRequest(id, item.head, offers, actor, at, proved) : null;
     const need = reviewNeeded({
       item, part: item.kind === "part", policy,
       evidence: this.evidenceFor(id), reviews: this.reviewsFor(id),
@@ -3618,7 +3652,7 @@ export class Ledger extends DurableObject<Env> {
     const made = this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?) RETURNING id`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item)).one();
     this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: "land", ...(choiceReason ? { reason: choiceReason } : {}), ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
     this.askTierReview(item, need, chosen, actor, at, proved);
-    return { needed: true, requested: true, reason: [need.reason, choiceReason].filter(Boolean).join(" "), at, head: need.head, reviewer: chosen, request: made.id as number };
+    return { needed: true, requested: true, reason: [need.reason, choiceReason, renewed ?? ""].filter(Boolean).join(" "), at, head: need.head, reviewer: chosen, request: made.id as number };
   }
 
   // When the newest review.requested event for a head was recorded, so a

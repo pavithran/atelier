@@ -524,7 +524,10 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         // A named reviewer is wanted even where the gate needs none; with
         // none named the gate decides, and the Ledger suggests the reviewer
         // from the records when it needs one.
-        const r = await L.requestReview(p.item, p.actor, p.reviewer, pool, p.reviewer !== null, false, records);
+        // The live offers go with the ask (t353): a request at this head
+        // every runner offering its reviewer has skipped, left by an earlier
+        // landing, is withdrawn and asked anew, so the runners serve it again.
+        const r = await L.requestReview(p.item, p.actor, p.reviewer, pool, p.reviewer !== null, false, records, await index.runnerOffers());
         if (r.needed && r.reviewer) await L.setLandingWorkflowStage(p.item, p.instance, "review", round, `Reviewer: ${r.reviewer}. ${r.reason}`);
         // The request's number travels with the ask (t353): the skips the
         // wait counts are that request's alone.
@@ -569,7 +572,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         });
         if (stuck) {
           await step.do("record the skipped review", RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "skipped", reviewer: ask.reviewer, runners: stuck.runners }); return {}; });
-          throw new NonRetryableError(`every runner that offers ${ask.reviewer} for the review of ${p.item} at ${short(head)} has skipped it: ${stuck.runners.join(", ")}. The review request stays open and ${p.item} stays submitted. Review by hand (atelier review ${p.item} --approve --as ${ask.reviewer} --note "…"), then atelier accept ${p.item} and atelier merge ${p.item}, or run atelier land ${p.item} --workflow again once a runner can serve ${ask.reviewer}`);
+          throw new NonRetryableError(`every runner that offers ${ask.reviewer} for the review of ${p.item} at ${short(head)} has skipped it: ${stuck.runners.join(", ")}. The review request stays open and ${p.item} stays submitted. Review by hand (atelier review ${p.item} --approve --as ${ask.reviewer} --note "…"), then atelier accept ${p.item} and atelier merge ${p.item}, or run atelier land ${p.item} --workflow again, which asks the review anew for the runners to serve`);
         }
       }
       if (i + 1 >= maxPolls) {

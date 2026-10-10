@@ -1572,7 +1572,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       requireOwner(env, actor);
       const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
       const track = reviewer === null ? await suggestionRecords(index(env), (p) => ledgerOf(env, p)) : undefined;
-      return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true, false, track));
+      // The live offers go with the ask (t353): a request at this head every
+      // runner offering its reviewer has skipped is withdrawn and asked anew.
+      return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true, false, track, await index(env).runnerOffers()));
     }
     // One recorded step of a landing (atelier land): what it was, how long it
     // took and what it settled, for the integration record (t186).
