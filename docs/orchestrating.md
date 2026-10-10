@@ -31,7 +31,16 @@ points at it and states the review path (it does not edit the file).
   verdict with `atelier finding`.
 - File every task with its acceptance criteria, written before the build. A
   review judges the change against them, so a task without them gives the
-  review nothing to bind to.
+  review nothing to bind to. Write with each criterion the edge cases it
+  implies (an option left out, an empty list, a policy under which nothing
+  qualifies), and have a model of another company than the orchestrator
+  read the criteria before the task is dispatched. A case the criteria do not
+  name is found by the reviewer instead, a round at a time: on 10 October
+  one task took three review rounds and another five, each over a case the
+  criteria left unstated.
+- Before asking for the cross-company review, read the diff against the
+  criteria yourself. Your reading does not count at the gate; it catches the
+  plain misses before the expensive review does.
 - Land one task at a time with `atelier land ID --reviewer H/M`, where
   `H/M` names a reviewer of another family than every contributor; the
   command merges main, checks, submits, waits for the independent review,
@@ -42,8 +51,16 @@ points at it and states the review path (it does not edit the file).
 - On a stall (a claimed task with no progress), check whether the agent's
   process still runs, then `atelier handoff` the task to another model or
   `atelier release` it. Do not start the same work twice.
-- After a repeated rejection of the same task, stop resending it: judge the
-  findings, then hand it to a builder from another company or ask the owner.
+- After two rejections on the same point, stop resending the task to the
+  same builder: judge the findings, then hand it to a builder from another
+  company or ask the owner.
+- Record every judgement you make for the owner, with its reason: a finding's
+  verdict (`atelier finding`), a decision (`atelier decide`), a hold released.
+  Your judgements are measured like a reviewer's: a finding you refuted that
+  later proves real counts against you.
+- Investigate in parallel. A failing check or a large conflict can go to a
+  helper agent of your own while you keep landing; do not stop the queue to
+  read a log.
 - Feed what you learn back into Atelier, as the last section says.
 
 ## The shape of the work
@@ -367,11 +384,15 @@ these waits with a command.
 In the task's workspace, `git diff --name-only --diff-filter=U` lists the
 conflicting files.
 
-- **A conflict of a line or two whose resolution is plain** (two sides each
-  adding a name to one import list): resolve it keeping both sides, run the
-  type check and the tests of the files touched, commit the merge, push with
-  `atelier push`, and queue the landing again.
-- **Anything larger**: `git merge --abort` in the workspace, then send it
+- **A mechanical conflict**, however many files it spans, is resolved by the
+  orchestrator: two sides each adding entries to help or usage text, an
+  import list, a table or a registry, and generated fixtures (regenerate them
+  from the merged code). Keep both sides, run the type check and the tests of
+  the files touched, commit the merge with your own `Agent:` line, push with
+  `atelier push --as H/M` from the workspace, and queue the landing again.
+  The commit makes you a contributor, so the reviewer must be of another
+  company than you as well as the builder.
+- **A conflict that changes behaviour** (two sides changing the same logic): `git merge --abort` in the workspace, then send it
   back to its builder:
   `atelier dispatch tN --job merge-main --to home --agent A --model M --overlap-ok`.
   For a task with many conflicting files in core code, name the strongest
