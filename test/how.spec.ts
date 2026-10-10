@@ -36,6 +36,13 @@ it("renders without a session, with or without a server token, and says it is pu
   }
 });
 
+it("states that coordinated review requires a different contributor model under any harness", async () => {
+  const { body } = await page();
+  const coordinatedRule = "Under a ControlPlane policy a coordinated change, one that is neither protected nor direct, needs a review from a model different from every contributor's, under any harness name, and the owner's approval is not that review either.";
+  expect(body).toContain(escapeText(coordinatedRule));
+  expect(body).not.toContain("any agent who did not contribute");
+});
+
 it("contains every command and flag form the CLI help prints, and the agent guide", async () => {
   const { body } = await page();
   expect(HELP_FORMS.length).toBeGreaterThan(40);

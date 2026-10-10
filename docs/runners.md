@@ -301,6 +301,14 @@ deadline from 45 minutes, and `finishTimeoutMs` to change the whole finish
 deadline from 60 minutes. Expiry ends the process group as above. A finish
 timeout leaves the claim held.
 
+A runner takes a new job only while the machine's load average is under a
+limit, so a saturated machine is not handed another harness to run on top of
+the rest (t403). The limit is the core count by default; set `loadLimit` to a
+number to change it, and the runner holds off while the load is at or above
+it, saying so on each poll it skips. The reading is the one-minute load
+average, and it is checked again before each job in a poll, so finishing a
+heavy job lets the load fall before another begins.
+
 ```sh
 atelier runner --name home:studio
 ```
