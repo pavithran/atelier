@@ -318,9 +318,29 @@ test("--reviewer whose approval would not count under the policy is refused up f
   assert.equal(f.posts("/review-request").length, 0);
   assert.equal(f.posts("/land").length, 0);
   assert.equal(git(f.checkout, "rev-parse", "HEAD"), before);
+  // An agent available but without the assessor role is refused the same way.
+  f.box.agents = { claude: { available: true, eligible_roles: ["assessor"] }, codex: { available: true, eligible_roles: ["executor"] } };
+  const norole = await f.run(f.checkout, "land", "t1", "--reviewer", "codex/gpt-6-astra");
+  assert.equal(norole.status, 1, norole.output);
+  assert.match(norole.output, /codex\/gpt-6-astra's approval would not count in proj: codex\/gpt-6-astra needs an available agent with the assessor role; available agents with the assessor role: claude\. Name another reviewer with --reviewer H\/M/);
+  assert.equal(f.posts("/landing-lease").length, 0);
+  assert.equal(git(f.checkout, "rev-parse", "HEAD"), before);
   // The eligible reviewer is not refused.
   const ok = await f.run(f.checkout, "land", "t1", "--reviewer", "claude-code/opus-5.5");
   assert.equal(ok.status, 0, ok.output);
+});
+
+test("--reviewer outside a legacy eligibility list is refused up front, naming the eligible harnesses", async (t) => {
+  const f = await landFixture(t);
+  f.box.eligible = ["claude"];
+  const before = git(f.checkout, "rev-parse", "HEAD");
+  const r = await f.run(f.checkout, "land", "t1", "--reviewer", "codex/gpt-6-astra");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /codex\/gpt-6-astra's approval would not count in proj: codex is not an eligible agent here \(eligible: claude\)\. Name another reviewer with --reviewer H\/M/);
+  assert.equal(f.posts("/landing-lease").length, 0);
+  assert.equal(f.posts("/review-request").length, 0);
+  assert.equal(f.posts("/land").length, 0);
+  assert.equal(git(f.checkout, "rev-parse", "HEAD"), before);
 });
 
 test("--reviewer stops the landing on a rejection even where the gate needs no review", async (t) => {
