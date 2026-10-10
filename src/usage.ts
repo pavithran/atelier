@@ -117,6 +117,8 @@ export const HELP_GROUPS: HelpGroup[] = [
   { name: "Models", lines: [[
     { form: "models", about: "Lists the model pool: each model's harness, where it runs, its family and what a runner last found." },
     { form: "models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... [--note TEXT]", about: "Adds or replaces a pool entry. Atelier never stores a key: `--keychain` names the Keychain entry that holds it, and a request that carries a key is refused. `--note` keeps a note with the entry." },
+    { form: "models show ID", about: "Shows a pool entry with its notes, oldest first." },
+    { form: "models note ID 'text' [--item tN]", about: "Keeps a dated note under a pool model, by its author. `--item` names the task it concerns; a note with none bears on every task the model is suggested for." },
     { form: "models remove ID", about: "Removes a model from the pool." },
   ], [
     { form: "dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] [--job merge-main [--head H]] [--overlap-ok]", about: "Queues an open task for a kind of runner, and optionally an agent and model, instead of waiting for an agent to choose it; a held task is released and queued in the same step, keeping its workspace and commits. While the task's scope overlaps, within one of the project's core files (`init --core`), the scope of a live item, the queue holds it and offers it to no runner until that item merges or is abandoned; `atelier status` and `atelier queue` say which item it waits on, and `--overlap-ok` lets this dispatch through at once. `--job merge-main` sends a task whose landing conflicted with main back to its builder: the runner merges main at the named head into its workspace (main's head as the baseline holds it, unless `--head` names one) and leaves the conflicts for the builder to resolve and commit; then `atelier land ID` again. Project owner only." },
@@ -526,6 +528,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       "--keychain NAME": "the Keychain entry that holds the key; the key itself is never sent",
       "--alias A": "another name the harness reports the model under; once per alias",
       "--note TEXT": "a note kept with the entry",
+      "--item tN": "the task a dated note concerns; without it the note bears on every task the model is suggested for",
     },
     example: "atelier models add gpt-6-astra --harness codex --where cloud",
   },

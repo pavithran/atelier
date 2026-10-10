@@ -292,7 +292,7 @@ export const FLAGS = {
   // Each plan subcommand takes only its own flags (PLAN_FLAGS); this row is their union.
   plan: { scope: '--scope needs text: atelier plan "goal" --scope "GLOB", once per entry', planner: false, json: true, hash: false, "allow-paid": true, note: false, to: false, resolve: true },
   // models add refuses --key, --api-key and --token itself, saying where keys go.
-  models: { harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, key: false, "api-key": false, token: false },
+  models: { harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, item: false, key: false, "api-key": false, token: false },
   showcase: { named: true, anonymous: true },
   projects: { force: true },
   owners: { json: true },
@@ -3366,9 +3366,15 @@ const commands = {
   // The model pool. With no subcommand, lists it. `models add ID --harness H
   // --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME]
   // [--alias A]... [--note TEXT]` adds or replaces an entry; `models remove ID`
-  // removes one. Keys stay in the Keychain; only the entry's name is sent.
+  // removes one; `models note ID 'text' [--item tN]` keeps a dated note under
+  // it, and `models show ID` prints it with its notes. Keys stay in the
+  // Keychain; only the entry's name is sent.
   async models() {
-    const [sub, id] = args._.slice(1);
+    const [sub, id, text] = args._.slice(1);
+    const modelLine = (m) => {
+      const s = m.status ? `${m.status.state} ${m.status.at.slice(0, 16)}Z${m.status.served && m.status.served !== m.id ? ` as ${m.status.served}` : ""}` : "not checked";
+      return `${m.where.padEnd(5)} ${m.harness}/${m.id}  ${m.family}  ${s}${m.keychain ? `  key: ${m.keychain}` : ""}`;
+    };
     if (sub === "add") {
       if (!id) die("atelier models add ID --harness H --where home|cloud");
       for (const k of ["key", "api-key", "token"]) if (args[k] !== undefined) die("Atelier never stores keys; put the key in your Keychain and give its entry's name with --keychain");
@@ -3383,13 +3389,24 @@ const commands = {
       const { removed } = await call("DELETE", `/models/${encodeURIComponent(id)}`, undefined, OWNER);
       return console.log(removed ? `${id} is no longer in the pool.` : `${id} was not in the pool.`);
     }
-    if (sub) die(`${COMMAND_USAGE.models}\nunknown models command "${sub}"; use add, remove, or nothing to list`);
+    if (sub === "note") {
+      if (!id || args._.length !== 4) die("atelier models note ID 'text' [--item tN]");
+      const note = await call("POST", `/models/${encodeURIComponent(id)}/notes`, { text, item: args.item }, OWNER);
+      return console.log(`${id} has a new note, ${note.at.slice(0, 10)} by ${note.by}${note.item ? ` on ${note.item}` : ""}: ${note.text}`);
+    }
+    if (sub === "show") {
+      if (!id) die("atelier models show ID");
+      const m = (await call("GET", "/models", undefined, OWNER)).find((entry) => entry.id === id);
+      if (!m) die(`${id} is not in the pool`);
+      console.log(modelLine(m));
+      if (!m.notes?.length) return console.log("  No notes yet. Add one: atelier models note ID 'text'");
+      for (const n of m.notes) console.log(`  ${n.at.slice(0, 10)} by ${n.by}${n.item ? ` on ${n.item}` : ""}: ${n.text}`);
+      return;
+    }
+    if (sub) die(`${COMMAND_USAGE.models}\nunknown models command "${sub}"; use add, remove, note, show, or nothing to list`);
     const pool = await call("GET", "/models", undefined, OWNER);
     if (!pool.length) return console.log("The pool is empty. Add a model: atelier models add ID --harness H --where home|cloud");
-    for (const m of pool) {
-      const s = m.status ? `${m.status.state} ${m.status.at.slice(0, 16)}Z${m.status.served && m.status.served !== m.id ? ` as ${m.status.served}` : ""}` : "not checked";
-      console.log(`${m.where.padEnd(5)} ${m.harness}/${m.id}  ${m.family}  ${s}${m.keychain ? `  key: ${m.keychain}` : ""}`);
-    }
+    for (const m of pool) console.log(modelLine(m));
   },
 
   // The public showcase: which projects the owner shows, and whether each is

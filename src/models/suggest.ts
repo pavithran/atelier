@@ -1,6 +1,6 @@
 import type { Item, ProjectPolicy } from "../rules.ts";
 import { assertEligible, DEFAULT_OWNER, modelKey, RuleError } from "../rules.ts";
-import type { ModelEntry } from "./pool.ts";
+import { latestNote, noteLine, type ModelEntry } from "./pool.ts";
 import { buildReliability, outcomesOf, reliabilityLine, tiebreak, type ProjectEvents, type RunReport } from "./reliability.ts";
 import { paidPerToken, type Choice } from "../plans/route.ts";
 import { servedActor, servedBy } from "./served.ts";
@@ -75,7 +75,8 @@ export function suggestBuilder(input: SuggestionInput, constraints: { to?: unkno
     else if (paidPerToken(entry)) refusal = "per-token spending is not authorized";
     else { try { assertEligible(actor, input.policy, input.owner); } catch (e) { if (!(e instanceof RuleError)) throw e; refusal = e.message; } }
     if (refusal) { excluded.push(`${actor}: ${refusal}`); continue; }
-    return { actor, where: entry.where, reasons: [why, `Outcome score ${score.toFixed(3)}. ${reason}`, ...excluded.map((s) => `Passed over ${s}.`)] };
+    const note = latestNote(entry, input.item.id);
+    return { actor, where: entry.where, reasons: [why, `Outcome score ${score.toFixed(3)}. ${reason}`, ...(note ? [noteLine(note)] : []), ...excluded.map((s) => `Passed over ${s}.`)] };
   }
   throw new RuleError("no_builder", `${why} No eligible builder in the pool. ${excluded.join("; ")}`, 409);
 }

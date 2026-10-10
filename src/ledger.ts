@@ -1,7 +1,7 @@
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
 import { sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
-import { OBSERVED_UNDER, type ModelEntry, type ModelStatus } from "./models/pool";
+import { OBSERVED_UNDER, type ModelEntry, type ModelNote, type ModelStatus } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -420,6 +420,7 @@ export class Ledger extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS showcase (name TEXT PRIMARY KEY, mode TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS model_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT NOT NULL, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS usage (tool TEXT NOT NULL, runner TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (tool, runner));
       CREATE TABLE IF NOT EXISTS usage_alerts (key TEXT PRIMARY KEY, tool TEXT NOT NULL, runner TEXT NOT NULL, since TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL);
@@ -759,8 +760,25 @@ export class Ledger extends DurableObject<Env> {
 
   // The model pool, on the index instance like the project list: shared by
   // every project, written by the owner, read by runners.
+  // Each entry carries its notes, oldest first (src/models/pool.ts).
   models(): ModelEntry[] {
-    return this.sql.exec(`SELECT json FROM models ORDER BY id`).toArray().map((r) => JSON.parse(r.json as string));
+    const notes = new Map<string, ModelNote[]>();
+    for (const r of this.sql.exec(`SELECT model, json FROM model_notes ORDER BY id`).toArray()) {
+      const list = notes.get(r.model as string) ?? [];
+      list.push(JSON.parse(r.json as string));
+      notes.set(r.model as string, list);
+    }
+    return this.sql.exec(`SELECT json FROM models ORDER BY id`).toArray().map((r) => {
+      const entry: ModelEntry = JSON.parse(r.json as string);
+      const mine = notes.get(entry.id);
+      return mine ? { ...entry, notes: mine } : entry;
+    });
+  }
+
+  addModelNote(id: string, note: ModelNote): ModelNote {
+    if (!this.sql.exec(`SELECT id FROM models WHERE id = ?`, id).toArray().length) throw new RuleError("no_model", `${id} is not in the model pool`, 404);
+    this.sql.exec(`INSERT INTO model_notes (model, json) VALUES (?, ?)`, id, JSON.stringify(note));
+    return note;
   }
 
   putModel(entry: ModelEntry): ModelEntry {

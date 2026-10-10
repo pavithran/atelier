@@ -1,8 +1,33 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cleanEntry, cleanStatus, familyOf, LOCAL_BUILD } from "../src/models/pool.ts";
+import { cleanEntry, cleanNote, cleanStatus, familyOf, latestNote, LOCAL_BUILD, noteLine } from "../src/models/pool.ts";
 
 const AT = "2026-10-04T12:00:00.000Z";
+
+test("a note is dated text under a model, naming the task it concerns when it does", () => {
+  assert.deepEqual(cleanNote({ text: "  Commits\nwithout the full suite.  ", item: "t406" }, "pavi", AT), { at: AT, by: "pavi", text: "Commits without the full suite.", item: "t406" });
+  assert.deepEqual(cleanNote({ text: "Stalls on long refactors." }, "pavi", AT), { at: AT, by: "pavi", text: "Stalls on long refactors." });
+  for (const [body, why] of [
+    [{ text: " \u0001 " }, /needs text/],
+    [{ text: "x".repeat(501) }, /at most 500/],
+    [{ text: "key sk-proj-AbC123xyzQrS456" }, /carries a key/],
+    [{ text: "fine", item: "406" }, /such as t406/],
+    [{ text: "fine", item: "t1 and t2" }, /such as t406/],
+  ] as const) assert.throws(() => cleanNote(body as Record<string, unknown>, "pavi", AT), why);
+});
+
+test("the latest note that bears on a task is the last one that names no task or names this one", () => {
+  const entry = {
+    notes: [
+      { at: "2026-10-01T09:00:00.000Z", by: "pavi", text: "Stalls on long refactors." },
+      { at: "2026-10-02T09:00:00.000Z", by: "pavi", text: "Only t9 is affected.", item: "t9" },
+    ],
+  };
+  assert.equal(latestNote(entry, "t1")?.text, "Stalls on long refactors.");
+  assert.equal(latestNote(entry, "t9")?.text, "Only t9 is affected.");
+  assert.equal(latestNote({}, "t1"), undefined);
+  assert.equal(noteLine(entry.notes[1]), "Latest note, 2026-10-02 by pavi on t9: Only t9 is affected.");
+});
 
 test("families are recognised by name, so new releases need no update", () => {
   for (const [name, family] of [

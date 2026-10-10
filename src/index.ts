@@ -16,7 +16,7 @@ import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, R
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
-import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
+import { cleanEntry, cleanNote, cleanStatus, type ModelEntry } from "./models/pool";
 import { suggestionRecords } from "./models/suggestion-records.ts";
 import { suggestBuilder } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
@@ -862,6 +862,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (parts.length === 2 && m === "DELETE") {
       requireOwner(env, actor);
       return json({ removed: await I.removeModel(id) });
+    }
+    if (parts.length === 3 && parts[2] === "notes" && m === "POST") {
+      requireOwner(env, actor);
+      return json(await I.addModelNote(id, cleanNote(body, actor, new Date().toISOString())));
     }
     if (parts.length === 3 && parts[2] === "status" && m === "POST") {
       const runner = parseRunner(req.headers.get("x-atelier-runner"));

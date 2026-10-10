@@ -2,6 +2,7 @@
 // on review execution or independence rules.
 import { RuleError } from "../rules.ts";
 import { buildPrecision, precisionWindow } from "../models/precision.ts";
+import { latestNote, noteLine } from "../models/pool.ts";
 import { frontier, ranked, sensitive, type SuggestionInput } from "../models/suggest.ts";
 import type { Choice } from "../plans/route.ts";
 import { pickReviewer } from "./reviewer.ts";
@@ -24,5 +25,6 @@ export function suggestReviewer(input: ReviewerSuggestionInput, avoid: readonly 
   });
   if (!pick.reviewer) throw new RuleError("no_reviewer", `${strict ? "Security, concurrency or gate work requires a frontier reviewer. " : ""}${pick.unpicked}`, 409);
   const row = ordered.find(({ entry }) => actorOf(entry) === pick.reviewer!.actor)!;
-  return { actor: pick.reviewer.actor, reasons: [strict ? "Frontier reviewer required for security, concurrency or gate work." : "Reviewer ranked by finding precision, then recorded outcomes.", row.reason, ...pick.reviewer.reasons] };
+  const note = latestNote(row.entry, input.item.id);
+  return { actor: pick.reviewer.actor, reasons: [strict ? "Frontier reviewer required for security, concurrency or gate work." : "Reviewer ranked by finding precision, then recorded outcomes.", row.reason, ...(note ? [noteLine(note)] : []), ...pick.reviewer.reasons] };
 }

@@ -16,5 +16,6 @@
 // take a brief and acceptance criteria apart from the short title, and edit
 // takes a title (t315). 16: a review names the binding of the acceptance
 // criteria it judged and may name the request it claimed, the review claim
-// gives both, and edit says what a change of criteria withdrew (t326).
-export const ROUTE_LEVEL = 16;
+// gives both, and edit says what a change of criteria withdrew (t326). 17:
+// the owner keeps dated notes under a pool model, atelier models note (t406).
+export const ROUTE_LEVEL = 17;
