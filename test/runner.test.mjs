@@ -1153,7 +1153,7 @@ test("jobs is the exact list a runner offers, and unknown job names are refused"
     assert.match(errors, /jobs/, JSON.stringify(jobs));
   }
   assert.match(parseConfig({ agents: [reviewer], jobs: ["integrate"] }).errors.join(" "), /the integrator's alone/);
-  assert.match(parseConfig({ agents: [reviewer], jobs: ["other"] }).errors.join(" "), /build, plan, merge-main, merge-main-task, merge-plan and review/);
+  assert.match(parseConfig({ agents: [reviewer], jobs: ["other"] }).errors.join(" "), /build, plan, merge-main, merge-main-task, merge-plan, review and criteria-review/);
   // The offer carries the parsed names, trimmed and deduped as parseConfig has them.
   assert.deepEqual(offerFrom({ agents: [reviewer], jobs: [" review ", "review"] }, "home:rev").jobs, ["review"]);
 });

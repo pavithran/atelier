@@ -12,7 +12,7 @@ import {
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
 } from "./rules";
 import { cleanSummary } from "./brief";
-import { criteriaHash, criteriaOf, sameCriteria } from "./criteria.ts";
+import { criteriaHash, criteriaOf, NO_CRITERIA, sameCriteria } from "./criteria.ts";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
 import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
@@ -30,7 +30,7 @@ import {
   cleanGoal, cleanNote, completion, EMPTY_PLAN, INTEGRATOR, jobsUsed, limitsFor, namedActor, ORCHESTRATOR, pastDeadline, pickPlanner, planInboxEntries,
   byPartKey, mainTakenOf, plannerAttempts, plannerBlock, PLANNER_ATTEMPTS, planTitle, refreshDecision, RUN_LIMITS, tickEvents, waitingParts,
   addedPart, maxJobsOf, mergeMainKey, mergeMainPart, mergeMainScope, planWithAdded, routesOf,
-  type PlanRecord, type PlanRefresh,
+  type PlanApproval, type PlanRecord, type PlanRefresh,
 } from "./plans/state.ts";
 import { integrationBlockers, nextToIntegrate, planGate, type Integration, type Part as PlanPartView } from "./plans/integrate.ts";
 import type { PlanPartReview, PlanView } from "./plans/show.ts";
@@ -44,6 +44,10 @@ import { pickReviewer } from "./review/reviewer.ts";
 import { suggestReviewer } from "./review/suggest.ts";
 import { buildPrecision, precisionWindow, type PrecisionRecord } from "./models/precision.ts";
 import { independenceRefusal } from "./review/independence.ts";
+import {
+  attributionRefusal, authorsOf, buildJob, criteriaFindingsSection, criteriaIndependenceRefusal, criteriaReviewBrief, criteriaStatus, CRITERIA_REVIEW_TIMEOUT_MS, lapsedClaim,
+  pickCriteriaReviewer, RESOLUTION_VERDICTS, type CriteriaResolution, type CriteriaReview, type CriteriaReviewState, type CriteriaRevision, type CriteriaStatus, type ResolutionVerdict,
+} from "./review/criteria.ts";
 import { gateServesTier, pickTierReviewer } from "./review/tier.ts";
 import type { LargeRef } from "./large.ts";
 
@@ -91,6 +95,39 @@ export interface ReviewClaim {
   // verdict, so a verdict on criteria that changed meanwhile is refused.
   criteria: string;
   request: number;
+  // The criteria reviews recorded on the item and the owner's resolutions of
+  // their findings (t438, src/review/criteria.ts), for the brief's section on
+  // them; `criteriaRev` is the revision the criteria are at now.
+  criteriaReviews?: CriteriaReview[];
+  criteriaResolutions?: CriteriaResolution[];
+  criteriaRev?: number;
+}
+
+// What a criteria review claim returns (t438): the item, the revision and
+// binding the verdict must name, the authors the reviewer was shown
+// independent of, the request's id and the brief, built here so the runner
+// hands it to the harness as it is.
+export interface CriteriaReviewClaim {
+  item: Item;
+  rev: number;
+  criteria: string;
+  authors: string[];
+  request: number;
+  reviewer: string;
+  brief: string;
+  owner: string;
+}
+
+// Where an item's criteria review stands, as the detail route and the
+// criteria-reviews route give it (t438): the status, every review and every
+// resolution, and whether the project requires the approval before a build.
+export interface CriteriaReviewView {
+  required: boolean;
+  status: CriteriaStatus;
+  authors: string[];
+  revisions: CriteriaRevision[];
+  reviews: CriteriaReview[];
+  resolutions: CriteriaResolution[];
 }
 
 // What a change of a task's acceptance criteria took back (Ledger.editItem):
@@ -170,6 +207,7 @@ export interface ProjectInit {
   eligible?: string[];
   refuseOverlap?: boolean;
   requireCriteria?: boolean;
+  requireCriteriaReview?: boolean;  // builds need an approved criteria review (see ProjectPolicy.requireCriteriaReview)
   coreFiles?: string[];       // replaces the core-file globs; [] clears them (see ProjectPolicy.coreFiles)
   sandboxOnly?: boolean;
   approval?: string | null;
@@ -359,6 +397,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       eligible: i.eligible ?? p?.eligible ?? [],
       refuseOverlap: i.refuseOverlap ?? p?.refuseOverlap ?? false,
       ...((i.requireCriteria ?? p?.requireCriteria) ? { requireCriteria: true } : {}),
+      ...((i.requireCriteriaReview ?? p?.requireCriteriaReview) ? { requireCriteriaReview: true } : {}),
       ...(coreFiles.length ? { coreFiles } : {}),
       sandboxOnly: i.sandboxOnly ?? p?.sandboxOnly ?? false,
       ...(approval ? { approval } : {}),
@@ -546,6 +585,24 @@ export class Ledger extends DurableObject<Env> {
     // again counts as already asked, even if the criteria return to the ones
     // it recorded, or it recorded none (made before requests did).
     if (!requestColumns.includes("superseded")) this.sql.exec(`ALTER TABLE review_requests ADD COLUMN superseded INTEGER`);
+    // Criteria review (t438, src/review/criteria.ts). Every change of an
+    // item's acceptance criteria is a revision with its author; a criteria
+    // review binds to one revision; the owner's resolutions answer one
+    // review's findings. Items whose criteria were recorded before revisions
+    // were kept have no revision row, and a review of them refuses for want
+    // of an author until the owner edits the criteria.
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS criteria_revisions (
+      item TEXT NOT NULL, rev INTEGER NOT NULL, criteria TEXT NOT NULL, by TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (item, rev)
+    )`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS criteria_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, item TEXT NOT NULL, rev INTEGER NOT NULL, criteria TEXT NOT NULL, authors TEXT NOT NULL,
+      reviewer TEXT NOT NULL, dispatch TEXT NOT NULL, state TEXT NOT NULL, requestedAt TEXT NOT NULL,
+      claimedBy TEXT, runner TEXT, claimedAt TEXT, decidedAt TEXT, summary TEXT, findings TEXT, failure TEXT
+    )`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS criteria_resolutions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, item TEXT NOT NULL, review INTEGER NOT NULL, idx INTEGER NOT NULL,
+      verdict TEXT NOT NULL, note TEXT NOT NULL, by TEXT NOT NULL, at TEXT NOT NULL
+    )`);
     this.backfillReviewProvenance();
     this.backfillPartAcceptance();
     // A deploy can change the tick's logic, and a plan waiting on nothing
@@ -987,6 +1044,8 @@ export class Ledger extends DurableObject<Env> {
     const set = fieldColumns(framing);
     if (Object.keys(set).length) this.update(id, set, now);
     this.log(id, actor, "item.created", { title: text.title, ...(text.brief ? { brief: text.brief } : {}), scope, ...framing }, now);
+    // Criteria filed with the task are its first revision, by whoever filed it (t438).
+    if (fields.accept?.length) this.recordCriteriaRevision(id, actor, now);
     return { ...this.item(id), ...(text.derived ? { derived: true as const } : {}) };
   }
 
@@ -1023,6 +1082,10 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     this.update(id, set, at);
     this.log(id, actor, "item.edited", { ...fields, ...(rescoping ? { scope, scopeWas: item.scope } : {}) }, at);
+    // Every change of the stored lists is a new revision, the editor its
+    // author, and a criteria review approves one revision alone (t438): an
+    // edit and its revert are two revisions, so the approval never returns.
+    if (changing) this.recordCriteriaRevision(id, actor, at);
     const change = changing ? this.criteriaChanged(item, actor, at) : null;
     return { ...this.item(id), ...(change ? { criteriaChange: change } : {}) };
   }
@@ -1074,6 +1137,18 @@ export class Ledger extends DurableObject<Env> {
       this.log(id, actor, "review.withdrawn", { head: r.head as string, reviewer: d.agent && d.model ? `${d.agent}/${d.model}` : null, reason, ...(r.tier === 1 ? { tier: true } : {}) }, at);
     }
     this.sql.exec(`UPDATE review_requests SET superseded = 1 WHERE item = ?`, id);
+    // A criteria review open or claimed on the old revision answers nothing
+    // now (t438): it is withdrawn, and a verdict on it is refused as stale.
+    this.withdrawCriteriaReviews(id, actor, "the acceptance criteria changed", at);
+    // Under require-criteria-review a queued build whose criteria changed
+    // waits for a review of the new revision (t438): its dispatch is withdrawn,
+    // as the tick withdraws a queued part's, so the queue offers no build the
+    // claim would refuse. The owner dispatches it again once approved.
+    const queued = this.item(id);
+    if (queued.kind !== "part" && queued.state === "open" && !queued.owner && queued.dispatch && buildJob(queued.dispatch) && this.project().policy.requireCriteriaReview) {
+      this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);
+      this.log(id, ORCHESTRATOR, "item.undispatched", { reason: "the acceptance criteria wait for their review" }, at);
+    }
     const accepted = before.state === "accepted";
     const overridden = !!before.reviewOverride;
     if (accepted || overridden) {
@@ -1175,6 +1250,12 @@ export class Ledger extends DurableObject<Env> {
       // A plan's planner claims its item to write the plan, under the planner role.
       assertClaimAllowed(item, this.items(), this.project().policy, actor, this.owner, item.kind === "plan" ? "planner" : "executor");
     }
+    // Under require-criteria-review a build is claimed only while a criteria
+    // review approves the criteria as they are now (t438). A re-claim by the
+    // holder refreshes a token and starts no build, so it is not held; the
+    // planner's and the integrator's claims are exempt, and a merge job keeps
+    // the gates it had.
+    if (item.owner !== actor && !integrating && item.kind !== "plan") this.assertCriteriaReviewed(item, item.dispatch ?? null, "claimed");
     if (item.owner === actor) {
       // Re-claiming refreshes the write token, so it is allowed only from where
       // the claim is held: two runners offering the same agent and model share
@@ -1250,6 +1331,7 @@ export class Ledger extends DurableObject<Env> {
     const item = this.checkDispatch(id, actor);
     const d = makeDispatch(input, actor, new Date().toISOString());
     this.assertMergeMainWorkspace(item, d);
+    this.assertCriteriaReviewed(item, d, "dispatched");
     const held = this.holds(item);
     if (held) {
       this.dropToken(id, token);
@@ -1279,8 +1361,29 @@ export class Ledger extends DurableObject<Env> {
     this.assertNotPlanned(item);
     if (item.state === "accepted") this.acceptedReworkAllowed(item, actor);
     if (!this.holds(item)) assertDispatchable(item);
-    if (input) this.assertMergeMainWorkspace(item, makeDispatch(input, actor, new Date().toISOString()));
+    if (input) {
+      const d = makeDispatch(input, actor, new Date().toISOString());
+      this.assertMergeMainWorkspace(item, d);
+      this.assertCriteriaReviewed(item, d, "dispatched");
+    }
     return item;
+  }
+
+  // Under require-criteria-review (t438), a build of this item needs a
+  // current approval of its acceptance criteria: a criteria review that
+  // approved the revision the criteria are at now, with every blocking
+  // finding of that revision settled. The planner's, the reviews', the
+  // integrator's and the merge jobs are not builds here (buildJob). The
+  // refusal says where the review stands and what asks for one.
+  private assertCriteriaReviewed(item: Item, dispatch: Dispatch | null, what: "dispatched" | "claimed"): void {
+    if (!this.project().policy.requireCriteriaReview) return;
+    if (!buildJob(dispatch)) return;
+    const status = this.criteriaReviewStatus(item.id, new Date());
+    if (status.approved) return;
+    const ask = item.kind === "part"
+      ? `the plan asks for one when it dispatches the part; see atelier plan show ${item.plan}`
+      : `ask for one with atelier criteria-review ${item.id} [--reviewer H/M]`;
+    throw new RuleError("criteria_unreviewed", `${item.id} cannot be ${what}: this project requires a review of the acceptance criteria before a build, and none approves them as they are now (${status.reason}); ${ask}`, 409);
   }
 
   private holds(item: Item): boolean {
@@ -1322,7 +1425,14 @@ export class Ledger extends DurableObject<Env> {
     const rows = this.sql.exec(`SELECT * FROM items WHERE state = 'open' AND (owner IS NULL OR owner = '') AND dispatch IS NOT NULL AND dispatch != '' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
     if (!rows.length) return [];
     const open = this.withPushActors(rows)
-      .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at));
+      .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at))
+      // A task whose criteria were reviewed carries how many findings the
+      // reviews recorded (t438), so its runner fetches the server's brief,
+      // which carries them, before it builds.
+      .map((i) => {
+        const findings = this.sql.exec(`SELECT COUNT(*) AS n FROM criteria_reviews WHERE item = ? AND state IN ('approved', 'rejected', 'failed')`, i.id).one().n as number;
+        return findings ? { ...i, criteriaReviews: findings } : i;
+      });
     const coreFiles = this.project().policy.coreFiles;
     if (!coreFiles?.length) return open;
     const live = this.sql.exec(`SELECT * FROM items WHERE state IN ('claimed', 'submitted', 'accepted') ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem);
@@ -1336,7 +1446,9 @@ export class Ledger extends DurableObject<Env> {
   // the open tasks waiting (waiting) and the open review requests
   // (reviewWaiting).
   queued(): { waiting: (Item & { held?: CoreHold })[]; reviews: Item[] } {
-    return { waiting: this.waiting(), reviews: this.reviewWaiting() };
+    // The open criteria reviews (t438) are offered with the code reviews:
+    // each carries its own dispatch, whose job names criteria-review.
+    return { waiting: this.waiting(), reviews: [...this.reviewWaiting(), ...this.criteriaReviewWaiting()] };
   }
 
   // Items as item() reads them, from their rows, with each one's push actors
@@ -2479,7 +2591,9 @@ export class Ledger extends DurableObject<Env> {
       : null;
     // `criteria` is the binding of the item's acceptance criteria now, which a
     // review of it names (src/criteria.ts).
-    return { item, criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, evidence, reviews, unparsable: this.unparsableFor(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
+    // `criteriaReview` is where the review of the item's acceptance criteria
+    // stands (t438), with every criteria review and resolution recorded.
+    return { item, criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, evidence, reviews, unparsable: this.unparsableFor(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), criteriaReview: this.criteriaReviewView(id), events: this.events(id) };
   }
 
   inbox(now: string, pool: readonly ModelEntry[] = []): InboxEntry[] {
@@ -2614,7 +2728,10 @@ export class Ledger extends DurableObject<Env> {
       assertOwner(item, actor);
       const rejection = this.reviewsFor(id).filter((r) => !r.approve && r.head === item.head).at(-1) ?? null;
       const findings = rejection ? reviewFindings(rejection) : null;
-      const text = findings ? findingsSection(findings) : "";
+      // What the criteria reviewers found and how the owner answered (t438),
+      // so the builder reads the criteria as they were questioned.
+      const criteria = criteriaFindingsSection(this.criteriaReviewsFor(id), this.criteriaResolutionsFor(id), this.criteriaRevision(id));
+      const text = [findings ? findingsSection(findings) : "", criteria].filter(Boolean).join("\n\n");
       return { job: findings ? "rework" : "build", text, hash: await sha256(text) };
     }
     assertOwner(item, actor);
@@ -2668,6 +2785,7 @@ export class Ledger extends DurableObject<Env> {
         failure: failed ? { claim: failed.claim, head: failed.head, where: failed.where ?? null, output: failed.outputTail ?? "", log: failed.log ?? null } : null,
         mergeMain: added ? { head: added.mainHead } : null,
         mergePlan: item.dispatch?.planHead ? { head: item.dispatch.planHead } : null,
+        criteriaReview: criteriaFindingsSection(this.criteriaReviewsFor(id), this.criteriaResolutionsFor(id), this.criteriaRevision(id)) || null,
       }),
     };
   }
@@ -2723,7 +2841,7 @@ export class Ledger extends DurableObject<Env> {
       }
       const parts = newest.plan.parts.map((p) => ({
         key: p.key,
-        id: this.insertItem(p.title, p.scope, ORCHESTRATOR, at, { kind: "part", plan: id, partKey: p.key, deps: p.dependsOn, acceptance: p.acceptance }, { plan: id, key: p.key, dependsOn: p.dependsOn, partKind: p.kind, taskKind: p.taskKind, approval: hash }),
+        id: this.insertItem(p.title, p.scope, ORCHESTRATOR, at, { kind: "part", plan: id, partKey: p.key, deps: p.dependsOn, acceptance: p.acceptance, author: newest.by }, { plan: id, key: p.key, dependsOn: p.dependsOn, partKind: p.kind, taskKind: p.taskKind, approval: hash }),
       }));
       record.approval = { hash, at, by: actor, allowPaid, limits, deadline, parts, routes, pool };
       record.blocked = null;
@@ -3139,7 +3257,10 @@ export class Ledger extends DurableObject<Env> {
     this.writeDispatch(id, planHead ? { ...merging, planHead } : merging, { approval: hash, reason, ...(planHead ? { planHead } : {}) });
   }
 
-  private insertItem(title: string, scope: string[], actor: string, at: string, plan: { kind: "plan" | "part"; plan?: string; partKey?: string; deps?: string[]; acceptance?: string[] }, data: Record<string, unknown>): string {
+  // `author` is who wrote a part's acceptance criteria, recorded as their
+  // first revision (t438): the planner that posted the approved proposal, or
+  // the Ledger itself for a merge-main part.
+  private insertItem(title: string, scope: string[], actor: string, at: string, plan: { kind: "plan" | "part"; plan?: string; partKey?: string; deps?: string[]; acceptance?: string[]; author?: string }, data: Record<string, unknown>): string {
     const n = this.sql.exec(`SELECT COUNT(*) AS n FROM items`).one().n as number;
     const id = `t${n + 1}`;
     this.sql.exec(
@@ -3148,6 +3269,7 @@ export class Ledger extends DurableObject<Env> {
       plan.acceptance ? JSON.stringify(plan.acceptance) : null,
     );
     this.log(id, actor, "item.created", { title, scope, kind: plan.kind, ...data }, at);
+    if (plan.acceptance?.length) this.recordCriteriaRevision(id, plan.author ?? actor, at);
     return id;
   }
 
@@ -3254,7 +3376,20 @@ export class Ledger extends DurableObject<Env> {
     for (const p of parts) {
       if (p.state !== "open" || p.owner) continue;
       const want = wanted.get(p.partKey!);
-      if (want) this.dispatchPart(p.id, want.to, want.reason, approval.hash, at, addedPart(record, p.partKey)?.mainHead ?? null, conflicted.has(p.partKey!) ? planHead : null);
+      const mainHead = addedPart(record, p.partKey)?.mainHead ?? null;
+      // Criteria review (t438): a part chosen now, or one already queued, is
+      // dispatched only while a review approves its criteria as they are
+      // now. Held, it is not dispatched, and a dispatch record it had is
+      // withdrawn, so the queue offers nothing until the approval stands.
+      const queued = !want && !blocked && !!p.dispatch && waiting.has(p.partKey!);
+      if ((want || queued) && this.criteriaReviewHolds(p, id, approval, at, mainHead !== null)) {
+        if (p.dispatch) {
+          this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, p.id);
+          this.log(p.id, ORCHESTRATOR, "item.undispatched", { reason: "the acceptance criteria wait for their review" }, at);
+        }
+        continue;
+      }
+      if (want) this.dispatchPart(p.id, want.to, want.reason, approval.hash, at, mainHead, conflicted.has(p.partKey!) ? planHead : null);
       else if (p.dispatch && !waiting.has(p.partKey!)) this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, p.id);
       else if (p.dispatch && blocked) {
         this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, p.id);
@@ -3367,6 +3502,7 @@ export class Ledger extends DurableObject<Env> {
         need, item: p, events: this.briefEvents(p.id),
         plan: { goal: plan.goal, part }, diff: null, owner: this.owner, bar: policy.reviewBar ?? null,
         decisions: standingDecisions(this.decisionStore),
+        criteriaReviews: this.criteriaReviewsFor(p.id), criteriaResolutions: this.criteriaResolutionsFor(p.id), criteriaRev: this.criteriaRevision(p.id),
       });
       const briefHash = briefFingerprint(brief);
       const topTier = this.gateIsTier(p, need, reviewer);
@@ -3541,6 +3677,7 @@ export class Ledger extends DurableObject<Env> {
       events: this.briefEvents(itemId), owner: this.owner, reviewBar: policy.reviewBar ?? null, tier,
       decisions: standingDecisions(this.decisionStore),
       criteria, request: row.id as number,
+      criteriaReviews: this.criteriaReviewsFor(itemId), criteriaResolutions: this.criteriaResolutionsFor(itemId), criteriaRev: this.criteriaRevision(itemId),
     };
   }
 
@@ -3853,6 +3990,356 @@ export class Ledger extends DurableObject<Env> {
     return { released: true };
   }
 
+  // ── criteria review (t438, src/review/criteria.ts) ───────────────────────
+  // A task's acceptance criteria are reviewed before it is built, by a model
+  // of another family than every model that wrote them. The criteria are
+  // kept by revision with their authors; a review binds to one revision; the
+  // owner answers a review's findings with resolutions. Under the project's
+  // require-criteria-review policy a build is dispatched and claimed only
+  // while a review approves the current revision (assertCriteriaReviewed,
+  // criteriaReviewHolds in the tick).
+
+  // Records the criteria an item has now as its next revision, by `by`. Called
+  // when a task is filed with criteria, when the owner changes them, and when
+  // a part is made from an approved plan or added by the Ledger.
+  private recordCriteriaRevision(id: string, by: string, at: string): number {
+    const item = this.item(id);
+    const rev = this.criteriaRevision(id) + 1;
+    const criteria = criteriaOf(item);
+    this.sql.exec(`INSERT INTO criteria_revisions (item, rev, criteria, by, at) VALUES (?, ?, ?, ?, ?)`, id, rev, criteria, by, at);
+    this.log(id, by, "criteria.revised", { rev, criteria }, at);
+    return rev;
+  }
+
+  // The revision an item's criteria are at: 0 when none was ever recorded.
+  private criteriaRevision(id: string): number {
+    return (this.sql.exec(`SELECT MAX(rev) AS rev FROM criteria_revisions WHERE item = ?`, id).one().rev as number | null) ?? 0;
+  }
+
+  criteriaRevisions(id: string): CriteriaRevision[] {
+    return this.sql.exec(`SELECT rev, criteria, by, at FROM criteria_revisions WHERE item = ? ORDER BY rev`, id).toArray()
+      .map((r) => ({ rev: r.rev as number, criteria: r.criteria as string, by: r.by as string, at: r.at as string }));
+  }
+
+  criteriaReviewsFor(id: string): CriteriaReview[] {
+    return this.sql.exec(`SELECT * FROM criteria_reviews WHERE item = ? ORDER BY id`, id).toArray().map(toCriteriaReview);
+  }
+
+  criteriaResolutionsFor(id: string): CriteriaResolution[] {
+    return this.sql.exec(`SELECT review, idx, verdict, note, by, at FROM criteria_resolutions WHERE item = ? ORDER BY id`, id).toArray()
+      .map((r) => ({ review: r.review as number, index: r.idx as number, verdict: r.verdict as ResolutionVerdict, note: r.note as string, by: r.by as string, at: r.at as string }));
+  }
+
+  // Where an item's criteria review stands now. A claimed review past the
+  // timeout is failed first, so a reviewer that stopped never holds the
+  // criteria, and a new review may be asked.
+  criteriaReviewStatus(id: string, now = new Date()): CriteriaStatus {
+    this.lapseCriteriaReviews(id, now);
+    return criteriaStatus(this.criteriaRevision(id), this.criteriaReviewsFor(id), this.criteriaResolutionsFor(id), now);
+  }
+
+  // The whole record, as the detail and criteria-reviews routes give it.
+  criteriaReviewView(id: string): CriteriaReviewView {
+    this.item(id);
+    const status = this.criteriaReviewStatus(id);
+    const revisions = this.criteriaRevisions(id);
+    return { required: !!this.project().policy.requireCriteriaReview, status, authors: authorsOf(revisions), revisions, reviews: this.criteriaReviewsFor(id), resolutions: this.criteriaResolutionsFor(id) };
+  }
+
+  private lapseCriteriaReviews(id: string, now: Date): void {
+    for (const r of this.criteriaReviewsFor(id)) {
+      if (!lapsedClaim(r, now)) continue;
+      const at = now.toISOString();
+      const failure = `the claim lapsed: ${r.claimedBy ?? r.reviewer} recorded no verdict within ${CRITERIA_REVIEW_TIMEOUT_MS / 3_600_000} hours`;
+      this.sql.exec(`UPDATE criteria_reviews SET state = 'failed', failure = ?, decidedAt = ? WHERE id = ?`, failure, at, r.id);
+      this.log(id, ORCHESTRATOR, "criteria_review.failed", { review: r.id, rev: r.rev, reviewer: r.claimedBy ?? r.reviewer, reason: failure }, at);
+    }
+  }
+
+  // Open and claimed criteria reviews of an item are withdrawn when its
+  // criteria change: they asked about a revision the item has left.
+  private withdrawCriteriaReviews(id: string, actor: string, reason: string, at: string): void {
+    for (const r of this.criteriaReviewsFor(id)) {
+      if (r.state !== "open" && r.state !== "claimed") continue;
+      this.sql.exec(`UPDATE criteria_reviews SET state = 'withdrawn', failure = ?, decidedAt = ? WHERE id = ?`, reason, at, r.id);
+      this.log(id, actor, "criteria_review.withdrawn", { review: r.id, rev: r.rev, reviewer: r.reviewer, reason }, at);
+    }
+    this.unblockForCriteria(id, at);
+  }
+
+  // The project owner asks for a review of a task's acceptance criteria,
+  // naming the reviewer or letting the pool pick one of another family than
+  // every model author. A live review for the current revision stands, unless
+  // the owner names another reviewer while it is unclaimed. Refused while a
+  // rejection's blocking findings wait for the owner, and when no reviewer
+  // can be shown independent of the authors.
+  requestCriteriaReview(id: string, actor: string, reviewer: string | null, pool: readonly ModelEntry[], proved = false): { requested: boolean; reason: string; rev: number; reviewer?: string; request?: number } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner asks for a review of a task's acceptance criteria", 403);
+    const item = this.item(id);
+    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; its criteria are no longer reviewed`);
+    if (reviewer !== null && !validActor(reviewer)) throw new RuleError("bad_actor", `"${reviewer}" is not harness/model`, 400);
+    const at = new Date().toISOString();
+    let allowPaid = false;
+    if (item.plan) {
+      const approval = this.planRecord(item.plan).approval;
+      allowPaid = approval?.allowPaid ?? false;
+    }
+    const asked = this.askCriteriaReview(item, actor, reviewer, pool, allowPaid, at, proved);
+    this.afterPlanChange(id);
+    return asked;
+  }
+
+  // Asks for the review where one is needed, by the owner or by the plan's
+  // tick. Throws a RuleError where none can be asked: no criteria, a
+  // rejection the owner has not answered, or no reviewer that qualifies.
+  private askCriteriaReview(item: Item, by: string, reviewer: string | null, pool: readonly ModelEntry[], allowPaid: boolean, at: string, proved = false): { requested: boolean; reason: string; rev: number; reviewer?: string; request?: number } {
+    const status = this.criteriaReviewStatus(item.id, new Date(at));
+    const rev = status.rev;
+    if (status.approved) return { requested: false, reason: status.reason, rev };
+    if (status.need === "none") {
+      // Criteria the item has but no revision records: filed before revisions
+      // were kept, so no author is known. The owner's edit records one.
+      if (criteriaOf(item) !== NO_CRITERIA) throw new RuleError("no_criteria_reviewer", `${item.id}'s acceptance criteria cannot be reviewed: ${attributionRefusal([], this.owner)}. Edit them (atelier edit ${item.id} --accept "TEXT"), which records the owner as their author`, 409);
+      throw new RuleError("no_criteria", `${item.id} has no acceptance criteria to review: give them with atelier edit ${item.id} --accept "TEXT"`, 409);
+    }
+    if (status.need === "owner") throw new RuleError("criteria_rejected", `${item.id}'s acceptance criteria are not reviewed again until the project owner answers the findings: ${status.reason}`, 409);
+    if (status.need === "wait") {
+      // A named reviewer replaces an unclaimed request for another; a claimed
+      // one, or no name, leaves the live request standing.
+      const live = this.criteriaReviewsFor(item.id).find((r) => r.rev === rev && (r.state === "open" || r.state === "claimed"));
+      if (!reviewer || !live || live.state !== "open" || sameActor(live.reviewer, reviewer)) return { requested: false, reason: status.reason, rev, reviewer: live?.reviewer, request: live?.id };
+      this.sql.exec(`UPDATE criteria_reviews SET state = 'withdrawn', failure = ?, decidedAt = ? WHERE id = ?`, `the project owner named ${reviewer} instead`, at, live.id);
+      this.log(item.id, by, "criteria_review.withdrawn", { review: live.id, rev, reviewer: live.reviewer, reason: `the project owner named ${reviewer} instead` }, at, proved);
+    }
+    const authors = authorsOf(this.criteriaRevisions(item.id));
+    const policy = this.project().policy;
+    let chosen: string;
+    let reasons: string[];
+    if (reviewer) {
+      const refusal = criteriaIndependenceRefusal(reviewer, authors, this.owner);
+      if (refusal) throw new RuleError("no_criteria_reviewer", `${reviewer} cannot review ${item.id}'s acceptance criteria: ${refusal}`, 409);
+      chosen = reviewer;
+      reasons = ["Named by the project owner"];
+    } else {
+      const pick = pickCriteriaReviewer({
+        authors, pool, policy, owner: this.owner, allowPaid, previous: status.previousReviewer,
+        avoid: status.lapsed.map((actor) => ({ actor, reason: "its claim on a review of these criteria lapsed" })),
+      });
+      if (!pick.reviewer) {
+        throw new RuleError("no_criteria_reviewer", `no reviewer can review ${item.id}'s acceptance criteria: ${pick.unpicked}. Name one of another family than every model author with atelier criteria-review ${item.id} --reviewer H/M, or add a model with atelier models add`, 409);
+      }
+      chosen = pick.reviewer.actor;
+      reasons = pick.reviewer.reasons;
+    }
+    const slash = chosen.indexOf("/");
+    const dispatch = { ...makeDispatch({ to: "home", agent: chosen.slice(0, slash), model: chosen.slice(slash + 1), note: `review the acceptance criteria of ${item.id}` }, ORCHESTRATOR, at), job: "criteria-review" as const };
+    const criteria = criteriaOf(item);
+    const row = this.sql.exec(`INSERT INTO criteria_reviews (item, rev, criteria, authors, reviewer, dispatch, state, requestedAt) VALUES (?, ?, ?, ?, ?, ?, 'open', ?) RETURNING id`,
+      item.id, rev, criteria, JSON.stringify(authors), chosen, JSON.stringify(dispatch), at).one();
+    const request = row.id as number;
+    this.log(item.id, by, "criteria_review.requested", { review: request, rev, criteria, reviewer: chosen, authors, round: status.round, reasons }, at, proved);
+    return { requested: true, reason: status.reason, rev, reviewer: chosen, request };
+  }
+
+  // Open criteria reviews, as the queue offers them: the item with its
+  // dispatch overlaid by the review's, whose job names "criteria-review".
+  criteriaReviewWaiting(): Item[] {
+    const rows = this.sql.exec(`SELECT item, dispatch FROM criteria_reviews WHERE state = 'open' ORDER BY id`).toArray();
+    if (!rows.length) return [];
+    const ids = [...new Set(rows.map((r) => r.item as string))];
+    const items = new Map(this.withPushActors(this.sql.exec(`SELECT * FROM items WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(ids)).toArray()).map((i) => [i.id, i]));
+    return rows.flatMap((r) => {
+      const item = items.get(r.item as string);
+      return item ? [{ ...item, dispatch: JSON.parse(r.dispatch as string) as Dispatch }] : [];
+    });
+  }
+
+  // Binds an open criteria review to the reviewer asked, atomically, and
+  // returns the brief. A review for a revision the criteria have left is
+  // withdrawn and refused; one asked of another actor, runner or kind of
+  // runner is refused as a review claim is.
+  async claimCriteriaReview(id: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved = false): Promise<CriteriaReviewClaim> {
+    const item = this.item(id);
+    const now = new Date();
+    const at = now.toISOString();
+    this.lapseCriteriaReviews(id, now);
+    const rev = this.criteriaRevision(id);
+    const rows = this.criteriaReviewsFor(id).filter((r) => r.state === "open");
+    const [harness, model] = actor.split("/");
+    const askedOf = (r: CriteriaReview) => { const d = this.criteriaDispatch(r.id); return (!d.agent || d.agent === harness) && (!d.model || d.model === model); };
+    const row = rows.find(askedOf) ?? rows[0];
+    if (!row) throw new RuleError("no_criteria_review", `${id} has no open review of its acceptance criteria`, 404);
+    if (row.rev !== rev) {
+      this.withdrawCriteriaReviews(id, ORCHESTRATOR, "the acceptance criteria changed", at);
+      throw new RuleError("stale_criteria", `the review of ${id}'s acceptance criteria asked about revision ${row.rev}, and they are at revision ${rev} now; it is withdrawn, and no review of the current revision is asked yet`, 409);
+    }
+    const dispatch = this.criteriaDispatch(row.id);
+    if (!runner) throw new RuleError("dispatched", `${id}'s criteria review waits for a runner to claim it`, 409);
+    if (dispatch.to !== "any" && dispatch.to !== runner.kind) throw new RuleError("wrong_runner", `${id}'s criteria review is for a ${dispatch.to} runner, not ${runner.runner}`, 403);
+    if (dispatch.agent && harness !== dispatch.agent) throw new RuleError("wrong_agent", `${id}'s criteria review asks for ${dispatch.agent}, not ${harness}`, 403);
+    if (dispatch.model && model !== dispatch.model) throw new RuleError("wrong_model", `${id}'s criteria review asks for ${dispatch.model}, not ${model ?? "no model"}`, 403);
+    const refusal = criteriaIndependenceRefusal(actor, row.authors, this.owner);
+    if (refusal) throw new RuleError("not_independent", `${actor} cannot review ${id}'s acceptance criteria: ${refusal}`, 403);
+    this.sql.exec(`UPDATE criteria_reviews SET state = 'claimed', claimedBy = ?, runner = ?, claimedAt = ? WHERE id = ?`, actor, runner.runner, at, row.id);
+    this.log(id, actor, "criteria_review.claimed", { review: row.id, rev, criteria: row.criteria, runner: runner.runner }, at, proved);
+    // A part's claimed review lapses on the alarm, as a code review's does
+    // (bindReview); a task's lapses when its status is next read.
+    if (item.plan) {
+      const lapse = now.getTime() + CRITERIA_REVIEW_TIMEOUT_MS + 1000;
+      const held = await this.ctx.storage.getAlarm();
+      if (held === null || lapse < held) await this.ctx.storage.setAlarm(lapse);
+    }
+    const status = criteriaStatus(rev, this.criteriaReviewsFor(id), this.criteriaResolutionsFor(id), now);
+    return { item, rev, criteria: row.criteria, authors: row.authors, request: row.id, reviewer: actor, brief: this.criteriaBrief(item, rev, row.authors, status.round), owner: this.owner };
+  }
+
+  private criteriaDispatch(review: number): Dispatch {
+    return JSON.parse(this.sql.exec(`SELECT dispatch FROM criteria_reviews WHERE id = ?`, review).one().dispatch as string) as Dispatch;
+  }
+
+  // The brief a criteria reviewer reads, from the item, its plan's account of
+  // the part when it is one, and the earlier criteria reviews with the
+  // owner's resolutions.
+  private criteriaBrief(item: Item, rev: number, authors: readonly string[], round: number): string {
+    let plan: { goal: string; part: PlanPart } | null = null;
+    if (item.plan) {
+      const record = this.planRecord(item.plan);
+      const document = record.approval ? planWithAdded(this.approvedPlan(item.plan, record.approval.hash), record) : null;
+      const part = document?.parts.find((p) => p.key === item.partKey);
+      if (document && part) plan = { goal: document.goal, part };
+    }
+    return criteriaReviewBrief({ item, rev, authors, plan, previous: this.criteriaReviewsFor(item.id), resolutions: this.criteriaResolutionsFor(item.id), round, owner: this.owner });
+  }
+
+  // Records a criteria reviewer's verdict on the review it claimed. The
+  // verdict names the revision and binding the claim gave; one for a revision
+  // the criteria have left, or a review no longer claimed by the reviewer, is
+  // refused and records nothing. An approval carries no blocking finding and
+  // a rejection at least one.
+  addCriteriaReview(r: { itemId: string; by: string; rev: number; criteria: string; request: number; approve: boolean; summary: string; findings?: Finding[] }, proved = false): CriteriaReview {
+    if (!validActor(r.by)) throw new RuleError("bad_actor", `"${r.by}" is not harness/model`, 400);
+    assertLength(r.summary, NOTE_MAX, "the review summary");
+    if (r.findings !== undefined && !validFindings(r.findings)) {
+      throw new RuleError("bad_findings", "findings must be a list of {file, line, severity, text}, severity blocking or follow-up", 400);
+    }
+    if (!Number.isInteger(r.request)) throw new RuleError("bad_request", "a criteria verdict names the review it answers, as the claim gave it", 400);
+    const item = this.item(r.itemId);
+    const now = new Date();
+    const at = now.toISOString();
+    this.lapseCriteriaReviews(r.itemId, now);
+    const row = this.criteriaReviewsFor(r.itemId).find((x) => x.id === r.request);
+    if (!row) throw new RuleError("no_criteria_review", `${r.itemId} has no criteria review ${r.request}`, 404);
+    const rev = this.criteriaRevision(r.itemId);
+    // A review of a revision the criteria have left is withdrawn, whatever
+    // the verdict says; a verdict that names another revision or binding
+    // than the item's, while the review's revision is current, is the
+    // reviewer's slip, and the claim stands for the right verdict.
+    if (row.rev !== rev) {
+      if (row.state === "open" || row.state === "claimed") this.withdrawCriteriaReviews(r.itemId, ORCHESTRATOR, "the acceptance criteria changed", at);
+      throw new RuleError("stale_criteria", `${r.itemId}'s acceptance criteria changed since revision ${row.rev} was reviewed: they are at revision ${rev} now, so this verdict answers nothing and is not recorded; the review is withdrawn, and the current revision is reviewed afresh`, 409);
+    }
+    if (r.rev !== rev || r.criteria !== criteriaOf(item)) {
+      throw new RuleError("stale_criteria", `this verdict names revision ${r.rev} of ${r.itemId}'s acceptance criteria${r.criteria !== criteriaOf(item) ? " and a binding the criteria do not have" : ""}; they are at revision ${rev}, which the claim gave, so nothing is recorded; name the revision and binding the claim gave`, 409);
+    }
+    if (row.state !== "claimed" || !row.claimedBy || !sameActor(row.claimedBy, r.by)) {
+      throw new RuleError("stale_request", `criteria review ${r.request} of ${r.itemId} is ${row.state === "claimed" ? `claimed by ${row.claimedBy}, not ${r.by}` : row.state}, so this verdict answers nothing; claim it again (atelier criteria-review-claim ${r.itemId})`, 409);
+    }
+    const refusal = criteriaIndependenceRefusal(r.by, row.authors, this.owner);
+    if (refusal) throw new RuleError("not_independent", `${r.by} cannot review ${r.itemId}'s acceptance criteria: ${refusal}`, 403);
+    const findings = r.findings ?? [];
+    const blocking = findings.filter((f) => f.severity === "blocking").length;
+    if (r.approve && blocking) throw new RuleError("bad_verdict", `an approval of the acceptance criteria cannot carry ${blocking === 1 ? "a blocking finding" : `${blocking} blocking findings`}; reject, or mark the finding a follow-up`, 400);
+    if (!r.approve && !blocking) throw new RuleError("bad_verdict", "a rejection of the acceptance criteria names at least one blocking finding", 400);
+    const state: CriteriaReviewState = r.approve ? "approved" : "rejected";
+    this.sql.exec(`UPDATE criteria_reviews SET state = ?, decidedAt = ?, summary = ?, findings = ? WHERE id = ?`, state, at, r.summary, JSON.stringify(findings), row.id);
+    this.log(r.itemId, r.by, r.approve ? "criteria_review.approved" : "criteria_review.rejected", { review: row.id, rev, criteria: r.criteria, summary: r.summary, ...(findings.length ? { findings } : {}) }, at, proved);
+    // An approval lets the plan dispatch the part it held (the tick); a
+    // rejection with blocking findings waits for the owner.
+    this.afterPlanChange(r.itemId);
+    return this.criteriaReviewsFor(r.itemId).find((x) => x.id === row.id)!;
+  }
+
+  // A claimed criteria review that reached no verdict: the harness stopped,
+  // timed out or wrote a reply no verdict could be read from. It is recorded
+  // as failed, approves nothing, and the criteria may be asked about again.
+  failCriteriaReview(id: string, actor: string, request: number, reason: string, proved = false): CriteriaReview {
+    if (!validActor(actor)) throw new RuleError("bad_actor", `"${actor}" is not harness/model`, 400);
+    this.item(id);
+    const row = this.criteriaReviewsFor(id).find((x) => x.id === request);
+    if (!row) throw new RuleError("no_criteria_review", `${id} has no criteria review ${request}`, 404);
+    if (row.state !== "claimed" || !row.claimedBy || !sameActor(row.claimedBy, actor)) {
+      throw new RuleError("stale_request", `criteria review ${request} of ${id} is ${row.state === "claimed" ? `claimed by ${row.claimedBy}, not ${actor}` : row.state}, so there is nothing of ${actor}'s to fail`, 409);
+    }
+    const at = new Date().toISOString();
+    const failure = String(reason || "the reviewer reached no verdict").slice(0, NOTE_MAX);
+    this.sql.exec(`UPDATE criteria_reviews SET state = 'failed', failure = ?, decidedAt = ? WHERE id = ?`, failure, at, row.id);
+    this.log(id, actor, "criteria_review.failed", { review: row.id, rev: row.rev, reviewer: actor, reason: failure }, at, proved);
+    this.afterPlanChange(id);
+    return this.criteriaReviewsFor(id).find((x) => x.id === row.id)!;
+  }
+
+  // The project owner answers one finding of a criteria review: refuted or
+  // fixed settles it, confirmed leaves it standing. An approval of the
+  // revision counts only once every blocking finding of it is settled, and a
+  // rejection whose blocking findings are all settled is reviewed again.
+  resolveCriteriaFinding(id: string, actor: string, review: number, index: number, verdict: string, note: string): CriteriaResolution {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner answers a finding of a criteria review", 403);
+    if (!RESOLUTION_VERDICTS.includes(verdict as ResolutionVerdict)) throw new RuleError("bad_finding", `a finding's verdict is ${RESOLUTION_VERDICTS.join(", ")}`, 400);
+    assertLength(note, NOTE_MAX, "the note");
+    this.item(id);
+    const row = this.criteriaReviewsFor(id).find((x) => x.id === review);
+    if (!row) throw new RuleError("no_criteria_review", `${id} has no criteria review ${review}`, 404);
+    if (row.state !== "approved" && row.state !== "rejected") throw new RuleError("no_finding", `criteria review ${review} of ${id} is ${row.state}, and has no findings to answer`, 409);
+    const findings = row.findings ?? [];
+    if (!Number.isInteger(index) || index < 1 || index > findings.length) {
+      throw new RuleError("no_finding", `criteria review ${review} of ${id} has ${findings.length} ${findings.length === 1 ? "finding" : "findings"}; --index ${index} is outside it`, 409);
+    }
+    const at = new Date().toISOString();
+    this.sql.exec(`INSERT INTO criteria_resolutions (item, review, idx, verdict, note, by, at) VALUES (?, ?, ?, ?, ?, ?, ?)`, id, review, index, verdict, note, actor, at);
+    const finding = findings[index - 1];
+    this.log(id, actor, "criteria_review.finding", { review, rev: row.rev, index, verdict, note, by: row.reviewer, finding: { file: finding.file, line: finding.line, severity: finding.severity, text: finding.text } }, at);
+    this.unblockForCriteria(id, at);
+    this.afterPlanChange(id);
+    return { review, index, verdict: verdict as ResolutionVerdict, note, by: actor, at };
+  }
+
+  // The reason the tick blocks a part for its criteria review starts with
+  // this, so the owner's answer to it, an edit of the criteria or a
+  // resolution of a finding, lifts the block itself (unblockForCriteria) and
+  // the next tick asks again.
+  private static readonly CRITERIA_BLOCK = "the acceptance criteria";
+
+  private unblockForCriteria(id: string, at: string): void {
+    const item = this.item(id);
+    if (item.state !== "blocked" || !item.blocked || item.blocked.by !== ORCHESTRATOR || !item.blocked.reason.startsWith(Ledger.CRITERIA_BLOCK)) return;
+    this.update(id, { state: item.blocked.from, blocked: null }, at);
+    this.log(id, ORCHESTRATOR, "item.unblocked", { reason: item.blocked.reason, to: item.blocked.from }, at);
+  }
+
+  // Whether the tick holds a part's dispatch for its criteria review (t438):
+  // under require-criteria-review a part is dispatched only while a criteria
+  // review approves its criteria as they are now. A part not approved has a
+  // review asked for, from the pool fixed at approval; one no reviewer
+  // qualifies for, or whose rejection waits for the owner, is blocked with
+  // what the owner can do, as a part no code reviewer remains for is. A
+  // merge-main part merges main and keeps the gates it had.
+  private criteriaReviewHolds(p: Item, planId: string, approval: PlanApproval, at: string, mergeMain: boolean): boolean {
+    if (!this.project().policy.requireCriteriaReview || mergeMain) return false;
+    const status = this.criteriaReviewStatus(p.id, new Date(at));
+    if (status.approved) return false;
+    if (status.need === "review") {
+      try {
+        this.askCriteriaReview(p, ORCHESTRATOR, null, approval.pool, approval.allowPaid, at);
+      } catch (err) {
+        if (!(err instanceof RuleError)) throw err;
+        this.blockPart(p, planId, `${Ledger.CRITERIA_BLOCK} of part ${p.partKey} cannot be reviewed: ${err.message}. Name a reviewer with atelier criteria-review ${p.id} --reviewer H/M`, at);
+      }
+    } else if (status.need === "owner" || status.need === "none") {
+      this.blockPart(p, planId, `${Ledger.CRITERIA_BLOCK} of part ${p.partKey} wait for the project owner: ${status.reason}`, at);
+    }
+    return true;
+  }
+
   // ── integration (docs/orchestrator.md, section 5) ────────────────────────
   // A plan item's fork is its integration branch. Parts are merged onto it by
   // the reserved integrator, which reports `integrated` or `integration-failed`;
@@ -4163,7 +4650,7 @@ export class Ledger extends DurableObject<Env> {
       pool: approval.pool, events: this.events(undefined, RECORD_EVENTS), policy: this.project().policy, allowPaid: approval.allowPaid, offers: offers !== null ? offers : await this.routingOffers(),
       precision: this.reviewPrecision(at),
     });
-    const partId = this.insertItem(spec.title, spec.scope, by, at, { kind: "part", plan: id, partKey: key, deps: [], acceptance: spec.acceptance },
+    const partId = this.insertItem(spec.title, spec.scope, by, at, { kind: "part", plan: id, partKey: key, deps: [], acceptance: spec.acceptance, author: ORCHESTRATOR },
       { plan: id, key, dependsOn: [], partKind: spec.kind, taskKind: spec.taskKind, approval: approval.hash, mergeMain: mainHead });
     record.added = [...(record.added ?? []), { id: partId, part: spec, route, mainHead, by, at, reason }];
     if (to && route.builder?.actor !== to) record.reroutes[key] = to;
@@ -4304,6 +4791,27 @@ function eventOf(r: Row): LedgerEvent {
     seq: r.seq as number, itemId: r.item_id as string | null, at: r.at as string,
     ...(r.proved === 1 ? { proved: true as const } : {}),
     actor: r.actor as string, kind: r.kind as string, data: JSON.parse(r.data as string),
+  };
+}
+
+// A criteria_reviews row as the Ledger returns it (t438).
+function toCriteriaReview(r: Row): CriteriaReview {
+  return {
+    id: r.id as number,
+    itemId: r.item as string,
+    rev: r.rev as number,
+    criteria: r.criteria as string,
+    authors: JSON.parse(r.authors as string) as string[],
+    reviewer: r.reviewer as string,
+    state: r.state as CriteriaReviewState,
+    requestedAt: r.requestedAt as string,
+    claimedBy: (r.claimedBy as string | null) ?? null,
+    claimedAt: (r.claimedAt as string | null) ?? null,
+    runner: (r.runner as string | null) ?? null,
+    decidedAt: (r.decidedAt as string | null) ?? null,
+    summary: (r.summary as string | null) ?? null,
+    ...(r.findings ? { findings: JSON.parse(r.findings as string) as Finding[] } : {}),
+    failure: (r.failure as string | null) ?? null,
   };
 }
 

@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { formatBrief, formatReviews } from "../cli/atelier.mjs";
+import { formatBrief, formatCriteriaReviews, formatReviews } from "../cli/atelier.mjs";
 
 // `atelier show` cannot show a review's findings in full: the brief cuts the
 // newest rejection's note to one line and its --json carried no reviews at
@@ -135,13 +135,72 @@ test("show --reviews prints each unparsable reply with the reviewer and the head
   assert.deepEqual(JSON.parse(asJson.output), { ...BRIEF, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [UNPARSABLE[0], UNPARSABLE[1]] });
 });
 
+// t438: the reviews of the acceptance criteria themselves, apart from the
+// reviews of the change, with each revision's author and the owner's newest
+// resolution of each finding; --json carries the record as the server sent it.
+const BINDING = "c".repeat(64);
+const CRITERIA_VIEW = {
+  required: true,
+  status: { rev: 2, approved: false, need: "owner", reason: "zcode/glm-5.3 rejected revision 2 of the acceptance criteria with a blocking finding the project owner has not settled", round: 1, previousReviewer: "zcode/glm-5.3", lapsed: [], unsettled: [] },
+  authors: ["owner", "claude-code/opus-5.5"],
+  revisions: [{ rev: 1, criteria: "a".repeat(64), by: "claude-code/opus-5.5", at: "2026-10-06T09:00:00.000Z" }, { rev: 2, criteria: BINDING, by: "owner", at: "2026-10-07T09:00:00.000Z" }],
+  reviews: [
+    { id: 1, itemId: "t1", rev: 1, criteria: "a".repeat(64), authors: ["claude-code/opus-5.5"], reviewer: "zcode/glm-5.3", state: "approved", requestedAt: "2026-10-06T09:10:00.000Z", decidedAt: "2026-10-06T09:30:00.000Z", summary: "Each names a measurement." },
+    { id: 2, itemId: "t1", rev: 2, criteria: BINDING, authors: ["owner", "claude-code/opus-5.5"], reviewer: "codex/gpt-6-astra", state: "failed", requestedAt: "2026-10-07T09:10:00.000Z", decidedAt: "2026-10-07T09:40:00.000Z", failure: "harness timed out" },
+    { id: 3, itemId: "t1", rev: 2, criteria: BINDING, authors: ["owner", "claude-code/opus-5.5"], reviewer: "zcode/glm-5.3", state: "rejected", requestedAt: "2026-10-07T10:00:00.000Z", decidedAt: "2026-10-07T10:30:00.000Z", summary: "Vague.\nRecommendation: accept.",
+      findings: [{ file: "criterion-1", line: null, severity: "blocking", text: "Fast is not a measurement." }, { file: "criteria", line: null, severity: "follow-up", text: "Name the search." }] },
+    { id: 4, itemId: "t1", rev: 2, criteria: BINDING, authors: ["owner", "claude-code/opus-5.5"], reviewer: "codex/gpt-6-astra", state: "open", requestedAt: "2026-10-07T11:00:00.000Z" },
+  ],
+  resolutions: [
+    { review: 3, index: 1, verdict: "refuted", note: "200 ms is the measurement", by: "owner", at: "2026-10-07T10:40:00.000Z" },
+    { review: 3, index: 1, verdict: "confirmed", note: "", by: "owner", at: "2026-10-07T10:50:00.000Z" },
+  ],
+};
+
+test("formatCriteriaReviews prints where the criteria stand, each revision's author, and each decided review with its findings and the owner's newest resolution", () => {
+  const lines = formatCriteriaReviews(CRITERIA_VIEW).split("\n");
+  assert.equal(lines[0], "Criteria reviews:");
+  assert.equal(lines[1], "  Revision 2, not approved; the project requires the approval before a build: zcode/glm-5.3 rejected revision 2 of the acceptance criteria with a blocking finding the project owner has not settled");
+  assert.equal(lines[2], `  Revision 1 by claude-code/opus-5.5 (2026-10-06 09:00 UTC), binding ${"a".repeat(64)}.`);
+  assert.equal(lines[3], `  Revision 2 by owner (2026-10-07 09:00 UTC), binding ${BINDING}.`);
+  // Newest decided review first; an open one is not a verdict and is not listed.
+  assert.equal(lines[4], "  Criteria review 3, revision 2 (the criteria as they are now): zcode/glm-5.3 rejected (2026-10-07 10:30 UTC).");
+  assert.equal(lines[5], "    Note: Vague. Recommendation: accept.");
+  assert.equal(lines[6], "    1. blocking criterion-1 Fast is not a measurement. [confirmed]");
+  assert.equal(lines[7], "    2. follow-up criteria Name the search. [no resolution recorded]");
+  assert.equal(lines[8], "  Criteria review 2, revision 2 (the criteria as they are now): codex/gpt-6-astra reached no verdict (harness timed out) (2026-10-07 09:40 UTC).");
+  assert.equal(lines[9], "  Criteria review 1, revision 1: zcode/glm-5.3 approved (2026-10-06 09:30 UTC).");
+  assert.equal(lines[10], "    Note: Each names a measurement.");
+  assert.equal(lines.length, 11);
+  assert.ok(!/\nRecommendation:/.test(lines.join("\n")));
+  // The newest resolution wins, and a note travels with it.
+  const refuted = formatCriteriaReviews({ ...CRITERIA_VIEW, resolutions: [CRITERIA_VIEW.resolutions[0]] }).split("\n");
+  assert.equal(refuted[6], "    1. blocking criterion-1 Fast is not a measurement. [refuted: 200 ms is the measurement]");
+  // Nothing decided yet, under no requirement.
+  const none = formatCriteriaReviews({ required: false, status: { rev: 1, approved: false, need: "review", reason: "revision 1 of the acceptance criteria has not been reviewed" }, authors: ["owner"], revisions: [CRITERIA_VIEW.revisions[1]], reviews: [], resolutions: [] }).split("\n");
+  assert.equal(none[1], "  Revision 1, not approved: revision 1 of the acceptance criteria has not been reviewed");
+  assert.equal(none[3], "  No criteria review has reached a verdict.");
+  assert.equal(formatCriteriaReviews(undefined), "");
+});
+
+test("show --reviews prints the criteria reviews after the reviews when the server keeps them, and --json carries the record", async (t) => {
+  const f = await fixture(t, false, CRITERIA_VIEW);
+  const full = await f.run(["show", "t1", "--reviews", "--project", "proj"]);
+  assert.equal(full.status, 0, full.output);
+  assert.equal(full.output.trim(), `${formatBrief("proj", "t1", BRIEF, f.origin)}\n\n${formatReviews(REVIEWS, "owner")}\n\n${formatCriteriaReviews(CRITERIA_VIEW)}`);
+  const plain = await f.run(["show", "t1", "--project", "proj"]);
+  assert.ok(!plain.output.includes("Criteria reviews:"), "the brief alone prints none");
+  const asJson = await f.run(["show", "t1", "--json", "--project", "proj"]);
+  assert.deepEqual(JSON.parse(asJson.output), { ...BRIEF, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [], criteriaReview: CRITERIA_VIEW });
+});
+
 // A fake server answering the two routes show reads: the brief and the item's
 // own record, which holds every review at every head, and with `kept` the
 // unparsable replies the record also holds (t407).
-async function fixture(t, kept = false) {
+async function fixture(t, kept = false, criteriaReview = null) {
   const server = createServer((req, res) => {
     let data = BRIEF;
-    if (req.url === "/api/projects/proj/items/t1") data = { item: { id: "t1", head: HEAD_B }, reviews: REVIEWS, ...(kept ? { unparsable: UNPARSABLE } : { unparsable: [] }), ownerActor: "owner", gate: { ready: false, blockers: [] }, policy: { checks: [] } };
+    if (req.url === "/api/projects/proj/items/t1") data = { item: { id: "t1", head: HEAD_B }, reviews: REVIEWS, ...(kept ? { unparsable: UNPARSABLE } : { unparsable: [] }), ownerActor: "owner", gate: { ready: false, blockers: [] }, policy: { checks: [] }, ...(criteriaReview ? { criteriaReview } : {}) };
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(data));
   });

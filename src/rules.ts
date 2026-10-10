@@ -30,6 +30,10 @@ export interface Item {
   lastPushAt: string | null;
   dispatch?: Dispatch | null; // set while the task waits for a runner; kept as the record once claimed
   runner?: string | null;     // the runner that holds the claim, if a runner claimed it
+  // How many reviews of the item's acceptance criteria reached a verdict or
+  // failed (t438), set on a queued task alone (Ledger.waiting), so its runner
+  // fetches the server's brief, which carries their findings, before it builds.
+  criteriaReviews?: number;
   reviewOverride?: ReviewOverride | null; // the owner's latest override; it counts only at the head it names
   // The owner's framing of the task, from ControlPlane's work item: what the
   // task is not to do, what tells its holder to stop and ask, and the gate it
@@ -336,6 +340,13 @@ export interface ProjectPolicy {
   // --require-criteria`): a review judges a change against them, so a task
   // without them has nothing to bind its review to.
   requireCriteria?: boolean;
+  // Every build is dispatched and claimed only while a criteria review
+  // approves the task's acceptance criteria as they are now (`atelier init
+  // --require-criteria-review`, src/review/criteria.ts): a model of another
+  // family than every model that wrote them judges them before the build.
+  // Planner and review jobs are exempt; merge, integrate and refresh jobs
+  // keep their own gates.
+  requireCriteriaReview?: boolean;
   // Globs of the files only one live item at a time may change: the queue
   // holds a dispatch whose scope overlaps a live item's within one of them
   // (coreHold in src/dispatch/rules.ts). Absent or empty, nothing is held.
