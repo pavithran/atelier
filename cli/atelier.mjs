@@ -1668,6 +1668,23 @@ async function discoverModels() {
   } catch (error) { die(error.message); }
 }
 
+// `runner setup` (runner-setup.mjs): the pool from the server, and each
+// provider's model list read without a key, as a public page is.
+async function setupRunner() {
+  const { runSetup } = await import("./runner-setup.mjs");
+  try {
+    await runSetup(args, {
+      pool: () => call("GET", "/models", undefined, OWNER),
+      async fetchJson(url) {
+        try {
+          const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+          return res.ok ? await res.json() : null;
+        } catch { return null; }
+      },
+    });
+  } catch (error) { die(error.message); }
+}
+
 // Each tool's usage goes to the usage route under the runner's name; one
 // that fails does not stop the others, and runUsage names every failure.
 // The AI Gateway's figures are read back from GET /api/usage, and each
@@ -1879,6 +1896,7 @@ const commands = {
   // `runner --discover` reports what each home model's harness serves (discover.mjs);
   // `runner --usage` reports each tool's windows, served models and balances (usage.mjs).
   async runner() {
+    if (args._[1] === "setup") return setupRunner();
     if (args.discover === true) return discoverModels();
     if (args.usage === true) return reportUsage();
     const { runRunner } = await import("./runner.mjs");
