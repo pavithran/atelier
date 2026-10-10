@@ -1,4 +1,4 @@
-import { checkFiles, evidenceAt, matchesFolded, pushActors, scopesOverlap, SHIP_FILES, type Evidence, type ProjectPolicy } from "./rules.ts";
+import { checkFiles, evidenceAt, holdsScope,matchesFolded, pushActors, scopesOverlap, SHIP_FILES, type Evidence, type ProjectPolicy } from "./rules.ts";
 
 type Policy = { protected?: string[]; checks?: string[]; shipRuns?: string[]; shipKinds?: string[]; eligible?: string[]; refuseOverlap?: boolean };
 
@@ -54,7 +54,7 @@ export function mergeContext(
   return {
     contributors: pushActors(detail.events),
     passed: evidenceAt(detail.policy, detail.evidence, item.acceptedHead).checks.filter((c) => c.grade === "observed" && c.passed).map((c) => c.claim),
-    overlapping: items.filter((o) => o.id !== item.id && (o.state === "claimed" || o.state === "submitted") && scopesOverlap(item.scope, o.scope)).map((o) => `${o.id} (${o.owner ?? "unowned"})`),
+    overlapping: items.filter((o) => o.id !== item.id && holdsScope(o) && scopesOverlap(item.scope, o.scope)).map((o) => `${o.id} (${o.owner ?? "unowned"})`),
   };
 }
 

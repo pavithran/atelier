@@ -252,6 +252,21 @@ export interface Review {
   withdrawn?: { at: string; reason: string };
 }
 
+// A reviewer's reply no verdict could be read from (parseVerdict refused it,
+// t407): kept on the task, its last VERDICT_LIMITS.reply characters, with the
+// reviewer and the head it judged, so the evidence of what the reviewer
+// actually said lives on the task and not only in the runner's log. The
+// reliability record counts it against the reviewer as a review that never
+// reached a verdict.
+export interface UnparsableReply {
+  itemId: string;
+  by: string;
+  head: string;
+  note: string;    // why no verdict could be read, as the parser said it
+  reply: string;   // the reply itself, its last 100 KB
+  at: string;
+}
+
 // What a review is bound to: the head it read and the binding of the
 // criteria it judged. An item's own is its head and criteriaOf(item).
 export interface ReviewBinding {
@@ -689,7 +704,7 @@ export function changeClass(paths: string[], policy: ProjectPolicy): ChangeClass
 
 export function classRequirement(kind: ChangeClass): string {
   if (kind === "protected") return "Protected change: needs one review from another model family";
-  if (kind === "coordinated") return "Coordinated change: needs one review from another agent";
+  if (kind === "coordinated") return "Coordinated change: needs one review from a different model than every contributor";
   return "Direct change: needs no review";
 }
 
@@ -701,17 +716,18 @@ export const PROTECTED_NEED = "touches a protected path; needs approval from a m
 // Whether one review is the independent review a change needs. The project
 // owner's approval never is: the owner decides by accepting, and the
 // decision is not also the second opinion. A reviewer must be a
-// harness/model actor that is not any contributor under another spelling.
-// A protected change, in every project, needs a model of a recognised family
+// harness/model actor running a different model from every contributor,
+// regardless of harness, spelling or profile. A protected change, in every
+// project, needs a model of a recognised family
 // that no contributor shares (familyRefusal); a coordinated change in a
-// governed project needs any other agent. In a protected change, a review
+// governed project needs a different model. In a protected change, a review
 // the owner token recorded in a model's name counts only when it answers a
 // review request that model claimed for that head (unprovedReview). A tier
 // review's approval never is: the tier reviews beside the gate, not for it.
 export function independentApproval(r: Review, kind: "protected" | "coordinated", contributors: readonly string[], owner = DEFAULT_OWNER): boolean {
   if (!r.approve || r.tier || sameActor(r.by, owner) || !validActor(r.by) || !r.by.includes("/")) return false;
   if (kind === "protected" && unprovedReview(r)) return false;
-  if (contributors.some((actor) => sameActor(r.by, actor))) return false;
+  if (contributors.some((actor) => modelKey(r.by) === modelKey(actor))) return false;
   return kind === "coordinated" || familyRefusal(r.by, contributors) === null;
 }
 
@@ -926,11 +942,18 @@ export function reviewOverrideFor(
   return { override: { head: item.head, by: owner, reason: text, at }, waived: g.requirement ?? PROTECTED_NEED, contributors: contributorsOf(item) };
 }
 
+// An item holds its scope against other claims while it is claimed,
+// submitted or accepted, whether or not a landing is under way (a cancelled
+// merge leaves it accepted); only a merge or an abandon releases it.
+export function holdsScope(item: { state: string }): boolean {
+  return item.state === "claimed" || item.state === "submitted" || item.state === "accepted";
+}
+
 // Live items held by someone else whose scope overlaps this one. Items of
 // one plan are not counted against each other (samePlan).
 export function overlappingLive(item: Item, items: Item[], actor: string): Item[] {
   return items.filter(
-    (o) => o.id !== item.id && (o.state === "claimed" || o.state === "submitted") && o.owner !== actor && !samePlan(item, o) && scopesOverlap(item.scope, o.scope),
+    (o) => o.id !== item.id && holdsScope(o) && o.owner !== actor && !samePlan(item, o) && scopesOverlap(item.scope, o.scope),
   );
 }
 
@@ -941,7 +964,7 @@ export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPol
     const clash = overlappingLive(item, items, actor);
     if (clash.length) {
       const names = clash.map((o) => `${o.id} (${o.owner})`).join(", ");
-      throw new RuleError("overlap", `${item.id}'s scope overlaps live ${names}; this project refuses overlapping claims${item.scope.length ? "" : ", and an unscoped item overlaps everything"}`);
+      throw new RuleError("overlap", `${item.id}'s scope overlaps live ${names}; this project refuses overlapping claims${item.scope.length ? "" : ", and an unscoped item overlaps everything"}. The project owner can narrow a scope with atelier edit ${clash.length === 1 ? clash[0].id : "ID"} --scope GLOB (or atelier edit ${item.id} --scope GLOB)`);
     }
   }
 }
@@ -1282,9 +1305,9 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   if (governed && kind && !policy.execution!.allowed_classes.includes(kind)) blockers.push(`${kind} changes are not allowed by this project's execution policy`);
   // A protected change needs an independent review in every project, and a
   // coordinated one does under an execution policy, unless the review is
-  // held outside the item (reviewHeld). Families and agents are
-  // compared by modelKey and sameActor, so a contributor's model under
-  // another letter case, profile or registered name is never independent of
+  // held outside the item (reviewHeld). Models are compared by modelKey,
+  // and protected reviews must also pass familyRefusal, so a contributor's
+  // model under another harness, case, profile or name is never independent of
   // itself. Without a qualifying approval, the owner's override at this head
   // stands in for it; the owner's approval does not.
   if (!options.reviewHeld && (kind === "protected" || (governed && kind === "coordinated"))) {
