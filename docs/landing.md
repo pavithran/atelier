@@ -306,6 +306,37 @@ What this protects against, and what it does not:
 - Timeouts: a workspace that never reports ends the Workflow after 24 hours,
   a review after one hour, a merge after 24 hours, all with the lease
   released and the by-hand command named.
+- The lease wait has a limit, `LANDING_LEASE_WAIT_LIMIT_MS` in
+  `src/landing/lease-wait.ts`: three hours, measured from the time the
+  server recorded the instance entering the stage `lease` (`stageAt` of its
+  landing-workflow record; the same stage written again in a round keeps
+  it), never from the instance's own clock. The Workflow's own wait
+  (`waitTimeoutMs`) is capped at it. Its timeout names the holder the final
+  ask found, read on the server at that ask, or says that no landing held
+  the lease (the queue ahead stood in the way), with the server's refusal.
+- An instance the server records at `lease` for the limit or longer (the
+  boundary included) is not attached to: `atelier land t9 --workflow`
+  terminates it, reads its status back until it has ended, and only then
+  starts a replacement, which keeps the task's place in the queue (t430).
+  A terminate that fails, a status that cannot be read, or one still live
+  is refused with a 503 and nothing is started. The replacement's id is
+  derived from the old one, so two runs at once create one replacement.
+  The answer and the command name the reason and the old and new
+  instances (`replaced`), and the record keeps them.
+- The record keeps the review options an instance was started with
+  (`reviewer`, `noReview`), and a replacement that names none keeps them.
+  Before acceptance, a run naming an eligible reviewer (another family than
+  every contributor) while the remembered one is no longer eligible
+  replaces the instance the same safe way; a named reviewer who is not
+  eligible replaces nothing and is reported.
+- A replaced instance, and the command attached to it, are fenced: the
+  Workflow's lease calls and the command's lease renewals name their
+  instance, and the Ledger refuses them (`stale_landing`) once the record
+  names another, so neither can release, renew or take the replacement's
+  lease; events must name the instance they answer, and one naming a
+  replaced instance is refused, so a stale report cannot advance the
+  replacement. The Workflow renews (and so checks the fence) before it
+  submits, requests the review and accepts.
 
 The routes the command calls (`landing-workflow`, GET and POST) raised the
 route level to 14. The Workflow is tested in workerd with the Workflows test
