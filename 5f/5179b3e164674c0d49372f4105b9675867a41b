@@ -1,0 +1,31 @@
+atelier atelier/t452 "atelier report returns exit zero when stale_head rejects the report"
+accepted head 40ff62d9622e1e776e2cf3c8a8d62a9df6a269ca
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-10T21:04:31.448Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-10T21:04:35.062Z
+REVIEW approve by codex/gpt-6-astra at 40ff62d9622e1e776e2cf3c8a8d62a9df6a269ca, recorded by codex/gpt-6-astra
+2026-10-10T16:02:40.729Z pavi item.created
+2026-10-10T17:54:05.935Z pavi item.edited
+2026-10-10T17:54:05.935Z pavi item.criteria_changed
+2026-10-10T17:54:06.721Z pavi item.dispatched
+2026-10-10T18:28:05.193Z claude-code/sonnet-5.5 item.claimed
+2026-10-10T18:28:20.140Z claude-code/sonnet-5.5 fork.created
+2026-10-10T20:15:54.793Z claude-code/sonnet-5.5 push.observed
+2026-10-10T20:15:56.328Z atelier/events secret.flagged
+2026-10-10T20:20:30.502Z claude-code/sonnet-5.5 evidence.observed
+2026-10-10T20:20:32.896Z claude-code/sonnet-5.5 evidence.observed
+2026-10-10T20:20:33.585Z claude-code/sonnet-5.5 item.submitted
+2026-10-10T20:56:11.704Z pavi land.lease
+2026-10-10T20:56:18.086Z pavi land.merge
+2026-10-10T20:56:29.647Z pavi land.regenerate
+2026-10-10T20:56:32.453Z claude-code/sonnet-5.5 push.observed
+2026-10-10T20:56:32.776Z atelier/events secret.resolved
+2026-10-10T20:56:32.910Z pavi land.push
+2026-10-10T21:04:32.067Z claude-code/sonnet-5.5 evidence.observed
+2026-10-10T21:04:35.331Z claude-code/sonnet-5.5 evidence.observed
+2026-10-10T21:04:35.759Z pavi land.check
+2026-10-10T21:04:38.559Z pavi review.requested
+2026-10-10T21:04:39.145Z codex/gpt-6-astra review.claimed
+2026-10-10T21:06:37.887Z codex/gpt-6-astra review.approved
+2026-10-10T21:06:39.498Z pavi land.review
+2026-10-10T21:06:40.244Z pavi item.accepted
+2026-10-10T21:06:40.267Z pavi land.accept
