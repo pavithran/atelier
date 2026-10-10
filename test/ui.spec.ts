@@ -6,7 +6,8 @@ import {stamp} from '../src/time';
 import type {ProjectRecord} from '../src/ledger';
 const head='a'.repeat(40),time='2026-10-03T12:00:00Z';
 const project:ProjectRecord={name:'example',repo:'example',policy:{checks:['npm test'],protected:['src/**']},createdAt:time};
-function detail():Detail{return{ownerActor:'pavi',item:{id:'t1',title:'<script>unsafe title</script>',state:'submitted',owner:'codex/gpt-6',scope:['src/**'],fork:'example--t1',base:'b'.repeat(40),head,acceptedHead:null,lastPushAt:time,updatedAt:time,createdAt:time},policy:project.policy,evidence:[{itemId:'t1',claim:'npm test',grade:'observed',head,passed:true,by:'codex/gpt-6',at:time,changedPaths:['src/a.ts']}],reviews:[],gate:{ready:false,needsAssessor:true,blockers:['Protected'],outOfScope:[]},events:[]};}
+// A server behind Access, whose task page offers the override forms (t371).
+function detail():Detail{return{ownerActor:'pavi',ownerFactor:'access',item:{id:'t1',title:'<script>unsafe title</script>',state:'submitted',owner:'codex/gpt-6',scope:['src/**'],fork:'example--t1',base:'b'.repeat(40),head,acceptedHead:null,lastPushAt:time,updatedAt:time,createdAt:time},policy:project.policy,evidence:[{itemId:'t1',claim:'npm test',grade:'observed',head,passed:true,by:'codex/gpt-6',at:time,changedPaths:['src/a.ts']}],reviews:[],gate:{ready:false,needsAssessor:true,blockers:['Protected'],outOfScope:[]},events:[]};}
 it('review puts revision-bound actions before the diff and escapes untrusted task text',()=>{
  const html=renderItem(project,detail(),'PAVI',{head,base:'b'.repeat(40),files:[],truncated:false});
  expect(html).toContain('&lt;script&gt;unsafe title&lt;/script&gt;');expect(html).not.toContain('<script>unsafe');
@@ -100,6 +101,16 @@ it('where the owner\'s approval counts, Approve stays the primary action and no 
   expect(renderItem(project,d,'PAVI',diff)).toContain('The project owner overrode the independent review at this revision: No &lt;b&gt;other&lt;/b&gt; family is available.');
   const moved=detail();moved.item.reviewOverride={...reviewOverride,head:'c'.repeat(40)};
   expect(renderItem(project,moved,'PAVI',diff)).not.toContain('Review overridden');
+ });
+ it('an override stored before the project forbade overrides is shown as not counted, until the task merged on it',()=>{
+  const diff={head,base:'b'.repeat(40),files:[],truncated:false};
+  const reviewOverride={head,by:'pavi',reason:'No other family is available',at:time};
+  const d=detail();d.item.reviewOverride=reviewOverride;d.policy={...d.policy,noOverride:true};
+  const html=renderItem(project,d,'PAVI',diff);
+  expect(html).toContain('Override not counted');expect(html).toContain('this project now forbids overrides');expect(html).not.toContain('Review overridden');
+  d.item.state='merged';d.item.acceptedHead=head;
+  const merged=renderItem(project,d,'PAVI',diff);
+  expect(merged).toContain('Review overridden');expect(merged).not.toContain('Override not counted');
  });
 it('an accepted revision offers its re-acceptance under the current policy, which a merge refused after a policy change asks for',()=>{
  const diff={head,base:'b'.repeat(40),files:[],truncated:false};
@@ -1467,4 +1478,14 @@ it('a merged task shows its change as it landed, with no merge preview or confli
  expect(html).not.toContain('differ from main');
  const ff=renderItem(project,d,'PAVI',{head,base:'b'.repeat(40),files:[],truncated:false,merged:{commit:head,from:'fork-point'}});
  expect(ff).toContain("the task's fork point");expect(ff).not.toContain('No workspace yet');
+});
+
+
+it('shows the blocked build report before clean-clone check results and escapes its detail',()=>{
+ const d=detail();
+ d.runs=[{actor:'codex/gpt-6-astra',role:'build',outcome:'validation_blocked',project:project.name,item:d.item.id,runner:'home:studio',at:time,detail:'npm test could not run: listen EPERM <script>'}];
+ const html=renderItem(project,d,'PAVI',null);
+ expect(html).toContain('Validation blocked');
+ expect(html).toContain('listen EPERM &lt;script&gt;');
+ expect(html.indexOf('Validation blocked')).toBeLessThan(html.indexOf('Runner, clean clone'));
 });

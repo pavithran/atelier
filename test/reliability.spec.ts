@@ -58,7 +58,7 @@ it("a runner reports a run under its name; the owner token reads the reports; an
   expect((await call("POST", "/runs", "owner", body, { "x-atelier-runner": "laptop" })).status).toBe(400);
   const bad = await call("POST", "/runs", "owner", { ...body, outcome: "crashed" }, { "x-atelier-runner": "home:studio" });
   expect(bad.status).toBe(400);
-  expect(await bad.json()).toMatchObject({ error: "bad_run", detail: "outcome must be one of stalled, timed-out, refused, harness_failed, early_stop, permission_stop, duplicate_design, incomplete_merge" });
+  expect(await bad.json()).toMatchObject({ error: "bad_run", detail: "outcome must be one of stalled, timed-out, refused, harness_failed, early_stop, permission_stop, duplicate_design, incomplete_merge, validation_blocked" });
   const sent = await call("POST", "/runs", "owner", body, { "x-atelier-runner": "home:studio" });
   expect(sent.status).toBe(201);
   expect(await sent.json()).toMatchObject({ ...body, runner: "home:studio" });
@@ -207,4 +207,20 @@ it("the Models page shows finding precision, median timings and the comparison b
   expect(html).toContain("1 of 1 kept");
   expect(html).toContain("none timed");
   expect(html).toContain("Findings adjudicated · 1");
+});
+
+
+it("persists blocked validation and retrieves only the task's reports", async () => {
+  const index = env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  await project("blocked-validation");
+  const id = await submitted("blocked-validation", GPT, H1);
+  const body = { actor: GPT, role: "build", outcome: "validation_blocked", project: "blocked-validation", item: id, detail: "npm test could not run: listen EPERM" };
+  expect((await call("POST", "/runs", "owner", body, { "x-atelier-runner": "home:studio" })).status).toBe(201);
+  await call("POST", "/runs", "owner", { ...body, item: "t2" }, { "x-atelier-runner": "home:studio" });
+  await call("POST", "/runs", "owner", { ...body, project: "another-validation" }, { "x-atelier-runner": "home:studio" });
+  expect(await index.runsForItem("blocked-validation", id)).toEqual([expect.objectContaining({ ...body, runner: "home:studio" })]);
+  const cookie = await signIn(TOKEN, testEnv);
+  const page = await worker.fetch(new Request(`https://atelier.test/p/blocked-validation/${id}`, { headers: { cookie } }), testEnv);
+  expect(page.status).toBe(200);
+  expect(await page.text()).toContain("npm test could not run: listen EPERM");
 });

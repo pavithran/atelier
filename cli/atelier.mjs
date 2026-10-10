@@ -38,7 +38,7 @@ import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } f
 import { pushHistory } from "./push-steps.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
-import { formatLocal, formatStatus, formatStatusBrief, itemJson, statusJson } from "./status.mjs";
+import { formatLocal, formatStatus, formatStatusBrief, itemJson, statusJson, taskLink } from "./status.mjs";
 import { findStrays, formatStrays } from "./strays.mjs";
 import { formatTokenExpiryWarnings, parseExpiryDay, readTokenExpiries, recordTokenExpiryDay, TOKEN_EXPIRY_WARN_DAYS } from "./token-expiry.mjs";
 import { receiptJson, receiptText } from "./receipt.mjs";
@@ -243,7 +243,7 @@ export const FLAGS = {
   ops: {},
   runner: { name: false, once: true, config: false, discover: true, probe: true, "dry-run": true, usage: true, integrate: true },
   login: { server: false, store: true },
-  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', core: '--core needs a glob: atelier init --core "GLOB", once per entry, or --core "" alone to clear them', approval: false, reset: true, "refuse-overlap": true, "require-criteria": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default', "review-tier": '--review-tier needs models: atelier init --review-tier H/M,H/M,..., or --review-tier "" to clear it' },
+  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', core: '--core needs a glob: atelier init --core "GLOB", once per entry, or --core "" alone to clear them', approval: false, reset: true, "refuse-overlap": true, "require-criteria": true, "sandbox-only": true, "no-override": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default', "review-tier": '--review-tier needs models: atelier init --review-tier H/M,H/M,..., or --review-tier "" to clear it' },
   adopt: {},
   revert: {},
   publish: {},
@@ -1226,7 +1226,8 @@ const flat = (value) => stripVTControlCharacters(String(value)).replace(/[\p{Cc}
 // Where a project stands, as plain text an agent can paste into a chat: one
 // line per item, and any text a person or agent wrote flattened.
 const at = (iso) => `${String(iso).slice(0, 16).replace("T", " ")} UTC`;
-export function formatStanding(s, ownerName = "the project owner") {
+// `origin` is the server in use, for the link to each merge by override.
+export function formatStanding(s, ownerName = "the project owner", origin = "") {
   const runner = (q) => `${q.to}${q.agent ? ` ${q.agent}` : ""}${q.model ? `/${q.model}` : ""}`;
   const lines = [`${flat(s.project.title)} (${flat(s.project.name)}) as of ${at(s.generatedAt)}, from Atelier's record`];
   const group = (title, rows) => { if (rows.length) lines.push("", `${title}:`, ...rows.map((r) => `  ${r}`)); };
@@ -1234,6 +1235,9 @@ export function formatStanding(s, ownerName = "the project owner") {
   group(`Waiting on ${flat(ownerName)}`, s.waiting.map((w) => `${w.id}  ${w.kind}  ${flat(w.title)}  ${flat(w.reason)}${w.brief ? `  brief, ${flat(w.brief.verdict)}: ${flat(w.brief.line)}` : ""}`));
   group("Queued for a runner", s.queued.map((q) => `${q.id}  for ${flat(runner(q))}  ${flat(q.title)}${q.note ? `  note: ${flat(q.note)}` : ""}`));
   group("Last merges", s.merged.map((m) => `${m.id}  ${at(m.at)}${m.commit ? `  ${m.commit.slice(0, 8)}` : ""}  ${flat(m.title)}${m.line ? `  summary: ${flat(m.line)}` : ""}`));
+  // Every merge by override, counted in the heading and one per line under
+  // it, each with the link to its page on the server in use (t371).
+  group(`Merged by override: ${(s.overrides ?? []).length}`, (s.overrides ?? []).map((o) => `${o.id}  ${taskLink(origin, s.project.name, o.id)}  ${at(o.at)}  ${flat(o.title)}  reason: ${flat(o.reason)}`));
   group("Handoff notes", s.handoffs.map((h) => `${h.id}  ${flat(h.from || "?")} to ${flat(h.to || "?")}, ${at(h.at)}  ${flat(h.note)}`));
   if (lines.length === 1) lines.push("", "Nothing is held, waiting, queued or recently merged.");
   if (s.partial?.length) lines.push("", "Part of this record is not shown:", ...s.partial.map((x) => `  ${flat(x)}`));
@@ -1714,7 +1718,7 @@ const commands = {
   async unwrap() {
     const name = project(), as = await actor(OWNER), cwd = sessionCheckout(name);
     const standing = await call("GET", `${P(name)}/standing`, undefined, as);
-    console.log(formatStanding(standing, OWNER_NAME));
+    console.log(formatStanding(standing, OWNER_NAME, server()));
     console.log(await checkoutStatusLine(name, as));
     if (cwd) for (const line of remoteStatusLines(name, cwd)) console.log(line);
     if (cwd) {
@@ -2147,6 +2151,10 @@ const commands = {
     if (cp || args["refuse-overlap"] !== undefined || reset) policy.refuseOverlap = cp?.refuseOverlap ?? args["refuse-overlap"] === true;
     if (args["require-criteria"] !== undefined || reset) policy.requireCriteria = args["require-criteria"] === true;
     if (args["sandbox-only"] !== undefined || reset) policy.sandboxOnly = args["sandbox-only"] === true;
+    // --no-override is a switch too (t371): given, overrides of the
+    // independent review are refused in the project; --no-override=false
+    // allows them again, with the owner's confirmation.
+    if (args["no-override"] !== undefined || reset) policy.noOverride = args["no-override"] === true;
     // --core names the core files, once per glob, replacing the recorded
     // ones; --core "" alone clears them, and --reset without it does too.
     const core = coreArg();
@@ -2228,6 +2236,9 @@ const commands = {
     console.log(`Protected:  ${[...new Set([...(pol.protected ?? []), ...checkInputs])].sort().join(", ")}`);
     console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
     console.log(`Overlap:    ${pol.refuseOverlap ? "refused" : "flagged"}`);
+    console.log(`Overrides:  ${pol.noOverride ? "refused; every change needs its independent review" : "allowed with a reason, once the owner confirms on the task's page with the Access sign-in or the server's confirmation secret"}`);
+    // A server older than --no-override ignores it and answers without it.
+    if (args["no-override"] === true && !pol.noOverride) console.log("Warning: the server did not record --no-override; deploy the server, then run atelier init --no-override again.");
     console.log(`Criteria:   ${pol.requireCriteria ? "required on every task" : "optional"}`);
     // A server older than the criteria requirement ignores it and answers without one.
     if (args["require-criteria"] === true && !pol.requireCriteria) console.log("Warning: the server did not record the criteria requirement; deploy the server, then run atelier init --require-criteria again.");
@@ -3747,7 +3758,7 @@ const commands = {
       const local = await localStanding(name, as);
       const strays = localStrays();
       if (args.json) return console.log(JSON.stringify({ project: standing, checkout, ...(local ? { local } : {}), ...(strays.length ? { strayTests: strays } : {}) }, null, 2));
-      console.log(tokenExpiryWarningsText(formatStanding(standing, OWNER_NAME) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : "") + (strays.length ? "\n\n" + formatStrays(strays) : "")));
+      console.log(tokenExpiryWarningsText(formatStanding(standing, OWNER_NAME, server()) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : "") + (strays.length ? "\n\n" + formatStrays(strays) : "")));
       pointToGuide([name]);
       return;
     }
@@ -3767,9 +3778,9 @@ const commands = {
       const { items } = await call("GET", P(p.name), undefined, OWNER);
       return { name: p.name, title: p.title, items, inbox };
     }));
-    if (args.json) return console.log(JSON.stringify(statusJson(views), null, 2));
+    if (args.json) return console.log(JSON.stringify(statusJson(views, server()), null, 2));
     const strays = formatStrays(localStrays());
-    console.log(tokenExpiryWarningsText(formatStatus(views, { queue, offers }) + (strays ? "\n\n" + strays : "")));
+    console.log(tokenExpiryWarningsText(formatStatus(views, { queue, offers, server: server() }) + (strays ? "\n\n" + strays : "")));
     pointToGuide(chosen.map((p) => p.name));
   },
 
