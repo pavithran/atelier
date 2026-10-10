@@ -1,0 +1,73 @@
+atelier atelier/t437 "Test-suite slots per machine, with priority, in place of the load-average gate"
+accepted head fe1b7c8898a7fd587453773cc4ac03cf55eedba4
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-10T21:22:34.903Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-10T21:22:38.567Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-10T21:30:07.783Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-10T21:30:11.415Z
+REVIEW approve by antigravity/gemini-3.1-pro at fe1b7c8898a7fd587453773cc4ac03cf55eedba4, recorded by antigravity/gemini-3.1-pro
+2026-10-10T14:50:58.645Z pavi item.created
+2026-10-10T14:54:21.121Z pavi item.edited
+2026-10-10T14:54:21.121Z pavi item.criteria_changed
+2026-10-10T14:54:46.353Z pavi item.dispatched
+2026-10-10T15:23:22.833Z pavi item.dispatched
+2026-10-10T15:23:32.173Z pavi item.dispatched
+2026-10-10T15:23:51.436Z codex/gpt-6-astra item.claimed
+2026-10-10T15:24:01.029Z codex/gpt-6-astra fork.created
+2026-10-10T15:36:37.679Z codex/gpt-6-astra item.released
+2026-10-10T15:37:08.366Z codex/gpt-6-astra item.claimed
+2026-10-10T15:38:17.678Z pavi item.released
+2026-10-10T15:38:17.678Z pavi item.dispatched
+2026-10-10T16:00:21.510Z pavi item.dispatched
+2026-10-10T16:09:42.361Z codex/gpt-6-astra item.claimed
+2026-10-10T16:13:49.252Z codex/gpt-6-astra item.released
+2026-10-10T16:29:37.842Z codex/gpt-6-astra item.claimed
+2026-10-10T16:31:09.621Z codex/gpt-6-astra item.released
+2026-10-10T16:31:40.397Z codex/gpt-6-astra item.claimed
+2026-10-10T16:41:52.434Z codex/gpt-6-astra push.observed
+2026-10-10T16:46:45.727Z codex/gpt-6-astra evidence.observed
+2026-10-10T16:46:48.653Z codex/gpt-6-astra evidence.observed
+2026-10-10T16:46:49.100Z codex/gpt-6-astra item.submitted
+2026-10-10T16:49:57.212Z pavi land.lease
+2026-10-10T16:50:33.965Z pavi land.merge
+2026-10-10T16:53:20.409Z codex/gpt-6-astra push.observed
+2026-10-10T17:29:50.114Z pavi land.merge
+2026-10-10T17:30:02.203Z pavi item.released
+2026-10-10T17:30:02.203Z pavi item.dispatched
+2026-10-10T18:39:54.811Z pavi item.dispatched
+2026-10-10T18:56:37.016Z claude-code/opus-5.5 item.claimed
+2026-10-10T18:56:47.573Z claude-code/opus-5.5 item.released
+2026-10-10T19:03:14.491Z claude-code/opus-5.5 item.claimed
+2026-10-10T19:13:58.779Z claude-code/opus-5.5 push.observed
+2026-10-10T19:18:53.864Z claude-code/opus-5.5 evidence.observed
+2026-10-10T19:19:06.830Z claude-code/opus-5.5 evidence.observed
+2026-10-10T19:19:07.517Z claude-code/opus-5.5 item.submitted
+2026-10-10T19:35:11.082Z pavi land.merge
+2026-10-10T19:37:08.031Z pavi item.released
+2026-10-10T19:37:08.031Z pavi item.dispatched
+2026-10-10T20:51:29.765Z pavi item.dispatched
+2026-10-10T20:51:31.914Z claude-code/opus-5.5 item.claimed
+2026-10-10T21:04:21.545Z claude-code/opus-5.5 push.observed
+2026-10-10T21:09:48.713Z claude-code/opus-5.5 evidence.observed
+2026-10-10T21:09:57.594Z claude-code/opus-5.5 evidence.observed
+2026-10-10T21:09:58.078Z claude-code/opus-5.5 item.submitted
+2026-10-10T21:17:17.162Z pavi land.merge
+2026-10-10T21:17:28.091Z pavi land.regenerate
+2026-10-10T21:17:33.072Z claude-code/opus-5.5 push.observed
+2026-10-10T21:17:35.188Z pavi land.push
+2026-10-10T21:22:35.740Z claude-code/opus-5.5 evidence.observed
+2026-10-10T21:22:38.917Z claude-code/opus-5.5 evidence.observed
+2026-10-10T21:22:39.455Z pavi land.check
+2026-10-10T21:24:38.987Z pavi land.lease
+2026-10-10T21:24:45.440Z pavi land.merge
+2026-10-10T21:24:56.676Z pavi land.regenerate
+2026-10-10T21:24:59.227Z pavi land.push
+2026-10-10T21:30:08.496Z claude-code/opus-5.5 evidence.observed
+2026-10-10T21:30:11.662Z claude-code/opus-5.5 evidence.observed
+2026-10-10T21:30:12.150Z pavi land.check
+2026-10-10T21:30:14.873Z pavi review.requested
+2026-10-10T21:30:27.334Z antigravity/gemini-3.1-pro review.claimed
+2026-10-10T21:30:33.956Z antigravity/gemini-3.1-pro review.diff
+2026-10-10T21:33:32.762Z antigravity/gemini-3.1-pro review.approved
+2026-10-10T21:33:46.662Z pavi land.review
+2026-10-10T21:33:47.673Z pavi item.accepted
+2026-10-10T21:33:47.700Z pavi land.accept
