@@ -817,6 +817,9 @@ export async function claimWorkspace(name, id, as, runner) {
   const reads = forkBranch(dir);
   if (reads && reads !== branch) console.log(`Warning: ${id}'s fork reads its head from ${reads}, but the project's branch is ${branch}, so atelier push will refuse. To register ${reads}, ${OWNER_NAME} runs atelier init in the project's checkout with ${reads} checked out.`);
   // Commit as the project's checkout does, not as this machine's global identity.
+  const preparation = (await call("GET", P(name), undefined, as)).project?.policy?.prepare ?? null;
+  git(["config", "--local", "atelier.prepare", JSON.stringify(preparation)], { cwd: dir });
+  if (preparation?.command) console.log(`Preparation (run in ${JSON.stringify(dir)}): ${preparation.command}`);
   const identity = applyIdentity(cfg.projects?.[name]?.path, dir);
   return { item: r.item, workspace: r.workspace, dir, identity };
 }

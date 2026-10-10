@@ -1962,3 +1962,59 @@ test("the runner's own load reader holds back under load, not just an injected o
   assert.ok(!calls.some((c) => c.argv?.[0] === "claim"), "no job is claimed while the runner's own reader reports load 5");
   assert.ok(logs.some((s) => /load 5 is at or above the limit 2; waiting before taking a job/.test(s)), logs.join("\n"));
 });
+
+test('build preparation runs after reset and before its harness, and failures use commit preservation', async () => {
+  const f = fixture();
+  const order = [];
+  f.io.reset = async () => order.push('reset');
+  f.io.prepare = async () => { order.push('prepare'); return { key: 'ready' }; };
+  const harness = f.io.harness;
+  f.io.harness = async (...args) => { order.push('harness'); return harness(...args); };
+  assert.equal((await runTask(assignment, config, 'home:studio', f.io)).phase, 'submitted');
+  assert.deepEqual(order, ['reset', 'prepare', 'harness']);
+  for (const releaseFails of [false, true]) {
+    const failed = fixture({ head: 'before', ...(releaseFails ? { failCommand: 'release' } : {}) });
+    failed.io.prepare = async () => { throw Object.assign(new Error('preparation exited 1: stderr tail'), { infrastructure: true }); };
+    const state = await runTask(assignment, config, 'home:studio', failed.io);
+    assert.equal(state.taskFailure, false);
+    assert.ok(!failed.calls.some((c) => c.harness || c.argv?.[0] === 'finish'));
+    assert.ok(failed.calls.some((c) => c.argv?.[0] === 'release'));
+    if (releaseFails) assert.ok(failed.logs.some((l) => l.includes('claim preserved: release failed')));
+  }
+});
+
+test('resumed work prepares before finishing, and retains its claim if preparation fails', async () => {
+  const job = { ...assignment, item: { ...assignment.item, state: 'claimed', owner: assignment.actor, head: 'recorded' } };
+  for (const fails of [false, true]) {
+    const f = fixture({ head: 'before' });
+    let prepared = false;
+    f.io.prepare = async () => { prepared = true; if (fails) throw new Error('preparation failed'); return { key: 'ready' }; };
+    const state = await runTask(job, config, 'home:studio', f.io);
+    assert.ok(prepared);
+    assert.equal(state.phase, fails ? 'failed' : 'submitted');
+    assert.ok(!f.calls.some((c) => c.harness || c.argv?.[0] === 'release'));
+    assert.equal(f.calls.some((c) => c.argv?.[0] === 'finish'), !fails);
+  }
+});
+
+test('successful preparation clears a pre-preparation validation blocker but keeps a blocker from that same preparation', async () => {
+  for (const prepared of [false, true]) {
+    const f = fixture();
+    let cleared = false;
+    f.io.readValidationBlock = async () => ({ actor: assignment.actor, head: 'before', detail: 'validation_blocked: old environment', prepared, ...(prepared ? { prepareKey: 'ready' } : {}) });
+    f.io.prepare = async () => ({ key: 'ready' });
+    f.io.clearValidationBlock = async () => { cleared = true; };
+    const state = await runTask(assignment, config, 'home:studio', f.io);
+    assert.equal(cleared, !prepared);
+    assert.equal(state.validationBlocked === true, prepared);
+    assert.equal(f.calls.some((c) => c.harness), !prepared);
+  }
+});
+
+test('conflicted preparation goes to the resolving harness, even with an old validation blocker', async () => {
+  const f = fixture();
+  f.io.readValidationBlock = async () => ({ actor: assignment.actor, head: 'before', detail: 'old blocker' });
+  f.io.prepare = async () => ({ deferred: 'Resolve input then run npm ci && npm run types' });
+  assert.equal((await runTask(assignment, config, 'home:studio', f.io)).phase, 'submitted');
+  assert.match(f.calls.find((c) => c.brief).brief, /Resolve input then run npm ci && npm run types/);
+});
