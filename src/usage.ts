@@ -89,6 +89,7 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "defect ID --note TEXT [--found-in ID]", about: "The project owner traces a defect to the revision the task was accepted at. Nothing about the task changes; the reliability record counts the defect against the model that built that revision and against each model that approved it. `--found-in` names the task the defect was found or fixed in." },
     { form: "finding ID --head SHA --index N --verdict confirmed|refuted|fixed [--note TEXT]", about: "The project owner records a verdict on one finding of a review: confirmed, that the finding was right and a fix followed; fixed, that it was right and is fixed; refuted, that it was wrong. `--head` names the review's revision and `--index` the finding's position in that review's findings, one based. The event is the record, and the reliability record counts the reviewer's findings confirmed and refuted, which measures its precision." },
   ], [
+    { form: "stuck [--project P] [--json] [--no-push-hours N] [--unanswered-hours N] [--lease-wait-minutes N] [--runner-poll-minutes N] [--review-answer-hours N]", about: "One read-only owner report of stuck tasks, lease waits, confirmed orphan leases, runner give-ups, idle polls, claimed reviews and stale core holds; prints evidence and recovery commands without running them, and separately lists failed observed check commands in the preceding rolling day." },
     { form: "run-report --actor H/M --role build|review --outcome KIND [--project P] [--item ID] [--detail TEXT]", about: "The project owner records a run that ended without a result the ledger saw, for a run outside the runner: an early stop, a permission stop, a duplicate design or an incomplete merge, beside stalled, timed-out and refused, which the runner reports itself. The reliability record counts it against the actor, and a review run counts as a review that never reached a verdict." },
     { form: "served MODEL --recorded H/M --from TIME --to TIME [--item ID]... [--note T] [--apply]", about: "The project owner records which model served events recorded under another, as when zcode served deepseek-flash while its events named glm-5.3. Each event recorded as `--recorded` from `--from` up to `--to`, on the tasks `--item` names or on every task, gets an annotation of its own, and the track record, the reliability record and the graph count it under the served model; the event itself never changes. Without `--apply` it lists the matches and records nothing. `--note` says how the owner knows." },
     { form: "approve ACTION --head SHA [--note T] [--expires 24h]", about: "The project owner approves one protected action, such as `deploy`, `install`, `paid-run` or `photos-writeback`, at one exact revision of the main line: the full SHA of a commit the baseline holds. `atelier ship` uses the approval once, at that revision only, and a later revision needs its own. It stands for 24 hours unless `--expires` gives from `1m` to `30d`; `--note` records why. Any other kind must be one the project's ship files name." },
@@ -285,6 +286,18 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   },
   owners: { flags: { "--json": "prints the list as JSON" }, example: "atelier owners --project demo" },
   inbox: { flags: { "--json": "prints the entries as JSON" }, example: "atelier inbox" },
+  stuck: {
+    flags: {
+      "--project P": "owner-only read-only report for this project (defaults to the checkout's project); failed reads are unavailable, never empty evidence",
+      "--json": "prints observation time, limits, evidence ages and links, recovery commands, unavailable sources and failed observed check commands in the preceding rolling day",
+      "--no-push-hours N": "positive limit for claims and core holds; default 6 hours",
+      "--unanswered-hours N": "positive limit for unanswered changes requests; default 24 hours",
+      "--lease-wait-minutes N": "positive limit for lease-stage Workflows; default 30 minutes",
+      "--runner-poll-minutes N": "positive idle-poll limit; default 5 minutes, plus one minute of offer timestamp coarsening; active jobs are excluded",
+      "--review-answer-hours N": "positive limit for current claimed reviews; default 2 hours; renewed claims reset the clock",
+    },
+    example: "atelier stuck --project demo",
+  },
   status: {
     flags: {
       "--brief": "the report to give the owner after each landing, in under 20 lines: recent merges, the deployed commit, live builds, reviews and landings, and spend against the daily limit; the project is --project, else this checkout's",

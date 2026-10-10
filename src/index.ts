@@ -1,3 +1,4 @@
+import { reportLimits, stuckReport, type Snapshot } from "./stuck/report.ts";
 import { assertCriteriaAllowed, assertReviewAllowed } from "./rules.ts";
 import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
@@ -988,6 +989,38 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (!ref) throw new RuleError("not_found", "no such route", 404);
   const project = ref.name;
   const L = ledger(env, ref.key);
+
+  if (parts[2] === "stuck" && parts.length === 3 && m === "GET") {
+    requireOwner(env, actor);
+    let limits;
+    try { limits = reportLimits(Object.fromEntries(c.url.searchParams)); }
+    catch (error) { throw new RuleError("bad_limit", String((error as Error).message), 400); }
+    const now = new Date(), unavailable: string[] = [];
+    async function read<T>(source: string, action: () => Promise<T>): Promise<T | null> {
+      try { return await action(); }
+      catch (error) { unavailable.push(`${source}: ${String((error as Error).message ?? error)}`); return null; }
+    }
+    const [snapshot, offers, runs, projects] = await Promise.all([
+      read<Snapshot>("project ledger", () => L.stuckSnapshot()),
+      read("runner offers", () => index(env).runnerOffers()),
+      read("run reports", () => index(env).runs(Number.MAX_SAFE_INTEGER)),
+      read("project index", () => index(env).projects()),
+    ]);
+    if (snapshot) await Promise.all(snapshot.workflows.map(async (w) => {
+      const status = await read(`Workflow ${w.record.instance}`, async () => (await (await env.LANDING_WORKFLOW.get(w.record.instance)).status()).status);
+      w.status = status ?? "unknown";
+      if (status === "unknown") unavailable.push(`Workflow ${w.record.instance}: indeterminate status`);
+    }));
+    const active: string[] = [];
+    let jobsAvailable = projects !== null;
+    if (projects) await Promise.all(projects.map(async (p) => {
+      const other = p.key === ref.key ? snapshot : await read<Snapshot>(`active jobs ${p.name}`, () => ledgerOf(env, p).stuckSnapshot());
+      if (!other) { jobsAvailable = false; return; }
+      for (const i of other.items) if (i.runner && i.owner && i.state === "claimed") active.push(i.runner);
+      for (const r of other.reviews) if (r.runner) active.push(r.runner);
+    }));
+    return json(stuckReport(project, c.url.origin, now, limits, snapshot, offers, runs, jobsAvailable ? active : null, unavailable));
+  }
 
   if (parts.length === 2 && m === "PUT") {
     requireOwner(env, actor);
