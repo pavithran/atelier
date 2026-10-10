@@ -37,7 +37,7 @@ test("pure output keeps the brief and gate wording", () => {
 // `forkBranch` is the branch the fork's HEAD names, and `branch.claim` the
 // one the claim route gives; the test may change it between claims. The
 // push route reports the fork's HEAD, as headOf reads it in Artifacts.
-async function fixture(t, { failed = false, blockers = [], failStep, sandbox = false, forkBranch = "main", claimBranch = forkBranch } = {}) {
+async function fixture(t, { failed = false, blockers = [], failStep, sandbox = false, forkBranch = "main", claimBranch = forkBranch, policy = {}, kind } = {}) {
   const root = mkdtempSync(join(tmpdir(), "atelier-agent-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const source = join(root, "source"), remote = join(root, "remote.git");
@@ -47,7 +47,7 @@ async function fixture(t, { failed = false, blockers = [], failStep, sandbox = f
   git(source, "commit", "-q", "--allow-empty", "-m", "Initial");
   execFileSync("git", ["clone", "-q", "--bare", source, remote]);
   const head = git(source, "rev-parse", "HEAD");
-  const item = { id: "t1", title: brief.title, scope: ["docs/**"], owner: actor, state: "claimed", head, dispatch: { note: "Keep examples" } };
+  const item = { id: "t1", ...(kind ? { kind } : {}), title: brief.title, scope: ["docs/**"], owner: actor, state: "claimed", head, dispatch: { note: "Keep examples" } };
   const gate = { ready: !blockers.length, blockers };
   const posts = [], requests = [], branch = { claim: claimBranch };
   const command = failed ? "exit 1" : "exit 0";
@@ -56,7 +56,7 @@ async function fixture(t, { failed = false, blockers = [], failStep, sandbox = f
     const path = req.url;
     requests.push(path);
     if (req.method === "POST") posts.push({ path, body: JSON.parse(raw) });
-    let data = { item, gate, policy: { checks: [command], sandboxOnly: sandbox } };
+    let data = { item, gate, policy: { checks: [command], sandboxOnly: sandbox, ...policy } };
     if (path.endsWith("/claim")) data = { item, workspace: { token: "fake", remote, defaultBranch: branch.claim, expiresAt: "tomorrow" } };
     if (path.endsWith("/push")) data = { ...item, head: git(remote, "rev-parse", "HEAD") };
     if (path.endsWith("/read-token") || path.endsWith("/baseline-token") || path.endsWith("/base-token")) data = { remote, token: "fake", head, defaultBranch: "main" };
@@ -268,4 +268,23 @@ test("the task an agent starts and the brief it reads carry the owner's framing,
   const text = formatBrief("proj", "t1", { ...brief, ...framed, summary: null }, "https://atelier.test");
   assert.deepEqual(text.split("\n").slice(1, 5), [brief.decided, "Non-goals: no CSS changes; no routes", "Stop when: a check fails twice", "Next gate: design review"]);
   assert.ok(!text.includes("\x1b"));
+});
+
+// The early review notice (t422): done says which policy requires a review
+// before the push and the checks run, measured against the project baseline.
+for (const [label, extra, expected] of [
+  ["a protected change", { policy: { protected: ["AGENTS.md"] } }, /AGENTS\.md matches the protected glob AGENTS\.md/],
+  ["a plan's part, though the change is direct", { kind: "part", policy: { protected: [] } }, /part of a plan, and every part of a plan is reviewed/],
+]) test(`done prints the review notice for ${label} before the checks run`, async (t) => {
+  const f = await fixture(t, { failed: true, ...extra });
+  assert.equal((await f.run(["start", "t1"])).status, 0);
+  writeFileSync(join(f.workspace, "AGENTS.md"), "changed\n");
+  git(f.workspace, "add", "AGENTS.md"); git(f.workspace, "-c", "user.name=T", "-c", "user.email=t@example.test", "commit", "-q", "-m", "Edit");
+  const r = await f.run(["done", "Edited docs"], f.workspace);
+  assert.equal(r.status, 2, r.output);
+  const notice = r.output.indexOf("A review will be needed before this lands"), failed = r.output.indexOf("check failed");
+  assert.ok(notice >= 0, r.output);
+  assert.ok(notice < failed, r.output);
+  assert.match(r.output, expected);
+  assert.ok(f.requests.some((path) => path.endsWith("/base-token")));
 });

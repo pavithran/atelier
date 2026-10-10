@@ -96,3 +96,37 @@ test("the workspace notice reads the changed paths and the policy file's version
   assert.match(lines.join("\n"), /execution-policy\.v1\.json \(version 4\)/);
   assert.match(lines.join("\n"), /AGENTS\.md matches the protected glob AGENTS\.md/);
 });
+
+test("a plan's part keeps the notice for a direct change, and says why", () => {
+  assert.equal(reviewNotice(["docs/a.md"], governed), null);
+  const text = reviewNotice(["docs/a.md"], governed, null, true)!.join("\n");
+  assert.match(text, /part of a plan, and every part of a plan is reviewed/);
+  assert.match(text, /another model family/);
+  assert.ok(reviewNotice(["src/a.ts"], open, null, true));
+});
+
+test("an execution policy's protected paths count in the disagreement", () => {
+  const policy: ProjectPolicy = { checks: [], protected: [], execution: { allowed_classes: ["protected"], direct: { enabled: false, allowed_path_patterns: [] }, protected_path_patterns: ["src/**"] } };
+  const found = reviewDisagreements(policy, [{ file: "AGENTS.md", text: "Review is optional for non-authority changes.\n" }]);
+  assert.equal(found.length, 1);
+  assert.match(found[0], /src\/\*\*/);
+});
+
+test("the notice measures against the project baseline, not the fork's origin/main", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "atelier-notice-base-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const sh = (cwd: string, ...a: string[]) => execFileSync("git", ["-c", "user.name=T", "-c", "user.email=t@example.invalid", ...a], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const base = join(root, "base"), fork = join(root, "fork.git"), ws = join(root, "ws");
+  mkdirSync(base);
+  sh(base, "init", "-b", "main"); writeFileSync(join(base, "a.txt"), "1"); sh(base, "add", "."); sh(base, "commit", "-m", "base");
+  sh(root, "clone", "--bare", base, fork); sh(root, "clone", fork, ws);
+  writeFileSync(join(ws, "AGENTS.md"), "x"); sh(ws, "add", "."); sh(ws, "commit", "-m", "task"); sh(ws, "push", "-q", "origin", "main");
+  const git = (argv: string[], o: { cwd?: string } = {}) => {
+    try { return { status: 0, stdout: sh(o.cwd ?? ws, ...argv) }; } catch { return { status: 1, stdout: "" }; }
+  };
+  const baseline = { remote: base, defaultBranch: "main", token: "t" };
+  // The fork already holds the head, so its origin/main sees no change.
+  assert.deepEqual(changedFromMain(git, ws), []);
+  assert.deepEqual(changedFromMain(git, ws, baseline), ["AGENTS.md"]);
+  assert.match(workspaceNotice(git, ws, open, { baseline })!.join("\n"), /AGENTS\.md matches the protected glob/);
+});
