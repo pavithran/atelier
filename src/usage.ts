@@ -145,7 +145,7 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "ops COMMAND [ARGS...]", aside: "portfolio operations, run by the private atelier-ops toolkit when installed", about: "Hands everything after `ops` to the private `atelier-ops` toolkit, named by `ATELIER_OPS` or found on `PATH`. Without one it says so and exits 2." },
   ]] },
   { name: "Docs", lines: [[
-    { form: "guide [--role build|review|plan|orchestrate] [--project P]", aside: "paste into a project's AGENTS.md", about: "Prints the instructions an agent needs, to paste into a project's AGENTS.md or CLAUDE.md. `--role` prints the instructions for one role alone, from a project's `.atelier/prompts/ROLE.md` when it has one. `--role orchestrate` for a project ends with the owner's standing decisions (`atelier decide`), read from the server. `atelier adopt` inserts the plain guide." },
+    { form: "guide [--role build|review|plan|orchestrate] [--full] [--project P]", aside: "paste into a project's AGENTS.md", about: "Prints the instructions an agent needs, to paste into a project's AGENTS.md or CLAUDE.md. `--role` prints the instructions for one role alone, from a project's `.atelier/prompts/ROLE.md` when it has one. `--role orchestrate` for a project ends with the owner's standing decisions (`atelier decide`), read from the server. `atelier adopt` inserts the plain guide." },
   ]] },
   { name: "Tokens", gap: true, lines: [[
     { form: "token issue --as H/M [--project P]... [--days N] [--label TEXT]", about: "The project owner issues a token bound to one actor and shown once. It expires in 30 days unless `--days` (1 to 365) says otherwise, and covers the named projects or all of them." },
@@ -576,6 +576,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   guide: {
     flags: {
       "--role build|review|plan|orchestrate": "prints the instructions for one role alone; a project's `.atelier/prompts/ROLE.md` overrides that role's text",
+      "--full": "with --role orchestrate, prints the handbook itself, docs/orchestrating.md, instead of the role's instructions",
     },
     example: "atelier guide --role build",
   },
@@ -754,7 +755,9 @@ Standing rules:
   "the owner's words"\`: every review brief and this guide carry the decisions
   that stand, and \`atelier decisions\` lists them.
 
-The detail, with the reasons, is in docs/orchestrating.md.
+The detail, with the reasons, is in the handbook, docs/orchestrating.md in the
+public repository: https://github.com/pavithran/atelier/blob/main/docs/orchestrating.md.
+\`atelier guide --role orchestrate --full\` prints it.
 `,
 };
 
