@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { agentRules, claudeModel, parseArgs, runAdapter } from "../cli/harness/adapter.mjs";
+import { CODEX_FEATURES_OFF, agentRules, claudeModel, parseArgs, runAdapter } from "../cli/harness/adapter.mjs";
 import { METADATA_VAR, metadataEscaped, opencodeConfig, substituteEnv } from "../cli/harness/providers.mjs";
 import { defaultCommand, parseConfig } from "../cli/runner-config.mjs";
 import { commandFor, gatewayMetadata } from "../cli/runner.mjs";
@@ -26,11 +26,29 @@ function standIn(path, record) {
   writeFileSync(path, `#!${process.execPath}
 const fs = require("node:fs");
 const argv = process.argv.slice(2);
-// codex mcp list --json: the servers its configuration names, as codex prints them.
-if (argv[0] === "mcp") {
+// codex [--disable F | -c K=V]... mcp list --json, as codex-cli 0.160.0 does
+// it: a server a feature provides ({ feature }) is gone with --disable FEATURE;
+// enabled=false on any server not defined in config.toml (one with no
+// feature) fails the configuration load.
+const mcp = argv.indexOf("mcp");
+if (mcp !== -1 && argv[mcp + 1] === "list") {
+  fs.appendFileSync(${JSON.stringify(record)} + ".mcp", JSON.stringify({ argv, cwd: process.cwd() }) + "\\n");
   if (process.env.FAKE_MCP_FAIL) process.exit(2);
-  fs.writeFileSync(${JSON.stringify(record)} + ".mcp", JSON.stringify({ argv, cwd: process.cwd() }));
-  process.stdout.write(process.env.FAKE_MCP_LIST ?? "[]");
+  const raw = process.env.FAKE_MCP_LIST ?? "[]";
+  let servers;
+  try { servers = JSON.parse(raw); } catch { process.stdout.write(raw); process.exit(0); }
+  if (!Array.isArray(servers)) { process.stdout.write(raw); process.exit(0); }
+  const flags = argv.slice(0, mcp), off = new Set(flags.filter((a, i) => flags[i - 1] === "--disable"));
+  const disabled = new Set();
+  for (const c of flags.filter((a, i) => flags[i - 1] === "-c")) {
+    const m = /^mcp_servers\\.(.+)\\.enabled=false$/.exec(c);
+    if (!m) continue;
+    if (!servers.some((s) => s.name === m[1] && !s.feature)) { process.stderr.write("Error: failed to load bootstrap configuration: invalid transport in mcp_servers." + m[1] + "\\n"); process.exit(1); }
+    disabled.add(m[1]);
+  }
+  if (process.env.FAKE_MCP_STUCK) disabled.clear();
+  const shown = servers.filter((s) => !off.has(s.feature)).map(({ feature, ...s }) => ({ ...s, enabled: disabled.has(s.name) ? false : s.enabled }));
+  process.stdout.write(JSON.stringify(shown));
   process.exit(0);
 }
 const input = fs.readFileSync(0, "utf8");
@@ -118,7 +136,7 @@ test("the harnesses are started with their own permission rules", (t) => {
   assert.ok(allowed.includes("Bash(git add:*)") && allowed.includes("Bash(git commit:*)"));
   assert.ok(claude[claude.indexOf("--disallowedTools") + 1].split(",").includes("Bash(git push:*)"));
   const codex = run("codex", s, { model: "gpt-6-astra" }).seen.argv;
-  assert.deepEqual(codex.slice(0, 3), ["exec", "--model", "gpt-6-astra"]);
+  assert.deepEqual(codex.slice(codex.indexOf("exec"), codex.indexOf("exec") + 3), ["exec", "--model", "gpt-6-astra"]);
   assert.equal(codex.at(-1), "-", "codex reads the prompt from standard input");
   assert.equal(codex[codex.indexOf("--sandbox") + 1], "workspace-write");
   assert.equal(run("codex", s, { model: "gpt-6-astra", review: true }).seen.argv[codex.indexOf("--sandbox") + 1], "read-only");
@@ -130,33 +148,51 @@ test("the harnesses are started with their own permission rules", (t) => {
   assert.equal(claudeModel("claude-fable-5-1"), "claude-fable-5-1");
 });
 
-test("codex runs with every MCP server its configuration names switched off by name", (t) => {
-  // The finding on 71346e21: -c mcp_servers={} left codex-cli 0.160.0's
-  // inherited servers enabled; only mcp_servers.NAME.enabled=false turns one off.
+test("codex runs with its MCP features off and its config.toml servers switched off by name, checked against codex", (t) => {
+  // The findings on 71346e21 and b8d81cf3 (codex-cli 0.160.0): -c
+  // mcp_servers={} left servers enabled, and enabled=false on a server a
+  // plugin or app provides broke the configuration load, so those go through
+  // --disable FEATURE and only config.toml's servers are switched off by name.
   const s = setup(t);
   const servers = [
-    { name: "browser", enabled: true, transport: { type: "stdio", command: "npx" } },
-    { name: "computer-use", enabled: true, transport: { type: "stdio", command: "cu" } },
-    { name: "old_repl", enabled: false, transport: { type: "stdio", command: "repl" } },
+    { name: "node_repl", enabled: true, transport: { type: "stdio", command: "repl" } },
+    { name: "safari-mcp-stp", enabled: false, transport: { type: "stdio", command: "safari" } },
+    { name: "code-review", feature: "plugins", enabled: true },
+    { name: "codex_app", feature: "apps", enabled: true },
+    { name: "cua_repl", feature: "computer_use", enabled: true },
   ];
   for (const review of [false, true]) {
+    rmSync(s.record + ".mcp", { force: true });
     const { r, seen } = run("codex", s, { model: "gpt-6-astra", review, env: { FAKE_MCP_LIST: JSON.stringify(servers) } });
     assert.equal(r.status, 0, r.stderr);
-    const overrides = seen.argv.filter((a, i) => seen.argv[i - 1] === "-c");
-    for (const name of ["browser", "computer-use", "old_repl"]) assert.ok(overrides.includes(`mcp_servers.${name}.enabled=false`), `${name} is switched off (review: ${review})`);
-    assert.ok(!overrides.includes("mcp_servers={}"), "the override that does nothing is gone");
-    const listed = JSON.parse(readFileSync(s.record + ".mcp", "utf8"));
-    assert.deepEqual(listed.argv, ["mcp", "list", "--json"]);
-    assert.equal(realpathSync(listed.cwd), realpathSync(s.ws), "listed from the workspace, so a project's own servers are found too");
+    const flags = seen.argv.slice(0, seen.argv.indexOf("exec"));
+    for (const feature of ["plugins", "apps", "browser_use", "browser_use_external", "computer_use", "in_app_browser"]) {
+      assert.ok(flags.some((a, i) => a === feature && flags[i - 1] === "--disable"), `--disable ${feature} (review: ${review})`);
+    }
+    const overrides = flags.filter((a, i) => flags[i - 1] === "-c");
+    assert.deepEqual(overrides, ["mcp_servers.node_repl.enabled=false", "mcp_servers.safari-mcp-stp.enabled=false"], "only config.toml's servers by name");
+    // Listed twice from the workspace: once to find config.toml's servers with
+    // the features off, once with the job's very flags, where codex loaded.
+    const calls = readFileSync(s.record + ".mcp", "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0].argv, [...CODEX_FEATURES_OFF, "mcp", "list", "--json"]);
+    assert.deepEqual(calls[1].argv, [...flags, "mcp", "list", "--json"], "the job's flags are the ones checked");
+    for (const call of calls) assert.equal(realpathSync(call.cwd), realpathSync(s.ws), "listed from the workspace, so a project's own servers are found too");
   }
-  // An object keyed by name, as older releases print it, is read as well.
-  const { seen } = run("codex", s, { model: "gpt-6-astra", env: { FAKE_MCP_LIST: JSON.stringify({ browser: { command: "npx" } }) } });
-  assert.ok(seen.argv.includes("mcp_servers.browser.enabled=false"));
 });
 
-test("codex does not run when its MCP servers cannot be listed or named safely", (t) => {
+test("the stand-in fails as codex does on enabled=false for a plugin's server, which the old flags hit", (t) => {
   const s = setup(t);
-  for (const env of [{ FAKE_MCP_FAIL: "1" }, { FAKE_MCP_LIST: "not json" }, { FAKE_MCP_LIST: JSON.stringify([{ name: "a.b" }]) }]) {
+  const r = spawnSync(s.fake, ["-c", "mcp_servers.code-review.enabled=false", "mcp", "list", "--json"],
+    { encoding: "utf8", env: { ...process.env, FAKE_MCP_LIST: JSON.stringify([{ name: "code-review", feature: "plugins", enabled: true }]) } });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /invalid transport in mcp_servers\.code-review/);
+});
+
+test("codex does not run when its MCP servers cannot be listed, named safely or all switched off", (t) => {
+  const s = setup(t);
+  for (const env of [{ FAKE_MCP_FAIL: "1" }, { FAKE_MCP_LIST: "not json" }, { FAKE_MCP_LIST: JSON.stringify([{ name: "a.b" }]) },
+    { FAKE_MCP_LIST: JSON.stringify([{ name: "node_repl", enabled: true }]), FAKE_MCP_STUCK: "1" }]) {
     rmSync(s.record, { force: true });
     const verdict = join(s.dir, "verdict.md");
     const r = spawnSync(process.execPath, [join(repo, "bin", "harness", ADAPTERS.codex), "gpt-6-astra", s.brief, s.ws, "undefined", "undefined", "undefined"],
