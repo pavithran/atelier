@@ -106,3 +106,11 @@ export function runnerRoute(method: string, parts: string[], body: Record<string
 export function runnerDenied(token: AgentToken): RuleError {
   return new RuleError("runner_forbidden", `runner ${token.runner} (token ${token.id}) is not authorized for this operation`, 403);
 }
+
+// Dedicated CLI exits carry the exact state through nested finish steps.
+// Neither accepted, integrated nor blocked means the task is terminal.
+export const TERMINAL_TASK_EXITS = { merged: 5, abandoned: 6 } as const;
+
+export function runnerTaskTerminal(id: string, state: keyof typeof TERMINAL_TASK_EXITS): RuleError {
+  return new RuleError("task_terminal", `${id} is ${state === "abandoned" ? "closed" : state} (state: ${state})`, 409);
+}

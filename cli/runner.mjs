@@ -16,6 +16,7 @@ import { submission } from "../src/brief.ts";
 import { parseVerdict, VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { TERMINAL_TASK_EXITS } from "../src/tokens.ts";
 import { rolePrompt, ROLE_PROMPT_MAX } from "../src/usage.ts";
 
 export function offerFrom(config, name) {
@@ -455,6 +456,7 @@ export async function checked(argv, options, executeChild = execute) {
     if (result.output) error.output = result.output;
     error.claimRefused = options?.claim && result.code === 3;
     error.infrastructure = result.code === 4;
+    if (argv[1] === cli) error.terminalState = Object.keys(TERMINAL_TASK_EXITS).find((state) => TERMINAL_TASK_EXITS[state] === result.code);
     throw error;
   }
   return result.output;
@@ -817,6 +819,11 @@ export async function runTask(assignment, config, name, io) {
     await io.cli(finishArgs(), workspace);
     advance({ type: "finish" });
   } catch (error) {
+    if (error.terminalState) {
+      state = { ...state, phase: "terminal", terminalState: error.terminalState, reason: error.message, taskFailure: false };
+      io.log(`task ${project}/${item.id} is ${error.terminalState === "abandoned" ? "closed" : error.terminalState} (state: ${error.terminalState}); workspace and commits preserved`);
+      return state;
+    }
     if (state.phase !== "failed") advance({ error: error.message });
     state = { ...state, taskFailure: taskFailure && !error.infrastructure && !io.stopped() };
     // The stall's report to the server (runOutcome, reportRun) says why the
@@ -1365,6 +1372,7 @@ export function failureCount(count, state) {
 }
 
 export function infrastructureFailureCount(count, state) {
+  if (state.terminalState) return count;
   return state.phase === "failed" && !state.taskFailure && !state.claimRefused && !state.skipped && !state.recorded ? count + 1 : 0;
 }
 
@@ -1460,6 +1468,11 @@ export async function runPlanTask(assignment, config, name, io) {
       io.log(`failed: ${state.reason}`);
     }
   } catch (error) {
+    if (error.terminalState) {
+      state = { phase: "terminal", terminalState: error.terminalState, reason: error.message, taskFailure: false };
+      io.log(`task ${project}/${item.id} is ${error.terminalState === "abandoned" ? "closed" : error.terminalState} (state: ${error.terminalState}); workspace preserved`);
+      return state;
+    }
     state = { phase: "failed", reason: error.message };
     state.taskFailure = taskFailure && !error.infrastructure && !io.stopped();
     if (error.claimRefused) state.claimRefused = true;
@@ -1473,7 +1486,7 @@ export async function runPlanTask(assignment, config, name, io) {
     // itself, and a refused or missing one counts an attempt only once the
     // claim is given back. A claim whose fate is unknown (the claim step
     // failed without a refusal) is released too, as runTask releases it.
-    if (claimed || (claimAttempted && !state.claimRefused && !state.skipped)) {
+    if (!state.terminalState && (claimed || (claimAttempted && !state.claimRefused && !state.skipped))) {
       const note = state.phase === "failed" ? state.reason : "plan job done";
       try {
         await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", note], workspace);
@@ -1688,7 +1701,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           const infrastructureCount = infrastructureFailureCount(infrastructureFailures.get(key) ?? 0, state);
           infrastructureFailures.set(key, infrastructureCount);
           if (infrastructureCount === 3) io.log(`${task.project}/${task.item.id} needs the owner's attention after 3 consecutive infrastructure failures: ${state.reason}; skipped for this process`);
-          if (state.claimRefused || state.skipped) refused.add(refusedKey(task));
+          if (state.terminalState || state.claimRefused || state.skipped) refused.add(refusedKey(task));
           else if (args.once || state.phase !== "failed" || state.taskFailure) break;
         }
         state ??= { phase: "idle" };
