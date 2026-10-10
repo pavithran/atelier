@@ -157,6 +157,31 @@ globalThis.fetch = async (url, options = {}) => {
   return { dir, checkout, workspace, run, requests, clear, head };
 }
 
+test("new warns when a task has no acceptance criteria, and init sends --require-criteria as a switch", (t) => {
+  const f = fixture(t);
+  const bare = f.run(f.checkout, ["new", "Title", "--project", "demo"]);
+  assert.equal(bare.status, 0, bare.stderr);
+  assert.match(bare.stdout, /^t9  Title$/m);
+  assert.match(bare.stderr, /^Warning: t9 has no acceptance criteria, so a review of it will have none to judge the change against\. Give them with atelier edit t9 --accept "TEXT", once per criterion\.$/m);
+  f.clear();
+  const judged = f.run(f.checkout, ["new", "Title", "--accept", "It works", "--project", "demo"]);
+  assert.equal(judged.status, 0, judged.stderr);
+  assert.doesNotMatch(judged.stderr, /no acceptance criteria/);
+  const put = (argv) => {
+    f.clear();
+    const r = f.run(f.checkout, ["init", ...argv]);
+    assert.equal(r.status, 0, r.stderr);
+    return { stdout: r.stdout, requireCriteria: f.requests().find((q) => q.method === "PUT").body.requireCriteria };
+  };
+  const required = put(["--require-criteria"]);
+  assert.equal(required.requireCriteria, true);
+  assert.match(required.stdout, /^Criteria: +optional$/m);
+  assert.match(required.stdout, /^Warning: the server did not record the criteria requirement; deploy the server, then run atelier init --require-criteria again\.$/m);
+  assert.deepEqual(put(["--require-criteria=false"]).requireCriteria, false);
+  assert.equal(put([]).requireCriteria, undefined);
+  assert.equal(put(["--reset"]).requireCriteria, false);
+});
+
 test("a folder that is no registered checkout is named, with every registered project and its folder", (t) => {
   const f = fixture(t);
   const elsewhere = join(f.dir, "elsewhere");
