@@ -50,7 +50,8 @@ const ORCHESTRATE_RULES = [
   /reviewed by a model from another\s+company/,
   /Never override[^.]*except on the owner's own\s+confirmation/,
   /Judge each review finding against the code[^.]*record every\s+verdict/,
-  /Land one task at a time/,
+  /Land one task at a time[^.]*--reviewer H\/M/,
+  /override[\s\S]*?last resort[\s\S]*?never the\s+way to land another\s+agent's work/,
   /Report every run that ended without a result/,
   /On a stall/,
   /repeated rejection/,
@@ -66,6 +67,23 @@ test("the orchestrate guide states each standing rule and names docs/orchestrati
 test("docs/orchestrating.md states the same standing rules", () => {
   const doc = readFileSync("docs/orchestrating.md", "utf8");
   for (const rule of ORCHESTRATE_RULES) assert.match(doc, rule);
+});
+
+test("the orchestrate guide names the handbook's public URL, and --full prints the handbook from outside the checkout", () => {
+  assert.ok(ROLE_PROMPTS.orchestrate.includes("https://github.com/pavithran/atelier/blob/main/docs/orchestrating.md"));
+  const full = run(["guide", "--role", "orchestrate", "--full"]);
+  assert.equal(full.status, 0, full.stderr);
+  assert.equal(full.stdout, readFileSync("docs/orchestrating.md", "utf8"));
+  assert.equal(full.stderr, "");
+});
+
+test("atelier guide --full refuses a role other than orchestrate, and no role", () => {
+  for (const args of [["guide", "--role", "build", "--full"], ["guide", "--full"]]) {
+    const r = run(args);
+    assert.equal(r.status, 1, args.join(" "));
+    assert.match(r.stderr, /--full prints the orchestrate handbook/);
+    assert.equal(r.stdout, "");
+  }
 });
 
 test("atelier guide --role refuses a role it does not know, and a --role with no value", () => {

@@ -25,6 +25,12 @@ check allows (task t190).
 
 ## Setting up the agents
 
+A runner needs none of what follows: the harness adapters ship in
+`bin/harness/`, and `atelier runner setup` writes the runner config and the
+opencode provider configs, reading keys from the credential store at run
+time (docs/runners.md, "Setting up a runner"). `run-agent.sh` and
+`review.sh`, for a session without a runner, still use the wrappers below.
+
 Each opencode agent runs through a small wrapper in `~/.local/bin` that reads
 its key from `~/.config/api-keys/NAME.key` into its own process and points
 opencode at a config that names the key's variable, never the key:
