@@ -22,6 +22,7 @@ import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } fr
 
 import { redactGitArgs } from "./runner.mjs";
 import { acceptancePolicy, controlPlaneChanges, mergeContext, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
+import { cleanSummary } from "../src/brief.ts";
 import { assertEligible, checkApplies, checkFiles, pathCollisions, recordedText } from "../src/rules.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { holdText } from "../src/dispatch/rules.ts";
@@ -564,7 +565,9 @@ export function noProjectMessage(name, host, projects, here) {
 // bare flag is refused by the flag table before the command runs.
 function summaryArg(cmd) {
   if (args.summary === undefined) return;
-  if (!args.summary.trim()) die(`--summary needs text: atelier ${cmd} ID --summary "TEXT"`);
+  let text;
+  try { text = cleanSummary(args.summary); } catch (error) { die(error.detail); }
+  if (!text) die(`--summary needs text: atelier ${cmd} ID --summary "TEXT"`);
 }
 
 // --check, --protect and --scope take text, once per use. A bare flag is
@@ -2058,7 +2061,7 @@ const commands = {
     if (fromRules?.unrun.length) console.log(`ControlPlane change rules also require ${fromRules.unrun.map((u) => `${u.name} (\`${u.command}\`)`).join(", ")}, which no registered check runs; add one with --check to require it.`);
     console.log(`Ship:       ${pol.shipKinds?.length ? `needs ${pol.shipKinds.join(", ")}; ` : ""}${pol.shipRuns?.length ?? 0} protected command${(pol.shipRuns?.length ?? 0) === 1 ? "" : "s"}`);
     if (pol.regenerate) console.log(`Regenerate: ${pol.regenerate}`);
-    console.log(`Review bar: ${pol.reviewBar ?? "the default, which blocks only for a correctness, security or data-loss defect"}`);
+    console.log(`Review bar: ${pol.reviewBar ?? "the default, which blocks for a correctness, security or data-loss defect, a behaviour change without a test that covers it, docs or help that now contradict the code, a breaking change to a command, route or API field without a migration, or a visible regression on a user-facing page; anything else is a follow-up"}`);
     // A server older than the review bar ignores it and answers without one.
     if (typeof args["review-bar"] === "string" && args["review-bar"].trim() && !pol.reviewBar) console.log("Warning: the server did not record the review bar; deploy the server, then run atelier init --review-bar again.");
     console.log(`Review tier: ${pol.reviewTier?.length ? `${pol.reviewTier.join(", ")}, one of which reviews every protected change: the gate's review goes to the tier first, and a separate tier review is asked only when the gate's reviewer is outside it` : "none"}`);
@@ -2322,6 +2325,14 @@ const commands = {
     const item = await call("POST", `${I(name, id)}/push`, { head, ...(rebasedFrom ? { rebasedFrom } : {}) }, as);
     if (item.head !== head) die(`pushed ${short(head)} but Artifacts reports ${short(item.head)}; recorded what Artifacts reports`);
     console.log(`${id} head ${short(item.head)} (observed in Artifacts).`);
+    // The push's secret scan (t332), as the answer reports it: a flag names
+    // file and line, never the value; a scan still pending blocks the gate
+    // until a later push, or Atelier's own retry, completes it.
+    if (item.secretScan === item.head) console.log(`${id}: the secret scan of ${short(item.head)} has not completed; acceptance waits for it. Run atelier push again to retry it.`);
+    for (const f of (item.secret ?? []).filter((f) => f.head === item.head && !f.cleared)) {
+      console.log(f.unscanned ? `${id}: the secret scan could not read ${f.file} in full${f.reason ? ` (${f.reason})` : ""}; the flag blocks acceptance until the owner clears it or a push removes the line.`
+        : `${id}: a key pattern was added at ${f.file}:${f.line}; the flag blocks acceptance until the owner clears it or a push removes the line.`);
+    }
   },
 
   // Agents: bring the workspace up to date with what has merged since the
@@ -3204,8 +3215,15 @@ const commands = {
     if (args.job !== undefined && args.job !== "merge-main") die(`--job names the job the runner runs; only merge-main is dispatched by hand: atelier dispatch ${id} --job merge-main`);
     if (args.head !== undefined && args.job === undefined) die(`--head names the main head a merge-main job merges; give it with --job merge-main: atelier dispatch ${id} --job merge-main --head FULL_HASH`);
     const body = { to: args.to, agent: args.agent, model: args.model, note: args.note, ...(args.job !== undefined ? { job: args.job, ...(args.head !== undefined ? { head: args.head } : {}) } : {}), ...(args["overlap-ok"] === true ? { overlapOk: true } : {}) };
+    // With no --agent the server chooses the builder from the pool and the
+    // models' records (t370), and says which and why.
+    const suggest = args.agent === undefined && args.job === undefined;
+    if (suggest) body.suggest = true;
     const item = await call("POST", `${I(name, id)}/dispatch`, body, OWNER);
     const d = item.dispatch;
+    if (item.suggestion) console.log(`Builder: ${item.suggestion.actor}. ${item.suggestion.reasons.join(" ")}`);
+    // A server older than the suggestion ignores the ask and leaves the dispatch open.
+    else if (suggest && !d.agent) console.log("Warning: the server chose no builder; deploy the server, then dispatch again, or name one with --agent.");
     // A server older than the override ignores it and answers without it.
     if (args["overlap-ok"] === true && !d.overlapOk) console.log("Warning: the server did not record --overlap-ok; deploy the server, then dispatch again.");
     else if (d.overlapOk) console.log(`${id} is offered to a runner although its scope may overlap a live item's in a core file.`);

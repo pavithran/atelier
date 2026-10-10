@@ -7,9 +7,9 @@ import { DurableObject } from "cloudflare:workers";
 import {
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
   assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, contributorsOf, DEFAULT_OWNER, gate, inboxFor, reviewOverrideFor, RuleError, sameActor, validActor,
-  assertBlockable, assertNotBlocked, blockReason, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
+  assertBlockable, assertNotBlocked, blockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
-  type Block, type ItemFields,
+  type Block, type SecretFlag, type SecretClearance, type ItemFields,
 } from "./rules";
 import { cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, sameCriteria } from "./criteria.ts";
@@ -20,6 +20,7 @@ import { assertDispatchable, assertDispatchedClaim, coreHold, makeDispatch, live
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
 import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
+import type { SecretHit, UnscannedFile } from "./secret-scan.ts";
 import { parsePlan, planHash, type Plan, type PlanPart } from "./plans/schema.ts";
 import { validatePlan } from "./plans/validate.ts";
 import { routeParts, type PartRoute } from "./plans/route.ts";
@@ -37,7 +38,9 @@ import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRu
 import { listDecisions, recordDecision, standingDecisions, withdrawDecision, type Decision, type DecisionStore, type DecisionView } from "./decisions.ts";
 import { reviewBrief } from "./review/brief.ts";
 import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
+import type { SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
+import { suggestReviewer } from "./review/suggest.ts";
 import { buildPrecision, precisionWindow, type PrecisionRecord } from "./models/precision.ts";
 import { independenceRefusal } from "./review/independence.ts";
 import { gateServesTier, pickTierReviewer } from "./review/tier.ts";
@@ -479,6 +482,17 @@ export class Ledger extends DurableObject<Env> {
     // A part's acceptance criteria from the approved plan (JSON), fixed when
     // the part is made, which its reviews are bound to beside `accept`.
     if (!columns.includes("part_accept")) this.sql.exec(`ALTER TABLE items ADD COLUMN part_accept TEXT`);
+    // The blocking secret flag a push scan records (t332): a JSON array of
+    // file and line, one entry per key pattern the added lines hold, never
+    // the value. Null when none stands.
+    if (!columns.includes("secret")) this.sql.exec(`ALTER TABLE items ADD COLUMN secret TEXT`);
+    // The head whose push scan is pending (t332): written with the head a
+    // push records, cleared by that head's own scan result. Null otherwise.
+    if (!columns.includes("secret_scan")) this.sql.exec(`ALTER TABLE items ADD COLUMN secret_scan TEXT`);
+    // The clearances the owner has recorded (t332): a JSON array of file,
+    // fingerprint, reason, head, by and at, one per flagged line judged
+    // safe, never removed. Null until the first clearance.
+    if (!columns.includes("secret_cleared")) this.sql.exec(`ALTER TABLE items ADD COLUMN secret_cleared TEXT`);
     this.splitLongTitles();
     // Every valid plan proposal, one row each, in the order posted; no row
     // is ever changed. `actor` is who posted it.
@@ -1421,7 +1435,13 @@ export class Ledger extends DurableObject<Env> {
   // name another actor than the holder are recorded with the push, which
   // makes each a contributor (pushActors) and credits its commit to it in
   // the reliability record.
-  recordPush(id: string, actor: string, observedHead: string, reportedHead: string | null, proved = false, lineage: PushLineage = { holdsRecorded: true, rebasedFrom: null }, authors: PushAuthor[] = []): Item {
+  //
+  // `scan` says the caller runs the push's secret scan (t332) on the head
+  // recorded: the head is then written with its scan pending, in the same
+  // write, so the gate blocks until the scan of that exact head completes
+  // (setSecret), whatever happens to the scan in between. The Worker's push
+  // paths pass it; the Ledger's own tests, which run no scan, do not.
+  recordPush(id: string, actor: string, observedHead: string, reportedHead: string | null, proved = false, lineage: PushLineage = { holdsRecorded: true, rebasedFrom: null }, authors: PushAuthor[] = [], scan = false): Item {
     const item = this.item(id);
     if (item.state !== "accepted") assertLive(item);
     assertOwner(item, actor);
@@ -1444,6 +1464,7 @@ export class Ledger extends DurableObject<Env> {
       head: observedHead, last_push_at: now,
       state: item.state === "submitted" ? "submitted" : "claimed",
       ...(reopened ? { accepted_head: null } : {}),
+      ...(scan ? { secret_scan: observedHead } : {}),
     }, now);
     this.log(id, actor, "push.observed", {
       head: observedHead,
@@ -1466,8 +1487,9 @@ export class Ledger extends DurableObject<Env> {
   // head the Worker could not place either way (holdsRecorded null, its
   // search having stopped at its budget) is left the same way, with the
   // reason saying so. The queue delivers an event at least once, so the
-  // same sighting is noted once.
-  observePush(id: string, observedHead: string, expectedHead: string | null, holdsRecorded: boolean | null = true, authors: PushAuthor[] = []): Item {
+  // same sighting is noted once. `scan` is as recordPush takes it: the head
+  // recorded is written with its secret scan pending.
+  observePush(id: string, observedHead: string, expectedHead: string | null, holdsRecorded: boolean | null = true, authors: PushAuthor[] = [], scan = false): Item {
     const item = this.item(id);
     if (item.state === "merged" || item.state === "abandoned" || item.head !== expectedHead || item.head === observedHead) return item;
     // While the accepted revision is landing, a push to the fork does not
@@ -1483,7 +1505,8 @@ export class Ledger extends DurableObject<Env> {
     }
     const now = new Date().toISOString();
     this.update(id, { head: observedHead, accepted_head: null, last_push_at: now,
-      state: item.state === "accepted" ? "submitted" : item.state }, now);
+      state: item.state === "accepted" ? "submitted" : item.state,
+      ...(scan ? { secret_scan: observedHead } : {}) }, now);
     this.log(id, "atelier/events", "push.observed", { head: observedHead, source: "artifacts", approvalInvalidated: item.state === "accepted", ...this.otherAuthors(item, authors) }, now);
     return this.item(id);
   }
@@ -1714,6 +1737,102 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id);
   }
 
+  // The secret flag a push scan records or clears (t332). `hits` names the
+  // file, line and fingerprint of every added line that held a key pattern
+  // at `head`, and `unscanned` names every path whose head side the scan
+  // could not read as text, with why and the hash of its object; an empty list of
+  // both clears the flag, so a later push that removes the line clears it.
+  // Only the file, line and fingerprint ever reach the Ledger, never the
+  // value.
+  //
+  // A finding whose file and fingerprint the owner has cleared before
+  // (clearSecret) is recorded as cleared: it is kept, so the record shows the
+  // scan found it, and it does not block. The match is by content, not line
+  // number, so a push that keeps the cleared line where it was, or moves it
+  // within its file, is not blocked again; a line changed in any way, or the
+  // same line in another file, is a new finding and blocks.
+  //
+  // The result is applied only if `head`, the head it scanned, is still the
+  // item's recorded head: the read and the write happen in one synchronous
+  // step of the Durable Object, so nothing moves the head between them. A
+  // result for any other head is dropped, and the newer head's own pending
+  // scan stands. The scan pending for `head` is cleared in the same write as
+  // the flags, whether the findings changed or not.
+  setSecret(id: string, actor: string, head: string, hits: SecretHit[], unscanned: UnscannedFile[] = []): Item {
+    const item = this.item(id);
+    if (item.head !== head) return item; // a newer push superseded this scan
+    const at = new Date().toISOString();
+    const clearances = item.secretClearances ?? [];
+    const cleared = (file: string, fingerprint: string) => !!fingerprint && clearances.some((c) => c.file === file && c.fingerprint === fingerprint);
+    const flags: SecretFlag[] = [
+      ...hits.map((h): SecretFlag => ({ file: h.file, line: h.line, fingerprint: h.fingerprint, head, by: actor, at, ...(cleared(h.file, h.fingerprint) ? { cleared: true as const } : {}) })),
+      ...unscanned.map((u): SecretFlag => ({ file: u.file, line: 0, fingerprint: u.fingerprint, head, by: actor, at, unscanned: true, ...(u.reason ? { reason: u.reason } : {}), ...(cleared(u.file, u.fingerprint) ? { cleared: true as const } : {}) })),
+    ];
+    const done: Record<string, string | null> = item.secretScan === head ? { secret_scan: null } : {};
+    // A re-scan of the same head with the same findings changes nothing but
+    // the pending mark. The comparison includes each flag's head, so a later
+    // push that keeps a secret at the same file and line is re-recorded for
+    // its own head — and keeps blocking — rather than left naming a
+    // superseded one.
+    const prev = item.secret ?? [];
+    const same = (f: SecretFlag, p: SecretFlag) => f.file === p.file && f.line === p.line && f.fingerprint === p.fingerprint
+      && (f.unscanned ?? false) === (p.unscanned ?? false) && (f.reason ?? "") === (p.reason ?? "") && (f.cleared ?? false) === (p.cleared ?? false);
+    const unchanged = prev.length === flags.length && flags.every((f, i) => same(f, prev[i])) && prev.every((f) => f.head === head);
+    if (unchanged) {
+      if ("secret_scan" in done) this.update(id, done, at);
+      return this.item(id);
+    }
+    if (!flags.length) {
+      this.update(id, { secret: null, ...done }, at);
+      this.log(id, actor, "secret.resolved", { head }, at);
+      return this.item(id);
+    }
+    this.update(id, { secret: JSON.stringify(flags), ...done }, at);
+    const where = (f: SecretFlag) => ({ file: f.file, line: f.line });
+    const standing = flags.filter((f) => !f.cleared), held = flags.filter((f) => f.cleared);
+    this.log(id, actor, "secret.flagged", {
+      head,
+      hits: standing.filter((f) => !f.unscanned).map(where),
+      ...(standing.some((f) => f.unscanned) ? { unscanned: standing.filter((f) => f.unscanned).map((f) => f.file) } : {}),
+      // What a clearance recorded before matched: found again, not blocking.
+      ...(held.length ? { cleared: held.map(where) } : {}),
+    }, at);
+    return this.item(id);
+  }
+
+  // The project owner clears the standing secret flags, recording the reason:
+  // the record of why the owner judged each line safe, which a later reader
+  // checks against the code (secret.cleared). The clearance is kept against
+  // the file and fingerprint of each line (secretClearances), with the head
+  // it was made at, so a later scan that finds the identical line in the
+  // same file records it as cleared rather than blocking the push again; the
+  // flags themselves stay on the item, marked cleared, as the record of what
+  // the scan found.
+  clearSecret(id: string, actor: string, reason: unknown, proved = false): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner clears a secret flag", 403);
+    const text = secretClearReason(reason);
+    const item = this.item(id);
+    // A scan still pending is not a flag: nothing has been judged yet, so
+    // there is nothing for the owner's reason to answer. It completes on the
+    // next retry of the push event, or when the holder runs atelier push
+    // again; a flag it records can then be cleared.
+    if (item.head && item.secretScan === item.head) {
+      throw new RuleError("secret_pending", `${id}'s secret scan for ${item.head.slice(0, 8)} has not completed, so there is no flag to clear yet; it runs again on the next push or retry`, 409);
+    }
+    const standing = (item.secret ?? []).filter((f) => !f.cleared);
+    if (!standing.length) throw new RuleError("no_secret", `${id} has no secret flag to clear`, 409);
+    const at = new Date().toISOString();
+    const clearances = [...(item.secretClearances ?? [])];
+    for (const f of standing) {
+      if (!f.fingerprint || clearances.some((c) => c.file === f.file && c.fingerprint === f.fingerprint)) continue;
+      clearances.push({ file: f.file, fingerprint: f.fingerprint, reason: text, head: item.head, by: actor, at } satisfies SecretClearance);
+    }
+    const flags = (item.secret ?? []).map((f): SecretFlag => (f.cleared ? f : { ...f, cleared: true }));
+    this.update(id, { secret: JSON.stringify(flags), secret_cleared: JSON.stringify(clearances) }, at);
+    this.log(id, actor, "secret.cleared", { reason: text, head: item.head, flags: standing.map((f) => ({ file: f.file, line: f.line })) }, at, proved);
+    return this.item(id);
+  }
+
   private releaseAllowed(id: string, actor: string, note: string): Item {
     assertLength(note, NOTE_MAX, "the release note");
     const item = this.item(id);
@@ -1844,6 +1963,10 @@ export class Ledger extends DurableObject<Env> {
     if (item.state !== "accepted" || item.acceptedHead !== head) {
       throw new RuleError("acceptance_changed", `${id} is no longer accepted at ${head.slice(0, 8)}; review it again before merging`, 409);
     }
+    // A standing secret flag blocks the merge too (t332), as it blocks
+    // acceptance through the gate; the message names the flag, never the value.
+    const secret = secretBlockers(item);
+    if (secret.length) throw new RuleError("secret", `${id} has a secret flag: ${secret.join("; ")}`, 409);
     // A merge publishes to the baseline, the one thing the project's landing
     // lease guards (t232): while another task's landing is live on it, the
     // merge is refused, so a landing that lost its lease (its Mac slept past
@@ -3416,7 +3539,7 @@ export class Ledger extends DurableObject<Env> {
   // where the gate needs none; only a gate that cannot proceed (checks not
   // passing, a rejection at this head whose blocking findings the owner has
   // not refuted, no push) refuses, with its reason.
-  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean } {
+  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner asks for a review", 403);
     const item = this.item(id);
     this.keepPool(pool);
@@ -3457,17 +3580,36 @@ export class Ledger extends DurableObject<Env> {
       if (live) {
         const dispatch = JSON.parse(live.dispatch as string) as Dispatch;
         const standing = dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : null;
+        // A landing that names no reviewer waits on the standing request only
+        // while its reviewer is still of another company than every
+        // contributor; one who has since pushed or claimed is refused. The
+        // reviewer the owner named earlier stays the owner's choice, in the
+        // pool or not.
+        if (records && standing) {
+          const refusal = independenceRefusal(standing, contributorsOf(item));
+          if (refusal) throw new RuleError("no_reviewer", `the review requested of ${standing} at ${item.head!.slice(0, 8)} cannot count: ${refusal}. Name another with atelier land ${id} --reviewer H/M`, 409);
+        }
         if (reviewer !== null && standing && !sameActor(standing, reviewer)) {
           throw new RuleError("review_requested", `a review of ${id} at ${item.head!.slice(0, 8)} is already requested from ${standing}; wait for its verdict, or let its claim lapse before naming ${reviewer}`, 409);
         }
-        return { needed: true, requested: false, reason: need.reason, at: this.requestedAt(id, item.head!) ?? at, head: item.head!, reviewer: dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : undefined };
+        const recordedReason = records ? this.events(id, Number.MAX_SAFE_INTEGER).find((e) => e.kind === "review.requested" && e.data.head === item.head && e.data.reviewer === standing)?.data.reason : null;
+        return { needed: true, requested: false, reason: [need.reason, typeof recordedReason === "string" ? recordedReason : ""].filter(Boolean).join(" "), at: this.requestedAt(id, item.head!) ?? at, head: item.head!, reviewer: dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : undefined };
       }
       if (wanted) throw new RuleError("review_blocked", `${id} cannot be reviewed now: ${need.reason}`, 409);
       return { needed: false, reason: need.reason };
     }
     let chosen: string;
+    let choiceReason = "";
     if (reviewer !== null) {
       chosen = reviewer;
+    } else if (records) {
+      // The suggestion asks the previous round's reviewer and, for a
+      // protected change, the review tier first, as the pool pick below does.
+      const pick = suggestReviewer({ ...records, item: { ...item, scope: [...item.scope, ...need.changedPaths] }, project: this.project().name, pool, policy, owner: this.owner, frontierRequired: need.changeClass === "protected",
+        previous: need.previousReviewer, tier: need.changeClass === "protected" ? policy.reviewTier : undefined },
+        need.lapsed.map((actor) => ({ actor, reason: "its claim on a review of this head lapsed" })), new Date(at));
+      chosen = pick.actor;
+      choiceReason = pick.reasons.join(" ");
     } else {
       const pick = pickReviewer({
         item, pool, policy, allowPaid: false,
@@ -3485,12 +3627,13 @@ export class Ledger extends DurableObject<Env> {
       chosen = pick.reviewer.actor;
     }
     const slash = chosen.indexOf("/");
-    const dispatch = { ...makeDispatch({ to: "home", agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
+    const where = records ? pool.find((m) => sameActor(`${m.harness}/${m.id}`, chosen))?.where ?? "home" : "home";
+    const dispatch = { ...makeDispatch({ to: where, agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
     const topTier = this.gateIsTier(item, need, chosen);
     this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?)`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item));
-    this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: "land", ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
+    this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: "land", ...(choiceReason ? { reason: choiceReason } : {}), ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
     this.askTierReview(item, need, chosen, actor, at, proved);
-    return { needed: true, requested: true, reason: need.reason, at, head: need.head, reviewer: chosen };
+    return { needed: true, requested: true, reason: [need.reason, choiceReason].filter(Boolean).join(" "), at, head: need.head, reviewer: chosen };
   }
 
   // When the newest review.requested event for a head was recorded, so a
@@ -4144,6 +4287,14 @@ function toItem(r: Row): Item {
     accept: r.accept ? (JSON.parse(r.accept as string) as string[]) : [],
     // Only a blocked item carries the record; unblocking and abandoning clear it.
     ...(r.blocked ? { blocked: JSON.parse(r.blocked as string) as Block } : {}),
+    // Only an item whose push scan flagged a secret carries the array; a push
+    // that removes the line or a clear clears it.
+    ...(r.secret ? { secret: JSON.parse(r.secret as string) as SecretFlag[] } : {}),
+    // Only an item whose push scan has not completed carries the head it is
+    // pending for; the scan's own result clears it.
+    ...(r.secret_scan ? { secretScan: r.secret_scan as string } : {}),
+    // Only an item whose owner has cleared a flag carries the clearances.
+    ...(r.secret_cleared ? { secretClearances: JSON.parse(r.secret_cleared as string) as SecretClearance[] } : {}),
     // Only a plan and its parts carry these.
     ...(r.kind === "plan" || r.kind === "part" ? { kind: r.kind } : {}),
     ...(r.plan ? { plan: r.plan as string } : {}),

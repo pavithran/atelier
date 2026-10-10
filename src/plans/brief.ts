@@ -145,6 +145,7 @@ export const BUILD_RULES = [
   "- Commit first when the work is done, before anything else, with plain single git commands, one per call: git add FILES, then git commit. No heredoc, no -F -, no && chain and no redirection: a harness refuses them, and the run ends without a commit.",
   "- A run that ends without a commit counts as stalled, whatever it did.",
   "- A fix comes with a test that fails without it.",
+  "- A change that depends on a platform limit or runtime behaviour local tests cannot reproduce names it in the task, and the project declares a remote smoke check run before and after deploy.",
 ].join("\n");
 
 const short = (head: string) => head.slice(0, 8);
