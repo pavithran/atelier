@@ -96,6 +96,7 @@ const trimSlash = (url) => String(url).replace(/\/$/, "");
 // together, so that server is the one the stored token belongs to, and the
 // token goes nowhere else: with ATELIER_SERVER naming another server it is
 // not sent, and the command says what to do instead.
+let ownerNoticeGiven = false;
 function apiToken() {
   if (loginToken) return loginToken;
   try {
@@ -104,6 +105,10 @@ function apiToken() {
     if (!name && ["claim", "start"].includes(args._[0])) name = args.runner;
     const runner = runnerCredential(server(), name);
     if (runner) return runner;
+    if (name && !ownerNoticeGiven) {
+      ownerNoticeGiven = true;
+      process.stderr.write(`runner ${name} has no runner token: running with the owner's credential\n`);
+    }
   } catch (error) { die(error.message); }
   const fromEnv = process.env.ATELIER_TOKEN?.trim();
   if (fromEnv) return fromEnv;
