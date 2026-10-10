@@ -1490,7 +1490,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // route, and requireOwner refuses any other actor the owner token names.
     case "edit":
       requireOwner(env, actor);
-      return json(await L.editItem(id, actor, { ...itemFields(body), ...(body.title !== undefined ? { title: titleLine(body.title) } : {}) }));
+      return json(await L.editItem(id, actor, { ...itemFields(body), ...(body.title !== undefined ? { title: titleLine(body.title) } : {}) }, body.scope !== undefined ? asStrings(body.scope, "scope") : undefined));
     // The holder or the owner blocks and unblocks; the Ledger checks which.
     case "block":
       return json(await L.block(id, actor, body.reason, !!c.token));
