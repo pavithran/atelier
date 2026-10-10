@@ -23,6 +23,7 @@ import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } fr
 import { redactGitArgs } from "./runner.mjs";
 import { acceptancePolicy, controlPlaneChanges, mergeContext, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
 import { cleanSummary } from "../src/brief.ts";
+import { VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { assertEligible, checkApplies, checkFiles, pathCollisions, recordedText } from "../src/rules.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { holdText } from "../src/dispatch/rules.ts";
@@ -37,10 +38,11 @@ import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } f
 import { pushHistory } from "./push-steps.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
-import { formatLocal, formatStatus, itemJson, statusJson } from "./status.mjs";
+import { formatLocal, formatStatus, formatStatusBrief, itemJson, statusJson } from "./status.mjs";
 import { receiptJson, receiptText } from "./receipt.mjs";
 import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
 import { checkEnv } from "./check-env.mjs";
+import { coreCount, envLoad, formatLoad, loadLimitOf, waitForLoad } from "./load.mjs";
 import { provenanceNote } from "./provenance.mjs";
 export { checkEnv } from "./check-env.mjs";
 import { COMMAND_USAGE, guideText, helpText, ROLES, rolePrompt } from "./help.mjs";
@@ -61,6 +63,9 @@ const VERSION_LINE = `atelier ${CLI_VERSION} (route level ${ROUTE_LEVEL})`;
 // ── plumbing ───────────────────────────────────────────────────────────────
 
 let doneStep;
+// Each check the run recorded: { claim, result, where }, read into done's outcome.
+const doneChecks = [];
+const CLEAN_CLONE = "in a clean clone on this machine", CONTAINER = "in a Cloudflare container";
 
 function die(msg, code = 1) {
   if (doneStep) msg = `${doneStep} failed: ${msg}`;
@@ -242,7 +247,7 @@ export const FLAGS = {
   new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry', brief: '--brief needs text: atelier new "short title" --brief "TEXT"', accept: '--accept needs text: atelier new --accept "TEXT", once per criterion', "non-goal": '--non-goal needs text: atelier new --non-goal "TEXT", once per entry', "stop-when": '--stop-when needs text: atelier new --stop-when "TEXT", once per entry', "next-gate": '--next-gate needs text: atelier new --next-gate "TEXT"' },
   // edit takes the same, and --title; one empty value clears the field, so
   // the owner can take a framing back.
-  edit: { title: '--title needs text: atelier edit ID --title "TEXT", at most 80 characters', brief: '--brief needs text: atelier edit ID --brief "TEXT", or --brief "" to clear it', accept: '--accept needs text: atelier edit ID --accept "TEXT", once per criterion, or --accept "" alone to clear', "non-goal": '--non-goal needs text: atelier edit ID --non-goal "TEXT", once per entry, or --non-goal "" alone to clear', "stop-when": '--stop-when needs text: atelier edit ID --stop-when "TEXT", once per entry, or --stop-when "" alone to clear', "next-gate": '--next-gate needs text: atelier edit ID --next-gate "TEXT", or --next-gate "" to clear' },
+  edit: { scope: '--scope needs text: atelier edit ID --scope "GLOB", once per entry, or --scope "" alone to clear', title: '--title needs text: atelier edit ID --title "TEXT", at most 80 characters', brief: '--brief needs text: atelier edit ID --brief "TEXT", or --brief "" to clear it', accept: '--accept needs text: atelier edit ID --accept "TEXT", once per criterion, or --accept "" alone to clear', "non-goal": '--non-goal needs text: atelier edit ID --non-goal "TEXT", once per entry, or --non-goal "" alone to clear', "stop-when": '--stop-when needs text: atelier edit ID --stop-when "TEXT", once per entry, or --stop-when "" alone to clear', "next-gate": '--next-gate needs text: atelier edit ID --next-gate "TEXT", or --next-gate "" to clear' },
   block: {},
   unblock: {},
   ls: { all: true, json: true },
@@ -260,6 +265,7 @@ export const FLAGS = {
   review: { approve: true, reject: true, note: false, head: false, findings: false, criteria: false, request: false },
   "review-claim": { runner: false },
   "review-release": { note: false },
+  "review-unparsable": { head: false, note: false, "reply-file": false },
   "read-token": {},
   "base-token": {},
   integrated: { part: false, "merge-commit": false },
@@ -275,7 +281,7 @@ export const FLAGS = {
   "run-report": { actor: false, role: false, outcome: false, project: false, item: false, detail: false },
   served: { recorded: false, from: false, to: false, item: false, note: false, apply: true },
   // done takes its summary as a word; it refuses --summary itself, with its usage.
-  done: { sandbox: true, summary: false },
+  done: { sandbox: true, summary: false, json: true },
   finish: { sandbox: true, summary: '--summary needs text: atelier finish ID --summary "TEXT"' },
   sync: {},
   merge: { cancel: true, "discard-local": true, head: false, approve: true, note: false, "policy-changed-ok": true, "override-review": '--override-review needs a reason: atelier merge ID --head FULL_REVISION --override-review "why no independent review is possible"' },
@@ -292,12 +298,12 @@ export const FLAGS = {
   // Each plan subcommand takes only its own flags (PLAN_FLAGS); this row is their union.
   plan: { scope: '--scope needs text: atelier plan "goal" --scope "GLOB", once per entry', planner: false, json: true, hash: false, "allow-paid": true, note: false, to: false, resolve: true },
   // models add refuses --key, --api-key and --token itself, saying where keys go.
-  models: { harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, key: false, "api-key": false, token: false },
+  models: { harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, item: false, key: false, "api-key": false, token: false },
   showcase: { named: true, anonymous: true },
   projects: { force: true },
   owners: { json: true },
   inbox: { json: true },
-  status: { json: true },
+  status: { json: true, brief: true },
   open: {},
   guide: { role: '--role needs a value: atelier guide --role build|review|plan|orchestrate' },
   help: {},
@@ -308,8 +314,23 @@ const PLAN_FLAGS = { "": ["scope", "planner"], show: ["json"], approve: ["hash",
 // version is a switch too, so --version=… is refused as a value it does not
 // take, instead of slipping through as a string that answers anyway.
 const SWITCHES = new Set(["version", ...Object.values(FLAGS).flatMap((row) => Object.keys(row).filter((flag) => row[flag] === true))]);
+// --brief is text for new and edit and a switch for status, so it is a switch
+// only when the command is status: the first word that is not a flag or a
+// flag's value.
+const commandOf = (argv) => {
+  const plain = new Set([...SWITCHES].filter((flag) => flag !== "brief"));
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--") return undefined;
+    if (!a.startsWith("-")) return a;
+    if (!a.startsWith("--") || a.includes("=")) continue;
+    const next = argv[i + 1];
+    if (plain.has(a.slice(2)) ? next === "true" || next === "false" : next !== undefined && !next.startsWith("--")) i++;
+  }
+};
+const switchesFor = (argv) => (commandOf(argv) === "status" ? SWITCHES : new Set([...SWITCHES].filter((flag) => flag !== "brief")));
 
-export function parseArgs(argv, switches = SWITCHES) {
+export function parseArgs(argv, switches = switchesFor(argv)) {
   const out = { _: [], multi: {}, bare: [], problems: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -432,6 +453,52 @@ export function insecureServer(url) {
   if (parsed.protocol === "https:") return undefined;
   if (parsed.protocol === "http:" && LOOPBACK.has(parsed.hostname)) return undefined;
   return `${url} is not https: the owner token goes with every request, and over plain http it would be readable on every network on the way. Name the server as https://HOST; plain http is accepted for a server on this machine alone (localhost, 127.0.0.1 or [::1])`;
+}
+
+// A session driving Atelier by hand reads the project's AGENTS.md and the
+// output of the commands it runs, not the briefs the build and review agents
+// get. Unless the project's AGENTS.md already states the review path (atelier
+// land --reviewer), status, ls and new end with one line that names
+// `atelier guide --role orchestrate`. Nothing is remembered between runs: the
+// CLI cannot tell one session from the next, so the line stays until the
+// AGENTS.md says it. A task workspace gets none: its agent has the brief.
+export function statesReviewPath(markdown) {
+  return typeof markdown === "string" && /atelier land\b[^\n]*--reviewer/.test(markdown);
+}
+
+function readAgentsMd(dir) {
+  try { return readFileSync(join(dir, "AGENTS.md"), "utf8"); } catch { return null; }
+}
+
+export function guidePointer(projects, names, inWorkspace = false, read = readAgentsMd) {
+  if (inWorkspace) return null;
+  const unread = names.filter((n) => !statesReviewPath(projects?.[n]?.path ? read(projects[n].path) : null));
+  if (!unread.length) return null;
+  const one = unread.length === 1;
+  return `Review path${one ? ` for ${unread[0]}` : ""}: atelier guide --role orchestrate${one ? ` --project ${unread[0]}` : ""} prints how to run, review and land work here, including atelier land --reviewer.`;
+}
+
+// The short AGENTS.md section atelier init offers: it points at the guide and
+// states the review path, so a session that reads only AGENTS.md finds both.
+export const AGENTS_SECTION = `## Working through Atelier
+
+Before driving this project's tasks by hand, run \`atelier guide --role orchestrate\`; it prints the whole orchestrator guide.
+
+Review path: a finished task is reviewed before it merges. \`atelier land ID --reviewer HARNESS/MODEL\` lands it with that model's review; do not merge around the review.
+`;
+
+export function agentsMdOffer(markdown) {
+  const pointsAtGuide = markdown !== null && /atelier guide/.test(markdown);
+  const statesReview = statesReviewPath(markdown);
+  if (pointsAtGuide && statesReview) return null;
+  const gap = markdown === null ? "This checkout has no AGENTS.md" : !pointsAtGuide ? "AGENTS.md does not mention atelier guide" : "AGENTS.md does not state the review path (atelier land --reviewer)";
+  return `${gap}, so a session that reads only it never sees the review path. atelier init did not edit it; add this section:\n\n${AGENTS_SECTION}`;
+}
+
+function pointToGuide(names) {
+  if (args.json) return;
+  const line = guidePointer(cfg.projects, names, Boolean(wsConfig("item")));
+  if (line) console.log(`\n${line}`);
 }
 
 function wsConfig(key, cwd = process.cwd()) {
@@ -609,6 +676,12 @@ function fieldsArg(cmd) {
   if (args.brief !== undefined) {
     if (typeof args.brief !== "string" || (!args.brief.trim() && cmd !== "edit")) die(FLAGS[cmd].brief);
     out.brief = args.brief.trim() || null;
+  }
+  if (cmd === "edit" && args.multi.scope !== undefined) {
+    const values = args.multi.scope;
+    if (values.length === 1 && values[0] === "") out.scope = [];
+    else if (values.some((v) => typeof v !== "string" || !v.trim())) die(FLAGS.edit.scope);
+    else out.scope = values.map((v) => v.trim());
   }
   for (const [flag, key] of [["accept", "accept"], ["non-goal", "nonGoals"], ["stop-when", "stopWhen"]]) {
     const values = args.multi[flag];
@@ -1133,6 +1206,7 @@ async function checkInSandbox() {
   }
   const on = state.request?.merged && state.mainHead ? ` merged with main ${short(state.mainHead)}` : "";
   for (const r of state.results ?? []) {
+    doneChecks.push({ claim: r.claim, result: r.notApplicable ? "not applicable" : r.passed ? "passed" : "failed", where: CONTAINER });
     if (r.notApplicable) { console.log(`N/A   ${r.claim}  @ ${short(state.request.head)}${on}  (not run: this change touches none of the paths it applies to)`); continue; }
     console.log(`${r.passed ? "PASS" : "FAIL"}  ${r.claim}  @ ${short(state.request.head)}${on}  (${r.seconds}s, in Cloudflare)`);
     if (!r.passed) process.stdout.write(r.outputTail.slice(-2000) + "\n");
@@ -1141,10 +1215,7 @@ async function checkInSandbox() {
   else if (state.changedPaths) console.log(`changed: ${state.changedPaths.join(", ") || "nothing"}`);
   if (state.status === "failed") die(`the run failed: ${state.error}`);
   if (!state.recorded) die("the checks ran but the ledger did not record them");
-  if (state.results.some((r) => r.passed === false)) {
-    if (doneStep) die("required checks failed", 2);
-    process.exit(2);
-  }
+  if (!doneStep && state.results.some((r) => r.passed === false)) process.exit(2);
 }
 
 // What an agent relays is one line per field: text a person or an agent
@@ -1197,8 +1268,61 @@ export function checkoutLine(raw) {
     : `Checkout: out of step. ${c.branch} @ ${short(c.head)} does not hold the baseline's head ${base}; reconcile the checkout before merging.`;
 }
 
-export function formatDone(gate) {
-  return gate.ready ? "Ready for the owner" : `Not ready: ${gate.blockers.map(flat).join("; ")}`;
+// The one outcome done ends with (exit codes in cli/help.mjs): failed checks,
+// nothing submitted; checked but blocked, submitted with a gate open; or
+// submitted and ready for the owner. Acceptance, merge and deploy are separate.
+export function doneReport({ id, head, checks, item, gate, changed = [] }) {
+  const submitted = item?.state === "submitted";
+  const failed = checks.filter((c) => c.result === "failed").map((c) => flat(c.claim));
+  const blockers = (gate?.blockers ?? []).map(flat);
+  const checkText = checks.length ? `Checks: ${checks.map((c) => `${flat(c.claim)} ${c.result}`).join("; ")} (${checks[0].where})` : "Checks: none ran";
+  let outcome, exitCode, line, unresolved, accept, merge, ownerAction;
+  if (failed.length) {
+    outcome = "failed_checks"; exitCode = 2;
+    unresolved = "not evaluated; nothing was submitted";
+    accept = "not reached"; merge = "not reached";
+    ownerAction = `none yet; fix ${failed.join("; ")} in the workspace, then run done again`;
+    const left = changed.length ? `; the workspace also changed: ${changed.map(flat).join(", ")}` : "";
+    line = `Outcome: failed checks: ${failed.join("; ")}; nothing was submitted${left}`;
+  } else if (submitted && gate.ready) {
+    outcome = "submitted"; exitCode = 0;
+    unresolved = "none";
+    accept = "waiting for the owner"; merge = "not yet; it follows acceptance";
+    ownerAction = `accept ${id} at ${short(head)}: atelier accept ${id} --head ${head}`;
+    line = "Outcome: submitted, ready for the owner";
+  } else {
+    outcome = "checked_but_blocked"; exitCode = 3;
+    unresolved = `${blockers.length} (named on the last line)`;
+    accept = "not yet; the gate must be clear first"; merge = "not yet; it follows acceptance";
+    ownerAction = `clear the first blocker: ${blockers[0]}`;
+    line = `Outcome: checked but blocked by ${blockers.length} ${blockers.length === 1 ? "blocker" : "blockers"}: ${blockers.join("; ")}`;
+  }
+  const deploy = "not covered by done";
+  const summary = [
+    `Head: ${short(head)}`,
+    checkText,
+    `Unresolved gates: ${unresolved}`,
+    `Submitted: ${submitted ? "yes" : "no"}`,
+    `Accept: ${accept}`,
+    `Merge: ${merge}`,
+    `Deploy: ${deploy}`,
+    `Owner action: ${ownerAction}`,
+  ];
+  const json = {
+    outcome, exitCode, outcomeLine: line, head, submitted,
+    checks: checks.map(({ claim, result, where }) => ({ claim, result, where })),
+    unresolvedGates: failed.length ? [] : blockers,
+    accept, merge, deploy, ownerAction,
+  };
+  return { outcome, exitCode, summary, line, json };
+}
+
+// --json keeps stdout to the one object: what the steps print goes to stderr.
+function progressToStderr() {
+  const log = console.log, write = process.stdout.write;
+  console.log = (...text) => console.error(...text);
+  process.stdout.write = (...text) => process.stderr.write(...text);
+  return () => { console.log = log; process.stdout.write = write; };
 }
 
 // The owner's framing of a task, one line per field that is set, for the
@@ -1262,16 +1386,23 @@ const newestReviews = (reviews) => [...reviews].sort((a, b) => b.at.localeCompar
 // learn why a review rejected the task (t173). One flattened line per field,
 // so no note or finding can pose as a line of Atelier's own. A separate tier
 // review (src/review/tier.ts), beside the gate's, is labelled, and so is a
-// gate review by a tier model, which gives the tier review too.
-export function formatReviews(reviews, owner = OWNER) {
+// gate review by a tier model, which gives the tier review too. After the
+// reviews come the replies no verdict could be read from (t407), newest
+// first, each with the reason it was refused and the reply itself, whole and
+// flattened the same way: what the reviewer actually said is the evidence.
+export function formatReviews(reviews, owner = OWNER, unparsable = []) {
   const ordered = newestReviews(reviews);
-  if (!ordered.length) return "No reviews are recorded.";
-  const lines = ["Reviews:"];
+  if (!ordered.length && !unparsable.length) return "No reviews are recorded.";
+  const lines = ordered.length ? ["Reviews:"] : [];
   for (const r of ordered) {
     const recorded = recordedText(r, owner);
     lines.push(`  ${r.tier ? "Tier review: " : r.topTier ? "Gate review, top tier: " : ""}${flat(r.by)} ${r.approve ? "approved" : "rejected"} at ${short(r.head)} (${at(r.at)}${recorded ? `; ${flat(recorded)}` : ""}).`);
     lines.push(`    Note: ${flat(r.note) || "(no note)"}`);
     for (const f of r.findings ?? []) lines.push(`    ${f.severity} ${flat(f.file)}${f.line ? `:${f.line}` : ""} ${flat(f.text)}`);
+  }
+  for (const r of newestReviews(unparsable)) {
+    lines.push(`  ${flat(r.by)} wrote a reply no verdict could be read from at ${short(r.head)} (${at(r.at)}): ${flat(r.note) || "(no reason recorded)"}`);
+    lines.push(`    Reply: ${flat(r.reply) || "(nothing written)"}`);
   }
   return lines.join("\n");
 }
@@ -1537,6 +1668,23 @@ async function discoverModels() {
   } catch (error) { die(error.message); }
 }
 
+// `runner setup` (runner-setup.mjs): the pool from the server, and each
+// provider's model list read without a key, as a public page is.
+async function setupRunner() {
+  const { runSetup } = await import("./runner-setup.mjs");
+  try {
+    await runSetup(args, {
+      pool: () => call("GET", "/models", undefined, OWNER),
+      async fetchJson(url) {
+        try {
+          const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+          return res.ok ? await res.json() : null;
+        } catch { return null; }
+      },
+    });
+  } catch (error) { die(error.message); }
+}
+
 // Each tool's usage goes to the usage route under the runner's name; one
 // that fails does not stop the others, and runUsage names every failure.
 // The AI Gateway's figures are read back from GET /api/usage, and each
@@ -1748,6 +1896,7 @@ const commands = {
   // `runner --discover` reports what each home model's harness serves (discover.mjs);
   // `runner --usage` reports each tool's windows, served models and balances (usage.mjs).
   async runner() {
+    if (args._[1] === "setup") return setupRunner();
     if (args.discover === true) return discoverModels();
     if (args.usage === true) return reportUsage();
     const { runRunner } = await import("./runner.mjs");
@@ -2074,6 +2223,10 @@ const commands = {
     // A server older than core files ignores them and answers without any.
     if (core?.length && !pol.coreFiles?.length) console.log("Warning: the server did not record the core files; deploy the server, then run atelier init --core again.");
     if (pol.approval) console.log(`Approval:   ${pol.approval}`);
+    let agentsMd = null;
+    try { agentsMd = readFileSync(join(top, "AGENTS.md"), "utf8"); } catch {}
+    const offer = agentsMdOffer(agentsMd);
+    if (offer) console.log(`\n${offer}`);
   },
 
   // Move one project from ControlPlane to Atelier. This is itself an Atelier
@@ -2158,6 +2311,7 @@ const commands = {
       ...(item.derived ? [`The text is longer than a title, so it is kept as the brief and the title is its first clause; change it with atelier edit ${item.id} --title "TEXT".`] : []),
       ...formatFields(item),
     ].join("\n"));
+    pointToGuide([project()]);
   },
 
   // The project owner changes a task's framing; the server keeps every field
@@ -2170,6 +2324,7 @@ const commands = {
     const lines = [
       ...(fields.title !== undefined ? [`Title: ${flat(item.title)}`] : []),
       ...(fields.brief !== undefined ? [item.brief ? `Brief: ${item.brief.length} characters, shown on the task's page.` : "Brief: cleared."] : []),
+      ...(fields.scope !== undefined ? [`Scope: ${item.scope.map(flat).join(", ") || "not specified (it overlaps every live task)"}`] : []),
       ...formatFields(item),
     ];
     console.log(`${id} edited.${lines.length ? `\n${lines.join("\n")}` : " No framing is set now."}`);
@@ -2205,6 +2360,7 @@ const commands = {
     for (const i of shown) {
       console.log(`${i.id.padEnd(5)} ${i.state.padEnd(10)} ${(i.owner ?? "—").padEnd(26)} ${short(i.head)}  ${i.title}`);
     }
+    pointToGuide([name]);
   },
 
   async show() {
@@ -2231,9 +2387,9 @@ const commands = {
       const label = event.kind === "item.reverts" ? "Reverts" : "Revert requested in";
       brief.evidence.push(`${label} ${itemId} (recorded merge ${mergeCommit}): ${server()}/p/${encodeURIComponent(name)}/${itemId}`);
     }
-    if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []) }, null, 2));
+    if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []) }, null, 2));
     const text = formatBrief(name, id, brief, server());
-    console.log(args.reviews ? `${text}\n\n${formatReviews(d?.reviews ?? [], d?.ownerActor)}` : text);
+    console.log(args.reviews ? `${text}\n\n${formatReviews(d?.reviews ?? [], d?.ownerActor, d?.unparsable ?? [])}` : text);
   },
 
   // The task's whole story from the ledger, in order (cli/receipt.mjs): one
@@ -2401,6 +2557,15 @@ const commands = {
       // Worker refuses a main head that is not on main's line.
       if (args.merged) mainHead = mergeWithMain(dir, id);
       const on = mainHead ? ` merged with main ${short(mainHead)}` : "";
+      // A landing's required checks compete with the home runners for this
+      // machine (t403): while the load average is at or above the limit they
+      // wait, saying so, and each result records the load it started at. The
+      // limit is ATELIER_LOAD_LIMIT when set, else the core count.
+      const configuredLimit = process.env.ATELIER_LOAD_LIMIT;
+      const limit = loadLimitOf(configuredLimit !== undefined && Number(configuredLimit) > 0 ? Number(configuredLimit) : undefined, coreCount());
+      // One reader for the whole command, so a sequence of readings (a test's
+      // ATELIER_LOAD) advances across the checks and each records its own.
+      const readLoad = envLoad();
       for (const cmd of cmds) {
         // A registered check whose paths this change does not touch is not
         // run. It is recorded as not applicable, which the Worker accepts only
@@ -2409,9 +2574,17 @@ const commands = {
           const n = await postEvidence(`${I(name, id)}/evidence`, { kind: "check", claim: cmd, head: ws.head, notApplicable: true }, as);
           const row = n?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd).at(-1);
           if (row) recorded = row.changedPaths;
+          doneChecks.push({ claim: cmd, result: "not applicable", where: CLEAN_CLONE });
           console.log(`N/A   ${cmd}  @ ${short(ws.head)}  (it ${appliesText(policy, cmd)}; this change touches none of them)`);
           continue;
         }
+        // The wait is per check (t403): a check that starts later must wait on
+        // the load as the earlier one did, and its own starting load is what
+        // its result records, not the first check's.
+        const startLoad = await waitForLoad(limit, {
+          readLoad,
+          report: (current) => process.stderr.write(`atelier: load ${formatLoad(current)} is at or above the limit ${formatLoad(limit)}; waiting for it to fall before running the checks\n`),
+        });
         const r = await runCheck(cmd, dir, secrets);
         // The Worker measures the changed paths from Artifacts and ignores this
         // list, which is sent only so a deployment without that measurement
@@ -2421,10 +2594,12 @@ const commands = {
         const d = await postEvidence(`${I(name, id)}/evidence`, {
           kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed,
           outputTail: `${r.output.slice(-3500)}\n[sha256 of full output: ${r.sha}]`,
+          load: startLoad,
           ...(mainHead ? { merged: true, mainHead } : {}),
         }, as);
         const row = d?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd && !e.merged).at(-1);
         if (row) recorded = row.changedPaths;
+        doneChecks.push({ claim: cmd, result: r.passed ? "passed" : "failed", where: CLEAN_CLONE });
         console.log(`${r.passed ? "PASS" : "FAIL"}  ${cmd}  @ ${short(ws.head)}${on}`);
         if (!r.passed) { failed++; process.stdout.write(r.output.slice(-2000) + "\n"); }
       }
@@ -2435,10 +2610,7 @@ const commands = {
     const paths = recorded === undefined ? changed : recorded;
     if (mainHead) console.log(`Recorded on the merge with main at ${short(mainHead)}; these results stand beside the revision's own checks and go stale when main moves.`);
     else console.log(Array.isArray(paths) ? `changed: ${paths.join(", ") || "nothing"}` : "changed: not measured; the gate waits for a check that measures it");
-    if (failed) {
-      if (doneStep) die("required checks failed", 2);
-      process.exit(2);
-    }
+    if (failed && !doneStep) process.exit(2);
   },
 
   async gc() {
@@ -2480,7 +2652,7 @@ const commands = {
     const name = project(), id = itemArg(), as = await actor();
     await call("POST", `${I(name, id)}/submit`, args.summary === undefined ? {} : { summary: args.summary }, as);
     const d = await call("GET", I(name, id), undefined, as);
-    if (doneStep) return d.gate;
+    if (doneStep) return { item: d.item, gate: d.gate };
     console.log(d.gate.ready ? `${id} submitted and ready for ${OWNER_NAME}.` : `${id} submitted. Still blocking:\n${d.gate.blockers.map((b) => `  - ${b}`).join("\n")}`);
   },
 
@@ -2533,6 +2705,22 @@ const commands = {
     const name = project(), id = itemArg(), as = await actor();
     await call("POST", `${I(name, id)}/review-release`, { note: args.note ?? "" }, as);
     console.log(`${id}'s review request released.`);
+  },
+
+  // t407: a reviewer's reply no verdict could be read from is kept on the
+  // task, its last 100 KB with the reviewer and the head, as the request it
+  // held goes back to the queue. The reply travels as the file the harness
+  // wrote, never as an argument, which the operating system caps far below a
+  // long reply.
+  async "review-unparsable"() {
+    const name = project(), id = itemArg(), as = await actor();
+    if (typeof args.head !== "string" || !/^[a-f0-9]{40,64}$/.test(args.head)) die("--head needs the full revision the review read");
+    if (typeof args["reply-file"] !== "string" || !args["reply-file"]) die('--reply-file needs the path of the file the harness wrote its reply to');
+    let reply;
+    try { reply = readFileSync(args["reply-file"], "utf8"); }
+    catch (error) { die(`could not read the reply file: ${error.message}`); }
+    const r = await call("POST", `${I(name, id)}/review-unparsable`, { head: args.head, note: args.note ?? "", reply: reply.slice(-VERDICT_LIMITS.reply) }, as);
+    console.log(`Kept the unparsable review reply on ${id}${r.released === false ? "" : ", and released its review request"}.`);
   },
 
   // Read-only access tokens the runner uses outside a task or review job: the
@@ -2603,7 +2791,12 @@ const commands = {
     const name = project(), id = itemArg(), reason = overrideArg("accept ID");
     const d = await call("GET", I(name,id), undefined, OWNER);
     const item = await call("POST", `${I(name, id)}/accept`, {head: args.head ?? d.item.head, ...(reason !== undefined ? { overrideReview: reason } : {}), ...(typeof args.note === "string" ? { note: args.note } : {})}, OWNER);
-    console.log(`${id} accepted at ${short(item.acceptedHead)}${reason !== undefined ? ", with the independent review overridden" : ""}. Merge it with: atelier merge ${id}`);
+    const overridden = reason !== undefined
+      ? item.availableReviewer
+        ? `, with the independent review overridden; ${item.availableReviewer} was available to review it instead: atelier land ${id} --reviewer ${item.availableReviewer}`
+        : ", with the independent review overridden"
+      : "";
+    console.log(`${id} accepted at ${short(item.acceptedHead)}${overridden}. Merge it with: atelier merge ${id}`);
   },
 
   // The server clears the owner and revokes the holder's write token, as a
@@ -2682,12 +2875,18 @@ const commands = {
     if (args._.length !== 2 || !args._[1].trim() || args.summary !== undefined || args.rest) die(COMMAND_USAGE.done);
     args.summary = args._[1];
     args._ = ["done"];
+    const restore = args.json === true ? progressToStderr() : () => {};
     doneStep = "prepare";
+    let result;
     try {
-      const gate = await commands.finish();
+      result = await commands.finish();
       doneStep = undefined;
-      console.log(formatDone(gate));
     } catch (error) { die(error.message); }
+    restore();
+    const report = doneReport(result);
+    if (args.json === true) console.log(JSON.stringify(report.json, null, 2));
+    else console.log([...report.summary, report.line].join("\n"));
+    process.exitCode = report.exitCode;
   },
 
   async finish() {
@@ -2698,15 +2897,20 @@ const commands = {
     if (d.item.owner !== as || !["claimed","submitted"].includes(d.item.state)) die("this task must be live and owned by you");
     if (git(["status","--porcelain"])) die("commit your changes before finishing");
     const head = git(["rev-parse","HEAD"]);
+    doneChecks.length = 0;
     if (doneStep) doneStep = "push";
     await commands.push();
     if (doneStep) doneStep = "check";
     if (d.policy.sandboxOnly || args.sandbox) await checkInSandbox(); else await commands.check();
-    if (git(["rev-parse","HEAD"]) !== head || git(["status","--porcelain"])) die("the workspace changed while finishing; inspect it and finish again");
+    const changed = git(["status","--porcelain"], { raw: true }).split("\n").filter(Boolean).map((line) => line.slice(3));
+    // A failed check is the outcome even when it also changed the workspace; the changed files are named with it.
+    if (doneChecks.some((c) => c.result === "failed")) return { id, head, checks: doneChecks, changed };
+    if (git(["rev-parse","HEAD"]) !== head || changed.length) die("the workspace changed while finishing; inspect it and finish again");
     const current = await call("GET", I(name,id), undefined, as);
     if (current.item.head !== head) die("the remote revision changed while checks ran; finish again");
     if (doneStep) doneStep = "submit";
-    return commands.submit();
+    const submitted = await commands.submit();
+    return { id, head, checks: doneChecks, ...submitted };
   },
 
   // The project owner merges an exact revision. With --head, a submitted item
@@ -2973,7 +3177,7 @@ const commands = {
           catch(error){journal.clear();die(error.message);}
           if(runs.length){journal.clear();die(`the accepted change touches files that this checkout's Git configuration runs: ${runs.map(r=>r.changed.length===1&&r.changed[0]===r.path?`${r.path}, ${r.setting}`:`${r.changed.join(', ')}, which reach ${r.path}, ${r.setting}`).join('; ')}. Landing it would run them, during the merge or at your next Git command. Nothing was merged; review those files in the accepted change and land it by hand, or have the task's owner submit a revision that leaves them alone`);}
           const result=git(['merge','--no-ff','--no-commit',target],{cwd,allowFail:true});
-          if(result.status!==0){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();if(item.kind==='plan')await planConflicted(name,id,item);die('merge conflicts; the task owner must update, recheck, and submit a new revision');}
+          if(result.status!==0){git(['merge','--abort'],{cwd,allowFail:true});journal.clear();if(item.kind==='plan')await planConflicted(name,id,item);die(`merge conflicts; nothing was merged and ${id} stays accepted. The project owner can send it back to a runner with atelier dispatch ${id} --job merge-main, or hand it to a builder with atelier handoff ${id} --to H/M. The builder resolves the conflicts, rechecks and submits a new revision for review and acceptance; earlier reviews and acceptance stay in the history`);}
           if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }
           const receipt=writeReceipt(cwd,{name,id,item,owners,view,reviews,policy:d.policy,branch:p.branch,notesRemote:p.notesRemote,changeClass:d.gate.changeClass});
           if(receipt)git(['add',receipt],{cwd});
@@ -3366,9 +3570,17 @@ const commands = {
   // The model pool. With no subcommand, lists it. `models add ID --harness H
   // --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME]
   // [--alias A]... [--note TEXT]` adds or replaces an entry; `models remove ID`
-  // removes one. Keys stay in the Keychain; only the entry's name is sent.
+  // removes one; `models note ID 'text' [--item tN]` keeps a dated note under
+  // it, and `models show ID` prints it with its notes. Keys stay in the
+  // Keychain; only the entry's name is sent.
   async models() {
-    const [sub, id] = args._.slice(1);
+    const [sub, id, text] = args._.slice(1);
+    const modelLine = (m) => {
+      const s = m.status ? `${m.status.state} ${m.status.at.slice(0, 16)}Z${m.status.served && m.status.served !== m.id ? ` as ${m.status.served}` : ""}` : "not checked";
+      return `${m.where.padEnd(5)} ${m.harness}/${m.id}  ${m.family}  ${s}${m.keychain ? `  key: ${m.keychain}` : ""}`;
+    };
+    const taskOf = (n) => (n.project ? `${n.projectName ?? n.project}/${n.item}` : n.item);
+    const noteLines = (m) => (m.notes ?? []).map((n) => `  ${n.at.slice(0, 10)} by ${n.by}${n.item ? ` on ${taskOf(n)}` : ""}: ${n.text}`);
     if (sub === "add") {
       if (!id) die("atelier models add ID --harness H --where home|cloud");
       for (const k of ["key", "api-key", "token"]) if (args[k] !== undefined) die("Atelier never stores keys; put the key in your Keychain and give its entry's name with --keychain");
@@ -3383,13 +3595,26 @@ const commands = {
       const { removed } = await call("DELETE", `/models/${encodeURIComponent(id)}`, undefined, OWNER);
       return console.log(removed ? `${id} is no longer in the pool.` : `${id} was not in the pool.`);
     }
-    if (sub) die(`${COMMAND_USAGE.models}\nunknown models command "${sub}"; use add, remove, or nothing to list`);
+    if (sub === "note") {
+      if (!id || args._.length !== 4) die("atelier models note ID 'text' [--item tN]");
+      const body = args.item === undefined ? { text } : { text, item: args.item, project: project() };
+      const note = await call("POST", `/models/${encodeURIComponent(id)}/notes`, body, OWNER);
+      return console.log(`${id} has a new note, ${note.at.slice(0, 10)} by ${note.by}${note.item ? ` on ${taskOf(note)}` : ""}: ${note.text}`);
+    }
+    if (sub === "show") {
+      if (!id) die("atelier models show ID");
+      const m = (await call("GET", "/models", undefined, OWNER)).find((entry) => entry.id === id);
+      if (!m) die(`${id} is not in the pool`);
+      console.log(modelLine(m));
+      const lines = noteLines(m);
+      if (!lines.length) return console.log("  No notes yet. Add one: atelier models note ID 'text'");
+      for (const line of lines) console.log(line);
+      return;
+    }
+    if (sub) die(`${COMMAND_USAGE.models}\nunknown models command "${sub}"; use add, remove, note, show, or nothing to list`);
     const pool = await call("GET", "/models", undefined, OWNER);
     if (!pool.length) return console.log("The pool is empty. Add a model: atelier models add ID --harness H --where home|cloud");
-    for (const m of pool) {
-      const s = m.status ? `${m.status.state} ${m.status.at.slice(0, 16)}Z${m.status.served && m.status.served !== m.id ? ` as ${m.status.served}` : ""}` : "not checked";
-      console.log(`${m.where.padEnd(5)} ${m.harness}/${m.id}  ${m.family}  ${s}${m.keychain ? `  key: ${m.keychain}` : ""}`);
-    }
+    for (const m of pool) console.log([modelLine(m), ...noteLines(m)].join("\n"));
   },
 
   // The public showcase: which projects the owner shows, and whether each is
@@ -3482,6 +3707,25 @@ const commands = {
 
   // The owner's queue: decisions waiting, tasks in progress, tasks waiting for a runner.
   async status() {
+    if (args.brief) {
+      const name = args.project ?? wsConfig("project") ?? registeredHere().name;
+      if (!name) die("--brief reports on one project: add --project NAME");
+      const as = await actor(OWNER);
+      // What cannot be read is said in the brief, not fatal to it.
+      const soft = (promise) => promise.catch(() => null);
+      const [standing, version, queue, usage, lease] = await Promise.all([
+        call("GET", `${P(name)}/standing`, undefined, as),
+        soft(fetch(server() + "/api/version").then((r) => (r.ok ? r.json() : null))),
+        soft(request("GET", "/queue", undefined, as)),
+        soft(request("GET", "/usage", undefined, as)),
+        landingLease(name, as),
+      ]);
+      const text = formatStatusBrief({ standing, version, queue, lease, usage });
+      if (args.json) return console.log(JSON.stringify({ brief: text.split("\n") }, null, 2));
+      console.log(text);
+      pointToGuide([name]);
+      return;
+    }
     if (args.project !== undefined) {
       const name = args.project;
       const as = await actor(OWNER);
@@ -3490,6 +3734,7 @@ const commands = {
       const local = await localStanding(name, as);
       if (args.json) return console.log(JSON.stringify({ project: standing, checkout, ...(local ? { local } : {}) }, null, 2));
       console.log(formatStanding(standing, OWNER_NAME) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : ""));
+      pointToGuide([name]);
       return;
     }
     const known = await call("GET", "/projects", undefined, OWNER);
@@ -3510,6 +3755,7 @@ const commands = {
     }));
     if (args.json) return console.log(JSON.stringify(statusJson(views), null, 2));
     console.log(formatStatus(views, { queue, offers }));
+    pointToGuide(chosen.map((p) => p.name));
   },
 
   async open() {
