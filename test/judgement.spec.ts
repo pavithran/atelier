@@ -112,9 +112,13 @@ it("an override of a missing review keeps the acting model beside the owner", as
   await L(name).recordPush("t1", OPUS, H1, H1);
   await L(name).addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
   await L(name).submit("t1", OPUS);
-  const refused = await L(name).accept("t1", OPUS, H1, "no reviewer", undefined, GPT).then(() => null, (e: Error) => e.message);
+  const refused = await L(name).accept("t1", OPUS, H1, "no reviewer", undefined, undefined, GPT).then(() => null, (e: Error) => e.message);
   expect(refused).toMatch(/only the project owner accepts/);
-  const item = await L(name).accept("t1", "owner", H1, "No model of another family is available", undefined, GPT);
+  // The acting model never stands in for the owner's confirmation (t371).
+  const unconfirmed = await L(name).accept("t1", "owner", H1, "No model of another family is available", undefined, undefined, GPT).then(() => null, (e: Error) => e.message);
+  expect(unconfirmed).toMatch(/needs the owner's confirmation/);
+  await L(name).confirmOverride("t1", "owner", H1, "secret");
+  const item = await L(name).accept("t1", "owner", H1, "No model of another family is available", undefined, undefined, GPT);
   expect(item).toMatchObject({ state: "accepted", reviewOverride: { by: "owner" } });
   const overridden = (await events(name, "t1")).find((e) => e.kind === "review.overridden")!;
   expect(overridden).toMatchObject({ actor: "owner", data: { reason: "No model of another family is available", acting: GPT } });
