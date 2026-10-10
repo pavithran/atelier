@@ -1922,9 +1922,13 @@ ${framing}${openScope}
   const reviews = latestReviews(d.reviews, bindingOf(item)).map((r) => `<div class="review-note">${tag(r.approve ? "Approved" : "Changes requested", r.approve ? "go" : "ask")}
     <p>${e(r.note || "No note provided.")}</p><p class="meta">${r.tier ? "tier review · " : r.topTier ? "gate review, top tier · " : ""}${e(r.by)} · ${when(r.at)}${recordedText(r, d.ownerActor ?? DEFAULT_OWNER) ? ` · ${e(recordedText(r, d.ownerActor ?? DEFAULT_OWNER)!)}` : ""}</p></div>`).join("");
   const overridden = overrideAt(item, d.ownerActor ?? DEFAULT_OWNER);
+  // An override recorded before the project forbade overrides (t371) counts
+  // for nothing on a task still in hand, as gate counts none; a merged task's
+  // went in on it, and keeps its label.
+  const voided = !!overridden && !!d.policy.noOverride && item.state !== "merged";
   const overrideNote = overridden
-    ? `<div class="review-note">${tag("Review overridden", "ask")}
-    <p>${e(overridden.reason)}</p><p class="meta">${e(overridden.by)} · ${when(overridden.at)} · the project owner's override, not a review</p></div>`
+    ? `<div class="review-note">${tag(voided ? "Override not counted" : "Review overridden", "ask")}
+    <p>${e(overridden.reason)}</p><p class="meta">${e(overridden.by)} · ${when(overridden.at)} · the project owner's override, not a review${voided ? "; this project now forbids overrides, so the change waits for its independent review" : ""}</p></div>`
     : "";
   const blockers = live && !gate.ready
     ? `<details class="disclosure"><summary>Readiness details</summary><ul>${gate.blockers.map((b) => `<li>${e(b)}</li>`).join("")}</ul></details>`
