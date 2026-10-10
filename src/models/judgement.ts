@@ -13,7 +13,11 @@
 //                                            review.overridden
 //
 // The CLI sends the name in X-Atelier-Acting (ACTING_HEADER), and the Worker
-// checks it with cleanActing before any route runs. An event recorded before
+// checks it with cleanActing and registeredActing before any route runs: it
+// must name a harness/model in the owner's model pool. It is still declared,
+// not verified: the owner token cannot prove which model typed the command,
+// so the pages and receipts call it the declared acting model. An event
+// recorded before
 // t440, or without a name, has no acting model: it stays unknown, and is
 // never guessed from the session, the token or the time.
 //
@@ -22,13 +26,16 @@
 // says otherwise (the correction is its own verdict, and the corrected one
 // stays in the record), or when a defect names it with `contradicts`
 // (cleanContradicts; atelier defect ID --contradicts SEQ#N). It is upheld
-// when a later verdict on the same finding by another hand says the same. Any
+// when a later verdict on the same finding by another named model says the
+// same; a verdict with no acting model is no other hand, since it may be the
+// same model unnamed. Any
 // other verdict is unresolved: a verdict no defect has named is not shown to
 // be right. Decisions and overrides are counted beside the verdicts, by the
 // model that acted, and given no outcome or score at all.
 
 import type { LedgerEvent } from "../ledger.ts";
-import { modelKey, RuleError, validActor } from "../rules.ts";
+import { modelKey, RuleError, sameActor, validActor } from "../rules.ts";
+import type { ModelEntry } from "./pool.ts";
 import { SERVED } from "./served.ts";
 
 export const ACTING_HEADER = "x-atelier-acting";
@@ -51,6 +58,14 @@ export function cleanActing(header: string | null, owner: string, agentToken: bo
   const acting = header.trim();
   if (!isModel(acting, owner)) throw new RuleError("bad_acting", "X-Atelier-Acting (atelier --as) must name the harness/model acting for the owner, such as claude-code/opus-5.5", 400);
   return acting;
+}
+
+// The declared acting model must name a model registered in the owner's pool,
+// by its harness and its id or an alias (sameActor: letter case and a
+// ":profile" suffix make no other model). It is kept as declared.
+export function registeredActing(acting: string, pool: readonly Pick<ModelEntry, "id" | "harness" | "aliases">[]): string {
+  if (pool.some((m) => [m.id, ...m.aliases].some((id) => sameActor(acting, `${m.harness}/${id}`)))) return acting;
+  throw new RuleError("unregistered_acting", `X-Atelier-Acting (atelier --as) names ${acting}, which is not a model in the pool; add it on the Models page, or name the harness/model you are`, 400);
 }
 
 // The acting model an event records, or null: unknown for an event recorded
@@ -121,7 +136,7 @@ export interface ActingJudgement {
   model: string | null;          // modelKey, or null for the unknown acting model
   actors: string[];              // the harness/model names it acted under
   verdicts: number;              // finding verdicts it recorded in the window
-  upheld: number;                // of those, a later verdict by another hand agreed
+  upheld: number;                // of those, a later verdict by another named model agreed
   contradicted: number;          // a later verdict disagreed, or a defect named it
   unresolved: number;            // neither: no outcome is known
   contradictions: Contradiction[];
@@ -193,11 +208,12 @@ export function buildJudgement(projects: readonly { project: string; events: rea
           });
           return;
         }
-        // Another hand: a different acting model, or none named where this
-        // one was. Two unknowns cannot be told apart, so they uphold nothing.
+        // Another hand: a named acting model other than this verdict's. A
+        // verdict with no acting model may be this same model unnamed, so it
+        // upholds nothing, and an unknown verdict is upheld by no one.
         const other = (w: LedgerEvent) => {
           const a = actingOf(w, owner);
-          return acting === null ? a !== null : a === null || modelKey(a) !== modelKey(acting);
+          return acting !== null && a !== null && modelKey(a) !== modelKey(acting);
         };
         if (later.some((w) => str(w.data.verdict) === str(v.data.verdict) && other(w))) r.upheld++;
         else r.unresolved++;

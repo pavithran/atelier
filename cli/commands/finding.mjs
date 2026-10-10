@@ -11,6 +11,6 @@ export default async function findingCommand() {
   const index = Number(args.index);
   if (!Number.isInteger(index) || index < 1) die('--index needs the finding\'s position in the review, one based: atelier finding ID --head SHA --index N --verdict ...');
   const r = await call("POST", `${I(name, id)}/finding`, { head: args.head, index, verdict, note: args.note ?? "" }, OWNER, actingHeaders());
-  const event = typeof r.event === "number" ? ` as event ${r.event}${r.acting ? `, acting ${r.acting}` : ""}; a defect that shows it wrong names it with --contradicts ${r.event}#${index}` : "";
+  const event = typeof r.event === "number" ? ` as event ${r.event}${r.acting ? `, declared acting ${r.acting}` : ""}; a defect that shows it wrong names it with --contradicts ${r.event}#${index}` : "";
   console.log(`Recorded ${verdict} on finding ${index} of ${id}'s review at ${args.head.slice(0, 8)}${event}. The Models page counts it under the reviewer.`);
 }

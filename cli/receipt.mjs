@@ -45,7 +45,7 @@ function ownerVerdicts(events) {
 // Where a verdict sits in the record, and the harness/model that recorded it
 // for the owner (t440), so a defect can name it with --contradicts SEQ#N.
 function verdictPlace(seq, acting) {
-  const said = [seq > 0 ? `event ${seq}` : null, typeof acting === "string" && acting ? `acting ${flat(acting)}` : null].filter(Boolean);
+  const said = [seq > 0 ? `event ${seq}` : null, typeof acting === "string" && acting ? `declared acting ${flat(acting)}` : null].filter(Boolean);
   return said.length ? ` (${said.join(", ")})` : "";
 }
 
@@ -126,7 +126,7 @@ function linesFor(e, verdicts, used, owner) {
     case "item.submitted":
       return [`submitted by ${flat(e.actor)} at ${short(d.head)}${d.summary ? `: ${flat(d.summary)}` : ""}`];
     case "review.overridden":
-      return [`independent review overridden by ${flat(e.actor)}${typeof d.acting === "string" && d.acting ? `, acting ${flat(d.acting)}` : ""}: ${flat(d.reason)}`];
+      return [`independent review overridden by ${flat(e.actor)}${typeof d.acting === "string" && d.acting ? `, declared acting ${flat(d.acting)}` : ""}: ${flat(d.reason)}`];
     // t407: the reply itself is kept on the task; show ID --reviews prints it.
     case "review.unparsable":
       return [`unparsable review reply from ${flat(e.actor)} at ${short(d.head)}, kept on the task${d.note ? `: ${flat(d.note)}` : ""}`];

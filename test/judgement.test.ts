@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { LedgerEvent } from "../src/ledger.ts";
-import { actingOf, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, linkVerdict, type JudgementRecord } from "../src/models/judgement.ts";
+import { actingOf, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, linkVerdict, registeredActing, type JudgementRecord } from "../src/models/judgement.ts";
 import { RuleError } from "../src/rules.ts";
 
 // t440: the orchestrator's judgements measured as a reviewer's verdicts are.
@@ -47,6 +47,19 @@ test("the acting model is the owner token's to name, and must be a harness/model
   for (const bad of ["", "  ", "not a model", OWNER, "atelier/events", "opus", "claude-code/opus 5.5"]) {
     refusal(() => cleanActing(bad, OWNER, false), "bad_acting", 400);
   }
+});
+
+test("the declared acting model must name a model in the pool, and is kept as declared", () => {
+  const pool = [
+    { id: "opus-5.5", harness: "claude-code" as const, aliases: ["claude-opus-5-5"] },
+    { id: "gpt-6-astra", harness: "codex" as const, aliases: [] },
+  ];
+  assert.equal(registeredActing(OPUS, pool), OPUS);
+  assert.equal(registeredActing("claude-code/Claude-Opus-5-5", pool), "claude-code/Claude-Opus-5-5", "an alias, in any case, is the same model, kept as typed");
+  assert.equal(registeredActing(GPT, pool), GPT);
+  // Well formed but not registered: another model, or a registered model in another harness.
+  for (const bad of [GLM, "codex/opus-5.5", "claude-code/opus-9"]) refusal(() => registeredActing(bad, pool), "unregistered_acting", 400, /not a model in the pool/);
+  refusal(() => registeredActing(OPUS, []), "unregistered_acting", 400);
 });
 
 test("an event's acting model is read only from a valid field; legacy and malformed ones stay unknown", () => {
@@ -111,8 +124,14 @@ test("a corrected verdict is contradicted by its correction, and both stay count
 test("a verdict is upheld only by a later agreeing verdict from another hand", () => {
   // Another model agrees: upheld.
   assert.deepEqual(counts(row(build([verdict(1, "refuted", OPUS), verdict(2, "refuted", GPT, { at: LATER })]), "opus-5.5")), [1, 1, 0, 0]);
-  // The owner's own hand, no acting model, agrees: upheld.
-  assert.deepEqual(counts(row(build([verdict(1, "refuted", OPUS), verdict(2, "refuted", undefined, { at: LATER })]), "opus-5.5")), [1, 1, 0, 0]);
+  // A later verdict with no acting model may be the same model unnamed: it
+  // upholds nothing, and nor does a malformed acting name.
+  assert.deepEqual(counts(row(build([verdict(1, "refuted", OPUS), verdict(2, "refuted", undefined, { at: LATER })]), "opus-5.5")), [1, 0, 0, 1]);
+  assert.deepEqual(counts(row(build([verdict(1, "refuted", OPUS), verdict(2, "refuted", "not-a-model", { at: LATER })]), "opus-5.5")), [1, 0, 0, 1]);
+  // Unknown verdicts never uphold one another, nor are they upheld by a named model.
+  const unknownFirst = build([verdict(1, "refuted", undefined), verdict(2, "refuted", OPUS, { at: LATER })]);
+  assert.deepEqual(counts(unknownFirst.unknown), [1, 0, 0, 1]);
+  assert.equal(judgementTotals(unknownFirst).upheld, 0);
   // The same model saying it again upholds nothing.
   assert.deepEqual(counts(row(build([verdict(1, "refuted", OPUS), verdict(2, "refuted", "claude-code/opus-5.5", { at: LATER })]), "opus-5.5")), [2, 0, 0, 2]);
   // Two unknowns cannot be told apart.
