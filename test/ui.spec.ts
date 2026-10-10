@@ -2,6 +2,7 @@ import {expect,it} from 'vitest';
 import { NO_CRITERIA } from "../src/criteria.ts";
 import {renderInbox,renderItem,renderProject,renderProjectTasks,renderProjectSettings,renderProjectFlow,renderProjectShip,renderHome,renderHistory,renderProjectPlans,renderModels,renderError,type Detail} from '../src/ui';
 import {buildFloor} from '../src/floor';
+import {stamp} from '../src/time';
 import type {ProjectRecord} from '../src/ledger';
 const head='a'.repeat(40),time='2026-10-03T12:00:00Z';
 const project:ProjectRecord={name:'example',repo:'example',policy:{checks:['npm test'],protected:['src/**']},createdAt:time};
@@ -28,6 +29,25 @@ it('a check Atelier ran reads as a runner in a clean clone or a Cloudflare conta
  expect(cloud).not.toContain('Runner, clean clone');
  expect(outsideBrief(cloud)).not.toMatch(/agent(&#39;|')s machine/i);
 });
+it('a check that failed and then passed unchanged keeps both results, each with the load it started at',()=>{
+  const diff={head,base:'b'.repeat(40),files:[],truncated:false};
+  const d=detail();
+  d.evidence=[
+    {itemId:'t1',claim:'npm test',grade:'observed',head,passed:false,by:'codex/gpt-6',at:'2026-10-09T10:00:00Z',changedPaths:['src/a.ts'],load:81.4},
+    {itemId:'t1',claim:'npm test',grade:'observed',head,passed:true,by:'codex/gpt-6',at:'2026-10-09T10:05:00Z',changedPaths:['src/a.ts'],load:2.1},
+  ];
+  const html=renderItem(project,d,'PAVI',diff);
+  expect(html).toContain('<span class="tag go">Passed</span><code>npm test</code>');
+  expect(html).toContain('class="check-runs"');
+  expect(html).toContain('<span class="tag bad">Failed</span>');
+  expect(html).toContain('load 81.4');
+  expect(html).toContain('load 2.1');
+  // A single run keeps the plain row, with no history list and the load in its detail.
+  const one=detail();
+  const single=renderItem(project,one,'PAVI',diff);
+  expect(single).not.toContain('class="check-runs"');
+});
+
 it('merged tasks show completion without actionable approval or a misleading closed gate',()=>{
  const d=detail();d.item.state='merged';d.item.acceptedHead=head;
  const html=renderItem(project,d,'PAVI',null);
@@ -388,7 +408,10 @@ it('the showcase route is public only when the owner names projects, and caches 
 it('the Models page lists the pool by where it runs, escapes it, and adds through a same-origin form',async()=>{
  const {renderModels}=await import('../src/ui');
  const html=renderModels([
-  {id:'GLM-5.3-Flash-4_8bit',harness:'opencode',where:'home',provider:'ai-studio',aliases:[],family:'zai',note:'<b>local</b>',addedBy:'pavi',addedAt:time,status:{state:'available',at:time,by:'home:studio'}},
+  {id:'GLM-5.3-Flash-4_8bit',harness:'opencode',where:'home',provider:'ai-studio',aliases:[],family:'zai',note:'<b>local</b>',addedBy:'pavi',addedAt:time,status:{state:'available',at:time,by:'home:studio'},notes:[
+   {at:'2026-10-01T09:00:00Z',by:'pavi',text:'Stalls on long refactors.'},
+   {at:'2026-10-08T10:00:00Z',by:'pavi',text:'Commits <i>without</i> the full suite.',item:'t406',project:'atelier-key',projectName:'atelier'},
+  ]},
   {id:'mystery-1',harness:'codex',where:'cloud',provider:'subscription',aliases:[],family:'other',note:'',addedBy:'pavi',addedAt:time},
  ],new Map([['opencode/GLM-5.3-Flash-4_8bit',{itemsClaimed:2,checkPasses:3,checkFailures:0,reviewsApproved:0,reviewsRejected:1,handoffsAway:0,merges:2}]]),'PAVI');
  expect(html).toContain('At home · 1');
@@ -398,6 +421,11 @@ it('the Models page lists the pool by where it runs, escapes it, and adds throug
  expect(html).toContain('checked by home:studio');
  expect(html).toContain('all 1,000 events');
  expect(html).toContain('family not recognised');
+ const noted=html.slice(html.indexOf('GLM-5.3-Flash-4_8bit'),html.indexOf('mystery-1'));
+ expect(noted.match(/class="meta model-note"/g)).toHaveLength(2);
+ expect(noted).toContain(`${stamp('2026-10-08T10:00:00Z')} · pavi on <code>atelier/t406</code>: Commits &lt;i&gt;without&lt;/i&gt; the full suite.`);
+ expect(noted.indexOf('Commits &lt;i&gt;')).toBeLessThan(noted.indexOf('Stalls on long refactors.'));
+ expect(html.slice(html.indexOf('mystery-1'))).not.toContain('model-note');
  expect(html).toContain('action="/models/add"');
  const TOKEN='models-page-token';
  const signedIn=await signIn(TOKEN,{...env,ATELIER_TOKEN:TOKEN} as typeof env);

@@ -120,6 +120,9 @@ function linesFor(e, verdicts, used, owner) {
       return [`submitted by ${flat(e.actor)} at ${short(d.head)}${d.summary ? `: ${flat(d.summary)}` : ""}`];
     case "review.overridden":
       return [`independent review overridden by ${flat(e.actor)}: ${flat(d.reason)}`];
+    // t407: the reply itself is kept on the task; show ID --reviews prints it.
+    case "review.unparsable":
+      return [`unparsable review reply from ${flat(e.actor)} at ${short(d.head)}, kept on the task${d.note ? `: ${flat(d.note)}` : ""}`];
     case "item.accepted":
       return [`accepted by ${flat(e.actor)} at ${short(d.head)}${d.note ? `: ${flat(d.note)}` : ""}`];
     case "item.merged":
