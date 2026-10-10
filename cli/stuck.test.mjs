@@ -7,7 +7,7 @@ import { commandUsage, helpText } from '../src/usage.ts';
 
 test('stuck registers its extracted handler, flags and help', () => {
   assert.equal(HANDLERS.get('stuck'), stuckCommand);
-  const flags = ['no-push-hours', 'unanswered-hours', 'lease-wait-minutes', 'runner-poll-minutes', 'review-answer-hours'];
+  const flags = ['no-push-hours', 'unanswered-hours', 'lease-wait-minutes', 'conflict-wait-minutes', 'core-hold-minutes', 'runner-poll-minutes', 'review-answer-hours'];
   for (const flag of flags) {
     assert.equal(FLAGS.stuck[flag], false);
     assert.equal(parseArgs(['stuck', `--${flag}`, '3'])[flag], '3');
@@ -67,9 +67,9 @@ test('current claimed reviews use renewed claims; old heads, closed and blocked 
 });
 test('core hold ages from current handoff or later push, not dispatch creation', () => {
   const waiting = item({ id: 't2', state: 'open', owner: null, dispatch: { to: 'home', agent: null, model: null, by: 'owner', at: at(99999999), note: '' } });
-  const s = snapshot({ items: [item(), waiting], events: [event(1, 'item.claimed', 8*3600000), event(2, 'item.handoff', 6*3600000)] });
+  const s = snapshot({ items: [item(), waiting], events: [event(1, 'item.claimed', 8*3600000), event(2, 'item.handoff', 30*60000)] });
   assert.deepEqual(kinds(report(s)), []);
-  s.events[1].at = at(6*3600000+1);
+  s.events[1].at = at(30*60000+1);
   assert.ok(kinds(report(s)).includes('core-hold'));
   s.events.push(event(3, 'push.observed', 1));
   assert.deepEqual(kinds(report(s)), []);
@@ -136,5 +136,72 @@ test('plan parts receive their documented retry recovery instead of ordinary dis
   assert.match(report(s).entries[0].recovery, /plan retry t1/);
   s.items[0].state = 'claimed';
   s.events = [event(1, 'item.claimed', 21600001)];
-  assert.match(report(s).entries[0].recovery, /release t1.*plan retry t1/);
+  assert.match(report(s).entries[0].recovery, /check in with the owner/);
+});
+
+
+test('core holds have an independent limit and recover the held dispatch without rebuilding the blocker', () => {
+  const waiting = item({ id: 't2', state: 'open', owner: null, dispatch: { to: 'home', agent: null, model: null, by: 'owner', at: at(99999999), note: '' } });
+  const s = snapshot({ items: [item({ state: 'submitted' }), waiting], events: [event(1, 'item.claimed', 1800001)] });
+  const entry = report(s).entries[0];
+  assert.equal(entry.kind, 'core-hold');
+  assert.equal(entry.recovery, 'Land the blocker with atelier land t1 --project "demo"; or, if the overlap is harmless, atelier dispatch t2 --overlap-ok --project "demo"');
+  assert.equal(entry.evidence, 'https://example.org/p/demo/t1');
+  assert.deepEqual(stuckReport('demo', 'https://example.org', now, reportLimits({ coreHoldMinutes: 31, noPushHours: 0.01 }), s, [], [], []).entries, []);
+  s.events.push(event(2, 'item.handoff', 1800000));
+  assert.deepEqual(kinds(report(s)), []);
+  s.events[1].at = at(1800001);
+  assert.deepEqual(kinds(report(s)), ['core-hold']);
+  s.items[0].state = 'merged';
+  assert.deepEqual(kinds(report(s)), []);
+});
+test('each task rule preserves its suggestion without dispatching or releasing the task', () => {
+  const s = snapshot({ events: [event(1, 'item.claimed', 21600001)] });
+  assert.match(report(s).entries[0].recovery, /check in with the owner \(codex\/model\).*show t1 --reviews/);
+  s.items[0].state = 'submitted';
+  s.events = [event(1, 'review.rejected', 86400001)];
+  assert.match(report(s).entries[0].recovery, /check in with the owner/);
+  s.events = [event(1, 'evidence.observed', 2, { passed: false, head: 'a' }), event(2, 'evidence.observed', 1, { passed: false, head: 'b' })];
+  assert.match(report(s).entries[0].recovery, /hand off:.*handoff t1 --to H\/M/);
+  assert.doesNotMatch(report(s).entries[0].recovery, /dispatch|release/);
+});
+test('idle runner recovery names the observed runner', () => {
+  const r = report(snapshot(), [{ runner: 'home:studio', kind: 'home', agents: [], at: at(360001) }]);
+  assert.equal(r.entries[0].recovery, 'atelier runner --name "home:studio" --once');
+});
+test('conflict pauses use a strict independent stage-age limit and documented resume recovery', () => {
+  const record = { instance: 'conflicted', at: at(99999999), stage: 'conflict', stageAt: at(1800000), round: 1, files: ['src/index.ts'] };
+  const s = snapshot({ workflows: [{ item: 't1', record, status: 'waiting' }] });
+  assert.deepEqual(kinds(report(s)), []);
+  record.stageAt = at(1800001);
+  const entry = report(s).entries[0];
+  assert.equal(entry.kind, 'workflow-conflict');
+  assert.equal(entry.ageMs, 1800001);
+  assert.match(entry.reason, /conflicted.*src\/index.ts/);
+  assert.equal(entry.recovery, 'Resolve and commit the conflicts in the task workspace, then atelier land t1 --workflow --project "demo"');
+  assert.deepEqual(stuckReport('demo', 'https://example.org', now, reportLimits({ conflictWaitMinutes: 31 }), s, [], [], []).entries, []);
+  for (const status of ['complete', 'errored', 'terminated', 'absent']) {
+    s.workflows[0].status = status;
+    assert.deepEqual(kinds(report(s)), []);
+  }
+  delete s.workflows[0].status;
+  const unavailable = report(s, [], [], [], ['Workflow conflicted: unavailable']);
+  assert.equal(unavailable.complete, false);
+  assert.match(unavailable.entries[0].reason, /indeterminate/);
+  s.workflows.push({ ...s.workflows[0] });
+  assert.equal(report(s).entries.length, 1);
+  for (const state of ['blocked', 'merged', 'abandoned']) {
+    s.items[0].state = state;
+    assert.deepEqual(kinds(report(s)), []);
+  }
+  s.items[0].state = 'claimed';
+  record.stage = 'workspace';
+  assert.deepEqual(kinds(report(s)), []);
+});
+test('new limits default to thirty minutes and reject invalid values', () => {
+  for (const key of ['coreHoldMinutes', 'conflictWaitMinutes']) {
+    assert.equal(reportLimits()[key], 30);
+    for (const value of [0, -1, NaN, Infinity, '', 'invalid']) assert.throws(() => reportLimits({ [key]: value }));
+    assert.equal(reportLimits({ [key]: '2.5' })[key], 2.5);
+  }
 });

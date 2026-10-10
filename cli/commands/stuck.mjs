@@ -3,7 +3,7 @@ import { OWNER, P, actor, args, call, die, project } from "../atelier.mjs";
 
 export default async function stuckCommand() {
   const name = project(), as = await actor(OWNER), query = new URLSearchParams();
-  for (const [flag, key] of Object.entries({ "no-push-hours": "noPushHours", "unanswered-hours": "unansweredHours", "lease-wait-minutes": "leaseWaitMinutes", "runner-poll-minutes": "runnerPollMinutes", "review-answer-hours": "reviewAnswerHours" })) {
+  for (const [flag, key] of Object.entries({ "no-push-hours": "noPushHours", "unanswered-hours": "unansweredHours", "lease-wait-minutes": "leaseWaitMinutes", "conflict-wait-minutes": "conflictWaitMinutes", "core-hold-minutes": "coreHoldMinutes", "runner-poll-minutes": "runnerPollMinutes", "review-answer-hours": "reviewAnswerHours" })) {
     if (args[flag] !== undefined) {
       if (!Number.isFinite(Number(args[flag])) || Number(args[flag]) <= 0) die(`--${flag} must be a positive finite number`);
       query.set(key, args[flag]);

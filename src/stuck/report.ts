@@ -6,7 +6,7 @@ import { landingLeaseLapsed, type LandingLease } from "../landing-lease.ts";
 import type { RunReport } from "../models/reliability.ts";
 import { detectStuck, holdStart, pushObservedAt } from "./rules.ts";
 
-export const REPORT_DEFAULTS = { noPushHours: 6, unansweredHours: 24, leaseWaitMinutes: 30, runnerPollMinutes: 5, reviewAnswerHours: 2 };
+export const REPORT_DEFAULTS = { noPushHours: 6, unansweredHours: 24, leaseWaitMinutes: 30, conflictWaitMinutes: 30, coreHoldMinutes: 30, runnerPollMinutes: 5, reviewAnswerHours: 2 };
 export type ReportLimits = typeof REPORT_DEFAULTS;
 export function reportLimits(values: Record<string, unknown> = {}): ReportLimits {
   const limits = { ...REPORT_DEFAULTS };
@@ -50,9 +50,13 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
         : `${release}; ${retry}`;
     };
     for (const f of detectStuck(live, events, now, limits))
-      add("task", f.itemId, f.reason, f.since, requeue(f.itemId));
+      add("task", f.itemId, f.reason, f.since, f.suggestion === "hand off"
+        ? `hand off: choose the next agent H/M, then ${command(`handoff ${f.itemId} --to H/M`)}`
+        : `check in with the owner${f.owner ? ` (${f.owner})` : ""}: inspect ${command(`show ${f.itemId} --reviews`)} and contact the holder before changing ownership`);
     for (const w of workflows) {
       if (!live.some((i) => i.id === w.item && i.state !== "merged" && i.state !== "abandoned")) continue;
+      if (w.record.stage === "conflict" && !["complete", "errored", "terminated", "absent"].includes(w.status ?? "") && age(w.record.stageAt) > limits.conflictWaitMinutes * 60_000)
+        add("workflow-conflict", w.item, `Workflow ${w.record.instance} paused at conflict; status ${w.status ?? "indeterminate"}${w.record.files?.length ? `; files: ${w.record.files.join(", ")}` : ""}`, w.record.stageAt, `Resolve and commit the conflicts in the task workspace, then ${command(`land ${w.item} --workflow`)}`);
       if (w.record.stage === "lease" && !["complete", "errored", "terminated", "absent"].includes(w.status ?? "") && age(w.record.stageAt) > limits.leaseWaitMinutes * 60_000)
         add("lease-wait", w.item, `Workflow ${w.record.instance} waiting for lease; status ${w.status ?? "indeterminate"}`, w.record.stageAt, command(`land ${w.item} --workflow`));
     }
@@ -78,8 +82,8 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
       if (!blocker) continue;
       const hold = holdStart(blocker, events), push = pushObservedAt(blocker, events);
       const since = push && push > hold ? push : hold;
-      if (age(since) > limits.noPushHours * 3_600_000)
-        add("core-hold", item.id, `dispatch held by ${blocker.id} (${held!.core})`, since, requeue(blocker.id), `${base}/${blocker.id}`);
+      if (age(since) > limits.coreHoldMinutes * 60_000)
+        add("core-hold", item.id, `dispatch held by ${blocker.id} (${held!.core})`, since, `Land the blocker with ${command(`land ${blocker.id}`)}; or, if the overlap is harmless, ${command(`dispatch ${item.id} --overlap-ok`)}`, `${base}/${blocker.id}`);
     }
     const ordered = [...events].sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.seq - b.seq);
     for (const e of ordered) {
@@ -109,7 +113,7 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
   if (offers && activeRunners) for (const offer of offers) {
     if (activeRunners.includes(offer.runner)) continue;
     if (age(offer.at) - OFFER_REFRESH_MS > limits.runnerPollMinutes * 60_000)
-      add("idle-runner", offer.runner, "no active job; last poll exceeds limit including timestamp coarsening", offer.at, "atelier runner --once", `${origin}/api/runners`);
+      add("idle-runner", offer.runner, "no active job; last poll exceeds limit including timestamp coarsening", offer.at, `atelier runner --name ${JSON.stringify(offer.runner)} --once`, `${origin}/api/runners`);
   }
   const dedup = new Map<string, Entry>();
   for (const entry of entries.sort((a, b) => a.since.localeCompare(b.since) || a.reason.localeCompare(b.reason))) dedup.set(`${entry.kind}:${entry.subject}:${["task", "review"].includes(entry.kind) ? entry.reason : ""}`, entry);
