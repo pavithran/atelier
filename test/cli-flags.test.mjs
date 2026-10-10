@@ -122,7 +122,8 @@ globalThis.fetch = async (url, options = {}) => {
   else if (m) {
     const rest = m[1] ?? "";
     const project = { name: "demo", title: "Demo", repo: "demo", policy: { checks: body?.checks ?? ["exit 0"], protected: body?.protected ?? [], eligible: [], refuseOverlap: body?.refuseOverlap ?? false, sandboxOnly: body?.sandboxOnly ?? false } };
-    if (rest === "" && method === "GET") data = { project, items: [item("t1"), item("t2")], events: [] };
+    if (rest === "standing") data = { project: { name: "demo", title: "Demo" }, generatedAt: "2026-10-09T12:34:56Z", live: [], waiting: [], merged: [] };
+    else if (rest === "" && method === "GET") data = { project, items: [item("t1"), item("t2")], events: [] };
     else if (rest === "" && method === "PUT") data = { project, baseline: { remote: BASELINE, token: "fake-baseline-token", defaultBranch: "main" } };
     // As the server answers an older CLI's long title: kept as the brief, the title derived.
     else if (rest === "items" && method === "POST") data = { id: "t9", title: body.title, scope: body.scope, ...(body.accept ? { accept: body.accept } : {}), ...(body.title.length > 80 && !body.brief ? { title: "Derived title", brief: body.title, derived: true } : {}) };
@@ -481,18 +482,51 @@ test("new and edit send the framing as lists and a line, block sends its reason,
 // t315: a short title, a brief and acceptance criteria. One long string is
 // sent as the title, as an older CLI sends it, and the answer says the
 // server kept it as the brief.
+// t402: a session is pointed at the orchestrator guide by the commands it runs
+// until the project's AGENTS.md states the review path.
+const POINTER = "Review path for demo: atelier guide --role orchestrate --project demo prints how to run, review and land work here, including atelier land --reviewer.\n";
+
+test("ls and new name the orchestrator guide until AGENTS.md states the review path, and not in a task workspace or in --json", (t) => {
+  const f = fixture(t);
+  for (const argv of [["ls", "--project", "demo"], ["new", "A task", "--project", "demo"]]) {
+    const r = f.run(f.checkout, argv);
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(r.stdout.endsWith(`\n\n${POINTER}`), `${argv[0]}: ${r.stdout}`);
+    assert.equal(r.stdout.split("atelier guide --role orchestrate").length, 2, "one line");
+  }
+  assert.doesNotMatch(f.run(f.checkout, ["ls", "--json", "--project", "demo"]).stdout, /atelier guide/);
+  assert.doesNotMatch(f.run(f.workspace, ["ls"]).stdout, /atelier guide/);
+  writeFileSync(join(f.checkout, "AGENTS.md"), "Land with `atelier land ID --reviewer H/M`.\n");
+  for (const argv of [["ls", "--project", "demo"], ["new", "A task", "--project", "demo"]]) {
+    const r = f.run(f.checkout, argv);
+    assert.equal(r.status, 0, r.stderr);
+    assert.doesNotMatch(r.stdout, /atelier guide/, argv[0]);
+  }
+});
+
+test("status --brief names the orchestrator guide until AGENTS.md states the review path, and not with --json", (t) => {
+  const f = fixture(t);
+  const brief = f.run(f.checkout, ["status", "--brief", "--project", "demo"]);
+  assert.equal(brief.status, 0, brief.stderr);
+  assert.ok(brief.stdout.endsWith(`\n\n${POINTER}`), brief.stdout);
+  assert.equal(brief.stdout.split("atelier guide --role orchestrate").length, 2, "one line");
+  assert.doesNotMatch(f.run(f.checkout, ["status", "--brief", "--json", "--project", "demo"]).stdout, /atelier guide/);
+  writeFileSync(join(f.checkout, "AGENTS.md"), "Land with `atelier land ID --reviewer H/M`.\n");
+  assert.doesNotMatch(f.run(f.checkout, ["status", "--brief", "--project", "demo"]).stdout, /atelier guide/);
+});
+
 test("new sends a title, a brief and repeatable criteria; one long string alone is said to become the brief; edit takes --title, --brief and --accept", (t) => {
   const f = fixture(t);
   const made = f.run(f.checkout, ["new", "Short titles", "--brief", "The whole task.", "--accept", "Lists show it", "--accept", "The page shows the brief", "--project", "demo"]);
   assert.equal(made.status, 0, made.stderr);
   assert.deepEqual(f.requests().map((q) => q.body), [{ title: "Short titles", scope: [], brief: "The whole task.", accept: ["Lists show it", "The page shows the brief"] }]);
-  assert.equal(made.stdout, "t9  Short titles\nAcceptance criterion 1: Lists show it\nAcceptance criterion 2: The page shows the brief\n");
+  assert.equal(made.stdout, "t9  Short titles\nAcceptance criterion 1: Lists show it\nAcceptance criterion 2: The page shows the brief\n\n" + POINTER);
   f.clear();
   const long = "word ".repeat(30).trim();
   const derived = f.run(f.checkout, ["new", long, "--project", "demo"]);
   assert.equal(derived.status, 0, derived.stderr);
   assert.deepEqual(f.requests().map((q) => q.body), [{ title: long, scope: [] }]);
-  assert.equal(derived.stdout, 't9  Derived title\nThe text is longer than a title, so it is kept as the brief and the title is its first clause; change it with atelier edit t9 --title "TEXT".\n');
+  assert.equal(derived.stdout, 't9  Derived title\nThe text is longer than a title, so it is kept as the brief and the title is its first clause; change it with atelier edit t9 --title "TEXT".\n\n' + POINTER);
   f.clear();
   for (const [argv, message] of [
     [["new", "Title", "--brief", "", "--project", "demo"], /--brief needs text: atelier new "short title" --brief "TEXT"/],
