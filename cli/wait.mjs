@@ -40,7 +40,11 @@ export function judge(target, d, first = d) {
     return null;
   }
   if (gone) return { ok: false, text: `${id} is ${state}; it will not be reviewed` };
-  const here = (d.reviews ?? []).filter((r) => r.head === d.item.head);
+  // Each reviewer's latest standing review: a rejection a later approval
+  // superseded does not count (rules.ts latestReviews).
+  const latest = new Map();
+  for (const r of (d.reviews ?? []).filter((r) => r.head === d.item.head && !r.withdrawn).sort((a, b) => String(a.at).localeCompare(String(b.at)))) latest.set(r.by, r);
+  const here = [...latest.values()];
   const rejected = here.filter((r) => !r.approve);
   if (rejected.length) return { ok: false, text: `${id} was rejected by ${rejected.map((r) => r.by).join(", ")} at ${short(d.item.head)}` };
   if (here.length) return { ok: true, text: `${id} was approved by ${here.map((r) => r.by).join(", ")} at ${short(d.item.head)}` };
@@ -55,23 +59,29 @@ export function judge(target, d, first = d) {
 // result carries the exit code: 0 reached, 1 failed, 3 timed out, 4 unread.
 export async function waitFor(target, read, { intervalMs = 5000, timeoutMs = Infinity, retries = 5, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = Date.now } = {}) {
   const deadline = now() + timeoutMs;
-  let first = null, failed = 0;
+  // Never sleeps past the deadline.
+  const nap = () => sleep(Math.max(0, Math.min(intervalMs, deadline - now())));
+  let first = null, failed = 0, last = null, lastError = null;
   for (;;) {
+    // Once a read has been made, the deadline is checked before the next one.
+    if (last && now() >= deadline) return { ok: false, code: 3, text: `${last.item.id} is still ${last.item.state}; gave up waiting for ${target}` };
+    if (lastError && now() >= deadline) return { ok: false, code: 3, text: `gave up waiting for ${target}; the last read failed: ${lastError.message}` };
     let d;
-    try { d = await read(); failed = 0; }
+    try { d = await read(); failed = 0; lastError = null; }
     catch (error) {
       // Only a server that cannot be reached (code 4) is worth another try;
       // a refusal or a missing task will not change.
       if (error.code !== undefined && error.code !== 4) return { ok: false, code: 4, text: `the task could not be read: ${error.message}` };
       if (now() >= deadline) return { ok: false, code: 3, text: `gave up waiting for ${target}; the last read failed: ${error.message}` };
       if (++failed > retries) return { ok: false, code: 4, text: `the task could not be read: ${error.message}` };
-      await sleep(intervalMs);
+      lastError = error;
+      await nap();
       continue;
     }
-    first ??= d;
+    first ??= d; last = d;
     const done = judge(target, d, first);
     if (done) return { ...done, code: done.ok ? 0 : 1 };
     if (now() >= deadline) return { ok: false, code: 3, text: `${d.item.id} is still ${d.item.state}; gave up waiting for ${target}` };
-    await sleep(intervalMs);
+    await nap();
   }
 }
