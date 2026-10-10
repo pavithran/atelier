@@ -2,9 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { constants as osConstants, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runGroup } from "../cli/group.mjs";
+import { execute } from "../cli/runner.mjs";
 import { etimeSeconds, findStrays, formatStrays, parseLsofCwd, parsePs, strayTests } from "../cli/strays.mjs";
 
 // t419: no process a test or a check starts outlives it. Seven test processes
@@ -79,12 +80,14 @@ test("an aborted grouped command, and one whose parent exits, leave nothing behi
   assert.ok(await gone(sleeper, 2000), `the sleeper ${sleeper} outlived the process that started it`);
 });
 
-// The test guard (test/guard.mjs), preloaded as npm test preloads it, run on
-// the fixtures in test/fixtures/guard. NODE_TEST_CONTEXT, which this file's
-// own runner sets, is dropped, or the inner node --test runs as a child.
+// A fixture in test/fixtures/guard run as npm test runs the suite: through
+// test/run.mjs, which runs node --test in a process group of its own with
+// the test guard (test/guard.mjs) preloaded. NODE_TEST_CONTEXT, which this
+// file's own runner sets, is dropped, or the inner node --test runs as a
+// child.
 function guarded(t, fixture, env = {}) {
   const { NODE_TEST_CONTEXT, ...base } = process.env;
-  const child = spawn(process.execPath, ["--import", "./test/guard.mjs", "--test", `test/fixtures/guard/${fixture}`], {
+  const child = spawn(process.execPath, ["test/run.mjs", `test/fixtures/guard/${fixture}`], {
     env: { ...base, ...env }, stdio: ["ignore", "pipe", "pipe"],
   });
   t.after(() => child.kill("SIGKILL"));
@@ -93,23 +96,106 @@ function guarded(t, fixture, env = {}) {
   return { child, done, output: () => output };
 }
 
-test("a test file spinning on microtasks is ended when its runner dies, not left on PID 1", { timeout: 30_000 }, async (t) => {
-  const pidFile = join(scratch(t), "pid");
-  const run = guarded(t, "spin.mjs", { GUARD_PID_FILE: pidFile });
-  const spinner = await fileWritten(pidFile);
+// The reviewer's probe of round 3 (t419): a guarded test with no file that
+// starts a sleeper and spins on microtasks, so nothing in the test process
+// (exit handler, test teardown, its watchdog) survives the timeout's kill.
+// The outside runner's group kill alone must take the sleeper.
+test("a spinning guarded test's child is ended by the group kill at the outside timeout", { timeout: 30_000 }, async (t) => {
+  const { pidFile, pids } = pidsFile(t);
+  const script = `import { test } from "node:test";
+    import { spawn } from "node:child_process";
+    import { writeFileSync } from "node:fs";
+    test("spins", async () => {
+      const child = spawn("sleep", ["300"], { stdio: "ignore" });
+      writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+      for (;;) await null;
+    });`;
+  const { NODE_TEST_CONTEXT, ...env } = process.env;
+  const r = await runGroup([process.execPath, "--import", "./test/guard.mjs", "--input-type=module", "-e", script], { env, timeoutMs: 700 });
+  assert.equal(r.timedOut, true);
+  assert.equal(pids().length, 1, r.stdout + r.stderr);
+  assert.ok(!alive(pids()[0]), `the sleeper ${pids()[0]} outlived the check's timeout`);
+});
+
+// The two pids a fixture writes (spin.mjs: the spinning test process and its
+// sleeper), once it has written them.
+async function pidPair(pids) {
+  const until = Date.now() + 10_000;
+  while (pids().length < 2) {
+    if (Date.now() > until) throw new Error("the fixture never wrote its pids");
+    await new Promise((ok) => setTimeout(ok, 50));
+  }
+  return pids();
+}
+
+test("npm test's runner past its time limit SIGKILLs the spinning test's group, its child with it", { timeout: 30_000 }, async (t) => {
+  const { pidFile, pids } = pidsFile(t);
+  // A file limit past the run's, so the guard's watchdog does not end it first.
+  const run = guarded(t, "spin.mjs", { GUARD_PID_FILE: pidFile, ATELIER_TEST_TIMEOUT_MS: "1500", ATELIER_TEST_FILE_LIMIT_MS: "60000" });
+  const [spinner, sleeper] = await pidPair(pids);
   assert.ok(alive(spinner), "its own timeout cannot end the spin");
+  const ended = await run.done;
+  assert.notEqual(ended.status, 0, run.output());
+  assert.match(run.output(), /ran past 2 s; its process group was killed/);
+  assert.ok(!alive(spinner) && !alive(sleeper), `the spinning test ${spinner} or its sleeper ${sleeper} outlived the run`);
+});
+
+// A check runs npm test, whose runner leads a group of its own inside the
+// check's: the check's timeout SIGKILLs both, though the runner had no time
+// to act.
+test("a check past its time limit SIGKILLs the group npm test's runner started too", { timeout: 30_000 }, async (t) => {
+  const { pidFile, pids } = pidsFile(t);
+  const { NODE_TEST_CONTEXT, ...env } = process.env;
+  const check = runGroup(["/bin/sh", "-c", `"${process.execPath}" test/run.mjs test/fixtures/guard/spin.mjs`], { env: { ...env, GUARD_PID_FILE: pidFile }, timeoutMs: 4000 });
+  const [spinner, sleeper] = await pidPair(pids);
+  const r = await check;
+  assert.equal(r.timedOut, true);
+  assert.ok(!alive(spinner) && !alive(sleeper), `the spinning test ${spinner} or its sleeper ${sleeper} outlived the check`);
+});
+
+// The runner's execute, past a harness's deadline, ends a group the harness
+// started in turn (a check's, npm test's) whose leader ignores the SIGTERM.
+test("the runner's execute past its deadline SIGKILLs a group its child started", { timeout: 30_000 }, async (t) => {
+  const { pidFile, pids } = pidsFile(t);
+  const nested = `trap "" TERM; sleep 300 & echo "$$ $!" > "${pidFile}"; wait`;
+  const leader = `require("node:child_process").spawn("/bin/sh", ["-c", ${JSON.stringify(nested)}], { detached: true, stdio: "ignore" }); setInterval(() => {}, 1000);`;
+  const run = execute([process.execPath, "-e", leader], { capture: true, timeoutMs: 1500, graceMs: 300 });
+  const [shell, sleeper] = await pidPair(pids);
+  const r = await run;
+  assert.equal(r.timedOut, true);
+  assert.ok(await gone(shell, 2000) && await gone(sleeper, 2000), `the nested group's shell ${shell} or sleeper ${sleeper} outlived the deadline`);
+});
+
+test("npm test's runner, interrupted or hung up on, SIGKILLs the spinning test's group", { timeout: 30_000 }, async (t) => {
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    const { pidFile, pids } = pidsFile(t);
+    const run = guarded(t, "spin.mjs", { GUARD_PID_FILE: pidFile });
+    const [spinner, sleeper] = await pidPair(pids);
+    run.child.kill(signal);
+    const ended = await run.done;
+    assert.equal(ended.status, 128 + osConstants.signals[signal], run.output());
+    assert.ok(await gone(spinner, 2000) && await gone(sleeper, 2000), `after ${signal}, the spinning test ${spinner} or its sleeper ${sleeper} outlived the run`);
+  }
+});
+
+test("a test file spinning on microtasks is ended when npm test's runner is killed, not left on PID 1", { timeout: 30_000 }, async (t) => {
+  const { pidFile, pids } = pidsFile(t);
+  const run = guarded(t, "spin.mjs", { GUARD_PID_FILE: pidFile });
+  const [spinner, sleeper] = await pidPair(pids);
+  // SIGKILL leaves the runner no way to act; the guard's watchdog in the
+  // test runner it started sees its parent gone.
   run.child.kill("SIGKILL");
-  assert.ok(await gone(spinner, 5000), `the spinning test process ${spinner} outlived its runner`);
+  assert.ok(await gone(spinner, 5000) && await gone(sleeper, 5000), `the spinning test process ${spinner} or its sleeper ${sleeper} outlived its runner`);
 });
 
 test("a test file spinning on microtasks is ended at its file limit, and the run fails", { timeout: 30_000 }, async (t) => {
-  const pidFile = join(scratch(t), "pid");
+  const { pidFile, pids } = pidsFile(t);
   const run = guarded(t, "spin.mjs", { GUARD_PID_FILE: pidFile, ATELIER_TEST_FILE_LIMIT_MS: "1500" });
-  const spinner = await fileWritten(pidFile);
+  const [spinner, sleeper] = await pidPair(pids);
   const ended = await run.done;
   assert.notEqual(ended.status, 0, run.output());
   assert.match(run.output(), /test guard: .*spin\.mjs .* ran past its limit of 2 s; killing it and its children/);
-  assert.ok(await gone(spinner, 2000));
+  assert.ok(!alive(spinner) && !alive(sleeper));
 });
 
 test("a child a test leaves running is ended with the file's tests, and a hung sync child is bounded", { timeout: 30_000 }, async (t) => {
@@ -118,7 +204,7 @@ test("a child a test leaves running is ended with the file's tests, and a hung s
   const ended = await run.done;
   assert.equal(ended.status, 0, run.output());
   const sleeper = Number(readFileSync(pidFile, "utf8"));
-  assert.ok(await gone(sleeper, 2000), `the leaked child ${sleeper} outlived the run`);
+  assert.ok(!alive(sleeper), `the leaked child ${sleeper} outlived the run`);
 });
 
 // A file for a fixture to write pids to, and a reader of them. The pids are
