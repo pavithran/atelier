@@ -60,9 +60,10 @@ test("pure output keeps the brief and gate wording", () => {
 // `forkBranch` is the branch the fork's HEAD names, and `branch.claim` the
 // one the claim route gives; the test may change it between claims. The
 // push route reports the fork's HEAD, as headOf reads it in Artifacts.
-async function fixture(t, { failed = false, blockers = [], failStep, sandbox = false, forkBranch = "main", claimBranch = forkBranch } = {}) {
+async function fixture(t, { failed = false, dirtyWorkspace = false, blockers = [], failStep, sandbox = false, forkBranch = "main", claimBranch = forkBranch } = {}) {
   const root = mkdtempSync(join(tmpdir(), "atelier-agent-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
+  const workspace = join(root, "cache", "work", "proj", "t1");
   const source = join(root, "source"), remote = join(root, "remote.git");
   execFileSync("git", ["init", "-q", "-b", forkBranch, source]);
   git(source, "config", "user.name", "Test Owner");
@@ -73,7 +74,7 @@ async function fixture(t, { failed = false, blockers = [], failStep, sandbox = f
   const item = { id: "t1", title: brief.title, scope: ["docs/**"], owner: actor, state: "claimed", head, dispatch: { note: "Keep examples" } };
   const gate = { ready: !blockers.length, blockers };
   const posts = [], requests = [], branch = { claim: claimBranch };
-  const command = failed ? "exit 1" : "exit 0";
+  const command = dirtyWorkspace ? `printf drift > ${workspace}/drift.txt; exit 1` : failed ? "exit 1" : "exit 0";
   const server = createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk;
     const path = req.url;
@@ -96,7 +97,6 @@ async function fixture(t, { failed = false, blockers = [], failStep, sandbox = f
   await new Promise((done, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", done); });
   writeFileSync(join(root, "config.json"), JSON.stringify({ projects: { proj: { path: source } } }));
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const workspace = join(root, "cache", "work", "proj", "t1");
   async function run(argv, cwd = source) {
     const child = spawn(process.execPath, [cli, ...argv], { cwd, env: { ...process.env, ATELIER_ACTOR: actor, ATELIER_CONFIG_DIR: root, ATELIER_CACHE: join(root, "cache"), ATELIER_TOKEN: "fake", ATELIER_SERVER: origin } });
     let output = "", stdout = "";
@@ -128,6 +128,23 @@ for (const sandbox of [false, true]) test(`done ends with failed checks, exit 2,
   assert.match(r.output, /Accept: not reached/);
   assert.ok(f.posts.some((p) => p.path.endsWith("/push")));
   assert.ok(!f.posts.some((p) => p.path.endsWith("/submit")));
+});
+
+test("done reports a failed check before a changed workspace, naming the files the check left", async (t) => {
+  const f = await fixture(t, { dirtyWorkspace: true });
+  assert.equal((await f.run(["start", "t1"])).status, 0);
+  const r = await f.run(["done", "Edited docs"], f.workspace);
+  assert.equal(r.status, 2, r.output);
+  assert.equal(r.output.trim().split("\n").at(-1), `Outcome: failed checks: printf drift > ${f.workspace}/drift.txt; exit 1; nothing was submitted; the workspace also changed: drift.txt`);
+  assert.ok(!r.output.includes("the workspace changed while finishing"));
+  assert.ok(!f.posts.some((p) => p.path.endsWith("/submit")));
+});
+
+test("done's failed-checks line names the files a failed check left in the workspace", () => {
+  const failedChecks = [{ claim: "npm test", result: "failed", where: "in a clean clone on this machine" }];
+  const dirty = doneReport({ id: "t1", head, checks: failedChecks, changed: ["drift.txt", "notes/new.md"] });
+  assert.equal(dirty.exitCode, 2);
+  assert.equal(dirty.line, "Outcome: failed checks: npm test; nothing was submitted; the workspace also changed: drift.txt, notes/new.md");
 });
 
 for (const blockers of [[], ["protected paths need an independent approval", "rejected by zcode/glm-5.3: fix the cap"]]) test(`done ends with one outcome: ${blockers.length ? "checked but blocked" : "submitted"}`, async (t) => {

@@ -1201,7 +1201,7 @@ export function checkoutLine(raw) {
 // The one outcome done ends with (exit codes in cli/help.mjs): failed checks,
 // nothing submitted; checked but blocked, submitted with a gate open; or
 // submitted and ready for the owner. Acceptance, merge and deploy are separate.
-export function doneReport({ id, head, checks, item, gate }) {
+export function doneReport({ id, head, checks, item, gate, changed = [] }) {
   const submitted = item?.state === "submitted";
   const failed = checks.filter((c) => c.result === "failed").map((c) => flat(c.claim));
   const blockers = (gate?.blockers ?? []).map(flat);
@@ -1212,7 +1212,8 @@ export function doneReport({ id, head, checks, item, gate }) {
     unresolved = "not evaluated; nothing was submitted";
     accept = "not reached"; merge = "not reached";
     ownerAction = `none yet; fix ${failed.join("; ")} in the workspace, then run done again`;
-    line = `Outcome: failed checks: ${failed.join("; ")}; nothing was submitted`;
+    const left = changed.length ? `; the workspace also changed: ${changed.map(flat).join(", ")}` : "";
+    line = `Outcome: failed checks: ${failed.join("; ")}; nothing was submitted${left}`;
   } else if (submitted && gate.ready) {
     outcome = "submitted"; exitCode = 0;
     unresolved = "none";
@@ -2756,14 +2757,17 @@ const commands = {
     if (d.item.owner !== as || !["claimed","submitted"].includes(d.item.state)) die("this task must be live and owned by you");
     if (git(["status","--porcelain"])) die("commit your changes before finishing");
     const head = git(["rev-parse","HEAD"]);
+    doneChecks.length = 0;
     if (doneStep) doneStep = "push";
     await commands.push();
     if (doneStep) doneStep = "check";
     if (d.policy.sandboxOnly || args.sandbox) await checkInSandbox(); else await commands.check();
-    if (git(["rev-parse","HEAD"]) !== head || git(["status","--porcelain"])) die("the workspace changed while finishing; inspect it and finish again");
+    const changed = git(["status","--porcelain"], { raw: true }).split("\n").filter(Boolean).map((line) => line.slice(3));
+    // A failed check is the outcome even when it also changed the workspace; the changed files are named with it.
+    if (doneChecks.some((c) => c.result === "failed")) return { id, head, checks: doneChecks, changed };
+    if (git(["rev-parse","HEAD"]) !== head || changed.length) die("the workspace changed while finishing; inspect it and finish again");
     const current = await call("GET", I(name,id), undefined, as);
     if (current.item.head !== head) die("the remote revision changed while checks ran; finish again");
-    if (doneChecks.some((c) => c.result === "failed")) return { id, head, checks: doneChecks };
     if (doneStep) doneStep = "submit";
     const submitted = await commands.submit();
     return { id, head, checks: doneChecks, ...submitted };
