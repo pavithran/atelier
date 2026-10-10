@@ -318,6 +318,21 @@ export interface Review {
   withdrawn?: { at: string; reason: string };
 }
 
+// A reviewer's reply no verdict could be read from (parseVerdict refused it,
+// t407): kept on the task, its last VERDICT_LIMITS.reply characters, with the
+// reviewer and the head it judged, so the evidence of what the reviewer
+// actually said lives on the task and not only in the runner's log. The
+// reliability record counts it against the reviewer as a review that never
+// reached a verdict.
+export interface UnparsableReply {
+  itemId: string;
+  by: string;
+  head: string;
+  note: string;    // why no verdict could be read, as the parser said it
+  reply: string;   // the reply itself, its last 100 KB
+  at: string;
+}
+
 // What a review is bound to: the head it read and the binding of the
 // criteria it judged. An item's own is its head and criteriaOf(item).
 export interface ReviewBinding {
