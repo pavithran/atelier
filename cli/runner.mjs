@@ -621,12 +621,22 @@ export function validationBlockedReport(output) {
 // stall. The head is not complete while a merge the runner started is in
 // progress (conflicts left for the harness, or a plan merge skipped behind
 // one), whatever the task's record says: the resolution is the work asked
-// for. Returns {complete, why}, the reason written for the run's log either way.
-export function alreadyComplete(item, head, merges = []) {
+// for. Ahead means the base is an ancestor of the head, which unequal hashes
+// alone do not prove: a rollback (atelier push --rollback) records a head
+// older than the base, and such a head holds no work to submit, so it is
+// released. `isAncestor(base, head)` answers that (git merge-base
+// --is-ancestor); when it cannot, the head is not taken as complete.
+// Returns {complete, why}, the reason written for the run's log either way.
+export async function alreadyComplete(item, head, merges = [], isAncestor) {
   const short = (hash) => String(hash).slice(0, 8);
   if (merges.some((m) => m.state === "conflicts" || m.state === "skipped")) return { complete: false, why: "a merge is in progress" };
   if (!item.head || !item.base || item.head === item.base) return { complete: false, why: "the task has no pushed head ahead of its base" };
   if (head !== item.head) return { complete: false, why: `the workspace head ${short(head)} is not the task's pushed head ${short(item.head)}` };
+  let ahead;
+  try { ahead = await isAncestor(item.base, head); } catch (error) {
+    return { complete: false, why: `whether the workspace head ${short(head)} is ahead of the task's base ${short(item.base)} could not be read: ${error.message}` };
+  }
+  if (!ahead) return { complete: false, why: `the workspace head ${short(head)} is the task's pushed head but not ahead of its base ${short(item.base)}, which it does not descend from` };
   return { complete: true, why: `the workspace head ${short(head)} is the task's pushed head, ahead of its base ${short(item.base)}` };
 }
 
@@ -779,7 +789,7 @@ export async function runTask(assignment, config, name, io) {
     // finishes a dead run's commit: the exit names the base as what the run
     // moved from, the checks run, and that head is submitted. Any other
     // unchanged head is a stall, released below; the log says which.
-    already = !resumed && result?.code === 0 && head === before ? alreadyComplete(item, head, merges) : null;
+    already = !resumed && result?.code === 0 && head === before ? await alreadyComplete(item, head, merges, (base, h) => io.isAncestor(workspace, base, h)) : null;
     if (already?.complete) io.log(`already complete: ${already.why}; the harness changed nothing, so the checks run and that head is submitted without a new commit`);
     else if (already) io.log(`nothing to submit: ${already.why}, and the harness changed nothing`);
     taskFailure = true;
@@ -1550,6 +1560,17 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
     clone: (remote, token, dir) => checked(["git", "clone", "--quiet", remote, dir], { env: gitAuth(token), signal: controller.signal, step: "clone" }, executeChild),
     diff: (dir, base, head) => checked(["git", "diff", base, head], { cwd: dir, capture: true, signal: controller.signal, step: "diff" }, executeChild),
     mergeBase: (dir, a, b) => checked(["git", "merge-base", a, b], { cwd: dir, capture: true, signal: controller.signal, step: "merge-base" }, executeChild),
+    // Whether `base` is an ancestor of `head` (alreadyComplete): git exits 0
+    // for yes and 1 for no, so neither goes through checked; anything else
+    // (an unknown commit, say) is a failure.
+    isAncestor: async (dir, base, head) => {
+      const result = await executeChild(["git", "merge-base", "--is-ancestor", base, head], { cwd: dir, capture: true, captureError: true, signal: controller.signal, step: "merge-base" });
+      if (result.timedOut) throw new Error("merge-base timed out");
+      if (controller.signal.aborted) throw new Error("interrupted");
+      if (result.code === 0) return true;
+      if (result.code === 1) return false;
+      throw new Error(result.stderr || `git exited ${result.signal ?? result.code}`);
+    },
     revParse: (dir, spec) => checked(["git", "rev-parse", spec], { cwd: dir, capture: true, signal: controller.signal, step: "rev-parse" }, executeChild),
     // A review role's override read from the accepted base (reviewRoleText):
     // the file as the base holds it, or the command fails and the default is

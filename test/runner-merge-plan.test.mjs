@@ -67,6 +67,7 @@ function fixture(t, { conflict, harness, dispatch = {}, setup }) {
       return "";
     },
     async head(cwd, { ref = "HEAD" } = {}) { return git(cwd, "rev-parse", ref); },
+    async isAncestor(cwd, base, head) { calls.push({ isAncestor: [base, head] }); return run(cwd, ["git", "merge-base", "--is-ancestor", base, head]).code === 0; },
     async reset(cwd) { calls.push({ reset: true }); git(cwd, "reset", "-q", "--hard", "HEAD"); git(cwd, "clean", "-ffdq"); },
     async fetch(cwd, remote, token, head) { calls.push({ fetch: [remote, token, head] }); git(cwd, "fetch", "-q", remote, head); },
     async mergeMain(cwd, head, message) { calls.push({ mergeMain: [head, message] }); return run(cwd, mergeMainArgs(head, message)); },

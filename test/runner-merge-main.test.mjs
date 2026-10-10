@@ -83,6 +83,7 @@ function fixture(t, { conflict, harness, kind = "part", findings = null, rescueR
       return "";
     },
     async head(cwd, { ref = "HEAD" } = {}) { return git(cwd, "rev-parse", ref); },
+    async isAncestor(cwd, base, head) { calls.push({ isAncestor: [base, head] }); return run(cwd, ["git", "merge-base", "--is-ancestor", base, head]).code === 0; },
     // The real runner's reset (resetTo in cli/runner.mjs): the uncommitted
     // work — a conflicted merge a landing left, say — is saved under
     // refs/atelier/rescue, then the workspace is reset hard and cleaned.
