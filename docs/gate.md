@@ -25,7 +25,7 @@ In detail:
 | `atelier check` | the item's owner; anyone with `--sandbox` | Clones the workspace afresh at that head (or runs in a Cloudflare container with `--sandbox` or `sandboxOnly` policy), runs each required check, and records the results as Observed. A result run on the caller's machine is recorded only for the item's owner, since the gate counts it on the caller's word; anyone the project's tokens reach may ask for a sandbox run, which records its own results. With each result Atelier records every path on which the workspace's head differs from main's head, which it measures itself from Artifacts; a list the caller sends is ignored. A result for a head that has since moved is refused. A local check runs with the caller's file access; run untrusted code with `--sandbox`. `--merged` runs the checks on the would-be merge instead: the head merged with main as main is now, in a temporary merge commit made in the clean clone and never pushed, or built by the Worker with `--sandbox`. A check that does not apply to the change is not run merged either. The result is recorded against both revisions, shown beside the merge preview on the item page, and marked stale when main moves on; it is never the head's own check. |
 | `atelier report [ID] "…"` | anyone | Records a Reported claim on the item named, else on the workspace's item; in a workspace, another item's id needs `--item ID`. It is shown and never counted. |
 | `atelier submit` | the item's owner | Marks the item ready. The gate states what still blocks it. |
-| `atelier handoff t3 --to codex/gpt-5.5` | the item's owner or the project owner | Moves ownership and revokes the old write token. The workspace and its history carry over; the work is not forked again. |
+| `atelier handoff t3 --to codex/gpt-5.5` | the item's owner or the project owner; project owner only when accepted | Moves ownership and revokes the old write token. An accepted task returns to claimed and must be submitted and accepted again. The workspace, reviews and acceptance history carry over; a merge holding the landing lease must finish or be cancelled first. |
 | `atelier review t3 --approve --criteria BINDING` | an agent that did not work on the item | Required when the item changes a protected path. Only a model of another family than every recorded contributor counts. The project owner may review too, and the owner's rejection blocks, but the owner's approval is not this review. A review names the binding of the acceptance criteria it judged (`atelier show` prints it; a review claim gives it), and counts only while the item's head and criteria are still the ones it judged; changing the criteria withdraws it for good. |
 | `atelier accept t3` | the project owner, or the Accept button | Allowed only when the gate is clear. Pins the accepted head. With `--override-review "reason"`, overrides a missing independent review when no reviewer qualifies (see below). |
 | `atelier merge t3` | the project owner, in the project checkout | Fetches exactly the accepted head, merges it with `--no-ff`, attaches the item's provenance as a git note on `refs/notes/atelier`, and pushes the new main to the baseline. Pushing the code to GitHub stays a separate, deliberate step; after `atelier notes-remote github`, each merge pushes the provenance notes, and only them, to that remote. |
@@ -119,6 +119,15 @@ head's own checks again does not clear it, since they pass on the head's tree
 and say nothing about the merge. Every observed
 check also records main's head as Atelier read it when the check was
 recorded, which is how the gate knows main moved.
+
+A local check waits for the machine's load average to fall under a limit
+before it runs, so a landing's required checks do not start on top of the
+home runners' jobs and starve them (or themselves) of CPU; the wait is said
+on the command's own output. The limit is the core count, or
+`ATELIER_LOAD_LIMIT` when set. Each result records the load it started at in
+its evidence, and a check that failed and then passed unchanged keeps both
+results, each with its load, so a failure under a saturated machine stays
+legible beside the later pass.
 
 The project owner's approval is never the independent review: the owner
 decides by accepting, and that decision is not also the second opinion. When

@@ -41,14 +41,14 @@ export const HELP_GROUPS: HelpGroup[] = [
   ]] },
   { name: "Items", lines: [[
     { form: 'new "short title" [--brief TEXT] [--accept TEXT]... [--scope GLOB]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]', about: "The project owner creates a task with a short title (at most 80 characters, what every list shows), and optionally its brief (the whole task, shown on its page and given to the agents that build and review it), its acceptance criteria (a change that fails one is rejected in review), the globs it intends to touch, what it is not to do, what tells its holder to stop and ask, and the gate it goes to next. One long text with no --brief is kept as the brief, and the title is derived from its first clause. The brief, `atelier start` and the task's page show them." },
-    { form: "edit ID [--title TEXT] [--brief TEXT] [--accept TEXT]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]", about: "The project owner changes a task's title, brief, acceptance criteria, non-goals, stop conditions or next gate. A flag given replaces that field, one left out keeps it, and an empty value clears it; the title cannot be cleared. Changing the acceptance criteria (their text, order or entries) withdraws every review and open or claimed review request of the old ones, an acceptance (the task goes back to claimed) and an override of the review, and says so: a fresh review of the new criteria is needed. The same list again changes nothing. The criteria of an integrated part, or of a task being landed, cannot change." },
+    { form: "edit ID [--title TEXT] [--brief TEXT] [--scope GLOB]... [--accept TEXT]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT]", about: "The project owner changes a task's title, brief, scope, acceptance criteria, non-goals, stop conditions or next gate. A flag given replaces that field, one left out keeps it, and an empty value clears it; the title cannot be cleared. A new scope is recorded in the task's history and counts at once for a project that refuses overlapping claims, which refuses a claim whose scope overlaps a claimed, submitted or accepted task's alike (a cancelled merge leaves a task accepted); an unscoped task overlaps every one. Changing the acceptance criteria (their text, order or entries) withdraws every review and open or claimed review request of the old ones, an acceptance (the task goes back to claimed) and an override of the review, and says so: a fresh review of the new criteria is needed. The same list again changes nothing. The criteria of an integrated part, or of a task being landed, cannot change." },
   ], [
     { form: "ls [--all] [--json]", about: "Lists the project's tasks with state, owner and head. Merged and abandoned tasks need `--all`. `--json` prints them for scripts, each task with its created, updated and last-push times, as Observatory reads them." },
     { form: "show ID [--reviews] [--json]", about: "Prints a task's decision brief: what is decided, the recorded evidence, a recommendation and the task's address. `--reviews` also prints each review at each head with its whole note and findings; `--json` prints the brief, carrying the reviews, for scripts." },
     { form: "receipt ID [--json]", about: "Prints one task's whole story from the ledger, in the order it was recorded: created, claimed, each handoff and release, each pushed head as Artifacts answered it, each observed check at each head, each review with its verdict and every finding with the owner's verdict on it (confirmed, refuted or fixed), then the submission, acceptance and merge or abandonment that ended it. `--json` prints the task's events as the ledger holds them, in order." },
     { form: "owners [--json]", about: "Prints one line per live task: its state, its owner and since when." },
     { form: "inbox [--json]", about: "Prints the decision brief of each task that needs the project owner, most urgent first. `--json` prints the entries for scripts." },
-    { form: "status [--project P] [--json]", aside: "with a project: where it stands, as text", about: "Prints the owner's queue for every project: what waits for the owner, which pairs of live tasks name overlapping scopes (each pair once, nothing waiting on the owner), what is in progress and what waits for a runner, with the live item each dispatch the project's core files hold waits on, each open review request among it with its reviewer named, and, for any queued job no live runner offers, that it can never be claimed until a runner that offers it is started, which is a mismatch between the dispatch and the runners rather than a wait. With `--project` it prints where one project stands instead, ending with whether this checkout is in step with the baseline and, when any of the project's tasks has a workspace on this Mac, an On this Mac section: each live task's workspace with its uncommitted changes, commits not pushed to its fork, a merge in progress and a waiting COMMIT_MSG.txt, a count of the merged or abandoned tasks' workspaces left behind, and whether a landing is running here for the project. `--json` prints machine-readable records, each task with its created, updated and last-push times, as Observatory reads them, the overlapping pairs under `overlaps` and the same local facts under `local`." },
+    { form: "status [--project P] [--brief] [--json]", aside: "with a project: where it stands, as text", about: "Prints the owner's queue for every project: what waits for the owner, which pairs of live tasks name overlapping scopes (each pair once, nothing waiting on the owner), what is in progress and what waits for a runner, with the live item each dispatch the project's core files hold waits on, each open review request among it with its reviewer named, and, for any queued job no live runner offers, that it can never be claimed until a runner that offers it is started, which is a mismatch between the dispatch and the runners rather than a wait. With `--project` it prints where one project stands instead, ending with whether this checkout is in step with the baseline and, when any of the project's tasks has a workspace on this Mac, an On this Mac section: each live task's workspace with its uncommitted changes, commits not pushed to its fork, a merge in progress and a waiting COMMIT_MSG.txt, a count of the merged or abandoned tasks' workspaces left behind, and whether a landing is running here for the project. `--brief` prints the report to give the owner after each landing, in under 20 lines: the recent merges, the commit the server is deployed at, live builds, reviews and the landing running, and 24-hour spend against the daily limit. `--json` prints machine-readable records, each task with its created, updated and last-push times, as Observatory reads them, the overlapping pairs under `overlaps` and the same local facts under `local`." },
     { form: "open", about: "Opens the server in a browser, using the macOS `open` command." },
   ]] },
   { name: "Agents", lines: [[
@@ -63,7 +63,7 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "report [ID] \"what you verified and how\" [--item ID] [--project P]", about: "Records a Reported claim at the current head: what the agent verified and how. It goes on the task named, else on the workspace's task; in a workspace, another task's id needs `--item ID`. It is shown and never counted as a check." },
     { form: "submit [--summary T]", about: "Marks the task ready for the owner and prints what still blocks it, if anything. `--summary` stores a summary of the change with the submission." },
   ], [
-    { form: "handoff ID --to H/M [--note TEXT]", about: "Moves ownership to another agent, with `--note` saying why. The old write token is revoked; the workspace and its history carry over." },
+    { form: "handoff ID --to H/M [--note TEXT]", about: "Moves ownership to another agent, with `--note` saying why. The old write token is revoked; the workspace and its history carry over. The project owner can hand an accepted task back to building: it becomes claimed, with its earlier reviews and acceptance kept in the history, and must be submitted and accepted again. A merge holding its landing lease must finish or be cancelled first." },
     { form: "release ID [--note TEXT]", about: "Gives the task up: it returns to open and the write token is revoked." },
     { form: 'block [ID] "what it is waiting on"', about: "The holder or the project owner blocks the task with what it is waiting on. It keeps its owner and workspace, leaves the runner queue and stuck detection, cannot be pushed, submitted, reviewed, handed off or released, and sits in the owner's inbox with the reason until it is unblocked." },
     { form: "unblock [ID]", about: "The holder or the project owner lifts the block, and the task returns to the state it was in." },
@@ -71,6 +71,7 @@ export const HELP_GROUPS: HelpGroup[] = [
     { form: "review ID --approve|--reject --criteria BINDING [--request N] [--note TEXT] [--head SHA] [--findings JSON]", about: "Records a verdict on the task's current head, with `--note` giving the reason. `--head` names the revision the verdict is for, and the server refuses one for any head but the current. `--criteria` names the binding of the acceptance criteria the verdict judged, as `atelier show` or the review claim gives it; the server refuses a verdict that names none, or criteria the task no longer has, and the reviewer must read them again. `--request` names the review request the reviewer claimed, which the verdict then answers alone. `--findings` attaches a reviewer's structured findings. The rules say whose approval counts." },
     { form: "review-claim ID [--runner home:NAME]", about: "A reviewer's runner claims the task's open review request and gets the part, its brief's inputs, the binding of the acceptance criteria the brief carries and the request's number, which the verdict names, and a read token for its fork." },
     { form: "review-release ID [--note T]", about: "A reviewer whose harness wrote no valid verdict lets the review request go, so another reviewer may take it." },
+    { form: "review-unparsable ID --head SHA --note TEXT --reply-file PATH", about: "Keeps a reviewer's reply that no verdict could be read from on the task, its last 100 KB with the reviewer and the head, and lets the review request go as review-release does. The runner calls it when the reply states no verdict; the reliability record counts the reply against the reviewer, and atelier show ID --reviews prints it." },
   ], [
     { form: "read-token ID", about: "Reads a token for the task's own fork, with its head and base, for a job that clones it outside a task or a review." },
     { form: "base-token ID", about: "Reads a token for the repository the task is measured against: the plan's fork for a part, the baseline otherwise." },
@@ -117,9 +118,11 @@ export const HELP_GROUPS: HelpGroup[] = [
   { name: "Models", lines: [[
     { form: "models", about: "Lists the model pool: each model's harness, where it runs, its family and what a runner last found." },
     { form: "models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... [--note TEXT]", about: "Adds or replaces a pool entry. Atelier never stores a key: `--keychain` names the Keychain entry that holds it, and a request that carries a key is refused. `--note` keeps a note with the entry." },
+    { form: "models show ID", about: "Shows a pool entry with its notes, oldest first." },
+    { form: "models note ID 'text' [--item tN]", about: "Keeps a dated note under a pool model, by its author. `--item` names the task it concerns; a note with none bears on every task the model is suggested for." },
     { form: "models remove ID", about: "Removes a model from the pool." },
   ], [
-    { form: "dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] [--job merge-main [--head H]] [--overlap-ok]", about: "Queues an open task for a kind of runner, and optionally an agent and model, instead of waiting for an agent to choose it; a held task is released and queued in the same step, keeping its workspace and commits. While the task's scope overlaps, within one of the project's core files (`init --core`), the scope of a live item, the queue holds it and offers it to no runner until that item merges or is abandoned; `atelier status` and `atelier queue` say which item it waits on, and `--overlap-ok` lets this dispatch through at once. `--job merge-main` sends a task whose landing conflicted with main back to its builder: the runner merges main at the named head into its workspace (main's head as the baseline holds it, unless `--head` names one) and leaves the conflicts for the builder to resolve and commit; then `atelier land ID` again. Project owner only." },
+    { form: "dispatch ID [--to home|cloud|any] [--agent A] [--model M] [--note T] [--job merge-main [--head H]] [--overlap-ok]", about: "Queues an open task for a kind of runner, and optionally an agent and model, instead of waiting for an agent to choose it; a held or accepted task is released and queued in the same step, keeping its workspace, commits, reviews and acceptance history. An accepted task must be submitted and accepted again; a merge holding its landing lease must finish or be cancelled first. While the task's scope overlaps, within one of the project's core files (`init --core`), the scope of a live item, the queue holds it and offers it to no runner until that item merges or is abandoned; `atelier status` and `atelier queue` say which item it waits on, and `--overlap-ok` lets this dispatch through at once. `--job merge-main` sends a task whose landing conflicted with main back to its builder: the runner merges main at the named head into its workspace (main's head as the baseline holds it, unless `--head` names one) and leaves the conflicts for the builder to resolve and commit; then `atelier land ID` again. Project owner only." },
     { form: "undispatch ID", about: "Takes the task out of the queue." },
     { form: "queue", about: "Lists everything waiting for a runner, across projects, oldest first, and for each dispatch the project's core files hold, the live item it waits on." },
   ]] },
@@ -251,6 +254,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
     flags: {
       "--title TEXT": "replaces the task's short title, at most 80 characters",
       "--brief TEXT": 'replaces the task\'s brief; --brief "" clears it',
+      "--scope GLOB": 'replaces the task\'s scope; once per glob, or --scope "" alone to clear it (an unscoped task overlaps every other)',
       "--accept TEXT": 'replaces the task\'s acceptance criteria; once per criterion, or --accept "" alone to clear them',
       "--non-goal TEXT": 'replaces the task\'s non-goals; once per entry, or --non-goal "" alone to clear them',
       "--stop-when TEXT": 'replaces what tells the holder to stop and ask; once per entry, or --stop-when "" alone to clear it',
@@ -282,6 +286,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   inbox: { flags: { "--json": "prints the entries as JSON" }, example: "atelier inbox" },
   status: {
     flags: {
+      "--brief": "the report to give the owner after each landing, in under 20 lines: recent merges, the deployed commit, live builds, reviews and landings, and spend against the daily limit; the project is --project, else this checkout's",
       "--project P": "where one project stands, as text, instead of the owner's queue for every project; ends with an On this Mac section when any of its tasks has a workspace here",
       "--json": "prints machine-readable records, each item with its created, updated and last-push times and each project's overlapping task pairs under `overlaps`; with --project, also the local facts of this Mac's workspaces and any landing",
     },
@@ -395,6 +400,14 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   "review-release": {
     flags: { "--note TEXT": "why the review request is let go; kept with the event" },
     example: 'atelier review-release t3 --note "The harness wrote no verdict" --project demo',
+  },
+  "review-unparsable": {
+    flags: {
+      "--head SHA": "the full revision the review read; required",
+      "--note TEXT": "why no verdict could be read, as the parser said it; kept with the reply",
+      "--reply-file PATH": "the file the harness wrote the reply to; its last 100 KB is kept; required",
+    },
+    example: 'atelier review-unparsable t3 --head 0123456789abcdef0123456789abcdef01234567 --note "No VERDICT line" --reply-file verdict.txt --project demo',
   },
   "read-token": { example: "atelier read-token t3 --project demo" },
   "base-token": { example: "atelier base-token t3 --project demo" },
@@ -526,6 +539,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       "--keychain NAME": "the Keychain entry that holds the key; the key itself is never sent",
       "--alias A": "another name the harness reports the model under; once per alias",
       "--note TEXT": "a note kept with the entry",
+      "--item tN": "the task a dated note concerns; without it the note bears on every task the model is suggested for",
     },
     example: "atelier models add gpt-6-astra --harness codex --where cloud",
   },
@@ -741,7 +755,14 @@ Standing rules:
   confirmation. Ask, and cite the owner's words; never infer them.
 - Judge each review finding against the code before acting, and record every
   verdict with \`atelier finding\`.
-- Land one task at a time with \`atelier land ID\`. Never land two together.
+- Land one task at a time with \`atelier land ID --reviewer H/M\`, which
+  merges main, checks, submits, waits for the independent review, then
+  accepts and merges; \`--reviewer H/M\` names a reviewer of another family
+  than every contributor. Never land two together. An override while
+  accepting is the owner's last resort when no reviewer qualifies, never the
+  way to land another agent's work.
+- After each landing, report to the owner with \`atelier status --brief\`: what
+  merged, what is deployed, what is running and the spend.
 - Report every run that ended without a result with \`atelier run-report\`.
 - On a stall (a claimed task with no progress), check whether the agent's
   process still runs, then \`atelier handoff\` the task to another model or

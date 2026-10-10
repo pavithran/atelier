@@ -423,6 +423,12 @@ function replay(
         if (!approve) built.rejections.push({ project, item, by: actor, note: str(data.note), at: event.at });
       }
       reviewedHeads.set(item, (reviewedHeads.get(item) ?? new Set()).add(head));
+    } else if (kind === "review.unparsable") {
+      // A reply no verdict could be read from, kept on the task (t407): a
+      // review that never reached a verdict, counted against the reviewer
+      // beside the runs the runners report. The reply itself is not in the
+      // event, so nothing here reads it back.
+      if (isAgent(actor, owner)) get(actor, project).unfinishedReviews++;
     } else if (kind === "item.merged") {
       const builder = agentOnly(holder?.serving ?? lastBuilder.get(item));
       holders.delete(item);
