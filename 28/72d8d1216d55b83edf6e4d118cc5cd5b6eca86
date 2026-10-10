@@ -1,0 +1,51 @@
+atelier atelier/t466 "Every test file runs in the checks; fix the runner-token test they missed"
+accepted head 5f1e83b303bcc54e20fafd5fbcf9db83362de7d3
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-10T19:55:05.269Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-10T19:55:09.805Z
+REVIEW approve by codex/gpt-6-astra at 5f1e83b303bcc54e20fafd5fbcf9db83362de7d3, recorded by codex/gpt-6-astra
+2026-10-10T18:33:49.282Z pavi item.created
+2026-10-10T18:34:25.039Z pavi item.edited
+2026-10-10T18:34:25.039Z pavi item.criteria_changed
+2026-10-10T18:34:25.437Z pavi item.dispatched
+2026-10-10T18:39:53.229Z pavi item.dispatched
+2026-10-10T18:48:11.742Z claude-code/sonnet-5.5 item.claimed
+2026-10-10T18:48:31.997Z claude-code/sonnet-5.5 fork.created
+2026-10-10T18:56:46.628Z claude-code/sonnet-5.5 push.observed
+2026-10-10T19:02:39.749Z claude-code/sonnet-5.5 evidence.observed
+2026-10-10T19:02:42.831Z claude-code/sonnet-5.5 evidence.observed
+2026-10-10T19:02:43.359Z claude-code/sonnet-5.5 item.submitted
+2026-10-10T19:16:19.315Z pavi land.lease
+2026-10-10T19:16:25.395Z pavi land.merge
+2026-10-10T19:16:34.730Z pavi land.regenerate
+2026-10-10T19:16:36.164Z pavi land.push
+2026-10-10T19:23:02.200Z claude-code/sonnet-5.5 evidence.observed
+2026-10-10T19:23:05.409Z claude-code/sonnet-5.5 evidence.observed
+2026-10-10T19:23:05.872Z pavi land.check
+2026-10-10T19:23:08.745Z pavi review.requested
+2026-10-10T19:23:13.313Z codex/gpt-6-astra review.claimed
+2026-10-10T19:24:46.402Z codex/gpt-6-astra review.rejected
+2026-10-10T19:24:54.594Z pavi land.review
+2026-10-10T19:25:21.823Z pavi review.finding
+2026-10-10T19:25:22.456Z pavi review.finding
+2026-10-10T19:25:23.544Z pavi item.released
+2026-10-10T19:25:23.544Z pavi item.dispatched
+2026-10-10T19:25:35.338Z claude-code/sonnet-5.5 item.claimed
+2026-10-10T19:32:53.462Z claude-code/sonnet-5.5 push.observed
+2026-10-10T19:36:37.502Z claude-code/sonnet-5.5 evidence.observed
+2026-10-10T19:36:40.305Z claude-code/sonnet-5.5 evidence.observed
+2026-10-10T19:36:40.970Z claude-code/sonnet-5.5 item.submitted
+2026-10-10T19:48:40.221Z pavi land.lease
+2026-10-10T19:48:46.455Z pavi land.merge
+2026-10-10T19:48:59.226Z pavi land.regenerate
+2026-10-10T19:49:00.471Z pavi land.push
+2026-10-10T19:49:04.409Z claude-code/sonnet-5.5 push.observed
+2026-10-10T19:49:04.906Z pavi land.push
+2026-10-10T19:55:06.883Z claude-code/sonnet-5.5 evidence.observed
+2026-10-10T19:55:09.993Z claude-code/sonnet-5.5 evidence.observed
+2026-10-10T19:55:10.505Z pavi land.check
+2026-10-10T19:55:13.468Z pavi review.requested
+2026-10-10T19:55:40.936Z codex/gpt-6-astra review.claimed
+2026-10-10T19:57:28.735Z codex/gpt-6-astra review.approved
+2026-10-10T19:57:29.510Z pavi land.review
+2026-10-10T19:57:30.302Z pavi item.accepted
+2026-10-10T19:57:30.330Z pavi land.accept
