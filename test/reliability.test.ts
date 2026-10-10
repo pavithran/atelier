@@ -179,7 +179,7 @@ test("an unparsable reply counts against the reviewer as a review without a verd
   assert.equal(rel.has("sandbox"), false);
   // It is the reviewer's record alone: no run outcome and no cause is invented.
   const opus = one(rel, "opus-5.5");
-  assert.deepEqual(opus.runs, { stalled: 0, "timed-out": 0, refused: 0, harness_failed: 0, early_stop: 0, permission_stop: 0, duplicate_design: 0, incomplete_merge: 0 });
+  assert.deepEqual(opus.runs, { stalled: 0, "timed-out": 0, refused: 0, harness_failed: 0, early_stop: 0, permission_stop: 0, duplicate_design: 0, incomplete_merge: 0, validation_blocked: 0 });
   assert.deepEqual(opus.runCauses, []);
 });
 
@@ -454,4 +454,19 @@ test("validation blocked remains visible without penalizing the model's reliabil
   assert.equal(model.runs.validation_blocked, 1);
   assert.equal(runTotal(model), 0);
   assert.match(model.runCauses[0].note, /validation_blocked.*listen EPERM/);
+});
+
+test("blocked validation does not erase unparsable reviews or add a review without a verdict", () => {
+  const events = history(["t1", OPUS, "review.unparsable", { head: H1, note: "no verdict" }]);
+  const rel = buildReliability([{ project: "a", events }], [
+    run({ actor: OPUS, role: "build", outcome: "validation_blocked", detail: "npm test: listen EPERM" }),
+    run({ actor: OPUS, role: "review", outcome: "validation_blocked", detail: "required checks unavailable" }),
+    run({ actor: OPUS, role: "review", outcome: "refused" }),
+  ], OWNER);
+  const model = one(rel, "opus-5.5");
+  assert.equal(model.runs.validation_blocked, 2);
+  assert.equal(runTotal(model), 1);
+  assert.equal(model.unfinishedReviews, 2);
+  assert.match(reliabilityLine(model), /2 reviews without a verdict/);
+  assert.equal(model.runCauses.length, 3);
 });
