@@ -8,7 +8,7 @@
 // --allow-failing is given. Wrap commits and updates the baseline; checkout
 // remote pushes are opt-in.
 
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { accessSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -38,9 +38,11 @@ import { pushHistory } from "./push-steps.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
 import { formatLocal, formatStatus, itemJson, statusJson } from "./status.mjs";
+import { findStrays, formatStrays } from "./strays.mjs";
 import { receiptJson, receiptText } from "./receipt.mjs";
 import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
 import { checkEnv } from "./check-env.mjs";
+import { runGroup } from "./group.mjs";
 import { provenanceNote } from "./provenance.mjs";
 export { checkEnv } from "./check-env.mjs";
 import { COMMAND_USAGE, guideText, helpText, ROLES, rolePrompt } from "./help.mjs";
@@ -734,6 +736,15 @@ function workspacePath(name, id) {
   return join(CACHE, "work", name, id);
 }
 
+// Test processes over an hour old left from a workspace on this machine
+// (cli/strays.mjs), read under the cache's real path, the one ps and lsof
+// report.
+function localStrays() {
+  let cache = CACHE;
+  try { cache = realpathSync(CACHE); } catch { /* No cache yet: nothing ran from it. */ }
+  return findStrays(cache);
+}
+
 // Where a checkout's landing lock and journal live (cli/landing.mjs): under
 // the cache, outside the iCloud checkout.
 const landingHome = (gitDir) => landingDir(CACHE, gitDir);
@@ -884,74 +895,31 @@ function mergeWithMain(dir, id) {
 // secret in `secrets` redacted. The output is redacted whole, before anything
 // cuts its tail, so no part of a secret survives at the cut, and the hash is
 // of the redacted text, the text a reader of the evidence is shown.
-// The check leads a process group of its own. When its shell exits, when its
-// time limit passes or when its output overruns, every process left in the
-// group (a test runner's worker, a watcher, anything started with &) gets
-// SIGTERM, then SIGKILL after `graceMs`, and the result comes back only once
-// the group is gone, so nothing the check started still writes in the clone
-// when it is removed. A process that leaves the group (setsid) is beyond this.
+// The check leads a process group of its own (runGroup in cli/group.mjs):
+// when its shell exits, when its time limit passes or when its output
+// overruns, every process left in the group is ended, and the result comes
+// back only once the group is gone, so nothing the check started still
+// writes in the clone when it is removed.
 async function runCheck(cmd, dir, secrets, graceMs = 5000) {
   process.stderr.write(`atelier: running \`${cmd}\` in a clean clone…\n`);
   const record = JSON.parse(readFileSync(markerPath(dir), "utf8"));
-  const r = await new Promise((done) => {
-    const child = spawn("/bin/sh", ["-c", cmd], { cwd: dir, env: checkEnv(), detached: true });
-    const pid = child.pid;
-    checkGroup = pid;
-    const onInt = interrupted("SIGINT"), onTerm = interrupted("SIGTERM");
-    process.once("SIGINT", onInt).once("SIGTERM", onTerm);
-    writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: pid }));
-    let stdout = "", stderr = "", error, bytes = 0, closed, ending = false, ended = !pid;
-    // A signal to every process in the group; false once none is left.
-    const send = (sig) => { try { process.kill(-pid, sig); return true; } catch { return false; } };
-    const finish = () => {
-      if (!closed || !ended) return;
-      clearTimeout(deadline);
-      if (checkGroup === pid) checkGroup = undefined;
-      process.off("SIGINT", onInt).off("SIGTERM", onTerm);
-      done({ ...closed, stdout, stderr, error: error ?? (closed.signal ? new Error(`check terminated by ${closed.signal}`) : undefined) });
-    };
-    const end = () => {
-      if (ending || ended) return;
-      ending = true;
-      const until = Date.now() + graceMs;
-      const wait = () => {
-        if (!send(0)) { ended = true; return finish(); }
-        if (Date.now() >= until) { send("SIGKILL"); ended = true; return finish(); }
-        setTimeout(wait, 50);
-      };
-      send("SIGTERM");
-      wait();
-    };
-    const deadline = setTimeout(() => { error ??= new Error(`check exceeded its time limit of ${Math.round(CHECK_TIMEOUT_MS / 1000)} s`); end(); }, CHECK_TIMEOUT_MS);
-    const append = (key, chunk) => {
-      if (error) return;
-      bytes += Buffer.byteLength(chunk);
-      if (key === "stdout") stdout += chunk; else stderr += chunk;
-      if (bytes > 64 * 1024 * 1024) {
-        error = new Error("check output exceeds 64 MiB");
-        end();
-        stdout = stdout.slice(-32 * 1024 * 1024);
-        stderr = stderr.slice(-32 * 1024 * 1024);
-      }
-    };
-    child.stdout.setEncoding("utf8").on("data", (s) => append("stdout", s));
-    child.stderr.setEncoding("utf8").on("data", (s) => append("stderr", s));
-    child.on("error", (e) => { error = e; });
-    // A process left in the group can hold the output pipes open, so the
-    // group is ended when the shell exits, not when the pipes close.
-    child.on("exit", end);
-    child.on("close", (status, signal) => { closed = { status, signal }; finish(); });
-  });
+  const r = await runGroupedCheck(cmd, { cwd: dir, graceMs, onSpawn: (pid) => writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: pid })) });
   writeFileSync(markerPath(dir), JSON.stringify(record));
-  const output = redact(`${r.stdout}${r.stderr}${r.error ? `\n[atelier] ${r.error.message}` : ""}`, secrets);
+  const output = redact(`${r.stdout}${r.stderr}${r.error ? `\n[atelier] check ${r.error.message}` : ""}`, secrets);
   return { passed: r.status === 0 && !r.error, output, sha: createHash("sha256").update(output).digest("hex") };
 }
 
-// The process group of the check running now. It is not the terminal's
-// foreground group, so an interrupt of this command does not reach it: this
-// process ends it on the way out instead.
-let checkGroup;
-process.on("exit", () => { if (checkGroup) { try { process.kill(-checkGroup, "SIGKILL"); } catch { /* The group has ended. */ } } });
+// One registered check through runGroup, bounded by CHECK_TIMEOUT_MS. An
+// interrupt, a terminal hang-up or a SIGTERM of this command does not reach
+// the check's group, so each ends this process, and runGroup ends the group
+// on the way out.
+async function runGroupedCheck(cmd, { cwd, env = checkEnv(), graceMs, onSpawn, maxBytes }) {
+  const onInt = interrupted("SIGINT"), onTerm = interrupted("SIGTERM"), onHup = interrupted("SIGHUP");
+  process.once("SIGINT", onInt).once("SIGTERM", onTerm).once("SIGHUP", onHup);
+  try { return await runGroup(["/bin/sh", "-c", cmd], { cwd, env, timeoutMs: CHECK_TIMEOUT_MS, graceMs, maxBytes, onSpawn }); }
+  finally { process.off("SIGINT", onInt).off("SIGTERM", onTerm).off("SIGHUP", onHup); }
+}
+
 const interrupted = (sig) => () => process.exit(128 + osConstants.signals[sig]);
 
 // Posts one check's result. A server that cannot answer (no connection, a
@@ -1601,10 +1569,11 @@ const commands = {
     if (refused.length) die(`${refused.join(".\n")}.\nwrap runs the registered checks in this checkout, so it stopped before running any. Replace the check with atelier init --check, or wrap with --no-check.`);
     const failing = [];
     if (!data.checksSkipped) for (const command of record.policy.checks) {
-      const result = spawnSync(command, { cwd, shell: true, encoding: "utf8", timeout: CHECK_TIMEOUT_MS, maxBuffer: 1024 * 1024 });
-      data.checks.push({ command, passed: result.status === 0, grade: "reported" });
-      console.log(`Reported: ${command}: ${result.status === 0 ? "passed" : "failed"} (owner's checkout, not a clean clone).`);
-      if (result.status !== 0) failing.push({ command, status: result.status, signal: result.signal, timedOut: result.error?.code === "ETIMEDOUT" });
+      const result = await runGroupedCheck(command, { cwd, env: process.env, maxBytes: 1024 * 1024 });
+      const passed = result.status === 0 && !result.error;
+      data.checks.push({ command, passed, grade: "reported" });
+      console.log(`Reported: ${command}: ${passed ? "passed" : "failed"} (owner's checkout, not a clean clone).`);
+      if (!passed) failing.push({ command, status: result.status, signal: result.signal, timedOut: result.timedOut });
     }
     // A failing registered check stops wrap here, with every result printed
     // and nothing staged, recorded or pushed: the checks ran in the checkout
@@ -3488,8 +3457,9 @@ const commands = {
       const standing = await call("GET", `${P(name)}/standing`, undefined, as);
       const checkout = await checkoutStatus(name, as);
       const local = await localStanding(name, as);
-      if (args.json) return console.log(JSON.stringify({ project: standing, checkout, ...(local ? { local } : {}) }, null, 2));
-      console.log(formatStanding(standing, OWNER_NAME) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : ""));
+      const strays = localStrays();
+      if (args.json) return console.log(JSON.stringify({ project: standing, checkout, ...(local ? { local } : {}), ...(strays.length ? { strayTests: strays } : {}) }, null, 2));
+      console.log(formatStanding(standing, OWNER_NAME) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : "") + (strays.length ? "\n\n" + formatStrays(strays) : ""));
       return;
     }
     const known = await call("GET", "/projects", undefined, OWNER);
@@ -3509,7 +3479,8 @@ const commands = {
       return { name: p.name, title: p.title, items, inbox };
     }));
     if (args.json) return console.log(JSON.stringify(statusJson(views), null, 2));
-    console.log(formatStatus(views, { queue, offers }));
+    const strays = formatStrays(localStrays());
+    console.log(formatStatus(views, { queue, offers }) + (strays ? "\n\n" + strays : ""));
   },
 
   async open() {

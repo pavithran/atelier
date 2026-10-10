@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { setImmediate as tick } from "node:timers/promises";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
@@ -210,7 +211,7 @@ test("an --integrate runner whose claims are refused tries each head once, not t
   let polls = 0;
   const args = { _: ["runner"], multi: { name: ["home:studio"], integrate: [true] }, name: "home:studio", integrate: true };
   await runRunner(args, {
-    workspacePath: () => "/cache/work/atelier/t1", wait: async () => {},
+    workspacePath: () => "/cache/work/atelier/t1", wait: () => tick(),
     taskIO: { log: (s) => logs.push(s) },
     async queue() {
       polls++;
@@ -334,7 +335,7 @@ test("a --integrate runner keeps serving a plan whose refresh conflicts twice", 
   };
   const args = { _: ["runner"], multi: { name: ["home:studio"], integrate: [true] }, name: "home:studio", integrate: true };
   await runRunner(args, {
-    workspacePath: () => "/cache/work/atelier/t1", wait: async () => {},
+    workspacePath: () => "/cache/work/atelier/t1", wait: () => tick(),
     taskIO: { log: (s) => logs.push(s) },
     async queue() {
       polls++;
@@ -439,7 +440,7 @@ test("a failed integrate push leaves nothing behind for the next run", async (t)
   t.after(() => { process.exitCode = previous; });
   const released = [], logs = [];
   const serve = (failPush) => runRunner(args, {
-    workspacePath: () => workspace, wait: async () => {}, queue: async () => [task], taskIO: { log: (s) => logs.push(s) },
+    workspacePath: () => workspace, wait: () => tick(), queue: async () => [task], taskIO: { log: (s) => logs.push(s) },
     async executeChild(argv, options) {
       if (argv[0] === "git") return execute(argv, options);
       const command = argv[2];
