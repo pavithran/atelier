@@ -567,6 +567,22 @@ export function codexBuildRefusal(entry) {
   return "Codex build refused: its command does not establish access for required checks (localhost listening, the npm cache and network); restricted or opaque adapters cannot verify this project";
 }
 
+// What a final report says when the required checks could not run. The build
+// brief asks for a `validation_blocked: why` line; the rest are the ways
+// agents said it unasked (t417). Each names the checks right beside the verb
+// that failed to run them, or an environment error beside a failed check, so
+// "I did not run any atelier command" or a summary that merely mentions
+// validation_blocked does not hold back a good build.
+const CHECKS = String.raw`(?:required checks?|checks?|tests?|test suite|suite|typecheck|vitest|npm test|npm run [\w:-]+)`;
+const SANDBOX = String.raw`(?:EPERM|EACCES|permission denied|sandbox|no network|network access|ENOTFOUND|EAI_AGAIN)`;
+const VALIDATION_BLOCKED = [
+  /^[\s*_`>-]*validation[_ ]blocked[*_`]*\s*:/im,
+  new RegExp(String.raw`(?:could not|couldn't|cannot|can't|unable to|not able to|did not|didn't)\s+(?:fully\s+|successfully\s+)?(?:run|execute)\s+(?:(?:the|all|any|full|required|project's|whole|complete)\s+){0,3}${CHECKS}\b`, "i"),
+  new RegExp(String.raw`\b${CHECKS}\s+(?:could not|couldn't|cannot|can't|did not|didn't)\s+(?:be\s+)?(?:run|executed?|start|complete)`, "i"),
+  new RegExp(String.raw`\b${CHECKS}\b[^\n.]{0,80}\b(?:blocked|failed|fails|errored|refused)\b[^\n.]{0,80}${SANDBOX}`, "i"),
+  new RegExp(String.raw`${SANDBOX}[^\n.]{0,60}\b(?:blocked|prevented|stopped)\b[^\n.]{0,40}\b${CHECKS}\b`, "i"),
+];
+
 // JSON harness output contains tool transcripts too: only an agent's final
 // message is a report. Plain-text harnesses report through their stdout.
 export function validationBlockedReport(output) {
@@ -583,8 +599,7 @@ export function validationBlockedReport(output) {
     } catch { /* plain output */ }
   }
   if (structured) report = messages.at(-1) ?? "";
-  const blocked = /validation_blocked|(?:could not|couldn't|cannot|can't|unable to|blocked|not run|did not run|could not complete)[^\n.]{0,180}(?:checks?|tests?|suite|typecheck|vitest|npm)|(?:checks?|tests?|suite|typecheck|vitest|npm)[^\n.]{0,180}(?:could not|couldn't|cannot|can't|unable|blocked|not run|unavailable|EPERM|EACCES|permission denied)/i;
-  const match = blocked.exec(report);
+  const match = VALIDATION_BLOCKED.map((pattern) => pattern.exec(report)).find(Boolean);
   if (!match) return null;
   // Keep the actual blocker in the server's bounded detail even when the
   // final report starts with a long summary of the implementation.
@@ -615,8 +630,13 @@ export async function runTask(assignment, config, name, io) {
     const refusal = codexBuildRefusal(entry);
     if (refusal) throw Object.assign(new Error(refusal), { validationBlocked: true, skipped: true });
     workspace = io.workspacePath(project, item.id);
+    // The marker holds back only what it was written for: this actor's
+    // unverified commit, still the workspace's head. Another builder, or this
+    // one after the commit moved on, runs its harness and the checks as usual.
     const priorBlock = await io.readValidationBlock?.(workspace);
-    if (priorBlock) throw Object.assign(new Error(priorBlock), { validationBlocked: true, skipped: true });
+    if (priorBlock?.actor === actor && priorBlock.head && priorBlock.head === await io.head(workspace).catch(() => null)) {
+      throw Object.assign(new Error(priorBlock.detail), { validationBlocked: true, skipped: true });
+    }
     if (io.stopped()) throw new Error("interrupted");
     claimAttempted = true;
     await io.cli(["claim", item.id, "--project", project, "--as", actor, "--runner", name]);
@@ -711,7 +731,8 @@ export async function runTask(assignment, config, name, io) {
     if (blocked) {
       // Persist outside the reset's tracked/untracked tree: a later runner
       // must not mistake this committed but unverified work for a dead run.
-      await io.writeValidationBlock?.(workspace, blocked);
+      const head = await io.head(workspace).catch(() => null);
+      await io.writeValidationBlock?.(workspace, { actor, head, detail: blocked });
       throw Object.assign(new Error(blocked), { validationBlocked: true });
     }
     if (result?.timedOut) throw new Error("harness timed out");
@@ -1463,11 +1484,12 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
     },
     // `env` is the harness's whole environment (harnessEnv); `io.env` is the runner's.
     harness: (argv, cwd, env, { capture = false, captureError = false, stream = false } = {}) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS, env, stream, ...(capture ? { capture } : {}), ...(captureError ? { captureError } : {}) }),
+    // { actor, head, detail }; a marker that does not parse holds nothing back.
     readValidationBlock: async (cwd) => {
       const file = join(cwd, ".git", "atelier-validation-blocked");
-      return existsSync(file) ? readFileSync(file, "utf8") : null;
+      try { return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null; } catch { return null; }
     },
-    writeValidationBlock: async (cwd, detail) => writeFileSync(join(cwd, ".git", "atelier-validation-blocked"), detail, { mode: 0o600 }),
+    writeValidationBlock: async (cwd, block) => writeFileSync(join(cwd, ".git", "atelier-validation-blocked"), JSON.stringify(block), { mode: 0o600 }),
     env: process.env, ownerTokens: () => ownerTokens(process.env),
     brief: writeBrief, removeBrief, dataHome: makeDataHome, removeDataHome,
     // The plan job's and a part's server calls (atelier.mjs wires them to

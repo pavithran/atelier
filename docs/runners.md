@@ -305,13 +305,21 @@ is a refusal, not a request to silently weaken an adapter's confinement.
 
 Build stdout is captured while it streams. A final report that required checks
 could not run records `validation_blocked` rather than a model test failure.
+The build brief asks for a `validation_blocked: why` line; a report that says
+it unasked counts only when it names the checks beside the failure to run them
+("could not run npm test", "the tests could not be run") or an environment
+error beside a failed check ("npm test failed: listen EPERM"). Mentioning
+`validation_blocked` or "did not run any atelier command" in passing does not.
 This outcome is excluded from the model reliability penalty.
 The runner does not call `finish`, so it does not push that build. The task page
 shows the report above clean-clone results, with the actor, runner and reason.
 Structured Codex transcripts use the final agent message, excluding tool logs.
 
-Committed work remains local. A `.git/atelier-validation-blocked` marker stops
-a restarted runner from automatically finishing it as an interrupted build.
+Committed work remains local. A `.git/atelier-validation-blocked` marker,
+naming the actor and the unverified head, stops a restarted runner from
+automatically finishing it as an interrupted build. It holds back only that
+actor at that head: another builder dispatched to the task, or the same one
+after the head moved, runs its harness and the checks as usual.
 After fixing the harness and running the required checks successfully, the
 operator can remove this marker to resume. Changing the command configuration
 alone does not clear a blocked validation report or prove that checks passed.
