@@ -101,12 +101,15 @@ export function parseHunks(out: string): Hunk[] | null {
     const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(lines[i]);
     if (!m) { if (!hunks.length && /^Binary files /.test(lines[i])) binary = true; continue; }
     const hunk: Hunk = { oldStart: Number(m[1]), oldCount: m[2] === undefined ? 1 : Number(m[2]), newStart: Number(m[3]), newCount: m[4] === undefined ? 1 : Number(m[4]), added: [] };
-    let dels = 0;
-    while ((dels < hunk.oldCount || hunk.added.length < hunk.newCount) && i + 1 < lines.length) {
+    // A context line (" ") counts on both sides, so a diff that merged nearby
+    // hunks (diff.interHunkContext) is still read to its end.
+    let olds = 0, news = 0;
+    while ((olds < hunk.oldCount || news < hunk.newCount) && i + 1 < lines.length) {
       const line = lines[++i];
       if (line.startsWith("\\")) continue;
-      if (line.startsWith("-")) dels++;
-      else if (line.startsWith("+")) hunk.added.push(line.slice(1));
+      if (line.startsWith("-")) olds++;
+      else if (line.startsWith("+")) { news++; hunk.added.push(line.slice(1)); }
+      else { olds++; news++; }
     }
     hunks.push(hunk);
   }
@@ -118,7 +121,7 @@ const splitLines = (text: string): string[] => { const l = text.split("\n"); if 
 
 // The diff of two blobs, as a landing's comparison reads it whatever the
 // repository's diff configuration says.
-const DIFF = ["diff", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", "--diff-algorithm=myers", "--indent-heuristic", "--src-prefix=a/", "--dst-prefix=b/"];
+const DIFF = ["diff", "-U0", "--inter-hunk-context=0", "--no-color", "--no-ext-diff", "--no-textconv", "--diff-algorithm=myers", "--indent-heuristic", "--src-prefix=a/", "--dst-prefix=b/"];
 const LIST = ["diff-tree", "-r", "-z", "--no-commit-id", `--find-renames=${RENAME_THRESHOLD}`];
 
 interface SourceFile { path: string; same: Set<string>; base: string[]; deleted: Set<number> }

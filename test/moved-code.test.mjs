@@ -123,6 +123,28 @@ test("t437 after t426: Git merges the handler edit cleanly into the loader, and 
   assert.deepEqual({ task: report.task, main: report.main, mergeBase: report.mergeBase }, s.revs);
 });
 
+test("the repository's diff configuration changes nothing: with interHunkContext and context raised, the same findings come back", (t) => {
+  // A second task edit six lines above the moved one, in a handler main kept
+  // in place: with interHunkContext the two hunks merge into one carrying
+  // context lines, as t437's real history did.
+  const task = { "cli/atelier.mjs": T437.replace('console.log("status");', 'console.log("status!");') };
+  const s = scenario(t, { ...regression, task });
+  const plain = s.detect();
+  assert.equal(plain.findings.length, 1);
+  git(s.dir, "config", "diff.interHunkContext", "10");
+  git(s.dir, "config", "diff.context", "20");
+  git(s.dir, "config", "diff.algorithm", "patience");
+  assert.deepEqual(s.detect().findings, plain.findings);
+});
+
+test("parseHunks reads a hunk with context lines to its end, counting each on both sides", () => {
+  const out = ["@@ -1,4 +1,5 @@", " keep", "-gone", "+came", "+also", " keep2", " keep3", "@@ -9 +10 @@", "-x", "+y", ""].join("\n");
+  const hunks = parseHunks(out);
+  assert.equal(hunks.length, 2);
+  assert.deepEqual(hunks[0].added, ["came", "also"]);
+  assert.deepEqual(hunks[1], { oldStart: 9, oldCount: 1, newStart: 10, newCount: 1, added: ["y"] });
+});
+
 // ── the matching rule ───────────────────────────────────────────────────────
 
 const BLOCK = ["function render(item) {", "    const title = item.title;", "    const body = format(item.body);", "    return `${title}: ${body}`;", "}"];
