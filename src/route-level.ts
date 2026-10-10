@@ -16,8 +16,15 @@
 // take a brief and acceptance criteria apart from the short title, and edit
 // takes a title (t315). 16: a review names the binding of the acceptance
 // criteria it judged and may name the request it claimed, the review claim
-// gives both, and edit says what a change of criteria withdrew (t326). 17: a
-// runner reports a review it will not serve to review-skip, the queue's
-// review tasks and the review request's answer name the request's number,
-// and the landing counts skips by it (t353).
-export const ROUTE_LEVEL = 17;
+// gives both, and edit says what a change of criteria withdrew (t326).
+// 17: the review-unparsable route, which the runner's review job calls to
+// keep a reply no verdict could be read from on the task (t407).
+// 18: the owner keeps dated notes under a pool model, atelier models note
+// (t406).
+// 19: a project that requires criteria refuses a task filed or cleared
+// without them, and init takes --require-criteria (t397).
+// Runner-scoped API credentials and revocable Git gateway (t444).
+// 21: a runner reports a review it will not serve to review-skip, the
+// queue's review tasks and the review request's answer name the request's
+// number, and the landing counts skips by it (t353).
+export const ROUTE_LEVEL = 21;

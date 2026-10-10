@@ -1,14 +1,14 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { checkEnv } from "./check-env.mjs";
+import { runGroup } from "./group.mjs";
 import { excludeScratch } from "./scratch.mjs";
 import { runCommand } from "./ship.mjs";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-lease.ts";
 import { unoffered } from "../src/dispatch/rules.ts";
-import { contributorsOf, sameActor } from "../src/rules.ts";
+import { contributorsOf, roleRefusal, sameActor } from "../src/rules.ts";
 import { landingVerdict, allSkipped } from "../src/landing-verdict.ts";
 
 // atelier land (t187): the project owner lands one task whole, taking the
@@ -98,8 +98,8 @@ import { landingVerdict, allSkipped } from "../src/landing-verdict.ts";
 // Workflow's too, whose push runs here, and again after a --wait) a token
 // that has lapsed or lapses within TOKEN_WINDOW_MS is refreshed, and a push
 // still refused as expired is refreshed and tried once more. A refresh re-claims
-// the task as its current holder, as `atelier claim ID` run by the holder
-// does, never as the owner, whose claim would take the task over.
+// the task as its current holder, or its workspace's builder when released,
+// never as the owner, whose claim would take the task over.
 
 const POLL_MS = Number(process.env.ATELIER_LAND_POLL_MS ?? 5000);
 // The review wait outlasts a build on the runner (its task timeout is 45
@@ -256,6 +256,15 @@ export async function runLand(io) {
   if (reviewer !== undefined) {
     const contributed = contributorsOf(d0.item).find((c) => sameActor(c, reviewer));
     if (contributed) die(`${reviewer} contributed to ${id} (as ${contributed}) and cannot review it; name another reviewer with --reviewer H/M, of another family than every contributor.`);
+    // A reviewer the project's policy would not count is refused before the
+    // lease or a check runs (t405): under a governed policy an agent marked
+    // unavailable or without the assessor role, otherwise an ineligible
+    // harness, whose approval would not be the independent review the gate
+    // counts. The refusal names the agents that would count.
+    if (d0.policy) {
+      const refusal = roleRefusal(reviewer, d0.policy, "assessor", d0.ownerActor);
+      if (refusal) die(`${reviewer}'s approval would not count in ${name}: ${refusal}. Name another reviewer with --reviewer H/M.`);
+    }
   }
   const regenerate = typeof d0.policy?.regenerate === "string" ? d0.policy.regenerate : null;
 
@@ -344,12 +353,13 @@ export async function runLand(io) {
   // lease behind. A Ctrl-C reaches the step's child process through the
   // process group as well. While --wait queues nothing is held, so a signal
   // then releases no lease, but it leaves the queue the landing holds a
-  // place in (t249).
+  // place in (t249). A terminal hang-up is taken the same way, so the
+  // regenerate command's group (runRegenerateIn) ends with the landing.
   const onSignal = (signal) => {
     print(`${signal} received; releasing the landing lease of ${name}…`);
-    release().finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
+    release().finally(() => process.exit(signal === "SIGINT" ? 130 : signal === "SIGHUP" ? 129 : 143));
   };
-  for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, onSignal);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, onSignal);
   // --wait polls for the lease until no live task holds it and no landing
   // queued earlier still waits, saying whose landing it waits behind each
   // time that changes, and gives up after WAIT_TIMEOUT_MS from when it began
@@ -647,7 +657,7 @@ export async function runLand(io) {
     die(error.message);
   }
   await release();
-  for (const signal of ["SIGINT", "SIGTERM"]) process.off(signal, onSignal);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.off(signal, onSignal);
   // When another landing took the lease over, release() has said where it
   // stands; claiming a release here would say what did not happen.
   if (takenOverBy === null) print(`The landing lease for ${name} is released; another task may land.`);
@@ -669,7 +679,8 @@ function landRecorder(io, itemPath) {
 // the server refreshes a claim only for `item.owner === actor`, and to any
 // other name a claim is a takeover. The workspace's own atelier.actor must
 // be that holder too, so a workspace left by an earlier holder is never
-// given the current one's token; a task nobody holds is not claimed. The
+// given the current one's token. A released task is claimed for the
+// workspace's builder, withdrawing any waiting dispatch first. The
 // holder's runner rides along, as the server refuses a re-claim from any
 // runner but the one holding the task. The new token replaces the old one
 // in the workspace (the old one is revoked by the claim) and its expiry is
@@ -677,11 +688,20 @@ function landRecorder(io, itemPath) {
 async function refreshWorkspaceToken(io, { dir, id, itemPath }) {
   const recorded = io.git(["config", "--local", "atelier.actor"], { cwd: dir, allowFail: true }).stdout?.trim() || null;
   const { item } = await io.request("GET", itemPath);
-  const holder = item?.owner ?? null;
-  if (!holder || !recorded || !sameActor(holder, recorded)) {
+  const holder = item?.owner ?? recorded;
+  if (!recorded || (item?.owner && !sameActor(item.owner, recorded))) {
     throw new StepError(`${id} is held by ${holder ?? "nobody"} and its workspace was claimed by ${recorded ?? "no recorded actor"}, so the landing cannot refresh the token for its holder`);
   }
-  const r = await io.request("POST", `${itemPath}/claim`, {}, holder, item.runner ? { "x-atelier-runner": item.runner } : {});
+  if (!item.owner) {
+    const head = io.git(["rev-parse", "--verify", "HEAD"], { cwd: dir, allowFail: true });
+    if (head.status !== 0 || !head.stdout?.trim()) throw new StepError(`${id}'s workspace has no committed head to land`);
+    if (item.dispatch) {
+      await io.request("POST", `${itemPath}/undispatch`, {});
+      io.print(`Withdrew ${id}'s waiting dispatch so its committed workspace can land.`);
+    }
+    io.print(`Claiming ${id} for its workspace's builder ${holder} before refreshing the write token…`);
+  }
+  const r = await io.request("POST", `${itemPath}/claim`, {}, holder, item.owner && item.runner ? { "x-atelier-runner": item.runner } : {});
   if (!r?.workspace?.token) throw new StepError(`the re-claim of ${id} as ${holder} returned no workspace token`);
   io.adoptWorkspaceToken(dir, r.workspace);
   return { holder, expiresAt: r.workspace.expiresAt ?? null };
@@ -689,7 +709,8 @@ async function refreshWorkspaceToken(io, { dir, id, itemPath }) {
 
 // Before the landing takes the lease: a write token that has lapsed or
 // lapses within TOKEN_WINDOW_MS is refreshed, and one that cannot be stops
-// the landing here, with nothing changed. The expiry is recorded at each
+// the landing here before the lease. Released tasks need a new claim even
+// before expiry, since release revokes their tokens. The expiry is recorded at each
 // claim (recordTokenExpiry in cli/atelier.mjs); the server keeps none it
 // could answer later, so a workspace claimed before that was recorded has
 // an unknown expiry, which is refreshed once — the refresh records it, and
@@ -698,13 +719,13 @@ async function ensureWorkspaceToken(io, { dir, id, itemPath, item }) {
   if (item?.state === "accepted") return;
   const recorded = io.git(["config", "--local", "atelier.write-token-expires-at"], { cwd: dir, allowFail: true }).stdout?.trim() || null;
   const at = recorded ? Date.parse(recorded) : NaN;
-  if (Number.isFinite(at) && at - Date.now() > TOKEN_WINDOW_MS) return;
+  if (item?.owner && Number.isFinite(at) && at - Date.now() > TOKEN_WINDOW_MS) return;
   io.print(Number.isFinite(at)
     ? `${id}'s workspace write token ${at <= Date.now() ? "expired" : "expires"} ${recorded.slice(0, 16).replace("T", " ")} UTC; refreshing it for its holder before the landing takes the lease…`
     : `${id}'s workspace records no write token expiry (it was claimed before expiries were recorded); refreshing the token for its holder before the landing takes the lease…`);
   let fresh;
   try { fresh = await refreshWorkspaceToken(io, { dir, id, itemPath }); }
-  catch (error) { throw new StepError(`${id}'s workspace write token could not be refreshed, so the landing stops before taking the lease, with nothing changed: ${error.message}. Have its holder run atelier claim ${id} in the workspace, then run atelier land ${id} again`); }
+  catch (error) { throw new StepError(`${id}'s workspace write token could not be refreshed, so the landing stops before taking the lease: ${error.message}. Have its builder run atelier claim ${id} in the workspace, then run atelier land ${id} again`); }
   io.print(`Refreshed ${id}'s workspace write token for ${fresh.holder}${fresh.expiresAt ? `; it expires ${String(fresh.expiresAt).slice(0, 16).replace("T", " ")} UTC` : ""}.`);
 }
 
@@ -726,9 +747,10 @@ async function pushRefreshing(io, ctx, push) {
 // The regenerate command, run in the workspace the way a check runs it.
 // Both the merge (to settle conflicts that lie only in generated files)
 // and the regenerate step (to bring every generated file current with the
-// merged tree) come through here.
-function runRegenerateIn(dir, regenerate, io) {
-  const r = spawnSync("/bin/sh", ["-c", regenerate], { cwd: dir, env: checkEnv(), timeout: CHECK_TIMEOUT_MS, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+// merged tree) come through here. It leads a process group of its own
+// (runGroup), ended whole when its shell exits or its time limit passes.
+async function runRegenerateIn(dir, regenerate, io) {
+  const r = await runGroup(["/bin/sh", "-c", regenerate], { cwd: dir, env: checkEnv(), timeoutMs: CHECK_TIMEOUT_MS });
   const output = io.redact(`${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? `\n[atelier] ${r.error.message}` : ""}`, io.secrets());
   if (output.trim()) process.stdout.write(output.slice(-4000) + "\n");
   return { ok: !r.error && r.status === 0, why: r.error ? r.error.message : `exit ${r.status}` };
@@ -803,7 +825,7 @@ async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, g
           taken.set(file, shaOf(file));
         }
         if (either) {
-          regen = runRegenerateIn(dir, regenerate, io);
+          regen = await runRegenerateIn(dir, regenerate, io);
           unwritten = regen.ok ? conflicts.filter((file) => shaOf(file) === taken.get(file)) : null;
         }
         if (regen?.ok && !unwritten.length) {
@@ -903,7 +925,7 @@ async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, g
     guard();
     const start = Date.now();
     print(`Regenerating with \`${regenerate}\`…`);
-    const r = runRegenerateIn(dir, regenerate, io);
+    const r = await runRegenerateIn(dir, regenerate, io);
     if (!r.ok) {
       await record("regenerate", Date.now() - start, { command: regenerate, failed: true });
       throw new StepError(`the fixture regeneration command \`${regenerate}\` failed (${r.why}); the merge is left in the workspace. Fix the command (the project's policy declares it: atelier init --regenerate), then run atelier land ${id} again`);
@@ -946,7 +968,7 @@ async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, g
 // It ends when the instance completes or fails. Closing the laptop stops
 // only this view: the Workflow keeps its place, and the same command run
 // again attaches and goes on from the stage it reached.
-const LIVE = ["queued", "running", "waiting", "waitingForPause", "paused"];
+const LIVE = ["queued", "running", "waiting", "waitingForPause", "paused", "rollingBack"];
 
 async function runLandWorkflow(io, { d0, itemPath, dir, regenerate }) {
   const { args, name, id, p, request, git, die, print } = io;
@@ -1005,6 +1027,14 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate }) {
     return () => clearInterval(timer);
   };
 
+  let lastStatus = started.status, lastInstance = started.instance;
+  const queueState = async (read) => {
+    if (typeof read?.queued === "boolean") return read.queued ? `${id} is still queued` : `${id} is not queued`;
+    try {
+      const lease = await request("GET", leasePath);
+      return Array.isArray(lease.waiting) ? (lease.waiting.some((row) => row.item === id) ? `${id} is still queued` : `${id} is not queued`) : `whether ${id} is still queued is unknown`;
+    } catch { return `whether ${id} is still queued is unknown`; }
+  };
   let said = null, workedRound = null, mergedHere = false, saidWait = false;
   for (;;) {
     let read;
@@ -1019,14 +1049,19 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate }) {
       print(`${id} landed through the landing Workflow; the lease is released.`);
       return;
     }
-    if (!instance || !status) die(`the landing Workflow of ${id} can no longer be read (instance ${instance ?? "none"}); its lease lapses on its own. Run atelier land ${id} --workflow again to start or attach the landing`);
+    if (!instance || !status || status.status === "unknown" || instance !== started.instance) {
+      const last = instance === started.instance ? read?.lastStatus ?? lastStatus : lastStatus;
+      die(`the landing Workflow of ${id} can no longer be read (instance ${lastInstance ?? "none"}); last status: ${last?.status ?? "unknown"}; last error: ${last?.error?.message ?? detail ?? "none recorded"}; read error: ${read?.readError ?? (instance && instance !== started.instance ? `replaced by ${instance}` : "no status returned")}; ${await queueState(read)}. Its lease lapses on its own. Inspect it with: npx wrangler workflows instances describe landing ${lastInstance}. To start or attach again, run: atelier land ${id} --workflow (a missing instance is cleared automatically; a live instance is reattached).`, 1);
+    }
+    lastStatus = status;
+    lastInstance = instance;
     if (status.status === "complete") {
       if (noReview || status.output?.review === "skipped") print(`${id} is submitted and left for you to settle the review by hand (--no-review): atelier review ${id} --approve --as H/M --note "…", then atelier accept ${id} and atelier merge ${id}.`);
       else print(`${id} landed through the landing Workflow (instance ${instance}); the lease is released.`);
       return;
     }
     if (status.status === "errored" || status.status === "terminated") {
-      die(`the landing Workflow ${instance} ${status.status === "terminated" ? "was terminated" : "failed"}: ${status.error?.message ?? detail ?? "no reason given"}`);
+      die(`the landing Workflow ${instance} ${status.status === "terminated" ? "was terminated" : "failed"}: ${status.error?.message ?? detail ?? "no reason given"}; last status: ${status.status}; ${await queueState(read)}`, 1);
     }
     const key = `${stage}:${round}:${stage === "review" ? detail ?? "" : ""}`;
     if (key !== said) {

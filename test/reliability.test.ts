@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import type { LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import {
-  buildReliability, cleanDefect, cleanFinding, cleanRun, outcomesOf, reliabilityLine, roundsPerMerge, tiebreak,
+  buildReliability, runTotal, cleanDefect, cleanFinding, cleanRun, outcomesOf, reliabilityLine, roundsPerMerge, tiebreak,
   type ModelReliability, type RunReport,
 } from "../src/models/reliability.ts";
 import { route } from "../src/models/routing.ts";
@@ -143,7 +143,7 @@ test("runs the runners reported: stalled, timed out and refused per model, and r
     run({ actor: "atelier/sandbox" }),
     run({ actor: OWNER }),
   ], OWNER);
-  assert.deepEqual(one(rel, "opus-5.5").runs, { stalled: 1, "timed-out": 1, refused: 0, harness_failed: 0, early_stop: 0, permission_stop: 0, duplicate_design: 0, incomplete_merge: 0 });
+  assert.deepEqual(one(rel, "opus-5.5").runs, { stalled: 1, "timed-out": 1, refused: 0, harness_failed: 0, early_stop: 0, permission_stop: 0, duplicate_design: 0, incomplete_merge: 0, validation_blocked: 0 });
   const glm = one(rel, "glm-5.3");
   assert.deepEqual([glm.runs.refused, glm.unfinishedReviews], [2, 1]);
   assert.deepEqual(glm.actors, ["opencode/GLM-5.3"]);
@@ -157,6 +157,30 @@ test("a plan harness failure is counted as harness_failed, not refused", () => {
   const opus = one(rel, "opus-5.5");
   assert.deepEqual([opus.runs.harness_failed, opus.runs.refused, opus.unfinishedReviews], [1, 0, 0]);
   assert.deepEqual(opus.runCauses.map((c) => c.note), ["plan run harness_failed: the CLI is too old"]);
+});
+
+// t407: a reply no verdict could be read from, kept on the task as a
+// review.unparsable event, counts against the reviewer as a review that never
+// reached a verdict, beside the runs the runners report; the owner's own and
+// Atelier's own records are no model's.
+test("an unparsable reply counts against the reviewer as a review without a verdict", () => {
+  const events = history(
+    ["t1", GEMINI, "review.unparsable", { head: H1, note: "the reply states no verdict: it has no VERDICT line and no JSON verdict" }],
+    ["t2", OPUS, "review.unparsable", { head: H2, note: "the reply is 131074 characters, over the 100000 a verdict needs" }],
+    ["t3", OPUS, "review.unparsable", { head: H3, note: "again" }],
+    ["t4", OWNER, "review.unparsable", { head: H1, note: "the owner by hand" }],
+    ["t5", "atelier/sandbox", "review.unparsable", { head: H1, note: "no model" }],
+  );
+  const rel = buildReliability([{ project: "a", events }], [], OWNER);
+  assert.equal(one(rel, "opus-5.5").unfinishedReviews, 2);
+  assert.equal(one(rel, "gemini-3.1-pro").unfinishedReviews, 1);
+  assert.match(reliabilityLine(one(rel, "opus-5.5")), /2 reviews without a verdict/);
+  assert.equal(rel.has(OWNER), false);
+  assert.equal(rel.has("sandbox"), false);
+  // It is the reviewer's record alone: no run outcome and no cause is invented.
+  const opus = one(rel, "opus-5.5");
+  assert.deepEqual(opus.runs, { stalled: 0, "timed-out": 0, refused: 0, harness_failed: 0, early_stop: 0, permission_stop: 0, duplicate_design: 0, incomplete_merge: 0, validation_blocked: 0 });
+  assert.deepEqual(opus.runCauses, []);
 });
 
 test("the tie-breaker is the share of outcomes in a model's favour, one half with no record", () => {
@@ -185,7 +209,7 @@ test("a run report is validated: an agent, a known role and outcome, a task id, 
   for (const [body, why] of [
     [{ actor: "owner", outcome: "stalled" }, /harness\/model/],
     [{ actor: "atelier/sandbox", outcome: "stalled" }, /harness\/model/],
-    [{ actor: OPUS, outcome: "crashed" }, /outcome must be one of stalled, timed-out, refused, harness_failed, early_stop, permission_stop, duplicate_design, incomplete_merge/],
+    [{ actor: OPUS, outcome: "crashed" }, /outcome must be one of stalled, timed-out, refused, harness_failed, early_stop, permission_stop, duplicate_design, incomplete_merge, validation_blocked/],
     [{ actor: OPUS, outcome: "stalled", role: "integrate" }, /build, plan or review/],
     [{ actor: OPUS, outcome: "stalled", item: "x1" }, /task id/],
     [{ actor: OPUS, outcome: "stalled", project: "a/b" }, /project/],
@@ -421,4 +445,28 @@ test("a commit another agent pushed into the holder's task is credited to that a
     assert.equal(r.merged, 1, model);
     assert.equal(r.defects.length, 1, model);
   }
+});
+
+
+test("validation blocked remains visible without penalizing the model's reliability", () => {
+  const rel = buildReliability([], [run({ outcome: "validation_blocked", detail: "npm test: listen EPERM" })], OWNER);
+  const model = one(rel, "opus-5.5");
+  assert.equal(model.runs.validation_blocked, 1);
+  assert.equal(runTotal(model), 0);
+  assert.match(model.runCauses[0].note, /validation_blocked.*listen EPERM/);
+});
+
+test("blocked validation does not erase unparsable reviews or add a review without a verdict", () => {
+  const events = history(["t1", OPUS, "review.unparsable", { head: H1, note: "no verdict" }]);
+  const rel = buildReliability([{ project: "a", events }], [
+    run({ actor: OPUS, role: "build", outcome: "validation_blocked", detail: "npm test: listen EPERM" }),
+    run({ actor: OPUS, role: "review", outcome: "validation_blocked", detail: "required checks unavailable" }),
+    run({ actor: OPUS, role: "review", outcome: "refused" }),
+  ], OWNER);
+  const model = one(rel, "opus-5.5");
+  assert.equal(model.runs.validation_blocked, 2);
+  assert.equal(runTotal(model), 1);
+  assert.equal(model.unfinishedReviews, 2);
+  assert.match(reliabilityLine(model), /2 reviews without a verdict/);
+  assert.equal(model.runCauses.length, 3);
 });

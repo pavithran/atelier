@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { setImmediate as tick } from "node:timers/promises";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -6,6 +7,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runReview, runRunner, commandFor, execute } from "../cli/runner.mjs";
 import { BRIEF_LIMITS } from "../src/review/brief.ts";
+import { VERDICT_LIMITS } from "../src/review/verdict.ts";
+
+// Pin the load under the runner's limit so these tests are not held back by
+// this machine's real load; the gate is tested with an injected load.
+process.env.ATELIER_LOAD = "0";
 
 // The review job (docs/orchestrator.md, section 4, build step 10) driven
 // through the same stand-in io the other runner tests use: the server answers
@@ -120,11 +126,12 @@ test("runReview posts a rejection with its findings, and releases the request wh
   assert.ok(posted.includes("--findings"));
   assert.ok(posted.includes(JSON.stringify([{ file: "src/review/needed.ts", line: 88, severity: "blocking", text: "A lapsed claim is never retried." }])));
 
-  // A harness that writes no valid verdict releases the request.
+  // A harness that writes no valid verdict keeps the reply on the task (t407)
+  // and releases the request.
   const blank = fixture({ verdict: "Looks good, ship it." });
   const blankState = await runReview(assignment, config, "home:studio", blank.io);
   assert.equal(blankState.phase, "failed");
-  assert.ok(blank.calls.some((c) => c.argv && c.argv[0] === "review-release"));
+  assert.ok(blank.calls.some((c) => c.argv && c.argv[0] === "review-unparsable"), "the reply is kept on the task");
 });
 
 // t325: the claim's part carries acceptance criteria, so the reply must prove
@@ -135,8 +142,8 @@ test("runReview releases the request when an approval proves no acceptance crite
   const state = await runReview(assignment, config, "home:studio", bare.io);
   assert.equal(state.phase, "failed");
   assert.match(state.reason, /an approval needs a CRITERION line for each of the 1 acceptance criteria: criterion 1 has none/);
-  const release = bare.calls.find((c) => c.argv && c.argv[0] === "review-release").argv;
-  assert.ok(release.some((a) => a.includes("criterion 1 has none")), release.join(" "));
+  const unparsable = bare.calls.find((c) => c.argv && c.argv[0] === "review-unparsable").argv;
+  assert.ok(unparsable.some((a) => a.includes("criterion 1 has none")), unparsable.join(" "));
   assert.ok(!bare.calls.some((c) => c.argv && c.argv[0] === "review"), "no review is posted");
 
   // A task with no criteria and no plan is approved without CRITERION lines,
@@ -153,6 +160,57 @@ test("runReview releases the request when the harness fails or times out", async
     assert.equal(state.phase, "failed");
     assert.ok(calls.some((c) => c.argv && c.argv[0] === "review-release"), JSON.stringify(options));
   }
+});
+
+// t407: a reply with no verdict is kept on the task, its last 100 KB with the
+// reviewer and the head it judged, as the request is released for another
+// reviewer. Before this the reply was discarded and the only evidence was the
+// runner's log.
+test("runReview keeps an unparsable reply on the task and releases the request", async () => {
+  const noVerdict = "I read the change.\nIt works as far as I can tell; nothing to add.";
+  const { io, calls, logs } = fixture({ verdict: noVerdict });
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.phase, "failed");
+  assert.match(state.reason, /the reply states no verdict: it has no VERDICT line and no JSON verdict/);
+  const kept = calls.find((c) => c.argv && c.argv[0] === "review-unparsable");
+  assert.ok(kept, "the unparsable reply is posted");
+  const argv = kept.argv;
+  assert.equal(argv[argv.indexOf("--head") + 1], H1);
+  assert.equal(argv[argv.indexOf("--as") + 1], assignment.actor);
+  assert.match(argv[argv.indexOf("--note") + 1], /the reply states no verdict/);
+  // The reply itself travels as a file the CLI reads, never as an argument.
+  const written = calls.filter((c) => c.brief).find((c) => c.brief === noVerdict);
+  assert.ok(written, "the reply is written to a file whole");
+  assert.equal(argv[argv.indexOf("--reply-file") + 1], "/cache/work/atelier/brief.txt", "the CLI is pointed at the file the runner wrote");
+  assert.ok(!argv.some((a) => a === noVerdict), "the reply text is never an argument");
+  assert.ok(!calls.some((c) => c.argv && c.argv[0] === "review"), "no review is posted");
+  assert.ok(calls.some((c) => c.removed === written.file), "the reply file is removed after the call");
+  assert.ok(logs.some((l) => l.includes("review released")), logs.join("\n"));
+  assert.ok(kept.token === FAKE_TOKEN, "the reply is kept with the reviewer's own token");
+
+  // A reply longer than the 100 KB a verdict needs is kept as its last 100 KB.
+  const long = `${"a line of a reply that never reaches a verdict\n".repeat(3400)}the tail that matters`;
+  assert.ok(long.length > VERDICT_LIMITS.reply, `${long.length} characters`);
+  const longRun = fixture({ verdict: long });
+  const longState = await runReview(assignment, config, "home:studio", longRun.io);
+  assert.match(longState.reason, /over the 100000 a verdict needs/);
+  const tail = longRun.calls.filter((c) => c.brief).find((c) => c.brief.endsWith("the tail that matters"));
+  assert.ok(tail, "the kept reply is the reply's end");
+  assert.equal(tail.brief.length, VERDICT_LIMITS.reply, "exactly the last 100 KB");
+
+  // When the task cannot take the reply, the request is released as before
+  // and the run still fails with the parse's reason.
+  const refused = fixture({ verdict: noVerdict });
+  const cli = refused.io.cli;
+  refused.io.cli = async (argv, cwd, options) => {
+    if (argv[0] === "review-unparsable") throw new Error("server refused");
+    return cli(argv, cwd, options);
+  };
+  const failed = await runReview(assignment, config, "home:studio", refused.io);
+  assert.equal(failed.phase, "failed");
+  assert.match(failed.reason, /the reply states no verdict/);
+  assert.ok(refused.calls.some((c) => c.argv && c.argv[0] === "review-release"), "the request is still released");
+  assert.ok(refused.logs.some((l) => l.includes("could not keep the unparsable reply")), refused.logs.join("\n"));
 });
 
 test("runReview carries a diff too large for the brief by its R2 reference, not inline (t284)", async () => {
@@ -202,7 +260,7 @@ test("runReview releases the request when the harness wrote no verdict file at a
   io.readVerdict = () => { throw Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" }); };
   const state = await runReview(assignment, config, "home:studio", io);
   assert.equal(state.phase, "failed");
-  assert.ok(calls.some((c) => c.argv && c.argv[0] === "review-release"), "the request is released");
+  assert.ok(calls.some((c) => c.argv && c.argv[0] === "review-unparsable"), "the empty reply is kept on the task and the request released");
 });
 
 test("runReview clones into a folder of its own, never the builder's workspace, and removes it and the verdict file", async () => {
@@ -291,7 +349,7 @@ test("the runner serves a review job before the builds the queue lists first", a
   const args = runnerConfig(t, ["build", "review"]);
   const { io, calls } = fixture();
   const build = { ...assignment, item: { id: "t20", title: "Build" } };
-  await runRunner(args, { workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, queue: async () => [build, assignment] });
+  await runRunner(args, { workspacePath: io.workspacePath, taskIO: io, wait: () => tick(), queue: async () => [build, assignment] });
   assert.deepEqual(calls.filter((c) => c.argv).map((c) => c.argv[0]).slice(0, 1), ["review-claim"]);
   assert.ok(!calls.some((c) => c.argv?.[0] === "claim"), "the build waits for the next poll");
 });
@@ -310,7 +368,7 @@ test("a reviews-only runner passes builds by and serves the review", async (t) =
   ];
   const offers = [];
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
     queue: async (offer) => { offers.push(offer.jobs); return [...builds, assignment]; },
   });
   assert.deepEqual(offers, [["review"]], "the offer names reviews alone");
@@ -319,12 +377,15 @@ test("a reviews-only runner passes builds by and serves the review", async (t) =
 
 // t252: with only builds offered, a reviews-only runner claims nothing and
 // keeps polling, and the builds stay in the queue for a runner that takes them.
-test("a reviews-only runner claims nothing when the queue offers only builds", async (t) => {
+// The stand-in wait yields to the timers (tick), so should the stop never
+// come the test's timeout still fires, where a wait that resolved at once
+// left the poll loop spinning a core for a day (t419).
+test("a reviews-only runner claims nothing when the queue offers only builds", { timeout: 10_000 }, async (t) => {
   const args = { ...runnerConfig(t), once: undefined };
   const { io, calls } = fixture();
   let polls = 0;
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
     queue: async () => {
       if (++polls === 2) process.emit("SIGINT");
       return [{ ...assignment, item: { id: "t20", title: "Build" } }];
@@ -342,7 +403,7 @@ test("a review run that timed out is reported with the review role", async (t) =
   const previous = process.exitCode;
   t.after(() => { process.exitCode = previous; });
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, queue: async () => [assignment],
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(), queue: async () => [assignment],
     async reportRun(body) { reports.push(body); },
   });
   assert.deepEqual(reports.map((r) => [r.role, r.outcome]), [["review", "timed-out"]]);
@@ -520,7 +581,7 @@ test("a review skip report the server refuses is dropped after the refusal, not 
 // t213: an interrupt during a review still gives the request back, with the
 // cleanup deadline a build's release gets, since the runner's own signal is
 // already aborted by then.
-test("an interrupted review releases the request through the real CLI helper", async (t) => {
+test("an interrupted review releases the request through the real CLI helper", { timeout: 10_000 }, async (t) => {
   const args = { ...runnerConfig(t), once: undefined };
   const { io } = fixture();
   const { cli, stopped, ...taskIO } = io;
@@ -530,7 +591,7 @@ test("an interrupted review releases the request through the real CLI helper", a
   // polls, and the assertion below fails instead of the poll loop spinning.
   let polls = 0;
   await runRunner(args, {
-    workspacePath: io.workspacePath, wait: async () => {}, queue: async () => { if (++polls > 3) process.emit("SIGINT"); return [assignment]; },
+    workspacePath: io.workspacePath, wait: () => tick(), queue: async () => { if (++polls > 3) process.emit("SIGINT"); return [assignment]; },
     taskIO: { ...taskIO, async harness() { process.emit("SIGINT"); return { code: 0 }; } },
     async executeChild(argv, options) {
       if (argv[2] === "review-claim") return { code: 0, output: JSON.stringify(claimed) };
@@ -569,7 +630,7 @@ async function serveReview(t, dir, claim) {
   t.after(() => { process.exitCode = previous; });
   const seen = {}, posted = [];
   await runRunner(args, {
-    workspacePath: () => join(dir, "t21"), wait: async () => {}, queue: async () => [task],
+    workspacePath: () => join(dir, "t21"), wait: () => tick(), queue: async () => [task],
     taskIO: { readSecret: () => FAKE_TOKEN },
     async executeChild(argv, options) {
       if (argv[0] === "git") return execute(argv, options);

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { runLand } from "../cli/land.mjs";
-import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone } from "../src/landing-lease.ts";
+import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone, landingLeasePollMs } from "../src/landing-lease.ts";
 
 // atelier land (t187) against a stand-in server and local bare repositories,
 // as the other CLI tests run merge: the landing lease refuses a second
@@ -114,7 +114,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     ];
     return {
       item: { id, title: `Fixture ${id}`, state, owner: "codex/test", ...(box.pushActors ? { pushActors: box.pushActors } : {}), head, ...(box.kinds[id] ? { kind: box.kinds[id] } : {}), acceptedHead: state === "accepted" || state === "merged" ? head : null },
-      policy: { checks: box.checks, protected: ["work.txt"], regenerate: box.regen },
+      policy: { checks: box.checks, protected: ["work.txt"], regenerate: box.regen, ...(box.agents ? { agents: box.agents } : {}), ...(box.eligible ? { eligible: box.eligible } : {}) },
       gate: { ready: true, outOfScope: [], blockers: [] }, evidence: [], reviews, events,
     };
   };
@@ -133,7 +133,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
       // remembers, its stage and round, and its status. A test moves it on
       // through `wf.tick` (after each read) and `wf.onEvent` (each event).
       const wf = box.wf;
-      const view = () => ({ instance: wf.instance, stage: wf.stage, round: wf.round, ...(wf.checks ? { checks: wf.checks } : {}), ...(wf.files ? { files: wf.files } : {}), status: { status: wf.status, ...(wf.error ? { error: { name: "Error", message: wf.error } } : {}), ...(wf.output ? { output: wf.output } : {}) } });
+      const view = () => ({ ...(wf.readError ? { readError: wf.readError } : {}), ...(wf.lastStatus ? { lastStatus: wf.lastStatus } : {}), instance: wf.instance, stage: wf.stage, round: wf.round, ...(wf.checks ? { checks: wf.checks } : {}), ...(wf.files ? { files: wf.files } : {}), status: wf.unreadable ? null : { status: wf.status, ...(wf.error ? { error: { name: "Error", message: wf.error } } : {}), ...(wf.output ? { output: wf.output } : {}) } });
       if (req.method === "GET") { answer = wf.instance ? view() : { instance: null, status: null, stage: null }; wf.reads++; }
       else if (body.event) { wf.events.push(body.event); wf.onEvent?.(body.event, box); answer = { sent: true, instance: wf.instance }; }
       else if (wf.instance && ["running", "waiting", "queued"].includes(wf.status)) answer = { ...view(), created: false };
@@ -236,7 +236,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     const status = await new Promise((ok) => child.on("close", ok));
     return { status, output };
   };
-  const fx = { p, url, baseline, checkout, workspace: (id) => join(cache, "work", "proj", id), fork: (id) => join(p, `fork-${id}.git`), forkHead, mainCommit, box, run, env: {}, onOutput: null, posts: (suffix) => box.requests.filter((r) => r.method === "POST" && r.path.endsWith(suffix)) };
+  const fx = { after: (fn) => t.after(fn), p, url, baseline, checkout, workspace: (id) => join(cache, "work", "proj", id), fork: (id) => join(p, `fork-${id}.git`), forkHead, mainCommit, box, run, env: {}, onOutput: null, posts: (suffix) => box.requests.filter((r) => r.method === "POST" && r.path.endsWith(suffix)) };
   return fx;
 }
 
@@ -306,6 +306,42 @@ test("--reviewer who contributed to the task is refused before the lease and the
   const r = await f.run(f.checkout, "land", "t1", "--reviewer", "codex/gpt-6-luna");
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /codex\/gpt-6-luna contributed to t1 .* cannot review it/);
+  assert.equal(f.posts("/landing-lease").length, 0);
+  assert.equal(f.posts("/review-request").length, 0);
+  assert.equal(f.posts("/land").length, 0);
+  assert.equal(git(f.checkout, "rev-parse", "HEAD"), before);
+});
+
+test("--reviewer whose approval would not count under the policy is refused up front, naming the reviewers that would", async (t) => {
+  const f = await landFixture(t);
+  f.box.agents = { claude: { available: true, eligible_roles: ["assessor"] }, codex: { available: false, eligible_roles: ["assessor"] } };
+  const before = git(f.checkout, "rev-parse", "HEAD");
+  const r = await f.run(f.checkout, "land", "t1", "--reviewer", "codex/gpt-6-astra");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /codex\/gpt-6-astra's approval would not count in proj: codex\/gpt-6-astra needs an available agent with the assessor role; available agents with the assessor role: claude\. Name another reviewer with --reviewer H\/M/);
+  assert.equal(f.posts("/landing-lease").length, 0);
+  assert.equal(f.posts("/review-request").length, 0);
+  assert.equal(f.posts("/land").length, 0);
+  assert.equal(git(f.checkout, "rev-parse", "HEAD"), before);
+  // An agent available but without the assessor role is refused the same way.
+  f.box.agents = { claude: { available: true, eligible_roles: ["assessor"] }, codex: { available: true, eligible_roles: ["executor"] } };
+  const norole = await f.run(f.checkout, "land", "t1", "--reviewer", "codex/gpt-6-astra");
+  assert.equal(norole.status, 1, norole.output);
+  assert.match(norole.output, /codex\/gpt-6-astra's approval would not count in proj: codex\/gpt-6-astra needs an available agent with the assessor role; available agents with the assessor role: claude\. Name another reviewer with --reviewer H\/M/);
+  assert.equal(f.posts("/landing-lease").length, 0);
+  assert.equal(git(f.checkout, "rev-parse", "HEAD"), before);
+  // The eligible reviewer is not refused.
+  const ok = await f.run(f.checkout, "land", "t1", "--reviewer", "claude-code/opus-5.5");
+  assert.equal(ok.status, 0, ok.output);
+});
+
+test("--reviewer outside a legacy eligibility list is refused up front, naming the eligible harnesses", async (t) => {
+  const f = await landFixture(t);
+  f.box.eligible = ["claude"];
+  const before = git(f.checkout, "rev-parse", "HEAD");
+  const r = await f.run(f.checkout, "land", "t1", "--reviewer", "codex/gpt-6-astra");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /codex\/gpt-6-astra's approval would not count in proj: codex is not an eligible agent here \(eligible: claude\)\. Name another reviewer with --reviewer H\/M/);
   assert.equal(f.posts("/landing-lease").length, 0);
   assert.equal(f.posts("/review-request").length, 0);
   assert.equal(f.posts("/land").length, 0);
@@ -635,6 +671,7 @@ test("a signal ends a queued landing, leaving the queue and taking no lease", as
     cwd: f.checkout,
     env: { ...process.env, ATELIER_CONFIG_DIR: join(f.p, "config"), ATELIER_TOKEN: "fixture", ATELIER_CACHE: join(f.p, "cache"), ATELIER_SERVER: f.url, ATELIER_LAND_POLL_MS: "30" },
   });
+  t.after(() => child.kill("SIGKILL"));
   let output = ""; child.stdout.on("data", (s) => { output += s; }); child.stderr.on("data", (s) => { output += s; });
   const done = new Promise((ok) => child.on("close", (status, signal) => ok({ status, signal })));
   await until(() => f.posts("/landing-lease").some((x) => x.body.queued === true && x.body.item === "t1"), 15_000, "the queued ask");
@@ -1085,6 +1122,8 @@ function waitingLanding(f, env = {}) {
     cwd: f.checkout,
     env: { ...process.env, ATELIER_CONFIG_DIR: join(f.p, "config"), ATELIER_TOKEN: "fixture", ATELIER_CACHE: join(f.p, "cache"), ATELIER_SERVER: f.url, ATELIER_LAND_POLL_MS: "30", ...env },
   });
+  // Ended however the test ends, so a failed wait leaves no landing polling.
+  f.after(() => child.kill("SIGKILL"));
   let output = ""; child.stdout.on("data", (s) => output += s); child.stderr.on("data", (s) => output += s);
   const done = new Promise((ok) => child.on("close", (status, signal) => ok({ status, signal })));
   return { child, done, output: () => output };
@@ -1103,6 +1142,25 @@ test("SIGINT and SIGTERM release the lease before the landing ends, with the sig
     assert.equal(f.box.lease, null);
     assert.ok(f.posts("/landing-lease").some((x) => x.body.cancel === true));
     assert.equal(f.box.states.t1, "submitted");
+  }
+});
+
+// t419: a landing signalled while its regenerate command runs ends that
+// command's process group, and what it started, as it releases the lease.
+test("SIGINT, SIGTERM and SIGHUP during the regenerate step end its process group with the landing", { timeout: 60_000 }, async (t) => {
+  for (const [signal, status] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]]) {
+    const f = await landFixture(t);
+    const pidFile = join(f.p, "regen-sleeper.pid");
+    f.box.regen = `sleep 300 & echo $! > ${JSON.stringify(pidFile)}; wait`;
+    const landing = waitingLanding(f);
+    await until(() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim(), 15_000, "the regenerate command's sleeper");
+    const sleeper = Number(readFileSync(pidFile, "utf8"));
+    landing.child.kill(signal);
+    const ended = await landing.done;
+    assert.equal(ended.status, status, landing.output());
+    assert.equal(f.box.lease, null, landing.output());
+    const alive = () => { try { process.kill(sleeper, 0); return true; } catch { return false; } };
+    await until(() => !alive(), 2000, `the end of the regenerate sleeper ${sleeper} after ${signal}`);
   }
 });
 
@@ -1623,11 +1681,11 @@ test("land --workflow reports a finished landing, not a lost one, when the merge
 // reads one from disk, under .scratch/) and the CLI's own steps. The task is
 // held by codex/test, the owner is "owner", and the workspace records
 // `expiresAt` as its token's expiry (none when null).
-function tokenLanding(t, { expiresAt, claim = "ok", holder = "codex/test", runner = null, workflow = false, push = [] } = {}) {
+function tokenLanding(t, { expiresAt, claim = "ok", holder = "codex/test", runner = null, dispatch = null, actor = "codex/test", committed = true, workflow = false, push = [] } = {}) {
   const scratch = resolve(".scratch"); mkdirSync(scratch, { recursive: true });
   const dir = mkdtempSync(join(scratch, "land-token-")); t.after(() => rmSync(dir, { recursive: true, force: true }));
   execFileSync("git", ["init", "-q", dir]);
-  const config = { "atelier.project": "proj", "atelier.item": "t1", "atelier.actor": "codex/test", ...(expiresAt ? { "atelier.write-token-expires-at": expiresAt } : {}) };
+  const config = { "atelier.project": "proj", "atelier.item": "t1", "atelier.actor": actor, ...(expiresAt ? { "atelier.write-token-expires-at": expiresAt } : {}) };
   const calls = [], lines = [], adopted = [], commands = [];
   const itemPath = "/projects/proj/items/t1", leasePath = "/projects/proj/landing-lease";
   const fresh = new Date(Date.now() + 8 * 3600_000).toISOString();
@@ -1636,9 +1694,12 @@ function tokenLanding(t, { expiresAt, claim = "ok", holder = "codex/test", runne
     if (path === "/version") return { routeLevel: ROUTE_LEVEL, commit: "c0ffee" };
     if (path === leasePath && method === "GET") return { lease: null, waiting: [] };
     if (path === leasePath) return body.cancel ? {} : { item: { id: "t1", state: "submitted" } };
-    if (path === itemPath) return { item: { id: "t1", state: "submitted", owner: holder, runner }, policy: { checks: [] } };
+    if (path === itemPath) return { item: { id: "t1", state: holder ? "submitted" : "open", owner: holder, runner, dispatch }, policy: { checks: [] } };
+    if (path === `${itemPath}/undispatch`) { dispatch = null; return {}; }
     if (path === `${itemPath}/claim`) {
+      if (dispatch && !holder) throw new Error("dispatched: withdraw the dispatch to claim it by hand");
       if (claim !== "ok") throw Object.assign(new Error(claim), { status: 409 });
+      holder = as;
       return { item: { id: "t1" }, workspace: { remote: "https://fork.invalid/t1.git", token: "fresh-token", expiresAt: fresh, defaultBranch: "main" } };
     }
     if (path === `${itemPath}/base-token`) return { remote: "https://base.invalid/main.git", token: "read", defaultBranch: "main" };
@@ -1650,7 +1711,7 @@ function tokenLanding(t, { expiresAt, claim = "ok", holder = "codex/test", runne
   // Git as a landing asks it: main already merged, nothing to compare or
   // regenerate, the config above.
   const fakeGit = (args, o = {}) => {
-    const out = args[0] === "config" ? config[args.at(-1)] ?? null : args[0] === "rev-parse" ? "a".repeat(40) : "";
+    const out = args[0] === "config" ? config[args.at(-1)] ?? null : args[0] === "rev-parse" ? committed ? "a".repeat(40) : null : "";
     if (o.allowFail) return { status: out === null ? 1 : 0, stdout: out ?? "", stderr: "" };
     return out ?? "";
   };
@@ -1718,10 +1779,48 @@ test("a refresh the server refuses stops the landing before the lease, naming at
 });
 
 test("a workspace whose recorded actor is not the task's holder is not refreshed: nothing is claimed, as the owner or anyone (t275)", async (t) => {
-  for (const holder of ["owner", "claude-code/opus-5.5", null]) {
+  for (const holder of ["owner", "claude-code/opus-5.5"]) {
     const l = tokenLanding(t, { expiresAt: null, holder });
     await assert.rejects(runLand(l.io), /atelier claim t1/);
     assert.equal(l.claims().length, 0, `held by ${holder}`);
+    assert.equal(l.leaseTaken(), false);
+  }
+});
+
+test("land claims a released committed workspace as its builder and refreshes its token (t414)", async (t) => {
+  for (const expiresAt of [new Date(Date.now() - 60_000).toISOString(), new Date(Date.now() + 4 * 3600_000).toISOString()]) {
+    const l = tokenLanding(t, { holder: null, expiresAt });
+    await runLand(l.io);
+    assert.equal(l.claims().length, 1);
+    assert.equal(l.claims()[0].as, "codex/test");
+    assert.deepEqual(l.claims()[0].extra, {});
+    assert.equal(l.adopted[0].token, "fresh-token");
+    assert.deepEqual(l.commands, ["push", "check", "submit"]);
+    assert.ok(l.lines.some((x) => /Claiming t1 for its workspace's builder codex\/test/.test(x)));
+    assert.ok(l.calls.findIndex((c) => c.path.endsWith("/claim")) < l.calls.findIndex((c) => c.method === "POST" && c.path.endsWith("/landing-lease")));
+    assert.ok(!l.calls.some((c) => c.path.endsWith("/undispatch")));
+  }
+});
+
+test("land withdraws a waiting dispatch before claiming the committed workspace for its builder (t414)", async (t) => {
+  const l = tokenLanding(t, { holder: null, expiresAt: new Date(Date.now() - 60_000).toISOString(), dispatch: { to: "home" } });
+  await runLand(l.io);
+  const withdrawn = l.calls.findIndex((c) => c.path.endsWith("/undispatch"));
+  const claimed = l.calls.findIndex((c) => c.path.endsWith("/claim"));
+  assert.ok(withdrawn >= 0 && claimed > withdrawn);
+  assert.equal(l.claims()[0].as, "codex/test");
+  assert.equal(l.calls[withdrawn].as, undefined, "withdrawal uses the project owner's default identity");
+  assert.ok(l.lines.some((x) => /Withdrew t1's waiting dispatch/.test(x)));
+  assert.equal(l.adopted[0].token, "fresh-token");
+  assert.deepEqual(l.commands, ["push", "check", "submit"]);
+});
+
+test("land leaves an unheld dispatch alone without a recorded builder or committed head (t414)", async (t) => {
+  for (const missing of [{ actor: null }, { committed: false }]) {
+    const l = tokenLanding(t, { holder: null, dispatch: { to: "home" }, ...missing });
+    await assert.rejects(runLand(l.io), /no recorded actor|no committed head/);
+    assert.equal(l.claims().length, 0);
+    assert.ok(!l.calls.some((c) => c.path.endsWith("/undispatch")));
     assert.equal(l.leaseTaken(), false);
   }
 });
@@ -1759,4 +1858,38 @@ test("a push that fails for any other reason is not refreshed or retried (t275)"
   await assert.rejects(runLand(l.io), /non-fast-forward/);
   assert.deepEqual(l.commands, ["push"]);
   assert.equal(l.claims().length, 0);
+});
+
+for (const queued of [true, false]) test(`land --workflow exits non-zero on losing a queued instance and reports queue membership (${queued})`, async (t) => {
+  const f = await landFixture(t);
+  const wf = f.box.wf;
+  wf.tick = () => {
+    if (!wf.instance) return;
+    wf.unreadable = true;
+    wf.readError = "Workflow instance not found";
+    wf.lastStatus = { status: "errored", error: { message: "internal error" } };
+    f.box.waiting = queued ? [{ item: "t1", holder: "owner", at: new Date().toISOString() }] : [];
+  };
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /instance land-t1-1/);
+  assert.match(r.output, /last status: errored; last error: internal error; read error: Workflow instance not found/);
+  assert.match(r.output, queued ? /t1 is still queued/ : /t1 is not queued/);
+  assert.match(r.output, /atelier land t1 --workflow/);
+  assert.match(r.output, /a missing instance is cleared automatically/);
+  assert.match(r.output, /npx wrangler workflows instances describe landing/);
+  assert.deepEqual(wf.events, []);
+  assert.deepEqual(f.posts("/merged"), []);
+});
+
+test("Workflow lease polling bounds a three-hour queue's steps and refreshes even a slow poll before queue expiry", () => {
+  const wait = 3 * 60 * 60_000;
+  assert.ok(Math.ceil(wait / landingLeasePollMs(wait, 15_000)) <= 256);
+  for (const duration of [wait, 30 * 24 * 60 * 60_000]) {
+    for (const requested of [15_000, 30 * 24 * 60 * 60_000]) {
+      assert.ok(landingLeasePollMs(duration, requested) <= LANDING_LEASE_EXPIRY_MS / 3);
+      assert.ok(Math.ceil(duration / landingLeasePollMs(duration, requested)) < 9000);
+    }
+  }
+  assert.equal(landingLeasePollMs(30, 10), 10);
 });
