@@ -116,6 +116,33 @@ it("criterion 6: a refused Accept the page no longer offers is still said among 
   expect(html).not.toContain("Accept revision</button>");
 });
 
+it("criterion 7: a permission given before noOverride is switched on reads as prohibited by policy, never active", async () => {
+  const { L, post, view } = await setup("forms-policy-permission");
+  expect((await post("allow-override", { confirmation: SECRET })).status).toBe(303);
+  expect(await view()).toMatch(/<dt>Command-line permission<\/dt><dd class="ask">Active for revision aaaaaaaa until /);
+  await L.initProject({ name: "forms-policy-permission", repo: "forms-policy-permission", reset: false, noOverride: true }, "owner");
+  // The Ledger keeps the confirmation on record; the page says it allows nothing.
+  expect((await L.item("t1")).overrideConfirmation).toBeDefined();
+  const html = await view();
+  expect(html).toMatch(/<dt>Command-line permission<\/dt><dd class="bad">Prohibited by policy: given for revision aaaaaaaa until [^<]*, but this project now refuses every override, so it allows nothing<\/dd>/);
+  expect(html).not.toContain("Active for revision");
+});
+
+it("criterion 7: an override refused under noOverride keeps its typed reason on the page that no longer offers the form", async () => {
+  const { L, post } = await setup("forms-policy-override");
+  await L.initProject({ name: "forms-policy-override", repo: "forms-policy-override", reset: false, noOverride: true }, "owner");
+  const reason = "No <other> family is available today";
+  // Sent from a page drawn before the policy changed.
+  const res = await post("override", { note: reason, confirmation: SECRET });
+  expect(res.status).toBeGreaterThanOrEqual(400);
+  const html = await res.text();
+  expect(html).not.toContain("Override the review and accept</button>");
+  expect(html).toContain('role="alert" id="error-override"');
+  expect(html).toContain('<div class="kept-note"><p class="meta">The reason you typed, which was not recorded:</p><blockquote>No &lt;other&gt; family is available today</blockquote></div>');
+  expect(html).not.toContain(SECRET);
+  expect((await L.item("t1")).state).toBe("submitted");
+});
+
 it("criterion 4: an override from the page keeps the reviewer availability in review.overridden and the history shows it", async () => {
   const { L, post, view } = await setup("forms-availability-page");
   // The command-line permission is given first; the page's own override then clears it unused.
