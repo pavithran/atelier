@@ -1235,7 +1235,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       readError = String((error as Error)?.message ?? error);
     }
     const queued = (await L.readLandingQueue()).some((row) => row.item === id);
-    return json({ ...remembered, status, lastStatus: status && status.status !== "unknown" ? { status: status.status, ...(status.error ? { error: status.error } : {}) } : remembered.lastStatus ?? null, ...(readError ? { readError } : {}), queued });
+    return json({ ...remembered, status, lastStatus: status && status.status !== "unknown" ? { status: status.status, ...(status.error ? { error: { name: status.error.name.slice(0, 200), message: status.error.message.slice(0, 2000) } } : {}) } : remembered.lastStatus ?? null, ...(readError ? { readError } : {}), queued });
   }
   if (m !== "POST") throw new RuleError("not_found", "no such route", 404);
 
@@ -1624,8 +1624,19 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       let standing: InstanceStatus | null = null;
       if (remembered) {
         try {
-          standing = await (await env.LANDING_WORKFLOW.get(remembered.instance)).status();
-          await L.observeLandingWorkflowStatus(id, remembered.instance, standing);
+          // Only a confirmed missing instance from get() permits replacement.
+          // A status() failure still leaves an executor that might be running.
+          let instance;
+          try {
+            instance = await env.LANDING_WORKFLOW.get(remembered.instance);
+          } catch (error) {
+            if (!/\binstance\.not_found$/.test(String((error as Error)?.message ?? error))) throw error;
+            await L.clearLandingWorkflow(id, remembered.instance, actor);
+          }
+          if (instance) {
+            standing = await instance.status();
+            await L.observeLandingWorkflowStatus(id, remembered.instance, standing);
+          }
         } catch (error) {
           // A failed read does not prove the instance ended. Never start a
           // second executor beside a landing whose state we cannot establish.
@@ -1643,11 +1654,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const item = await L.item(id);
       if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; there is nothing to land.`, 409);
       if (item.state === "accepted") throw new RuleError("accepted", `${id} is accepted at ${(item.acceptedHead ?? "").slice(0, 8)}; merge it with: atelier merge ${id}.`, 409);
-      // The instance is recorded under the id chosen here before it is
-      // created, so the stage it writes from its first step is never
-      // written ahead of the record (and dropped as a stale instance's).
+      // Remember only a successfully created instance. The first stage retries
+      // if execution reaches it before this request has saved the record.
       const instanceId = `land-${id}-${Date.now()}`;
-      const record = await L.setLandingWorkflow(id, instanceId, actor, checks);
       const instance = await env.LANDING_WORKFLOW.create({
         id: instanceId,
         params: {
@@ -1658,6 +1667,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           ...ms("checksTimeoutMs"), ...ms("pollMs"), ...ms("mergePollMs"), ...ms("waitTimeoutMs"), ...ms("workspaceTimeoutMs"), ...ms("conflictTimeoutMs"), ...ms("reviewTimeoutMs"), ...ms("mergeTimeoutMs"),
         },
       });
+      const record = await L.setLandingWorkflow(id, instanceId, actor, checks);
       const status = await instance.status();
       await L.observeLandingWorkflowStatus(id, instanceId, status);
       return json({ ...record, created: true, status }, 201);

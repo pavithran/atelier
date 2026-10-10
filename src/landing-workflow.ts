@@ -290,7 +290,10 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
 
   private async stage(step: WorkflowStep, L: LedgerStub, p: Landing, stage: LandingWorkflowStage, round: number, detail?: string, files?: string[]): Promise<void> {
     await step.do(`stage ${stage} r${round}`, RETRIES, async () => {
-      await L.setLandingWorkflowStage(p.item, p.instance, stage, round, detail, files);
+      const record = await L.setLandingWorkflowStage(p.item, p.instance, stage, round, detail, files);
+      if (!record && stage === "lease" && round === 0) {
+        throw new Error("the landing instance is waiting for its record after creation");
+      }
       return {};
     });
   }

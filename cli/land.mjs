@@ -1019,7 +1019,7 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate }) {
     }
     if (!instance || !status || status.status === "unknown" || instance !== started.instance) {
       const last = instance === started.instance ? read?.lastStatus ?? lastStatus : lastStatus;
-      die(`the landing Workflow of ${id} can no longer be read (instance ${lastInstance ?? "none"}); last status: ${last?.status ?? "unknown"}; last error: ${last?.error?.message ?? detail ?? "none recorded"}; read error: ${read?.readError ?? (instance && instance !== started.instance ? `replaced by ${instance}` : "no status returned")}; ${await queueState(read)}. Its lease lapses on its own. Read the instance before starting another landing.`, 1);
+      die(`the landing Workflow of ${id} can no longer be read (instance ${lastInstance ?? "none"}); last status: ${last?.status ?? "unknown"}; last error: ${last?.error?.message ?? detail ?? "none recorded"}; read error: ${read?.readError ?? (instance && instance !== started.instance ? `replaced by ${instance}` : "no status returned")}; ${await queueState(read)}. Its lease lapses on its own. Inspect it with: npx wrangler workflows instances describe landing ${lastInstance}. To start or attach again, run: atelier land ${id} --workflow (a missing instance is cleared automatically; a live instance is reattached).`, 1);
     }
     lastStatus = status;
     lastInstance = instance;
