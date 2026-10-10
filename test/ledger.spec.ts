@@ -530,6 +530,32 @@ it("dispatch queues an open task for a kind of runner, and only a matching runne
   expect(kinds(await L.events(item.id))).toEqual(expect.arrayContaining(["item.dispatched", "item.undispatched", "item.released"]));
 });
 
+it("a dispatch refuses the claim rules ahead of the claim: role under a governed policy and refused overlap", async () => {
+  const governed: ProjectPolicy = {
+    checks: [], protected: [],
+    agents: { claude: { available: true, eligible_roles: ["executor"] }, codex: { available: true, eligible_roles: ["assessor"] } },
+  };
+  const L = await setup("dispatch-claim-rules", governed);
+  const t1 = (await L.newItem("Build it", ["src/**"], "owner")).id;
+  // The named actor has no executor role, so the claim would refuse it; the
+  // dispatch refuses now, naming the agent that would be eligible.
+  await refusal(L.dispatch(t1, "owner", { to: "home", agent: "codex", model: "gpt-5.5" }), "ineligible", /codex\/gpt-5\.5 needs an available agent with the executor role; available agents with the executor role: claude/);
+  expect((await L.item(t1)).dispatch).toBeNull();
+  const queued = await L.dispatch(t1, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
+  expect(queued.dispatch).toMatchObject({ agent: "claude-code", model: "opus-5.5" });
+
+  const strict: ProjectPolicy = { checks: [], protected: [], refuseOverlap: true };
+  const S = await setup("dispatch-claim-overlap", strict);
+  await S.newItem("Live", ["relay/test/**"], "owner");
+  await S.claim("t1", A);
+  const t2 = (await S.newItem("Queued", ["relay/test/foo.ts"], "owner")).id;
+  await refusal(S.dispatch(t2, "owner", { to: "home" }), "overlap", /t2's scope overlaps live t1 \(claude-code\/opus-5\.5\); this project refuses overlapping claims/);
+  expect((await S.item(t2)).dispatch).toBeNull();
+  // The holder of the overlapping item is not refused when named.
+  const overlapped = await S.dispatch(t2, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
+  expect(overlapped.dispatch).toMatchObject({ agent: "claude-code", model: "opus-5.5" });
+});
+
 it("the owner can dispatch a held task, which releases its holder and queues it for rework", async () => {
   const L = await setup("dispatch-held");
   const item = await L.newItem("Rework me", ["docs/**"], "owner");

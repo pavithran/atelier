@@ -657,6 +657,39 @@ export function hasRole(actor: string, policy: ProjectPolicy, role: AgentRole): 
   return name !== null && policy.agents[name].available && policy.agents[name].eligible_roles.includes(role);
 }
 
+// The agent names a governed policy marks available for a role, for a
+// refusal said ahead of a claim (a dispatch, a named reviewer) to name who
+// would pass (t405). Only governed policies have agents; without one,
+// eligibility is by harness and assertEligible names those.
+export function eligibleAgents(policy: ProjectPolicy, role: AgentRole): string[] {
+  if (!policy.agents) return [];
+  return Object.entries(policy.agents)
+    .filter(([, a]) => a.available && a.eligible_roles.includes(role))
+    .map(([name]) => name);
+}
+
+// Why a claim by `actor` under `role` would be refused by the project's
+// policy, or null when it would pass. The reason is the one assertEligible
+// gives, extended, under a governed policy, with the agents that would be
+// eligible, so a refusal said ahead of the claim names who would pass
+// (t405). A caller that refuses on this reason refuses the same rule the
+// claim would apply.
+export function roleRefusal(actor: string, policy: ProjectPolicy, role: AgentRole, owner = DEFAULT_OWNER): string | null {
+  if (policy.agents) {
+    if (hasRole(actor, policy, role)) return null;
+    const names = eligibleAgents(policy, role);
+    return `${actor} needs an available agent with the ${role} role${names.length ? `; available agents with the ${role} role: ${names.join(", ")}` : `; no agent is available with the ${role} role`}`;
+  }
+  try {
+    assertEligible(actor, policy, owner, role);
+    return null;
+  } catch (err) {
+    const rule = parseRuleError(err);
+    if (!rule) throw err;
+    return rule.detail;
+  }
+}
+
 export function countingReviews(reviews: Review[], at: ReviewBinding, policy: ProjectPolicy, owner = DEFAULT_OWNER): Review[] {
   return latestReviews(reviews, at).filter((r) => r.by === owner || hasRole(r.by, policy, "assessor"));
 }
@@ -924,21 +957,29 @@ export function reviewOverrideFor(
 
 // Live items held by someone else whose scope overlaps this one. Items of
 // one plan are not counted against each other (samePlan).
-export function overlappingLive(item: Item, items: Item[], actor: string): Item[] {
+export function overlappingLive(item: Item, items: readonly Item[], actor: string): Item[] {
   return items.filter(
     (o) => o.id !== item.id && (o.state === "claimed" || o.state === "submitted") && o.owner !== actor && !samePlan(item, o) && scopesOverlap(item.scope, o.scope),
   );
+}
+
+// The reason a claim whose scope overlaps a live item is refused under a
+// refuseOverlap policy, or null when none overlaps. Shared between the claim
+// and the refusals said ahead of it (a dispatch, t405), so both name the
+// same live items with the same words.
+export function overlappingRefusal(item: Item, items: readonly Item[], actor: string): string | null {
+  const clash = overlappingLive(item, items, actor);
+  if (!clash.length) return null;
+  const names = clash.map((o) => `${o.id} (${o.owner})`).join(", ");
+  return `${item.id}'s scope overlaps live ${names}; this project refuses overlapping claims${item.scope.length ? "" : ", and an unscoped item overlaps everything"}`;
 }
 
 export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPolicy, actor: string, owner = DEFAULT_OWNER, role: AgentRole = "executor"): void {
   assertClaimable(item, actor);
   assertEligible(actor, policy, owner, role);
   if (policy.refuseOverlap && item.owner !== actor) {
-    const clash = overlappingLive(item, items, actor);
-    if (clash.length) {
-      const names = clash.map((o) => `${o.id} (${o.owner})`).join(", ");
-      throw new RuleError("overlap", `${item.id}'s scope overlaps live ${names}; this project refuses overlapping claims${item.scope.length ? "" : ", and an unscoped item overlaps everything"}`);
-    }
+    const refusal = overlappingRefusal(item, items, actor);
+    if (refusal) throw new RuleError("overlap", refusal);
   }
 }
 

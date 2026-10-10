@@ -16,7 +16,7 @@ import { criteriaHash, criteriaOf, sameCriteria } from "./criteria.ts";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
 import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
-import { assertDispatchable, assertDispatchedClaim, coreHold, makeDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
+import { assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, makeDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
 import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
@@ -1208,6 +1208,7 @@ export class Ledger extends DurableObject<Env> {
     const item = this.checkDispatch(id, actor);
     const d = makeDispatch(input, actor, new Date().toISOString());
     this.assertMergeMainWorkspace(item, d);
+    assertDispatchClaimable(item, this.items(), this.project().policy, d, this.owner);
     const held = this.holds(item);
     if (held) {
       this.dropToken(id, token);
@@ -1236,7 +1237,11 @@ export class Ledger extends DurableObject<Env> {
     const item = this.item(id);
     this.assertNotPlanned(item);
     if (!this.holds(item)) assertDispatchable(item);
-    if (input) this.assertMergeMainWorkspace(item, makeDispatch(input, actor, new Date().toISOString()));
+    if (input) {
+      const d = makeDispatch(input, actor, new Date().toISOString());
+      this.assertMergeMainWorkspace(item, d);
+      assertDispatchClaimable(item, this.items(), this.project().policy, d, this.owner);
+    }
     return item;
   }
 
