@@ -713,6 +713,38 @@ export function roleRefusal(actor: string, policy: ProjectPolicy, role: AgentRol
   }
 }
 
+// Why a dispatch that names only a harness, no model, would be refused by
+// the project's policy for every model under that harness, or null when the
+// policy has nothing to say about the harness alone. A claim names an actor
+// (harness/model), so a harness-only dispatch is checked only for the
+// restrictions the harness itself decides: under a governed policy the fixed
+// agent a harness runs (claude-code → claude, codex → codex, zcode → glm),
+// whose role and availability hold for every model of that harness; under
+// legacy eligibility the harness list, which names no model at all. A
+// harness whose agent depends on the model (opencode's glm models against
+// its others) cannot be judged here, and the claim's own check applies when
+// the runner names a model (t405).
+export function harnessRefusal(harness: string, policy: ProjectPolicy, role: AgentRole, owner = DEFAULT_OWNER): string | null {
+  if (policy.agents) {
+    // agentOf reads the harness lowercased, so the fixed mapping matches the
+    // claim's own, whatever letter case the dispatch carried.
+    const fixed = harness.toLowerCase() === "claude-code" ? "claude" : harness.toLowerCase() === "codex" ? "codex" : harness.toLowerCase() === "zcode" ? "glm" : null;
+    if (!fixed) return null;
+    const agent = policy.agents[fixed];
+    if (agent?.available && agent.eligible_roles.includes(role)) return null;
+    const names = eligibleAgents(policy, role);
+    return `${harness} needs an available agent with the ${role} role${names.length ? `; available agents with the ${role} role: ${names.join(", ")}` : `; no agent is available with the ${role} role`}`;
+  }
+  try {
+    assertEligible(`${harness}/x`, policy, owner, role);
+    return null;
+  } catch (err) {
+    const rule = parseRuleError(err);
+    if (!rule) throw err;
+    return rule.detail;
+  }
+}
+
 export function countingReviews(reviews: Review[], at: ReviewBinding, policy: ProjectPolicy, owner = DEFAULT_OWNER): Review[] {
   return latestReviews(reviews, at).filter((r) => r.by === owner || hasRole(r.by, policy, "assessor"));
 }

@@ -212,3 +212,28 @@ test("a dispatch refuses a named agent and model the claim would refuse, and an 
   // The holder of the overlapping item is not refused when named.
   assert.doesNotThrow(() => assertDispatchClaimable(open, [live], policy({ refuseOverlap: true }), d({ agent: "codex", model: "gpt-6" })));
 });
+
+// A dispatch that names only a harness is refused where the claim would be
+// for every model under that harness (t405): a harness whose governed agent
+// is unavailable or lacks the executor role, or whose harness the legacy
+// eligibility list excludes. The refusal names the eligible agents, or the
+// eligible harnesses, exactly as the claim's would.
+test("a dispatch naming only a harness refuses the harness the claim would refuse", () => {
+  const policy = (over: Partial<ProjectPolicy> = {}): ProjectPolicy => ({ checks: [], protected: [], ...over });
+  const d = (o: Record<string, unknown> = {}) => makeDispatch(o, "pavi", T);
+  const open = item({ id: "t2", scope: ["relay/test/foo.ts"] });
+  // Codex's governed agent lacks the executor role, so no codex model could
+  // claim; the refusal names the agent that would be eligible.
+  const assessorOnly = policy({ agents: { claude: { available: true, eligible_roles: ["executor"] }, codex: { available: true, eligible_roles: ["assessor"] } } });
+  assert.throws(() => assertDispatchClaimable(open, [], assessorOnly, d({ agent: "codex" })), /codex needs an available agent with the executor role; available agents with the executor role: claude/);
+  // Codex's governed agent is unavailable, so no codex model could claim.
+  const unavailable = policy({ agents: { claude: { available: true, eligible_roles: ["executor"] }, codex: { available: false, eligible_roles: ["executor"] } } });
+  assert.throws(() => assertDispatchClaimable(open, [], unavailable, d({ agent: "codex" })), /codex needs an available agent with the executor role; available agents with the executor role: claude/);
+  // A legacy policy excludes the codex harness, naming the eligible ones.
+  assert.throws(() => assertDispatchClaimable(open, [], policy({ eligible: ["claude"] }), d({ agent: "codex" })), /codex is not an eligible agent here \(eligible: claude\)/);
+  // A harness the policy would let claim is not refused, and a harness whose
+  // governed agent depends on the model is left to the claim's own check.
+  assert.doesNotThrow(() => assertDispatchClaimable(open, [], assessorOnly, d({ agent: "claude-code" })));
+  assert.doesNotThrow(() => assertDispatchClaimable(open, [], policy({ eligible: ["claude"] }), d({ agent: "claude" })));
+  assert.doesNotThrow(() => assertDispatchClaimable(open, [], assessorOnly, d({ agent: "opencode" })));
+});
