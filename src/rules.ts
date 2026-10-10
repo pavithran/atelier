@@ -190,6 +190,10 @@ export interface Evidence {
   // An observed record that the check does not apply at this head: its paths
   // match none of the changed paths Atelier measured. It carries no result.
   notApplicable?: boolean;
+  // The machine's load average when an observed check started (t403), kept so
+  // a failure under a saturated machine stays legible beside a later passing
+  // run of the same command. Only a run on someone's machine records one.
+  load?: number;
 }
 
 // One finding of an automatic review, as parseVerdict (src/review/verdict.ts)
