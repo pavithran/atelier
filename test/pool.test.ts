@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cleanEntry, cleanModelSet, cleanStatus, familyOf, hasModelRole, LOCAL_BUILD, modelState, offThePool } from "../src/models/pool.ts";
+import { cleanEntry, cleanModelSet, cleanStatus, familyOf, hasModelRole, LOCAL_BUILD, modelState, offThePool, reviewHeld, withStanding } from "../src/models/pool.ts";
 
 const AT = "2026-10-04T12:00:00.000Z";
 
@@ -93,6 +93,24 @@ test("a set changes only the fields it names, and refuses keys and bad values", 
     [{ roles: ["boss"] }, /roles must be some of build, review, plan/],
     [{ note: "key is AIzaSyD-abcdefghijklmnopqrstu" }, /looks like it carries a key/],
   ] as const) assert.throws(() => cleanModelSet(body), why);
+});
+
+test("a saved pool takes the owner's standing now, and a held model or one without the review role is kept from reviewing", () => {
+  const astra = cleanEntry({ id: "gpt-6-astra", harness: "codex", where: "cloud", aliases: ["astra"] }, "pavi", AT);
+  const luna = cleanEntry({ id: "gpt-6-luna", harness: "codex", where: "cloud", roles: "review" }, "pavi", AT);
+  const now = [{ ...astra, state: "reserved" as const, stateAt: "2026-10-09T00:00:00.000Z", note: "credits" }, { ...luna, roles: ["build" as const] }];
+  const [a, l] = withStanding([astra, luna], now);
+  assert.equal(a.state, "reserved");
+  assert.equal(a.note, "credits");
+  assert.deepEqual(l.roles, ["build"]);
+  // Back to available, the saved state does not linger.
+  assert.equal(withStanding([a], [astra])[0].state, undefined);
+  // An entry the pool no longer has keeps what was saved.
+  assert.deepEqual(withStanding([luna], []), [luna]);
+  assert.match(reviewHeld(now, "codex/astra")!, /reserved since 2026-10-09 \(the owner's standing\): credits/);
+  assert.match(reviewHeld(now, "codex/gpt-6-luna")!, /not a reviewer; its roles are build/);
+  assert.equal(reviewHeld([astra, luna], "codex/gpt-6-astra"), null);
+  assert.equal(reviewHeld(now, "claude-code/opus-5.5"), null);
 });
 
 test("a status report is one of four states, with what was served", () => {
