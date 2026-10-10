@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { runLand } from "../cli/land.mjs";
-import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone } from "../src/landing-lease.ts";
+import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone, landingLeasePollMs } from "../src/landing-lease.ts";
 
 // atelier land (t187) against a stand-in server and local bare repositories,
 // as the other CLI tests run merge: the landing lease refuses a second
@@ -128,7 +128,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
       // remembers, its stage and round, and its status. A test moves it on
       // through `wf.tick` (after each read) and `wf.onEvent` (each event).
       const wf = box.wf;
-      const view = () => ({ instance: wf.instance, stage: wf.stage, round: wf.round, ...(wf.checks ? { checks: wf.checks } : {}), ...(wf.files ? { files: wf.files } : {}), status: { status: wf.status, ...(wf.error ? { error: { name: "Error", message: wf.error } } : {}), ...(wf.output ? { output: wf.output } : {}) } });
+      const view = () => ({ ...(wf.readError ? { readError: wf.readError } : {}), ...(wf.lastStatus ? { lastStatus: wf.lastStatus } : {}), instance: wf.instance, stage: wf.stage, round: wf.round, ...(wf.checks ? { checks: wf.checks } : {}), ...(wf.files ? { files: wf.files } : {}), status: wf.unreadable ? null : { status: wf.status, ...(wf.error ? { error: { name: "Error", message: wf.error } } : {}), ...(wf.output ? { output: wf.output } : {}) } });
       if (req.method === "GET") { answer = wf.instance ? view() : { instance: null, status: null, stage: null }; wf.reads++; }
       else if (body.event) { wf.events.push(body.event); wf.onEvent?.(body.event, box); answer = { sent: true, instance: wf.instance }; }
       else if (wf.instance && ["running", "waiting", "queued"].includes(wf.status)) answer = { ...view(), created: false };
@@ -1754,4 +1754,38 @@ test("a push that fails for any other reason is not refreshed or retried (t275)"
   await assert.rejects(runLand(l.io), /non-fast-forward/);
   assert.deepEqual(l.commands, ["push"]);
   assert.equal(l.claims().length, 0);
+});
+
+for (const queued of [true, false]) test(`land --workflow exits non-zero on losing a queued instance and reports queue membership (${queued})`, async (t) => {
+  const f = await landFixture(t);
+  const wf = f.box.wf;
+  wf.tick = () => {
+    if (!wf.instance) return;
+    wf.unreadable = true;
+    wf.readError = "Workflow instance not found";
+    wf.lastStatus = { status: "errored", error: { message: "internal error" } };
+    f.box.waiting = queued ? [{ item: "t1", holder: "owner", at: new Date().toISOString() }] : [];
+  };
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /instance land-t1-1/);
+  assert.match(r.output, /last status: errored; last error: internal error; read error: Workflow instance not found/);
+  assert.match(r.output, queued ? /t1 is still queued/ : /t1 is not queued/);
+  assert.match(r.output, /atelier land t1 --workflow/);
+  assert.match(r.output, /a missing instance is cleared automatically/);
+  assert.match(r.output, /npx wrangler workflows instances describe landing/);
+  assert.deepEqual(wf.events, []);
+  assert.deepEqual(f.posts("/merged"), []);
+});
+
+test("Workflow lease polling bounds a three-hour queue's steps and refreshes even a slow poll before queue expiry", () => {
+  const wait = 3 * 60 * 60_000;
+  assert.ok(Math.ceil(wait / landingLeasePollMs(wait, 15_000)) <= 256);
+  for (const duration of [wait, 30 * 24 * 60 * 60_000]) {
+    for (const requested of [15_000, 30 * 24 * 60 * 60_000]) {
+      assert.ok(landingLeasePollMs(duration, requested) <= LANDING_LEASE_EXPIRY_MS / 3);
+      assert.ok(Math.ceil(duration / landingLeasePollMs(duration, requested)) < 9000);
+    }
+  }
+  assert.equal(landingLeasePollMs(30, 10), 10);
 });

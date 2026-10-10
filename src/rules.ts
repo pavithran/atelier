@@ -1347,6 +1347,10 @@ export interface InboxEntry {
   kind: "accept" | "assess" | "merge" | "ship" | "blocked" | "stale" | "overlap" | "scope" | "failing" | "approve-plan" | "plan-blocked";
   reason: string;
   weight: number;
+  // The reviewer `atelier land ID --reviewer H/M` would name for an assess
+  // entry, or null when the pool offers none; the Ledger fills it from the
+  // pool, since inboxFor is pure and has no pool (t395).
+  reviewer?: string | null;
 }
 
 // The inbox kinds that are the lead developer's own decisions — the calls only
@@ -1413,7 +1417,7 @@ export function inboxFor(
       if (g.ready) {
         out.push({ ...base, kind: "accept", reason: `all checks observed passing at this head${overrode(g)}`, weight: 100 });
       } else if (g.needsAssessor) {
-        out.push({ ...base, kind: "assess", reason: `${g.requirement ?? PROTECTED_NEED}; ask a reviewer who qualifies, or accept with an override and its reason`, weight: 80 });
+        out.push({ ...base, kind: "assess", reason: `${g.requirement ?? PROTECTED_NEED}; ask a reviewer with atelier land ${item.id} --reviewer H/M, and override only as the owner's last resort`, weight: 80 });
       } else if (g.blockers.some((b) => b.includes("failed"))) {
         out.push({ ...base, kind: "failing", reason: g.blockers.find((b) => b.includes("failed"))!, weight: 20 });
       }
