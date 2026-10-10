@@ -9,6 +9,10 @@ import { parseConfig } from "../cli/runner-config.mjs";
 import { commandFor, offerFrom, planFilePath, runPlanTask, runTask, runRunner, runOutcome, execute } from "../cli/runner.mjs";
 import { ROLE_PROMPTS } from "../src/usage.ts";
 
+// Pin the load under the runner's limit so these tests are not held back by
+// this machine's real load; the gate is tested with an injected load.
+process.env.ATELIER_LOAD = "0";
+
 // The runner's plan job and a part's brief (docs/orchestrator.md, sections 2
 // and 3, build step 7b): the runner offers plan jobs, claims the plan item as
 // the planner, fetches the brief the server wrote, runs the harness with a

@@ -13,6 +13,14 @@ about working within them well.
 `atelier guide --role orchestrate` prints these for any agent that runs a
 project, whatever its company; each is explained in the sections below.
 
+A session that drives Atelier by hand reads the project's AGENTS.md and what
+its commands print, so Atelier reaches it there: `atelier status`, `ls` and
+`new` end with one line naming this guide until the project's AGENTS.md states
+the review path (`atelier land --reviewer`); fetching the guide does not
+silence it, and a project with no checkout on this Mac always gets it.
+`atelier init` offers a short AGENTS.md section that
+points at it and states the review path (it does not edit the file).
+
 - Use builders from several companies, chosen by tier, and not one company's
   models alone.
 - Every protected or coordinated change is reviewed by a model from another
@@ -21,7 +29,15 @@ project, whatever its company; each is explained in the sections below.
   confirmation. Ask, and cite the owner's words; never infer them.
 - Judge each review finding against the code before acting, and record every
   verdict with `atelier finding`.
-- Land one task at a time with `atelier land ID`. Never land two together.
+- File every task with its acceptance criteria, written before the build. A
+  review judges the change against them, so a task without them gives the
+  review nothing to bind to.
+- Land one task at a time with `atelier land ID --reviewer H/M`, where
+  `H/M` names a reviewer of another family than every contributor; the
+  command merges main, checks, submits, waits for the independent review,
+  then accepts and merges. Never land two together. An override while
+  accepting is the owner's last resort when no reviewer qualifies, and
+  never the way to land another agent's work.
 - Report every run that ended without a result with `atelier run-report`.
 - On a stall (a claimed task with no progress), check whether the agent's
   process still runs, then `atelier handoff` the task to another model or
@@ -135,6 +151,11 @@ misread:
 - A change that depends on a platform limit or runtime behaviour local tests
   cannot reproduce names it in the task, and the project declares a remote
   smoke check run before and after deploy.
+- Give the task's acceptance criteria in the brief, and have them written
+  before the build. On 2026-10-09 the seven ourai tasks t20 to t26, login
+  security among them, were filed with none, so their reviews had nothing to
+  judge against. `atelier new` now warns on a task filed without criteria, and
+  `atelier init --require-criteria` refuses one for the project.
 - Say what the agent must not do: push, deploy, run `atelier` against the
   real server, or touch the owner's checkout.
 - Before sending one brief to many projects, pilot it on the project whose
@@ -213,6 +234,12 @@ review waits because the runners are busy (one runner works one job at a
 time), the session can start a second runner (`atelier runner --name
 home:NAME-2`, see "The home runner" in `bin/orchestrate/README.md`) or
 review by hand.
+
+**Report after each landing.** The report the owner gets after every landing
+is `atelier status --brief`, under 20 lines: the recent merges, the commit
+the server is deployed at, live builds, reviews and the landing running, and
+the last 24 hours' spend against the daily limit. Give it as it prints; do
+not assemble it by hand.
 
 **Deploy when the CLI needs it.** On a machine where the CLI runs from the
 project's own checkout, a merge that adds a route the CLI calls, or changes

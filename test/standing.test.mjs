@@ -108,6 +108,7 @@ async function run(t, setup, argv, env = {}) {
   mkdirSync(checkout);
   git(checkout, "init", "-q", "-b", "main");
   writeFileSync(join(checkout, "a.txt"), "one\n");
+  writeFileSync(join(checkout, "AGENTS.md"), "Land with `atelier land ID --reviewer H/M`.\n");
   git(checkout, "add", "."); git(checkout, "commit", "-q", "-m", "one");
   git(dir, "clone", "-q", "--bare", checkout, bare);
   const state = setup({ checkout, bare, dir }) ?? {};

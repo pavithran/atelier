@@ -38,12 +38,14 @@ import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } f
 import { pushHistory } from "./push-steps.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
-import { formatLocal, formatStatus, itemJson, statusJson } from "./status.mjs";
+import { formatLocal, formatStatus, formatStatusBrief, itemJson, statusJson } from "./status.mjs";
 import { findStrays, formatStrays } from "./strays.mjs";
+import { formatTokenExpiryWarnings, parseExpiryDay, readTokenExpiries, recordTokenExpiryDay, TOKEN_EXPIRY_WARN_DAYS } from "./token-expiry.mjs";
 import { receiptJson, receiptText } from "./receipt.mjs";
 import { describeStore, promptSecret, readSecret, writeSecret } from "./credentials.mjs";
 import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
+import { coreCount, envLoad, formatLoad, loadLimitOf, waitForLoad } from "./load.mjs";
 import { provenanceNote } from "./provenance.mjs";
 export { checkEnv } from "./check-env.mjs";
 import { COMMAND_USAGE, guideText, helpText, ROLES, rolePrompt } from "./help.mjs";
@@ -64,6 +66,9 @@ const VERSION_LINE = `atelier ${CLI_VERSION} (route level ${ROUTE_LEVEL})`;
 // ── plumbing ───────────────────────────────────────────────────────────────
 
 let doneStep;
+// Each check the run recorded: { claim, result, where }, read into done's outcome.
+const doneChecks = [];
+const CLEAN_CLONE = "in a clean clone on this machine", CONTAINER = "in a Cloudflare container";
 
 function die(msg, code = 1) {
   if (doneStep) msg = `${doneStep} failed: ${msg}`;
@@ -238,7 +243,7 @@ export const FLAGS = {
   ops: {},
   runner: { name: false, once: true, config: false, discover: true, probe: true, "dry-run": true, usage: true, integrate: true },
   login: { server: false, store: true },
-  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', core: '--core needs a glob: atelier init --core "GLOB", once per entry, or --core "" alone to clear them', approval: false, reset: true, "refuse-overlap": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default', "review-tier": '--review-tier needs models: atelier init --review-tier H/M,H/M,..., or --review-tier "" to clear it' },
+  init: { title: 'give the title as --title TEXT, or --title "" to clear it', name: false, "rename-local": true, check: '--check needs text: atelier init --check "TEXT", once per entry', protect: '--protect needs text: atelier init --protect "TEXT", once per entry', core: '--core needs a glob: atelier init --core "GLOB", once per entry, or --core "" alone to clear them', approval: false, reset: true, "refuse-overlap": true, "require-criteria": true, "sandbox-only": true, "history-since": false, "declare-read-only": '--declare-read-only needs a reason: atelier init --declare-read-only "why the checks change nothing outside the clone"', regenerate: '--regenerate needs a command: atelier init --regenerate "CMD", or --regenerate "" to clear it', "review-bar": '--review-bar needs text: atelier init --review-bar "what may block a review", or --review-bar "" to restore the default', "review-tier": '--review-tier needs models: atelier init --review-tier H/M,H/M,..., or --review-tier "" to clear it' },
   adopt: {},
   revert: {},
   publish: {},
@@ -279,7 +284,7 @@ export const FLAGS = {
   "run-report": { actor: false, role: false, outcome: false, project: false, item: false, detail: false },
   served: { recorded: false, from: false, to: false, item: false, note: false, apply: true },
   // done takes its summary as a word; it refuses --summary itself, with its usage.
-  done: { sandbox: true, summary: false },
+  done: { sandbox: true, summary: false, json: true },
   finish: { sandbox: true, summary: '--summary needs text: atelier finish ID --summary "TEXT"' },
   sync: {},
   merge: { cancel: true, "discard-local": true, head: false, approve: true, note: false, "policy-changed-ok": true, "override-review": '--override-review needs a reason: atelier merge ID --head FULL_REVISION --override-review "why no independent review is possible"' },
@@ -296,14 +301,14 @@ export const FLAGS = {
   // Each plan subcommand takes only its own flags (PLAN_FLAGS); this row is their union.
   plan: { scope: '--scope needs text: atelier plan "goal" --scope "GLOB", once per entry', planner: false, json: true, hash: false, "allow-paid": true, note: false, to: false, resolve: true },
   // models add refuses --key, --api-key and --token itself, saying where keys go.
-  models: { harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, key: false, "api-key": false, token: false },
+  models: { harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, item: false, key: false, "api-key": false, token: false },
   showcase: { named: true, anonymous: true },
   projects: { force: true },
   owners: { json: true },
   inbox: { json: true },
-  status: { json: true },
+  status: { json: true, brief: true },
   open: {},
-  guide: { role: '--role needs a value: atelier guide --role build|review|plan|orchestrate' },
+  guide: { role: '--role needs a value: atelier guide --role build|review|plan|orchestrate', full: true },
   help: {},
 };
 const REST = new Set(["check"]);
@@ -312,8 +317,23 @@ const PLAN_FLAGS = { "": ["scope", "planner"], show: ["json"], approve: ["hash",
 // version is a switch too, so --version=… is refused as a value it does not
 // take, instead of slipping through as a string that answers anyway.
 const SWITCHES = new Set(["version", ...Object.values(FLAGS).flatMap((row) => Object.keys(row).filter((flag) => row[flag] === true))]);
+// --brief is text for new and edit and a switch for status, so it is a switch
+// only when the command is status: the first word that is not a flag or a
+// flag's value.
+const commandOf = (argv) => {
+  const plain = new Set([...SWITCHES].filter((flag) => flag !== "brief"));
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--") return undefined;
+    if (!a.startsWith("-")) return a;
+    if (!a.startsWith("--") || a.includes("=")) continue;
+    const next = argv[i + 1];
+    if (plain.has(a.slice(2)) ? next === "true" || next === "false" : next !== undefined && !next.startsWith("--")) i++;
+  }
+};
+const switchesFor = (argv) => (commandOf(argv) === "status" ? SWITCHES : new Set([...SWITCHES].filter((flag) => flag !== "brief")));
 
-export function parseArgs(argv, switches = SWITCHES) {
+export function parseArgs(argv, switches = switchesFor(argv)) {
   const out = { _: [], multi: {}, bare: [], problems: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -363,9 +383,9 @@ const isMain = process.argv[1] && realpathSync(process.argv[1]) === fileURLToPat
 // the findings ledger) live in a private toolkit, not in this public command.
 // `atelier ops ...` hands everything after `ops` to it before this command
 // parses anything, so no argument is changed on the way, and it exits as the
-// toolkit exits; only --version is read here first, like every other command,
-// so it never reaches the toolkit. The toolkit is the program ATELIER_OPS
-// names, or atelier-ops on PATH; only an executable file counts.
+// toolkit exits; only --version and the token-expiry command are read here
+// first, so they never reach the toolkit. The toolkit is the program
+// ATELIER_OPS names, or atelier-ops on PATH; only an executable file counts.
 const runnable = (path) => {
   try { return statSync(path).isFile() && (accessSync(path, fsConstants.X_OK), true); } catch { return false; }
 };
@@ -394,12 +414,40 @@ function runOps(argv) {
   }
   process.exit(r.status ?? 1);
 }
+// `atelier ops token-expiry NAME --on YYYY-MM-DD` records the day a named
+// token expires, for `atelier status` to warn before it lapses. It is handled
+// here, before anything reaches the private toolkit, because the record is
+// local to this machine and `status` (this command) reads it: it stores a
+// name and a day, never a token's value. Every other `ops` command still goes
+// to the toolkit.
+function runTokenExpiry(argv) {
+  if (argv.includes("-h") || argv.includes("--help")) {
+    process.stdout.write("usage: atelier ops token-expiry NAME --on YYYY-MM-DD\n\nRecords the day the named token expires, for `atelier status` to warn from 14 days before it. It stores the name and the day, never the token's value.\n");
+    process.exit(0);
+  }
+  let name = null, on = null;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--on") { on = argv[i + 1]; i++; continue; }
+    if (a.startsWith("--on=")) { on = a.slice(5); continue; }
+    if (a.startsWith("--")) die(`token-expiry does not take ${a}; use atelier ops token-expiry NAME --on YYYY-MM-DD`);
+    if (name !== null) die("token-expiry takes one name; use atelier ops token-expiry NAME --on YYYY-MM-DD");
+    name = a;
+  }
+  if (!name) die("token-expiry needs a name: atelier ops token-expiry NAME --on YYYY-MM-DD");
+  if (!on) die("token-expiry needs the expiry day: atelier ops token-expiry NAME --on YYYY-MM-DD");
+  if (!parseExpiryDay(on)) die(`--on takes a day, YYYY-MM-DD, not ${JSON.stringify(on)}`);
+  recordTokenExpiryDay(name, on);
+  console.log(`Recorded ${name} expires ${on}; atelier status warns from ${TOKEN_EXPIRY_WARN_DAYS} days before.`);
+  process.exit(0);
+}
 if (isMain && process.argv[2] === "ops") {
   const opsArgs = process.argv.slice(3);
   // --version stands before any parsing, so only the words up to a `--` are
   // read: an exact --version there is answered, like every other command.
   const version = opsArgs.indexOf("--version"), end = opsArgs.indexOf("--");
   if (version !== -1 && (end === -1 || version < end)) { console.log(VERSION_LINE); process.exit(0); }
+  if (opsArgs[0] === "token-expiry") runTokenExpiry(opsArgs.slice(1));
   runOps(opsArgs);
 }
 
@@ -436,6 +484,52 @@ export function insecureServer(url) {
   if (parsed.protocol === "https:") return undefined;
   if (parsed.protocol === "http:" && LOOPBACK.has(parsed.hostname)) return undefined;
   return `${url} is not https: the owner token goes with every request, and over plain http it would be readable on every network on the way. Name the server as https://HOST; plain http is accepted for a server on this machine alone (localhost, 127.0.0.1 or [::1])`;
+}
+
+// A session driving Atelier by hand reads the project's AGENTS.md and the
+// output of the commands it runs, not the briefs the build and review agents
+// get. Unless the project's AGENTS.md already states the review path (atelier
+// land --reviewer), status, ls and new end with one line that names
+// `atelier guide --role orchestrate`. Nothing is remembered between runs: the
+// CLI cannot tell one session from the next, so the line stays until the
+// AGENTS.md says it. A task workspace gets none: its agent has the brief.
+export function statesReviewPath(markdown) {
+  return typeof markdown === "string" && /atelier land\b[^\n]*--reviewer/.test(markdown);
+}
+
+function readAgentsMd(dir) {
+  try { return readFileSync(join(dir, "AGENTS.md"), "utf8"); } catch { return null; }
+}
+
+export function guidePointer(projects, names, inWorkspace = false, read = readAgentsMd) {
+  if (inWorkspace) return null;
+  const unread = names.filter((n) => !statesReviewPath(projects?.[n]?.path ? read(projects[n].path) : null));
+  if (!unread.length) return null;
+  const one = unread.length === 1;
+  return `Review path${one ? ` for ${unread[0]}` : ""}: atelier guide --role orchestrate${one ? ` --project ${unread[0]}` : ""} prints how to run, review and land work here, including atelier land --reviewer.`;
+}
+
+// The short AGENTS.md section atelier init offers: it points at the guide and
+// states the review path, so a session that reads only AGENTS.md finds both.
+export const AGENTS_SECTION = `## Working through Atelier
+
+Before driving this project's tasks by hand, run \`atelier guide --role orchestrate\`; it prints the whole orchestrator guide.
+
+Review path: a finished task is reviewed before it merges. \`atelier land ID --reviewer HARNESS/MODEL\` lands it with that model's review; do not merge around the review.
+`;
+
+export function agentsMdOffer(markdown) {
+  const pointsAtGuide = markdown !== null && /atelier guide/.test(markdown);
+  const statesReview = statesReviewPath(markdown);
+  if (pointsAtGuide && statesReview) return null;
+  const gap = markdown === null ? "This checkout has no AGENTS.md" : !pointsAtGuide ? "AGENTS.md does not mention atelier guide" : "AGENTS.md does not state the review path (atelier land --reviewer)";
+  return `${gap}, so a session that reads only it never sees the review path. atelier init did not edit it; add this section:\n\n${AGENTS_SECTION}`;
+}
+
+function pointToGuide(names) {
+  if (args.json) return;
+  const line = guidePointer(cfg.projects, names, Boolean(wsConfig("item")));
+  if (line) console.log(`\n${line}`);
 }
 
 function wsConfig(key, cwd = process.cwd()) {
@@ -1109,6 +1203,7 @@ async function checkInSandbox() {
   }
   const on = state.request?.merged && state.mainHead ? ` merged with main ${short(state.mainHead)}` : "";
   for (const r of state.results ?? []) {
+    doneChecks.push({ claim: r.claim, result: r.notApplicable ? "not applicable" : r.passed ? "passed" : "failed", where: CONTAINER });
     if (r.notApplicable) { console.log(`N/A   ${r.claim}  @ ${short(state.request.head)}${on}  (not run: this change touches none of the paths it applies to)`); continue; }
     console.log(`${r.passed ? "PASS" : "FAIL"}  ${r.claim}  @ ${short(state.request.head)}${on}  (${r.seconds}s, in Cloudflare)`);
     if (!r.passed) process.stdout.write(r.outputTail.slice(-2000) + "\n");
@@ -1117,10 +1212,7 @@ async function checkInSandbox() {
   else if (state.changedPaths) console.log(`changed: ${state.changedPaths.join(", ") || "nothing"}`);
   if (state.status === "failed") die(`the run failed: ${state.error}`);
   if (!state.recorded) die("the checks ran but the ledger did not record them");
-  if (state.results.some((r) => r.passed === false)) {
-    if (doneStep) die("required checks failed", 2);
-    process.exit(2);
-  }
+  if (!doneStep && state.results.some((r) => r.passed === false)) process.exit(2);
 }
 
 // What an agent relays is one line per field: text a person or an agent
@@ -1173,8 +1265,61 @@ export function checkoutLine(raw) {
     : `Checkout: out of step. ${c.branch} @ ${short(c.head)} does not hold the baseline's head ${base}; reconcile the checkout before merging.`;
 }
 
-export function formatDone(gate) {
-  return gate.ready ? "Ready for the owner" : `Not ready: ${gate.blockers.map(flat).join("; ")}`;
+// The one outcome done ends with (exit codes in cli/help.mjs): failed checks,
+// nothing submitted; checked but blocked, submitted with a gate open; or
+// submitted and ready for the owner. Acceptance, merge and deploy are separate.
+export function doneReport({ id, head, checks, item, gate, changed = [] }) {
+  const submitted = item?.state === "submitted";
+  const failed = checks.filter((c) => c.result === "failed").map((c) => flat(c.claim));
+  const blockers = (gate?.blockers ?? []).map(flat);
+  const checkText = checks.length ? `Checks: ${checks.map((c) => `${flat(c.claim)} ${c.result}`).join("; ")} (${checks[0].where})` : "Checks: none ran";
+  let outcome, exitCode, line, unresolved, accept, merge, ownerAction;
+  if (failed.length) {
+    outcome = "failed_checks"; exitCode = 2;
+    unresolved = "not evaluated; nothing was submitted";
+    accept = "not reached"; merge = "not reached";
+    ownerAction = `none yet; fix ${failed.join("; ")} in the workspace, then run done again`;
+    const left = changed.length ? `; the workspace also changed: ${changed.map(flat).join(", ")}` : "";
+    line = `Outcome: failed checks: ${failed.join("; ")}; nothing was submitted${left}`;
+  } else if (submitted && gate.ready) {
+    outcome = "submitted"; exitCode = 0;
+    unresolved = "none";
+    accept = "waiting for the owner"; merge = "not yet; it follows acceptance";
+    ownerAction = `accept ${id} at ${short(head)}: atelier accept ${id} --head ${head}`;
+    line = "Outcome: submitted, ready for the owner";
+  } else {
+    outcome = "checked_but_blocked"; exitCode = 3;
+    unresolved = `${blockers.length} (named on the last line)`;
+    accept = "not yet; the gate must be clear first"; merge = "not yet; it follows acceptance";
+    ownerAction = `clear the first blocker: ${blockers[0]}`;
+    line = `Outcome: checked but blocked by ${blockers.length} ${blockers.length === 1 ? "blocker" : "blockers"}: ${blockers.join("; ")}`;
+  }
+  const deploy = "not covered by done";
+  const summary = [
+    `Head: ${short(head)}`,
+    checkText,
+    `Unresolved gates: ${unresolved}`,
+    `Submitted: ${submitted ? "yes" : "no"}`,
+    `Accept: ${accept}`,
+    `Merge: ${merge}`,
+    `Deploy: ${deploy}`,
+    `Owner action: ${ownerAction}`,
+  ];
+  const json = {
+    outcome, exitCode, outcomeLine: line, head, submitted,
+    checks: checks.map(({ claim, result, where }) => ({ claim, result, where })),
+    unresolvedGates: failed.length ? [] : blockers,
+    accept, merge, deploy, ownerAction,
+  };
+  return { outcome, exitCode, summary, line, json };
+}
+
+// --json keeps stdout to the one object: what the steps print goes to stderr.
+function progressToStderr() {
+  const log = console.log, write = process.stdout.write;
+  console.log = (...text) => console.error(...text);
+  process.stdout.write = (...text) => process.stderr.write(...text);
+  return () => { console.log = log; process.stdout.write = write; };
 }
 
 // The owner's framing of a task, one line per field that is set, for the
@@ -1520,6 +1665,23 @@ async function discoverModels() {
   } catch (error) { die(error.message); }
 }
 
+// `runner setup` (runner-setup.mjs): the pool from the server, and each
+// provider's model list read without a key, as a public page is.
+async function setupRunner() {
+  const { runSetup } = await import("./runner-setup.mjs");
+  try {
+    await runSetup(args, {
+      pool: () => call("GET", "/models", undefined, OWNER),
+      async fetchJson(url) {
+        try {
+          const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+          return res.ok ? await res.json() : null;
+        } catch { return null; }
+      },
+    });
+  } catch (error) { die(error.message); }
+}
+
 // Each tool's usage goes to the usage route under the runner's name; one
 // that fails does not stop the others, and runUsage names every failure.
 // The AI Gateway's figures are read back from GET /api/usage, and each
@@ -1536,6 +1698,14 @@ async function reportUsage() {
       speed: async () => (await request("GET", "/reliability", undefined, OWNER)).speed,
     });
   } catch (error) { die(error.message); }
+}
+
+// The text `atelier status` prints, with the token-expiry warnings read from
+// this machine's record prepended when any token warns. Pure enough to test:
+// the record is read here, the wording lives in src/token-expiry.ts.
+function tokenExpiryWarningsText(text) {
+  const warnings = formatTokenExpiryWarnings(readTokenExpiries());
+  return warnings.length ? `${warnings.join("\n")}\n\n${text}` : text;
 }
 
 const commands = {
@@ -1732,6 +1902,7 @@ const commands = {
   // `runner --discover` reports what each home model's harness serves (discover.mjs);
   // `runner --usage` reports each tool's windows, served models and balances (usage.mjs).
   async runner() {
+    if (args._[1] === "setup") return setupRunner();
     if (args.discover === true) return discoverModels();
     if (args.usage === true) return reportUsage();
     const { runRunner } = await import("./runner.mjs");
@@ -1972,6 +2143,7 @@ const commands = {
     // --refuse-overlap and --sandbox-only are switches: given, they turn the
     // setting on; given as --sandbox-only=false or --sandbox-only false, off.
     if (cp || args["refuse-overlap"] !== undefined || reset) policy.refuseOverlap = cp?.refuseOverlap ?? args["refuse-overlap"] === true;
+    if (args["require-criteria"] !== undefined || reset) policy.requireCriteria = args["require-criteria"] === true;
     if (args["sandbox-only"] !== undefined || reset) policy.sandboxOnly = args["sandbox-only"] === true;
     // --core names the core files, once per glob, replacing the recorded
     // ones; --core "" alone clears them, and --reset without it does too.
@@ -2054,10 +2226,17 @@ const commands = {
     console.log(`Protected:  ${[...new Set([...(pol.protected ?? []), ...checkInputs])].sort().join(", ")}`);
     console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
     console.log(`Overlap:    ${pol.refuseOverlap ? "refused" : "flagged"}`);
+    console.log(`Criteria:   ${pol.requireCriteria ? "required on every task" : "optional"}`);
+    // A server older than the criteria requirement ignores it and answers without one.
+    if (args["require-criteria"] === true && !pol.requireCriteria) console.log("Warning: the server did not record the criteria requirement; deploy the server, then run atelier init --require-criteria again.");
     console.log(`Core files: ${pol.coreFiles?.length ? `${pol.coreFiles.join(", ")}; the queue holds a dispatch whose scope overlaps a live item's in one` : "none; the queue holds no dispatch for its scope"}`);
     // A server older than core files ignores them and answers without any.
     if (core?.length && !pol.coreFiles?.length) console.log("Warning: the server did not record the core files; deploy the server, then run atelier init --core again.");
     if (pol.approval) console.log(`Approval:   ${pol.approval}`);
+    let agentsMd = null;
+    try { agentsMd = readFileSync(join(top, "AGENTS.md"), "utf8"); } catch {}
+    const offer = agentsMdOffer(agentsMd);
+    if (offer) console.log(`\n${offer}`);
   },
 
   // Move one project from ControlPlane to Atelier. This is itself an Atelier
@@ -2142,6 +2321,8 @@ const commands = {
       ...(item.derived ? [`The text is longer than a title, so it is kept as the brief and the title is its first clause; change it with atelier edit ${item.id} --title "TEXT".`] : []),
       ...formatFields(item),
     ].join("\n"));
+    if (!fields.accept?.length) console.error(`Warning: ${item.id} has no acceptance criteria, so a review of it will have none to judge the change against. Give them with atelier edit ${item.id} --accept "TEXT", once per criterion.`);
+    pointToGuide([project()]);
   },
 
   // The project owner changes a task's framing; the server keeps every field
@@ -2190,6 +2371,7 @@ const commands = {
     for (const i of shown) {
       console.log(`${i.id.padEnd(5)} ${i.state.padEnd(10)} ${(i.owner ?? "—").padEnd(26)} ${short(i.head)}  ${i.title}`);
     }
+    pointToGuide([name]);
   },
 
   async show() {
@@ -2386,6 +2568,15 @@ const commands = {
       // Worker refuses a main head that is not on main's line.
       if (args.merged) mainHead = mergeWithMain(dir, id);
       const on = mainHead ? ` merged with main ${short(mainHead)}` : "";
+      // A landing's required checks compete with the home runners for this
+      // machine (t403): while the load average is at or above the limit they
+      // wait, saying so, and each result records the load it started at. The
+      // limit is ATELIER_LOAD_LIMIT when set, else the core count.
+      const configuredLimit = process.env.ATELIER_LOAD_LIMIT;
+      const limit = loadLimitOf(configuredLimit !== undefined && Number(configuredLimit) > 0 ? Number(configuredLimit) : undefined, coreCount());
+      // One reader for the whole command, so a sequence of readings (a test's
+      // ATELIER_LOAD) advances across the checks and each records its own.
+      const readLoad = envLoad();
       for (const cmd of cmds) {
         // A registered check whose paths this change does not touch is not
         // run. It is recorded as not applicable, which the Worker accepts only
@@ -2394,9 +2585,17 @@ const commands = {
           const n = await postEvidence(`${I(name, id)}/evidence`, { kind: "check", claim: cmd, head: ws.head, notApplicable: true }, as);
           const row = n?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd).at(-1);
           if (row) recorded = row.changedPaths;
+          doneChecks.push({ claim: cmd, result: "not applicable", where: CLEAN_CLONE });
           console.log(`N/A   ${cmd}  @ ${short(ws.head)}  (it ${appliesText(policy, cmd)}; this change touches none of them)`);
           continue;
         }
+        // The wait is per check (t403): a check that starts later must wait on
+        // the load as the earlier one did, and its own starting load is what
+        // its result records, not the first check's.
+        const startLoad = await waitForLoad(limit, {
+          readLoad,
+          report: (current) => process.stderr.write(`atelier: load ${formatLoad(current)} is at or above the limit ${formatLoad(limit)}; waiting for it to fall before running the checks\n`),
+        });
         const r = await runCheck(cmd, dir, secrets);
         // The Worker measures the changed paths from Artifacts and ignores this
         // list, which is sent only so a deployment without that measurement
@@ -2406,10 +2605,12 @@ const commands = {
         const d = await postEvidence(`${I(name, id)}/evidence`, {
           kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed,
           outputTail: `${r.output.slice(-3500)}\n[sha256 of full output: ${r.sha}]`,
+          load: startLoad,
           ...(mainHead ? { merged: true, mainHead } : {}),
         }, as);
         const row = d?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd && !e.merged).at(-1);
         if (row) recorded = row.changedPaths;
+        doneChecks.push({ claim: cmd, result: r.passed ? "passed" : "failed", where: CLEAN_CLONE });
         console.log(`${r.passed ? "PASS" : "FAIL"}  ${cmd}  @ ${short(ws.head)}${on}`);
         if (!r.passed) { failed++; process.stdout.write(r.output.slice(-2000) + "\n"); }
       }
@@ -2420,10 +2621,7 @@ const commands = {
     const paths = recorded === undefined ? changed : recorded;
     if (mainHead) console.log(`Recorded on the merge with main at ${short(mainHead)}; these results stand beside the revision's own checks and go stale when main moves.`);
     else console.log(Array.isArray(paths) ? `changed: ${paths.join(", ") || "nothing"}` : "changed: not measured; the gate waits for a check that measures it");
-    if (failed) {
-      if (doneStep) die("required checks failed", 2);
-      process.exit(2);
-    }
+    if (failed && !doneStep) process.exit(2);
   },
 
   async gc() {
@@ -2465,7 +2663,7 @@ const commands = {
     const name = project(), id = itemArg(), as = await actor();
     await call("POST", `${I(name, id)}/submit`, args.summary === undefined ? {} : { summary: args.summary }, as);
     const d = await call("GET", I(name, id), undefined, as);
-    if (doneStep) return d.gate;
+    if (doneStep) return { item: d.item, gate: d.gate };
     console.log(d.gate.ready ? `${id} submitted and ready for ${OWNER_NAME}.` : `${id} submitted. Still blocking:\n${d.gate.blockers.map((b) => `  - ${b}`).join("\n")}`);
   },
 
@@ -2604,7 +2802,12 @@ const commands = {
     const name = project(), id = itemArg(), reason = overrideArg("accept ID");
     const d = await call("GET", I(name,id), undefined, OWNER);
     const item = await call("POST", `${I(name, id)}/accept`, {head: args.head ?? d.item.head, ...(reason !== undefined ? { overrideReview: reason } : {}), ...(typeof args.note === "string" ? { note: args.note } : {})}, OWNER);
-    console.log(`${id} accepted at ${short(item.acceptedHead)}${reason !== undefined ? ", with the independent review overridden" : ""}. Merge it with: atelier merge ${id}`);
+    const overridden = reason !== undefined
+      ? item.availableReviewer
+        ? `, with the independent review overridden; ${item.availableReviewer} was available to review it instead: atelier land ${id} --reviewer ${item.availableReviewer}`
+        : ", with the independent review overridden"
+      : "";
+    console.log(`${id} accepted at ${short(item.acceptedHead)}${overridden}. Merge it with: atelier merge ${id}`);
   },
 
   // The server clears the owner and revokes the holder's write token, as a
@@ -2683,12 +2886,18 @@ const commands = {
     if (args._.length !== 2 || !args._[1].trim() || args.summary !== undefined || args.rest) die(COMMAND_USAGE.done);
     args.summary = args._[1];
     args._ = ["done"];
+    const restore = args.json === true ? progressToStderr() : () => {};
     doneStep = "prepare";
+    let result;
     try {
-      const gate = await commands.finish();
+      result = await commands.finish();
       doneStep = undefined;
-      console.log(formatDone(gate));
     } catch (error) { die(error.message); }
+    restore();
+    const report = doneReport(result);
+    if (args.json === true) console.log(JSON.stringify(report.json, null, 2));
+    else console.log([...report.summary, report.line].join("\n"));
+    process.exitCode = report.exitCode;
   },
 
   async finish() {
@@ -2699,15 +2908,20 @@ const commands = {
     if (d.item.owner !== as || !["claimed","submitted"].includes(d.item.state)) die("this task must be live and owned by you");
     if (git(["status","--porcelain"])) die("commit your changes before finishing");
     const head = git(["rev-parse","HEAD"]);
+    doneChecks.length = 0;
     if (doneStep) doneStep = "push";
     await commands.push();
     if (doneStep) doneStep = "check";
     if (d.policy.sandboxOnly || args.sandbox) await checkInSandbox(); else await commands.check();
-    if (git(["rev-parse","HEAD"]) !== head || git(["status","--porcelain"])) die("the workspace changed while finishing; inspect it and finish again");
+    const changed = git(["status","--porcelain"], { raw: true }).split("\n").filter(Boolean).map((line) => line.slice(3));
+    // A failed check is the outcome even when it also changed the workspace; the changed files are named with it.
+    if (doneChecks.some((c) => c.result === "failed")) return { id, head, checks: doneChecks, changed };
+    if (git(["rev-parse","HEAD"]) !== head || changed.length) die("the workspace changed while finishing; inspect it and finish again");
     const current = await call("GET", I(name,id), undefined, as);
     if (current.item.head !== head) die("the remote revision changed while checks ran; finish again");
     if (doneStep) doneStep = "submit";
-    return commands.submit();
+    const submitted = await commands.submit();
+    return { id, head, checks: doneChecks, ...submitted };
   },
 
   // The project owner merges an exact revision. With --head, a submitted item
@@ -3367,9 +3581,17 @@ const commands = {
   // The model pool. With no subcommand, lists it. `models add ID --harness H
   // --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME]
   // [--alias A]... [--note TEXT]` adds or replaces an entry; `models remove ID`
-  // removes one. Keys stay in the Keychain; only the entry's name is sent.
+  // removes one; `models note ID 'text' [--item tN]` keeps a dated note under
+  // it, and `models show ID` prints it with its notes. Keys stay in the
+  // Keychain; only the entry's name is sent.
   async models() {
-    const [sub, id] = args._.slice(1);
+    const [sub, id, text] = args._.slice(1);
+    const modelLine = (m) => {
+      const s = m.status ? `${m.status.state} ${m.status.at.slice(0, 16)}Z${m.status.served && m.status.served !== m.id ? ` as ${m.status.served}` : ""}` : "not checked";
+      return `${m.where.padEnd(5)} ${m.harness}/${m.id}  ${m.family}  ${s}${m.keychain ? `  key: ${m.keychain}` : ""}`;
+    };
+    const taskOf = (n) => (n.project ? `${n.projectName ?? n.project}/${n.item}` : n.item);
+    const noteLines = (m) => (m.notes ?? []).map((n) => `  ${n.at.slice(0, 10)} by ${n.by}${n.item ? ` on ${taskOf(n)}` : ""}: ${n.text}`);
     if (sub === "add") {
       if (!id) die("atelier models add ID --harness H --where home|cloud");
       for (const k of ["key", "api-key", "token"]) if (args[k] !== undefined) die("Atelier never stores keys; put the key in your Keychain and give its entry's name with --keychain");
@@ -3384,13 +3606,26 @@ const commands = {
       const { removed } = await call("DELETE", `/models/${encodeURIComponent(id)}`, undefined, OWNER);
       return console.log(removed ? `${id} is no longer in the pool.` : `${id} was not in the pool.`);
     }
-    if (sub) die(`${COMMAND_USAGE.models}\nunknown models command "${sub}"; use add, remove, or nothing to list`);
+    if (sub === "note") {
+      if (!id || args._.length !== 4) die("atelier models note ID 'text' [--item tN]");
+      const body = args.item === undefined ? { text } : { text, item: args.item, project: project() };
+      const note = await call("POST", `/models/${encodeURIComponent(id)}/notes`, body, OWNER);
+      return console.log(`${id} has a new note, ${note.at.slice(0, 10)} by ${note.by}${note.item ? ` on ${taskOf(note)}` : ""}: ${note.text}`);
+    }
+    if (sub === "show") {
+      if (!id) die("atelier models show ID");
+      const m = (await call("GET", "/models", undefined, OWNER)).find((entry) => entry.id === id);
+      if (!m) die(`${id} is not in the pool`);
+      console.log(modelLine(m));
+      const lines = noteLines(m);
+      if (!lines.length) return console.log("  No notes yet. Add one: atelier models note ID 'text'");
+      for (const line of lines) console.log(line);
+      return;
+    }
+    if (sub) die(`${COMMAND_USAGE.models}\nunknown models command "${sub}"; use add, remove, note, show, or nothing to list`);
     const pool = await call("GET", "/models", undefined, OWNER);
     if (!pool.length) return console.log("The pool is empty. Add a model: atelier models add ID --harness H --where home|cloud");
-    for (const m of pool) {
-      const s = m.status ? `${m.status.state} ${m.status.at.slice(0, 16)}Z${m.status.served && m.status.served !== m.id ? ` as ${m.status.served}` : ""}` : "not checked";
-      console.log(`${m.where.padEnd(5)} ${m.harness}/${m.id}  ${m.family}  ${s}${m.keychain ? `  key: ${m.keychain}` : ""}`);
-    }
+    for (const m of pool) console.log([modelLine(m), ...noteLines(m)].join("\n"));
   },
 
   // The public showcase: which projects the owner shows, and whether each is
@@ -3483,6 +3718,25 @@ const commands = {
 
   // The owner's queue: decisions waiting, tasks in progress, tasks waiting for a runner.
   async status() {
+    if (args.brief) {
+      const name = args.project ?? wsConfig("project") ?? registeredHere().name;
+      if (!name) die("--brief reports on one project: add --project NAME");
+      const as = await actor(OWNER);
+      // What cannot be read is said in the brief, not fatal to it.
+      const soft = (promise) => promise.catch(() => null);
+      const [standing, version, queue, usage, lease] = await Promise.all([
+        call("GET", `${P(name)}/standing`, undefined, as),
+        soft(fetch(server() + "/api/version").then((r) => (r.ok ? r.json() : null))),
+        soft(request("GET", "/queue", undefined, as)),
+        soft(request("GET", "/usage", undefined, as)),
+        landingLease(name, as),
+      ]);
+      const text = formatStatusBrief({ standing, version, queue, lease, usage });
+      if (args.json) return console.log(JSON.stringify({ brief: text.split("\n") }, null, 2));
+      console.log(text);
+      pointToGuide([name]);
+      return;
+    }
     if (args.project !== undefined) {
       const name = args.project;
       const as = await actor(OWNER);
@@ -3491,7 +3745,8 @@ const commands = {
       const local = await localStanding(name, as);
       const strays = localStrays();
       if (args.json) return console.log(JSON.stringify({ project: standing, checkout, ...(local ? { local } : {}), ...(strays.length ? { strayTests: strays } : {}) }, null, 2));
-      console.log(formatStanding(standing, OWNER_NAME) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : "") + (strays.length ? "\n\n" + formatStrays(strays) : ""));
+      console.log(tokenExpiryWarningsText(formatStanding(standing, OWNER_NAME) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : "") + (strays.length ? "\n\n" + formatStrays(strays) : "")));
+      pointToGuide([name]);
       return;
     }
     const known = await call("GET", "/projects", undefined, OWNER);
@@ -3512,7 +3767,8 @@ const commands = {
     }));
     if (args.json) return console.log(JSON.stringify(statusJson(views), null, 2));
     const strays = formatStrays(localStrays());
-    console.log(formatStatus(views, { queue, offers }) + (strays ? "\n\n" + strays : ""));
+    console.log(tokenExpiryWarningsText(formatStatus(views, { queue, offers }) + (strays ? "\n\n" + strays : "")));
+    pointToGuide(chosen.map((p) => p.name));
   },
 
   async open() {
@@ -3520,6 +3776,11 @@ const commands = {
   },
 
   async guide() {
+    if (args.full) {
+      if (args.role !== "orchestrate") die("--full prints the orchestrate handbook: atelier guide --role orchestrate --full");
+      process.stdout.write(readFileSync(new URL("../docs/orchestrating.md", import.meta.url), "utf8"));
+      return;
+    }
     if (args.role === undefined) { process.stdout.write(guideText()); return; }
     const role = args.role;
     if (!ROLES.includes(role)) die(`--role needs one of ${ROLES.join(", ")}: atelier guide --role build|review|plan|orchestrate`);

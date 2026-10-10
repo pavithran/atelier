@@ -115,7 +115,7 @@ test("a spinning guarded test's child is ended by the group kill at the outside 
   const r = await runGroup([process.execPath, "--import", "./test/guard.mjs", "--input-type=module", "-e", script], { env, timeoutMs: 700 });
   assert.equal(r.timedOut, true);
   assert.equal(pids().length, 1, r.stdout + r.stderr);
-  assert.ok(!alive(pids()[0]), `the sleeper ${pids()[0]} outlived the check's timeout`);
+  assert.ok(await gone(pids()[0], 2000), `the sleeper ${pids()[0]} outlived the check's timeout`);
 });
 
 // The two pids a fixture writes (spin.mjs: the spinning test process and its
@@ -138,7 +138,7 @@ test("npm test's runner past its time limit SIGKILLs the spinning test's group, 
   const ended = await run.done;
   assert.notEqual(ended.status, 0, run.output());
   assert.match(run.output(), /ran past 2 s; its process group was killed/);
-  assert.ok(!alive(spinner) && !alive(sleeper), `the spinning test ${spinner} or its sleeper ${sleeper} outlived the run`);
+  assert.ok(await gone(spinner, 2000) && await gone(sleeper, 2000), `the spinning test ${spinner} or its sleeper ${sleeper} outlived the run`);
 });
 
 // A check runs npm test, whose runner leads a group of its own inside the
@@ -151,7 +151,9 @@ test("a check past its time limit SIGKILLs the group npm test's runner started t
   const [spinner, sleeper] = await pidPair(pids);
   const r = await check;
   assert.equal(r.timedOut, true);
-  assert.ok(!alive(spinner) && !alive(sleeper), `the spinning test ${spinner} or its sleeper ${sleeper} outlived the check`);
+  // A SIGKILLed process can answer kill(pid, 0) until it is reaped, which
+  // on a loaded machine takes a moment.
+  assert.ok(await gone(spinner, 2000) && await gone(sleeper, 2000), `the spinning test ${spinner} or its sleeper ${sleeper} outlived the check`);
 });
 
 // A ship step (a verify-deploy smoke check) leaves no server behind, when it
