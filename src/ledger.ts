@@ -46,6 +46,7 @@ import { buildPrecision, precisionWindow, type PrecisionRecord } from "./models/
 import { independenceRefusal } from "./review/independence.ts";
 import { gateServesTier, pickTierReviewer } from "./review/tier.ts";
 import type { LargeRef } from "./large.ts";
+import { linkVerdict, type Contradicts } from "./models/judgement.ts";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
 // event log. A Durable Object runs one request at a time, so "exactly one owner"
@@ -1905,7 +1906,10 @@ export class Ledger extends DurableObject<Env> {
   // nothing else: a failing or pending check, a rejection or a disallowed
   // class still refuses the acceptance, and so nothing is recorded.
   // `note` is the owner's word on the acceptance, recorded with its event.
-  accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string): Item {
+  // `acting` is the harness/model that recorded the override for the owner
+  // (src/models/judgement.ts), kept on review.overridden; the authority to
+  // override stays the owner's.
+  accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string, acting: string | null = null): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner accepts", 403);
     if (note !== undefined) assertLength(note, NOTE_MAX, "the acceptance note");
     const item = this.item(id);
@@ -1933,7 +1937,7 @@ export class Ledger extends DurableObject<Env> {
     if (!g.ready) throw new RuleError("not_ready", `not ready: ${g.blockers.join("; ")}`);
     if (override) {
       this.update(id, { review_override: JSON.stringify(override.override) }, at);
-      this.log(id, actor, "review.overridden", { head: item.head, reason: override.override.reason, waived: override.waived, contributors: override.contributors }, at);
+      this.log(id, actor, "review.overridden", { head: item.head, reason: override.override.reason, waived: override.waived, contributors: override.contributors, ...(acting ? { acting } : {}) }, at);
     }
     this.update(id, { state: "accepted", accepted_head: item.head }, at);
     this.withdrawTierRequests(id, "the change was accepted; a tier review never holds a landing", at);
@@ -2299,24 +2303,46 @@ export class Ledger extends DurableObject<Env> {
   // merged or not. Nothing about the item changes: the event is the record,
   // and the reliability record counts it against the model that built that
   // revision and every model that approved it. An item never accepted
-  // carries no approved change, so it is refused.
-  traceDefect(id: string, actor: string, note: string, foundIn: string | null): Item {
+  // carries no approved change, so it is refused. `contradicts` names the
+  // verdict on a finding the defect shows was wrong (t440): the link is
+  // checked against this task's own verdicts and revisions (linkVerdict) and
+  // recorded with the defect, which counts it against the model that acted.
+  traceDefect(id: string, actor: string, note: string, foundIn: string | null, contradicts: Contradicts | null = null): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner traces a defect to a change", 403);
     const item = this.item(id);
     if (!item.acceptedHead) {
       throw new RuleError("not_accepted", `${id} is not accepted at any revision, so no approved change of it carries the defect; trace it to the task whose accepted revision introduced it`, 409);
     }
+    const link = contradicts ? linkVerdict(contradicts, this.eventAt(contradicts.event), id, this.revisionsAccepted(id)) : null;
     const at = new Date().toISOString();
-    this.log(id, actor, "item.defect", { head: item.acceptedHead, note, ...(foundIn ? { foundIn } : {}) }, at);
+    this.log(id, actor, "item.defect", { head: item.acceptedHead, note, ...(foundIn ? { foundIn } : {}), ...(link ? { contradicts: link } : {}) }, at);
     return item;
+  }
+
+  private eventAt(seq: number): LedgerEvent | undefined {
+    const row = this.sql.exec(`SELECT * FROM events WHERE seq = ?`, seq).toArray()[0];
+    return row ? eventOf(row) : undefined;
+  }
+
+  // The revisions a task was submitted at up to its latest acceptance, and
+  // the accepted one: the revisions whose reviews the accepted change answered.
+  private revisionsAccepted(id: string): string[] {
+    const accepted = this.sql.exec(`SELECT seq FROM events WHERE item_id = ? AND kind = 'item.accepted' ORDER BY seq DESC LIMIT 1`, id).toArray()[0]?.seq as number | undefined;
+    const heads = this.sql.exec(`SELECT data FROM events WHERE item_id = ? AND kind = 'item.submitted' AND seq <= ?`, id, accepted ?? Number.MAX_SAFE_INTEGER).toArray()
+      .map((r) => JSON.parse(r.data as string).head as string);
+    const head = this.item(id).acceptedHead;
+    return [...new Set([...heads, ...(head ? [head] : [])])];
   }
 
   // The owner records a verdict on one finding of a review, at the head the
   // review was made at and the finding's position (one based) in that
   // review's findings. Nothing about the review changes: the event is the
   // record, and the reliability record counts the reviewer's findings
-  // confirmed and refuted (src/models/reliability.ts).
-  addFinding(id: string, actor: string, head: string, index: number, verdict: string, note: string): void {
+  // confirmed and refuted (src/models/reliability.ts). `acting` is the
+  // harness/model that recorded the verdict for the owner (t440), measured
+  // by src/models/judgement.ts. Returns the verdict event's sequence number,
+  // the number a defect names to contradict it.
+  addFinding(id: string, actor: string, head: string, index: number, verdict: string, note: string, acting: string | null = null): number {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner records a verdict on a finding", 403);
     if (!["confirmed", "refuted", "fixed"].includes(verdict)) throw new RuleError("bad_finding", "a finding's verdict is confirmed, refuted or fixed", 400);
     this.item(id);
@@ -2328,7 +2354,8 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("no_finding", `${id}'s review at ${at.slice(0, 8)} has ${findings.length} ${findings.length === 1 ? "finding" : "findings"}; --index ${index} is outside it`, 409);
     }
     const finding = findings[index - 1];
-    this.log(id, actor, "review.finding", { head: at, index, verdict, note, by: review.by, finding: { file: finding.file, line: finding.line, severity: finding.severity, text: finding.text } }, new Date().toISOString());
+    this.log(id, actor, "review.finding", { head: at, index, verdict, note, by: review.by, finding: { file: finding.file, line: finding.line, severity: finding.severity, text: finding.text }, ...(acting ? { acting } : {}) }, new Date().toISOString());
+    return this.sql.exec(`SELECT MAX(seq) AS seq FROM events WHERE item_id = ? AND kind = 'review.finding'`, id).one().seq as number;
   }
 
   // The owner records which model served events recorded under another
@@ -2391,9 +2418,9 @@ export class Ledger extends DurableObject<Env> {
     return { sql: this.sql, owner: this.owner, log: (kind, data) => this.log(null, this.owner, kind, data, new Date().toISOString()) };
   }
 
-  recordDecision(body: Record<string, unknown>, actor: string): DecisionView {
+  recordDecision(body: Record<string, unknown>, actor: string, acting: string | null = null): DecisionView {
     this.project();
-    return recordDecision(this.decisionStore, actor, body, new Date().toISOString());
+    return recordDecision(this.decisionStore, actor, body, new Date().toISOString(), acting);
   }
 
   decisions(): DecisionView[] {
@@ -2406,9 +2433,9 @@ export class Ledger extends DurableObject<Env> {
     return standingDecisions(this.decisionStore);
   }
 
-  withdrawDecision(id: string, actor: string, note: unknown): DecisionView {
+  withdrawDecision(id: string, actor: string, note: unknown, acting: string | null = null): DecisionView {
     this.project();
-    return withdrawDecision(this.decisionStore, actor, id, note, new Date().toISOString());
+    return withdrawDecision(this.decisionStore, actor, id, note, new Date().toISOString(), acting);
   }
 
   // ── protected actions (src/actions.ts) ──────────────────────────────────

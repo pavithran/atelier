@@ -277,7 +277,7 @@ export const FLAGS = {
   release: { note: false },
   accept: { head: false, note: false, "override-review": '--override-review needs a reason: atelier accept ID --override-review "why no independent review is possible"' },
   abandon: { note: false, "delivered-by": false },
-  defect: { note: '--note needs text: atelier defect ID --note "what is wrong"', "found-in": false },
+  defect: { note: '--note needs text: atelier defect ID --note "what is wrong"', "found-in": false, contradicts: "--contradicts needs the verdict: atelier defect ID --note TEXT --contradicts SEQ#N" },
   finding: { head: false, index: false, verdict: '--verdict needs a value: atelier finding ID --head SHA --index N --verdict confirmed|refuted|fixed', note: false },
   "run-report": { actor: false, role: false, outcome: false, project: false, item: false, detail: false },
   served: { recorded: false, from: false, to: false, item: false, note: false, apply: true },
@@ -768,6 +768,15 @@ async function resolveTokenActor() {
   tokenActor = config.actor;
   const declared = args.as ?? process.env.ATELIER_ACTOR;
   if (tokenActor && args._[0] !== "token" && declared !== undefined && declared !== tokenActor) die("--as and ATELIER_ACTOR must match the agent token actor");
+}
+
+// The harness/model acting for the owner on a judgement the owner's token
+// records (src/models/judgement.ts): a finding's verdict, a decision, an
+// override. It is --as, or ATELIER_ACTOR, sent beside the owner's actor; the
+// server refuses a name that is not a harness/model, and with none the event
+// records no acting model.
+export function actingHeaders(as = args.as ?? process.env.ATELIER_ACTOR) {
+  return typeof as === "string" && as.trim() ? { "x-atelier-acting": as.trim() } : {};
 }
 
 async function call(method, path, body, as, extra = {}) {
@@ -2832,7 +2841,7 @@ const commands = {
   async accept() {
     const name = project(), id = itemArg(), reason = overrideArg("accept ID");
     const d = await call("GET", I(name,id), undefined, OWNER);
-    const item = await call("POST", `${I(name, id)}/accept`, {head: args.head ?? d.item.head, ...(reason !== undefined ? { overrideReview: reason } : {}), ...(typeof args.note === "string" ? { note: args.note } : {})}, OWNER);
+    const item = await call("POST", `${I(name, id)}/accept`, {head: args.head ?? d.item.head, ...(reason !== undefined ? { overrideReview: reason } : {}), ...(typeof args.note === "string" ? { note: args.note } : {})}, OWNER, reason !== undefined ? actingHeaders() : {});
     const overridden = reason !== undefined
       ? item.availableReviewer
         ? `, with the independent review overridden; ${item.availableReviewer} was available to review it instead: atelier land ${id} --reviewer ${item.availableReviewer}`
@@ -2855,9 +2864,10 @@ const commands = {
   // server refuses an item never accepted, and a blank note.
   async defect() {
     const name = project(), id = itemArg();
-    if (typeof args.note !== "string" || !args.note.trim()) die('a defect needs a note: atelier defect ID --note "what is wrong" [--found-in ID]');
-    const item = await call("POST", `${I(name, id)}/defect`, { note: args.note.trim(), ...(args["found-in"] !== undefined ? { foundIn: args["found-in"] } : {}) }, OWNER);
-    console.log(`Defect traced to ${id} at ${short(item.acceptedHead)}. It counts against the model that built that revision and each model that approved it; the Models page shows the record.`);
+    if (typeof args.note !== "string" || !args.note.trim()) die('a defect needs a note: atelier defect ID --note "what is wrong" [--found-in ID] [--contradicts SEQ#N]');
+    const item = await call("POST", `${I(name, id)}/defect`, { note: args.note.trim(), ...(args["found-in"] !== undefined ? { foundIn: args["found-in"] } : {}), ...(args.contradicts !== undefined ? { contradicts: args.contradicts } : {}) }, OWNER);
+    const contradicted = args.contradicts !== undefined ? ` It contradicts the verdict ${args.contradicts}, which counts against the model that recorded it.` : "";
+    console.log(`Defect traced to ${id} at ${short(item.acceptedHead)}. It counts against the model that built that revision and each model that approved it; the Models page shows the record.${contradicted}`);
   },
 
   // The project owner records a verdict on one finding of a review, at the
@@ -2869,8 +2879,9 @@ const commands = {
     if (typeof args.head !== "string" || !/^[a-f0-9]{40,64}$/.test(args.head)) die('--head needs the full revision the review was made at: atelier finding ID --head SHA --index N --verdict ...');
     const index = Number(args.index);
     if (!Number.isInteger(index) || index < 1) die('--index needs the finding\'s position in the review, one based: atelier finding ID --head SHA --index N --verdict ...');
-    await call("POST", `${I(name, id)}/finding`, { head: args.head, index, verdict, note: args.note ?? "" }, OWNER);
-    console.log(`Recorded ${verdict} on finding ${index} of ${id}'s review at ${args.head.slice(0, 8)}. The Models page counts it under the reviewer.`);
+    const r = await call("POST", `${I(name, id)}/finding`, { head: args.head, index, verdict, note: args.note ?? "" }, OWNER, actingHeaders());
+    const event = typeof r.event === "number" ? ` as event ${r.event}${r.acting ? `, acting ${r.acting}` : ""}; a defect that shows it wrong names it with --contradicts ${r.event}#${index}` : "";
+    console.log(`Recorded ${verdict} on finding ${index} of ${id}'s review at ${args.head.slice(0, 8)}${event}. The Models page counts it under the reviewer.`);
   },
 
   // The project owner records a run that ended without a result the ledger
@@ -3118,7 +3129,7 @@ const commands = {
         if (d.item.head!==args.head) die("the task changed; review the new revision before merging");
         // The owner approves here the criteria this command read with the head.
         if (args.approve) await call("POST",`${I(name,id)}/review`,{head:args.head,criteria:d.criteria,approve:true,note:args.note??""},OWNER);
-        await call("POST",`${I(name,id)}/accept`,{head:args.head,...(reason!==undefined?{overrideReview:reason}:{})},OWNER);
+        await call("POST",`${I(name,id)}/accept`,{head:args.head,...(reason!==undefined?{overrideReview:reason}:{})},OWNER,reason!==undefined?actingHeaders():{});
       }
     }
     const gitDir=git(["rev-parse","--absolute-git-dir"],{cwd}), landing=landingHome(gitDir);
@@ -3370,7 +3381,7 @@ const commands = {
     if (args._.length !== 2 || !text?.trim()) die(COMMAND_USAGE.decide);
     if (typeof args.quote !== "string" || !args.quote.trim()) die(`a decision needs the owner's words: atelier decide "text" --quote "what the owner said"`);
     const name = project();
-    const d = await call("POST", `${P(name)}/decisions`, { text, quote: args.quote }, OWNER);
+    const d = await call("POST", `${P(name)}/decisions`, { text, quote: args.quote }, OWNER, actingHeaders());
     console.log(`${d.id}: recorded ${d.at.slice(0, 10)} for ${name}. Every review brief of ${name} and atelier guide --role orchestrate --project ${name} carry it. To withdraw it: atelier decisions withdraw ${d.id} --note "why"`);
   },
 
@@ -3380,7 +3391,7 @@ const commands = {
     if (sub === "withdraw") {
       if (!id || args._.length !== 3) die(COMMAND_USAGE.decisions);
       if (typeof args.note !== "string" || !args.note.trim()) die(`withdrawing a decision needs a note saying why: atelier decisions withdraw ${id} --note "why"`);
-      const d = await call("POST", `${P(name)}/decisions/${encodeURIComponent(id)}/withdraw`, { note: args.note }, OWNER);
+      const d = await call("POST", `${P(name)}/decisions/${encodeURIComponent(id)}/withdraw`, { note: args.note }, OWNER, actingHeaders());
       return console.log(`${d.id}: withdrawn ${d.withdrawn.at.slice(0, 10)}; it no longer appears in ${name}'s review briefs or its orchestrator's guide. atelier decisions --all still lists it.`);
     }
     if (sub !== undefined || args.note !== undefined) die(COMMAND_USAGE.decisions);
