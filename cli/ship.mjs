@@ -14,10 +14,10 @@
 // cli/atelier.mjs owns the server, git and the process: the ship command
 // there passes them in, so this module holds the rules and stays testable.
 
-import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ACTION_KINDS, KIND, approvalStatus } from "../src/actions.ts";
+import { runGroup } from "./group.mjs";
 
 export const SHIP_FILE = "docs/atelier/ship.json";
 const CP = "docs/control-plane";
@@ -362,22 +362,21 @@ export function stepEnv(env) {
 }
 
 // Runs argv with no shell, in `cwd`, showing its output as it comes and
-// keeping the last megabyte of it.
-export function runCommand(argv, { cwd, env, timeoutMs, out = process.stdout, err = process.stderr }) {
-  return new Promise((done) => {
-    const started = Date.now();
-    let output = "", error;
-    const child = spawn(argv[0], argv.slice(1), { cwd, env, timeout: timeoutMs, stdio: ["ignore", "pipe", "pipe"] });
-    const take = (stream, to) => stream.setEncoding("utf8").on("data", (s) => { to.write(s); output = (output + s).slice(-KEEP); });
-    take(child.stdout, out);
-    take(child.stderr, err);
-    child.on("error", (e) => { error = e; });
-    child.on("close", (status, signal) => {
-      const durationMs = Date.now() - started;
-      const why = error ? `could not run ${argv[0]}: ${error.message}` : signal ? `ended by ${signal}${durationMs >= timeoutMs ? ` after its ${Math.round(timeoutMs / 1000)}s timeout` : ""}` : null;
-      done({ status: error ? null : status, signal: signal ?? null, output: why ? `${output}\n[atelier] ${why}` : output, durationMs, passed: !error && status === 0 });
-    });
-  });
+// keeping the last megabyte of it. It leads a process group of its own
+// (runGroup in cli/group.mjs), which is SIGKILLed whole when it exits and
+// when `timeoutMs` passes, so a smoke check's server or test process does
+// not outlive it (t419).
+export async function runCommand(argv, { cwd, env, timeoutMs, out = process.stdout, err = process.stderr }) {
+  const started = Date.now();
+  let output = "";
+  const onData = (key, s) => { (key === "stdout" ? out : err).write(s); output = (output + s).slice(-KEEP); };
+  const r = await runGroup(argv, { cwd, env, timeoutMs, onData });
+  const durationMs = Date.now() - started;
+  const why = r.timedOut ? `ended by SIGKILL with its process group after its ${Math.round(timeoutMs / 1000)}s timeout`
+    : r.signal ? `ended by ${r.signal}`
+    : r.error ? `could not run ${argv[0]}: ${r.error.message}` : null;
+  const status = r.error && !r.signal && !r.timedOut ? null : r.status;
+  return { status, signal: r.signal ?? null, output: why ? `${output}\n[atelier] ${why}` : output, durationMs, passed: !r.error && r.status === 0 };
 }
 
 // A GET of the URL, following redirects, that must end with the status.
