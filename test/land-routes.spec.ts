@@ -423,6 +423,36 @@ it("a landing's review request with an explicit --reviewer outside the tier asks
   expect((await solo.reviewRequests(t)).filter((r) => r.tier)).toEqual([]);
 });
 
+// t394: the acceptance records the family mode in force and each contributor
+// with its company, and the merge's provenance note reads them from there:
+// GPT's work done before a switch to Anthropic only stays GPT's in the note.
+it("an acceptance records the family mode in force and each contributor's company for the provenance note", async () => {
+  const SONNET = "claude-code/sonnet-5.5";
+  const L = await setup("land-acceptance-family");
+  const id = (await L.newItem("Landing", [], "owner")).id;
+  const first = "d".repeat(40), head = "e".repeat(40);
+  await L.claim(id, GPT, RUNNER);
+  await L.setFork(id, `fork-${id}`, H0, GPT);
+  await L.recordPush(id, GPT, first, first);
+  await L.release(id, GPT, "Opus finishes it");
+  await L.claim(id, OPUS, RUNNER);
+  await L.recordPush(id, OPUS, head, first);
+  await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/land.ts"] } satisfies Evidence);
+  await L.submit(id, OPUS);
+  await L.initProject({ name: "land-acceptance-family", repo: "land-acceptance-family--baseline", reset: false, familyMode: { single: "anthropic", by: "owner" } }, "owner");
+  expect(await L.requestReview(id, "owner", null, [...POOL, entry("sonnet-5.5", "claude-code")])).toMatchObject({ reviewer: SONNET });
+  await L.claimReview(id, SONNET, RUNNER);
+  await L.addReview({ itemId: id, criteria: await L.criteria(id), by: SONNET, head, approve: true, note: "Fine.", at: new Date().toISOString() });
+  await L.accept(id, "owner", head);
+  // What cli/provenance.mjs states (its own tests read these into the note).
+  const family = (await L.detail(id) as unknown as { acceptanceFamily: { contributors: unknown[] } }).acceptanceFamily;
+  expect(family).toEqual({ singleFamily: "anthropic", contributors: expect.arrayContaining([{ actor: GPT, company: "openai" }, { actor: OPUS, company: "anthropic" }]) });
+  expect(family.contributors).toHaveLength(2);
+  // A later return to the default does not change what the acceptance recorded.
+  await L.initProject({ name: "land-acceptance-family", repo: "land-acceptance-family--baseline", reset: false, familyMode: { single: null, by: "owner" } }, "owner");
+  expect((await L.detail(id) as unknown as { acceptanceFamily: { singleFamily: string | null } }).acceptanceFamily.singleFamily).toBe("anthropic");
+});
+
 it("a tier approval alone does not let the task be accepted", async () => {
   const L = await setup("land-tier-gate", { ...policy, reviewTier: ["claude-code/sonnet-5.5"] });
   const id = (await L.newItem("Landing", [], "owner")).id;

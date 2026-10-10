@@ -178,7 +178,10 @@ claimed review request another company's model holds or is asked to give.
 The mode is shown under the project's title on every tab of its page
 and on its Settings tab, by `atelier status` and `atelier status --project`,
 at the top of every review brief, and in each merge's provenance note, so
-nobody takes such a review for a cross-company one.
+nobody takes such a review for a cross-company one. The acceptance records
+the mode in force and each contributor with its company, and the provenance
+note states those, not the mode at merge time: work contributed before a
+switch keeps its own company there.
 
 ```text
 atelier init --cross-family
