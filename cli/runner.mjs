@@ -9,7 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { checkEnv } from "./check-env.mjs";
 import { killTree, treeGroups } from "./group.mjs";
 import { formatLoad, envLoad, coreCount, loadLimitOf } from "./load.mjs";
-import { envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
+import { runnerChildEnv, envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
 import { reviewBrief, BRIEF_LIMITS, criteriaCount } from "../src/review/brief.ts";
 import { submission } from "../src/brief.ts";
@@ -311,7 +311,7 @@ export function harnessEnv(base, names = [], tokens = []) {
 // The owner's Atelier token as this machine holds it: ATELIER_TOKEN, and the
 // one `atelier login` stored. Read only when an entry names variables to pass.
 export function ownerTokens(base = process.env) {
-  const tokens = [base.ATELIER_TOKEN?.trim()];
+  const tokens = [base.ATELIER_TOKEN?.trim(), base.ATELIER_RUNNER_TOKEN?.trim()];
   try { tokens.push(readSecret("API_TOKEN", { env: { ...base, ATELIER_TOKEN: "" } })); } catch { /* A store that cannot be read gives the CLI no token either. */ }
   return tokens.filter(Boolean);
 }
@@ -1495,7 +1495,7 @@ export function runOutcome(state) {
 
 // `reportRun(body, runner, signal)` sends a run report; a report that fails
 // is logged and the loop goes on.
-export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun, version, load = envLoad(), cores = coreCount }) {
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun, version, load = envLoad(), cores = coreCount }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
@@ -1541,7 +1541,7 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
     // child's environment, which wins over the owner's stored token; it is
     // never an argument, which any local user could read.
     cli: (argv, cwd, options = {}) => checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, capture: readsOutput(argv), claim: argv[0] === "claim",
-      ...(options.token ? { env: { ...process.env, ATELIER_TOKEN: options.token } } : {}),
+      env: runnerChildEnv(process.env, offer.runner, credential, options.token),
       step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
       ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild),
     head: (cwd, { cleanup = false, ref = "HEAD" } = {}) => checked(["git", "rev-parse", "--verify", `${ref}^{commit}`],
@@ -1563,7 +1563,7 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
       try { return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null; } catch { return null; }
     },
     writeValidationBlock: async (cwd, block) => writeFileSync(join(cwd, ".git", "atelier-validation-blocked"), JSON.stringify(block), { mode: 0o600 }),
-    env: process.env, ownerTokens: () => ownerTokens(process.env),
+    env: process.env, ownerTokens: () => [...ownerTokens(process.env), credential].filter(Boolean),
     brief: writeBrief, removeBrief, dataHome: makeDataHome, removeDataHome,
     // The plan job's and a part's server calls (atelier.mjs wires them to
     // fetch); a runner started without them takes no plan job and no part.

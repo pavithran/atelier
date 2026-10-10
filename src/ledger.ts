@@ -1,6 +1,6 @@
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
-import { sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
+import { runnerDenied, sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
 import { OBSERVED_UNDER, type ModelEntry, type ModelNote, type ModelStatus } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
@@ -17,7 +17,7 @@ import { criteriaHash, criteriaOf, sameCriteria } from "./criteria.ts";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
 import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
-import { assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, makeDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
+import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, makeDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
 import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
@@ -1162,6 +1162,57 @@ export class Ledger extends DurableObject<Env> {
       .map((row) => ({ ...toItem(row), pushActors: pushActors(histories.get(row.id as string) ?? []) }));
   }
 
+  private runnerMeta<T>(key: string): T | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, key).toArray()[0];
+    return row ? JSON.parse(row.value as string) : null;
+  }
+
+  runnerPoll(token: AgentToken, offer: RunnerOffer): void {
+    if (!token.runner || offer.runner !== token.runner) throw runnerDenied(token);
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-offer:${token.id}`, JSON.stringify({ ...offer, at: new Date().toISOString() }));
+    // A report may follow a failed claim or a review run authenticated with
+    // its model token. Remember only jobs this poll actually authorizes,
+    // separately from the grants that authorize build/plan operations.
+    const { waiting, reviews } = this.queued();
+    for (const item of [...this.heldJobs(offer.runner), ...waiting, ...reviews]) {
+      if (!item.dispatch || "held" in item && item.held) continue;
+      const assignment = assign(item.dispatch, offer);
+      if (!assignment || ["integrate", "refresh"].includes(item.dispatch.job ?? "")) continue;
+      if (item.state === "claimed" && item.owner !== assignment.actor && item.dispatch.job !== "review") continue;
+      const role = item.dispatch.job === "review" ? "review" : item.dispatch.job === "plan" ? "plan" : "build";
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-report:${token.id}:${item.id}:${assignment.actor}:${role}`, JSON.stringify(item.dispatch.at));
+    }
+  }
+
+  assertRunnerReport(token: AgentToken, id: string, actor: string, role: string): void {
+    if (!this.runnerMeta(`runner-report:${token.id}:${id}:${actor}:${role}`)) throw runnerDenied(token);
+  }
+
+  assertRunnerJob(token: AgentToken, id: string, actor: string, claim = false): void {
+    let item: Item;
+    try { item = this.item(id); } catch { throw runnerDenied(token); }
+    const held = this.runnerMeta<{ actor: string; runner: string }>(`runner-job:${token.id}:${id}`);
+    if (held?.actor === actor && held.runner === token.runner && (item.owner === actor && item.runner === token.runner && !["merged", "abandoned", "blocked"].includes(item.state))) return;
+    if (claim && (item.state === "open" && !item.owner || item.state === "claimed" && item.owner === actor && item.runner === token.runner) && item.dispatch && !["review", "integrate", "refresh"].includes(item.dispatch.job ?? "")) {
+      const offer = this.runnerMeta<SeenOffer>(`runner-offer:${token.id}`);
+      if (offer && liveOffers([offer]).length && assign(item.dispatch, offer)?.actor === actor && !coreHold(item, this.items(), this.project().policy.coreFiles)) return;
+    }
+    throw runnerDenied(token);
+  }
+
+  recordRunnerGit(id: string, actor: string, generation: number, replaces: string | null, hash: string, token: AgentToken): boolean {
+    if (!this.recordToken(id, actor, generation, replaces, `runner:${hash}`)) return false;
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-git:${hash}`, JSON.stringify({ parent: token.hash, actor, id, generation }));
+    return true;
+  }
+
+  runnerGit(hash: string): { parent: string; actor: string; id: string; generation: number } | null {
+    const grant = this.runnerMeta<{ parent: string; actor: string; id: string; generation: number }>(`runner-git:${hash}`);
+    if (!grant || this.tokenId(grant.id) !== `runner:${hash}`) return null;
+    const row = this.sql.exec(`SELECT claim_gen FROM items WHERE id = ?`, grant.id).one();
+    return row.claim_gen === grant.generation ? grant : null;
+  }
+
   tokenId(id: string): string | null {
     const row = this.sql.exec(`SELECT token_id FROM items WHERE id = ?`, id).toArray()[0];
     return (row?.token_id as string | null) ?? null;
@@ -1171,9 +1222,10 @@ export class Ledger extends DurableObject<Env> {
   // write token its caller goes on to mint, and says which recorded token
   // that one replaces: the caller revokes it, and records the new one with
   // recordToken under this generation.
-  claim(id: string, actor: string, runner: { runner: string; kind: RunnerKind } | null = null, proved = false): { item: Item; needsFork: boolean; generation: number; replaces: string | null } {
+  claim(id: string, actor: string, runner: { runner: string; kind: RunnerKind } | null = null, proved = false, runnerToken?: AgentToken): { item: Item; needsFork: boolean; generation: number; replaces: string | null } {
     const at = new Date().toISOString();
     const item = this.item(id);
+    if (runnerToken) this.assertRunnerJob(runnerToken, id, actor, true);
     this.assertPlanClaim(item, actor);
     assertDispatchedClaim(item, actor, runner);
     // The integrator is a reserved actor, reachable only through a t43 token
@@ -1185,6 +1237,9 @@ export class Ledger extends DurableObject<Env> {
     } else {
       // A plan's planner claims its item to write the plan, under the planner role.
       assertClaimAllowed(item, this.items(), this.project().policy, actor, this.owner, item.kind === "plan" ? "planner" : "executor");
+    }
+    if (runnerToken) {
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-job:${runnerToken.id}:${id}`, JSON.stringify({ actor, runner: runnerToken.runner }));
     }
     if (item.owner === actor) {
       // Re-claiming refreshes the write token, so it is allowed only from where
