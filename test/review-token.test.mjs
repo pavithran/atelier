@@ -147,11 +147,23 @@ test("a review job makes every CLI call with the model's own token, and the toke
   assert.ok(!logs.some((l) => /owner token/.test(l)), logs.join("\n"));
 });
 
-test("a release after a failure is made with the same token as the claim", async () => {
-  const { io, calls } = fixture();
-  io.readVerdict = () => "Looks fine.";
-  const state = await runReview(assignment, { agents, tokens: { [model]: "agent.glm" } }, "home:studio", io);
+test("an unparsable reply is kept and a later failure released, each with the same token as the claim", async () => {
+  // A reply with no verdict: kept on the task (t407) with the reviewer's token.
+  const kept = fixture();
+  kept.io.readVerdict = () => "Looks fine.";
+  const state = await runReview(assignment, { agents, tokens: { [model]: "agent.glm" } }, "home:studio", kept.io);
   assert.equal(state.phase, "failed");
+  const unparsable = cliCalls(kept.calls).find((c) => c.argv[0] === "review-unparsable");
+  assert.ok(unparsable, "the reply is kept on the task");
+  assert.deepEqual(unparsable.opts, { token: FAKE });
+  assert.ok(!cliCalls(kept.calls).some((c) => c.argv[0] === "review-release"), "the request is released by the same call");
+
+  // Any other failure after the claim still releases, with the same token.
+  const { io, calls } = fixture();
+  const cli = io.cli;
+  io.cli = async (argv, cwd, opts) => { if (argv[0] === "review") throw new Error("server refused"); return cli(argv, cwd, opts); };
+  const failed = await runReview(assignment, { agents, tokens: { [model]: "agent.glm" } }, "home:studio", io);
+  assert.equal(failed.phase, "failed");
   const release = cliCalls(calls).find((c) => c.argv[0] === "review-release");
   assert.ok(release, "the request is released");
   assert.deepEqual(release.opts, { token: FAKE });
