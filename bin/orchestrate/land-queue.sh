@@ -10,7 +10,10 @@
 # Each landing prints exactly one line, "LANDQ tN: OUTCOME", for a watcher to
 # match: landed, paused at its conflict stage, rejected by the reviewer,
 # refused on route level, or failed. The full output of each landing is kept
-# under the queue folder as tN.log.
+# under the queue folder as tN.log. A successful workflow then runs the
+# synchronous post-merge.sh barrier (or LAND_QUEUE_POST_MERGE executable).
+# Its failure retains PROJECT.queue.post-merge; restart retries it before
+# taking another task. Its output is tN.post-merge.log. Run only one consumer.
 #
 # The queue file is $ATELIER_CACHE/land-queue/PROJECT.queue (one
 # "tN:harness/model" per line). Add a landing while the queue runs with
@@ -34,6 +37,8 @@ limit=${LAND_QUEUE_LOAD:-25}; idle_limit=${LAND_QUEUE_IDLE:-7200}
 cli=${ATELIER_CLI:-node cli/atelier.mjs}
 poll=${LAND_QUEUE_POLL:-20}
 lock=$queue.lock
+pending=$queue.post-merge
+post_merge=${LAND_QUEUE_POST_MERGE:-${0:A:h}/post-merge.sh}
 
 # lock_queue / unlock_queue: mkdir is atomic, so one process holds the lock.
 # A lock whose owner's pid is gone is taken over.
@@ -54,6 +59,20 @@ enqueue "$@"
 # The five-minute load average: macOS prints "{ 1m 5m 15m }", Linux "1m 5m 15m ...".
 load5() { if [[ -r /proc/loadavg ]]; then awk '{print int($2)}' /proc/loadavg; else sysctl -n vm.loadavg | awk '{print int($3)}'; fi; }
 
+# Persist the barrier across exits/restarts. A failing hook leaves the next
+# task in the queue; restarting retries the hook, never the landed task.
+finish_merge() {
+  [[ -f $pending ]] || return 0
+  local task=$(cat "$pending")
+  if "$post_merge" "$task" > "$dir/$task.post-merge.log" 2>&1; then
+    rm -f "$pending"
+    print -r -- "LANDQ $task: post-merge complete"
+  else
+    print -r -- "LANDQ $task: post-merge blocked; read $dir/$task.post-merge.log and restart after fixing it"
+    return 1
+  fi
+}
+finish_merge || exit 1
 idle=0
 while (( idle < idle_limit )); do
   lock_queue
@@ -65,6 +84,12 @@ while (( idle < idle_limit )); do
   until (( $(load5) < limit )); do sleep 30; done
   ${=cli} land "$t" --project "$project" --workflow --wait --reviewer "$reviewer" > "$dir/$t.log" 2>&1
   out=$(sed 's/\x1b\[[0-9;]*m//g' "$dir/$t.log" | grep -E "landed through|failed:|conflict stage|route level|can no longer be read|FAIL " | tail -1)
+  # Match the CLI's completion message, not just its exit status (a paused
+  # workflow may also exit successfully).
+  if [[ $out == *"landed through the landing Workflow"* ]]; then
+    print -r -- "$t" > "$pending"
+  fi
   print -r -- "LANDQ $t: ${out:0:300}"
+  finish_merge || exit 1
 done
 print -r -- "LANDQ idle: nothing queued for $((idle_limit / 60)) minutes; exiting"

@@ -293,7 +293,7 @@ whose output is kept in a file (`docs/runners.md` sets them up):
   64 GB laptop): `atelier runner --name home:NAME --config
   ~/.config/atelier/runner-build.json`;
 - two review runners, so one slow review does not hold every landing:
-  `--config ~/.config/atelier/runner-review.json`;
+  `atelier runner --name home:NAME-rev --config ~/.config/atelier/runner-review.json`;
 - one integrator for plans: `atelier runner --name home:NAME-int
   --integrate`, with the integrator's own token.
 
@@ -308,6 +308,12 @@ Restart a runner when:
 - **a review runner has printed nothing for a long time while a review
   waits**: restart it (t351, t353). A review it had claimed may need
   `atelier review-release ID`.
+
+To restart, stop that runner's recorded process with `kill -TERM PID`, wait
+for it to exit, then repeat its original `atelier runner` command above.
+A missing PID means it already exited; an error in the new process's log
+means fix the configuration before retrying. Do not start a duplicate with
+the same name while its old process is still alive.
 
 Each harness's command must give agents no MCP servers or plugins, and a
 build sandbox that allows the network, the package manager's cache and
@@ -326,7 +332,7 @@ tail -n0 -F RUNNER-OUTPUTS... | grep -E --line-buffered \
 
 | Line | Meaning | Next step |
 | --- | --- | --- |
-| `tN submitted` | A build finished, pushed and passed its own checks | Queue its landing (below) |
+| `tN submitted` | A build finished, pushed and passed its own checks | Triage its diff against every criterion, then queue its landing (below) |
 | `runner: failed: harness …` | A run ended without a commit or with an error | Read the run's lines above it; `atelier run-report` if the model stopped early |
 | `… needs the owner's attention after 2 failures` | The runner gave up on that task | Read both failures, fix the cause, restart the runner |
 | `Error loading config` | A harness's own configuration is broken | Fix it before anything else: every run of that harness fails |
@@ -335,7 +341,24 @@ tail -n0 -F RUNNER-OUTPUTS... | grep -E --line-buffered \
 `atelier status` lists dispatches waiting for a runner, with the reason each
 is not being taken.
 
+Before starting an agent in a fresh workspace on another machine, run
+`npm ci` and `npm run types` there. If either fails, fix the dependency or
+configuration failure before starting the agent. A stale
+`.git/atelier-validation-blocked` marker strands an otherwise finished build:
+read it with `cat .git/atelier-validation-blocked`, fix the reported cause,
+run `npm test` and `npm run typecheck`, then remove the stale marker with
+`rm .git/atelier-validation-blocked` only after both pass and retry
+`atelier finish`. A remaining failure stays blocked.
+
 ### Choosing a reviewer
+
+Before queueing, read `atelier show tN` and, in the task workspace,
+`git fetch origin main` then `git diff origin/main...HEAD`. Triage the diff
+against each acceptance criterion. Missing behaviour goes back to the
+builder with `atelier dispatch tN --to home --agent A --model M --note "…"`;
+a complete diff proceeds to independent review. A criterion the builder
+cannot verify, such as a signed-in browser flow, belongs to the orchestrator
+after deploy: record that check and do not claim it passed from local tests.
 
 The reviewer must be of another company than every contributor to the task,
 not only its last builder: `atelier show tN` names who worked on it, and the
@@ -349,7 +372,9 @@ the same task several rounds running is still the right reviewer; see
 
 `bin/orchestrate/land-queue.sh` lands tasks one after another, waiting for
 the machine's load to fall under 25 before each, and prints one `LANDQ tN:`
-line per landing. Start it once from the project's checkout as a long-lived
+line per landing. After a successful merge it synchronously runs
+`bin/orchestrate/post-merge.sh tN`; the next task stays queued until that
+step checks main, deploys and publishes successfully. Start it once from the project's checkout as a long-lived
 background job, then add each submitted task with `--add`:
 
 ```sh
@@ -376,6 +401,16 @@ waiter itself and it waits forever. On 10 October two landings sat for fifty
 minutes that way. If a wait on a process is unavoidable, write the pattern so
 it cannot match itself (`pgrep -f "land-queue.sh t40[5]"`). t408 replaces
 these waits with a command.
+
+A failed post-merge step prints `LANDQ tN: post-merge blocked` and exits
+nonzero. Read `$ATELIER_CACHE/land-queue/atelier.queue.post-merge` for the
+pending task and `$ATELIER_CACHE/land-queue/tN.post-merge.log` for the error.
+Fix it and restart `bin/orchestrate/land-queue.sh`; it retries that step
+before consuming any task, even after a process restart. Do not delete the
+marker or requeue the already merged task. `post-merge complete` means the
+barrier cleared. `LAND_QUEUE_POST_MERGE=/absolute/path/to/hook` may replace
+the step only with an executable that performs all the same operations;
+zero means they all finished, any other status holds the queue.
 
 ### Landing outcomes
 
@@ -407,6 +442,12 @@ conflicting files.
   For a task with many conflicting files in core code, name the strongest
   builder available rather than the original one.
 
+A task built before a code move is ported by its builder, even if Git can
+merge it cleanly: dispatch `atelier dispatch tN --job merge-main --to home
+--agent A --model M --overlap-ok` and wait for the builder's port and checks
+before queueing it again. Moving paths is not a mechanical resolution when
+imports, registries or behaviour need adapting.
+
 The same files conflict almost every time on Atelier: `cli/atelier.mjs`,
 `src/usage.ts`, `src/ledger.ts` and the CLI's help and usage fixtures. A
 merge-main job merges main as it is when a runner claims it (t429), so the
@@ -424,6 +465,10 @@ reaches every core file, so the task is held behind any live task in any of
 them: on 10 October twelve tasks filed with broad scopes all waited on one
 task, while a second machine's runners sat idle.
 
+When runners sit idle, read `atelier queue` first: held dispatches are work
+waiting on scope overlaps, not an empty backlog. If none are held, use
+`atelier status` to check runner eligibility and health.
+
 `atelier status` shows `Held: waits on tX … both scopes reach core file F`
 for a dispatch whose scope overlaps a live task's in a core file. Check that
 tX is really moving (its workspace's last commit, an agent process in it). If
@@ -434,15 +479,27 @@ landing.
 
 ### After each merge
 
-Run these in the project checkout, in order, between landings and never
-while another landing's checks run.
+The queue runs `bin/orchestrate/post-merge.sh tN` in the project checkout
+and waits for it. It requires a clean `main`, pulls with `--ff-only`, runs
+`npm run typecheck` and `npm test`,
+deploys, audits outgoing history and publishes. Any failed command stops it
+and holds the next landing. The steps below explain those operations and
+manual diagnosis; never start a second queue while this barrier is pending.
+The script runs the full suite in the clean checkout; a clean clone below
+can reproduce failures independently.
+
+For a task whose platform/runtime behaviour needs a remote smoke check, set
+`POST_MERGE_SMOKE=/absolute/path/to/check`; the executable receives `before`
+and `after` around deployment and must return zero for each. A failure
+holds the queue. Include the orchestrator's signed-in browser criterion in
+that verification after deployment; a local pass cannot stand in for it.
 
 1. Update and type check:
 
    ```sh
    PREVIOUS=$(git rev-parse HEAD)
    git pull --ff-only
-   npx tsc -p . && npx tsc -p test
+   npm run typecheck
    ```
 
    `git pull` failing as not fast-forward means the checkout holds a commit
@@ -478,25 +535,44 @@ while another landing's checks run.
    `git remote add public URL` once) and run:
 
    ```sh
+   : "${NOREPLY:?Set the recorded public no-reply address}"
    git fetch public
    # a. every new commit's author and committer address must be the public
    #    no-reply address; this prints the ones that are not
-   git log --format='%h %ae %ce' public/main..main | grep -v "$NOREPLY"
-   # b. the added lines carry no key, token, private address or personal email
-   git diff public/main main | grep -E '^\+' | grep -iE 'api[_-]?key|token|secret|password|PRIVATE KEY|sk-[A-Za-z0-9]{20,}|([0-9]{1,3}\.){3}[0-9]{1,3}|@[a-z0-9-]+\.[a-z]{2,}'
-   # c. files the project keeps private are not in the diff
-   git diff --name-only public/main main | grep -E '^(PROJECT|AGENTS)\.md$|^\.env'
-   # d. only when a, b and c printed nothing
-   git push public main
+   git log --format='%H %ae %ce' public/main..HEAD | awk -v expected="$NOREPLY" '$2 != expected || $3 != expected'
+   # b. inspect every outgoing commit, including additions later removed
+   git log -p -m --root --format=fuller --binary public/main..HEAD | grep -E '^\+' | grep -iE 'api[_-]?key|token|secret|password|PRIVATE KEY|sk-[A-Za-z0-9]{20,}|([0-9]{1,3}\.){3}[0-9]{1,3}|@[a-z0-9-]+\.[a-z]{2,}'
+   # c. private paths must not appear in any outgoing commit
+   git log --name-only -m --root --format= public/main..HEAD | grep -E '^(PROJECT|AGENTS)\.md$|^\.env'
+   # d. read all outgoing metadata, messages and patches too; pattern scans
+   #    only flag candidates and cannot prove prose or binary assets public
+   git log -p -m --root --format=fuller --binary public/main..HEAD
+   # after every candidate is cleared, let the pending post-merge step push
+   export PUBLIC_AUDIT_HEAD=$(git rev-parse HEAD)
+   bin/orchestrate/land-queue.sh
    ```
 
    `NOREPLY` is the public no-reply address, read from the project's
-   recorded decisions (`atelier guide --role orchestrate`). No output from
-   a, b or c is the pass. Output from a: those commits must be rewritten
+   recorded decisions (`atelier guide --role orchestrate`). An unset or empty `NOREPLY` is a stop, never a pass.
+   Compare author and committer separately with exact equality: either
+   private address holds publication. Output from a: those commits must be rewritten
    before they are published, so send their task back. Output from b: read
    each line; a test fixture or a documented placeholder is fine, a real
-   value goes back to its task. Output from c: the file must leave main
-   first. Any output holds the push. If the push is rejected as
+   value goes back to its task. Output from c: the file must be removed from every outgoing
+   commit that contains it. Deleting it at the tip does not remove it from
+   published history. Stop publication and coordinate history repair with
+   the owner; do not rewrite shared main casually. Re-audit the entire
+   outgoing range after any repair. The `-m --root` scans include merge
+   changes and initial commits. Review commit messages, metadata and binary
+   files as well as added lines for private details, including spend figures.
+   Any unresolved candidate holds the push.
+
+   The script saves addresses, paths and the full patch under
+   `$(git rev-parse --git-path public-audit)` and stops until
+   `PUBLIC_AUDIT_HEAD` names the exact audited head. Setting it acknowledges
+   that human inspection; it cannot bypass bad addresses or private paths.
+   On restart, the pending step repeats checks and deployment before pushing;
+   it takes the next task only after the push succeeds. If the push is rejected as
    non-fast-forward, the mirror has a commit main does not: fetch, find it,
    and never force the push.
 5. Report to the lead developer: what merged, what was deployed, what is
