@@ -2533,6 +2533,9 @@ export class Ledger extends DurableObject<Env> {
     const policy = this.project().policy;
     const active = this.sql.exec(`SELECT id FROM items WHERE kind = 'plan' AND state NOT IN ('merged', 'abandoned') LIMIT 1`).toArray()[0];
     if (active) throw new RuleError("plan_active", `${active.id} is this project's active plan, and a project has one at a time; finish it, or stop it with atelier plan stop ${active.id}`, 409);
+    // Kept here as well, so a reroute of this plan's planner in a project the
+    // index has not yet sent the pool reads the owner's standing.
+    this.keepPool(pool);
     let chosen: string, reasons: string[];
     if (planner !== null) {
       chosen = namedActor(planner, policy, "planner", this.owner);

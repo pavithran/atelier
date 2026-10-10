@@ -95,6 +95,25 @@ test("a plan's tick never dispatches a builder held since approval, named plainl
       assert.deepEqual(tick([standingRoute(route(OPUS, [builder]), [...pool.slice(0, 1), entry('opus-5.5', 'claude-code', change)])]).dispatch, [], `${name} ${builder}`);
     }
   }
+  // Attempts are counted by model, not by position in the route: a builder
+  // held after its attempts leaves the alternates their own, so the next one
+  // untried is dispatched rather than the part blocking.
+  const ALT2 = 'gemini-cli/gemini-3';
+  const ev = (seq, actor, kind, data = {}) => ({ seq, itemId: 'b', at: AT, actor, kind, data });
+  const failed = (seq, actor) => [ev(seq, actor, 'item.claimed'), ev(seq + 1, actor, 'push.observed', { head: 'a'.repeat(40) }), ev(seq + 2, actor, 'item.released')];
+  const twice = [...failed(1, ASTRA), ...failed(4, ASTRA)];
+  const routed = route(ASTRA, [OPUS, ALT2]);
+  const before = planActions({ plan, parts, routes: [routed], events: twice, now: AT });
+  assert.deepEqual(before.dispatch.map((d) => d.to), [OPUS]);
+  for (const [name, change] of HELD) {
+    const pool = [entry('gpt-6-astra', 'codex', change), entry('opus-5.5', 'claude-code'), entry('gemini-3', 'gemini-cli')];
+    const after = planActions({ plan, parts, routes: [standingRoute(routed, pool)], events: twice, now: AT });
+    assert.equal(after.blocked, null, name);
+    assert.deepEqual(after.dispatch, [{ part: 'b', to: OPUS, reason: `two attempts by ${ASTRA} did not finish; moving to the next alternate` }], name);
+    // Held after one attempt, the builder's retry passes to the next alternate.
+    const once = planActions({ plan, parts, routes: [standingRoute(routed, pool)], events: failed(1, ASTRA), now: AT });
+    assert.deepEqual(once.dispatch, [{ part: 'b', to: OPUS, reason: `${ASTRA} is no longer routed to build it; moving to the next alternate` }], name);
+  }
   // A route with nothing held is left as it was.
   const free = route(ASTRA, [OPUS]);
   assert.equal(standingRoute(free, [entry('gpt-6-astra', 'codex')]), free);
