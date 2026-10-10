@@ -964,7 +964,7 @@ export class Ledger extends DurableObject<Env> {
   // decided under the old ones (criteriaChanged), and the answer says what
   // it took back. The criteria of a part already integrated, or of a task
   // under a landing lease, cannot change, and nothing is written then.
-  editItem(id: string, actor: string, fields: ItemFields): Item & { criteriaChange?: CriteriaChange } {
+  editItem(id: string, actor: string, fields: ItemFields, scope?: string[]): Item & { criteriaChange?: CriteriaChange } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner edits a task's fields", 403);
     if (fields.revertOf !== undefined) throw new RuleError("bad_field", "revertOf is set only when creating a task", 400);
     const item = this.item(id);
@@ -976,12 +976,17 @@ export class Ledger extends DurableObject<Env> {
       if (title.length > TITLE_MAX) throw new RuleError("bad_title", `a title is at most ${TITLE_MAX} characters; put the rest in the brief`, 400);
       set.title = title;
     }
-    if (!Object.keys(set).length) throw new RuleError("nothing_to_edit", "nothing to change: give --title, --brief, --accept, --non-goal, --stop-when or --next-gate", 400);
+    const rescoping = scope !== undefined && JSON.stringify(scope) !== JSON.stringify(item.scope);
+    if (scope !== undefined) {
+      if (item.kind === "part") throw new RuleError("part_scope", `${id} is a part of a plan, whose scope the plan sets; nothing was changed`, 409);
+      set.scope = JSON.stringify(scope);
+    }
+    if (!Object.keys(set).length) throw new RuleError("nothing_to_edit", "nothing to change: give --title, --brief, --scope, --accept, --non-goal, --stop-when or --next-gate", 400);
     const changing = fields.accept !== undefined && !sameCriteria(fields.accept, item.accept);
     if (changing) this.assertCriteriaEditable(item);
     const at = new Date().toISOString();
     this.update(id, set, at);
-    this.log(id, actor, "item.edited", { ...fields }, at);
+    this.log(id, actor, "item.edited", { ...fields, ...(rescoping ? { scope, scopeWas: item.scope } : {}) }, at);
     const change = changing ? this.criteriaChanged(item, actor, at) : null;
     return { ...this.item(id), ...(change ? { criteriaChange: change } : {}) };
   }

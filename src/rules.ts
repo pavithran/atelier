@@ -922,11 +922,18 @@ export function reviewOverrideFor(
   return { override: { head: item.head, by: owner, reason: text, at }, waived: g.requirement ?? PROTECTED_NEED, contributors: contributorsOf(item) };
 }
 
+// An item holds its scope against other claims while it is claimed,
+// submitted or accepted, whether or not a landing is under way (a cancelled
+// merge leaves it accepted); only a merge or an abandon releases it.
+export function holdsScope(item: { state: string }): boolean {
+  return item.state === "claimed" || item.state === "submitted" || item.state === "accepted";
+}
+
 // Live items held by someone else whose scope overlaps this one. Items of
 // one plan are not counted against each other (samePlan).
 export function overlappingLive(item: Item, items: Item[], actor: string): Item[] {
   return items.filter(
-    (o) => o.id !== item.id && (o.state === "claimed" || o.state === "submitted") && o.owner !== actor && !samePlan(item, o) && scopesOverlap(item.scope, o.scope),
+    (o) => o.id !== item.id && holdsScope(o) && o.owner !== actor && !samePlan(item, o) && scopesOverlap(item.scope, o.scope),
   );
 }
 
@@ -937,7 +944,7 @@ export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPol
     const clash = overlappingLive(item, items, actor);
     if (clash.length) {
       const names = clash.map((o) => `${o.id} (${o.owner})`).join(", ");
-      throw new RuleError("overlap", `${item.id}'s scope overlaps live ${names}; this project refuses overlapping claims${item.scope.length ? "" : ", and an unscoped item overlaps everything"}`);
+      throw new RuleError("overlap", `${item.id}'s scope overlaps live ${names}; this project refuses overlapping claims${item.scope.length ? "" : ", and an unscoped item overlaps everything"}. The project owner can narrow a scope with atelier edit ${clash.length === 1 ? clash[0].id : "ID"} --scope GLOB (or atelier edit ${item.id} --scope GLOB)`);
     }
   }
 }

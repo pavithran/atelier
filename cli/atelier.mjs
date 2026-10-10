@@ -242,7 +242,7 @@ export const FLAGS = {
   new: { scope: '--scope needs text: atelier new --scope "TEXT", once per entry', brief: '--brief needs text: atelier new "short title" --brief "TEXT"', accept: '--accept needs text: atelier new --accept "TEXT", once per criterion', "non-goal": '--non-goal needs text: atelier new --non-goal "TEXT", once per entry', "stop-when": '--stop-when needs text: atelier new --stop-when "TEXT", once per entry', "next-gate": '--next-gate needs text: atelier new --next-gate "TEXT"' },
   // edit takes the same, and --title; one empty value clears the field, so
   // the owner can take a framing back.
-  edit: { title: '--title needs text: atelier edit ID --title "TEXT", at most 80 characters', brief: '--brief needs text: atelier edit ID --brief "TEXT", or --brief "" to clear it', accept: '--accept needs text: atelier edit ID --accept "TEXT", once per criterion, or --accept "" alone to clear', "non-goal": '--non-goal needs text: atelier edit ID --non-goal "TEXT", once per entry, or --non-goal "" alone to clear', "stop-when": '--stop-when needs text: atelier edit ID --stop-when "TEXT", once per entry, or --stop-when "" alone to clear', "next-gate": '--next-gate needs text: atelier edit ID --next-gate "TEXT", or --next-gate "" to clear' },
+  edit: { scope: '--scope needs text: atelier edit ID --scope "GLOB", once per entry, or --scope "" alone to clear', title: '--title needs text: atelier edit ID --title "TEXT", at most 80 characters', brief: '--brief needs text: atelier edit ID --brief "TEXT", or --brief "" to clear it', accept: '--accept needs text: atelier edit ID --accept "TEXT", once per criterion, or --accept "" alone to clear', "non-goal": '--non-goal needs text: atelier edit ID --non-goal "TEXT", once per entry, or --non-goal "" alone to clear', "stop-when": '--stop-when needs text: atelier edit ID --stop-when "TEXT", once per entry, or --stop-when "" alone to clear', "next-gate": '--next-gate needs text: atelier edit ID --next-gate "TEXT", or --next-gate "" to clear' },
   block: {},
   unblock: {},
   ls: { all: true, json: true },
@@ -609,6 +609,12 @@ function fieldsArg(cmd) {
   if (args.brief !== undefined) {
     if (typeof args.brief !== "string" || (!args.brief.trim() && cmd !== "edit")) die(FLAGS[cmd].brief);
     out.brief = args.brief.trim() || null;
+  }
+  if (cmd === "edit" && args.multi.scope !== undefined) {
+    const values = args.multi.scope;
+    if (values.length === 1 && values[0] === "") out.scope = [];
+    else if (values.some((v) => typeof v !== "string" || !v.trim())) die(FLAGS.edit.scope);
+    else out.scope = values.map((v) => v.trim());
   }
   for (const [flag, key] of [["accept", "accept"], ["non-goal", "nonGoals"], ["stop-when", "stopWhen"]]) {
     const values = args.multi[flag];
@@ -2170,6 +2176,7 @@ const commands = {
     const lines = [
       ...(fields.title !== undefined ? [`Title: ${flat(item.title)}`] : []),
       ...(fields.brief !== undefined ? [item.brief ? `Brief: ${item.brief.length} characters, shown on the task's page.` : "Brief: cleared."] : []),
+      ...(fields.scope !== undefined ? [`Scope: ${item.scope.map(flat).join(", ") || "not specified (it overlaps every live task)"}`] : []),
       ...formatFields(item),
     ];
     console.log(`${id} edited.${lines.length ? `\n${lines.join("\n")}` : " No framing is set now."}`);
