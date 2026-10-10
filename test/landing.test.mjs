@@ -109,6 +109,23 @@ async function mergeFixture(t){
  return{p,baseline,checkout,workspace,head,box,run,journalFile:landingJournalFile(landingDir(cache,join(checkout,'.git')))};
 }
 
+test('an accepted task merge conflict names both owner paths back to building',async t=>{
+ const {checkout,baseline,head,box,run,journalFile}=await mergeFixture(t);
+ box.state='accepted';
+ writeFileSync(join(checkout,'work.txt'),'main changed the same line\n');
+ git(checkout,'add','work.txt');git(checkout,'commit','-m','Conflicting main');
+ const before=git(checkout,'rev-parse','HEAD'),baselineBefore=git(checkout,'ls-remote',baseline,'refs/heads/main');
+ const result=await run(checkout,'merge','t1');
+ assert.equal(result.status,1,result.output);
+ assert.match(result.output,/atelier dispatch t1 --job merge-main/);
+ assert.match(result.output,/atelier handoff t1 --to H\/M/);
+ assert.match(result.output,/earlier reviews and acceptance stay in the history/);
+ assert.equal(box.state,'accepted');assert.equal(git(checkout,'rev-parse','HEAD'),before);
+ assert.equal(git(checkout,'ls-remote',baseline,'refs/heads/main'),baselineBefore);
+ assert.equal(git(checkout,'status','--porcelain'),'');assert.ok(!existsSync(journalFile));
+ assert.ok(!box.requests.some(r=>r.path.endsWith('/merged')||r.path.endsWith('/handoff')||r.path.endsWith('/dispatch')));
+});
+
 test('merge --head resumes after ledger failure without a second merge; finish stops on failed checks',async t=>{
  const {p,baseline,checkout,workspace,head,box,run,journalFile}=await mergeFixture(t);
  // The ledger's temporary failure is a server error: exit 4, the merge journal kept for the retry.

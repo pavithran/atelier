@@ -7,10 +7,11 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { checkEnv } from "./check-env.mjs";
+import { formatLoad, envLoad, coreCount, loadLimitOf } from "./load.mjs";
 import { envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
 import { reviewBrief, BRIEF_LIMITS, criteriaCount } from "../src/review/brief.ts";
-import { parseVerdict } from "../src/review/verdict.ts";
+import { parseVerdict, VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { rolePrompt, ROLE_PROMPT_MAX } from "../src/usage.ts";
@@ -373,7 +374,8 @@ function gitAuth(token, base = process.env) {
 
 // The cf-aig-metadata header's value for one harness run, which the runner's
 // opencode configs send on every pay-per-use call through the AI Gateway (the
-// config's provider headers read "{env:CF_AIG_METADATA}"): whose run the call
+// config's provider headers read it, escaped for JSON by the opencode adapter,
+// as "{env:CF_AIG_METADATA_ESCAPED}"; cli/harness/providers.mjs): whose run the call
 // belongs to, so the gateway's analytics, and the Models page with them, can
 // count calls per task (src/usage/gateway.ts reads them back). The role is
 // the one run reports use: build, review or plan. The gateway keeps at most
@@ -738,8 +740,8 @@ export function jobOf(task) {
 // A review job (docs/orchestrator.md, section 4): the runner claims a review
 // request, clones the part's head read-only, writes the diff, gives the
 // reviewer the brief and the diff, reads the verdict and posts it. A harness
-// that writes no valid verdict releases the request, so another reviewer may
-// take it.
+// that writes no valid verdict keeps the reply on the task and releases the
+// request, so another reviewer may take it.
 export async function runReview(assignment, config, name, runnerIO) {
   const { project, item, agent, model, actor } = assignment;
   let brief, diffFile, workspace, verdictFile, claimedRequest = false, released = false, io = runnerIO;
@@ -840,8 +842,8 @@ export async function runReview(assignment, config, name, runnerIO) {
       await release(`harness exited ${result.code}`);
       return { phase: "failed", reason: `harness exited ${result.code}`, taskFailure: true };
     }
-    // A harness that wrote no verdict file leaves nothing to read; the
-    // request is released like any other unusable verdict.
+    // A harness that wrote no verdict file leaves nothing to read; the empty
+    // reply is kept like any other unusable one, so the failure is on the task.
     let reply;
     try { reply = io.readVerdict(verdictFile); } catch { reply = ""; }
     // The reply was asked for one CRITERION line per acceptance criterion
@@ -849,8 +851,24 @@ export async function runReview(assignment, config, name, runnerIO) {
     // and refuses an approval that misses one or declares one unmet.
     const parsed = parseVerdict(reply, criteriaCount(claimed.item, claimed.plan));
     if (!parsed.ok) {
-      await release(parsed.error);
-      io.log(`review released: ${parsed.error}`);
+      // The reply is kept on the task, its last VERDICT_LIMITS.reply
+      // characters with the reviewer and the head it judged, as the request
+      // is released (t407): before this the reply was discarded and the only
+      // evidence was this runner's log, which the owner read by hand (GLM
+      // lost four replies this way on t372). The reply travels as a file the
+      // CLI reads, never as an argument, which the operating system caps far
+      // below a long reply; writeBrief gives that file a sibling of the
+      // workspace, removed once the call ends whatever it answered.
+      const kept = await io.brief(workspace, reply.slice(-VERDICT_LIMITS.reply));
+      try {
+        await io.cli(["review-unparsable", item.id, "--project", project, "--as", actor, "--head", claimed.head, "--note", parsed.error, "--reply-file", kept.file]);
+        io.log(`review released: ${parsed.error}`);
+      } catch (error) {
+        io.log(`could not keep the unparsable reply on the task: ${error.message}`);
+        await release(parsed.error);
+      } finally {
+        await io.removeBrief(kept);
+      }
       return { phase: "failed", reason: parsed.error, taskFailure: true };
     }
     const argv = ["review", item.id, "--project", project, "--as", actor, "--head", claimed.head, parsed.verdict === "approve" ? "--approve" : "--reject", "--note", parsed.summary];
@@ -1341,7 +1359,7 @@ export function runOutcome(state) {
 
 // `reportRun(body, runner, signal)` sends a run report; a report that fails
 // is logged and the loop goes on.
-export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun, version }) {
+export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun, version, load = envLoad(), cores = coreCount }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
@@ -1354,6 +1372,10 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
   const offer = integrating
     ? { runner: args.name.toLowerCase(), kind: "home", agents: [], jobs: ["integrate", "refresh"] }
     : offerFrom(config, args.name);
+  // The load average under which this runner takes a new job (t403): the
+  // config's `loadLimit`, else the machine's core count, so a saturated
+  // machine is not given another harness to run on top of the rest.
+  const loadLimit = loadLimitOf(config.loadLimit, cores());
   const controller = new AbortController();
   // The first interrupt ends the active child's group with its grace
   // period; a second kills every group at once and exits.
@@ -1383,7 +1405,7 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
     cli: (argv, cwd, options = {}) => checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, capture: readsOutput(argv), claim: argv[0] === "claim",
       ...(options.token ? { env: { ...process.env, ATELIER_TOKEN: options.token } } : {}),
       step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
-      ...((argv[0] === "release" || argv[0] === "review-release") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild),
+      ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild),
     head: (cwd, { cleanup = false } = {}) => checked(["git", "rev-parse", "HEAD"],
       { cwd, capture: true, ...(cleanup ? cleanupOptions() : { signal: controller.signal }) }, executeChild),
     // Every build, plan and merge job's workspace keeps .scratch/ out of Git
@@ -1476,6 +1498,16 @@ export async function runRunner(args, { queue, workspacePath, jobBrief, postPlan
         const ordered = [...tasks.filter((task) => task.item.dispatch?.job === "review"), ...tasks.filter((task) => task.item.dispatch?.job !== "review")];
         for (const task of ordered.filter((task) => offer.jobs.includes(jobOf(task)) && !refused.has(refusedKey(task)) && (failures.get(taskKey(task)) ?? 0) < 2 &&
           (infrastructureFailures.get(taskKey(task)) ?? 0) < 3)) {
+          // A saturated machine takes no new job (t403): while the load
+          // average is at or above the limit the runner holds back and says
+          // so, and the next poll tries again. One job at a time is started,
+          // and the check runs again before the next, so finishing a heavy
+          // job lets the load fall before another begins.
+          const current = load();
+          if (current >= loadLimit) {
+            io.log(`load ${formatLoad(current)} is at or above the limit ${formatLoad(loadLimit)}; waiting before taking a job`);
+            break;
+          }
           // A dispatch carrying job: "plan" asks for the plan job, one
           // carrying "review" for the review job, "integrate" for the
           // integrate job and "refresh" for the refresh job

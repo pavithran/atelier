@@ -13,6 +13,14 @@ about working within them well.
 `atelier guide --role orchestrate` prints these for any agent that runs a
 project, whatever its company; each is explained in the sections below.
 
+A session that drives Atelier by hand reads the project's AGENTS.md and what
+its commands print, so Atelier reaches it there: `atelier status`, `ls` and
+`new` end with one line naming this guide until the project's AGENTS.md states
+the review path (`atelier land --reviewer`); fetching the guide does not
+silence it, and a project with no checkout on this Mac always gets it.
+`atelier init` offers a short AGENTS.md section that
+points at it and states the review path (it does not edit the file).
+
 - Use builders from several companies, chosen by tier, and not one company's
   models alone.
 - Every protected or coordinated change is reviewed by a model from another
@@ -24,7 +32,12 @@ project, whatever its company; each is explained in the sections below.
 - File every task with its acceptance criteria, written before the build. A
   review judges the change against them, so a task without them gives the
   review nothing to bind to.
-- Land one task at a time with `atelier land ID`. Never land two together.
+- Land one task at a time with `atelier land ID --reviewer H/M`, where
+  `H/M` names a reviewer of another family than every contributor; the
+  command merges main, checks, submits, waits for the independent review,
+  then accepts and merges. Never land two together. An override while
+  accepting is the owner's last resort when no reviewer qualifies, and
+  never the way to land another agent's work.
 - Report every run that ended without a result with `atelier run-report`.
 - On a stall (a claimed task with no progress), check whether the agent's
   process still runs, then `atelier handoff` the task to another model or
@@ -222,6 +235,12 @@ time), the session can start a second runner (`atelier runner --name
 home:NAME-2`, see "The home runner" in `bin/orchestrate/README.md`) or
 review by hand.
 
+**Report after each landing.** The report the owner gets after every landing
+is `atelier status --brief`, under 20 lines: the recent merges, the commit
+the server is deployed at, live builds, reviews and the landing running, and
+the last 24 hours' spend against the daily limit. Give it as it prints; do
+not assemble it by hand.
+
 **Deploy when the CLI needs it.** On a machine where the CLI runs from the
 project's own checkout, a merge that adds a route the CLI calls, or changes
 the meaning of a route the CLI already calls, breaks every check until the
@@ -256,8 +275,12 @@ owner it read as a defect. The other half were real, and some were serious.
 ## Keeping the record honest
 
 - The task's holder is who the ledger says did the work. Before another
-  model works on a task, hand it off (`atelier handoff`); an accepted task
-  cannot be handed off, so integrate it under its holder or not at all.
+  model works on a task, hand it off (`atelier handoff`). The project owner
+  can send an accepted task back to building with `atelier handoff ID --to H/M`
+  or `atelier dispatch ID --job merge-main` after a merge conflict. The earlier
+  reviews and acceptance stay in the history; the new revision is submitted,
+  reviewed and accepted again. A merge holding the landing lease must finish
+  or be cancelled first. Plans use `atelier plan refresh ID` instead.
 - Every commit carries an `Agent:` line naming who wrote it.
 - When a closing note turns out to be wrong, say so where the record can
   hold it; never leave a false statement standing.
