@@ -22,3 +22,27 @@ export const COMMAND_HELP = { ...shared.COMMAND_HELP, done: DONE_HELP, revert: {
 export const COMMAND_USAGE = { ...shared.COMMAND_USAGE, done: DONE_USAGE, revert: REVERT_USAGE };
 export const commandUsage = (cmd) => cmd === "revert" ? REVERT_USAGE : cmd === "done" ? DONE_USAGE : shared.commandUsage(cmd);
 export const helpText = () => `${shared.helpText()}\nUndo: revert ID`;
+
+// Runner credentials extend specific token subcommands. Keep the general
+// token help stable for existing clients; each subcommand has its own help.
+export const TOKEN_SUBCOMMANDS = {
+  issue: {
+    flags: { runner: false },
+    usage: `usage: atelier token issue --as H/M [--project P]... [--days N] [--label TEXT]
+       atelier token issue --runner NAME --project P [--days N] [--label TEXT]
+
+Only the owner issues tokens. A runner token binds one normalized runner and
+one existing project. NAME defaults to home:NAME. --as and --runner cannot
+be combined. Expiry defaults to 30 days; --days accepts 1 through 365.
+The token is shown once. See docs/runners.md for owner-free build and plan runners.`,
+  },
+  store: {
+    flags: { runner: false },
+    usage: `usage: atelier token store --runner NAME
+
+Reads a runner token from stdin or a hidden prompt, verifies its runner name
+with ATELIER_SERVER (or the configured server), and stores the token and
+server together as runner.home:NAME. ATELIER_RUNNER_TOKEN overrides the store.
+An invalid explicit credential never falls back to owner credentials.`,
+  },
+};
