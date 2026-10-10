@@ -1195,9 +1195,10 @@ export class Ledger extends DurableObject<Env> {
 
   // The project owner puts an open task in the queue for a kind of runner.
   // Only the owner, for now; an orchestrator with an approved plan comes later.
-  // A task held by an agent (claimed, or submitted and perhaps rejected) can
+  // A task held by an agent (claimed, submitted or accepted) can
   // be sent back to a runner too: the holder is released and the task queued
-  // in one step, keeping its workspace and commits for the next builder. The
+  // in one step, keeping its workspace, commits and acceptance history for
+  // the next builder. An accepted task must be submitted and accepted again. The
   // caller revokes the holder's write token first (see checkDispatch), and
   // passes its id as `token`. A dispatch naming the merge-main job sends a
   // task whose landing conflicted with main back to its builder (t243): the
@@ -1211,7 +1212,7 @@ export class Ledger extends DurableObject<Env> {
     const held = this.holds(item);
     if (held) {
       this.dropToken(id, token);
-      this.update(id, { owner: null, state: "open" }, d.at);
+      this.update(id, { owner: null, state: "open", accepted_head: null }, d.at);
       this.log(id, actor, "item.released", { from: item.owner, note: "dispatched again by the project owner" }, d.at);
     }
     this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), d.at, id);
@@ -1235,13 +1236,14 @@ export class Ledger extends DurableObject<Env> {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner dispatches", 403);
     const item = this.item(id);
     this.assertNotPlanned(item);
+    if (item.state === "accepted") this.acceptedReworkAllowed(item, actor);
     if (!this.holds(item)) assertDispatchable(item);
     if (input) this.assertMergeMainWorkspace(item, makeDispatch(input, actor, new Date().toISOString()));
     return item;
   }
 
   private holds(item: Item): boolean {
-    return !!item.owner && (item.state === "claimed" || item.state === "submitted");
+    return !!item.owner && ["claimed", "submitted", "accepted"].includes(item.state);
   }
 
   undispatch(id: string, actor: string): Item {
@@ -1664,8 +1666,16 @@ export class Ledger extends DurableObject<Env> {
     assertHandoffTarget(to, this.owner);
     assertEligible(to, this.project().policy, this.owner);
     assertNotBlocked(item);
-    if (item.state !== "claimed" && item.state !== "submitted") throw new RuleError("closed", `${id} is ${item.state}`);
+    if (item.state === "accepted") this.acceptedReworkAllowed(item, from);
+    else if (item.state !== "claimed" && item.state !== "submitted") throw new RuleError("closed", `${id} is ${item.state}`);
     return item;
+  }
+
+  private acceptedReworkAllowed(item: Item, actor: string): void {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner sends accepted work back to building", 403);
+    this.assertNotPlanned(item);
+    const landing = this.landing(item.id);
+    if (landing) throw new RuleError("landing", `${item.id} is being merged at ${landing.slice(0, 8)} and holds the landing lease; finish atelier merge ${item.id}, or cancel an unpublished merge with atelier merge ${item.id} --cancel before sending it back to building`, 409);
   }
 
   // The holder or the project owner blocks a task with the reason it cannot
@@ -1830,7 +1840,7 @@ export class Ledger extends DurableObject<Env> {
     const item = this.handoffAllowed(id, from, to, note);
     this.dropToken(id, token);
     const at = new Date().toISOString();
-    this.update(id, { owner: to, state: "claimed" }, at);
+    this.update(id, { owner: to, state: "claimed", accepted_head: null }, at);
     this.log(id, from, "item.handoff", { from: item.owner, to, note }, at, proved);
     return this.item(id);
   }
