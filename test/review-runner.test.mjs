@@ -372,13 +372,79 @@ test("a review that fails twice is reported as skipped, and a new head is served
       return [];
     },
   });
-  // The skip is reported once, for the first request's head.
+  // The skip is reported once, for the first request's head and number, so
+  // the landing counts it against that request alone.
   assert.equal(reports.length, 1, JSON.stringify(reports));
   assert.equal(reports[0].item, "t21");
   assert.equal(reports[0].head, "a".repeat(40));
+  assert.equal(reports[0].request, 1);
   // The second request is served after the first was skipped: two claims for
   // the first, one for the second.
   assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 3);
+});
+
+// t353: a skip report that fails is not dropped. The capped review is no
+// longer taken, so the report must be tried again on its own, each poll,
+// until the server has it; otherwise the landing waiting on the review never
+// hears the skip and waits out the hour.
+test("a review skip report that fails is tried again each poll until the server has it, while the capped review is no longer taken", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { io, calls, logs } = fixture({ code: 1 });
+  const attempts = [], persisted = [];
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const task = { ...assignment, item: { ...assignment.item, head: "a".repeat(40), request: 1, dispatch: { job: "review" } } };
+  let polls = 0;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async reportReviewSkip(body) {
+      attempts.push(body);
+      // The first report meets a transient server failure; the next lands.
+      if (attempts.length === 1) throw new Error("503");
+      persisted.push(body);
+    },
+    async queue() {
+      polls++;
+      // The request stays open in the queue, as it would while no runner serves it.
+      if (polls <= 5) return [task];
+      process.emit("SIGINT");
+      return [];
+    },
+  });
+  // Two runs reach the cap; the review is not taken again after that.
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 2);
+  // The failed report is tried again on the next poll and lands once; a
+  // report that landed is not sent again on the polls after it.
+  assert.equal(attempts.length, 2, JSON.stringify(attempts));
+  assert.equal(persisted.length, 1, JSON.stringify(persisted));
+  assert.deepEqual(persisted[0], { project: "atelier", item: "t21", head: "a".repeat(40), request: 1, actor: assignment.actor, note: attempts[0].note });
+  assert.ok(logs.some((l) => /could not report the review skip for atelier\/t21.*503.*again next poll/.test(l)), logs.join("\n"));
+  assert.ok(logs.some((l) => /^reported the review skip for atelier\/t21/.test(l)), logs.join("\n"));
+});
+
+// t353: a skip report the server refuses outright — a request it does not
+// have, a malformed head — would never land however often it is tried, so it
+// is said once and dropped rather than sent every poll.
+test("a review skip report the server refuses is dropped after the refusal, not tried every poll", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { io, logs } = fixture({ code: 1 });
+  const attempts = [];
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const task = { ...assignment, item: { ...assignment.item, head: "a".repeat(40), request: 1, dispatch: { job: "review" } } };
+  let polls = 0;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async reportReviewSkip(body) { attempts.push(body); throw new Error("404 no review request 1 of t21"); },
+    async queue() {
+      polls++;
+      if (polls <= 4) return [task];
+      process.emit("SIGINT");
+      return [];
+    },
+  });
+  assert.equal(attempts.length, 1, JSON.stringify(attempts));
+  assert.ok(logs.some((l) => /could not report the review skip for atelier\/t21: 404 no review request 1 of t21$/.test(l)), logs.join("\n"));
 });
 
 // t213: an interrupt during a review still gives the request back, with the

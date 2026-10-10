@@ -602,13 +602,14 @@ export async function runLand(io) {
           if (d.item.head !== head) throw new StepError(`${id}'s head moved to ${short(d.item.head)} while waiting for the review; start the landing again`);
           // A review request every runner that offers the reviewer has skipped
           // will never be claimed, however long the wait runs (t353). Read as
-          // the Workflow reads it: the skips recorded since the request, at
-          // this head, against the live runners offering the reviewer for the
-          // review job — and say so by runner name instead of waiting out the
-          // hour.
-          if (ask.reviewer) {
+          // the Workflow reads it: the skips recorded against this very
+          // request, by its number — an earlier request's at the same head
+          // count for nothing — against the live runners offering the
+          // reviewer for the review job; and say so by runner name instead of
+          // waiting out the hour.
+          if (ask.reviewer && typeof ask.request === "number") {
             const skips = (d.events ?? [])
-              .filter((e) => e.kind === "review.skipped" && e.data?.head === head && Date.parse(e.at) >= Date.parse(since))
+              .filter((e) => e.kind === "review.skipped" && e.data?.request === ask.request)
               .map((e) => ({ runner: e.data?.runner }));
             if (skips.length) {
               let offers = null;

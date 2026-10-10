@@ -267,9 +267,13 @@ it("a submitted task with a protected change gets a review request, named or pic
   expect(asked).toMatchObject({ needed: true, requested: true, reviewer: GPT, head });
   expect(asked.at).toBeTruthy();
   expect((await events(L, id)).find((e) => e.kind === "review.requested")).toMatchObject({ actor: "owner", data: { head, reviewer: GPT, via: "land" } });
-  // The request is open in the queue, routed to the named reviewer.
+  // The request is open in the queue, routed to the named reviewer, under the
+  // request number the ask returned (t353): the landing and the runner name
+  // the same request, so a skip of it is counted against it alone.
   const [waiting] = await L.reviewWaiting();
   expect(waiting).toMatchObject({ id, dispatch: { job: "review", agent: "codex", model: "gpt-6-astra" } });
+  expect(asked.request).toBe(waiting.request);
+  expect(typeof asked.request).toBe("number");
   // A contributor cannot be named; the owner alone asks.
   await refusal(L.requestReview(id, "owner", OPUS, POOL), "self_review", /contributed to/);
   await refusal(L.requestReview(id, OPUS, null, POOL), "not_project_owner", /only the project owner asks/);
@@ -281,7 +285,7 @@ it("a submitted task with a protected change gets a review request, named or pic
   expect(claim.plan).toBeNull();
   // Asking again while the request is live returns it as it stands, not duplicated.
   const again = await L.requestReview(id, "owner", null, POOL);
-  expect(again).toMatchObject({ needed: true, requested: false, reviewer: GPT, head });
+  expect(again).toMatchObject({ needed: true, requested: false, reviewer: GPT, head, request: asked.request });
   // Naming another reviewer while that request stands is refused, not ignored.
   await refusal(L.requestReview(id, "owner", "antigravity/gemini-3.1-pro", POOL), "review_requested", /already requested from codex\/gpt-6-astra/);
   expect(await L.requestReview(id, "owner", GPT, POOL)).toMatchObject({ requested: false, reviewer: GPT });

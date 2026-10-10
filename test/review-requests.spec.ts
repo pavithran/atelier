@@ -3,6 +3,7 @@ import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import type { Ledger, LedgerEvent, ReviewClaim } from "../src/ledger.ts";
 import type { SeenOffer } from "../src/dispatch/rules.ts";
+import { allSkipped } from "../src/landing-verdict.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import { planText, type PlanView } from "../src/plans/show.ts";
@@ -802,61 +803,99 @@ it("a part's review claim binds the task's criteria and the plan's acceptance it
   expect((await L.reviewsFor(partId)).at(-1)).toMatchObject({ criteria: claim.criteria, request: claim.request, claimed: true });
 });
 
-// t353: a runner's skip of a review is recorded by runner name and read back
-// by head and since, so the landing waiting on the verdict can say when every
-// runner that offers the reviewer has skipped. The queue's review carries the
-// request's own number, so a runner can tell one request from the next at the
-// same head.
-it("a review skip is recorded by runner, read by head and since, and the queue's review carries its request number", async () => {
+// t353: a runner's skip of a review is recorded by runner name under the
+// review request it skipped, and read back by that request, so the landing
+// waiting on the verdict can say when every runner that offers the reviewer
+// has skipped — and an older request's skip never counts against a newer
+// request at the same head. The queue's review carries the request's own
+// number, so a runner can tell one request from the next at the same head.
+it("a review skip is recorded under its request and read back by it, so an older request's skip never counts against a newer one at the same head", async () => {
   const L = await setup("review-skip");
   const { partId } = await approved(L);
+  const { reviewer } = await routing(L, partId);
   const head = "a".repeat(40);
   await submitPart(L, partId, head);
   // The queue's review task carries the request's own number beside its head.
-  const [waiting] = await L.reviewWaiting();
-  expect(waiting.request).toBe(1);
-  expect(waiting.head).toBe(head);
+  const [first] = await L.reviewWaiting();
+  expect(first.request).toBe(1);
+  expect(first.head).toBe(head);
 
-  const since = new Date(Date.now() - 60_000).toISOString();
-  await L.recordReviewSkip(partId, head, "home:studio", "owner", "no agent token");
-  await L.recordReviewSkip(partId, head, "home:desk", "owner", "wrong agent");
-  expect(await L.reviewSkips(partId, head, since)).toEqual([
+  await L.recordReviewSkip(partId, first.request, head, "home:studio", "owner", "no agent token");
+  await L.recordReviewSkip(partId, first.request, head, "home:desk", "owner", "wrong agent");
+  expect(await L.reviewSkips(partId, first.request)).toEqual([
     { runner: "home:studio", at: expect.any(String), note: "no agent token" },
     { runner: "home:desk", at: expect.any(String), note: "wrong agent" },
   ]);
-  // A skip at another head, or one before the request, does not count.
-  expect(await L.reviewSkips(partId, "b".repeat(40), since)).toEqual([]);
-  expect(await L.reviewSkips(partId, head, new Date(Date.now() + 60_000).toISOString())).toEqual([]);
+  const offers = [
+    { runner: "home:studio", kind: "home" as const, jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() },
+    { runner: "home:desk", kind: "home" as const, jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() },
+  ];
+  expect(allSkipped("codex/gpt-6-astra", offers, await L.reviewSkips(partId, first.request))).toEqual(["home:studio", "home:desk"]);
+
+  // A second request at the same head: the first's claim lapsed, and the
+  // refused retry asks the review again under a new request number.
+  await L.claimReview(partId, reviewer, RUNNER);
+  await ageClaim(L, partId);
+  await refusal(L.claimReview(partId, reviewer, RUNNER), "no_review", /no open review request/);
+  const [second] = await L.reviewWaiting();
+  expect(second.head).toBe(head);
+  expect(second.request).toBeGreaterThan(first.request);
+  // The skips of the earlier request, at this very head, do not count against
+  // the new one: no runner is stuck on it yet.
+  expect(await L.reviewSkips(partId, second.request)).toEqual([]);
+  expect(allSkipped("codex/gpt-6-astra", offers, await L.reviewSkips(partId, second.request))).toBeNull();
+  // A report that arrives late, under the earlier request, stays with it.
+  await L.recordReviewSkip(partId, first.request, head, "home:desk", "owner", "wrong agent, again");
+  expect(await L.reviewSkips(partId, second.request)).toEqual([]);
+  // A skip of the new request counts for it alone.
+  await L.recordReviewSkip(partId, second.request, head, "home:studio", "owner", "no agent token");
+  expect(await L.reviewSkips(partId, second.request)).toEqual([{ runner: "home:studio", at: expect.any(String), note: "no agent token" }]);
+  expect((await L.reviewSkips(partId, first.request)).map((s) => s.runner)).toEqual(["home:studio", "home:desk", "home:desk"]);
+
+  // A skip naming a request the item does not have, or another head than the
+  // request's, is refused rather than recorded against nothing.
+  await refusal(L.recordReviewSkip(partId, 99, head, "home:studio", "owner", ""), "no_request", /no review request 99/);
+  await refusal(L.recordReviewSkip(partId, second.request, "b".repeat(40), "home:studio", "owner", ""), "bad_head", /is at aaaaaaaa, not bbbbbbbb/);
 });
 
 // t353: the review-skip route awaits the write before it acknowledges, so a
-// skip that cannot persist (a missing item) reaches the runner as a refusal
-// rather than an unacknowledged success that loses the report.
-it("the review-skip route persists the skip before acknowledging, and a skip for a missing item is refused", async () => {
+// skip that cannot persist (a missing item, a request the item does not have)
+// reaches the runner as a refusal rather than an unacknowledged success that
+// loses the report; and it names the request it skipped, or is refused.
+it("the review-skip route persists the skip under its request before acknowledging, and refuses one for a missing item or request", async () => {
   const { default: worker } = await import("../src/index.ts");
   const name = "review-skip-route";
   const L = await setup(name);
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject({ name, repo: `${name}--baseline`, policy, createdAt: new Date().toISOString() });
-  const { id } = await L.newItem("Skipped", [], "owner");
+  const { partId } = await approved(L);
   const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  const [{ request }] = await L.reviewWaiting();
   const TOKEN = "rsk";
   const token = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
-  const skip = (item: string, runner: string) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${item}/review-skip`, {
+  const skip = (item: string, runner: string, body: Record<string, unknown>) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${item}/review-skip`, {
     method: "POST",
     headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-runner": runner, "content-type": "application/json" },
-    body: JSON.stringify({ head, note: "no agent token" }),
+    body: JSON.stringify(body),
   }), token);
   // A skip for a missing item is refused: the awaited write's failure reaches
   // the runner instead of a success that never persisted.
-  const missing = await skip("t999", "home:studio");
+  const missing = await skip("t999", "home:studio", { head, request, note: "no agent token" });
   expect(missing.status).toBe(404);
   expect(await missing.json()).toMatchObject({ error: "no_item" });
-  // A skip for a real item is persisted before the response acknowledges it.
-  const since = new Date(Date.now() - 60_000).toISOString();
-  const ok = await skip(id, "home:studio");
+  // A skip that names no request, or a request the item does not have, is refused.
+  const unnumbered = await skip(partId, "home:studio", { head, note: "no agent token" });
+  expect(unnumbered.status).toBe(400);
+  expect(await unnumbered.json()).toMatchObject({ error: "bad_request" });
+  const unknown = await skip(partId, "home:studio", { head, request: 99, note: "no agent token" });
+  expect(unknown.status).toBe(404);
+  expect(await unknown.json()).toMatchObject({ error: "no_request" });
+  expect(await L.reviewSkips(partId, request)).toEqual([]);
+  // A skip for a real request is persisted under it before the response acknowledges it.
+  const ok = await skip(partId, "home:studio", { head, request, note: "no agent token" });
   expect(ok.status).toBe(200);
   expect(await ok.json()).toEqual({ skipped: true });
-  expect(await L.reviewSkips(id, head, since)).toEqual([{ runner: "home:studio", at: expect.any(String), note: "no agent token" }]);
+  expect(await L.reviewSkips(partId, request)).toEqual([{ runner: "home:studio", at: expect.any(String), note: "no agent token" }]);
 });
 
 // t377: a review claim carries the owner's standing decisions, so the brief

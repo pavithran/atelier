@@ -359,9 +359,11 @@ it("says by runner name when every runner that offers the reviewer has skipped",
   });
   await env.LANDING_WORKFLOW.create({ id: "wf-skip-1", params: { ...params(project, id), pollMs: 10, reviewTimeoutMs: 30_000 } });
   await send("wf-skip-1", "workspace", { round: 0, head: H1, mainHead: null, mergedIn: false });
-  // The review is requested; then the one runner that offers the reviewer skips it.
+  // The review is requested; then the one runner that offers the reviewer
+  // skips it, under the request's own number as the queue gave it.
   await until(async () => ((await L.events(id)) as unknown as LedgerEvent[]).some((e) => e.kind === "review.requested"), (v) => v);
-  await L.recordReviewSkip(id, H1, "home:studio", "owner", "no agent token");
+  const [{ request }] = await L.reviewWaiting();
+  await L.recordReviewSkip(id, request, H1, "home:studio", "owner", "no agent token");
   await wf.waitForStatus("errored");
   expect(await L.landingWorkflowOf(id)).toMatchObject({ stage: "failed" });
   expect((await L.landingWorkflowOf(id))?.detail).toMatch(/every runner that offers codex\/gpt-6-astra for the review of t\d+ at aaaaaaaa has skipped it: home:studio/);

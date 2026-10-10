@@ -526,7 +526,9 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         // from the records when it needs one.
         const r = await L.requestReview(p.item, p.actor, p.reviewer, pool, p.reviewer !== null, false, records);
         if (r.needed && r.reviewer) await L.setLandingWorkflowStage(p.item, p.instance, "review", round, `Reviewer: ${r.reviewer}. ${r.reason}`);
-        return { needed: r.needed, reason: r.reason, at: r.at ?? new Date().toISOString(), reviewer: r.reviewer ?? null };
+        // The request's number travels with the ask (t353): the skips the
+        // wait counts are that request's alone.
+        return { needed: r.needed, reason: r.reason, at: r.at ?? new Date().toISOString(), reviewer: r.reviewer ?? null, request: r.request ?? null };
       } catch (error) {
         throw new NonRetryableError(this.refusal(error));
       }
@@ -557,11 +559,12 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       // t353: a review request every runner that offers the reviewer has
       // skipped will never be claimed, however long the wait runs. Asked once
       // a poll, so the landing says so by runner name instead of waiting out
-      // the hour.
-      if (ask.reviewer) {
+      // the hour. The skips counted are this request's alone, by its number:
+      // an earlier request's at the same head are that request's.
+      if (ask.reviewer && ask.request !== null) {
         const stuck = await step.do(`see whether every reviewer skipped #${i}`, RETRIES, async () => {
           const offers = await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers();
-          const runners = allSkipped(ask.reviewer!, offers, await L.reviewSkips(p.item, head, ask.at));
+          const runners = allSkipped(ask.reviewer!, offers, await L.reviewSkips(p.item, ask.request!));
           return runners ? { runners } : null;
         });
         if (stuck) {
