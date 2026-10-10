@@ -138,6 +138,9 @@ misread:
   guide loosely.
 - Ask for a test that fails without the fix, and for the agent to confirm it
   does.
+- A change that depends on a platform limit or runtime behaviour local tests
+  cannot reproduce names it in the task, and the project declares a remote
+  smoke check run before and after deploy.
 - Say what the agent must not do: push, deploy, run `atelier` against the
   real server, or touch the owner's checkout.
 - Before sending one brief to many projects, pilot it on the project whose
