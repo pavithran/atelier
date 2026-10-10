@@ -75,3 +75,13 @@ test("every command answers --help with its usage, what it does, its flags and a
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+
+test("merge-main help distinguishes claim-time main from --head dispatch context", () => {
+  const usage = commandUsage("dispatch");
+  assert.match(usage, /fetches and merges the baseline's current main head at claim time/);
+  assert.match(usage, /--head.*full hash recorded as dispatch context/);
+  assert.match(usage, /defaults to main's head as the baseline holds it at dispatch/);
+  assert.match(usage, /does not pin the merge target/);
+  assert.doesNotMatch(usage, /main at the named head|full hash of main's head to merge/);
+});
