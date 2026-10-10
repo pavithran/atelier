@@ -5,6 +5,7 @@ import { briefFor } from "../src/brief.ts";
 import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
 import { Ledger, type CriteriaChange, type LedgerEvent, type ReviewClaim } from "../src/ledger.ts";
 import { parseRuleError, type Evidence, type Item, type ProjectPolicy, type Review } from "../src/rules.ts";
+import type { Detail } from "../src/ui.ts";
 import { signIn } from "./signin.ts";
 
 // The Ledger driven end to end over Durable Object RPC, with its real SQLite
@@ -255,13 +256,14 @@ it("decision 2026-10-06: only the owner overrides a missing review, with a reaso
   await refusal(L.accept("t1", "owner", H2), "not_ready", /protected path/);
   // t371: the owner token alone does not override. Without the owner's
   // permission from the task's page the override is refused, naming the page
-  // and the button, and nothing is recorded; with it, given for this head,
-  // the override goes through and spends it.
-  await refusal(L.accept("t1", "owner", H2, reason), "override_unconfirmed", /needs the owner's confirmation: open \/p\/override\/t1 signed in as the owner, press "Allow an override from the command line", then run the command again within 15 minutes; the owner token alone does not confirm it/);
+  // and the button, and nothing is recorded; with it, given for this head
+  // with a factor no agent holds, the override goes through and spends it.
+  await refusal(L.accept("t1", "owner", H2, reason), "override_unconfirmed", /needs the owner's confirmation: open \/p\/override\/t1 as the owner, press "Allow an override from the command line" confirming as the owner, then run the command again within 15 minutes; the owner token alone does not confirm it/);
   expect(kinds(await L.events("t1"))).not.toContain("review.overridden");
-  await refusal(L.confirmOverride("t1", B, H2), "not_project_owner", /only the project owner allows an override/);
-  const allowed = await L.confirmOverride("t1", "owner", H2);
-  expect(allowed.overrideConfirmation).toMatchObject({ head: H2, by: "owner" });
+  await refusal(L.confirmOverride("t1", B, H2, "secret"), "not_project_owner", /only the project owner allows an override/);
+  await refusal(L.confirmOverride("t1", "owner", H2, "session" as never), "override_unconfirmed", /only with the owner's Access identity or the confirmation secret/);
+  const allowed = await L.confirmOverride("t1", "owner", H2, "secret");
+  expect(allowed.overrideConfirmation).toMatchObject({ head: H2, by: "owner", factor: "secret" });
   expect(Date.parse(allowed.overrideConfirmation!.until) - Date.parse(allowed.overrideConfirmation!.at)).toBe(15 * 60 * 1000);
   expect(kinds(await L.events("t1"))[0]).toBe("override.allowed");
   const accepted = await L.accept("t1", "owner", H2, `  ${reason}  `);
@@ -269,7 +271,7 @@ it("decision 2026-10-06: only the owner overrides a missing review, with a reaso
   expect(accepted.overrideConfirmation).toBeUndefined();
   const events = await L.events("t1") as unknown as LedgerEvent[];
   expect(events.slice(0, 2).map((e) => [e.kind, e.actor])).toEqual([["item.accepted", "owner"], ["review.overridden", "owner"]]);
-  expect(events[1].data).toEqual({ head: H2, reason, waived: "touches a protected path; needs approval from a model of another family than every contributor", contributors: [A], confirmed: "command line", confirmedAt: allowed.overrideConfirmation!.at });
+  expect(events[1].data).toEqual({ head: H2, reason, waived: "touches a protected path; needs approval from a model of another family than every contributor", contributors: [A], confirmed: "command line", confirmedAt: allowed.overrideConfirmation!.at, factor: "secret" });
   expect(events[0].data).toMatchObject({ head: H2, reviewOverridden: true });
   // It is not a review: none was recorded for it.
   expect((await L.reviewsFor("t1")).filter((r) => r.head === H2)).toEqual([]);
@@ -502,17 +504,17 @@ it("t371: a permission for an override is spent by one override, lapses with the
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
   // Not submitted yet: nothing to allow.
-  await refusal(L.confirmOverride("t1", "owner"), "not_submitted", /t1 is claimed; an override is allowed only on a submitted revision/);
+  await refusal(L.confirmOverride("t1", "owner", undefined, "access"), "not_submitted", /t1 is claimed; an override is allowed only on a submitted revision/);
   await L.submit("t1", A);
-  await refusal(L.confirmOverride("t1", "owner", H2), "stale_head", /this task changed since you opened it/);
-  await L.confirmOverride("t1", "owner", H1);
+  await refusal(L.confirmOverride("t1", "owner", H2, "access"), "stale_head", /this task changed since you opened it/);
+  await L.confirmOverride("t1", "owner", H1, "access");
   // A change of the criteria takes the permission with it; the task stays submitted.
   await L.editItem("t1", "owner", { accept: ["Keeps the prompts", "And the README"] });
   expect((await L.item("t1")).state).toBe("submitted");
   expect((await L.item("t1")).overrideConfirmation).toBeUndefined();
   await refusal(L.accept("t1", "owner", H1, "No other family"), "override_unconfirmed", /needs the owner's confirmation/);
   // Given again, then the head moves: the permission names the old head.
-  await L.confirmOverride("t1", "owner", H1);
+  await L.confirmOverride("t1", "owner", H1, "access");
   await L.recordPush("t1", A, H2, H2);
   await L.addEvidence(observed("t1", H2, ["AGENTS.md"]));
   await L.submit("t1", A);
@@ -526,7 +528,7 @@ it("t371: a permission for an override is spent by one override, lapses with the
   await L.addEvidence(observed("t2", H1, ["AGENTS.md"]));
   await L.submit("t2", A);
   await L.addReview(review("t2", B, H1, true), undefined, true);
-  await refusal(L.confirmOverride("t2", "owner", H1), "override_unneeded", /nothing to allow an override of/);
+  await refusal(L.confirmOverride("t2", "owner", H1, "access"), "override_unneeded", /nothing to allow an override of/);
 
   // A project that forbids overrides.
   const F = await setup("override-forbidden", { ...policy, noOverride: true });
@@ -537,7 +539,7 @@ it("t371: a permission for an override is spent by one override, lapses with the
   await F.addEvidence(observed("t1", H1, ["AGENTS.md"]));
   await F.submit("t1", A);
   expect((await F.project()).policy.noOverride).toBe(true);
-  await refusal(F.confirmOverride("t1", "owner", H1), "override_forbidden", /this project forbids overrides of the independent review \(atelier init --no-override\)/);
+  await refusal(F.confirmOverride("t1", "owner", H1, "access"), "override_forbidden", /this project forbids overrides of the independent review \(atelier init --no-override\)/);
   await refusal(F.accept("t1", "owner", H1, "No other family"), "override_forbidden", /forbids overrides/);
   await refusal(F.accept("t1", "owner", H1, ""), "override_forbidden", /forbids overrides/);
   expect((await F.inbox(new Date().toISOString())).map((e) => e.reason)).toEqual([expect.stringMatching(/ask a reviewer who qualifies; this project forbids overrides$/)]);
@@ -547,17 +549,56 @@ it("t371: a permission for an override is spent by one override, lapses with the
   expect((await F.accept("t1", "owner", H1)).state).toBe("accepted");
 });
 
+// t371, round 2: an override recorded before the project forbade overrides
+// counts for nothing once it does. The gate reads the stored override no
+// more, so an acceptance that would rest on it is refused for the missing
+// review, and the inbox and the detail ask for that review; allowing
+// overrides again restores it.
+it("t371: an override recorded earlier is ignored once the project forbids overrides", async () => {
+  const L = await setup("override-then-forbidden");
+  await L.newItem("Touch a protected path", ["AGENTS.md"], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", "override-then-forbidden--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
+  await L.submit("t1", A);
+  await L.confirmOverride("t1", "owner", H1, "secret");
+  await L.accept("t1", "owner", H1, "No other family");
+  expect((await L.item("t1")).reviewOverride).toMatchObject({ head: H1 });
+  // Accepted again on the standing override: the override carries it, and
+  // the gate (which also says the item is accepted, not submitted) asks for
+  // no assessor.
+  expect((await L.accept("t1", "owner", H1)).state).toBe("accepted");
+  const gateOf = async () => ((await L.detail("t1")) as Detail).gate;
+  expect(await gateOf()).toMatchObject({ needsAssessor: false, overridden: { head: H1 } });
+  // Then the project forbids overrides: the one on record is ignored.
+  await L.initProject({ name: "override-then-forbidden", repo: "override-then-forbidden", reset: false, noOverride: true }, "owner");
+  const g = await gateOf();
+  expect(g.needsAssessor).toBe(true);
+  expect(g.overridden).toBeUndefined();
+  expect(g.blockers).toContainEqual(expect.stringMatching(/protected path/));
+  await refusal(L.accept("t1", "owner", H1), "not_ready", /protected path/);
+  await refusal(L.accept("t1", "owner", H1, "No other family"), "override_forbidden", /forbids overrides/);
+  expect((await L.item("t1")).reviewOverride).toMatchObject({ head: H1 });
+  // Allowed again, the recorded override stands as before.
+  await L.initProject({ name: "override-then-forbidden", repo: "override-then-forbidden", reset: false, noOverride: false }, "owner");
+  expect(await gateOf()).toMatchObject({ needsAssessor: false, overridden: { head: H1 } });
+  expect((await L.accept("t1", "owner", H1)).state).toBe("accepted");
+});
+
 it("HTTP review and acceptance preserve the displayed revision through successful form posts",async()=>{
  const {default:worker}=await import('../src/index');
  const L=await setup('http-success');await L.newItem('Approve safely',[],'owner');await L.claim('t1',A);await L.setFork('t1','http-success--t1',H0,A);await L.recordPush('t1',A,H1,H1);await L.addEvidence(observed('t1',H1,['AGENTS.md']));await L.submit('t1',A);
  const artifacts={get:async()=>({log:async()=>[{hash:H1}],[Symbol.dispose](){}})} as unknown as Artifacts;
- const bindings={...env,ARTIFACTS:artifacts,ATELIER_TOKEN:'fixture-token'};
- const post=(action:string,note:string,headers:Record<string,string>={authorization:'Bearer fixture-token'})=>worker.fetch(new Request(`https://atelier.test/ui/http-success/t1/${action}`,{method:'POST',headers:{...headers,origin:'https://atelier.test'},body:new URLSearchParams({head:H1,criteria:NO_CRITERIA,note})}),bindings);
+ // A server whose owner factor is the confirmation secret (t371); every form here carries it.
+ const bindings={...env,ARTIFACTS:artifacts,ATELIER_TOKEN:'fixture-token',OVERRIDE_SECRET:'fixture-word'};
+ const post=(action:string,note:string,headers:Record<string,string>={authorization:'Bearer fixture-token'})=>worker.fetch(new Request(`https://atelier.test/ui/http-success/t1/${action}`,{method:'POST',headers:{...headers,origin:'https://atelier.test'},body:new URLSearchParams({head:H1,criteria:NO_CRITERIA,note,confirmation:'fixture-word'})}),bindings);
  // The owner's approval is recorded at the displayed revision, but it is not
  // the independent review AGENTS.md needs, so Accept is refused; the
  // override form, with its reason, accepts at the same revision — under the
- // owner's own sign-in (t371): posted with the owner token as a bearer, as an
- // agent session could, the override forms are refused and nothing is recorded.
+ // owner's own sign-in and with the confirmation secret (t371): posted with
+ // the owner token as a bearer, as an agent session could, the override
+ // forms are refused even with the secret, and nothing is recorded.
  expect((await post('approve','Reviewed')).status).toBe(303);
  expect((await post('accept','')).status).toBe(409);
  const bearer=await post('override','No model of another family is available');
@@ -985,7 +1026,7 @@ it("one Ledger change takes one timestamp: the item's times and the change's eve
       L.recordPush("t4", A, H1, H1);
       L.addEvidence(observed("t4", H1, ["AGENTS.md"]));
       L.submit("t4", A);
-      L.confirmOverride("t4", "owner", H1);
+      L.confirmOverride("t4", "owner", H1, "access");
       L.accept("t4", "owner", H1, "No reviewer of another family is available");
       expect(stamped("t4", 2).reviewOverride?.at).toBe(L.item("t4").updatedAt);
 
@@ -1452,7 +1493,7 @@ it("changing criteria takes back an acceptance and an override, the task claimed
 
   // Accepted with the owner's override: the override goes with the acceptance.
   await submittedWith(L, ONE, "t2");
-  await L.confirmOverride("t2", "owner", H1);
+  await L.confirmOverride("t2", "owner", H1, "access");
   await L.accept("t2", "owner", H1, "No reviewer of another family is available");
   expect((await L.item("t2")).reviewOverride).toBeDefined();
   const overridden = await L.editItem("t2", "owner", { accept: TWO }) as unknown as Item & { criteriaChange: CriteriaChange };

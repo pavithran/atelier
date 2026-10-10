@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  assertOverridesAllowed, confirmationAt, decisionFor, gate, inboxFor, mergedByOverride, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, overrideOffer, PROTECTED_NEED, reviewOverrideFor,
+  assertOverridesAllowed, confirmationAt, decisionFor, gate, inboxFor, mergedByOverride, NO_OWNER_FACTOR, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, overrideOffer, PROTECTED_NEED, reviewOverrideFor,
   type Evidence, type Item, type ProjectPolicy, type Review,
 } from "../src/rules.ts";
 import { briefFor } from "../src/brief.ts";
@@ -43,9 +43,30 @@ test("t371: the owner's permission for a command-line override stands at its hea
   // A deployment's own owner name is the one that counts.
   assert.equal(confirmationAt(item({ overrideConfirmation: { ...confirmation, by: "pavi" } }), NOW, "pavi")?.by, "pavi");
   assert.equal(confirmationAt(item({ overrideConfirmation: confirmation }), NOW, "pavi"), null);
-  // The refusal names the page, the button and the time, on the server asked.
-  assert.equal(overrideConfirmationHint("demo", "t1", "https://atelier.zone"), 'open https://atelier.zone/p/demo/t1 signed in as the owner, press "Allow an override from the command line", then run the command again within 15 minutes; the owner token alone does not confirm it');
-  assert.match(overrideConfirmationHint("my project", "t1"), /^open \/p\/my%20project\/t1 signed in/);
+  // The refusal names the page, the button and the time, on the server
+  // asked, and the factor that server takes: the Access sign-in, the
+  // confirmation secret, or neither, which says what to set.
+  assert.equal(overrideConfirmationHint("demo", "t1", "https://atelier.zone"), 'open https://atelier.zone/p/demo/t1 as the owner, press "Allow an override from the command line" confirming as the owner, then run the command again within 15 minutes; the owner token alone does not confirm it');
+  assert.equal(overrideConfirmationHint("demo", "t1", "https://atelier.zone", "access"), 'open https://atelier.zone/p/demo/t1 as the owner, press "Allow an override from the command line" under your Cloudflare Access sign-in, which is the confirmation, then run the command again within 15 minutes; the owner token alone does not confirm it');
+  assert.equal(overrideConfirmationHint("demo", "t1", "https://atelier.zone", "secret"), 'open https://atelier.zone/p/demo/t1 as the owner, press "Allow an override from the command line" giving the server\'s confirmation secret (OVERRIDE_SECRET, which no session is given), then run the command again within 15 minutes; the owner token alone does not confirm it');
+  assert.equal(overrideConfirmationHint("demo", "t1", "https://atelier.zone", null), `open https://atelier.zone/p/demo/t1 as the owner, press "Allow an override from the command line" confirming as the owner, then run the command again within 15 minutes; ${NO_OWNER_FACTOR}; the owner token alone does not confirm it`);
+  assert.match(NO_OWNER_FACTOR, /CF_ACCESS_ISS, CF_ACCESS_AUD and CF_ACCESS_OWNER_EMAIL.*OVERRIDE_SECRET/);
+  assert.match(overrideConfirmationHint("my project", "t1"), /^open \/p\/my%20project\/t1 as the owner/);
+});
+
+// Round 2: a project that forbids overrides counts none, an override recorded
+// before the prohibition included; the gate waits for the review as though
+// the override were not there, and offers it again once overrides are allowed.
+test("t371: the gate ignores a stored override where the project forbids overrides", () => {
+  const overridden = item({ reviewOverride: { head: H1, by: "owner", reason: "No other family", at: T } });
+  const allowed = gate(overridden, policy, touching, []);
+  assert.deepEqual([allowed.ready, allowed.needsAssessor, allowed.overridden?.head], [true, false, H1]);
+  const refused = gate(overridden, forbidding, touching, []);
+  assert.deepEqual([refused.ready, refused.needsAssessor, refused.overridden, refused.blockers], [false, true, undefined, [PROTECTED_NEED]]);
+  // Another family's approval still clears it there: test/ledger.spec.ts,
+  // "an override recorded earlier is ignored once the project forbids overrides".
+  // The inbox asks for the review, not the merge.
+  assert.deepEqual(inboxFor("proj", [overridden], forbidding, touching, [], new Date(T)).map((x) => x.kind), ["assess"]);
 });
 
 test("t371: a project that forbids overrides refuses every override before the reason is read, and offers none", () => {

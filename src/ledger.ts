@@ -7,7 +7,7 @@ import { DurableObject } from "cloudflare:workers";
 import {
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
   assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, confirmationAt, contributorsOf, DEFAULT_OWNER, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, RuleError, sameActor, validActor,
-  type OverrideConfirmation,
+  type OverrideConfirmation, type OwnerFactor,
   assertBlockable, assertNotBlocked, blockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
   type Block, type SecretFlag, type SecretClearance, type ItemFields,
@@ -1861,15 +1861,17 @@ export class Ledger extends DurableObject<Env> {
   // nothing else: a failing or pending check, a rejection or a disallowed
   // class still refuses the acceptance, and so nothing is recorded.
   // `note` is the owner's word on the acceptance, recorded with its event.
-  // An override needs the owner's own confirmation (t371): `signedIn` says
-  // the call comes from a page the owner reached through Access or the
-  // owner's own sign-in, which confirms it in itself; otherwise the override
-  // is taken only while the owner's standing permission for this head
-  // (confirmOverride) has not run out, and that permission is spent by it.
-  // Without either it is refused, naming how to confirm, before anything is
-  // written; the owner token alone, which an agent session holds, never
-  // confirms. A project that forbids overrides refuses every override first.
-  accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string, signedIn = false): Item {
+  // An override needs the owner's own confirmation (t371): `confirmedBy` is
+  // the factor the page's own override form carried, an Access identity or
+  // the confirmation secret (OwnerFactor), which the route checked and which
+  // confirms the override in itself; otherwise the override is taken only
+  // while the owner's standing permission for this head (confirmOverride)
+  // has not run out, and that permission is spent by it. Without either it
+  // is refused, naming how to confirm, before anything is written; the owner
+  // token alone, which an agent session holds, never confirms, and nor does
+  // a browser session, which that token buys. A project that forbids
+  // overrides refuses every override first.
+  accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string, confirmedBy?: OwnerFactor): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner accepts", 403);
     if (note !== undefined) assertLength(note, NOTE_MAX, "the acceptance note");
     const item = this.item(id);
@@ -1878,7 +1880,7 @@ export class Ledger extends DurableObject<Env> {
     const evidence = this.evidenceFor(id), reviews = this.reviewsFor(id);
     const current: Item = item.state === "accepted" ? { ...item, state: "submitted" } : item;
     const now = Date.now(), at = new Date(now).toISOString();
-    const confirmation = overrideReason === undefined || signedIn ? null : confirmationAt(current, now, this.owner);
+    const confirmation = overrideReason === undefined || confirmedBy ? null : confirmationAt(current, now, this.owner);
     const override = overrideReason === undefined ? null
       : reviewOverrideFor(current, policy, evidence, reviews, this.owner, overrideReason, at);
     if (override) override.override.confirmedAt = confirmation?.at ?? at;
@@ -1901,15 +1903,17 @@ export class Ledger extends DurableObject<Env> {
     // confirmation: a forbidden override, a missing reason, nothing to
     // override or another blocker are told first, so the owner is sent to
     // the page only for an override that is ready to be made.
-    if (override && !signedIn && !confirmation) {
+    if (override && !confirmedBy && !confirmation) {
       throw new RuleError("override_unconfirmed", `an override of the independent review needs the owner's confirmation: ${overrideConfirmationHint(project.name, id)}`, 403);
     }
     if (override) {
       // The permission, when one was used, is spent: one confirmation, one override.
       this.update(id, { review_override: JSON.stringify(override.override), ...(item.overrideConfirmation ? { override_confirmation: null } : {}) }, at);
+      // The record says where the owner confirmed and with what factor.
+      const factor = confirmedBy ?? confirmation?.factor;
       this.log(id, actor, "review.overridden", {
         head: item.head, reason: override.override.reason, waived: override.waived, contributors: override.contributors,
-        confirmed: signedIn ? "page" : "command line", confirmedAt: override.override.confirmedAt,
+        confirmed: confirmedBy ? "page" : "command line", confirmedAt: override.override.confirmedAt, ...(factor ? { factor } : {}),
       }, at);
     }
     this.update(id, { state: "accepted", accepted_head: item.head }, at);
@@ -1926,15 +1930,17 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // The owner allows an override from the command line (t371): recorded from
-  // the task's page under the owner's own sign-in (the route checks that),
-  // for the submitted head the page showed, and good for
+  // the task's page with the factor no agent holds, `factor`, the owner's
+  // Access identity or the confirmation secret (the route checks it, and
+  // says which), for the submitted head the page showed, and good for
   // OVERRIDE_CONFIRMATION_MS. It overrides nothing itself: `atelier accept
   // --override-review REASON` within that time does, and spends it. A
   // project that forbids overrides refuses it; so does a task that is not
   // submitted, or one whose gate is not missing the independent review,
   // since there would be nothing to allow.
-  confirmOverride(id: string, actor: string, expected?: string): Item {
+  confirmOverride(id: string, actor: string, expected: string | undefined, factor: OwnerFactor): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner allows an override", 403);
+    if (factor !== "access" && factor !== "secret") throw new RuleError("override_unconfirmed", "an override is allowed only with the owner's Access identity or the confirmation secret", 403);
     const policy = this.project().policy;
     assertOverridesAllowed(policy);
     const item = this.item(id);
@@ -1943,9 +1949,9 @@ export class Ledger extends DurableObject<Env> {
     const g = gate({ ...item, reviewOverride: null }, policy, this.evidenceFor(id), this.reviewsFor(id), this.owner);
     if (!g.needsAssessor) throw new RuleError("override_unneeded", `${id} at ${item.head.slice(0, 8)} is not missing an independent review, so there is nothing to allow an override of`);
     const now = Date.now(), at = new Date(now).toISOString();
-    const confirmation: OverrideConfirmation = { head: item.head, by: actor, at, until: new Date(now + OVERRIDE_CONFIRMATION_MS).toISOString() };
+    const confirmation: OverrideConfirmation = { head: item.head, by: actor, at, until: new Date(now + OVERRIDE_CONFIRMATION_MS).toISOString(), factor };
     this.update(id, { override_confirmation: JSON.stringify(confirmation) }, at);
-    this.log(id, actor, "override.allowed", { head: item.head, until: confirmation.until }, at);
+    this.log(id, actor, "override.allowed", { head: item.head, until: confirmation.until, factor }, at);
     return this.item(id);
   }
 

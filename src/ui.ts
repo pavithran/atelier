@@ -38,8 +38,8 @@ import type { PartRoute } from "./plans/route.ts";
 // refreshes itself, in seconds, or nothing for the scrubber alone.
 export interface Live { nonce: string; refresh?: number }
 import {
-  bindingOf, confirmationAt, DEFAULT_OWNER, decisionFor, evidenceAt, isOwnCall, latestReviews, mergedByOverride, mergedChecksAt, OVERRIDE_CONFIRMATION_MS, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey,
-  type Evidence, type Gate, type InboxEntry, type Item, type MergedCheckView, type ProjectPolicy, type Review,
+  bindingOf, confirmationAt, DEFAULT_OWNER, decisionFor, evidenceAt, isOwnCall, latestReviews, mergedByOverride, mergedChecksAt, NO_OWNER_FACTOR, OVERRIDE_CONFIRMATION_MS, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey,
+  type Evidence, type Gate, type InboxEntry, type Item, type MergedCheckView, type OwnerFactor, type ProjectPolicy, type Review,
 } from "./rules";
 
 // What a page calls a project: its title when it has one, else its name. Links,
@@ -157,6 +157,11 @@ export function publicPage(o: { title: string; description: string; brand: strin
 
 export interface Detail {
   ownerActor?: string;
+  // The factor the server takes as the owner's confirmation of an override
+  // (t371): the Access identity, the confirmation secret, or null for a
+  // server with neither, which offers no override form. Unset where the
+  // page is drawn without a server, as a null.
+  ownerFactor?: OwnerFactor | null;
   item: Item;
   policy: ProjectPolicy;
   evidence: Evidence[];
@@ -1551,7 +1556,7 @@ export function renderProjectSettings(p: ProjectRecord, ownerName: string | null
     <dt>Check execution</dt><dd>${p.policy.sandboxOnly ? "Only checks run in a Cloudflare container count" : "Checks count from a Cloudflare container or a runner's clean clone"}</dd>
     <dt>Eligible agents</dt><dd>${p.policy.eligible?.map(e).join(", ") || "Any agent"}</dd>
     <dt>Overlap</dt><dd>${p.policy.refuseOverlap ? "Refused" : "Flagged for review"}</dd>
-    <dt>Overrides</dt><dd>${p.policy.noOverride ? "Refused: every change needs its independent review (<code>atelier init --no-override</code>)" : "Allowed with a reason, confirmed by the owner on the task's page"}</dd>
+    <dt>Overrides</dt><dd>${p.policy.noOverride ? "Refused: every change needs its independent review (<code>atelier init --no-override</code>)" : "Allowed with a reason, confirmed by the owner on the task's page with the Cloudflare Access sign-in or the server's confirmation secret, never the owner token"}</dd>
     <dt>Baseline</dt><dd><code>${e(p.repo)}</code></dd>
   </dl>`;
   const cp = p.policy.approval
@@ -1697,22 +1702,34 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   // is the one thing blocking this revision, since it waives that and nothing
   // else. Its reason is required and recorded.
   // A project that forbids overrides (t371) offers neither form and says so.
-  // The forms count as the owner's confirmation only under the owner's own
-  // sign-in; the second gives `atelier accept --override-review` a quarter
-  // of an hour's permission for this head, which the owner token alone
-  // never has, and the note says while one stands.
+  // The forms carry the owner's confirmation, a factor no agent holds: the
+  // Access identity every page carries behind Access, or the server's
+  // confirmation secret, typed into the form (a session alone is not it,
+  // since the owner token buys one). A server with neither offers no form
+  // and says what to set. The second form gives `atelier accept
+  // --override-review` a quarter of an hour's permission for this head,
+  // which the owner token alone never has, and the note says while one stands.
   const overridable = evidenceVisible && item.state === "submitted" && !!item.head && gate.needsAssessor && gate.blockers.length === 1;
   const allowed = confirmationAt(item, Date.now(), d.ownerActor ?? DEFAULT_OWNER);
+  const factor = d.ownerFactor ?? null;
+  const confirmField = factor === "secret"
+    ? `<label>Confirmation secret<input type="password" name="confirmation" required autocomplete="off"></label>`
+    : "";
+  const confirmWords = factor === "access"
+    ? "Your Cloudflare Access sign-in is the confirmation an override needs; the owner token alone cannot give it."
+    : "The confirmation secret is the confirmation an override needs: the server's own OVERRIDE_SECRET, which no session is given, so the owner token alone cannot give it.";
   const override = overridable && d.policy.noOverride
     ? `<p class="meta">This project forbids overrides of the independent review (<code>atelier init --no-override</code>): the revision lands only with an approval from a model of another family than every contributor.</p>`
+    : overridable && factor === null
+    ? `<p class="meta">An override of the independent review needs the owner's own confirmation, which ${e(NO_OWNER_FACTOR)}; then reopen this page. The owner token alone, and the session it signs in, cannot confirm one.</p>`
     : overridable
     ? `<details class="request-changes"><summary>Accept without an independent review</summary>
       <form class="stack" method="post" action="${action("override")}">${revision}
-        <label>Why is no independent review possible?<textarea name="note" required rows="3" maxlength="${OVERRIDE_REASON_MAX}"></textarea></label>
-        <p class="meta">This records your override and its reason on the task and in the inbox, and accepts the revision. It is not a review. Your sign-in here is the confirmation an override needs; the owner token alone cannot give it.</p>
+        <label>Why is no independent review possible?<textarea name="note" required rows="3" maxlength="${OVERRIDE_REASON_MAX}"></textarea></label>${confirmField}
+        <p class="meta">This records your override and its reason on the task and in the inbox, and accepts the revision. It is not a review. ${confirmWords}</p>
         <button>Override the review and accept</button>
       </form>
-      <form class="stack" method="post" action="${action("allow-override")}">${revision}
+      <form class="stack" method="post" action="${action("allow-override")}">${revision}${confirmField}
         <p class="meta">${allowed
           ? `You allowed an override from the command line for this revision until ${e(when(allowed.until))}: <code>atelier accept ${e(item.id)} --override-review "reason"</code> is taken until then, once.`
           : `Or allow <code>atelier accept ${e(item.id)} --override-review "reason"</code> from the command line for this revision, for ${OVERRIDE_CONFIRMATION_MS / 60000} minutes and one override; without it the command is refused.`}</p>
