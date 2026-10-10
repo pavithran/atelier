@@ -406,3 +406,31 @@ access can end the run silently: every brief says so, and puts what the
 agent needs inside the workspace under `.scratch/`. The reviewer in
 `review.sh` may run commands only inside its throwaway clone, with its
 terminal sandboxed. No script pushes a project's own remotes or deploys.
+
+## Between landings
+
+`land-queue.sh` runs `post-merge.sh TASK` synchronously after the CLI reports
+that a task landed through the landing Workflow. This step requires clean
+`main`, pulls, runs `npm run typecheck` and `npm test`,
+deploys (owner decision d6), and publishes to `public`. Set `NOREPLY` to the
+recorded public no-reply address. It checks author and committer separately
+and audits every outgoing commit, including paths removed in later commits.
+
+The first run stops for human inspection of the files in
+`$(git rev-parse --git-path public-audit)`. Read all outgoing history and
+binary assets, clear every private detail, then set
+`PUBLIC_AUDIT_HEAD` to the inspected `git rev-parse HEAD` and restart the
+queue. This acknowledgement cannot bypass private paths or bad identities.
+A main change invalidates it. `POST_MERGE_SMOKE` can name an executable
+called with `before` and `after` around deployment; use it for declared
+remote smoke checks and verification the orchestrator owes after deploy.
+
+Any error leaves `PROJECT.queue.post-merge` beside the queue, prints
+`post-merge blocked`, and exits without taking another task. Read
+`TASK.post-merge.log`, fix the cause and restart: the pending step retries
+before the queue advances. Do not delete the marker. A successful run prints
+`post-merge complete`. `LAND_QUEUE_POST_MERGE` may name another executable
+receiving TASK, but its zero status must certify checks, required deployment,
+verification and publication all completed; any failure must return nonzero.
+The default step repeats checks/deploy on retry. Run only one queue process.
+Open task **t432**, the server's landing queue, replaces this workaround.
