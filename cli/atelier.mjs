@@ -34,6 +34,7 @@ import { hooksOff, landingDir, landingJournalFile, oldLandingJournalFile, RECEIP
 import { loadPairs } from "./fresh.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { markerPath } from "./gc.mjs";
+import { formatProcesses, liveProcesses, parseLsof, parsePs } from "./procs.mjs";
 import { taskLink } from "./status.mjs";
 import { findStrays } from "./strays.mjs";
 import { formatTokenExpiryWarnings, parseExpiryDay, readTokenExpiries, recordTokenExpiryDay, TOKEN_EXPIRY_WARN_DAYS } from "./token-expiry.mjs";
@@ -733,14 +734,14 @@ export class RequestError extends Error {
 
 // `call` without ending the command: a failure throws a RequestError, so a
 // caller can retry it or name the step that failed.
-export async function request(method, path, body, as, extra = {}) {
+export async function request(method, path, body, as, extra = {}, signal) {
   const die = (message, code = 1) => { throw new RequestError(message, code); };
   if (path !== "/config") await resolveTokenActor();
   if (tokenActor) as = args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
   let res, text;
   try {
     res = await fetch(server() + "/api" + path, {
-      method,
+      method, signal,
       headers: { authorization: `Bearer ${apiToken()}`, ...(as ? { "x-atelier-actor": as } : {}), "content-type": "application/json", ...extra },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -835,6 +836,9 @@ export async function claimWorkspace(name, id, as, runner) {
   if (!fresh) takeForkHead(dir, id, branch);
   const reads = forkBranch(dir);
   if (reads && reads !== branch) console.log(`Warning: ${id}'s fork reads its head from ${reads}, but the project's branch is ${branch}, so atelier push will refuse. To register ${reads}, ${OWNER_NAME} runs atelier init in the project's checkout with ${reads} checked out.`);
+  const preparation = (await call("GET", P(name), undefined, as)).project?.policy?.prepare ?? null;
+  git(["config", "--local", "atelier.prepare", JSON.stringify(preparation)], { cwd: dir });
+  if (preparation?.command) console.log(`Preparation (run in ${JSON.stringify(dir)}): ${preparation.command}`);
   const identity = setWorkspaceIdentity(dir, r.commitIdentity, cfg.projects?.[name]?.path, name);
   // An agent claiming for itself is the builder, and commits in this
   // environment; a runner checks its builder's own (cli/runner.mjs runTask).
@@ -1539,6 +1543,17 @@ export async function localStanding(name, as) {
   const leftover = items.filter((i) => here.has(i.id) && closed(i)).length;
   return { project: name, tasks, leftover, landing: { lock: landingRunning(name), lease: await landingLease(name, as) } };
 }
+
+// The runners and agent processes live on this machine, read as columns from
+// ps and the working directories from lsof (cli/procs.mjs): no command line
+// is kept. null when either tool could not be run.
+export function liveHere(project = null) {
+  const ps = spawnSync("ps", ["-axo", "pid=,ppid=,etime=,args="], { encoding: "utf8", maxBuffer: 64 << 20 });
+  const lsof = spawnSync("lsof", ["-a", "-d", "cwd", "-Fpcn"], { encoding: "utf8", maxBuffer: 64 << 20 });
+  if (ps.error || ps.status !== 0 || !lsof.stdout) return null;
+  return liveProcesses({ ps: parsePs(ps.stdout), lsof: parseLsof(lsof.stdout), work: join(CACHE, "work"), skip: [process.pid, ps.pid, lsof.pid], project });
+}
+export const liveText = (live) => (live ? formatProcesses(live) : "Live on this Mac:\n  the process table could not be read");
 
 // One line per remote of the local checkout: where the registered branch
 // stands against that remote's tracking ref, as it was last fetched or

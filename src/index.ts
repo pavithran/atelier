@@ -47,6 +47,8 @@ import { renderActions } from "./actions-page.ts";
 export { CheckRunner, Egress, Ledger };
 export { LandingWorkflow } from "./landing-workflow.ts";
 import { LANDING_CHECKS_MODES, type LandingChecksMode } from "./landing-workflow.ts";
+import { ENDED, LANDING_CREATE_RECONCILE_MS, replacementFor, terminateConfirmed, type Replacement } from "./landing/replace.ts";
+import { replacementInstanceId } from "./landing/lease-wait.ts";
 import { renderHow } from "./how.ts";
 
 const WRITE_TTL = 8 * 3600;
@@ -1076,6 +1078,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       name: project, repo, reset: body.reset === true,
       ...(branch ? { branch } : {}),
       ...(has("title") ? { title: cleanTitle(body.title) ?? null } : {}),
+      ...(has("prepare") ? { prepare: (() => {
+        const value = body.prepare;
+        if (value === null || value === "") return null;
+        if (!value || typeof value !== "object" || Array.isArray(value)) throw new RuleError("bad_prepare", "prepare must declare command, inputs and outputs, or be empty to clear it", 400);
+        return { command: value.command, inputs: value.inputs, outputs: value.outputs,
+          ...(value.declaration !== undefined ? { declaration: parseDeclarations([value.declaration])[0] } : {}) };
+      })() } : {}),
       ...(has("checks") ? { checks: asStrings(body.checks, "checks") } : {}),
       ...(has("checkClasses") ? { checkClasses: parseDeclarations(body.checkClasses) } : {}),
       ...(has("checkPaths") ? { checkPaths: parseCheckPaths(body.checkPaths) } : {}),
@@ -1193,14 +1202,17 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // place in the queue and answers the lease and the queue as the server
   // sees them (with leave: true it gives up its place instead), and {
   // cancel: true, item } releases that task's lease, answering which task
-  // held it since when, and leaves another task's lease alone.
+  // held it since when, and leaves another task's lease alone. A call that
+  // names the landing Workflow `instance` it acts for (the Workflow
+  // executor's) is refused once another instance replaced it (t430).
   if (parts[2] === "landing-lease" && parts.length === 3) {
     if (m === "GET") return json({ lease: await L.readProjectLanding(), waiting: await L.readLandingQueue() });
     requireOwner(env, actor);
-    if (body.cancel === true) return json(await L.cancelProjectLanding(String(body.item ?? ""), actor));
-    if (body.renew === true) return json({ lease: await L.renewProjectLanding(String(body.item ?? ""), actor) });
-    if (body.queued === true) return json(await L.queueProjectLanding(String(body.item ?? ""), actor, body.leave === true));
-    return json(await L.beginProjectLanding(String(body.item ?? ""), actor));
+    const instance = typeof body.instance === "string" && body.instance ? body.instance : undefined;
+    if (body.cancel === true) return json(await L.cancelProjectLanding(String(body.item ?? ""), actor, instance));
+    if (body.renew === true) return json({ lease: await L.renewProjectLanding(String(body.item ?? ""), actor, instance) });
+    if (body.queued === true) return json(await L.queueProjectLanding(String(body.item ?? ""), actor, body.leave === true, instance));
+    return json(await L.beginProjectLanding(String(body.item ?? ""), actor, instance));
   }
   if (parts[2] === "baseline-token" && m === "POST") {
     const scope = body.scope === "write" ? "write" : "read";
@@ -1676,8 +1688,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       }
       return json({ ...claim, ...(diffRef ? { diffRef } : {}) });
     }
+    case "review-renew": {
+      await L.renewReview(id, actor, Number(body.request));
+      return json({ renewed: true });
+    }
     case "review-release": {
-      await L.releaseReview(id, actor, String(body.note ?? ""), !!c.token);
+      await L.releaseReview(id, actor, String(body.note ?? ""), !!c.token, body.request);
       return json({ released: true });
     }
     // A runner's word that it will not serve the review of this head (t353):
@@ -1709,7 +1725,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review-unparsable": {
       const head = String(body.head ?? "");
       if (!/^[a-f0-9]{40,64}$/.test(head)) throw new RuleError("bad_head", "--head must be the full revision the review read", 400);
-      return json({ kept: true, ...await L.unparsableReview(id, actor, head, String(body.note ?? ""), String(body.reply ?? ""), !!c.token) });
+      return json({ kept: true, ...await L.unparsableReview(id, actor, head, String(body.note ?? ""), String(body.reply ?? ""), !!c.token, body.request) });
     }
     // A review request for an item outside a plan (atelier land): the owner
     // asks for the independent review the gate needs, naming the reviewer or
@@ -1746,6 +1762,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "landing-workflow": {
       requireOwner(env, actor);
       const remembered = await L.landingWorkflowOf(id);
+      const replacementReport = (record: Pick<NonNullable<typeof remembered>, "instance" | "replaced">) => record.replaced ? { replaced: { ...record.replaced, to: record.instance } } : {};
       if (body.event !== undefined) {
         const event = body.event as { type?: unknown; payload?: unknown };
         if (!remembered) throw new RuleError("no_workflow", `${id} has no landing Workflow; start one with atelier land ${id} --workflow`, 404);
@@ -1753,6 +1770,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // the workspace steps, and the owner's resume after a conflict.
         if (event.type !== "workspace" && event.type !== "resume") throw new RuleError("bad_event", "a landing Workflow takes a workspace or a resume event", 400);
         if (typeof event.payload !== "object" || event.payload === null || !Number.isInteger((event.payload as { round?: unknown }).round)) throw new RuleError("bad_event", "an event's payload names the round it answers", 400);
+        // The executor names the instance it attached to (t430): one attached
+        // to an instance since replaced cannot advance the replacement with a
+        // report or a resume meant for the old one.
+        if (typeof body.instance !== "string" || !body.instance) throw new RuleError("bad_event", `an event names the instance it answers ({ event, instance }); update the atelier command and run atelier land ${id} --workflow again`, 400);
+        if (body.instance !== remembered.instance) throw new RuleError("stale_landing", `${body.instance} is no longer ${id}'s landing Workflow: ${remembered.instance} replaced it${remembered.replaced ? ` (${remembered.replaced.reason}: ${remembered.replaced.detail})` : ""}, so the ${event.type} event is not sent. Run atelier land ${id} --workflow again to attach to it`, 409);
         const type: string = event.type;
         try {
           await env.LANDING_WORKFLOW.get(remembered.instance).then((i) => i.sendEvent({ type, payload: event.payload ?? {} }));
@@ -1766,20 +1788,54 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // runs no checks on its machine.
       if (body.checks !== undefined && !LANDING_CHECKS_MODES.includes(body.checks as LandingChecksMode)) throw new RuleError("bad_checks", "checks must be local or container", 400);
       const checks: LandingChecksMode = body.checks === "local" ? "local" : "container";
+      const named = typeof body.reviewer === "string" && body.reviewer ? body.reviewer : null;
       let standing: InstanceStatus | null = null;
+      let handle: WorkflowInstance | undefined;
+      // The instance the record names when this request decides to start
+      // one: the remembered one, or none for the first start.
+      const expected = remembered?.instance ?? null;
       if (remembered) {
         try {
           // Only a confirmed missing instance from get() permits replacement.
           // A status() failure still leaves an executor that might be running.
-          let instance;
           try {
-            instance = await env.LANDING_WORKFLOW.get(remembered.instance);
+            handle = await env.LANDING_WORKFLOW.get(remembered.instance);
           } catch (error) {
             if (!/\binstance\.not_found$/.test(String((error as Error)?.message ?? error))) throw error;
-            await L.clearLandingWorkflow(id, remembered.instance, actor);
+            // A claimed successor may not have reached create yet. Missing
+            // alone cannot distinguish that from an expired instance. Keep
+            // ownership intact unless an ended status or terminal stage was
+            // recorded. The Workflow writes done/failed itself, including for
+            // older records with no observed status, before retention purges it.
+            if (remembered.lastStatus && ENDED.includes(remembered.lastStatus.status)) {
+              standing = remembered.lastStatus;
+            } else if (remembered.stage === "done" || remembered.stage === "failed") {
+              standing = { status: remembered.stage === "done" ? "complete" : "errored" };
+            } else if (!remembered.lastStatus && remembered.stage === "lease" && Date.now() - Date.parse(remembered.at) >= LANDING_CREATE_RECONCILE_MS) {
+              // Recover a claimant that died before create, using its SAME ID
+              // and recorded options. Concurrent retries (or a delayed owner)
+              // cannot create a second instance with this ID. Never turn an
+              // unreadable status into permission to create another executor.
+              try {
+                handle = await env.LANDING_WORKFLOW.create({
+                  id: remembered.instance,
+                  params: { project, key: ref.key, item: id, actor, origin: c.url.origin,
+                    checks: remembered.checks ?? "container",
+                    ...(remembered.reviewer ? { reviewer: remembered.reviewer } : {}),
+                    ...(remembered.noReview ? { noReview: true } : {}),
+                  },
+                });
+              } catch {
+                // A competing create may have won; only a readable instance
+                // confirms that. Keep the claim on any ambiguous failure.
+                handle = await env.LANDING_WORKFLOW.get(remembered.instance);
+              }
+            } else {
+              throw new Error("instance is missing but its end is not confirmed; its create may still be in progress");
+            }
           }
-          if (instance) {
-            standing = await instance.status();
+          if (handle) {
+            standing = await handle.status();
             await L.observeLandingWorkflowStatus(id, remembered.instance, standing);
           }
         } catch (error) {
@@ -1788,8 +1844,26 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           throw new RuleError("workflow_unreadable", `the landing Workflow ${remembered.instance} cannot be read: ${String((error as Error)?.message ?? error)}; last status: ${remembered.lastStatus?.status ?? "unknown"}; last error: ${remembered.lastStatus?.error?.message ?? remembered.detail ?? "none recorded"}; ${id} ${(await L.readLandingQueue()).some((row) => row.item === id) ? "is still queued" : "is not queued"}`, 503);
         }
       }
-      if (standing && !["complete", "errored", "terminated"].includes(standing.status)) {
-        return json({ ...remembered!, created: false, status: standing });
+      // A live instance is attached to, unless it has waited for the lease
+      // past the limit or the owner names an eligible reviewer in place of
+      // an ineligible remembered one (t430, src/landing/replace.ts): then it
+      // is terminated, its end confirmed, and replaced below.
+      let replacing: (Replacement & { from: string }) | null = null;
+      if (remembered && standing && ENDED.includes(standing.status)) {
+        const decision = replacementFor(remembered, named, await L.item(id), Date.now());
+        if (decision.replace) replacing = { ...decision.replace, from: remembered.instance };
+      }
+      if (standing && handle && remembered && !ENDED.includes(standing.status)) {
+        const decision = replacementFor(remembered, named, await L.item(id), Date.now());
+        if (!decision.replace) {
+          return json({ ...remembered, created: false, status: standing, ...replacementReport(remembered), ...(decision.refused ? { reviewerRefused: decision.refused } : {}) });
+        }
+        const end = await terminateConfirmed(handle);
+        if ("unconfirmed" in end) {
+          throw new RuleError("workflow_not_terminated", `${id}'s landing Workflow ${remembered.instance} is to be replaced (${decision.replace.detail}), but its end could not be confirmed: ${end.unconfirmed}. No replacement was started, so two never run at once; run atelier land ${id} --workflow again to retry`, 503);
+        }
+        await L.observeLandingWorkflowStatus(id, remembered.instance, end.ended);
+        replacing = { ...decision.replace, from: remembered.instance };
       }
       // The timeouts the landing waits with, each a positive number of
       // milliseconds; anything else keeps the Workflow's default.
@@ -1799,23 +1873,51 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const item = await L.item(id);
       if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; there is nothing to land.`, 409);
       if (item.state === "accepted") throw new RuleError("accepted", `${id} is accepted at ${(item.acceptedHead ?? "").slice(0, 8)}; merge it with: atelier merge ${id}.`, 409);
-      // Remember only a successfully created instance. The first stage retries
-      // if execution reaches it before this request has saved the record.
-      const instanceId = `land-${id}-${Date.now()}`;
-      const instance = await env.LANDING_WORKFLOW.create({
-        id: instanceId,
-        params: {
-          project, key: ref.key, item: id, actor,
-          ...(typeof body.reviewer === "string" && body.reviewer ? { reviewer: body.reviewer } : {}),
-          ...(body.noReview === true ? { noReview: true } : {}),
-          origin: c.url.origin, checks,
-          ...ms("checksTimeoutMs"), ...ms("pollMs"), ...ms("mergePollMs"), ...ms("waitTimeoutMs"), ...ms("workspaceTimeoutMs"), ...ms("conflictTimeoutMs"), ...ms("reviewTimeoutMs"), ...ms("mergeTimeoutMs"),
-        },
-      });
-      const record = await L.setLandingWorkflow(id, instanceId, actor, checks);
+      // The review options: the ones this run names, and for a replacement
+      // that names none, the ones the replaced instance was started with.
+      const reviewer = named ?? (remembered && body.noReview !== true ? remembered?.reviewer ?? null : null);
+      const noReview = body.noReview === true || (!!remembered && named === null && remembered?.noReview === true);
+      const options = { checks, ...(reviewer ? { reviewer } : {}), ...(noReview ? { noReview: true } : {}) };
+      // Who starts the next instance is decided in the Ledger before anything
+      // is created (t430). The instance that follows a remembered one has an
+      // id derived from it, so every request that follows it (two replacing
+      // it, or one replacing it and one that found it already ended) claims
+      // the same successor: the one whose claim is recorded creates it, with
+      // the options it recorded, and every other answers that record and the
+      // instance it names. A failed create keeps its claim for reconciliation.
+      const instanceId = remembered ? replacementInstanceId(id, remembered.instance) : `land-${id}-${Date.now()}`;
+      const claim = await L.claimLandingWorkflow(id, expected, instanceId, actor, options, replacing ?? undefined);
+      if (!claim.owner) {
+        const record = claim.record;
+        if (!record) throw new RuleError("landing_replaced", `${id}'s landing Workflow ${expected ?? "record"} was cleared meanwhile; run atelier land ${id} --workflow again to start one`, 409);
+        // The owner may not have created it yet: it is waited for briefly.
+        let status: InstanceStatus | null = null;
+        for (let i = 0; i < 25 && !status; i++) {
+          try { status = await (await env.LANDING_WORKFLOW.get(record.instance)).status(); }
+          catch { await new Promise((ok) => setTimeout(ok, 200)); }
+        }
+        if (!status) throw new RuleError("landing_starting", `${id}'s landing Workflow ${record.instance} is being started by another request; run atelier land ${id} --workflow again to attach to it`, 409);
+        await L.observeLandingWorkflowStatus(id, record.instance, status);
+        return json({ ...record, created: false, status, ...replacementReport(record) });
+      }
+      let instance: WorkflowInstance;
+      try {
+        instance = await env.LANDING_WORKFLOW.create({
+          id: instanceId,
+          params: {
+            project, key: ref.key, item: id, actor, ...options, origin: c.url.origin,
+            ...ms("checksTimeoutMs"), ...ms("pollMs"), ...ms("mergePollMs"), ...ms("waitTimeoutMs"), ...ms("workspaceTimeoutMs"), ...ms("conflictTimeoutMs"), ...ms("reviewTimeoutMs"), ...ms("mergeTimeoutMs"),
+          },
+        });
+      } catch (error) {
+        // Creation may have succeeded despite an error, or reconciliation
+        // may have won while this request was delayed. Never erase its claim.
+        try { instance = await env.LANDING_WORKFLOW.get(instanceId); }
+        catch { throw error; }
+      }
       const status = await instance.status();
       await L.observeLandingWorkflowStatus(id, instanceId, status);
-      return json({ ...record, created: true, status }, 201);
+      return json({ ...claim.record, created: true, status, ...replacementReport(claim.record!) }, 201);
     }
     case "integrated": {
       // The integrator reports a merge of one part. The Worker verifies the
