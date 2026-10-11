@@ -45,7 +45,7 @@ test("a coordinated change needs a notice only under an execution policy", () =>
   assert.equal(reviewNotice(["src/a.ts"], open), null);
   const text = reviewNotice(["src/a.ts"], governed)!.join("\n");
   assert.match(text, /not within the execution policy's direct paths/);
-  assert.match(text, /another agent/);
+  assert.match(text, /a different model than every contributor/);
   assert.match(text, /as stored on the server/);
 });
 
@@ -72,7 +72,7 @@ test("status lists the disagreement under its project, and in JSON", () => {
   assert.equal("mismatches" in statusJson([{ ...view, mismatches: [] }])[0], false);
 });
 
-test("the workspace notice reads the changed paths and the policy file's version", (t) => {
+test("the workspace notice does not attribute an unrelated protection to a local execution file", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "atelier-notice-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const git = (argv: string[], o: { cwd?: string; allowFail?: boolean } = {}) => {
@@ -91,9 +91,9 @@ test("the workspace notice reads the changed paths and the policy file's version
   writeFileSync(join(dir, "AGENTS.md"), "x");
   run("add", "."); run("commit", "-m", "task");
   assert.deepEqual(changedFromMain(git, dir)?.sort(), ["AGENTS.md", "docs/control-plane/execution-policy.v1.json"]);
-  assert.deepEqual(policySource(dir), { file: "docs/control-plane/execution-policy.v1.json", version: "4" });
+  assert.equal(policySource(dir, controllingRule(["AGENTS.md"], open), open), null);
   const lines = workspaceNotice(git, dir, open)!;
-  assert.match(lines.join("\n"), /execution-policy\.v1\.json \(version 4\)/);
+  assert.doesNotMatch(lines.join("\n"), /execution-policy\.v1\.json/);
   assert.match(lines.join("\n"), /AGENTS\.md matches the protected glob AGENTS\.md/);
 });
 
@@ -141,4 +141,32 @@ test("the notice measures against the project baseline, not the fork's origin/ma
   assert.deepEqual(changedFromMain(git, ws), []);
   assert.deepEqual(changedFromMain(git, ws, baseline), ["AGENTS.md"]);
   assert.match(workspaceNotice(git, ws, open, { baseline })!.join("\n"), /AGENTS\.md matches the protected glob/);
+});
+
+ test("a local execution file is not the source of checks, ship files, or plan review", () => {
+  const source = { file: "docs/control-plane/execution-policy.v1.json", version: "9" };
+  for (const [paths, policy, part] of [
+    [["AGENTS.md"], open, false],
+    [["test/check.mjs"], { ...open, checks: ["node test/check.mjs"] }, false],
+    [["docs/atelier/ship.json"], open, false],
+    [["docs/a.md"], governed, true],
+  ] as const) {
+    const text = reviewNotice(paths, policy, source, part)!.join("\n");
+    assert.doesNotMatch(text, /Controlling policy: docs\/control-plane\/execution-policy/);
+  }
+});
+
+test("imported adapter and execution protections name the matching file and version", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-sources-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, "docs/control-plane"), { recursive: true });
+  writeFileSync(join(dir, "docs/control-plane/execution-policy.v1.json"), JSON.stringify({ version: 3, protected_path_patterns: ["auth/**"] }));
+  writeFileSync(join(dir, "docs/control-plane/project-adapter.v1.json"), JSON.stringify({ version: 2, protected_surfaces: [{ pattern: "db/**" }] }));
+  const policy = { ...open, protected: ["auth/**", "db/**", "other/**"] };
+  for (const [path, file, version] of [["auth/a", "execution-policy", "3"], ["db/a", "project-adapter", "2"]]) {
+    const source = policySource(dir, controllingRule([path], policy), policy);
+    assert.deepEqual(source, { file: `docs/control-plane/${file}.v1.json`, version });
+    assert.match(reviewNotice([path], policy, () => source)!.join("\n"), new RegExp(file));
+  }
+  assert.equal(policySource(dir, controllingRule(["other/a"], policy), policy), null);
 });

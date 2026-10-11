@@ -12,6 +12,7 @@ import { criteriaOf } from "./criteria.ts";
 export type ItemState = "open" | "claimed" | "submitted" | "accepted" | "integrated" | "merged" | "abandoned" | "blocked";
 
 export interface Item {
+  area?: string | null;
   id: string;
   title: string;            // the short title every list shows, at most TITLE_MAX characters
   // The long text of the task, shown only on its own page and in briefs to
@@ -31,6 +32,10 @@ export interface Item {
   dispatch?: Dispatch | null; // set while the task waits for a runner; kept as the record once claimed
   runner?: string | null;     // the runner that holds the claim, if a runner claimed it
   reviewOverride?: ReviewOverride | null; // the owner's latest override; it counts only at the head it names
+  // The owner's standing permission for an override from the command line
+  // (t371): given on the task's page under the owner's own sign-in, for one
+  // head and a quarter of an hour. Read with confirmationAt.
+  overrideConfirmation?: OverrideConfirmation | null;
   // The owner's framing of the task, from ControlPlane's work item: what the
   // task is not to do, what tells its holder to stop and ask, and the gate it
   // goes to next. Each is optional; the brief and the task page show them.
@@ -124,6 +129,7 @@ export interface SecretClearance {
 // item's value; one absent keeps it. An empty list, a null gate or a null
 // brief clears. `title` is read by edit only: new takes its title apart.
 export interface ItemFields {
+  area?: string | null;
   // Creation only: the ledger resolves this task's recorded merge itself.
   revertOf?: string;
   nonGoals?: string[];
@@ -154,6 +160,72 @@ export interface ReviewOverride {
   by: string;
   reason: string;
   at: string;
+  // When the owner confirmed the override from a signed-in page (t371): the
+  // time of the page's own override form, or of the standing permission an
+  // `atelier accept --override-review` then used.
+  confirmedAt?: string;
+}
+
+// The owner's permission for an override made with the owner token (t371).
+// An agent session acting with that token recorded every override on ourAI,
+// so an override now needs the owner's own word, given with a factor no
+// agent holds (OwnerFactor): the task's page, under the owner's Cloudflare
+// Access identity where the pages are behind Access, or else with the
+// server's confirmation secret, which no session is given. A browser session
+// alone is not that word: without Access, the owner token buys one at
+// /login. The page's own override form carries the factor itself; the
+// command line needs this permission, given on the page, which names one
+// head and lasts OVERRIDE_CONFIRMATION_MS from when it was given.
+export interface OverrideConfirmation {
+  head: string;
+  by: string;
+  at: string;
+  until: string;
+  factor?: OwnerFactor;       // how the owner confirmed on the page; absent on a record from before the factor was kept
+}
+
+// The factor an override's confirmation rests on: the owner's Access identity
+// (`access`), which every owner page carries where the server names its
+// Access team, or the confirmation secret (`secret`), OVERRIDE_SECRET on the
+// server, typed into the page's form and never given to a session. The
+// server decides which it takes (ownerFactorOf in src/index.ts): Access
+// where it is set, else the secret, else nothing, and then no override can
+// be confirmed until one is set.
+export type OwnerFactor = "access" | "secret";
+
+export const OVERRIDE_CONFIRMATION_MS = 15 * 60 * 1000;
+
+// The permission that stands at the item's head and has not run out, or null.
+export function confirmationAt(item: Pick<Item, "head" | "overrideConfirmation">, now: number, owner = DEFAULT_OWNER): OverrideConfirmation | null {
+  const c = item.overrideConfirmation;
+  return c && item.head && c.head === item.head && c.by === owner && Date.parse(c.until) > now ? c : null;
+}
+
+// How the owner confirms on a server that takes the factor given: the words
+// the hint below, the page and the Settings tab share.
+export function ownerFactorText(factor: OwnerFactor | null | undefined): string {
+  if (factor === "access") return "under your Cloudflare Access sign-in, which is the confirmation";
+  if (factor === "secret") return "giving the server's confirmation secret (OVERRIDE_SECRET, which no session is given)";
+  return "confirming as the owner";
+}
+
+// What a server with no factor must do before any override can be confirmed.
+export const NO_OWNER_FACTOR = "this server can take no confirmation: put its pages behind Cloudflare Access (CF_ACCESS_ISS, CF_ACCESS_AUD and CF_ACCESS_OWNER_EMAIL) or give it a confirmation secret (OVERRIDE_SECRET, set with wrangler secret put and never given to a session)";
+
+// How the owner confirms an override from the command line: the refusal every
+// unconfirmed override gets, naming the page, the button and the factor the
+// server takes (`factor`: undefined where the caller does not know, as the
+// Ledger does not; null for a server that takes none).
+export function overrideConfirmationHint(project: string, id: string, origin = "", factor?: OwnerFactor | null): string {
+  const page = `open ${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)} as the owner, press "Allow an override from the command line" ${ownerFactorText(factor)}, then run the command again within ${OVERRIDE_CONFIRMATION_MS / 60000} minutes`;
+  return `${page}; ${factor === null ? `${NO_OWNER_FACTOR}; ` : ""}the owner token alone does not confirm it`;
+}
+
+// The merged items that went in on the owner's override: those whose override
+// stands at the head that was merged. The project page and `atelier status`
+// count them and link each (t371).
+export function mergedByOverride<T extends Pick<Item, "state" | "head" | "acceptedHead" | "reviewOverride">>(items: T[]): T[] {
+  return items.filter((i) => i.state === "merged" && !!i.reviewOverride && !!i.reviewOverride.reason.trim() && i.reviewOverride.head === (i.acceptedHead ?? i.head));
 }
 
 // Observed: Atelier ran it itself, in a clean clone, at the exact head.
@@ -190,6 +262,10 @@ export interface Evidence {
   // An observed record that the check does not apply at this head: its paths
   // match none of the changed paths Atelier measured. It carries no result.
   notApplicable?: boolean;
+  // The machine's load average when an observed check started (t403), kept so
+  // a failure under a saturated machine stays legible beside a later passing
+  // run of the same command. Only a run on someone's machine records one.
+  load?: number;
 }
 
 // One finding of an automatic review, as parseVerdict (src/review/verdict.ts)
@@ -328,12 +404,20 @@ export interface ProjectPolicy {
   protected: string[];      // globs whose changes need an independent assessor
   eligible?: string[];      // harness families allowed to act (e.g. "claude"); empty or absent means any
   refuseOverlap?: boolean;  // refuse a claim whose scope overlaps another live item
+  // Every task is filed, and kept, with acceptance criteria (`atelier init
+  // --require-criteria`): a review judges a change against them, so a task
+  // without them has nothing to bind its review to.
+  requireCriteria?: boolean;
   // Globs of the files only one live item at a time may change: the queue
   // holds a dispatch whose scope overlaps a live item's within one of them
   // (coreHold in src/dispatch/rules.ts). Absent or empty, nothing is held.
   coreFiles?: string[];
   approval?: string;
   sandboxOnly?: boolean;    // only checks observed in a Cloudflare sandbox count
+  // Overrides of the independent review are refused in this project, with
+  // or without the owner's confirmation (`atelier init --no-override`, t371):
+  // every change gets its review from another family, or does not land.
+  noOverride?: boolean;
 }
 
 // Reject malformed policy at the boundary instead of silently widening access.
@@ -672,6 +756,80 @@ export function hasRole(actor: string, policy: ProjectPolicy, role: AgentRole): 
   return name !== null && policy.agents[name].available && policy.agents[name].eligible_roles.includes(role);
 }
 
+// The agent names a governed policy marks available for a role, for a
+// refusal said ahead of a claim (a dispatch, a named reviewer) to name who
+// would pass (t405). Only governed policies have agents; without one,
+// eligibility is by harness and assertEligible names those.
+export function eligibleAgents(policy: ProjectPolicy, role: AgentRole): string[] {
+  if (!policy.agents) return [];
+  return Object.entries(policy.agents)
+    .filter(([, a]) => a.available && a.eligible_roles.includes(role))
+    .map(([name]) => name);
+}
+
+// Why a claim by `actor` under `role` would be refused by the project's
+// policy, or null when it would pass. The reason is the one assertEligible
+// gives, extended, under a governed policy, with the agents that would be
+// eligible, so a refusal said ahead of the claim names who would pass
+// (t405). A caller that refuses on this reason refuses the same rule the
+// claim would apply.
+export function roleRefusal(actor: string, policy: ProjectPolicy, role: AgentRole, owner = DEFAULT_OWNER): string | null {
+  if (policy.agents) {
+    if (hasRole(actor, policy, role)) return null;
+    const names = eligibleAgents(policy, role);
+    return `${actor} needs an available agent with the ${role} role${names.length ? `; available agents with the ${role} role: ${names.join(", ")}` : `; no agent is available with the ${role} role`}`;
+  }
+  try {
+    assertEligible(actor, policy, owner, role);
+    return null;
+  } catch (err) {
+    const rule = parseRuleError(err);
+    if (!rule) throw err;
+    return rule.detail;
+  }
+}
+
+// Why a dispatch that names only a harness, no model, would be refused by
+// the project's policy for every model under that harness, or null when the
+// policy has nothing to say about the harness alone. A claim names an actor
+// (harness/model), so a harness-only dispatch is checked only for the
+// restrictions the harness itself decides: under a governed policy the fixed
+// agent a harness runs (claude-code → claude, codex → codex, zcode → glm),
+// whose role and availability hold for every model of that harness; under
+// legacy eligibility the harness list, which names no model at all. A
+// harness whose agent depends on the model (opencode's glm models against
+// its others) cannot be judged here, and the claim's own check applies when
+// the runner names a model (t405).
+export function harnessRefusal(harness: string, policy: ProjectPolicy, role: AgentRole, owner = DEFAULT_OWNER): string | null {
+  if (policy.agents) {
+    // agentOf reads the harness lowercased, so the fixed mapping matches the
+    // claim's own, whatever letter case the dispatch carried.
+    const fixed = harness.toLowerCase() === "claude-code" ? "claude" : harness.toLowerCase() === "codex" ? "codex" : harness.toLowerCase() === "zcode" ? "glm" : null;
+    if (!fixed) {
+      // A harness whose governed agent depends on the model (opencode's glm
+      // models against its others) cannot be judged per model here, and the
+      // claim's own check applies once the runner names a model. But when no
+      // governed agent holds the role at all, no model under any harness
+      // could qualify, and the refusal is said now with the claim's reason.
+      const names = eligibleAgents(policy, role);
+      if (names.length) return null;
+      return `${harness} needs an available agent with the ${role} role; no agent is available with the ${role} role`;
+    }
+    const agent = policy.agents[fixed];
+    if (agent?.available && agent.eligible_roles.includes(role)) return null;
+    const names = eligibleAgents(policy, role);
+    return `${harness} needs an available agent with the ${role} role${names.length ? `; available agents with the ${role} role: ${names.join(", ")}` : `; no agent is available with the ${role} role`}`;
+  }
+  try {
+    assertEligible(`${harness}/x`, policy, owner, role);
+    return null;
+  } catch (err) {
+    const rule = parseRuleError(err);
+    if (!rule) throw err;
+    return rule.detail;
+  }
+}
+
 export function countingReviews(reviews: Review[], at: ReviewBinding, policy: ProjectPolicy, owner = DEFAULT_OWNER): Review[] {
   return latestReviews(reviews, at).filter((r) => r.by === owner || hasRole(r.by, policy, "assessor"));
 }
@@ -700,7 +858,7 @@ export function changeClass(paths: string[], policy: ProjectPolicy): ChangeClass
 
 export function classRequirement(kind: ChangeClass): string {
   if (kind === "protected") return "Protected change: needs one review from another model family";
-  if (kind === "coordinated") return "Coordinated change: needs one review from another agent";
+  if (kind === "coordinated") return "Coordinated change: needs one review from a different model than every contributor";
   return "Direct change: needs no review";
 }
 
@@ -712,17 +870,18 @@ export const PROTECTED_NEED = "touches a protected path; needs approval from a m
 // Whether one review is the independent review a change needs. The project
 // owner's approval never is: the owner decides by accepting, and the
 // decision is not also the second opinion. A reviewer must be a
-// harness/model actor that is not any contributor under another spelling.
-// A protected change, in every project, needs a model of a recognised family
+// harness/model actor running a different model from every contributor,
+// regardless of harness, spelling or profile. A protected change, in every
+// project, needs a model of a recognised family
 // that no contributor shares (familyRefusal); a coordinated change in a
-// governed project needs any other agent. In a protected change, a review
+// governed project needs a different model. In a protected change, a review
 // the owner token recorded in a model's name counts only when it answers a
 // review request that model claimed for that head (unprovedReview). A tier
 // review's approval never is: the tier reviews beside the gate, not for it.
 export function independentApproval(r: Review, kind: "protected" | "coordinated", contributors: readonly string[], owner = DEFAULT_OWNER): boolean {
   if (!r.approve || r.tier || sameActor(r.by, owner) || !validActor(r.by) || !r.by.includes("/")) return false;
   if (kind === "protected" && unprovedReview(r)) return false;
-  if (contributors.some((actor) => sameActor(r.by, actor))) return false;
+  if (contributors.some((actor) => modelKey(r.by) === modelKey(actor))) return false;
   return kind === "coordinated" || familyRefusal(r.by, contributors) === null;
 }
 
@@ -888,6 +1047,10 @@ export function itemFields(input: Record<string, unknown>): ItemFields {
     return entries;
   };
   const out: ItemFields = {};
+  if (input.area !== undefined) {
+    if (input.area !== null && (typeof input.area !== "string" || !/^a[1-9]\d*$/.test(input.area))) throw new RuleError("bad_area", "area must be an area ID or null to clear", 400);
+    out.area = input.area as string | null;
+  }
   if (input.revertOf !== undefined) {
     if (typeof input.revertOf !== "string" || !/^t[1-9]\d*$/.test(input.revertOf)) throw new RuleError("bad_field", "revertOf must name a task, such as t7", 400);
     out.revertOf = input.revertOf;
@@ -910,6 +1073,21 @@ export function itemFields(input: Record<string, unknown>): ItemFields {
 
 export const OVERRIDE_REASON_MAX = 500;
 
+// The refusal a project that forbids overrides gives every override, and
+// every permission for one, before the reason is read (t371).
+export const OVERRIDE_FORBIDDEN = "this project forbids overrides of the independent review (atelier init --no-override): the change needs an approval from a model of another family than every contributor, or it does not land";
+
+export function assertOverridesAllowed(policy: Pick<ProjectPolicy, "noOverride">): void {
+  if (policy.noOverride) throw new RuleError("override_forbidden", OVERRIDE_FORBIDDEN, 403);
+}
+
+// What the inbox, the page and the brief offer beside a missing independent
+// review: the override, where the project allows it, or the word that it does not.
+export function overrideOffer(policy: Pick<ProjectPolicy, "noOverride">, offered: boolean): string {
+  if (policy.noOverride) return " This project forbids overrides of that review.";
+  return offered ? " If no reviewer qualifies, you can accept with an override and say why." : "";
+}
+
 // The reason an override records: text, control characters as spaces,
 // trimmed. A missing, blank or over-long reason is refused, not cut or
 // filled in, because it is the record of why the owner overrode the review.
@@ -928,6 +1106,7 @@ export function overrideReason(value: unknown): string {
 export function reviewOverrideFor(
   item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner: string, reason: unknown, at: string,
 ): { override: ReviewOverride; waived: string; contributors: string[] } {
+  assertOverridesAllowed(policy);
   const text = overrideReason(reason);
   const g = gate({ ...item, reviewOverride: null }, policy, evidence, reviews, owner);
   if (!item.head || !g.needsAssessor) {
@@ -946,21 +1125,37 @@ export function holdsScope(item: { state: string }): boolean {
 
 // Live items held by someone else whose scope overlaps this one. Items of
 // one plan are not counted against each other (samePlan).
-export function overlappingLive(item: Item, items: Item[], actor: string): Item[] {
+export function overlappingLive(item: Item, items: readonly Item[], actor: string): Item[] {
   return items.filter(
     (o) => o.id !== item.id && holdsScope(o) && o.owner !== actor && !samePlan(item, o) && scopesOverlap(item.scope, o.scope),
   );
+}
+
+// The reason a claim whose scope overlaps a live item is refused under a
+// refuseOverlap policy, or null when none overlaps. Shared between the claim
+// and the refusals said ahead of it (a dispatch, t405), so both name the
+// same live items with the same words.
+export function overlappingRefusal(item: Item, items: readonly Item[], actor: string): string | null {
+  const clash = overlappingLive(item, items, actor);
+  if (!clash.length) return null;
+  const names = clash.map((o) => `${o.id} (${o.owner})`).join(", ");
+  return `${item.id}'s scope overlaps live ${names}; this project refuses overlapping claims${item.scope.length ? "" : ", and an unscoped item overlaps everything"}. The project owner can narrow a scope with atelier edit ${clash.length === 1 ? clash[0].id : "ID"} --scope GLOB (or atelier edit ${item.id} --scope GLOB)`;
 }
 
 export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPolicy, actor: string, owner = DEFAULT_OWNER, role: AgentRole = "executor"): void {
   assertClaimable(item, actor);
   assertEligible(actor, policy, owner, role);
   if (policy.refuseOverlap && item.owner !== actor) {
-    const clash = overlappingLive(item, items, actor);
-    if (clash.length) {
-      const names = clash.map((o) => `${o.id} (${o.owner})`).join(", ");
-      throw new RuleError("overlap", `${item.id}'s scope overlaps live ${names}; this project refuses overlapping claims${item.scope.length ? "" : ", and an unscoped item overlaps everything"}. The project owner can narrow a scope with atelier edit ${clash.length === 1 ? clash[0].id : "ID"} --scope GLOB (or atelier edit ${item.id} --scope GLOB)`);
-    }
+    const refusal = overlappingRefusal(item, items, actor);
+    if (refusal) throw new RuleError("overlap", refusal);
+  }
+}
+
+// A project that requires criteria files no task without them and clears none:
+// the review of a change without criteria would judge it against nothing.
+export function assertCriteriaAllowed(policy: Pick<ProjectPolicy, "requireCriteria">, accept: readonly string[] | undefined): void {
+  if (policy.requireCriteria && !accept?.length) {
+    throw new RuleError("no_criteria", "this project requires acceptance criteria on every task, since a review judges a change against them: give the task at least one with --accept \"TEXT\"", 400);
   }
 }
 
@@ -1300,15 +1495,18 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   if (governed && kind && !policy.execution!.allowed_classes.includes(kind)) blockers.push(`${kind} changes are not allowed by this project's execution policy`);
   // A protected change needs an independent review in every project, and a
   // coordinated one does under an execution policy, unless the review is
-  // held outside the item (reviewHeld). Families and agents are
-  // compared by modelKey and sameActor, so a contributor's model under
-  // another letter case, profile or registered name is never independent of
+  // held outside the item (reviewHeld). Models are compared by modelKey,
+  // and protected reviews must also pass familyRefusal, so a contributor's
+  // model under another harness, case, profile or name is never independent of
   // itself. Without a qualifying approval, the owner's override at this head
   // stands in for it; the owner's approval does not.
   if (!options.reviewHeld && (kind === "protected" || (governed && kind === "coordinated"))) {
     const contributors = contributorsOf(item);
     if (!reviews.some((r) => independentApproval(r, kind, contributors, owner))) {
-      overridden = overrideAt(item, owner);
+      // A project that forbids overrides (t371) counts none, an override
+      // recorded before the prohibition included: the change waits for its
+      // review as if the override had never been made.
+      overridden = policy.noOverride ? null : overrideAt(item, owner);
       if (!overridden) {
         needsAssessor = true;
         blockers.push(governed ? requirement : PROTECTED_NEED);
@@ -1342,6 +1540,10 @@ export interface InboxEntry {
   kind: "accept" | "assess" | "merge" | "ship" | "blocked" | "stale" | "overlap" | "scope" | "failing" | "approve-plan" | "plan-blocked";
   reason: string;
   weight: number;
+  // The reviewer `atelier land ID --reviewer H/M` would name for an assess
+  // entry, or null when the pool offers none; the Ledger fills it from the
+  // pool, since inboxFor is pure and has no pool (t395).
+  reviewer?: string | null;
 }
 
 // The inbox kinds that are the lead developer's own decisions — the calls only
@@ -1408,7 +1610,7 @@ export function inboxFor(
       if (g.ready) {
         out.push({ ...base, kind: "accept", reason: `all checks observed passing at this head${overrode(g)}`, weight: 100 });
       } else if (g.needsAssessor) {
-        out.push({ ...base, kind: "assess", reason: `${g.requirement ?? PROTECTED_NEED}; ask a reviewer who qualifies, or accept with an override and its reason`, weight: 80 });
+        out.push({ ...base, kind: "assess", reason: `${g.requirement ?? PROTECTED_NEED}; ask a reviewer with atelier land ${item.id} --reviewer H/M${policy.noOverride ? "; this project forbids overrides" : ", and override only as the owner's last resort"}`, weight: 80 });
       } else if (g.blockers.some((b) => b.includes("failed"))) {
         out.push({ ...base, kind: "failing", reason: g.blockers.find((b) => b.includes("failed"))!, weight: 20 });
       }
@@ -1538,7 +1740,7 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
   // when the missing review is all that blocks, since it waives nothing else.
   if (item.state === "submitted" && g.needsAssessor) {
     const need = g.requirement ? `${g.requirement}.` : "This task changes protected files and needs an approval from a model of another family than every contributor.";
-    const override = g.blockers.length === 1 ? " If no reviewer qualifies, you can accept with an override and say why." : "";
+    const override = overrideOffer(policy, g.blockers.length === 1);
     return { title: "Waiting for an independent review", detail: `${need} Your own approval does not count as that review.${override}`, action: "review", tone: "ask", passed };
   }
   if (item.state === "submitted" && g.ready) {

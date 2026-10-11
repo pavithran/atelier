@@ -35,7 +35,9 @@ test("lists decisions with the next command, work in progress and tasks waiting 
 
 test("a project with nothing to do says so, and other projects' decisions are ignored", () => {
   const out = formatStatus([{ name: "quiet", items: [item("t1", "merged")], inbox: [entry("t9", "accept", { project: "other" })] }]);
-  assert.equal(out, "quiet\n  Nothing waiting.");
+  // A project that has merged says how many merges went in by override (t371).
+  assert.equal(out, "quiet\n  Nothing waiting.\n  Merged by override: 0 of 1 merge");
+  assert.equal(formatStatus([{ name: "quiet", items: [item("t1", "open")], inbox: [] }]), "quiet\n  Nothing waiting.");
 });
 
 test("the waiting list splits the lead developer's own decisions from what the orchestrator handles", () => {
@@ -74,6 +76,14 @@ test("a plan's entries point to what the plan shows", () => {
   const out = formatStatus([{ name: "demo", items: [item("t1", "open", { kind: "plan" })], inbox: [entry("t1", "approve-plan"), entry("t2", "plan-blocked")] }]).split("\n");
   assert.equal(out.filter((l) => l === "      next: atelier plan show t1 --project demo").length, 1);
   assert.equal(out.filter((l) => l === "      next: atelier plan show t2 --project demo").length, 1);
+});
+
+test("an assess entry names the reviewer the pool offers, and H/M when none is offered", () => {
+  const named = formatStatus([{ name: "demo", items: [item("t1", "submitted", { owner: "claude-code/opus-5.5" })], inbox: [entry("t1", "assess", { reviewer: "codex/gpt-6-astra" })] }]).split("\n");
+  assert.ok(named.includes("    t1  assess  Task t1"));
+  assert.ok(named.includes("      next: atelier land t1 --reviewer codex/gpt-6-astra --project demo"));
+  const placeholder = formatStatus([{ name: "demo", items: [item("t1", "submitted", { owner: "claude-code/opus-5.5" })], inbox: [entry("t1", "assess")] }]).split("\n");
+  assert.ok(placeholder.includes("      next: atelier land t1 --reviewer H/M --project demo"));
 });
 
 test("an undelivered merge's entry names the dry run, and the merged task itself stays out of In progress", () => {
@@ -243,8 +253,11 @@ async function runLocal(t, setup, argv) {
   const server = createServer((req, res) => {
     seen.push(`${req.method} ${req.url}`);
     let status = 200, body;
-    if (req.url === "/api/projects/demo/standing") body = STANDING;
-    else if (req.url === "/api/projects/demo") body = { project: STANDING.project, items: state.items ?? [], events: [] };
+    if (req.url === "/api/projects") body = [STANDING.project];
+    else if (req.url === "/api/inbox") body = [];
+    else if (req.url === "/api/projects/demo/baseline-head") body = { head: git(state.checkout, "rev-parse", "HEAD") };
+    else if (req.url === "/api/projects/demo/standing") body = STANDING;
+    else if (req.url === "/api/projects/demo") body = { project: { ...STANDING.project, policy: state.policy }, items: state.items ?? [], events: [] };
     else if (req.url === "/api/projects/demo/landing-lease") {
       if (state.noLeaseRoute) { status = 404; body = { error: "not_found", detail: "no such route" }; }
       else body = { lease: state.lease ?? null };
@@ -254,7 +267,7 @@ async function runLocal(t, setup, argv) {
   });
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   t.after(() => server.close());
-  writeFileSync(join(dir, "config.json"), JSON.stringify({ server: "x", owner: "owner", projects: {} }));
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ server: "x", owner: "owner", projects: state.checkout ? { demo: { path: state.checkout } } : {} }));
   const child = spawn(process.execPath, [cli, ...(argv ?? ["status", "--project", "demo"])], {
     cwd: dir, env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: cache, ATELIER_TOKEN: "test-token", ATELIER_ACTOR: "owner", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}` },
   });
@@ -475,4 +488,18 @@ test("a queued task the core files hold says what it waits on and how to let it 
   assert.ok(out.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned, or at once with atelier dispatch t2 --overlap-ok."), out.join("\n"));
   assert.ok(out.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned."));
   assert.equal(out.filter((l) => l.includes("Held:")).length, 2, "t4 is not held here, only in another project");
+});
+
+for (const project of [false, true]) for (const json of [false, true]) test(`status module reports policy disagreements (project=${project}, json=${json})`, async (t) => {
+  const r = await runLocal(t, ({ dir }) => {
+    const checkout = workspace(join(dir, "checkout"), [["AGENTS.md", "Review is optional.\n"]]);
+    return { checkout, policy: { protected: ["AGENTS.md"], checks: [] } };
+  }, ["status", ...(project ? ["--project", "demo"] : []), ...(json ? ["--json"] : [])]);
+  assert.equal(r.code, 0, r.output);
+  assert.match(r.output, /AGENTS\.md:1 calls review optional/);
+  if (!json) assert.match(r.output, /Policy and instructions disagree/);
+  else {
+    const value = JSON.parse(r.output);
+    assert.equal((project ? value : value[0]).mismatches.length, 1);
+  }
 });

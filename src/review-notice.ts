@@ -23,7 +23,7 @@ export interface PolicySource {
 export function controllingRule(paths: readonly string[], policy: ProjectPolicy): ControllingRule | null {
   if (!paths.length) return null;
   const groups: [string, string[]][] = [
-    ["the project's protected paths", policy.protected],
+    ["the project's protected paths", policy.protected ?? []],
     ["the files its required checks run", checkFiles(policy.checks)],
     ["the execution policy's protected_path_patterns", policy.execution?.protected_path_patterns ?? []],
     ["the ship files", SHIP_FILES],
@@ -49,11 +49,12 @@ export function controllingRule(paths: readonly string[], policy: ProjectPolicy)
 // A part of a plan is reviewed whatever its class (reviewNeeded's basis
 // "part"), so `part` keeps the notice for a direct change or a project
 // without an execution policy.
-export function reviewNotice(paths: readonly string[], policy: ProjectPolicy, source?: PolicySource | null, part = false): string[] | null {
+export function reviewNotice(paths: readonly string[], policy: ProjectPolicy, source?: PolicySource | null | ((rule: ControllingRule) => PolicySource | null), part = false): string[] | null {
   const rule = controllingRule(paths, policy);
   if (!rule) return null;
   if (!part && (rule.kind === "direct" || (rule.kind === "coordinated" && !policy.execution))) return null;
-  const named = source ? `${source.file}${source.version ? ` (version ${source.version})` : ""}` : "the project's recorded policy, as stored on the server";
+  const resolved = typeof source === "function" ? source(rule) : rule.origin.includes("execution policy") ? source : null;
+  const controlling = part ? "Atelier's plan-part review rule (src/rules.ts: reviewNeeded)" : resolved ? `${resolved.file}${resolved.version ? ` (version ${resolved.version})` : ""}` : rule.origin === "the ship files" ? "Atelier's built-in SHIP_FILES rule (src/rules.ts)" : `the project's recorded policy, as stored on the server (${rule.origin})`;
   const classWhy = rule.glob !== null
     ? `${rule.path} matches the protected glob ${rule.glob}, from ${rule.origin}`
     : rule.kind === "direct"
@@ -62,7 +63,7 @@ export function reviewNotice(paths: readonly string[], policy: ProjectPolicy, so
   const why = part ? `this task is a part of a plan, and every part of a plan is reviewed by another family than its contributors (${classWhy})` : classWhy;
   return [
     `A review will be needed before this lands: ${part ? classRequirement("protected") : rule.requirement}.`,
-    `  Controlling policy: ${named}`,
+    `  Controlling policy: ${controlling}`,
     `  Rule: ${why}; class ${rule.kind}`,
   ];
 }
@@ -77,7 +78,7 @@ export function reviewDisagreements(policy: ProjectPolicy, instructions: readonl
   const requires: string[] = [];
   const protectedGlobs = [...new Set([...policy.protected, ...checkFiles(policy.checks), ...(policy.execution?.protected_path_patterns ?? []), ...SHIP_FILES, ...checkFiles(policy.shipRuns ?? [])])];
   if (protectedGlobs.length) requires.push(`a protected change (${protectedGlobs.slice(0, 4).join(", ")}${protectedGlobs.length > 4 ? ", …" : ""}) needs a review from another model family`);
-  if (policy.execution?.allowed_classes.includes("coordinated")) requires.push("a coordinated change needs another agent's review");
+  if (policy.execution?.allowed_classes.includes("coordinated")) requires.push("a coordinated change needs a review from a different model than every contributor");
   if (!requires.length) return [];
   const out: string[] = [];
   for (const { file, text } of instructions) {

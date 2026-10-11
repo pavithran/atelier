@@ -8,7 +8,8 @@
 // waiting section also names each open review request and its reviewer, and
 // says of any queued job no live runner offers that it can never be claimed,
 // which is not a wait but a mismatch between the dispatch and the runners
-// (unoffered in src/dispatch/rules.ts). A queued job the project's core
+// (unoffered in src/dispatch/rules.ts); `waiting.server` is the server in
+// use, which the link to each merge by override names. A queued job the project's core
 // files hold (coreHold there) says which live item it waits on, as the
 // queue's entry for it carries that. The offers (GET /runners) are each
 // { runner, kind, agents: [{ agent, models }], jobs?, at }, `at` saying when
@@ -17,13 +18,21 @@
 // (jobsLine in cli/runner.mjs): the jobs it takes and, behind them, the known
 // jobs it does not.
 import { holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
-import { isOwnCall } from "../src/rules.ts";
+import { isOwnCall, mergedByOverride } from "../src/rules.ts";
+import { daySpend } from "../src/usage/report.ts";
 import { jobsLine } from "./runner.mjs";
 
 export function formatPolicyDisagreements(mismatches = []) {
   if (!mismatches.length) return "";
   return ["  Policy and instructions disagree", ...mismatches.map((m) => `    ${m}`),
     "    Settle which is right; agents are held to the recorded policy."].join("\n");
+}
+
+// The address of a task's page on the server in use, the link `status` prints
+// beside each merge by override (t371); with no server known, the page's
+// path alone.
+export function taskLink(server, project, id) {
+  return `${server ? String(server).replace(/\/+$/, "") : ""}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`;
 }
 
 // An item as `ls --json` and `status --json` print it: what the text listings
@@ -37,7 +46,8 @@ export function itemJson(i) {
 // carrying its times, and the project's overlapping pairs of tasks, each
 // pair once and sorted. Merged and abandoned items are included; a reader
 // that wants only live work filters by state.
-export function statusJson(views) {
+// `server` is the server in use, for the link to each merge by override.
+export function statusJson(views, server = "") {
   return views.map((v) => {
     const mine = v.inbox.filter((x) => x.project === v.name);
     return {
@@ -47,6 +57,9 @@ export function statusJson(views) {
       items: v.items.map(itemJson),
       ...(v.mismatches?.length ? { mismatches: v.mismatches } : {}),
       overlaps: overlapPairs(mine),
+      // The merges that went in on the owner's override, each with the link
+      // to its page (t371).
+      mergedByOverride: mergedByOverride(v.items).map((i) => ({ id: i.id, url: taskLink(server, v.name, i.id) })),
     };
   });
 }
@@ -118,6 +131,7 @@ export function formatLocal(local) {
 function nextCommand(entry, project) {
   const flag = ` --project ${project}`;
   if (entry.kind === "accept") return `atelier accept ${entry.itemId}${flag}`;
+  if (entry.kind === "assess") return `atelier land ${entry.itemId} --reviewer ${entry.reviewer ?? "H/M"}${flag}`;
   if (entry.kind === "merge") return `atelier merge ${entry.itemId}${flag}`;
   if (entry.kind === "ship") return `atelier ship --dry-run${flag}`;
   if (entry.kind === "stale") return `atelier release ${entry.itemId}${flag}`;
@@ -265,6 +279,14 @@ export function formatStatus(views, waiting = {}) {
       lines.push("  In progress");
       for (const i of working) lines.push(`    ${i.id}  ${i.state}  held by ${i.owner ?? "nobody"}  ${i.title}`);
     }
+    // How many merges went in on the owner's override of the independent
+    // review, wherever the project has merged anything, then each under it
+    // with the link to its page on the server in use (t371).
+    const merged = v.items.filter((i) => i.state === "merged"), byOverride = mergedByOverride(merged);
+    if (merged.length) {
+      lines.push(`  Merged by override: ${byOverride.length} of ${merged.length} ${merged.length === 1 ? "merge" : "merges"}`);
+      for (const i of byOverride) lines.push(`    ${i.id}  ${taskLink(waiting.server, v.name, i.id)}  ${i.title}`);
+    }
     if (queued.length || reviews.length) {
       lines.push("  Waiting for a runner");
       for (const i of queued) {
@@ -280,5 +302,68 @@ export function formatStatus(views, waiting = {}) {
     }
   }
   if (offers?.length) lines.push("", ...formatRunners(offers, waiting.now ? waiting.now.getTime() : Date.now()));
+  return lines.join("\n");
+}
+
+// `atelier status --brief`: the report the orchestrator gives the owner after
+// each landing, in under 20 lines whatever the project holds. Pure: the caller
+// fetches. A brief is { standing, version, queue, lease, usage }: the project's
+// standing (GET standing), the server's { commit, routeLevel } (GET
+// /api/version) or null, the runner queue (GET /queue) or null, the landing
+// lease as landingLease reads it (null, { unreadable } or { item, holder,
+// since }), and the usage view (GET /usage: thresholds, reports) or null. What
+// could not be read is said so on its own line, never dropped.
+const BRIEF_MERGES = 3;
+const BRIEF_NAMED = 3;
+const oneLine = (v) => String(v ?? "").replace(/\s+/g, " ").trim();
+const dollars = (n) => `$${n.toFixed(2)}`;
+
+// "t1 a, t2 b, t3 c and 2 more": the first few named, the rest counted.
+function named(rows) {
+  const shown = rows.slice(0, BRIEF_NAMED).join(", ");
+  return rows.length > BRIEF_NAMED ? `${shown} and ${rows.length - BRIEF_NAMED} more` : shown;
+}
+
+// Each tool's spend over the last 24 hours, summed over its runners, against
+// the owner's daily limit for a tool (USAGE_DAILY_SPEND).
+function spendLine(usage) {
+  if (!usage || !Array.isArray(usage.reports)) return "Spend: not readable from the server.";
+  const limit = typeof usage.thresholds?.dailySpend === "number" ? usage.thresholds.dailySpend : null;
+  const byTool = new Map();
+  for (const r of usage.reports) {
+    const spent = daySpend(r);
+    if (spent !== null) byTool.set(r.tool, (byTool.get(r.tool) ?? 0) + spent);
+  }
+  const of = limit === null ? "no daily limit set" : `limit ${dollars(limit)} a tool a day`;
+  if (!byTool.size) return `Spend, last 24 hours: none recorded; ${of}.`;
+  const tools = [...byTool].sort((a, b) => b[1] - a[1]);
+  const over = tools.filter(([, n]) => limit !== null && n > limit).map(([t]) => oneLine(t));
+  const total = tools.reduce((n, [, v]) => n + v, 0);
+  return `Spend, last 24 hours: ${dollars(total)} (${named(tools.map(([t, n]) => `${oneLine(t)} ${dollars(n)}`))}); ${of}${over.length ? `; over it: ${over.join(", ")}` : ""}.`;
+}
+
+export function formatStatusBrief(b) {
+  const s = b.standing;
+  const lines = [`${oneLine(s.project.title)} (${oneLine(s.project.name)}) as of ${String(s.generatedAt).slice(0, 16).replace("T", " ")} UTC`];
+  lines.push("Recent merges:");
+  const merged = s.merged.slice(0, BRIEF_MERGES);
+  if (!merged.length) lines.push("  none");
+  for (const m of merged) lines.push(`  ${m.id}  ${m.commit ? `${m.commit.slice(0, 8)}  ` : ""}${oneLine(m.title)}`);
+  lines.push(b.version
+    ? `Deployed: ${b.version.commit ? b.version.commit.slice(0, 8) : "no commit recorded"}, route level ${b.version.routeLevel}.`
+    : "Deployed: the server's version could not be read.");
+  const building = s.live.filter((i) => i.state === "claimed");
+  const submitted = s.live.filter((i) => i.state === "submitted" || i.state === "accepted");
+  lines.push(`Live builds: ${building.length ? `${building.length} (${named(building.map((i) => `${i.id} ${oneLine(i.owner ?? "nobody")}`))})` : "none"}.`);
+  const requests = (Array.isArray(b.queue) ? b.queue : []).filter((q) => q.project === s.project.name && q.item?.dispatch?.job === "review");
+  const reviewing = requests.map((q) => `${q.item.id} by ${oneLine(q.item.dispatch.agent ?? "any")}/${oneLine(q.item.dispatch.model ?? "any")}`);
+  const asked = !b.queue ? "the review queue could not be read" : reviewing.length ? `${reviewing.length} waiting for a runner (${named(reviewing)})` : "none waiting for a runner";
+  lines.push(`Reviews: ${submitted.length} submitted or accepted${submitted.length ? ` (${named(submitted.map((i) => `${i.id} ${i.state}`))})` : ""}; ${asked}.`);
+  const lease = b.lease;
+  lines.push(!lease ? "Landing: none running."
+    : lease.unreadable ? `Landing: the lease could not be read (${oneLine(lease.unreadable)}).`
+      : `Landing: ${lease.item} held by ${lease.holder} since ${lease.since}.`);
+  lines.push(`Waiting on the owner: ${s.waiting.length ? named(s.waiting.map((w) => `${w.id} ${w.kind}`)) : "nothing"}.`);
+  lines.push(spendLine(b.usage));
   return lines.join("\n");
 }

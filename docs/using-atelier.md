@@ -56,6 +56,11 @@ and reviewer get, and a reviewer blocks a change that fails a criterion. One
 long text with no `--brief` becomes the brief, with its first clause as the
 title; `atelier edit ID --title T --brief B --accept A` changes them.
 
+A task filed without `--accept` is created with a warning, because a review
+would have no criteria to judge its change against. `atelier init
+--require-criteria` makes that a refusal for the project, and under it
+`atelier edit ID --accept ""` is refused too.
+
 The owner also changes a live task's scope with `atelier edit ID --scope GLOB`
 (once per glob, or `--scope ""` to clear it); the change is recorded. In a
 project that refuses overlapping claims (`atelier init --refuse-overlap`), a
@@ -172,3 +177,5 @@ that is how Atelier improves.
 | close a session of direct edits | `atelier wrap "summary"` |
 | clear finished workspaces | `atelier gc --project NAME` |
 | see spend and windows | `atelier runner --usage` |
+
+See [Function areas and the project board](areas.md) for owner commands to create, rename and remove areas, assign tasks and read their stages.

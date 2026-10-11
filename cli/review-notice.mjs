@@ -33,13 +33,31 @@ export function changedFromMain(git, dir, baseline) {
   return null;
 }
 
-// The execution policy file the checkout holds and its version, or null.
-export function policySource(dir) {
-  try {
-    const doc = JSON.parse(readFileSync(join(dir, EXECUTION_POLICY), "utf8"));
-    const version = doc.version ?? doc.policy_version ?? doc.schema_version;
-    return { file: EXECUTION_POLICY, version: version === undefined ? null : String(version) };
-  } catch { return null; }
+// Name a local policy only when its relevant rule matches the recorded rule.
+// Merely having an execution policy file does not make it the source of every
+// protection: checks, ship files and explicit server protections have theirs.
+export function policySource(dir, rule, policy) {
+  const read = (file) => {
+    try { return JSON.parse(readFileSync(join(dir, file), "utf8")); } catch { return null; }
+  };
+  const execution = read(EXECUTION_POLICY);
+  const adapterFile = "docs/control-plane/project-adapter.v1.json";
+  const adapter = read(adapterFile);
+  let file, doc;
+  if (rule?.origin.includes("execution policy") && execution && policy?.execution
+      && JSON.stringify(execution.direct) === JSON.stringify(policy.execution.direct)
+      && JSON.stringify(execution.protected_path_patterns) === JSON.stringify(policy.execution.protected_path_patterns)) {
+    file = EXECUTION_POLICY; doc = execution;
+  } else if (rule?.origin === "the project's protected paths" && rule.glob) {
+    if (execution?.protected_path_patterns?.includes(rule.glob) || execution?.maintenance_path_rules?.some((r) => r.paths?.includes(rule.glob))) {
+      file = EXECUTION_POLICY; doc = execution;
+    } else if (adapter?.protected_surfaces?.some((s) => s.pattern === rule.glob)) {
+      file = adapterFile; doc = adapter;
+    }
+  }
+  if (!doc) return null;
+  const version = doc.version ?? doc.policy_version ?? doc.schema_version;
+  return { file, version: version === undefined ? null : String(version) };
 }
 
 // The notice's lines for the workspace at `dir`, or null where no review is
@@ -49,7 +67,7 @@ export function policySource(dir) {
 export function workspaceNotice(git, dir, policy, { baseline, part = false } = {}) {
   if (!policy) return null;
   const paths = changedFromMain(git, dir, baseline);
-  return paths ? reviewNotice(paths, policy, policySource(dir), part) : null;
+  return paths ? reviewNotice(paths, policy, (rule) => policySource(dir, rule, policy), part) : null;
 }
 
 // The instruction files the checkout holds.
