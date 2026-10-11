@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 // The design documents (t499) hold to one another: every finding the
@@ -105,4 +105,18 @@ test("the mockups draw palette B with the values brief.md §1.1 fixes", () => {
   }
   assert.ok(checked >= 15, `${checked} palette tokens checked`);
   assert.equal(value(dark, "--signal"), "#4d8bff", "palette B's one accent");
+});
+
+test("the mockups draw company colours only inside charts (d9)", () => {
+  const files = readdirSync(resolve("docs/design/mockups")).filter((f) => /\.(html|css)$/.test(f));
+  assert.ok(files.length >= 13, `${files.length} mockup files`);
+  for (const f of files) {
+    const text = read(`mockups/${f}`);
+    assert.doesNotMatch(text, /--fam\b|\bf-(anthropic|openai|zai|google|qwen)\b|class="stripe"/, `${f} marks a family outside a chart`);
+    // In the stylesheet a family colour is defined, or drawn by a graph's legend; in a page, only inside an <svg>.
+    const outside = f.endsWith(".css")
+      ? text.split("\n").filter((l) => /var\(--m-/.test(l) && !/^\.graph-legend /.test(l))
+      : text.replace(/<svg[\s\S]*?<\/svg>/g, "").match(/var\(--m-[a-z]+\)/g) ?? [];
+    assert.deepEqual(outside, [], `${f} draws a company colour outside a chart`);
+  }
 });

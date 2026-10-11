@@ -3,7 +3,8 @@
    src/theme.css (head 7d64b297), dark by default and light by device, and
    t367's family colours from src/layout.css. #4d8bff is the one accent;
    caution is a tint of it; green only for an observed pass or merge, red
-   only for failures. Families are used for marks, never as text. */
+   only for failures. Company (family) colours appear only inside charts
+   (standing decision d9): graph lines and a graph's own legend. */
 
 :root {
   color-scheme: dark;
@@ -205,11 +206,8 @@ label { font-weight: 600; font-size: 14px; }
 .phone .rows .meta { grid-column: 1; font-size: 13px; }
 .phone .rows .tag { grid-column: 2; grid-row: 1; justify-self: end; }
 
-/* Agent mark: family colour as a swatch only */
-.who { display: inline-flex; align-items: center; gap: 6px; color: var(--text); white-space: nowrap; }
-.who::before { content: ""; width: 10px; height: 10px; border-radius: 2px; background: var(--fam, var(--text-dim)); }
-.f-anthropic { --fam: var(--m-anthropic); } .f-openai { --fam: var(--m-openai); }
-.f-zai { --fam: var(--m-zai); } .f-google { --fam: var(--m-google); } .f-qwen { --fam: var(--m-qwen); }
+/* Agent mark: text only. Company colours appear only inside charts (d9) */
+.who { color: var(--text); white-space: nowrap; }
 
 /* Counts strip */
 .counts { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; padding: 0; list-style: none; }
@@ -242,6 +240,11 @@ label { font-weight: 600; font-size: 14px; }
 .graph { overflow-x: auto; background: var(--surface-raised); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
 .graph svg { display: block; }
 .graph .main { stroke: var(--text-muted); }
+.graph-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 6px; padding: 0; list-style: none; color: var(--text-muted); font-size: 14px; }
+.graph-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.graph-legend .line { width: 18px; height: 3px; border-radius: 2px; }
+.graph-legend .l-anthropic { background: var(--m-anthropic); } .graph-legend .l-openai { background: var(--m-openai); }
+.graph-legend .l-zai { background: var(--m-zai); } .graph-legend .l-google { background: var(--m-google); } .graph-legend .l-qwen { background: var(--m-qwen); }
 
 @media (max-width: 720px) {
   .frames, .notes, .mock-head, .strip { padding-left: 12px; padding-right: 12px; }
