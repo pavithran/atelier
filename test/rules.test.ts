@@ -3,7 +3,7 @@ import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
 import assert from "node:assert/strict";
 import {
   pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, isOwnCall, matchesAny, modelKey, modelOf, sameActor,
-  assertClaimAllowed, assertEligible, checkFiles, foldPath, matchesFolded, overlappingLive, parseRuleError, pathCollisions, repoName, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
+  assertClaimAllowed, assertCriteriaAllowed, assertEligible, checkFiles, eligibleAgents, foldPath, matchesFolded, overlappingLive, overlappingRefusal, parseRuleError, pathCollisions, repoName, roleRefusal, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
   decisionFor, mergedBlockers, mergedChecksAt, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
   type Evidence, type InboxEntry, type Item, type ProjectPolicy, type Review, type ReviewOverride,
 } from "../src/rules.ts";
@@ -23,6 +23,15 @@ const policy: ProjectPolicy = { checks: ["npm test"], protected: ["AGENTS.md", "
 const pass = (over: Partial<Evidence> = {}): Evidence => ({
   itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true,
   by: "claude-code/opus-5.5", at: T, changedPaths: ["src/a.ts"], ...over,
+});
+
+test("a project that requires criteria refuses a task filed or cleared without them", () => {
+  assert.doesNotThrow(() => assertCriteriaAllowed({}, undefined));
+  assert.doesNotThrow(() => assertCriteriaAllowed({ requireCriteria: false }, []));
+  assert.doesNotThrow(() => assertCriteriaAllowed({ requireCriteria: true }, ["It works"]));
+  for (const accept of [undefined, []]) {
+    assert.throws(() => assertCriteriaAllowed({ requireCriteria: true }, accept), (err: unknown) => err instanceof RuleError && err.code === "no_criteria" && err.status === 400 && /--accept "TEXT"/.test(err.detail));
+  }
 });
 
 test("globs: ** crosses directories, * does not", () => {
@@ -303,6 +312,38 @@ test("overlapping claims are refused when the project says so, and only then", (
   assert.throws(() => assertClaimAllowed(unscoped, [...all, unscoped], strict, "glm/glm-4.6"), /unscoped item overlaps everything/);
 });
 
+test("roleRefusal says why a claim would be refused and names the agents that would pass", () => {
+  const governed: ProjectPolicy = { checks: [], protected: [], agents: { claude: { available: true, eligible_roles: ["executor", "assessor"] }, codex: { available: true, eligible_roles: ["assessor"] }, glm: { available: false, eligible_roles: ["executor"] } } };
+  assert.equal(roleRefusal("codex/gpt-6-astra", governed, "executor"), "codex/gpt-6-astra needs an available agent with the executor role; available agents with the executor role: claude");
+  assert.equal(roleRefusal("glm/glm-4.6", governed, "executor"), "glm/glm-4.6 needs an available agent with the executor role; available agents with the executor role: claude");
+  assert.equal(roleRefusal("codex/gpt-6-astra", governed, "assessor"), null, "codex holds the assessor role");
+  assert.equal(roleRefusal("claude-code/opus-5.5", governed, "assessor"), null);
+  // No agent holds the role: the refusal says so rather than naming none.
+  const onlyExec: ProjectPolicy = { checks: [], protected: [], agents: { claude: { available: true, eligible_roles: ["executor"] } } };
+  assert.equal(roleRefusal("claude-code/opus-5.5", onlyExec, "assessor"), "claude-code/opus-5.5 needs an available agent with the assessor role; no agent is available with the assessor role");
+  // A legacy policy falls back to assertEligible's own words, which name the eligible harnesses.
+  const legacy: ProjectPolicy = { checks: [], protected: [], eligible: ["claude"] };
+  assert.equal(roleRefusal("codex/gpt-6-astra", legacy, "assessor"), "codex is not an eligible agent here (eligible: claude)");
+  assert.equal(roleRefusal("claude-code/opus-5.5", legacy, "assessor"), null);
+  // Without a policy restriction nothing is refused.
+  assert.equal(roleRefusal("anything/x", { checks: [], protected: [] }, "assessor"), null);
+});
+
+test("eligibleAgents names only the available agents holding the role", () => {
+  const governed: ProjectPolicy = { checks: [], protected: [], agents: { claude: { available: true, eligible_roles: ["executor", "assessor"] }, codex: { available: true, eligible_roles: ["assessor"] }, glm: { available: false, eligible_roles: ["executor"] } } };
+  assert.deepEqual(eligibleAgents(governed, "executor"), ["claude"]);
+  assert.deepEqual(eligibleAgents(governed, "assessor"), ["claude", "codex"]);
+  assert.deepEqual(eligibleAgents({ checks: [], protected: [] }, "executor"), []);
+});
+
+test("overlappingRefusal names the same live items with the same words as the claim", () => {
+  const held = item({ id: "t1", state: "claimed", owner: "codex/gpt-5.5", scope: ["src/**"] });
+  const want = item({ id: "t2", state: "open", owner: null, scope: ["src/ui/**"] });
+  assert.equal(overlappingRefusal(want, [held], "claude-code/opus-5.5"), "t2's scope overlaps live t1 (codex/gpt-5.5); this project refuses overlapping claims. The project owner can narrow a scope with atelier edit t1 --scope GLOB (or atelier edit t2 --scope GLOB)");
+  assert.equal(overlappingRefusal(want, [], "claude-code/opus-5.5"), null);
+  assert.equal(overlappingRefusal(want, [held], "codex/gpt-5.5"), null, "the holder of the overlapping item may take it");
+});
+
 test("a live task blocks an overlapping claim by one rule in every state, and the refusal names the way out", () => {
   const strict: ProjectPolicy = { checks: [], protected: [], refuseOverlap: true };
   const want = item({ id: "t9", state: "open", owner: null, scope: ["src/ui/**"] });
@@ -456,7 +497,7 @@ test("changed paths take the strictest class and retain implicit check protectio
   assert.equal(changeClass(["docs/a.md"], { ...governed, execution: { ...governed.execution!, direct: { enabled: false, allowed_path_patterns: ["**"] } } }), "coordinated");
 });
 
-test("direct needs no review, coordinated needs another actor, protected needs another family", () => {
+test("direct needs no review, coordinated needs another model, protected needs another family", () => {
   const direct = [pass({ changedPaths: ["docs/a.md"] })];
   const coordinated = [pass()];
   const protectedChange = [pass({ changedPaths: ["AGENTS.md"] })];
@@ -617,11 +658,11 @@ test("a contributor's model under another letter case, profile or registered nam
   assert.equal(gate(item(), policy, touching, [review("codex/gpt-6-astra")]).ready, true);
 
   // Governed, coordinated: another spelling of a contributor is that
-  // contributor; the same model in another harness is another agent.
+  // contributor; changing harness does not make its review independent.
   const coordinated = [pass({ changedPaths: ["src/a.ts"] })];
   assert.equal(gate(item(), governed, coordinated, [review("Claude-Code/OPUS-5.5:fast")]).ready, false);
   assert.equal(gate(item(), governed, coordinated, [review("claude-code/claude-opus-5-5")]).ready, false);
-  assert.equal(gate(item(), governed, coordinated, [review("codex/opus-5.5")]).ready, true);
+  assert.equal(gate(item(), governed, coordinated, [review("codex/opus-5.5")]).ready, false);
 
   // Governed, protected: a profile suffix never changes a model's family, nor
   // the agent its review is counted for.
@@ -630,6 +671,32 @@ test("a contributor's model under another letter case, profile or registered nam
   assert.equal(agentOf("opencode/qwen3.8-27b:google-eval", anyAssessor.agents!), "qwen");
   assert.equal(gate(qwen, anyAssessor, touching, [review("opencode/qwen3.8-27b:google-eval")]).ready, false);
   assert.equal(gate(qwen, anyAssessor, touching, [review("codex/gpt-6-astra")]).ready, true);
+});
+
+test("t418: changing harness never makes a contributor model independent", () => {
+  const scenarios = [
+    { label: "coordinated", policy: governed, paths: ["src/a.ts"] },
+    { label: "governed protected", policy: governed, paths: ["AGENTS.md"] },
+    { label: "ungoverned protected", policy, paths: ["AGENTS.md"] },
+  ];
+  for (const scenario of scenarios) {
+    const evidence = [pass({ changedPaths: scenario.paths })];
+    for (const task of [
+      item(),
+      item({ owner: "codex/gpt-6", pushActors: ["claude-code/opus-5.5"] }),
+    ]) {
+      for (const by of ["codex/claude-opus-5-5", "codex/OPUS-5.5:fast", "opencode/opus-5.5"]) {
+        const g = gate(task, scenario.policy, evidence, [review(by)]);
+        assert.equal(g.ready, false, `${scenario.label}: ${by}`);
+        assert.equal(g.needsAssessor, true, `${scenario.label}: ${by}`);
+      }
+      // A different model at the same company qualifies only for coordinated work.
+      assert.equal(gate(task, scenario.policy, evidence, [review("codex/claude-sonnet-5-5")]).ready,
+        scenario.label === "coordinated", scenario.label);
+      // A company absent from all contributors qualifies for either class.
+      assert.equal(gate(task, scenario.policy, evidence, [review("qwen/qwen3")]).ready, true, scenario.label);
+    }
+  }
 });
 
 test("review independence includes every contributor after a handoff", () => {
@@ -725,7 +792,7 @@ test("decision 2026-10-06: the inbox and the page name the override and its reas
   const touching = [pass({ changedPaths: ["AGENTS.md"] })];
   const reviewOverride: ReviewOverride = { head: H1, by: "owner", reason: "No other family is available", at: T };
   const entry = (over: Partial<Item>) => inboxFor("proj", [item({ scope: [], ...over })], policy, touching, [], now);
-  assert.deepEqual(entry({}).map((x) => [x.kind, x.reason]), [["assess", `${PROTECTED_NEED}; ask a reviewer who qualifies, or accept with an override and its reason`]]);
+  assert.deepEqual(entry({}).map((x) => [x.kind, x.reason]), [["assess", `${PROTECTED_NEED}; ask a reviewer with atelier land t1 --reviewer H/M, and override only as the owner's last resort`]]);
   assert.deepEqual(entry({ reviewOverride }).map((x) => [x.kind, x.reason]), [["accept", "all checks observed passing at this head, with the independent review overridden by the project owner: No other family is available"]]);
   assert.deepEqual(entry({ reviewOverride, state: "accepted", acceptedHead: H1 }).map((x) => [x.kind, x.reason]), [["merge", "accepted, with the independent review overridden by the project owner: No other family is available; run `atelier merge` in the project checkout"]]);
   assert.equal(entry({ state: "accepted", acceptedHead: H1 })[0].reason, "accepted; run `atelier merge` in the project checkout");
