@@ -58,8 +58,8 @@ test("malformed and unavailable answers get their own errors", () => {
 
 test("legacy route levels map to the documented guarantees only", () => {
   assert.deepEqual(capabilitiesForLevel(5), []);
-  assert.deepEqual(capabilitiesForLevel(13), ["plans.integration.v1"]);
-  assert.deepEqual(capabilitiesForLevel(14), ["plans.integration.v1", "land.workflow.v1"]);
+  assert.deepEqual(capabilitiesForLevel(13), ["plans.integration.v1", "plans.refresh.v1"]);
+  assert.deepEqual(capabilitiesForLevel(14), ["plans.integration.v1", "plans.refresh.v1", "land.workflow.v1"]);
   assert.deepEqual(capabilitiesForLevel(ROUTE_LEVEL), [...SERVER_CAPABILITIES]);
   assert.deepEqual(capabilitiesForLevel(ROUTE_LEVEL + 5), [...SERVER_CAPABILITIES]);
   assert.equal(checkCapabilities({ routeLevel: 17 }, ["reviews.unparsable.v1"]).ok, true);
@@ -75,13 +75,35 @@ test("a legacy server is refused for a requirement no level guarantees", () => {
   assert.deepEqual(r.missing, ["future.thing.v1"]);
 });
 
+// The check a client from before capabilities made, as cli/land.mjs and
+// cli/runner.mjs (versionRefusal) had it at f7493eb^: routeLevel alone, read
+// as an integer, refused below the client's own ROUTE_LEVEL. It stands in
+// for every old client the new server must keep serving.
+function oldClientRefusal(version, clientLevel) {
+  const level = Number.isInteger(version?.routeLevel) ? version.routeLevel : null;
+  const commit = typeof version?.commit === "string" && version.commit ? version.commit.slice(0, 8) : null;
+  const deploy = (why) => `the server ${commit ? `runs main at ${commit}, ` : ""}${level === null ? "reports no route level" : `runs route level ${level}`}, this CLI route level ${clientLevel}: ${why}. Deploy the server from a checkout at route level ${clientLevel} or newer (npm run deploy, which records the commit it deploys), then start the runner again`;
+  if (!version) return deploy("the server does not answer GET /api/version");
+  if (level === null) return deploy("the server is older than route levels");
+  if (level < clientLevel) return deploy("the server's routes are older than the ones this CLI calls");
+  return null;
+}
+
 test("old clients against the new server: the server's answer carries routeLevel and capabilities", async () => {
-  const answer = { commit: "c0ffee", routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES };
-  // an old client reads routeLevel as an integer and never looks at the rest
-  assert.ok(Number.isInteger(answer.routeLevel) && answer.routeLevel >= ROUTE_LEVEL);
-  // and a new client reading a server that carries both uses the capabilities
+  // What src/index.ts answers on GET /api/version, as test/land-routes.spec.ts checks against the worker.
+  const answer = { commit: "c0ffee0123456789", routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES };
+  // An old client at this level, or any level up to it, reads routeLevel alone and starts.
+  for (const clientLevel of [ROUTE_LEVEL, ROUTE_LEVEL - 1, 14, 6, 1]) assert.equal(oldClientRefusal(answer, clientLevel), null, `old client at level ${clientLevel}`);
+  // An old client whose level the server has not reached still refuses on the level, as before.
+  assert.match(oldClientRefusal(answer, ROUTE_LEVEL + 1), /runs main at c0ffee01, runs route level \d+, this CLI route level \d+: the server's routes are older/);
+  // The answer survives the old client's reading whatever the capability list holds.
+  assert.equal(oldClientRefusal({ ...answer, capabilities: [...SERVER_CAPABILITIES, "future.thing.v1"] }, ROUTE_LEVEL), null);
+  assert.equal(oldClientRefusal({ ...answer, capabilities: [] }, ROUTE_LEVEL), null);
+  // and a new client reading a server that carries both uses the capabilities, not the level
   assert.equal(checkCapabilities(answer, COMMAND_CAPABILITIES.land).via, "capabilities");
   assert.equal(checkCapabilities(answer, requiredForJobs(Object.keys(JOB_CAPABILITIES))).ok, true);
+  assert.equal(checkCapabilities({ ...answer, routeLevel: 0 }, COMMAND_CAPABILITIES.land).ok, true, "a new client ignores the level when capabilities are published");
+  assert.equal(checkCapabilities({ ...answer, capabilities: [] }, COMMAND_CAPABILITIES.land).kind, "missing", "and reads an empty list as empty, not through the level");
 });
 
 test("a command or job with no declaration needs nothing", () => {
@@ -97,13 +119,16 @@ test("a command or job with no declaration needs nothing", () => {
 // set of commands that depend on one; a command dropped from it, or one that
 // starts depending on a capability without declaring it, fails here.
 test("each command that relies on a named capability declares it in its module", () => {
-  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["edit", "init", "integrated", "integration-failed", "land", "merge", "models", "new", "refresh-failed", "refreshed", "review", "review-claim", "review-unparsable", "token"]);
+  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["edit", "init", "integrated", "integration-failed", "land", "merge", "models", "new", "plan", "refresh-failed", "refreshed", "review", "review-claim", "review-unparsable", "token"]);
   for (const command of ["integrated", "integration-failed", "refreshed", "refresh-failed"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["plans.integration.v1"], command);
   assert.deepEqual(COMMAND_CAPABILITIES.land, ["land.workflow.v1", "items.brief-criteria.v1", "reviews.criteria-binding.v1", "projects.require-criteria.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.new, ["items.brief-criteria.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.edit, ["items.brief-criteria.v1", "reviews.criteria-binding.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.init, ["projects.require-criteria.v1"]);
-  for (const command of ["review", "review-claim", "merge"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["reviews.criteria-binding.v1"], command);
+  for (const command of ["review", "review-claim"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["reviews.criteria-binding.v1"], command);
+  // merge posts the owner's review and, for an accepted plan that conflicts with main, the plan refresh route.
+  assert.deepEqual(COMMAND_CAPABILITIES.merge, ["reviews.criteria-binding.v1", "plans.refresh.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.plan, ["plans.refresh.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES["review-unparsable"], ["reviews.unparsable.v1"]);
   // The declarations are the modules' own: the module says what the registry reads.
   for (const { spec } of COMMAND_MODULES) {
@@ -124,6 +149,9 @@ test("a subcommand's capabilities are asked only when that subcommand runs", () 
   assert.deepEqual(requiredForCommand("token", "issue"), ["runners.scoped-token.v1"]);
   assert.deepEqual(requiredForCommand("token", "store"), ["runners.scoped-token.v1"]);
   assert.deepEqual(requiredForCommand("token", "ls"), []);
+  // atelier plan, plan show and the rest call routes every server has; refresh posts the plan refresh route.
+  for (const word of [undefined, "show", "approve", "revise", "reroute", "retry", "stop", "post", "t1"]) assert.deepEqual(requiredForCommand("plan", word), [], String(word));
+  assert.deepEqual(requiredForCommand("plan", "refresh"), ["plans.refresh.v1"]);
   // A prototype key is not a subcommand.
   assert.deepEqual(requiredForCommand("models", "constructor"), []);
   // The command's own are asked under every word.
@@ -156,9 +184,10 @@ test("every runner job declares what it needs, the integrator's jobs included", 
 
 test("the integration routes are guaranteed from legacy level 6, as the commits that added them document", () => {
   assert.deepEqual(capabilitiesForLevel(5), []);
-  assert.deepEqual(capabilitiesForLevel(6), ["plans.integration.v1"]);
-  assert.deepEqual(capabilitiesForLevel(13), ["plans.integration.v1"]);
-  assert.deepEqual(capabilitiesForLevel(14), ["plans.integration.v1", "land.workflow.v1"]);
+  // Level 6 was one raise for two routes' sides (933d198): the integrator's and the owner's plan refresh.
+  assert.deepEqual(capabilitiesForLevel(6), ["plans.integration.v1", "plans.refresh.v1"]);
+  assert.deepEqual(capabilitiesForLevel(13), ["plans.integration.v1", "plans.refresh.v1"]);
+  assert.deepEqual(capabilitiesForLevel(14), ["plans.integration.v1", "plans.refresh.v1", "land.workflow.v1"]);
 });
 
 // The CLI against a stub server: what GET /api/version answers decides
@@ -205,6 +234,7 @@ function invocations(root) {
     { argv: ["edit", "t1", "--title", "Another", "--project", "proj"], required: COMMAND_CAPABILITIES.edit },
     { argv: ["init", "--title", "Proj"], required: COMMAND_CAPABILITIES.init },
     { argv: ["merge", "t1", "--project", "proj"], required: COMMAND_CAPABILITIES.merge },
+    { argv: ["plan", "refresh", "t1", "--project", "proj"], required: ["plans.refresh.v1"] },
     { argv: ["models", "note", "gpt", "a note"], required: ["models.note.v1"] },
     { argv: ["models", "show", "gpt"], required: ["models.note.v1"] },
     { argv: ["review", "t1", "--approve", "--criteria", BINDING, "--project", "proj"], required: COMMAND_CAPABILITIES.review },

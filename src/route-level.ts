@@ -82,8 +82,13 @@ const declare = <const N extends string>(name: N, level: number | undefined, sum
 
 // 6: the integrate and refresh job routes: integrated and integration-failed
 // (32d5755, 2026-10-06, the integration branch per plan) and refreshed and
-// refresh-failed (933d198, level 6), which a plan's integrator posts.
+// refresh-failed (933d198, level 6), which a plan's integrator posts; and,
+// from the same raise, the owner's plan refresh route (POST plan/refresh),
+// which atelier plan refresh posts and atelier merge posts for an accepted
+// plan whose branch conflicts with main. Two declarations, as the two sides
+// of the route may part: an integrator needs the first, an owner the second.
 const plansIntegration = declare("plans.integration.v1", 6, "the integrated, integration-failed, refreshed and refresh-failed routes a plan's integrator posts");
+const plansRefresh = declare("plans.refresh.v1", 6, "the plan refresh route, which atelier plan refresh and atelier merge post to take main into a plan's branch");
 const landWorkflow = declare("land.workflow.v1", 14, "the landing-workflow routes behind atelier land --workflow");
 const itemsBriefCriteria = declare("items.brief-criteria.v1", 15, "items take a brief and acceptance criteria apart from the title; edit takes a title");
 const reviewsBinding = declare("reviews.criteria-binding.v1", 16, "a review names the binding of the criteria it judged and the request it claimed");
@@ -92,7 +97,7 @@ const modelsNote = declare("models.note.v1", 18, "dated owner notes under a pool
 const requireCriteria = declare("projects.require-criteria.v1", 19, "a project that requires criteria refuses a task filed or cleared without them");
 const runnerScopedToken = declare("runners.scoped-token.v1", 20, "runner-scoped API credentials and the revocable Git gateway");
 
-export const CAPABILITIES = buildCapabilities([plansIntegration, landWorkflow, itemsBriefCriteria, reviewsBinding, reviewUnparsable, modelsNote, requireCriteria, runnerScopedToken]);
+export const CAPABILITIES = buildCapabilities([plansIntegration, plansRefresh, landWorkflow, itemsBriefCriteria, reviewsBinding, reviewUnparsable, modelsNote, requireCriteria, runnerScopedToken]);
 
 // Every published name, as a type: a command module's `capabilities` holds these.
 export type CapabilityName = (typeof CAPABILITIES)[number]["name"];
