@@ -13,7 +13,7 @@ export default async function waitCommand() {
     return n;
   };
   const timeout = seconds("timeout", Infinity), interval = seconds("interval", 5);
-  const result = await waitFor(target, () => request("GET", I(name, id), undefined, as), { intervalMs: interval * 1000, timeoutMs: timeout * 1000 });
+  const result = await waitFor(target, (signal) => request("GET", I(name, id), undefined, as, {}, signal), { intervalMs: interval * 1000, timeoutMs: timeout * 1000 });
   console.log(result.text);
   process.exit(result.code);
 }
