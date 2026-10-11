@@ -128,3 +128,41 @@ it("the runner refuses a check that deploys before it reads the workspace or sta
   expect(state).toMatchObject({ status: "failed", error: expect.stringMatching(/`npx wrangler deploy` is not a check: it deploys/) });
   expect(state?.results).toBeUndefined();
 });
+
+it("init persists preparation through the API and ledger, preserves omission, clears and resets, and validates classification and paths", async () => {
+  const created: string[] = [];
+  const call = api({ ...testEnv, ARTIFACTS: artifacts(created) } as typeof env);
+  const path = "/projects/preparation-policy";
+  const command = "npm ci --prefer-offline --no-audit --no-fund && npm run types";
+  const prepare = { command, inputs: ["package.json", "package-lock.json", "wrangler.jsonc"], outputs: ["node_modules", "worker-configuration.d.ts"] };
+  for (const invalid of [
+    { ...prepare, command: "npm ci && git push", declaration: { command: "npm ci && git push", by: "owner", note: "trust me" } },
+    { ...prepare, command: "./setup.sh" },
+    { ...prepare, inputs: [] }, { ...prepare, outputs: [] }, { command },
+    { ...prepare, inputs: ["../escape"] }, { ...prepare, outputs: ["/tmp/out"] },
+    { ...prepare, inputs: ["*.json"] }, { ...prepare, command: false },
+    { ...prepare, declaration: { command, by: "command" } },
+  ]) {
+    const r = await call("PUT", path, "owner", { prepare: invalid });
+    expect(r.status, await r.clone().text()).toBe(400);
+  }
+  expect(created).toEqual([]);
+  const policy = async () => (await env.LEDGER.get(env.LEDGER.idFromName("project:preparation-policy")).project()).policy;
+  expect((await call("PUT", path, "owner", { prepare })).status).toBe(200);
+  expect((await policy()).prepare).toEqual({ ...prepare, declaration: { command, by: "command" } });
+  expect((await call("PUT", path, "owner", { title: "Retitled" })).status).toBe(200);
+  expect((await policy()).prepare?.command).toBe(command);
+  const custom = { ...prepare, command: "./setup.sh", declaration: { command: "./setup.sh", by: "owner", note: "writes only in the clone" } };
+  expect((await call("PUT", path, "owner", { prepare: custom })).status).toBe(200);
+  expect((await policy()).prepare).toEqual(custom);
+  expect((await call("PUT", path, "owner", { prepare: { ...prepare, command: custom.command } })).status).toBe(200);
+  expect((await policy()).prepare?.declaration).toEqual(custom.declaration);
+  expect((await call("PUT", path, "owner", { reset: true, prepare: { ...prepare, command: custom.command } })).status).toBe(400);
+  for (const empty of ["", null]) {
+    expect((await call("PUT", path, "owner", { prepare: empty })).status).toBe(200);
+    expect((await policy()).prepare).toBeUndefined();
+    expect((await call("PUT", path, "owner", { prepare })).status).toBe(200);
+  }
+  expect((await call("PUT", path, "owner", { reset: true })).status).toBe(200);
+  expect((await policy()).prepare).toBeUndefined();
+});
