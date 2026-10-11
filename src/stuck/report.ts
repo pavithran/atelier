@@ -30,6 +30,20 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
   const entries: Entry[] = [], checks: Entry[] = [];
   const time = now.getTime(), age = (at: string) => time - Date.parse(at);
   const base = `${origin}/p/${encodeURIComponent(project)}`;
+  // Recovery is shell text: preserve literal notes, including quotes and $.
+  const quote = (value: string) => /^[a-zA-Z0-9_./:@+-]+$/.test(value) ? value : "'" + value.replaceAll("'", "'\"'\"'") + "'";
+  const heldDispatch = (item: Item) => {
+    const d = item.dispatch!;
+    const flags = [`dispatch ${item.id}`, `--to ${quote(d.to)}`];
+    if (d.agent !== null) flags.push(`--agent ${quote(d.agent)}`);
+    if (d.model !== null) flags.push(`--model ${quote(d.model)}`);
+    flags.push(`--note ${quote(d.note)}`);
+    if (d.job === "merge-main") {
+      flags.push("--job merge-main");
+      if (d.head) flags.push(`--head ${quote(d.head)}`);
+    }
+    return `${flags.join(" ")} --overlap-ok`;
+  };
   const projectFlag = `--project ${JSON.stringify(project)}`;
   const command = (cmd: string) => `atelier ${cmd} ${projectFlag}`;
   const add = (kind: string, subject: string, reason: string, since: string, recovery: string, evidence = `${base}/${subject}`) => {
@@ -85,7 +99,7 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
       // Plain land refuses accepted tasks: their next step is the merge.
       const landing = command(`${blocker.state === "accepted" ? "merge" : "land"} ${blocker.id}`);
       if (age(since) > limits.coreHoldMinutes * 60_000)
-        add("core-hold", item.id, `dispatch held by ${blocker.id} (${held!.core})`, since, `Land the blocker with ${landing}; or, if the overlap is harmless, ${command(`dispatch ${item.id} --overlap-ok`)}`, `${base}/${blocker.id}`);
+        add("core-hold", item.id, `dispatch held by ${blocker.id} (${held!.core})`, since, `Land the blocker with ${landing}; or, if the overlap is harmless, ${command(heldDispatch(item))}`, `${base}/${blocker.id}`);
     }
     const ordered = [...events].sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.seq - b.seq);
     for (const e of ordered) {
