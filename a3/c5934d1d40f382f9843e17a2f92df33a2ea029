@@ -1,0 +1,35 @@
+atelier atelier/t492 "The owner can admit an outside reviewer whose approval counts"
+accepted head f1bb1c1e7f318ea823d15681dca9654c74a9b5d3
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — codex/gpt-6-astra 2026-10-11T04:43:00.526Z
+OBSERVED pass npm run types && npm run typecheck — codex/gpt-6-astra 2026-10-11T04:43:04.194Z
+REVIEW approve by antigravity/gemini-3.1-pro at f1bb1c1e7f318ea823d15681dca9654c74a9b5d3, recorded by antigravity/gemini-3.1-pro
+2026-10-11T01:32:11.666Z pavi item.created
+2026-10-11T01:32:15.874Z pavi item.edited
+2026-10-11T01:32:27.827Z pavi item.edited
+2026-10-11T01:32:27.827Z pavi item.criteria_changed
+2026-10-11T01:48:50.227Z pavi item.edited
+2026-10-11T01:48:50.227Z pavi item.criteria_changed
+2026-10-11T01:48:50.629Z pavi item.dispatched
+2026-10-11T01:49:50.239Z pavi item.edited
+2026-10-11T02:00:05.777Z codex/gpt-6-astra item.claimed
+2026-10-11T02:00:27.701Z codex/gpt-6-astra fork.created
+2026-10-11T02:15:27.531Z codex/gpt-6-astra push.observed
+2026-10-11T02:19:57.143Z codex/gpt-6-astra evidence.observed
+2026-10-11T02:20:00.714Z codex/gpt-6-astra evidence.observed
+2026-10-11T02:20:01.309Z codex/gpt-6-astra item.submitted
+2026-10-11T04:33:00.306Z pavi land.lease
+2026-10-11T04:33:19.607Z pavi land.merge
+2026-10-11T04:37:49.603Z pavi land.merge
+2026-10-11T04:37:59.783Z pavi land.regenerate
+2026-10-11T04:38:04.224Z codex/gpt-6-astra push.observed
+2026-10-11T04:38:05.815Z pavi land.push
+2026-10-11T04:43:01.238Z codex/gpt-6-astra evidence.observed
+2026-10-11T04:43:04.448Z codex/gpt-6-astra evidence.observed
+2026-10-11T04:43:04.862Z pavi land.check
+2026-10-11T04:43:08.144Z pavi review.requested
+2026-10-11T04:43:13.049Z antigravity/gemini-3.1-pro review.claimed
+2026-10-11T04:43:14.154Z antigravity/gemini-3.1-pro review.diff
+2026-10-11T04:53:40.459Z antigravity/gemini-3.1-pro review.approved
+2026-10-11T04:53:47.653Z pavi land.review
+2026-10-11T04:53:48.223Z pavi item.accepted
+2026-10-11T04:53:48.284Z pavi land.accept
