@@ -126,8 +126,11 @@ export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unk
     throw new RuleError("bad_dispatch", `head names the main head a merge-main job merges; give it with --job merge-main, not alone`, 400);
   }
   // The note is the owner's and is stored with the dispatch for every runner
-  // to read, so one over its limit is refused, never cut.
-  const note = String(input.note ?? "");
+  // to read, so one over its limit is refused, never cut. A line break is
+  // one character, as the page's textarea counts it: a browser posts each as
+  // CRLF and a file written on Windows holds them so, and both are stored as
+  // LF before the limit is checked, so a note the form took is never refused.
+  const note = String(input.note ?? "").replace(/\r\n?/g, "\n");
   assertLength(note, DISPATCH_NOTE_MAX, "the dispatch note");
   if (input.overlapOk !== undefined && input.overlapOk !== null && typeof input.overlapOk !== "boolean") {
     throw new RuleError("bad_dispatch", "overlapOk must be true or false", 400);
