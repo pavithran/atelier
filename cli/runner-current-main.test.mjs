@@ -3,15 +3,27 @@
 // predates main's head is submitted merged, the submission records the main
 // commit merged, a conflicting merge goes back to the same harness in the
 // same run, the project's regenerate command runs as the landing's merge
-// runs it, and a baseline that cannot be fetched is an infrastructure
-// failure, not the model's. Real git in a baseline and a workspace cloned
-// from it; the harness, the CLI and the server are stubs.
+// runs it, a baseline that cannot be fetched is an infrastructure failure,
+// not the model's, and an edit of the build's in code main moved to another
+// file (t471's comparison) goes back to the same harness to port, after a
+// clean merge or with a conflicting one. Real git in a baseline and a
+// workspace cloned from it; the harness, the CLI and the server are stubs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { prepareBuildSubmission, runTask, mergeMainArgs } from './runner.mjs';
+import { readMovedCodeRecords } from './landing.mjs';
+
+// A file main moves a block out of (lib.txt lines 2-7 to moved.txt lines
+// 1-6, keeping d and e in place, which bridges the block for the detector):
+// an insertion between d and e merges cleanly, since Git keeps a line on
+// each side; a change to c conflicts, since main deleted it.
+const LIB = 'a\nb\nc\nd\ne\nf\ng\nh\n';
+const LIB_ON_MAIN = 'a\nd\ne\nh\n', MOVED_ON_MAIN = 'b\nc\nd\ne\nf\ng\n';
+const EDITED = { clean: 'a\nb\nc\nd\nx\ne\nf\ng\nh\n', conflict: 'a\nb\nC\nd\ne\nf\ng\nh\n' };
+const PORTED = { clean: 'b\nc\nd\nx\ne\nf\ng\n', conflict: 'b\nC\nd\ne\nf\ng\n' };
 
 const actor = 'codex/gpt-6-astra';
 const config = { agents: [{ agent: 'codex', models: ['gpt-6-astra'], command: ['codex', 'exec', '--dangerously-bypass-approvals-and-sandbox', '{brief_file}'] }] };
@@ -25,20 +37,20 @@ const commit = (cwd, files, message = 'change') => {
 };
 // Git as the runner's io.git runs it for the landing's merge (cli/land.mjs):
 // the landing's signature, with allowFail answering git's own result.
-const landingGit = (cwd, args, { token, allowFail = false, raw = false } = {}) => {
-  const r = spawnSync('git', [...IDENTITY, ...args], { cwd, encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+const landingGit = (cwd, args, { token, allowFail = false, raw = false, env = null } = {}) => {
+  const r = spawnSync('git', [...IDENTITY, ...args], { cwd, encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...(env ?? {}) } });
   if (allowFail) return { status: r.status, stdout: r.stdout, stderr: r.stderr };
   if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed:\n${r.stderr}`);
   return raw ? r.stdout : r.stdout.trim();
 };
 
-function fixture(t, { conflict = false, generatedConflict = false, regenerate = null, rework = false, resumed = false, unresolved = false, discardWork = false, failFetch = false, advanceDuringResolution = false, mergeJob = false } = {}) {
+function fixture(t, { conflict = false, generatedConflict = false, regenerate = null, rework = false, resumed = false, unresolved = false, discardWork = false, failFetch = false, advanceDuringResolution = false, mergeJob = false, moved = null, failPort = false } = {}) {
   const root = mkdtempSync(join(process.cwd(), '.runner-main-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const main = join(root, 'main'), workspace = join(root, 'work');
   mkdirSync(main);
   git(main, 'init', '-qb', 'main');
-  const base = commit(main, { 'shared.txt': 'base\n', ...(generatedConflict ? { 'gen.txt': 'base gen\n' } : {}) });
+  const base = commit(main, { 'shared.txt': 'base\n', ...(generatedConflict ? { 'gen.txt': 'base gen\n' } : {}), ...(moved ? { 'lib.txt': LIB } : {}) });
   git(root, 'clone', '-q', main, workspace);
   const prior = rework || resumed ? commit(workspace, { 'prior.txt': 'previous work\n' }) : base;
   const job = { project: 'atelier', actor, agent: 'codex', model: 'gpt-6-astra', item: {
@@ -48,7 +60,7 @@ function fixture(t, { conflict = false, generatedConflict = false, regenerate = 
   const calls = [], briefs = [], gitCalls = [], logs = [];
   let latest, harnessCalls = 0, finished = false, tokenCount = 0;
   const fetchedTokens = new Set();
-  const advanceMain = () => { latest = commit(main, { [conflict ? 'shared.txt' : 'main.txt']: 'new main\n', ...(generatedConflict ? { 'gen.txt': 'gen from main\n' } : {}) }); };
+  const advanceMain = () => { latest = commit(main, { [conflict ? 'shared.txt' : 'main.txt']: 'new main\n', ...(generatedConflict ? { 'gen.txt': 'gen from main\n' } : {}), ...(moved ? { 'lib.txt': LIB_ON_MAIN, 'moved.txt': MOVED_ON_MAIN } : {}) }); };
   if (resumed || mergeJob) advanceMain();
   if (mergeJob) job.item.dispatch = { job: 'merge-main', head: base };
   const io = {
@@ -82,7 +94,20 @@ function fixture(t, { conflict = false, generatedConflict = false, regenerate = 
       harnessCalls++;
       assert.deepEqual(argv, ['codex', 'exec', '--dangerously-bypass-approvals-and-sandbox', join(root, `brief-${briefs.length}`)]);
       assert.equal(cwd, workspace, 'resolution stays in the build workspace');
-      if (existsSync(join(cwd, '.git', 'MERGE_HEAD'))) {
+      const merging = existsSync(join(cwd, '.git', 'MERGE_HEAD'));
+      if (moved && harnessCalls > 1) {
+        // The builder ports the edit the brief names to the moved code and
+        // takes it out of the source, which main emptied of that code; a
+        // conflicted merge is committed as it stands, a clean one is already.
+        assert.match(briefs.at(-1), /lib\.txt lines 2-7 moved to moved\.txt lines 1-6/);
+        assert.equal(merging, moved === 'conflict', 'a clean merge is committed before the builder ports');
+        if (failPort) return { code: 1 };
+        writeFileSync(join(cwd, 'moved.txt'), PORTED[moved]);
+        writeFileSync(join(cwd, 'lib.txt'), LIB_ON_MAIN);
+        git(cwd, 'add', 'moved.txt', 'lib.txt');
+        if (merging) git(cwd, 'commit', '-q', '--no-edit');
+        else git(cwd, 'commit', '-qm', `Port the edit to moved.txt\n\nAgent: ${actor}`);
+      } else if (merging) {
         assert.match(briefs.at(-1), /Resolve the merge of main/);
         assert.match(briefs.at(-1), /shared.txt/);
         if (discardWork) {
@@ -95,7 +120,7 @@ function fixture(t, { conflict = false, generatedConflict = false, regenerate = 
           if (advanceDuringResolution) latest = commit(main, { 'later.txt': 'main advanced during resolution\n' });
         }
       } else {
-        commit(cwd, { [conflict ? 'shared.txt' : 'work.txt']: 'work\n', ...(generatedConflict ? { 'gen.txt': 'gen from work\n' } : {}) });
+        commit(cwd, { [conflict ? 'shared.txt' : 'work.txt']: 'work\n', ...(generatedConflict ? { 'gen.txt': 'gen from work\n' } : {}), ...(moved ? { 'lib.txt': EDITED[moved] } : {}) });
         advanceMain(); // Main advances while the builder is running.
       }
       return { code: 0 };
@@ -291,4 +316,69 @@ for (const stage of ['fetch', 'merge']) test(`stopping after ${stage} prevents f
   assert.equal(f.harnessCalls, 1, 'no resolution harness starts after stopping');
   assert.equal(existsSync(join(f.workspace, '.git', 'MERGE_HEAD')), stage === 'merge');
   assert.equal(f.finished, false);
+});
+
+// The merge runs the landing's moved-code comparison (t471): an edit of the
+// build's in code main moved to another file goes back to the same harness
+// in the same run, with main merged first, cleanly or in conflict, and a
+// brief naming the source and destination; the port is submitted merged.
+for (const kind of ['clean', 'conflict']) test(`an edit in code main moved to another file goes back to the same harness to port, after a ${kind} merge of main`, async (t) => {
+  const f = fixture(t, { moved: kind });
+  const state = await runTask(f.job, config, 'home', f.io);
+  assert.equal(state.phase, 'submitted', JSON.stringify(state));
+  assert.equal(state.mainHead, f.latest);
+  assert.equal(state.head, git(f.workspace, 'rev-parse', 'HEAD'));
+  assert.equal(f.harnessCalls, 2, 'the builder ports the edit in the same run');
+  assert.equal(f.calls.filter((a) => a[0] === 'claim').length, 1);
+  const brief = f.briefs[1];
+  if (kind === 'clean') assert.match(brief, /## Port this task's edits to the code main moved\n\nThe runner has merged main at [0-9a-f]{8} into this workspace before you start, and committed the merge/);
+  else assert.match(brief, /## Resolve the merge of main[\s\S]*### Port this task's edits to the code main moved\n\nBesides the conflicts/);
+  assert.match(brief, kind === 'clean'
+    ? /- lib\.txt lines 2-7 moved to moved\.txt lines 1-6: the task inserted 1 line between base lines 4 and 5 there \(its line 5 at the task's head\); 6 lines match/
+    : /- lib\.txt lines 2-7 moved to moved\.txt lines 1-6: the task changed base line 3 there \(its line 3 at the task's head\); 6 lines match/);
+  assert.match(brief, /Make each edit again at its destination/);
+  assert.match(brief, kind === 'clean' ? /The workspace already holds main at [0-9a-f]{8}; no merge was left in progress/ : /left conflicts in this file:\n```\nlib\.txt\n```/);
+  assert.match(brief, /Run each test command through the host slot wrapper/);
+  // The port: the moved code holds the edit, the source holds what main has.
+  assert.equal(readFileSync(join(f.workspace, 'moved.txt'), 'utf8'), PORTED[kind]);
+  assert.equal(readFileSync(join(f.workspace, 'lib.txt'), 'utf8'), LIB_ON_MAIN);
+  assert.equal(git(f.workspace, 'status', '--porcelain'), '');
+  assert.equal(existsSync(join(f.workspace, '.git', 'MERGE_HEAD')), false);
+  if (kind === 'clean') {
+    assert.match(git(f.workspace, 'log', '-1', '--format=%B'), /^Port the edit to moved\.txt\n\nAgent: codex\/gpt-6-astra/);
+    assert.match(git(f.workspace, 'log', '-1', '--format=%B', 'HEAD~1'), new RegExp(`^Merge main at ${f.latest.slice(0, 8)} into t435\\n\\nAgent: codex/gpt-6-astra$`));
+  } else {
+    assert.match(git(f.workspace, 'log', '-1', '--format=%B'), new RegExp(`^Merge main at ${f.latest.slice(0, 8)} into t435\\n\\nAgent: codex/gpt-6-astra\\n`));
+  }
+  assert.ok(f.logs.some((line) => /1 of the build's edits lies in code main moved to another file; codex\/gpt-6-astra (ports|resolves) them in this run$/.test(line)), f.logs.join('\n'));
+  assert.ok(f.logs.some((line) => /lib\.txt lines 2-7 moved to moved\.txt lines 1-6/.test(line) && /ports each edit to its destination in this run/.test(line)), f.logs.join('\n'));
+  // The workspace's moved-code log says the findings were handed to the
+  // builder; main read again after the port is already merged, so nothing
+  // is compared a second time.
+  const records = readMovedCodeRecords(join(f.workspace, '.git'));
+  assert.deepEqual(records.map((r) => r.kind), ['handed']);
+  assert.equal(records[0].resolver, actor);
+  assert.equal(records[0].findings.length, 1);
+  assert.equal(records[0].main, f.latest);
+  assert.equal(f.gitCalls.filter((args) => args[0] === 'fetch').length, 2, 'main is read again after the port');
+  assert.ok(f.finished);
+  assert.deepEqual(finishSummary(f), ['--summary', `Built t435 with main at ${f.latest} merged`]);
+});
+
+test('a harness that fails to port the moved edit is the model\'s failure, like an unresolved conflict, and nothing is submitted', async (t) => {
+  const f = fixture(t, { moved: 'clean', failPort: true });
+  const state = await runTask(f.job, config, 'home', f.io);
+  assert.equal(state.phase, 'failed');
+  assert.match(state.reason, /harness exited 1 resolving main/);
+  assert.equal(state.taskFailure, true);
+  assert.equal(f.harnessCalls, 2);
+  assert.equal(f.finished, false);
+});
+
+test('a finding is not the model\'s failure: the comparison and the port count no failure of their own', async (t) => {
+  const f = fixture(t, { moved: 'conflict' });
+  const state = await runTask(f.job, config, 'home', f.io);
+  assert.equal(state.phase, 'submitted', JSON.stringify(state));
+  assert.equal(state.taskFailure, undefined);
+  assert.equal(state.validationBlocked, undefined);
 });

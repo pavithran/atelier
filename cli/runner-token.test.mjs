@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { runnerCredential, runnerChildEnv, storeRunnerCredential } from "./credentials.mjs";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { runRunner, planFilePath } from "./runner.mjs";
+import { readMovedCodeRecords } from "./landing.mjs";
 
 const root = resolve(".cache/runner-token-tests");
 mkdirSync(root, { recursive: true });
@@ -56,13 +57,16 @@ test("the direct CLI sends an explicit invalid runner credential once and never 
 // baseline-token CLI call, which must carry the runner credential as every
 // CLI child does (the server lets a runner token read the project's
 // baseline token: runnerRoute in src/tokens.ts, covered by
-// src/runner-token.spec.mjs), and the landing's merge of main
+// test/runner-baseline-token.spec.ts), and the landing's merge of main
 // (mergeMainAndRegenerate in cli/land.mjs) as git commands in the
 // workspace, whose fetch authenticates with that read token, never the
-// runner's. The plan job merges nothing and keeps its two calls.
+// runner's, and whose moved-code comparison (t471) reads the trees with
+// git's diff output pinned and logs what it compared in the workspace's git
+// dir. The plan job merges nothing and keeps its two calls.
 for (const job of ["build", "plan"]) test(`the real runner completes ${job} with runner credentials in children and no token in harnesses/logs`, async (t) => {
-  const dir = fixture(t), workspace = join(dir, "work");
+  const dir = fixture(t), workspace = join(dir, "work"), gitDir = join(dir, "gitdir");
   mkdirSync(workspace);
+  mkdirSync(gitDir);
   const config = join(dir, "runner.json");
   const token = "runner-flow-secret", baseToken = "main-read-secret", mainHead = "f".repeat(40), forkPoint = "e".repeat(40);
   // Not Codex: a Codex build is refused unless its command grants the checks
@@ -106,6 +110,8 @@ for (const job of ["build", "plan"]) test(`the real runner completes ${job} with
         if (argv[1] === "merge-base" && argv[2] === "--is-ancestor") return { code: argv[3] === "FETCH_HEAD" ? 1 : 0, output: "", stderr: "" };
         if (argv[1] === "merge-base") return { code: 0, output: `${forkPoint}\n`, stderr: "" };
         if (argv[1] === "rev-list") return { code: 0, output: argv.includes("--first-parent") ? `${mainHead}\n` : "", stderr: "" };
+        if (argv[1] === "diff-tree") assert.equal(options.env.GIT_CONFIG_COUNT, "0", "the comparison reads the trees with git's diff output pinned (DETECTOR_ENV)");
+        if (argv[1] === "rev-parse" && argv.includes("--absolute-git-dir")) return { code: 0, output: `${gitDir}\n`, stderr: "" };
         if (argv[1] === "rev-parse" && argv.includes("MERGE_HEAD")) return { code: 1, output: "", stderr: "" };
         if (argv[1] === "rev-parse") return { code: 0, output: `${mainHead}\n`, stderr: "" };
         if (argv[1] === "merge") assert.deepEqual(argv.slice(2), ["--no-ff", "--no-edit", "-m", `Merge main at ${mainHead.slice(0, 8)} into t1\n\nAgent: ${actor}`, "FETCH_HEAD"]);
@@ -121,11 +127,14 @@ for (const job of ["build", "plan"]) test(`the real runner completes ${job} with
   });
   assert.ok(harness);
   assert.deepEqual(calls, job === "plan" ? ["claim", "release"] : ["claim", "baseline-token", "finish"]);
-  // The landing's merge (fetch, main's head, the fork point and the commits
-  // from main, the no-ff merge, the route-level comparison, the merged
-  // head), then the runner's own checks of the result (no conflict, no merge
-  // pending, main's head and the build's head both in HEAD's history).
-  assert.deepEqual(gitCalls, job === "plan" ? [] : ["fetch", "rev-parse", "merge-base", "merge-base", "rev-list", "merge", "rev-list", "merge-base", "rev-parse", "diff", "rev-parse", "merge-base", "merge-base"]);
+  // The landing's merge (fetch, main's head, whether HEAD holds it; the
+  // moved-code comparison: the build's head, the merge base, main's and the
+  // build's trees, the git dir its log goes to; the fork point and the
+  // commits from main, the no-ff merge, the route-level comparison, the
+  // merged head), then the runner's own checks of the result (no conflict,
+  // no merge pending, main's head and the build's head both in HEAD's history).
+  assert.deepEqual(gitCalls, job === "plan" ? [] : ["fetch", "rev-parse", "merge-base", "rev-parse", "merge-base", "diff-tree", "diff-tree", "rev-parse", "merge-base", "rev-list", "merge", "rev-list", "merge-base", "rev-parse", "diff", "rev-parse", "merge-base", "merge-base"]);
+  assert.deepEqual(readMovedCodeRecords(gitDir).map((r) => r.kind), job === "plan" ? [] : ["compared"], "the comparison is logged in the workspace, as a landing's is");
   assert.deepEqual(finish, job === "plan" ? null : ["finish", "t1", "--project", "demo", "--as", actor, "--summary", `Built t1 with main at ${mainHead} merged`]);
   assert.equal(posted, job === "plan");
   assert.doesNotMatch(logs.join("\n"), new RegExp(`${token}|${baseToken}`));
