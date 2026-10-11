@@ -22,7 +22,8 @@ import { stateFile, sessionText, WRAP_MARKERS, unmergedPaths, wrapRefusal } from
 
 import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } from "../src/context-budget.ts";
 
-import { redactGitArgs } from "./runner.mjs";
+import { redactGitArgs, IDENTITY_FILE, identityRefusals } from "./runner.mjs";
+import { commitRefusals, IDENTITY_LOG_FORMAT, NO_IDENTITY, parseIdentityLog } from "../src/commit-identity.ts";
 import { controlPlaneChanges, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
 import { cleanSummary } from "../src/brief.ts";
 import { recordedText } from "../src/rules.ts";
@@ -825,9 +826,57 @@ export async function claimWorkspace(name, id, as, runner) {
   if (!fresh) takeForkHead(dir, id, branch);
   const reads = forkBranch(dir);
   if (reads && reads !== branch) console.log(`Warning: ${id}'s fork reads its head from ${reads}, but the project's branch is ${branch}, so atelier push will refuse. To register ${reads}, ${OWNER_NAME} runs atelier init in the project's checkout with ${reads} checked out.`);
-  // Commit as the project's checkout does, not as this machine's global identity.
-  const identity = applyIdentity(cfg.projects?.[name]?.path, dir);
-  return { item: r.item, workspace: r.workspace, dir, identity };
+  const preparation = (await call("GET", P(name), undefined, as)).project?.policy?.prepare ?? null;
+  git(["config", "--local", "atelier.prepare", JSON.stringify(preparation)], { cwd: dir });
+  if (preparation?.command) console.log(`Preparation (run in ${JSON.stringify(dir)}): ${preparation.command}`);
+  const identity = setWorkspaceIdentity(dir, r.commitIdentity, cfg.projects?.[name]?.path, name);
+  // An agent claiming for itself is the builder, and commits in this
+  // environment; a runner checks its builder's own (cli/runner.mjs runTask).
+  if (!runner && r.commitIdentity) {
+    const refused = identityRefusals(dir, process.env, name);
+    if (refused.length) die(`${id} is claimed, but a commit made in ${dir} would carry an identity the project's policy refuses:\n  ${refused.join("\n  ")}\nFix that, then run atelier claim ${id} again.`);
+  }
+  return { item: r.item, workspace: r.workspace, dir, identity, fromPolicy: !!r.commitIdentity };
+}
+
+// The environment that makes a commit's author and committer the project's
+// own, over any GIT_AUTHOR_* or GIT_COMMITTER_* the caller's holds.
+export const identityEnv = (identity) => ({ GIT_AUTHOR_NAME: identity.name, GIT_AUTHOR_EMAIL: identity.email, GIT_COMMITTER_NAME: identity.name, GIT_COMMITTER_EMAIL: identity.email });
+
+// The commits `to` holds and `from` does not, each author and committer
+// field checked against the policy (t451): `from` is the history already
+// published there, which the check leaves alone.
+export function identityRangeRefusals(gitIn, cwd, identity, from, to) {
+  // With no FROM (nothing published there yet), every commit TO holds is new.
+  const log = gitIn(["log", `--format=${IDENTITY_LOG_FORMAT}`, from ? `${from}..${to}` : to], { cwd, raw: true });
+  return commitRefusals(identity, parseIdentityLog(log));
+}
+
+// Every claim, of a new clone or a reused one, on any machine, writes the
+// project's commit identity from the server's policy into the workspace's
+// own Git config, so no commit falls back to this machine's global identity
+// (t451), and keeps the policy beside it for the runner's check. A write
+// that does not read back as written fails the claim's setup. A project
+// whose policy names no identity yet (docs/setup.md, "Commit identity")
+// keeps the old way: what the registered checkout sets, if this machine has
+// one.
+function setWorkspaceIdentity(dir, policy, checkout, name) {
+  const file = join(dir, ".git", IDENTITY_FILE);
+  if (!policy) {
+    rmSync(file, { force: true });
+    console.log(`Warning: ${NO_IDENTITY(name)}. Until then this workspace commits as the registered checkout does, if this machine has one, and runners refuse to start a builder.`);
+    return applyIdentity(checkout, dir);
+  }
+  for (const [key, value] of [["user.name", policy.name], ["user.email", policy.email]]) {
+    const set = git(["config", "--local", key, value], { cwd: dir, allowFail: true });
+    const read = git(["config", "--local", "--get", key], { cwd: dir, allowFail: true });
+    if (set.status !== 0 || read.status !== 0 || read.stdout.trim() !== value) {
+      die(`the claim could not set ${key} to ${JSON.stringify(value)} in ${dir}/.git/config: ${(set.stderr || read.stderr || `it reads ${JSON.stringify(read.stdout.trim())}`).trim()}`);
+    }
+  }
+  try { writeFileSync(file, `${JSON.stringify(policy)}\n`); }
+  catch (error) { die(`the claim could not record the project's commit identity in ${file}: ${error.message}`); }
+  return { name: policy.name, email: policy.email };
 }
 
 // The branch a fork's HEAD names, as its Git remote reports it. Atelier
