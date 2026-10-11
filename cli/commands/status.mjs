@@ -2,7 +2,7 @@
 import { formatLocal, formatPolicyDisagreements, formatStatus, formatStatusBrief, statusJson } from "../status.mjs";
 import { formatStrays } from "../strays.mjs";
 import { formatSlots, slotStatus } from "../load.mjs";
-import { OWNER, OWNER_NAME, P, actor, args, call, cfg, checkoutStatus, die, formatStanding, landingLease, localStanding, localStrays, pointToGuide, project, registeredHere, request, server, tokenExpiryWarningsText, wsConfig } from "../atelier.mjs";
+import { OWNER, OWNER_NAME, P, actor, args, call, cfg, checkoutStatus, die, formatStanding, landingLease, localStanding, localStrays, liveHere, liveText, pointToGuide, project, registeredHere, request, server, tokenExpiryWarningsText, wsConfig } from "../atelier.mjs";
 
 import { readInstructions } from "../review-notice.mjs";
 import { reviewDisagreements } from "../../src/review-notice.ts";
@@ -34,14 +34,15 @@ export default async function statusCommand() {
     const standing = await call("GET", `${P(name)}/standing`, undefined, as);
     const checkout = await checkoutStatus(name, as);
     const local = await localStanding(name, as);
+    const live = liveHere(name);
     const path = cfg.projects?.[name]?.path;
     const instructions = path ? readInstructions(path) : [];
     const record = instructions.length ? await request("GET", P(name), undefined, as).catch(() => null) : null;
     const mismatches = record?.project?.policy ? reviewDisagreements(record.project.policy, instructions) : [];
     const testSlots = await slotStatus();
     const strays = localStrays();
-    if (args.json) return console.log(JSON.stringify({ project: standing, checkout, testSlots, ...(mismatches.length ? { mismatches } : {}), ...(local ? { local } : {}), ...(strays.length ? { strayTests: strays } : {}) }, null, 2));
-    console.log(tokenExpiryWarningsText(formatStanding(standing, OWNER_NAME, server()) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots)));
+    if (args.json) return console.log(JSON.stringify({ project: standing, checkout, testSlots, processes: live, ...(mismatches.length ? { mismatches } : {}), ...(local ? { local } : {}), ...(strays.length ? { strayTests: strays } : {}) }, null, 2));
+    console.log(tokenExpiryWarningsText(formatStanding(standing, OWNER_NAME, server()) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)));
     pointToGuide([name]);
     return;
   }
@@ -66,6 +67,7 @@ export default async function statusCommand() {
   if (args.json) return console.log(JSON.stringify(statusJson(views, server()), null, 2));
   const strays = formatStrays(localStrays());
   console.log(tokenExpiryWarningsText(formatStatus(views, { queue, offers, server: server() }) + (strays ? "\n\n" + strays : "")));
+  console.log(liveText(liveHere()));
   console.log(formatSlots(await slotStatus()));
   pointToGuide(chosen.map((p) => p.name));
 }

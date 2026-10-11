@@ -26,7 +26,7 @@ test("the text is one line per item under plain headings, and says what each par
   assert.equal(out[0], "Demo project (demo) as of 2026-10-05 10:46 UTC, from Atelier's record");
   assert.ok(out.includes("  t1  claimed  held by claude-code/opus-5.5 since 2026-10-05 09:00 UTC  Held task"));
   assert.ok(out.includes("Waiting on PAVI:"));
-  assert.ok(out.includes("  t2  accept  Ready one  all checks observed passing at this head  brief, accept: 1 of 1 required checks passed at this revision and nothing blocks it."));
+  assert.ok(out.includes("  t2  accept  Ready one  all checks observed passing at this head  brief, accept: 1 of 1 required checks passed at this revision and nothing blocks it.  next: atelier land t2 --reviewer H/M --project demo"));
   assert.ok(out.includes("  t3  for home codex/gpt-6  Queued one  note: Keep it small"));
   assert.ok(out.includes("  t0  2026-10-04 11:00 UTC  abcdef01  Earlier  summary: Fixed the thing"));
   assert.ok(out.includes("  t1  codex/gpt-6 to claude-code/opus-5.5, 2026-10-05 09:00 UTC  Tests are in test/x"));
@@ -38,7 +38,7 @@ test("a waiting line keeps the inbox's reason, so a stale task and an overlap sa
     { id: "t4", title: "Stale", kind: "stale", kinds: ["stale"], reason: "claude-code/opus-5.5 has not pushed for 14h; hand it off or release it", brief: { verdict: "wait", line: "The task is in progress and has not been submitted for a decision." } },
     { id: "t5", title: "Overlap", kind: "overlap", kinds: ["accept", "overlap"], reason: "all checks observed passing; scope overlaps t9 (codex/gpt-6)", brief: null },
   ] })).split("\n");
-  assert.ok(out.includes("  t4  stale  Stale  claude-code/opus-5.5 has not pushed for 14h; hand it off or release it  brief, wait: The task is in progress and has not been submitted for a decision."));
+  assert.ok(out.includes("  t4  stale  Stale  claude-code/opus-5.5 has not pushed for 14h; hand it off or release it  brief, wait: The task is in progress and has not been submitted for a decision.  next: atelier release t4 --project demo"));
   assert.ok(out.includes("  t5  overlap  Overlap  all checks observed passing; scope overlaps t9 (codex/gpt-6)"));
 });
 
@@ -135,7 +135,7 @@ async function run(t, setup, argv, env = {}) {
   t.after(() => server.close());
   writeFileSync(join(dir, "config.json"), JSON.stringify({ server: "x", owner: "owner", projects: { demo: { path: checkout, branch: "main", ...state.project } } }));
   const child = spawn(process.execPath, [cli, ...(argv ?? ["status", "--project", "demo"])], {
-    cwd: dir, env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: join(dir, "cache"), ATELIER_TOKEN: "test-token", ATELIER_ACTOR: "owner", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}`, ...env },
+    cwd: dir, env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: join(dir, "cache"), ATELIER_TOKEN: "test-token", ATELIER_ACTOR: "owner", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}`, ...state.env, ...env },
   });
   let output = ""; child.stdout.on("data", (s) => output += s); child.stderr.on("data", (s) => output += s);
   const status = await new Promise((done) => child.on("close", done));
@@ -280,4 +280,34 @@ test("each check is one line with its class and the paths it applies to, flatten
     "  xcodebuild build  read-only, from ControlPlane: capability app-build is local-read-only; applies only when the change touches App/**, project.yml",
     "  ./check.sh forged  undeclared: still run",
   ]);
+});
+
+
+test("status includes local runners and task processes in text and project JSON without arguments", async (t) => {
+  const setup = ({ dir }) => {
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    const ps = "100 1 01:00 /usr/bin/node /x/cli/atelier.mjs runner --name home:test --config PRIVATE\n101 100 00:30 codex exec SECRET PROMPT\n";
+    const lsof = `p101\nccodex\nn${dir}/cache/work/demo/t7\n`;
+    for (const [name, output] of [["ps", ps], ["lsof", lsof]]) {
+      const expected = name === "ps" ? ["-axo", "pid=,ppid=,etime=,args="] : ["-a", "-d", "cwd", "-Fpcn"];
+      const real = name === "ps" ? "/bin/ps" : "/usr/sbin/lsof";
+      writeFileSync(join(bin, name), `#!${process.execPath}
+const args = process.argv.slice(2);
+if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expected))}) process.stdout.write(${JSON.stringify(output)});
+else process.exit(require("node:child_process").spawnSync(${JSON.stringify(real)}, args, { stdio: "inherit" }).status ?? 1);
+`, { mode: 0o755 });
+    }
+    return { env: { PATH: `${bin}:${process.env.PATH}` } };
+  };
+  const text = await run(t, setup);
+  assert.equal(text.status, 0, text.output);
+  assert.match(text.output, /runner home:test  pid 100  up 1m  working on t7/);
+  assert.match(text.output, /demo\/t7  codex pid 101 up 30s/);
+  const json = await run(t, setup, ["status", "--project", "demo", "--json"]);
+  assert.equal(json.status, 0, json.output);
+  const processes = JSON.parse(json.output).processes;
+  assert.deepEqual(processes.runners, [{ pid: 100, name: "home:test", age: "1m", tasks: ["t7"] }]);
+  assert.deepEqual(processes.agents, [{ pid: 101, command: "codex", age: "30s", project: "demo", id: "t7" }]);
+  for (const output of [text.output, json.output]) assert.doesNotMatch(output, /PRIVATE|SECRET|--config|codex exec/);
 });

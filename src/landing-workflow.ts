@@ -65,6 +65,7 @@ import { refusalOf, refusalText } from "./checks";
 import { baseRepoOf } from "./plans/integrate";
 import { evidenceAt, parseRuleError } from "./rules";
 import { landingLeasePollMs, type LandingLease } from "./landing-lease.ts";
+import { LANDING_LEASE_WAIT_LIMIT_MS, leaseTimeout } from "./landing/lease-wait.ts";
 import type { LandingWorkflowStage } from "./ledger.ts";
 import { landingVerdict, allSkipped, type LandingReview } from "./landing-verdict.ts";
 import type { RunRequest } from "./sandbox/runner";
@@ -145,7 +146,9 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       reviewer: typeof raw.reviewer === "string" && raw.reviewer ? raw.reviewer : null,
       noReview: raw.noReview === true, origin: typeof raw.origin === "string" ? raw.origin : undefined,
       poll: bounded(raw.pollMs, 15_000), mergePoll: bounded(raw.mergePollMs, 60_000),
-      wait: bounded(raw.waitTimeoutMs, 3 * 3_600_000), workspace: bounded(raw.workspaceTimeoutMs, 24 * 3_600_000),
+      // The lease wait is capped at the limit the route replaces an instance
+      // past (src/landing/lease-wait.ts), so a healthy instance ends first.
+      wait: Math.min(bounded(raw.waitTimeoutMs, LANDING_LEASE_WAIT_LIMIT_MS), LANDING_LEASE_WAIT_LIMIT_MS), workspace: bounded(raw.workspaceTimeoutMs, 24 * 3_600_000),
       conflict: bounded(raw.conflictTimeoutMs, 7 * DAY),
       review: bounded(raw.reviewTimeoutMs, 3_600_000), merge: bounded(raw.mergeTimeoutMs, 24 * 3_600_000),
       checks: raw.checks === "local" ? "local" : "container",
@@ -206,6 +209,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       // is skipped where the Ledger already holds it, so a retried step
       // never submits twice.
       await step.do("submit the merged head", RETRIES, async () => {
+        await this.renewOrStop(L, p);
         const item = await L.item(p.item);
         if (item.head !== head) throw new NonRetryableError(`${p.item}'s head moved to ${short(item.head)}; start the landing again`);
         if (["submitted", "accepted", "merged"].includes(item.state)) return { skipped: true };
@@ -277,9 +281,14 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       const message = String((error as Error)?.message ?? error);
       try {
         await step.do("release the landing lease after the failure", RETRIES, async () => {
-          try { await L.cancelProjectLanding(p.item, p.actor); } catch (err) { if (parseRuleError(err)?.code === "landing_lease") return { handedOver: true }; throw err; }
+          // A replaced instance (t430) leaves the lease and the stage to its
+          // replacement, as a lease handed over is left to its new holder.
+          // A lease held by another landing still gets this landing's stage
+          // `failed` and its reason (a lease-wait timeout names that holder).
+          let outcome: { released?: true; handedOver?: true } = { released: true };
+          try { await L.cancelProjectLanding(p.item, p.actor, p.instance); } catch (err) { const code = parseRuleError(err)?.code; if (code === "stale_landing") return { replaced: true }; if (code !== "landing_lease") throw err; outcome = { handedOver: true }; }
           await L.setLandingWorkflowStage(p.item, p.instance, "failed", round, message);
-          return { released: true };
+          return outcome;
         });
       } catch { /* the lease lapses on its own; the error that ends the run is the one to keep */ }
       throw error;
@@ -313,13 +322,18 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
     for (let i = 0; ; i++) {
       const ask = await step.do(`ask for the landing lease ${label} #${i}`, RETRIES, async () => {
         const t0 = Date.now();
-        await L.queueProjectLanding(p.item, p.actor);
+        await L.queueProjectLanding(p.item, p.actor, false, p.instance);
         try {
-          const { expired }: { expired: LandingLease | null } = await L.beginProjectLanding(p.item, p.actor);
+          const { expired }: { expired: LandingLease | null } = await L.beginProjectLanding(p.item, p.actor, p.instance);
           return { took: true as const, t0, expired: expired ? expired.item : null };
         } catch (error) {
           const parsed = parseRuleError(error);
-          if (parsed?.code === "landing_lease") return { took: false as const, why: parsed.detail };
+          // The holder at this attempt, read after the refusal: the final
+          // attempt's is what a timeout reports, or that nobody held it.
+          if (parsed?.code === "landing_lease") {
+            const held: LandingLease | null = await L.liveProjectLanding();
+            return { took: false as const, why: parsed.detail, at: new Date().toISOString(), holder: held ? { item: held.item, holder: held.holder, since: held.at } : null };
+          }
           if (parsed && parsed.status >= 400 && parsed.status < 500) throw new NonRetryableError(parsed.detail);
           throw error;
         }
@@ -334,8 +348,8 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         return;
       }
       if (i + 1 >= maxAsks) {
-        await step.do(`leave the landing queue ${label}`, RETRIES, async () => { await L.queueProjectLanding(p.item, p.actor, true); return {}; });
-        throw new NonRetryableError(`the landing lease was not ${p.item}'s within ${span(p.wait)}: ${ask.why}. Nothing was changed; run atelier land ${p.item} --workflow again to queue once more`);
+        await step.do(`leave the landing queue ${label}`, RETRIES, async () => { await L.queueProjectLanding(p.item, p.actor, true, p.instance); return {}; });
+        throw new NonRetryableError(leaseTimeout(p.item, p.wait, ask));
       }
       await step.sleep(`wait for the landing lease ${label} #${i}`, poll);
     }
@@ -347,9 +361,10 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
   // that cannot be asked retries with the step.
   private async renewOrStop(L: LedgerStub, p: Landing): Promise<void> {
     try {
-      await L.renewProjectLanding(p.item, p.actor);
+      await L.renewProjectLanding(p.item, p.actor, p.instance);
     } catch (error) {
       const parsed = parseRuleError(error);
+      if (parsed?.code === "stale_landing") throw new NonRetryableError(`this landing Workflow was replaced, so it stops without advancing ${p.item}: ${parsed.detail}`);
       if (parsed && (parsed.code === "no_lease" || parsed.code === "landing_lease")) {
         throw new NonRetryableError(`another landing took the landing lease of ${p.project} over, so this landing stops without accepting or merging ${p.item}: the server said "${parsed.detail}". Nothing was merged; run atelier land ${p.item} --workflow again once the other landing ends.`);
       }
@@ -359,7 +374,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
 
   private async release(step: WorkflowStep, L: LedgerStub, p: Landing, name: string): Promise<void> {
     await step.do(name, RETRIES, async () => {
-      try { await L.cancelProjectLanding(p.item, p.actor); } catch (err) { if (parseRuleError(err)?.code === "landing_lease") return { handedOver: true }; throw err; }
+      try { await L.cancelProjectLanding(p.item, p.actor, p.instance); } catch (err) { const code = parseRuleError(err)?.code; if (code === "landing_lease") return { handedOver: true }; if (code === "stale_landing") return { replaced: true }; throw err; }
       return { released: true };
     });
   }
@@ -524,6 +539,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
 
   private async review(step: WorkflowStep, L: LedgerStub, p: Landing, head: string, round: number): Promise<void> {
     const ask = await step.do("request the review", RETRIES, async () => {
+      await this.renewOrStop(L, p);
       const index = this.env.LEDGER.get(this.env.LEDGER.idFromName("__index"));
       const pool = await index.models();
       const records = p.reviewer === null ? { ...await suggestionRecords(index, (project) => this.env.LEDGER.get(this.env.LEDGER.idFromName(`project:${project.key ?? project.name}`))), project: (await index.resolveProject(p.project)).key } : undefined;

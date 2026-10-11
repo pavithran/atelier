@@ -6,6 +6,7 @@ import { OBSERVED_UNDER, type ModelEntry, type ModelNote, type ModelStatus } fro
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
+  preparationPaths,
   REVIEW_RENEW_MS, reviewLeaseExpired,
   reviewerAdmission, admissionActor, actorFamily, familyRefusal, modelKey, type ReviewerAdmission,
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
@@ -155,6 +156,7 @@ export interface ProjectInit {
   reset: boolean;
   branch?: string;
   title?: string | null;
+  prepare?: (Omit<NonNullable<ProjectPolicy["prepare"]>, "declaration"> & { declaration?: CheckDeclaration }) | null;
   checks?: string[];
   checkClasses?: CheckDeclaration[];  // declarations this init makes; see settleCheckClasses
   checkPaths?: ProjectPolicy["checkPaths"];  // replaces the paths checks apply to; see settleCheckPaths
@@ -208,7 +210,26 @@ export interface LandingWorkflowRecord {
   // machine holding the workspace, "container" in the CheckRunner. The
   // executor reads it to know whether the checks are its to run.
   checks?: "local" | "container";
+  // The review options the instance was started with (t430), so a rerun
+  // that attaches to it can tell whether a reviewer it names differs.
+  reviewer?: string | null;
+  noReview?: boolean;
+  // Set on an instance that replaced another (src/landing/replace.ts):
+  // which one, why, and when.
+  replaced?: { from: string; reason: string; detail: string; at: string };
   lastStatus?: { status: InstanceStatus["status"]; error?: { name: string; message: string } };
+}
+export interface LandingWorkflowOptions { checks?: "local" | "container"; reviewer?: string | null; noReview?: boolean }
+
+// A new instance's record: at the stage `lease` from now, with the options
+// it was started with.
+function landingWorkflowRecord(instance: string, options: LandingWorkflowOptions): LandingWorkflowRecord {
+  const at = new Date().toISOString();
+  return {
+    instance, at, stage: "lease", stageAt: at, round: 0, checks: options.checks ?? "container",
+    ...(options.reviewer ? { reviewer: options.reviewer } : {}),
+    ...(options.noReview ? { noReview: true } : {}),
+  };
 }
 
 const LAND_STEPS = new Set(["lease", "merge", "regenerate", "push", "check", "submit", "review", "accept", "merged"]);
@@ -341,6 +362,15 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   // An init that names the checks must show each one read-only; one that
   // does not keeps their classes and may declare the undeclared ones.
   const checkClasses = settleCheckClasses(checks, i.checkClasses, p?.checkClasses, i.checks !== undefined);
+  let prepare = i.prepare === undefined ? p?.prepare : undefined;
+  if (i.prepare) {
+    const { command, declaration } = i.prepare;
+    if (typeof command !== "string" || !command.trim()) throw new RuleError("bad_prepare", "prepare.command must be a nonempty command", 400);
+    const normalized = command.trim();
+    const declarations = settleCheckClasses([normalized], declaration ? [declaration] : undefined,
+      p?.prepare ? [p.prepare.declaration] : undefined, true);
+    prepare = { command: normalized, inputs: preparationPaths(i.prepare.inputs), outputs: preparationPaths(i.prepare.outputs), declaration: declarations[0]! };
+  }
   const checkPaths = settleCheckPaths(checks, i.checkPaths, p?.checkPaths);
   const shipRuns = i.shipRuns ?? p?.shipRuns ?? [];
   const shipKinds = i.shipKinds ?? p?.shipKinds ?? [];
@@ -359,6 +389,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       ...((i.agents ?? p?.agents) !== undefined ? { agents: i.agents ?? p?.agents } : {}),
       ...((i.execution ?? p?.execution) !== undefined ? { execution: i.execution ?? p?.execution } : {}),
       checks,
+      ...(prepare ? { prepare } : {}),
       ...(checkClasses.length ? { checkClasses } : {}),
       ...(checkPaths.length ? { checkPaths } : {}),
       ...(shipRuns.length ? { shipRuns } : {}),
@@ -2334,13 +2365,30 @@ export class Ledger extends DurableObject<Env> {
   // instance still runs is read from the Workflow itself. The record is
   // cleared when the task closes, like the rest of its landing state (see
   // merged and abandon).
-  setLandingWorkflow(id: string, instance: string, actor: string, checks: "local" | "container" = "container"): LandingWorkflowRecord {
+  setLandingWorkflow(id: string, instance: string, actor: string, checks: "local" | "container" | LandingWorkflowOptions = "container"): LandingWorkflowRecord {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
     this.item(id);
-    const at = new Date().toISOString();
-    const record: LandingWorkflowRecord = { instance, at, stage: "lease", stageAt: at, round: 0, checks };
+    const record = landingWorkflowRecord(instance, typeof checks === "string" ? { checks } : checks);
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing-workflow:${id}`, JSON.stringify(record));
     return record;
+  }
+
+  // The claim on starting the instance that follows `from` (t430), decided
+  // here before any instance is created: it is made only while the record
+  // still names `from` (null: no record), and records `to` with the options
+  // the claimant will create it with and, for a replacement, why. Of
+  // requests that follow the same instance at once (two replacing it, or one
+  // replacing it and one that found it already ended), exactly one is the
+  // `owner` and creates `to`; every other is answered the record as it
+  // stands, whose options are the ones `to` is created with.
+  claimLandingWorkflow(id: string, from: string | null, to: string, actor: string, options: LandingWorkflowOptions, replaced?: { from: string; reason: string; detail: string }): { owner: boolean; record: LandingWorkflowRecord | null } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
+    this.item(id);
+    const current = this.landingWorkflowOf(id);
+    if ((current?.instance ?? null) !== from) return { owner: false, record: current };
+    const record: LandingWorkflowRecord = { ...landingWorkflowRecord(to, options), ...(replaced ? { replaced: { ...replaced, detail: replaced.detail.slice(0, 2000), at: new Date().toISOString() } } : {}) };
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing-workflow:${id}`, JSON.stringify(record));
+    return { owner: true, record };
   }
 
   // The Workflow's own report of its stage. An instance that is no longer
@@ -2349,10 +2397,13 @@ export class Ledger extends DurableObject<Env> {
   setLandingWorkflowStage(id: string, instance: string, stage: LandingWorkflowStage, round: number, detail?: string, files?: string[]): LandingWorkflowRecord | null {
     const record = this.landingWorkflowOf(id);
     if (!record || record.instance !== instance) return null;
+    const { detail: _detail, files: _files, ...kept } = record;
+    // A stage written again in the same round keeps the time it was entered,
+    // which the lease-wait limit is measured from (src/landing/lease-wait.ts).
+    const stageAt = record.stage === stage && record.round === round ? record.stageAt : new Date().toISOString();
     const next: LandingWorkflowRecord = {
-      ...(record.lastStatus ? { lastStatus: record.lastStatus } : {}),
-      instance, at: record.at, stage, stageAt: new Date().toISOString(), round,
-      ...(record.checks ? { checks: record.checks } : {}),
+      ...kept,
+      instance, at: record.at, stage, stageAt, round,
       ...(detail ? { detail: detail.slice(0, 2000) } : {}),
       ...(files?.length ? { files: files.slice(0, 200).map((f) => String(f).slice(0, 500)) } : {}),
     };
@@ -2377,6 +2428,28 @@ export class Ledger extends DurableObject<Env> {
   landingWorkflowOf(id: string): LandingWorkflowRecord | null {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `landing-workflow:${id}`).toArray()[0];
     return row ? JSON.parse(row.value as string) : null;
+  }
+
+  // The fence on a landing instance's lease calls (t430): a call that names
+  // its instance is refused once the task's record names another, so an
+  // instance that was replaced (or the executor attached to it) can neither
+  // take, renew nor release the lease its replacement holds for the same
+  // task. A call that names none (the plain landing, an older executor) and
+  // a task with no record (closed, which clears it) are not fenced.
+  private fenceLandingInstance(id: string, instance: string | undefined): void {
+    if (!instance) return;
+    const record = this.landingWorkflowOf(id);
+    if (record && record.instance !== instance) {
+      throw new RuleError("stale_landing", `${instance} is no longer ${id}'s landing Workflow: ${record.instance} replaced it${record.replaced?.from === instance ? ` (${record.replaced.reason}: ${record.replaced.detail})` : ""}, and only it takes, renews or releases ${id}'s landing lease`, 409);
+    }
+  }
+
+  // Who holds the lease at this moment, if a live landing does: what a
+  // refused ask reports as the holder of its final attempt (t430). A lease
+  // that lapsed, or whose task has closed, is held by nobody.
+  liveProjectLanding(): LandingLease | null {
+    const held = this.projectLanding();
+    return held && this.landingLive(held, new Date().toISOString()) ? held : null;
   }
 
   // The queue of landings waiting for the lease with --wait (t249): the
@@ -2421,9 +2494,10 @@ export class Ledger extends DurableObject<Env> {
   // landings behind it must not wait for a peer that no longer waits; a row
   // whose landing stops asking goes the same way once the expiry has passed
   // without an ask.
-  queueProjectLanding(id: string, actor: string, leave = false): { lease: LandingLease | null; waiting: WaitingLanding[] } {
+  queueProjectLanding(id: string, actor: string, leave = false, instance?: string): { lease: LandingLease | null; waiting: WaitingLanding[] } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
     const item = this.item(id);
+    this.fenceLandingInstance(id, instance);
     const at = new Date().toISOString();
     const rows = this.projectLandingQueue();
     const mine = rows.findIndex((w) => w.item === id);
@@ -2446,9 +2520,10 @@ export class Ledger extends DurableObject<Env> {
     return holder.state !== "merged" && holder.state !== "abandoned";
   }
 
-  beginProjectLanding(id: string, actor: string): { item: Item; expired: LandingLease | null } {
+  beginProjectLanding(id: string, actor: string, instance?: string): { item: Item; expired: LandingLease | null } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
     const item = this.item(id);
+    this.fenceLandingInstance(id, instance);
     const at = new Date().toISOString();
     const held = this.projectLanding();
     let expired: LandingLease | null = null;
@@ -2489,8 +2564,9 @@ export class Ledger extends DurableObject<Env> {
   // stays live through the long steps of a landing. Refused when the lease
   // is held for another task or by nobody, which tells the landing it no
   // longer holds the project.
-  renewProjectLanding(id: string, actor: string): LandingLease {
+  renewProjectLanding(id: string, actor: string, instance?: string): LandingLease {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
+    this.fenceLandingInstance(id, instance);
     const at = new Date().toISOString();
     const held = this.projectLanding();
     if (!held || held.item !== id) {
@@ -2506,9 +2582,10 @@ export class Ledger extends DurableObject<Env> {
   // it freed. A lease held for another task is left alone and named: a
   // landing whose lease lapsed and was taken over must not free the
   // landing that took it, or two landings would run at once.
-  cancelProjectLanding(id: string, actor: string): { held: boolean; lease: LandingLease | null } {
+  cancelProjectLanding(id: string, actor: string, instance?: string): { held: boolean; lease: LandingLease | null } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner ends a landing lease", 403);
     if (!id) throw new RuleError("bad_item", "a cancel names the task whose landing lease it releases: { cancel: true, item: ID }", 400);
+    this.fenceLandingInstance(id, instance);
     const held = this.projectLanding();
     if (held && held.item !== id) {
       const since = held.at.slice(0, 16).replace("T", " ");
