@@ -495,7 +495,7 @@ test("new and edit send the framing as lists and a line, block sends its reason,
   // A field not given is not sent, so the server keeps what the item has.
   const plain = f.run(f.checkout, ["new", "Plain", "--project", "demo"]);
   assert.equal(plain.status, 0, plain.stderr);
-  assert.deepEqual(f.requests().map((q) => q.body), [{ title: "Plain", scope: [] }]);
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => q.body), [{ title: "Plain", scope: [] }]);
   f.clear();
   for (const [argv, message] of [
     [["new", "Title", "--non-goal", "", "--project", "demo"], /--non-goal needs text: atelier new --non-goal "TEXT", once per entry/],
@@ -585,13 +585,13 @@ test("new sends a title, a brief and repeatable criteria; one long string alone 
   const f = fixture(t);
   const made = f.run(f.checkout, ["new", "Short titles", "--brief", "The whole task.", "--accept", "Lists show it", "--accept", "The page shows the brief", "--project", "demo"]);
   assert.equal(made.status, 0, made.stderr);
-  assert.deepEqual(f.requests().map((q) => q.body), [{ title: "Short titles", scope: [], brief: "The whole task.", accept: ["Lists show it", "The page shows the brief"] }]);
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => q.body), [{ title: "Short titles", scope: [], brief: "The whole task.", accept: ["Lists show it", "The page shows the brief"] }]);
   assert.equal(made.stdout, "t9  Short titles\nAcceptance criterion 1: Lists show it\nAcceptance criterion 2: The page shows the brief\n\n" + POINTER);
   f.clear();
   const long = "word ".repeat(30).trim();
   const derived = f.run(f.checkout, ["new", long, "--project", "demo"]);
   assert.equal(derived.status, 0, derived.stderr);
-  assert.deepEqual(f.requests().map((q) => q.body), [{ title: long, scope: [] }]);
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => q.body), [{ title: long, scope: [] }]);
   assert.equal(derived.stdout, 't9  Derived title\nThe text is longer than a title, so it is kept as the brief and the title is its first clause; change it with atelier edit t9 --title "TEXT".\n\n' + POINTER);
   f.clear();
   for (const [argv, message] of [

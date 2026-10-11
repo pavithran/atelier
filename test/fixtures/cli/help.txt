@@ -1,9 +1,9 @@
 atelier — one owner per task, observed evidence, the project owner decides.
 
 Sessions   unwrap [--project P] · wrap "summary" [--next TEXT] [--found TEXT]... [--push] [--no-check | --allow-failing] [--project P]
-Setup      login --server URL · login --store · init [--title TEXT] [--check CMD]... [--declare-read-only TEXT] [--protect GLOB]... [--core GLOB]... [--sandbox-only] [--refuse-overlap] [--require-criteria] [--no-override] [--approval TEXT] [--regenerate CMD] [--review-bar TEXT] [--review-tier H/M,H/M] [--single-family COMPANY] [--cross-family] [--commit-name NAME --commit-email EMAIL] [--agent-email EMAIL]... [--private-email EMAIL]... [--public-mirror REMOTE]... [--reset] [--history-since YYYY-MM-DD] · sync · publish
+Setup      login --server URL · login --store · init [--title TEXT] [--check CMD]... [--prepare CMD --prepare-input PATH... --prepare-output PATH...] [--declare-read-only TEXT] [--protect GLOB]... [--core GLOB]... [--sandbox-only] [--refuse-overlap] [--require-criteria] [--no-override] [--approval TEXT] [--regenerate CMD] [--review-bar TEXT] [--review-tier H/M,H/M] [--single-family COMPANY] [--cross-family] [--commit-name NAME --commit-email EMAIL] [--agent-email EMAIL]... [--private-email EMAIL]... [--public-mirror REMOTE]... [--reset] [--history-since YYYY-MM-DD] · sync · publish
            notes-remote [REMOTE | --off]
-Items      new "short title" [--brief TEXT] [--accept TEXT]... [--scope GLOB]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT] [--area ID] · edit ID [--title TEXT] [--brief TEXT] [--scope GLOB]... [--accept TEXT]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT] [--area ID] [--clear-area]
+Items      new "short title" [--brief TEXT] [--accept TEXT]... [--scope GLOB]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT] [--area ID] [--duplicate-ok] · edit ID [--title TEXT] [--brief TEXT] [--scope GLOB]... [--accept TEXT]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT] [--area ID] [--clear-area]
            ls [--all] [--json] · show ID [--reviews] [--json] · receipt ID [--json] · owners [--json] · inbox [--json] · status [--project P] [--brief] [--json] (with a project: where it stands, as text) · open
            board [--json]
            area list
