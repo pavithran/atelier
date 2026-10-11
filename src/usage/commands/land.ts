@@ -2,6 +2,15 @@ import type { CommandSpec } from "../command.ts";
 
 const spec: CommandSpec = {
   name: "land",
+  // The landing-workflow routes, the brief and criteria the review binds to,
+  // the binding the review it waits for names, the criteria requirement
+  // the project may hold, and the request number the review request's answer
+  // carries, by which the landing counts the runners that skipped it (t353).
+  capabilities: ["projects.commit-identity.v1", "land.workflow.v1", "items.brief-criteria.v1", "reviews.criteria-binding.v1", "projects.require-criteria.v1", "reviews.skip.v1"],
+  // cli/land.mjs checks them itself, after --release-lease (the lease route
+  // alone, which every server has, so a stuck lease is freed even while the
+  // server is behind) and before the lease is read.
+  capabilityCheck: "handler",
   forms: [
     {
       group: "Owner", line: 1, slot: 40,
