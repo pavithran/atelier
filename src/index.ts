@@ -914,7 +914,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     throw new RuleError("not_found", "no such route", 404);
   }
-  if (parts[0] === "inbox" && m === "GET") return json(await inbox(env, c.token));
+  if (parts[0] === "inbox" && m === "GET") return json(await inbox(env, c.token, c.url.searchParams.get("unread") === "1"));
   // The model pool requires the owner token. Owner tools may read it and
   // report runner status; changes also require the owner actor.
   if (parts[0] === "models") {
@@ -2423,12 +2423,25 @@ function isHeld(item: Item): boolean {
   return item.state === "claimed" && !!item.owner;
 }
 
-async function inbox(env: Env, token?: AgentToken) {
+// The portfolio's notices, each project's read on its own: a project whose
+// Ledger cannot be read drops out of the list instead of failing it, so the
+// healthy projects' notices still reach the owner. With `withUnread` (GET
+// /inbox?unread=1) the answer names those projects, `{ entries, unread }`, so
+// a reader passes them to attentionFor as not read (null notices) rather than
+// as nothing waiting; the bare list stays for older clients.
+async function inbox(env: Env, token?: AgentToken, withUnread = false) {
   const projects = (await index(env).projects()).filter((p) => inScope(token, namesOf(p)));
   const now = new Date().toISOString();
   const pool = await poolOf(env);
-  const lists = await Promise.all(projects.map((p) => ledgerOf(env, p).inbox(now, pool)));
-  return lists.flat().sort((a, b) => b.weight - a.weight);
+  const lists = await Promise.allSettled(projects.map((p) => ledgerOf(env, p).inbox(now, pool)));
+  const unread: string[] = [];
+  const entries = lists.flatMap((r, i) => {
+    if (r.status === "fulfilled") return r.value;
+    console.error("project inbox unavailable", projects[i].name, codeOf(r.reason).trim());
+    unread.push(projects[i].name);
+    return [];
+  }).sort((a, b) => b.weight - a.weight);
+  return withUnread ? { entries, unread } : entries;
 }
 
 // Whether a revision is on a project's main line as Atelier holds it: the

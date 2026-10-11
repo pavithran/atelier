@@ -47,7 +47,7 @@ export function itemJson(i) {
 // `offers` the runner offers (null when not read) and `now` the time read at.
 export function statusJson(views, server = "", offers = null, now = new Date()) {
   return views.map((v) => {
-    const mine = v.inbox.filter((x) => x.project === v.name);
+    const mine = (v.inbox ?? []).filter((x) => x.project === v.name);
     const a = attentionFor(v.name, v.items, v.inbox, offers, now);
     return {
       name: v.name,
@@ -342,6 +342,17 @@ export function formatStatusBrief(b) {
 // overlapping scopes counted in a line each, and what could not be read said.
 // A view is { name, title?, items (null when not read), inbox }; `waiting`
 // is { offers (null when not read), server, now }.
+// One project's notices from GET /inbox?unread=1 as read: the server's
+// entries, or null (not read) when the server named the project as one whose
+// Ledger it could not read, or when the inbox itself could not be read, so
+// attentionFor says the doubt instead of counting nothing. An older server
+// answers with the bare list and names no project.
+export function projectInbox(read, name) {
+  if (Array.isArray(read)) return read;
+  if (!read || !Array.isArray(read.entries)) return null;
+  return Array.isArray(read.unread) && read.unread.includes(name) ? null : read.entries;
+}
+
 export function formatInbox(views, waiting = {}) {
   const lines = [];
   let total = 0;

@@ -4,8 +4,14 @@
 // same in test/attention-views.spec.ts.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { createServer } from "node:http";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { formatInbox, formatStatus, inboxJson, inboxNotRead, statusJson } from "../cli/status.mjs";
-import { ALL_ENTRIES, ALPHA_ITEMS, BETA_ITEMS, EXPECTED, NOW, OFFERS } from "./fixtures/attention.ts";
+import { ALL_ENTRIES, ALPHA_ENTRIES, ALPHA_ITEMS, BETA_ITEMS, EXPECTED, NOW, OFFERS } from "./fixtures/attention.ts";
 
 const views = () => [
   { name: "alpha", title: "Alpha", items: ALPHA_ITEMS, inbox: ALL_ENTRIES },
@@ -94,4 +100,41 @@ test("atelier inbox prints only what waits on the owner, by project, and what wa
   const noOffers = formatStatus(views(), { now: NOW }).split("\n");
   assert.ok(noOffers.includes("  Not read"));
   assert.ok(!listedUnder(noOffers, 0, "  Waiting for you").includes("a8"), "no runner is judged missing without the offers");
+});
+
+// The command itself against a stand-in server whose Ledger for beta cannot be
+// read: the server names beta in GET /inbox?unread=1 and answers the bare
+// list with an error, as the aggregate did before (t504 review). The inbox
+// still lists alpha's tasks and labels beta as not read; it does not end.
+test("atelier inbox shows the projects it read and labels one whose notices could not be read", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-inbox-unread-"));
+  const server = createServer((req, res) => {
+    const send = (code, body) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
+    if (req.url === "/api/projects") return send(200, [{ name: "alpha", title: "Alpha" }, { name: "beta", title: "Beta" }]);
+    if (req.url === "/api/projects/alpha") return send(200, { items: ALPHA_ITEMS });
+    if (req.url === "/api/projects/beta") return send(200, { items: BETA_ITEMS });
+    if (req.url === "/api/inbox?unread=1") return send(200, { entries: ALPHA_ENTRIES, unread: ["beta"] });
+    if (req.url === "/api/inbox") return send(503, { error: "unavailable", detail: "beta's ledger could not be read" });
+    send(404, { error: "not_found", detail: "unexpected" });
+  });
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  try {
+    const cli = fileURLToPath(new URL("../cli/atelier.mjs", import.meta.url));
+    const r = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [cli, "inbox"], { env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_TOKEN: "test-token", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}` } });
+      let output = "";
+      child.stdout.on("data", (x) => output += x);
+      child.stderr.on("data", (x) => output += x);
+      child.on("close", (code) => resolve({ code, output }));
+    });
+    assert.equal(r.code, 0, r.output);
+    const lines = r.output.split("\n");
+    assert.ok(lines.some((l) => l.startsWith("Alpha (alpha): ")), r.output);
+    assert.ok(lines.some((l) => l.startsWith("    a1  ")), r.output);
+    assert.ok(lines.includes("Beta (beta): 0 waiting on you, and more may be"), r.output);
+    assert.ok(lines.some((l) => /^ {4}Not read: The project's notices could not be read/.test(l)), r.output);
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
