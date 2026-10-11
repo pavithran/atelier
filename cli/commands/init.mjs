@@ -8,13 +8,6 @@ import { pushHistory } from "../push-steps.mjs";
 import { shipPolicy } from "../ship.mjs";
 import { OWNER, OWNER_NAME, P, agentsMdOffer, args, call, cfg, coreArg, die, git, holds, initName, listArg, project, readControlPlane, recordedApproval, saveConfig, short, wsConfig } from "../atelier.mjs";
 
-// Atelier owner rollout, after deploying the Worker and updating the CLI:
-// run in the project checkout (never in a task workspace):
-// atelier init --prepare "npm ci --prefer-offline --no-audit --no-fund && npm run types" --prepare-input package.json --prepare-input package-lock.json --prepare-input wrangler.jsonc --prepare-input src --prepare-output node_modules --prepare-output worker-configuration.d.ts
-// The manifest, lockfile, Wrangler configuration and source declarations all
-// affect preparation; the lockfile alone does not certify this workspace.
-// This registration is an owner rollout step, not something a build runs.
-
 // The project owner, in the project's checkout.
 export default async function initCommand() {
   // A task workspace is a clone claimWorkspace made, named by the project

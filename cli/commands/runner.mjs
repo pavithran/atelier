@@ -1,5 +1,22 @@
 // atelier runner. Its forms, flags and help are declared in src/usage/commands/runner.ts.
-import { call, P, I, OWNER, actor, apiToken, args, auth, die, discoverModels, postAsRunner, project, readJson, reportUsage, resolveTokenActor, server, setupRunner, tokenActor, tokenRunner, workspacePath } from "../atelier.mjs";
+import { P, I, OWNER, apiToken, args, die, discoverModels, postAsRunner, reportUsage, resolveTokenActor, server, setupRunner, tokenActor, tokenRunner, workspacePath } from "../atelier.mjs";
+
+// Queue polling has already resolved the runner's identity. A failed policy
+// read must reach the job's infrastructure handling, never call()'s process.exit.
+export async function hasPreparation(project, actor) {
+  try {
+    const res = await fetch(server() + `/api${P(project)}`, {
+      headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": actor, ...(tokenRunner ? { "x-atelier-runner": tokenRunner } : {}) },
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data?.project?.policy) throw new Error("missing project policy");
+    return !!data.project.policy.prepare;
+  } catch (error) {
+    throw Object.assign(new Error(`the preparation policy could not be read: ${error.message}`), { infrastructure: true });
+  }
+}
 
 // `runner --discover` reports what each home model's harness serves (discover.mjs);
 // `runner --usage` reports each tool's windows, served models and balances (usage.mjs).
@@ -53,9 +70,7 @@ export default async function runnerCommand() {
         if (incomplete) console.log(`Could not read: ${incomplete}. Tasks waiting there are not listed.`);
         return res.json();
       },
-      async hasPreparation(project, actor) {
-        return !!(await call("GET", P(project), undefined, actor)).project?.policy?.prepare;
-      },
+      hasPreparation,
       async jobBrief(project, id, actor) {
         await resolveTokenActor();
         let res;
