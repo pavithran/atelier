@@ -157,8 +157,11 @@ test("npm test executes real runner-token routes and propagates a failed token a
   const execute = () => spawnSync("npm", ["test"], { cwd: dir, env, encoding: "utf8", timeout: 55_000 });
   const passed = execute();
   assert.equal(passed.status, 0, passed.stdout + passed.stderr);
-  assert.match(passed.stdout, /13 passed/);
-  t.diagnostic("runner-token.spec.mjs: 13 executed tests in isolated npm test");
+  // At least the 13 tests the spec held when this test was written: a count
+  // that only grows as the spec gains cases, and fails if it.each stops expanding.
+  const ran = Number(/Tests\s+(\d+) passed/.exec(passed.stdout)?.[1] ?? 0);
+  assert.ok(ran >= 13, `runner-token.spec.mjs ran ${ran} tests\n${passed.stdout}`);
+  t.diagnostic(`runner-token.spec.mjs: ${ran} executed tests in isolated npm test`);
   const spec = join(dir, "src/runner-token.spec.mjs");
   const source = readFileSync(spec, "utf8");
   assert.ok(source.includes('expect(t.token.runner).toBe("home:studio")'));
