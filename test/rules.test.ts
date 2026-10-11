@@ -1040,3 +1040,16 @@ test("reviews recorded before reviews were bound stay visible but neither satisf
     assert.equal(gate(task, policy, touching, [approval, rejection, review("codex/gpt-6", { criteria: criteriaHash(accept) })]).ready, true);
   }
 });
+
+
+test("review leases expire at five server-clock minutes; renewal cadence is thirty seconds", async () => {
+  const { REVIEW_LEASE_MS, REVIEW_RENEW_MS, reviewLeaseExpired } = await import("../src/rules.ts");
+  const start = Date.parse(T);
+  assert.equal(REVIEW_RENEW_MS, 30_000);
+  assert.equal(REVIEW_LEASE_MS, 300_000);
+  assert.equal(reviewLeaseExpired(T, start + REVIEW_LEASE_MS - 1), false);
+  assert.equal(reviewLeaseExpired(T, start + REVIEW_LEASE_MS), true);
+  assert.equal(reviewLeaseExpired(T, start + REVIEW_LEASE_MS + 1), true);
+  assert.equal(reviewLeaseExpired(null, start), true);
+  assert.equal(reviewLeaseExpired("invalid", start), true);
+});

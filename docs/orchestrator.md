@@ -177,6 +177,23 @@ This applies to every part, even where `gate()` would ask for no review.
 
 **Reviews run on home runners.** A runner whose config lists it offers the `review` job (`offerFrom` in `cli/runner.mjs`); `runReview` in `cli/runner.mjs` makes the clone, writes the diff and reads the verdict. A harness that cannot take the brief and diff files itself is served by an adapter the config names as its review command: for Antigravity, `cli/agy-review.mjs` builds one prompt from the brief and the diff (fenced past any run of backticks in the diff), runs `agy` with the terminal sandboxed in the review clone and the prompt on standard input, maps Atelier's model ids to Antigravity's, and writes `agy`'s response to `{verdict_file}`; it exits non-zero when `agy` fails, so the runner releases the request as for any harness failure. A reply `parseVerdict` refuses is not discarded (t407): the runner posts `review-unparsable`, which keeps the reply on the task — its last 100 KB, with the reviewer and the head it judged, in the ledger's `unparsable` table beside a `review.unparsable` event that carries no reply text, since the reliability record replays every event — and releases the request as `review-release` does. `atelier show ID --reviews` prints the kept replies, and the reliability record counts each against the reviewer as a review that never reached a verdict.
 
+Review claims have a five-minute server-clock lease. The runner sends an
+authenticated `POST /api/projects/PROJECT/items/ID/review-renew` with
+`{"request": N}` every 30 seconds throughout the review; the server advances
+the lease at most once per 30 seconds. This is a runner API route, not a CLI
+command. N is the generation returned by `review-claim`, also sent with the
+verdict, `review-unparsable` and `review-release ID --request N`. Expired
+claims are replaced and reoffered on the next queue poll with the same
+reviewer routing, head, criteria and gate/tier identity. A restarted runner,
+including one with the same name or reviewer actor, can claim that new
+generation; a duplicate cannot steal an unexpired claim. Old renewals,
+verdicts and releases cannot affect its successor. The landing Workflow
+follows the replacement request and ignores skips for obsolete generations.
+On SIGINT or SIGTERM the runner stops its review child before attempting a
+release with a five-second deadline. SIGKILL, lost responses and failed
+cleanup recover through lease expiry. Only owner credentials can omit
+`--request` when manually releasing the current claim for the named actor.
+
 `addReview` still refuses self-review and stale heads, and `countingReviews` still filters to assessors.
 
 **The generated brief contains:**

@@ -1464,6 +1464,7 @@ it("a task sent back for rework gets the rejecting review's findings in its job 
 // ── t326: reviews bound to the acceptance criteria ───────────────────────
 
 const GPT = "codex/gpt-6-astra", GLM = "zcode/glm-5.3";
+const REVIEW_POOL: ModelEntry[] = [{ id: "gpt-6-astra", harness: "codex", where: "home", provider: "subscription", aliases: [], family: "openai", note: "", addedBy: "owner", addedAt: new Date().toISOString() }];
 const RUNNER = { runner: "home:studio", kind: "home" } as const;
 const ONE = ["Nested lists parse"];
 const TWO = ["Nested lists parse", "Errors name the line"];
@@ -1507,7 +1508,7 @@ it("changing criteria withdraws every standing review and live request, keeps th
   // An approval by another family, the owner asks GPT by name, the tier asks
   // GLM beside it; GLM claims the tier review and rejects; GPT claims the gate's.
   await L.addReview(bound(review("t1", B, H1, true, "fine"), one), undefined, true);
-  await L.requestReview("t1", "owner", GPT, [], true);
+  await L.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
   const tier = await L.claimReview("t1", GLM, RUNNER) as unknown as ReviewClaim;
   expect(tier).toMatchObject({ tier: true, criteria: one });
   await L.addReview(bound(review("t1", GLM, H1, false, "unsafe"), one, tier.request), undefined, true);
@@ -1555,7 +1556,7 @@ it("edits that leave the stored criteria as they are change no binding, review o
   await submittedWith(L, TWO);
   const two = criteriaHash(TWO);
   await L.addReview(bound(review("t1", B, H1, true), two), undefined, true);
-  await L.requestReview("t1", "owner", GPT, [], true);
+  await L.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
   const before = { reviews: await L.reviewsFor("t1"), requests: await L.reviewRequests("t1") };
   for (const fields of [{ title: "Parse lists" }, { brief: "The whole task." }, { nonGoals: ["No new syntax"] }, { stopWhen: ["The grammar changes"] }, { nextGate: "Owner review" }, { accept: [...TWO] }, { title: "Again", accept: TWO }]) {
     const edited = await L.editItem("t1", "owner", fields) as unknown as Item & { criteriaChange?: CriteriaChange };
@@ -1687,7 +1688,7 @@ const liveTier = async (L: Awaited<ReturnType<typeof setup>>, id = "t1") => (awa
 it("criteria changed A to B and back to A at one head: the tier is asked again each time, and a live tier request stands", async () => {
   const L = await setup("criteria-tier-aba", { ...policy, reviewTier: [GLM] });
   await submittedWith(L, ONE);
-  await L.requestReview("t1", "owner", GPT, [], true);
+  await L.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
   expect((await liveTier(L)).length).toBe(1);
   await L.editItem("t1", "owner", { accept: TWO });
   expect((await liveTier(L)).length).toBe(1);
@@ -1711,7 +1712,7 @@ it("requests and reviews made before reviews were bound stop counting as already
     L.recordPush("t1", A, H1, H1);
     L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
     L.submit("t1", A);
-    L.requestReview("t1", "owner", GPT, [], true);
+    L.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
     // As a ledger before t326 left them: requests with no criteria, and a
     // tier review with no binding at the head.
     state.storage.sql.exec(`UPDATE review_requests SET criteria = NULL`);
@@ -1732,7 +1733,7 @@ it("requests and reviews made before reviews were bound stop counting as already
 it("a gate request the criteria change withdrew is carried at the same head once the gate needs the review", async () => {
   const L = await setup("criteria-carry");
   await submittedWith(L, ONE);
-  await L.requestReview("t1", "owner", GPT, []);
+  await L.requestReview("t1", "owner", GPT, REVIEW_POOL);
   // The check fails at the head while the criteria change, so no review is needed and none is asked yet.
   await L.addEvidence({ ...observed("t1", H1, ["AGENTS.md"]), passed: false });
   const change = await L.editItem("t1", "owner", { accept: TWO }) as unknown as Item & { criteriaChange: CriteriaChange };

@@ -197,7 +197,7 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
 
 function eligibility(actor: string, policy: ProjectPolicy, owner: string): string | null {
   try {
-    assertEligible(actor, policy, owner);
+    assertEligible(actor, policy, owner, "assessor");
     return null;
   } catch (err) {
     const rule = parseRuleError(err);

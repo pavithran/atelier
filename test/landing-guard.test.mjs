@@ -78,7 +78,7 @@ async function landFixture(t, { setup = () => {}, change, controlPlane = false, 
     const item = { id: 't1', title: 'Task one', scope: [], state: box.state, owner: 'codex/test', head, acceptedHead: head, base };
     let answer = {};
     if (path === '/api/projects/proj' && req.method === 'GET') answer = { project: { name: 'proj', policy: { protected: PROTECTED, eligible: [], refuseOverlap: false } }, items: [], events: [] };
-    else if (path === '/api/projects/proj/items/t1') answer = { item, policy: { checks: [], protected: [] }, gate: { ready: true, blockers: [], changeClass: 'coordinated' }, evidence: [], reviews: [], acceptanceProtected: PROTECTED, events: [{ kind: 'item.claimed', actor: 'codex/test', at: '2026-10-06T00:00:00Z', data: {} }] };
+    else if (path === '/api/projects/proj/items/t1') answer = { item, policy: { checks: [], protected: [], commitIdentity: { name: 'Owner', email: 'owner@example.invalid', agentEmails: [] } }, gate: { ready: true, blockers: [], changeClass: 'coordinated' }, evidence: [], reviews: [], acceptanceProtected: PROTECTED, events: [{ kind: 'item.claimed', actor: 'codex/test', at: '2026-10-06T00:00:00Z', data: {} }] };
     else if (path.endsWith('/baseline-token')) answer = { remote: baseline, token: 'fixture', defaultBranch: 'main' };
     else if (path.endsWith('/read-token')) answer = { remote: fork, token: 'fixture', defaultBranch: 'main', head, base };
     else if (path.endsWith('/landing') && body.cancel !== true && box.failLanding) {

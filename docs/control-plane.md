@@ -4,7 +4,9 @@ ControlPlane is the policy system PAVI's projects used before Atelier. This
 document says how Atelier reads a project's ControlPlane policy files and how
 a project moves from ControlPlane to Atelier. A project without those files
 needs none of it; the README's "Concepts" section describes the gate that
-applies everywhere.
+applies everywhere, including the explicit `init --single-family COMPANY`
+exception: reviews must come from a different model of that company from every
+contributor. `init --cross-family` restores the default.
 
 ## Policy files and what Atelier does with them
 
@@ -42,14 +44,17 @@ merged.
   and every changed path matches `direct.allowed_path_patterns`; all other
   changes are `coordinated`. A class absent from `allowed_classes` is refused.
   Protected changes need approval from a model family different from every
-  recorded contributor, as in every project; coordinated changes need
-  approval from an agent who did not contribute; direct changes need no
+  recorded contributor by default; in single-family mode they need a different
+  model of the selected company from every contributor. Coordinated changes
+  need a different model from every contributor, also of the selected company
+  in single-family mode; direct changes need no
   review. Required reviews must come from assessors. The project owner's
   approval is neither review; where no reviewer qualifies, the owner's
   override stands in for it, as [the gate](gate.md) describes. Project owner acceptance is
   always required. A measured empty change has nothing to merge.
   Projects without these policy files have no change classes: a protected
-  change needs its review from another family, and any other change needs
+  change needs its review from another family (or a different model of the
+  selected company in single-family mode), and any other change needs
   none.
 - `atelier sync` and normal `atelier merge` re-read these files and refresh
   the stored protected paths, eligible agents and overlap rule. The refresh
@@ -94,8 +99,9 @@ merged.
 ## Moving a project from ControlPlane
 
 A project moves to Atelier one at a time, and the move is itself an Atelier
-task, reviewed by a model from another family and accepted by the project
-owner. `atelier adopt` runs in the project's registered checkout:
+task, reviewed by a model from another family by default (or a different
+model of the selected company from every contributor in single-family mode)
+and accepted by the project owner. `atelier adopt` runs in the project's registered checkout:
 
 ```sh
 atelier adopt --project NAME --as HARNESS/MODEL

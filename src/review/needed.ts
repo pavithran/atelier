@@ -16,7 +16,7 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import {
-  bindingOf, changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, hasRole, independentApproval, independentReviewerText, matchesAny, singleFamily,
+  bindingOf, changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, reviewAuthorized, independentApproval, independentReviewerText, matchesAny, singleFamily,
   type ChangeClass, type Evidence, type EvidenceView, type Item, type ProjectPolicy, type Review,
 } from "../rules.ts";
 import { contributorsOf } from "./independence.ts";
@@ -33,17 +33,12 @@ export interface ReviewRequestView {
   head: string;
   state: "open" | "claimed" | "answered" | "withdrawn";
   claimedBy?: string | null;
-  claimedAt?: string | null;   // ISO time the request was claimed
+  claimedAt?: string | null;   // server-clock time of the last claim renewal
   tier?: boolean;
 }
 
-// A claimed request with no verdict after this long no longer holds the item
-// back: its reviewer is taken to have failed, a new request may be made, and
-// pickReviewer can pass that reviewer over. An open request never lapses,
-// since it is waiting for a runner and a second request would wait in the
-// same queue. Two hours is a judgement, not a measurement: well beyond the
-// time a slow local model should need for a large diff.
-export const REVIEW_CLAIM_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+// Compatibility export for callers scheduling the lease alarm.
+export { REVIEW_LEASE_MS as REVIEW_CLAIM_TIMEOUT_MS } from "../rules.ts";
 
 // review: no model has rejected a head of this item that this review moves
 // past. re-review: one has — the builder has pushed since, or the owner
@@ -197,22 +192,18 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
     }
   }
 
-  // A live request for this head holds the item unless its claim has lapsed;
-  // a tier request beside it holds nothing.
-  // A claim time that cannot be read is taken as recent, so a request is
-  // never duplicated on a guess.
+  // The ledger recovers expired claims before supplying this view. A live
+  // gate request holds the item; a tier request beside it holds nothing.
   const live = (input.requests ?? []).filter((r) => r.head === head && !r.tier && (r.state === "open" || r.state === "claimed"));
-  const lapsedAt = (r: ReviewRequestView) => {
-    const at = r.state === "claimed" && r.claimedAt ? Date.parse(r.claimedAt) : NaN;
-    return Number.isFinite(at) && input.now.getTime() - at >= REVIEW_CLAIM_TIMEOUT_MS;
-  };
-  const waiting = live.find((r) => !lapsedAt(r));
+  const waiting = live[0];
   if (waiting) {
     return no(waiting.state === "open"
       ? `a review request for ${short(head)} is open`
       : `a review request for ${short(head)} is claimed${waiting.claimedBy ? ` by ${waiting.claimedBy}` : ""}`);
   }
-  const lapsed = [...new Set(live.flatMap((r) => (r.claimedBy ? [r.claimedBy] : [])))];
+  // Lease recovery belongs to the ledger. Runner failure is not evidence
+  // against a reviewer and must not exclude its actor from future routing.
+  const lapsed: string[] = [];
 
   // Earlier reviews: the latest counting review per reviewer at each head,
   // this one included (an approval here that does not suffice, with its
@@ -224,7 +215,7 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   // not rounds of automatic review. The limit on rounds is fixed when a plan
   // is approved and reaching it blocks the plan, so it is the plan tick's to
   // enforce; this reports the round.
-  const counts = (r: Review) => r.by === owner || hasRole(r.by, policy, "assessor");
+  const counts = (r: Review) => reviewAuthorized(r, policy, owner);
   const latest = new Map<string, ReviewRecord>();
   for (const r of reviews.filter(counts).sort((a, b) => a.at.localeCompare(b.at))) {
     latest.set(`${r.head}\n${r.by}`, r);

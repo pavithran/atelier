@@ -3,6 +3,7 @@ import { MODEL_PROFILES } from "./models/registry.ts";
 import type { Dispatch } from "./dispatch/rules";
 import type { CheckDeclaration } from "./checks.ts";
 import type { LargeRef } from "./large.ts";
+import type { CommitIdentityPolicy } from "./commit-identity.ts";
 import { criteriaOf } from "./criteria.ts";
 // Atelier's rules, as pure functions. Nothing here touches Cloudflare, so the
 // whole policy can be tested with `node --test` and read in one place.
@@ -296,6 +297,7 @@ export interface Review {
   // review recorded before these fields existed gains them from its event
   // when the Ledger starts; one built without them, as in a test, is read
   // as proved.
+  reviewerAdmission?: ReviewerAdmission;
   recordedBy?: string;
   proved?: boolean;
   claimed?: boolean;
@@ -374,7 +376,29 @@ export interface CheckPaths {
   paths: string[];
 }
 
+export interface ReviewerAdmission {
+  id: string;
+  aliases: string[];
+  by: string;
+  reason: string;
+  at: string;
+  active: boolean;
+}
+
+// Admissions are read from the project ledger, never supplied by a review.
+export function reviewerAdmission(actor: string, policy: ProjectPolicy): ReviewerAdmission | undefined {
+  if (!actor.includes("/")) return undefined;
+  const key = modelKey(actor);
+  return policy.reviewerAdmissions?.find((a) => [a.id, ...a.aliases].some((name) => modelKey(`model/${name}`) === key));
+}
+
+export function admissionActor(actor: string, admission: ReviewerAdmission): string {
+  return [admission.id, ...admission.aliases].some((name) => modelKey(`model/${name}`) === modelKey(actor))
+    ? `${actor.split("/")[0]}/${admission.id}` : actor;
+}
+
 export interface ProjectPolicy {
+  reviewerAdmissions?: ReviewerAdmission[];
   agents?: Record<string, AgentPolicy>;
   execution?: ExecutionPolicy;
   checks: string[];         // commands that must pass, observed, before acceptance
@@ -429,6 +453,12 @@ export interface ProjectPolicy {
   // single-family mode from a different model of the one company), or does
   // not land.
   noOverride?: boolean;
+  // The name and address the project's commits carry, the agent addresses
+  // allowed beside it, and the addresses declared private (t451,
+  // src/commit-identity.ts). A claim writes the name and address into the
+  // workspace's Git config; a runner and a landing refuse what falls outside
+  // it. Absent in a project set up before t451 until the owner names one.
+  commitIdentity?: CommitIdentityPolicy;
 }
 
 export interface FamilyMode {
@@ -767,6 +797,11 @@ export function assertClaimable(item: Item, actor: string): void {
 // Role policy takes precedence over legacy harness eligibility. Taking work
 // needs the executor role; planning a plan needs the planner role.
 export function assertEligible(actor: string, policy: ProjectPolicy, owner = DEFAULT_OWNER, role: AgentRole = "executor"): void {
+  if (role === "assessor") {
+    const admission = reviewerAdmission(actor, policy);
+    if (admission?.active) return;
+    if (admission) throw new RuleError("ineligible", `${admission.id}'s reviewer admission was withdrawn; use atelier models admit`, 403);
+  }
   if (policy.agents) {
     if (!hasRole(actor, policy, role)) throw new RuleError("ineligible", `${actor} needs an available agent with the ${role} role`, 403);
     return;
@@ -800,6 +835,10 @@ export function agentOf(actor: string, agents: Record<string, AgentPolicy>): str
 }
 
 export function hasRole(actor: string, policy: ProjectPolicy, role: AgentRole): boolean {
+  if (role === "assessor") {
+    const admission = reviewerAdmission(actor, policy);
+    if (admission) return admission.active;
+  }
   if (!policy.agents) return true;
   const name = agentOf(actor, policy.agents);
   return name !== null && policy.agents[name].available && policy.agents[name].eligible_roles.includes(role);
@@ -879,8 +918,14 @@ export function harnessRefusal(harness: string, policy: ProjectPolicy, role: Age
   }
 }
 
+// An admission cannot retroactively qualify an old review. A recorded
+// admission survives withdrawal; head, criteria and independence still apply.
+export function reviewAuthorized(r: Review, policy: ProjectPolicy, owner = DEFAULT_OWNER): boolean {
+  return r.by === owner || r.reviewerAdmission?.active === true || hasRole(r.by, { ...policy, reviewerAdmissions: undefined }, "assessor");
+}
+
 export function countingReviews(reviews: Review[], at: ReviewBinding, policy: ProjectPolicy, owner = DEFAULT_OWNER): Review[] {
-  return latestReviews(reviews, at).filter((r) => r.by === owner || hasRole(r.by, policy, "assessor"));
+  return latestReviews(reviews, at).filter((r) => reviewAuthorized(r, policy, owner));
 }
 
 export function measuredPaths(value: unknown): string[] | null {
@@ -934,6 +979,12 @@ export const protectedNeed = (single: PoolFamily | null): string => (single ? `t
 // model counts for any change, coordinated included; a contributor never
 // counts in either mode.
 export function independentApproval(r: Review, kind: "protected" | "coordinated", contributors: readonly string[], owner = DEFAULT_OWNER, single: PoolFamily | null = null): boolean {
+  if (r.reviewerAdmission) {
+    const admission = r.reviewerAdmission;
+    r = { ...r, by: admissionActor(r.by, admission) };
+    contributors = contributors.map((actor) => admissionActor(actor, admission));
+    if (familyRefusal(r.by, contributors, single) !== null) return false;
+  }
   if (!r.approve || r.tier || sameActor(r.by, owner) || !validActor(r.by) || !r.by.includes("/")) return false;
   if (kind === "protected" && unprovedReview(r)) return false;
   if (contributed(r.by, contributors)) return false;
@@ -1834,4 +1885,12 @@ export function pushNotice(value: unknown, namespace = "atelier"): PushNotice | 
   const { ref, after } = v.payload ?? {};
   if (!v.source.repoName || !ref?.startsWith("refs/heads/") || !after || !/^[a-f0-9]{40,64}$/.test(after) || /^0+$/.test(after)) return null;
   return { repo: v.source.repoName, ref, after };
+}
+
+// Review leases use the server clock. Renewal is coalesced to one write per
+// 30 seconds; five minutes without one fences the claim, even after SIGKILL.
+export const REVIEW_RENEW_MS = 30_000;
+export const REVIEW_LEASE_MS = 5 * 60_000;
+export function reviewLeaseExpired(renewedAt: string | null | undefined, now: number): boolean {
+  return !renewedAt || !Number.isFinite(Date.parse(renewedAt)) || now - Date.parse(renewedAt) >= REVIEW_LEASE_MS;
 }
