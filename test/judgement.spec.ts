@@ -231,13 +231,14 @@ it("through the Ledger, confirmed then fixed agree, and a re-review's different 
   await L(name).submit(id, OPUS);
   const review = (at: string, text: string) => L(name).addReview({ itemId: id, by: GLM, head: H1, criteria: NO_CRITERIA, approve: false, note: "no", at, findings: [{ file: "a.ts", line: 1, severity: "blocking", text }] });
   await review("2026-10-01T00:00:00.000Z", "drops rows");
-  await L(name).addFinding(id, "owner", H1, 1, "confirmed", "", OPUS);
-  await L(name).addFinding(id, "owner", H1, 1, "fixed", "", GPT);
+  const first = await L(name).addFinding(id, "owner", H1, 1, "confirmed", "", {}, OPUS);
+  await L(name).addFinding(id, "owner", H1, 1, "fixed", "", { reviewSeq: first.review }, GPT);
   // The same reviewer reviews the same revision again; its first finding is another one.
   await review("2026-10-02T00:00:00.000Z", "loses the header");
-  await L(name).addFinding(id, "owner", H1, 1, "refuted", "", GPT);
+  const second = (await events(name, id)).filter((e) => e.kind === "review.rejected").map((e) => e.seq).sort((a, b) => b - a)[0];
+  await L(name).addFinding(id, "owner", H1, 1, "refuted", "", { reviewSeq: second }, GPT);
   const verdicts = (await events(name, id)).filter((e) => e.kind === "review.finding").sort((a, b) => a.seq - b.seq);
-  expect(verdicts.map((e) => e.data.review)).toEqual(["2026-10-01T00:00:00.000Z", "2026-10-01T00:00:00.000Z", "2026-10-02T00:00:00.000Z"]);
+  expect(verdicts.map((e) => e.data.review)).toEqual([first.review, first.review, second]);
   const record = buildJudgement([{ project: name, events: await events(name) }], judgementWindow(new Date()), "owner");
   const opus = record.models.find((m) => m.model === "opus-5.5")!;
   const gpt = record.models.find((m) => m.model === "gpt-6-astra")!;

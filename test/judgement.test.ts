@@ -19,7 +19,7 @@ const IN = "2026-10-01T12:00:00.000Z", LATER = "2026-10-05T12:00:00.000Z", OLD =
 
 const ev = (seq: number, item: string | null, kind: string, data: Record<string, unknown>, at = IN, actor = OWNER): LedgerEvent => ({ seq, itemId: item, at, actor, kind, data });
 // A verdict on finding `index` of GLM's review of `item` at `head`, as addFinding logs it.
-const verdict = (seq: number, v: string, acting: string | undefined, over: { item?: string; head?: string; index?: number; at?: string; review?: string; file?: string; text?: string } = {}) =>
+const verdict = (seq: number, v: string, acting: string | undefined, over: { item?: string; head?: string; index?: number; at?: string; review?: number; file?: string; text?: string } = {}) =>
   ev(seq, over.item ?? "t1", "review.finding", { head: over.head ?? A, index: over.index ?? 1, verdict: v, note: "", by: GLM, ...(over.review ? { review: over.review } : {}), finding: { file: over.file ?? "src/x.ts", line: 1, severity: "blocking", text: over.text ?? "wrong" }, ...(acting === undefined ? {} : { acting }) }, over.at ?? IN);
 const defect = (seq: number, item: string, link?: { event: number; finding: number }, at = LATER) =>
   ev(seq, item, "item.defect", { head: B, note: `defect ${seq}`, ...(link ? { contradicts: link } : {}) }, at);
@@ -136,8 +136,8 @@ test("only a reversal contradicts: confirmed then fixed agree", () => {
 test("a correction binds to the finding itself: a later review's different finding at the same index is unrelated", () => {
   // A re-review of the same revision by the same reviewer, whose first finding is another one.
   const other = build([
-    verdict(1, "refuted", OPUS, { review: "2026-09-30T00:00:00.000Z" }),
-    verdict(2, "confirmed", GPT, { at: LATER, review: "2026-10-02T00:00:00.000Z", file: "src/y.ts", text: "something else" }),
+    verdict(1, "refuted", OPUS, { review: 3 }),
+    verdict(2, "confirmed", GPT, { at: LATER, review: 5, file: "src/y.ts", text: "something else" }),
   ]);
   assert.deepEqual(counts(row(other, "opus-5.5")), [1, 0, 0, 1]);
   assert.deepEqual(counts(row(other, "gpt-6-astra")), [1, 0, 0, 1]);
@@ -145,15 +145,15 @@ test("a correction binds to the finding itself: a later review's different findi
   assert.deepEqual(counts(row(build([verdict(1, "refuted", OPUS), verdict(2, "confirmed", GPT, { at: LATER, text: "something else" })]), "opus-5.5")), [1, 0, 0, 1]);
   // The same content in another review is another review's finding.
   assert.deepEqual(counts(row(build([
-    verdict(1, "refuted", OPUS, { review: "2026-09-30T00:00:00.000Z" }),
-    verdict(2, "confirmed", GPT, { at: LATER, review: "2026-10-02T00:00:00.000Z" }),
+    verdict(1, "refuted", OPUS, { review: 3 }),
+    verdict(2, "confirmed", GPT, { at: LATER, review: 5 }),
   ]), "opus-5.5")), [1, 0, 0, 1]);
   // The same review and finding is corrected, and a legacy verdict without the review still binds by content.
   assert.deepEqual(counts(row(build([
-    verdict(1, "refuted", OPUS, { review: "2026-09-30T00:00:00.000Z" }),
-    verdict(2, "confirmed", GPT, { at: LATER, review: "2026-09-30T00:00:00.000Z" }),
+    verdict(1, "refuted", OPUS, { review: 3 }),
+    verdict(2, "confirmed", GPT, { at: LATER, review: 3 }),
   ]), "opus-5.5")), [1, 0, 1, 0]);
-  assert.deepEqual(counts(row(build([verdict(1, "refuted", OPUS), verdict(2, "confirmed", GPT, { at: LATER, review: "2026-09-30T00:00:00.000Z" })]), "opus-5.5")), [1, 0, 1, 0]);
+  assert.deepEqual(counts(row(build([verdict(1, "refuted", OPUS), verdict(2, "confirmed", GPT, { at: LATER, review: 3 })]), "opus-5.5")), [1, 0, 1, 0]);
 });
 
 test("a verdict is upheld only by a later agreeing verdict from another hand", () => {

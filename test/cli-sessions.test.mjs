@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 
 import { buildHistory, savePairs, loadPairs } from "../cli/fresh.mjs";
 import { landingDir, landingJournalFile, oldLandingJournalFile } from "../cli/landing.mjs";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 const cli = resolve("cli/atelier.mjs");
 function fixture(t) {
@@ -45,6 +46,7 @@ const previous = { actor: "owner", at: "2026-10-04T12:00:00Z", data: { summary: 
 let taskCount = 0;
 globalThis.fetch = async (url, options) => {
   const path = new URL(url).pathname;
+  if (path === "/api/version") return Response.json({ capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
   appendFileSync(${JSON.stringify(join(dir, "requests.jsonl"))}, JSON.stringify({ method: options.method, path, body: options.body }) + "\\n");
   let result;
   if (options.method === "POST") {
