@@ -47,6 +47,20 @@ function store(name: string, changed: string) {
 
 const POLICY = { checks: ["npm test", "xcodebuild build"], checkPaths: [{ command: "xcodebuild build", paths: ["App/**", "project.yml"] }], protected: [] };
 
+it("the sandbox route carries preparation into both plain and merged runs", async () => {
+  const name = "prepare-sandbox-route";
+  const prepare = { command: "npm ci", inputs: ["package.json"], outputs: ["node_modules"], declaration: { command: "npm ci", by: "command" } };
+  await pushed(name, { ...POLICY, prepare });
+  const call = api({ ...testEnv, ARTIFACTS: store(name, "docs/a.md") } as typeof env);
+  for (const merged of [false, true]) {
+    const response = await call("POST", `/projects/${name}/items/t1/sandbox`, A, { merged });
+    expect(response.status).toBe(202);
+    const { state } = await response.json() as { state: RunState };
+    expect(state.request.prepare).toEqual(prepare);
+    expect(state.request.merged === true).toBe(merged);
+  }
+});
+
 async function pushed(name: string, policy: object = POLICY) {
   const record = { name, repo: name, policy, createdAt: new Date().toISOString() };
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
