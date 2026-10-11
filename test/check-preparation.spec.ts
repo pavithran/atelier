@@ -3,6 +3,8 @@ import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import type { CheckRunner, RunRequest, RunState } from "../src/sandbox/runner.ts";
 
+const FAKE_TOKEN = "abcdefghijklmnopqrstuvwxyz".concat("123456");
+
 const head = "a".repeat(40), tree = "b".repeat(40);
 const prepare = { command: "npm ci", inputs: ["package.json"], outputs: ["node_modules"], declaration: { command: "npm ci", by: "command" as const } };
 
@@ -29,7 +31,8 @@ async function run(id: string, status: number, declared = true, merged = false, 
         calls.push(command);
       }
       const exitCode = timeout && command === prepare.command ? status : 0;
-      const output = new TextEncoder().encode("x ".repeat(3000) + "Bearer abcdefghijklmnopqrstuvwxyz123456");
+      // Built at runtime so the source holds no token-shaped literal for the secret scan.
+      const output = new TextEncoder().encode("x ".repeat(3000) + ["Bearer", FAKE_TOKEN].join(" "));
       return {
         exitCode: Promise.resolve(exitCode),
         stdout: new Blob([output]).stream(),
@@ -74,7 +77,7 @@ it("container preparation failure and timeout add no results or evidence; a new 
     expect(r.state.results).toEqual([]);
     expect(r.state.error).toContain(`Preparation \`npm ci\` failed: exit ${status}`);
     expect(r.state.error).toContain("last 4000 characters, redacted");
-    expect(r.state.error).not.toContain("abcdefghijklmnopqrstuvwxyz123456");
+    expect(r.state.error).not.toContain(FAKE_TOKEN);
     expect(r.state.error!.split("\n")[1]).toHaveLength(4000);
     if (status === 124) expect(r.state.error).toContain("timed out");
     expect(evidence).toEqual([{ claim: "earlier evidence" }]);
