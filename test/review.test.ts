@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { createHash } from "node:crypto";
 import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
 import assert from "node:assert/strict";
 import type { LedgerEvent } from "../src/ledger.ts";
@@ -1183,3 +1184,45 @@ test("reviewBrief evidence: the brief and its order do not depend on the order t
     ["npm run a", "sandbox", null], ["npm run a", "runner", null], ["npm run b", "runner", null],
   ]);
 });
+
+// The ledger's recording sequence, as reviewEvidence sends it, in the order given.
+const recorded = (runs: Evidence[]) => runs.map((e, i) => ({ ...e, seq: i + 1 }));
+const shuffles = <T>(xs: T[]): T[][] => [[...xs].reverse(), [...xs.slice(1), xs[0]], xs.filter((_, i) => i % 2).concat(xs.filter((_, i) => !(i % 2)))];
+
+test("reviewBrief evidence: runs in the same millisecond are ordered by recording sequence, never by outcome or input order", () => {
+  const passFirst = recorded([run("npm run v", 1, { passed: true, outputTail: "v ok" }), run("npm run v", 1, { passed: false, outputTail: "v broke" })]);
+  const failFirst = recorded([run("npm run v", 1, { passed: false, outputTail: "v broke" }), run("npm run v", 1, { passed: true, outputTail: "v ok" })]);
+  for (const runs of [passFirst, [...passFirst].reverse()]) {
+    const ev = evidenceOf(brief({ evidence: { required: [], runs } }));
+    assert.ok(ev.includes("- `npm run v`: failed. Observed"), ev);
+    assert.ok(ev.includes("v broke") && !ev.includes("v ok"));
+    assert.ok(ev.includes(`- Superseded: \`npm run v\` passed here at ${at(1)}`));
+  }
+  for (const runs of [failFirst, [...failFirst].reverse()]) {
+    const ev = evidenceOf(brief({ evidence: { required: [], runs } }));
+    assert.ok(ev.includes("- `npm run v`: passed. Observed"), ev);
+    assert.ok(ev.includes(`- Superseded: \`npm run v\` failed here at ${at(1)}`));
+  }
+});
+
+test("reviewBrief evidence: shuffled runs give the same brief and hash, reports and runs differing only in claim, load or log included", () => {
+  const sha = "e".repeat(64);
+  const runs = recorded([
+    run("first report", 5, { grade: "reported", passed: null, outputTail: undefined }),
+    run("second report", 5, { grade: "reported", passed: null, outputTail: undefined }),
+    run("npm run v", 2, { load: 1 }), run("npm run v", 2, { load: 2, passed: false }),
+    run("npm run v", 2, { log: { key: largeKey("logs", "atelier", "t21", sha), bytes: 10, sha256: sha } }),
+    run("npm run w", 3, { passed: false }), run("npm run w", 3, { passed: true }),
+  ]);
+  const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+  const one = brief({ evidence: { required: [], runs } });
+  for (const order of shuffles(runs)) assert.equal(hash(brief({ evidence: { required: [], runs: order } })), hash(one));
+  const ev = evidenceOf(one);
+  assert.ok(ev.indexOf("first report") < ev.indexOf("second report"));
+  assert.ok(ev.includes("- `npm run w`: passed. Observed"));
+  // Without a sequence (an older server's claim), the order still does not depend on input order.
+  const bare = runs.map(({ seq: _, ...e }) => e);
+  const old = brief({ evidence: { required: [], runs: bare } });
+  for (const order of shuffles(bare)) assert.equal(brief({ evidence: { required: [], runs: order } }), old);
+});
+

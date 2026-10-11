@@ -1047,11 +1047,18 @@ it("carries ad-hoc observed checks at the head into the plan's request and the c
   await L.recordPush(partId, actor, head, head);
   await L.addEvidence(observed(partId, head));
   await L.addEvidence({ ...observed(partId, head), claim: "npm run verify:visual", passed: true, outputTail: "visual: 12 of 12 match", where: "runner" });
+  // Two runs recorded in the same millisecond, a pass and then a failure:
+  // the recording sequence makes the failure the latest.
+  const tie = "2026-10-11T03:00:00.000Z";
+  await L.addEvidence({ ...observed(partId, head), claim: "npm run verify:tie", passed: true, outputTail: "tie passed", where: "runner", at: tie });
+  await L.addEvidence({ ...observed(partId, head), claim: "npm run verify:tie", passed: false, outputTail: "tie failed", where: "runner", at: tie });
   await L.submit(partId, actor);
   const requested = (await events(L, partId)).find((e) => e.kind === "review.requested")!;
   const claim = await L.claimReview(partId, GPT, RUNNER) as unknown as ReviewClaim;
   expect(claim.evidence.required).toEqual(["npm test"]);
-  expect(claim.evidence.runs.map((e) => e.claim)).toEqual(["npm test", "npm run verify:visual"]);
+  expect(claim.evidence.runs.map((e) => e.claim)).toEqual(["npm test", "npm run verify:visual", "npm run verify:tie", "npm run verify:tie"]);
+  const seqs = claim.evidence.runs.map((e) => e.seq!);
+  expect(seqs.every((n, i) => Number.isInteger(n) && (i === 0 || n > seqs[i - 1]))).toBe(true);
   const brief = reviewBrief({
     need: claim.need!, item: claim.item, events: claim.events, plan: claim.plan, diff: null, owner: claim.owner,
     bar: claim.reviewBar, decisions: claim.decisions, evidence: claim.evidence,
@@ -1060,6 +1067,8 @@ it("carries ad-hoc observed checks at the head into the plan's request and the c
   expect(supplemental).toContain("- `npm run verify:visual`: passed. Observed, on aaaaaaaa itself");
   expect(supplemental).toContain("visual: 12 of 12 match");
   expect(brief).not.toContain("verify:stale");
+  expect(supplemental).toContain("- `npm run verify:tie`: failed. Observed");
+  expect(supplemental).toContain(`- Superseded: \`npm run verify:tie\` passed here at ${tie}, recorded by \`owner\`;`);
   let h = 0xcbf29ce484222325n;
   for (let i = 0; i < brief.length; i++) h = ((h ^ BigInt(brief.charCodeAt(i))) * 0x100000001b3n) & 0xffffffffffffffffn;
   expect(requested.data.briefHash).toBe(h.toString(16).padStart(16, "0"));
