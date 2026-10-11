@@ -4,6 +4,21 @@ const spec: CommandSpec = {
   name: "models",
   forms: [
     {
+      group: "Models", line: 1, slot: 60,
+      form: "models admit ID --project NAME --reason TEXT",
+      about: "Owner only: admits a registered model as a reviewer in this project, including its aliases. A known independent family is still required.",
+    },
+    {
+      group: "Models", line: 1, slot: 70,
+      form: "models withdraw ID --project NAME --reason TEXT",
+      about: "Owner only: withdraws reviewer admission and outstanding requests. Past approvals keep their bindings.",
+    },
+    {
+      group: "Models", line: 1, slot: 80,
+      form: "models reviewers --project NAME",
+      about: "Lists the project's reviewer admissions and withdrawals with actor, reason and time.",
+    },
+    {
       group: "Models", line: 1, slot: 10,
       form: "models",
       about: "Lists the model pool: each model's harness, where it runs, its family and what a runner last found.",
@@ -29,15 +44,19 @@ const spec: CommandSpec = {
       about: "Removes a model from the pool.",
     },
   ],
-  flags: { harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, item: false, key: false, "api-key": false, token: false },
+  flags: { reason: false, harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, item: false, key: false, "api-key": false, token: false },
   // The pool itself is listed, added to and pruned on any server; the dated
   // notes, which `note` posts and `show` prints, need models.note.v1.
   subcommands: {
+    admit: { capabilities: ["reviews.admission.v1"] },
+    withdraw: { capabilities: ["reviews.admission.v1"] },
+    reviewers: { capabilities: ["reviews.admission.v1"] },
     note: { capabilities: ["models.note.v1"] },
     show: { capabilities: ["models.note.v1"] },
   },
   help: {
     flags: {
+      "--reason TEXT": "why the owner admits or withdraws a reviewer",
       "--harness H": "the harness that runs the model: opencode, claude-code, codex, zcode, gemini-cli or antigravity",
       "--where home|cloud": "home, a harness on a home runner; cloud, a hosted service",
       "--provider P": "the provider the harness reaches the model through; a cloud opencode model must name one",

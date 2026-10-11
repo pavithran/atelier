@@ -127,7 +127,8 @@ accepted, finishes it after the other landing ends.
 
 The steps in between:
 
-1. The server must be at this CLI's route level or newer. `GET /api/version`
+1. Clients from before capabilities require the server to be at their route
+   level or newer. `GET /api/version`
    reports the commit the server was deployed from (`npm run deploy` records
    it) and its route level, and a landing whose server is older refuses
    before it starts, naming both levels and saying to deploy, since the
@@ -161,7 +162,7 @@ The steps in between:
    (`requireCapabilities`, `cli/atelier.mjs`); `land` alone makes the same
    check itself, after `--release-lease`, which touches only the lease
    route so a stuck lease can be freed while the server is behind, and
-   before the lease is read. `new`, `edit`, `init`, `merge`, `plan refresh`,
+   before the lease is read. `claim`, `start`, `wrap`, `new`, `edit`, `init`, `merge`, `plan refresh`,
    `review`, `review-claim`, `review-unparsable`, `token issue`, `token
    store`, `area`, `board` and the integrator's `integrated`,
    `integration-failed`, `refreshed` and `refresh-failed` declare theirs
@@ -169,7 +170,10 @@ The steps in between:
    `edit` declares the binding a change of criteria withdraws: a command
    declares what any of its flags may ask); a command with none, and
    `help`, `--help` and `--version` of any command, asks nothing, so the
-   offline commands work with no server at all. The home runner checks the
+   offline commands work with no server at all, including `init --rename-local`.
+   The identity consumers (`adopt`, `revert`, `claim`, `start`, `wrap`, `init`, `merge`,
+   `land` and runner jobs) require `projects.commit-identity.v1`;
+   `models admit`, `withdraw` and `reviewers` require `reviews.admission.v1`. The home runner checks the
    union of its jobs' (`JOB_CAPABILITIES`, `src/route-level.ts`) before its
    first poll, the integrator's `integrate` and `refresh` jobs included;
    the review job's include the review skip (`reviews.skip.v1`,
@@ -187,14 +191,20 @@ The steps in between:
    `reviews.unparsable.v1`, 18 `models.note.v1`, 19
    `projects.require-criteria.v1`, 20 `runners.scoped-token.v1`, 21
    `reviews.skip.v1`, 22 `reviews.skip-as-runner.v1`, 23 `areas.manage.v1`
-   and `areas.board.v1`) and nothing else; a capability added later has no
+   and `areas.board.v1`, 24 `projects.commit-identity.v1`, 25
+   `reviews.admission.v1`) and nothing else; a capability added later has no
    level, so a legacy server is refused for it. While the migration lasts
    the number still rises by one with each such change, but gates nothing
    by itself: the change declares the capability it stands for with the
    level it raised the number to, one `declare` line under the capability's
    family in `src/route-level.ts`, apart from the `ROUTE_LEVEL` block, so a
    raise on one side and a declaration on the other, or two declarations
-   under two families, merge cleanly; `test/capabilities.test.mjs` fails a
+   under separated existing families, merge cleanly. Same-family additions
+   and two new families can conflict: retain both declarations and validate
+   their names and legacy levels. Landing refuses automatic numeric raises
+   when named declarations are present: move the task's new declaration
+   levels above main's level along with ROUTE_LEVEL, keeping main's
+   published mappings unchanged, then commit and rerun; `test/capabilities.test.mjs` fails a
    raise that declares nothing, and merges the file three ways to keep that
    shape. The route level, its raise by a change, and atelier land's merge
    arithmetic may be removed once no server this CLI supports answers with

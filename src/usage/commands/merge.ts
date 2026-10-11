@@ -5,7 +5,7 @@ const spec: CommandSpec = {
   // --approve posts the owner's review with the criteria binding it read;
   // an accepted plan whose branch conflicts with main is put back to
   // building through the plan refresh route.
-  capabilities: ["reviews.criteria-binding.v1", "plans.refresh.v1"],
+  capabilities: ["projects.commit-identity.v1", "reviews.criteria-binding.v1", "plans.refresh.v1"],
   forms: [
     {
       group: "Owner", line: 1, slot: 20,
