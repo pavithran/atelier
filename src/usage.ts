@@ -267,6 +267,15 @@ Standing rules:
   observable criterion. A task filed without any draws a warning, and a
   project that requires them (\`atelier init --require-criteria\`) refuses it;
   a review of a task without criteria has nothing to judge the change against.
+  Write with each criterion the edge cases it implies, and have a model of
+  another company than you read the criteria before the task is dispatched.
+- Before asking for the cross-company review, read the diff against the
+  criteria yourself; it does not count at the gate, but it catches plain misses.
+- Resolve a mechanical merge conflict yourself (both sides adding help text,
+  imports, table rows; fixtures regenerated from the code), with your own
+  \`Agent:\` line: you become a contributor, so the reviewer must be of another
+  company than you too. Send a conflict that changes behaviour back to its
+  builder with \`atelier dispatch ID --job merge-main\`.
 - Land one task at a time with \`atelier land ID --reviewer H/M\`, which
   merges main, checks, submits, waits for the independent review, then
   accepts and merges; \`--reviewer H/M\` names a reviewer of another family
@@ -279,8 +288,12 @@ Standing rules:
 - On a stall (a claimed task with no progress), check whether the agent's
   process still runs, then \`atelier handoff\` the task to another model or
   \`atelier release\` it. Do not start the same work twice.
-- After a repeated rejection of the same task, stop resending it: judge the
-  findings, then hand it to a builder from another company or ask the owner.
+- Land the tasks that touch core files first; add to a task's criteria any
+  case a confirmed finding names that they did not state; give each build
+  brief the past review findings on the files in its scope.
+- After two rejections on the same point, stop resending the task to the same
+  builder: judge the findings, then hand it to a builder from another company
+  or ask the owner.
 - Feed what you learn back: \`atelier new "Lesson: …"\` for a rule worth
   keeping, and a task on the atelier project for a missing feature.
 - When the owner settles a question for good (who reviews, the review bar, a
@@ -288,7 +301,9 @@ Standing rules:
   "the owner's words"\`: every review brief and this guide carry the decisions
   that stand, and \`atelier decisions\` lists them.
 
-The detail, with the reasons, is in the handbook, docs/orchestrating.md in the
+The loop step by step (runners, what to watch, the landing queue and each
+landing outcome, conflicts, held dispatches, after each merge) and the detail,
+with the reasons, are in the handbook, docs/orchestrating.md in the
 public repository: https://github.com/pavithran/atelier/blob/main/docs/orchestrating.md.
 \`atelier guide --role orchestrate --full\` prints it.
 `,

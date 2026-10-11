@@ -68,7 +68,7 @@ import { effectiveFailures, failureSummary, resolveFailures } from "./check-fail
 import { getLarge } from "./large.ts";
 import { landingLeasePollMs, type LandingLease } from "./landing-lease.ts";
 import { LANDING_DETAIL_MAX, type LandingWorkflowStage } from "./ledger.ts";
-import { landingVerdict, type LandingReview } from "./landing-verdict.ts";
+import { landingVerdict, allSkipped, type LandingReview } from "./landing-verdict.ts";
 import type { RunRequest } from "./sandbox/runner";
 
 // What the landing-workflow route passes when it creates the instance.
@@ -538,9 +538,14 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         // A named reviewer is wanted even where the gate needs none; with
         // none named the gate decides, and the Ledger suggests the reviewer
         // from the records when it needs one.
-        const r = await L.requestReview(p.item, p.actor, p.reviewer, pool, p.reviewer !== null, false, records);
+        // The live offers go with the ask (t353): a request at this head
+        // every runner offering its reviewer has skipped, left by an earlier
+        // landing, is withdrawn and asked anew, so the runners serve it again.
+        const r = await L.requestReview(p.item, p.actor, p.reviewer, pool, p.reviewer !== null, false, records, await index.runnerOffers());
         if (r.needed && r.reviewer) await L.setLandingWorkflowStage(p.item, p.instance, "review", round, `Reviewer: ${r.reviewer}. ${r.reason}`);
-        return { needed: r.needed, reason: r.reason, at: r.at ?? new Date().toISOString(), reviewer: r.reviewer ?? null };
+        // The request's number travels with the ask (t353): the skips the
+        // wait counts are that request's alone.
+        return { needed: r.needed, reason: r.reason, at: r.at ?? new Date().toISOString(), reviewer: r.reviewer ?? null, request: r.request ?? null };
       } catch (error) {
         throw new NonRetryableError(this.refusal(error));
       }
@@ -567,6 +572,22 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         }
         await step.do("record the approved review", RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "approve", reviewer: poll.by, resolvedBy: poll.by }); return {}; });
         return;
+      }
+      // t353: a review request every runner that offers the reviewer has
+      // skipped will never be claimed, however long the wait runs. Asked once
+      // a poll, so the landing says so by runner name instead of waiting out
+      // the hour. The skips counted are this request's alone, by its number:
+      // an earlier request's at the same head are that request's.
+      if (ask.reviewer && ask.request !== null) {
+        const stuck = await step.do(`see whether every reviewer skipped #${i}`, RETRIES, async () => {
+          const offers = await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers();
+          const runners = allSkipped(ask.reviewer!, offers, await L.reviewSkips(p.item, ask.request!));
+          return runners ? { runners } : null;
+        });
+        if (stuck) {
+          await step.do("record the skipped review", RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "skipped", reviewer: ask.reviewer, runners: stuck.runners }); return {}; });
+          throw new NonRetryableError(`every runner that offers ${ask.reviewer} for the review of ${p.item} at ${short(head)} has skipped it: ${stuck.runners.join(", ")}. The review request stays open and ${p.item} stays submitted. Review by hand (atelier review ${p.item} --approve --as ${ask.reviewer} --note "…"), then atelier accept ${p.item} and atelier merge ${p.item}, or run atelier land ${p.item} --workflow again, which asks the review anew for the runners to serve`);
+        }
       }
       if (i + 1 >= maxPolls) {
         await step.do("record the review timeout", RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "timeout", ...(ask.reviewer ? { reviewer: ask.reviewer } : {}) }); return {}; });
