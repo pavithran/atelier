@@ -477,6 +477,32 @@ it("the landing's steps are recorded as land.* events with their duration, and a
   await refusal(L.landEvent(id, OPUS, "merge", 5, {}), "not_project_owner", /only the project owner records/);
 });
 
+it("a triage is recorded as its own land.triage step, by the project owner alone, and changes no review, round or gate decision (t475)", async () => {
+  const L = await setup("land-triage");
+  const id = (await L.newItem("Landing", ["src/**"], "owner")).id;
+  const detail = async () => (await L.detail(id)) as unknown as { reviews: unknown[]; gate: unknown };
+  const before = await detail();
+  const binding = { head: "a".repeat(40), base: "b".repeat(40), criteria: "c".repeat(64) };
+  await L.landEvent(id, "owner", "triage", 4000, { ...binding, outcome: "stopped", triager: GPT, statuses: ["1:met", "2:not-met"], reason: "criterion 2 not met" });
+  await L.landEvent(id, "owner", "triage", 0, { ...binding, outcome: "overridden", triager: GPT, reason: "checked by hand" });
+  await L.landEvent(id, "owner", "triage", 0, { ...binding, outcome: "bypassed", reason: "hotfix" });
+  const recorded = (await events(L, id)).filter((e) => e.kind === "land.triage").sort((a, b) => a.seq - b.seq);
+  expect(recorded.map((e) => [e.actor, e.data.outcome, e.data.head, e.data.base, e.data.criteria, e.data.reason])).toEqual([
+    ["owner", "stopped", binding.head, binding.base, binding.criteria, "criterion 2 not met"],
+    ["owner", "overridden", binding.head, binding.base, binding.criteria, "checked by hand"],
+    ["owner", "bypassed", binding.head, binding.base, binding.criteria, "hotfix"],
+  ]);
+  expect(recorded[0].data).toMatchObject({ triager: GPT, statuses: ["1:met", "2:not-met"] });
+  // Only the project owner records a triage, its bypass or its override.
+  await refusal(L.landEvent(id, OPUS, "triage", 0, { ...binding, outcome: "bypassed", reason: "mine" }), "not_project_owner", /only the project owner records/);
+  await refusal(L.landEvent(id, "owner", "triage", 0, { ...binding, outcome: 3 }), "bad_field", /outcome must be text/);
+  // Triage is not a review: the item's reviews and its gate are as they were.
+  const after = await detail();
+  expect(after.reviews).toEqual(before.reviews);
+  expect(after.gate).toEqual(before.gate);
+  expect((await events(L, id)).some((e) => e.kind.startsWith("review."))).toBe(false);
+});
+
 it("a merge step with more commits from main than its record has room for is cut to the first hashes with the count, not refused", async () => {
   const L = await setup("land-cut");
   const id = (await L.newItem("Landing", [], "owner")).id;
