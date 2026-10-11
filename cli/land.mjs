@@ -1118,7 +1118,11 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, moved }) {
   const leasePath = `/projects/${encodeURIComponent(name)}/landing-lease`;
   const record = landRecorder(io, itemPath);
   const sleep = () => new Promise((ok) => setTimeout(ok, POLL_MS));
-  const send = (type, payload) => request("POST", wfPath, { event: { type, payload } });
+  // Each event and lease call names the instance this command attached to,
+  // so once the server replaces it (t430) they are refused rather than
+  // advance the replacement or touch its lease.
+  let started;
+  const send = (type, payload) => request("POST", wfPath, { event: { type, payload }, instance: started.instance });
 
   // Start, or attach to the task's live instance. An accepted task has
   // nothing left but its merge: it is landed through a live instance at
@@ -1127,7 +1131,6 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, moved }) {
   try { current = await request("GET", wfPath); } catch (error) { die(error.message); }
   const live = !!current?.instance && LIVE.includes(current.status?.status);
   if (d0.item.state === "accepted" && !live) die(`${id} is accepted at ${short(d0.item.acceptedHead)}; merge it with: atelier merge ${id}.`);
-  let started;
   try { started = await request("POST", wfPath, { checks: askedChecks, ...(reviewer ? { reviewer } : {}), ...(noReview ? { noReview: true } : {}) }); }
   catch (error) { die(error.message); }
   // The mode is the instance's, as the server recorded it: a live instance
@@ -1136,12 +1139,17 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, moved }) {
   const checksMode = started.checks === "local" ? "local" : "container";
   if (!started.checks && askedChecks === "local") print("Warning: the server recorded no checks mode for this landing, so it predates them and runs the required checks in a Cloudflare container; deploy the server for --checks local.");
   else if (!started.created && args.checks !== undefined && args.checks !== checksMode) print(`The live instance keeps the checks mode it was started with (${checksMode}); --checks applies to a new landing.`);
-  print(started.created
+  // A live instance the server replaced rather than attach to (t430): it
+  // waited for the lease past the limit, or the reviewer it was started
+  // with is no longer eligible and this run named one who is.
+  if (started.replaced) print(`Replaced ${id}'s landing Workflow ${started.replaced.from} with ${started.replaced.to} (${started.replaced.reason}): ${started.replaced.detail}.`);
+  if (started.reviewerRefused) print(`Warning: ${started.reviewerRefused}; the live instance keeps its reviewer.`);
+  print(started.created || started.replaced
     ? (checksMode === "local"
       ? `Landing ${id} as a Cloudflare Workflow (instance ${started.instance}). The Workflow takes ${name}'s landing lease and runs the submission, the review and the acceptance on Cloudflare as durable steps; this machine merges main, pushes, runs the required checks in a clean clone (checks mode local) and merges when the Workflow asks, and the Workflow goes on only once the server has recorded every check passing at the pushed head. If this command stops, run atelier land ${id} --workflow again to attach.`
       : `Landing ${id} as a Cloudflare Workflow (instance ${started.instance}). The Workflow takes ${name}'s landing lease and runs the checks (in a Cloudflare container), the submission, the review and the acceptance on Cloudflare as durable steps; this machine merges main, pushes and merges when the Workflow asks. If this command stops, run atelier land ${id} --workflow again to attach.`)
     : `Attached to ${id}'s landing Workflow (instance ${started.instance}, at ${started.stage ?? "its start"}).`);
-  if (!started.created && (reviewer || noReview)) print("The live instance keeps the review options it was started with; --reviewer and --no-review apply to a new landing.");
+  if (!started.created && !started.replaced && !started.reviewerRefused && ((reviewer && reviewer !== started.reviewer) || (noReview && started.noReview !== true))) print(`The live instance keeps the review options it was started with (${started.noReview ? "--no-review" : started.reviewer ? `reviewer ${started.reviewer}` : "the reviewer the gate picks"}); --reviewer and --no-review apply to a new landing.`);
 
   // The pause on a conflict, ended: the owner resolved and committed the
   // conflicts (the preflight saw the workspace clean), so the Workflow is
@@ -1160,8 +1168,8 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, moved }) {
   const guard = () => { if (lost) throw new StepError(`the landing lease of ${name} is no longer ${id}'s (${lost}); the landing Workflow stops at its next step. Run atelier land ${id} --workflow again once the other landing ends`); };
   const heartbeat = () => {
     const timer = setInterval(async () => {
-      try { await request("POST", leasePath, { item: id, renew: true }); }
-      catch (error) { if (/no_lease|landing_lease|held for|no landing lease/.test(error.message)) lost = error.message; }
+      try { await request("POST", leasePath, { item: id, renew: true, instance: started.instance }); }
+      catch (error) { if (/no_lease|landing_lease|stale_landing|held for|no landing lease|no longer/.test(error.message)) lost = error.message; }
     }, LEASE_RENEW_MS);
     timer.unref?.();
     return () => clearInterval(timer);
