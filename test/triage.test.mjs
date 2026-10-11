@@ -307,9 +307,10 @@ test("a triage model the pool refuses, or a task with no criteria, stops before 
 });
 
 test("criteria that change while the model triages are triaged again before the submission, and a change after the submission stops before the review request, saying the task is submitted (t475)", async (t) => {
-  // The item is read before the triage, after it (changed: triage again),
+  // The item is read once as the landing starts (the post-merge resume
+  // check, t477), then before the triage, after it (changed: triage again),
   // before the second, after it, and so on.
-  const during = landing(t, { args: { triage: "codex/gpt-6-astra", "no-review": true }, criteria: (reads) => (reads < 3 ? CRITERIA : [...CRITERIA, "A third"]), answers: [allMet(2), allMet(3)] });
+  const during = landing(t, { args: { triage: "codex/gpt-6-astra", "no-review": true }, criteria: (reads) => (reads < 4 ? CRITERIA : [...CRITERIA, "A third"]), answers: [allMet(2), allMet(3)] });
   await runLand(during.io);
   assert.equal(during.asked.length, 2);
   assert.match(during.asked[1].brief, /3\. A third/);
