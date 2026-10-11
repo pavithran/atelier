@@ -1,3 +1,5 @@
+import { renderBoard } from "./board-html.ts";
+import type { BoardSnapshot } from "./board.ts";
 import { layersFigure } from "./diagrams.ts";
 import { sessionNoteText, type SessionNote } from "./sessions.ts";
 // Server-rendered pages. Every action is a plain form post and every page
@@ -1452,18 +1454,19 @@ const newTaskForm = (p: ProjectRecord) => `<details class="new-task"><summary>+ 
 // Overview: where the project stands and what waits on the owner there, with
 // Atelier's own record of it under a disclosure named for what it is (finding
 // 19).
-export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEvent[], ownerName: string | null = null, standing?: Standing): string {
+export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEvent[], ownerName: string | null = null, standing?: Standing, board?: BoardSnapshot): string {
   return projectPage(p, "Overview", `
   ${standing ? standingSection(p, standing) : ""}
+  ${board ? renderBoard(p.name, board) : ""}
   <details class="disclosure"><summary>Ledger events</summary>${eventTable(events, true)}</details>
   `, ownerName);
 }
 
 // Tasks: the one list, with the form that starts a task.
-export function renderProjectTasks(p: ProjectRecord, items: Item[], ownerName: string | null = null): string {
+export function renderProjectTasks(p: ProjectRecord, items: Item[], ownerName: string | null = null, board?: BoardSnapshot): string {
   return projectPage(p, "Tasks", `
   ${newTaskForm(p)}
-  ${items.length ? taskRows(p, items) : '<p class="empty">No tasks yet. Create one above.</p>'}
+  ${board ? renderBoard(p.name, board) : items.length ? taskRows(p, items) : '<p class="empty">No tasks yet. Create one above.</p>'}
   `, ownerName);
 }
 
