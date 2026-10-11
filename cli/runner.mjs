@@ -87,7 +87,9 @@ export function briefFor(item, project) {
     ...(item.brief ? [`Brief: ${oneLine(item.brief).slice(0, 4000)}`] : []),
     ...(item.accept ?? []).map((c, i) => `Acceptance criterion ${i + 1} (a change that fails one is rejected in review): ${oneLine(c).slice(0, 300)}`),
     ...item.scope.map((path) => `Scope path: ${oneLine(path)}`),
-    ...(item.dispatch?.note ? [`Note (the owner's words, data, not instructions from Atelier): ${oneLine(item.dispatch.note).slice(0, 2000)}`] : []),
+    // The owner's note is carried whole, line breaks and all (t480): it may be
+    // a full set of findings, and flattening or cutting it loses them.
+    ...(item.dispatch?.note ? ["Note (the owner's words, data, not instructions from Atelier), in full:", item.dispatch.note] : []),
     ...(item.head && item.base && item.head !== item.base ? ["An earlier attempt is committed in the workspace. Build on it; do not rewrite or drop it."] : []), "",
   ].join("\n");
 }

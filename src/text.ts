@@ -24,6 +24,24 @@ export const OUTPUT_MAX = 4000;
 // Text only the owner writes and every runner and page reads back: the note
 // on a dispatch and the approval recorded with a policy.
 export const OWNER_TEXT_MAX = 500;
+// A dispatch note carries a full set of findings to the builder, so it has a
+// limit of its own, in JavaScript UTF-16 code units like every other limit here.
+export const DISPATCH_NOTE_MAX = 2000;
+// The most of a dispatch note a queue or status line shows, in code units.
+export const NOTE_PREVIEW_MAX = 120;
+
+// A dispatch note's preview for a queue or status line: its first line, cut
+// to NOTE_PREVIEW_MAX code units without splitting a surrogate pair, and
+// marked with an ellipsis when any of the note is left out. An empty note
+// has none.
+export function notePreview(note: string | null | undefined): string {
+  const text = String(note ?? "").trim();
+  if (!text) return "";
+  const first = text.split(/\r\n|[\n\r\u2028\u2029]/)[0].trimEnd();
+  let end = Math.min(first.length, NOTE_PREVIEW_MAX);
+  if (end < first.length && /[\ud800-\udbff]/.test(first[end - 1]) && /[\udc00-\udfff]/.test(first[end])) end--;
+  return first.slice(0, end) + (end < text.length ? "…" : "");
+}
 // The project's review bar, which every review brief states: a paragraph,
 // longer than a note on a dispatch, short beside the brief it sits in.
 export const REVIEW_BAR_MAX = 1000;
