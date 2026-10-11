@@ -25,7 +25,7 @@ import { MODEL_PROFILES, type ModelProfile } from "../models/registry.ts";
 import { byPrecision, precisionLine, precisionOf, type PrecisionRecord } from "../models/precision.ts";
 import { paidPerToken, SIZE_M_CONTEXT, type Availability, type Choice, type PartRoute } from "../plans/route.ts";
 import type { PlanPart } from "../plans/schema.ts";
-import { assertEligible, DEFAULT_OWNER, hasRole, parseRuleError, sameActor, type Item, type ProjectPolicy } from "../rules.ts";
+import { assertEligible, DEFAULT_OWNER, hasRole, independentReviewerText, parseRuleError, sameActor, singleFamily, type Item, type ProjectPolicy } from "../rules.ts";
 import { actorFamily, contributorsOf, describeContributors, familyRefusal } from "./independence.ts";
 
 export interface PickInput {
@@ -63,7 +63,10 @@ export function pickReviewer(input: PickInput): ReviewerPick {
   const contributors = contributorsOf(input.item);
   const none = (unpicked: string, passedOver: Choice[] = []): ReviewerPick => ({ reviewer: null, passedOver, unpicked });
   if (!contributors.length) return none("no contributor is recorded for this item, so no reviewer can be shown to be independent of its authors");
-  const unknown = contributors.filter((c) => actorFamily(c) === "other");
+  // Under single-family mode the reviewer is compared by model, not family,
+  // so a contributor whose family is not recognised rules out nothing.
+  const single = singleFamily(input.policy);
+  const unknown = single ? [] : contributors.filter((c) => actorFamily(c) === "other");
   if (unknown.length) {
     return none(`no reviewer can be of another family than ${unknown.join(", ")}, whose family is not recognised from ${unknown.length === 1 ? "its name" : "their names"}`);
   }
@@ -110,7 +113,7 @@ export function pickReviewer(input: PickInput): ReviewerPick {
     return { reviewer: { actor: actorOf(entry), reasons: [...lead, position(source, input), ...judged.passed, ...said] }, passedOver, unpicked: null };
   }
   const tried = passedOver.length ? passedOver.map((c) => `${c.actor} (${c.reasons.join("; ")})`).join(", ") : "no model in the pool";
-  return none(`no reviewer of another family than every contributor (${describeContributors(contributors)}): ${tried}`, passedOver);
+  return none(`${single ? `no reviewer that is ${independentReviewerText(single)}` : "no reviewer of another family than every contributor"} (${describeContributors(contributors)}): ${tried}`, passedOver);
 }
 
 function position(source: Source, input: PickInput): string {
@@ -135,10 +138,14 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
 
   // A contributor under another letter case, profile or registered name of
   // this entry's model, in the same harness, is this entry.
+  // The same model under another harness fails the family rule below, which
+  // names it as the contributor's model.
   if (contributors.some((c) => names.some((name) => sameActor(name, c)))) failed.push("contributed to this item, and nobody reviews their own work");
   else {
-    const family = familyRefusal(actor, contributors);
+    const single = singleFamily(policy);
+    const family = familyRefusal(actor, contributors, single);
     if (family) failed.push(family);
+    else if (single) passed.push(`A different ${single} model from every contributor, as single-family mode asks: ${describeContributors(contributors)}`);
     else passed.push(`Another family (${actorFamily(actor)}) than every contributor: ${describeContributors(contributors)}`);
   }
 
@@ -188,6 +195,8 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
   return { failed, passed };
 }
 
+// The company single-family mode allows is judged by assertEligible too;
+// familyRefusal above already says that refusal in its own words (t394).
 function eligibility(actor: string, policy: ProjectPolicy, owner: string): string | null {
   try {
     assertEligible(actor, policy, owner, "assessor");
@@ -195,7 +204,7 @@ function eligibility(actor: string, policy: ProjectPolicy, owner: string): strin
   } catch (err) {
     const rule = parseRuleError(err);
     if (!rule) throw err;
-    return rule.detail;
+    return rule.code === "single_family" ? null : rule.detail;
   }
 }
 

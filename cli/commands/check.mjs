@@ -2,6 +2,7 @@
 import { prepareChecks } from "../../src/check-preparation.ts";
 import { join } from "node:path";
 import { checkApplies } from "../../src/rules.ts";
+import { LOCAL_OUTPUT_TAIL } from "../../src/check-failure.ts";
 import { appliesText, refusalOf, refusalText } from "../../src/checks.ts";
 import { CLEAN_CLONE, I, OWNER_NAME, actor, apiToken, args, at, call, checkInSandbox, cleanClone, cliState, die, doneChecks, itemArg, mergeWithMain, postEvidence, project, removeClone, runCheck, short, workspacePath, workspaceTokens } from "../atelier.mjs";
 
@@ -60,7 +61,7 @@ export default async function checkCommand() {
       // when the reply carries none. A merged check measures no paths.
       const d = await postEvidence(`${I(name, id)}/evidence`, {
         kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed,
-        outputTail: `${r.output.slice(-3500)}\n[sha256 of full output: ${r.sha}]`,
+        outputTail: `${r.output.slice(-LOCAL_OUTPUT_TAIL)}\n[sha256 of full output: ${r.sha}]`,
         ...(mainHead ? { merged: true, mainHead } : {}),
       }, as);
       const row = d?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd && !e.merged).at(-1);

@@ -1,0 +1,31 @@
+PASS src/sum.test.js
+FAIL src/cap.test.js
+  cap
+    ✓ adds numbers (2 ms)
+    ✕ fails: the cap is enforced (5 ms)
+  a suite
+    ✕ fails inside: names are read (1 ms)
+
+  ● cap › fails: the cap is enforced
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 2
+    Received: 1
+
+      3 |   test("fails: the cap is enforced", () => {
+    > 4 |     expect(1).toBe(2);
+        |               ^
+
+  ● a suite › fails inside: names are read
+
+    boom
+
+      7 |     throw new Error("boom");
+        |           ^
+
+Test Suites: 1 failed, 1 passed, 2 total
+Tests:       2 failed, 2 passed, 4 total
+Snapshots:   0 total
+Time:        0.812 s
+Ran all test suites.

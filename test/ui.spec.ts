@@ -147,10 +147,23 @@ it('the dispatch and withdraw forms carry the revision, as every other form does
   const send = renderItem(project, d, 'PAVI', null);
   const sendForm = send.slice(send.indexOf('action="/ui/example/t1/dispatch"'));
   expect(sendForm.slice(0, 200)).toContain(`name="head" value="${head}"`);
+  // The page takes a note as long as the CLI's (t480): a full set of findings.
+  expect(sendForm).toContain('<textarea name="note" rows="4" maxlength="2000"></textarea>');
   d.item.dispatch = { to: 'home', agent: null, model: null, by: 'pavi', at: time, note: '' };
   const wait = renderItem(project, d, 'PAVI', null);
   const withdraw = wait.slice(wait.indexOf('action="/ui/example/t1/undispatch"'));
   expect(withdraw.slice(0, 200)).toContain(`name="head" value="${head}"`);
+});
+
+it('the task page shows a waiting dispatch note whole, line breaks kept and escaped (t480)', () => {
+  const d = detail();
+  d.item.state = 'open'; d.item.owner = null;
+  d.item.dispatch = { to: 'home', agent: null, model: null, by: 'pavi', at: time, note: 'Findings:\n1. <b>first</b>\n2. second' };
+  const html = renderItem(project, d, 'PAVI', null);
+  expect(html).toContain('<p class="dispatch-note">Findings:\n1. &lt;b&gt;first&lt;/b&gt;\n2. second</p>');
+  expect(html).not.toContain('<b>first</b>');
+  // The page's own stylesheet keeps those breaks on screen.
+  expect(html).toMatch(/\.dispatch-note \{ white-space: pre-wrap;/);
 });
 
 // ── flow ──
@@ -930,7 +943,7 @@ async function standingFixture(over:Partial<{approval:string}>={}){
  const items=[
   {...base,id:'t1',title:'Held <b>task</b>',state:'claimed',owner:'claude-code/opus-5.5'},
   {...base,id:'t2',title:'Ready task',state:'submitted',owner:'codex/gpt-6',head},
-  {...base,id:'t3',title:'Queued task',state:'open',owner:null,dispatch:{to:'home',agent:'codex',model:'gpt-6',by:'pavi',at:at(5),note:'<i>small</i>'}},
+  {...base,id:'t3',title:'Queued task',state:'open',owner:null,dispatch:{to:'home',agent:'codex',model:'gpt-6',by:'pavi',at:at(5),note:'<i>small</i>\nSecond line of the findings'}},
   ...[4,5,6,7,8,9,10].map((n)=>({...base,id:`t${n}`,title:`Merged ${n}`,state:'merged',owner:null,acceptedHead:head,updatedAt:at(n+6)})),
  ] as never[];
  const evs=[
@@ -958,6 +971,8 @@ it('the Overview tab leads with where the project stands: waiting with a brief, 
  expect(sec).toContain('Waiting on the owner');expect(sec).toContain('all checks observed passing · brief, accept: 1 of 1 required checks passed at this revision and nothing blocks it.');
  expect(sec).not.toContain('bad');expect(sec).toContain('Ready to accept');
  expect(sec).toContain('Queued for a runner');expect(sec).toContain('for home codex/gpt-6 · sent by pavi');
+ // A queued row shows the note's first-line preview; the whole note is the task page's (t480).
+ expect(sec).toContain(' · &lt;i&gt;small&lt;/i&gt;…</span>');expect(sec).not.toContain('Second line of the findings');
  expect(sec).toContain('Last merges');
  expect((sec.match(/href="\/p\/example\/t(?:4|5|6|7|8|9|10)"/g)||[]).length).toBe(5);
  expect(sec).toContain('Merged 10');expect(sec).toContain('Merged &lt;u&gt;summary&lt;/u&gt;');
@@ -979,6 +994,38 @@ it('the standing section and the Settings tab escape everything a person or agen
  const settings=f.renderProjectSettings(f.p);
  for(const esc of ['ControlPlane policy, approved: &lt;b&gt;PAVI&lt;/b&gt;','Protected areas: src/**. Eligible agents: claude. Overlapping claims: refused.'])expect(settings).toContain(esc);
  expect(settings).not.toContain('<b>PAVI</b>');
+});
+// t394: a project on one company's models says so under its title on every
+// tab, on the Settings tab under Models, and in the standing data; the
+// default names the mode on Settings alone, with a recorded return.
+it('single-family mode is named under the project title on every tab, on Settings, and in the standing data',async()=>{
+ const f=await standingFixture();
+ const mode={single:'anthropic' as const,by:'<b>pavi</b>',at:'2026-10-09T10:00:00.000Z'};
+ const single:ProjectRecord={...f.p,policy:{...f.p.policy,familyMode:mode}};
+ const banner='Single-family mode, anthropic: building and reviewing use anthropic models only, and a review counts from a different anthropic model than every contributor, not from another company (set by &lt;b&gt;pavi&lt;/b&gt; on 2026-10-09).';
+ for(const page of [f.renderProject(single,f.items as never,f.evs as never,'PAVI'),f.renderProjectTasks(single,f.items as never),f.renderProjectSettings(single)]){
+  expect(page).toContain(`<p class="meta family-mode" role="note">${banner}</p>`);
+  expect(page).not.toContain('<b>pavi</b>');
+ }
+ expect(f.renderProjectSettings(single)).toContain('<dt>Models</dt><dd>Single-family mode, anthropic:');
+ expect(f.buildStanding(single,f.items,f.tasks,300,f.inbox,f.details,f.now).familyMode).toEqual(mode);
+ // The default: no banner, Settings says cross-family, and a recorded return names who and when.
+ const plain=f.renderProjectSettings(f.p);
+ expect(plain).not.toContain('family-mode');
+ expect(plain).toContain('<dt>Models</dt><dd>Cross-family, the default: a protected change needs approval from a model of another company than every contributor</dd>');
+ expect(f.buildStanding(f.p,f.items,f.tasks,300,f.inbox,f.details,f.now).familyMode).toBeNull();
+ const returned:ProjectRecord={...f.p,policy:{...f.p.policy,familyMode:{single:null,by:'pavi',at:'2026-10-10T10:00:00.000Z'}}};
+ expect(f.renderProject(returned,f.items as never,f.evs as never,'PAVI')).not.toContain('family-mode');
+ expect(f.renderProjectSettings(returned)).toContain('<dt>Models</dt><dd>Cross-family, the default: a protected change needs approval from a model of another company than every contributor (set by pavi on 2026-10-10)</dd>');
+ // The task page's ask for a review names the mode too.
+ const d=detail();
+ const task=renderItem(single,{...d,policy:single.policy},'PAVI',null);
+ expect(task).toContain('a different anthropic model than every contributor (single-family mode)');
+ expect(renderItem(f.p,d,'PAVI',null)).not.toContain('single-family');
+ const strict={...single,policy:{...single.policy,noOverride:true}};
+ const strictPage=renderItem(strict,{...d,policy:strict.policy},'PAVI',{head,base:'b'.repeat(40),files:[],truncated:false});
+ expect(strictPage).toContain('the revision lands only with an approval from a different anthropic model from every contributor (single-family mode).');
+ expect(strictPage).not.toContain('the revision lands only with an approval from a model of another family');
 });
 it('the standing data lists the last five merges newest first, with the agent\'s summary, and empty parts are left out',async()=>{
  const f=await standingFixture();
@@ -1437,6 +1484,11 @@ it('Plans draws each plan as one unit with its parts, their state and why each w
  expect(html).toContain('Ship &lt;the&gt; thing');
  expect(html).toContain('built by claude-code/opus-5.5: Rank 1 of 3 eligible for feature work, score 0.72');
  expect(html).toContain('reviewer zcode/glm-5.3, of another family');
+ const single={...project,policy:{...project.policy,familyMode:{single:'anthropic' as const,by:'pavi',at:when}}};
+ const singleView={...view,parts:view.parts.map(part=>({...part,route:{...part.route,reviewer:{actor:'claude-code/sonnet-5.5',reasons:[]}}}))};
+ const singleHtml=renderProjectPlans(single,[singleView as never],'PAVI');
+ expect(singleHtml).toContain('reviewer claude-code/sonnet-5.5, a different anthropic model from every contributor (single-family mode)');
+ expect(singleHtml).not.toContain('of another family');
  expect(html).toContain('attempts: codex/gpt-6-astra released with no commit');
  expect(html).toContain('queued for zcode/glm-5.3');
  expect(html).toContain('depends on a (t6)');
