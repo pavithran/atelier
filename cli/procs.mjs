@@ -74,7 +74,11 @@ export function liveProcesses({ ps, lsof, work, skip = [], project = null }) {
   const runners = ps.filter((p) => !skipped.has(p.pid) && isRunner(p.args)).map((p) => {
     const tasks = new Set();
     for (const a of agents) {
-      for (let at = byPid.get(a.pid); at; at = byPid.get(at.ppid)) if (at.ppid === p.pid) { tasks.add(a.id); break; }
+      const seen = new Set();
+      for (let at = byPid.get(a.pid); at && !seen.has(at.pid); at = byPid.get(at.ppid)) {
+        seen.add(at.pid);
+        if (at.ppid === p.pid) { tasks.add(a.id); break; }
+      }
     }
     return { pid: p.pid, name: runnerName(p.args), age: age(p.etime), tasks: [...tasks].sort() };
   });

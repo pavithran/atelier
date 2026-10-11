@@ -38,8 +38,8 @@ import type { PartRoute } from "./plans/route.ts";
 // refreshes itself, in seconds, or nothing for the scrubber alone.
 export interface Live { nonce: string; refresh?: number }
 import {
-  bindingOf, DEFAULT_OWNER, decisionFor, evidenceAt, isOwnCall, latestReviews, mergedChecksAt, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey,
-  type Evidence, type Gate, type InboxEntry, type Item, type MergedCheckView, type ProjectPolicy, type Review, type UnparsableReply,
+  bindingOf, confirmationAt, DEFAULT_OWNER, decisionFor, evidenceAt, isOwnCall, latestReviews, mergedByOverride, mergedChecksAt, NO_OWNER_FACTOR, OVERRIDE_CONFIRMATION_MS, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey,
+  type Evidence, type Gate, type InboxEntry, type Item, type MergedCheckView, type OwnerFactor, type ProjectPolicy, type Review, type UnparsableReply,
 } from "./rules";
 
 // What a page calls a project: its title when it has one, else its name. Links,
@@ -156,7 +156,13 @@ export function publicPage(o: { title: string; description: string; brand: strin
 }
 
 export interface Detail {
+  runs?: import("./models/reliability").RunReport[];
   ownerActor?: string;
+  // The factor the server takes as the owner's confirmation of an override
+  // (t371): the Access identity, the confirmation secret, or null for a
+  // server with neither, which offers no override form. Unset where the
+  // page is drawn without a server, as a null.
+  ownerFactor?: OwnerFactor | null;
   item: Item;
   policy: ProjectPolicy;
   evidence: Evidence[];
@@ -749,6 +755,7 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
   <p class="meta">${r.claimed ? `Took ${plural(r.claimed, "task")}, merged ${r.merges}; checks ${r.pass} passed, ${r.fail} failed; sent back ${plural(r.back, "time")}.` : "No work recorded yet."}</p>
   ${across.map((x) => `<p class="meta">Across projects${across.length > 1 ? ` as <code>${e(x.model)}</code>` : ""}: ${e(reliabilityLine(x))}</p>`).join("")}
   ${m.note ? `<p class="meta">${e(m.note)}</p>` : ""}
+  ${[...(m.notes ?? [])].reverse().map((n) => `<p class="meta model-note">${when(n.at)} · ${e(n.by)}${n.item ? ` on <code>${n.project ? `${e(n.projectName ?? n.project)}/` : ""}${e(n.item)}</code>` : ""}: ${e(n.text)}</p>`).join("")}
   <form method="post" action="/models/remove" class="inline model-remove"><input type="hidden" name="id" value="${e(m.id)}"><button class="quiet">Remove</button></form>
 </li>`;
   };
@@ -1254,6 +1261,10 @@ export interface Standing {
   waiting: { id: string; title: string; kind: InboxEntry["kind"]; kinds: InboxEntry["kind"][]; reason: string; brief: { verdict: string; line: string } | null }[];
   queued: { id: string; title: string; to: string; agent: string | null; model: string | null; by: string; at: string; note: string }[];
   merged: { id: string; title: string; at: string; commit: string | null; line: string | null }[];
+  // Every merge that went in on the owner's override of the independent
+  // review (t371), newest first, with the reason recorded; `overrides.length`
+  // is the count the page and `atelier status` show.
+  overrides: { id: string; title: string; at: string; reason: string }[];
   handoffs: { id: string; title: string; from: string; to: string; note: string; at: string }[];
   controlPlane: { approval: string; protected: string[]; eligible: string[]; refuseOverlap: boolean } | null;
   // Each registered check, its class, that class in words (src/checks.ts),
@@ -1341,7 +1352,9 @@ export function buildStanding(
     queued: items.filter((i) => i.state === "open" && !i.owner && i.dispatch).map((i) => ({
       id: i.id, title: i.title, to: i.dispatch!.to, agent: i.dispatch!.agent ?? null, model: i.dispatch!.model ?? null, by: i.dispatch!.by, at: i.dispatch!.at, note: i.dispatch!.note ?? "",
     })),
-    merged, handoffs,
+    merged,
+    overrides: mergedByOverride(items).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((i) => ({ id: i.id, title: i.title, at: i.reviewOverride!.at, reason: i.reviewOverride!.reason })),
+    handoffs,
     // A project governed by ControlPlane carries the owner's recorded approval.
     controlPlane: p.policy.approval
       ? { approval: p.policy.approval, protected: p.policy.protected, eligible: p.policy.eligible ?? [], refuseOverlap: !!p.policy.refuseOverlap }
@@ -1363,10 +1376,12 @@ function standingSection(p: ProjectRecord, s: Standing): string {
     group("Waiting on the owner", s.waiting.map((w) => `<li>${link(w.id)} <strong>${e(w.title)}</strong>${tag(KIND[w.kind][0], KIND[w.kind][1])}<span class="meta">${e(w.reason)}${w.brief ? ` · brief, ${e(w.brief.verdict)}: ${e(w.brief.line)}` : ""}</span></li>`)),
     group("Queued for a runner", s.queued.map((q) => `<li>${link(q.id)} <strong>${e(q.title)}</strong><span class="meta">for ${e(runner(q))} · sent by ${e(q.by)} ${e(when(q.at))}${q.note ? ` · ${e(q.note)}` : ""}</span></li>`)),
     group("Last merges", s.merged.map((m) => `<li>${link(m.id)} <strong>${e(m.title)}</strong><span class="meta">${e(when(m.at))}${m.commit ? ` · <code>${e(m.commit.slice(0, 8))}</code>` : ""}${m.line ? ` · ${e(m.line)}` : ""}</span></li>`)),
+    // Every merge by override, each linked, under the count the lead line gives (t371).
+    group(`Merged by override: ${plural((s.overrides ?? []).length, "merge")}`, (s.overrides ?? []).map((o) => `<li>${link(o.id)} <strong>${e(o.title)}</strong><span class="meta">${e(when(o.at))} · the owner's override, not a review: ${e(o.reason)}</span></li>`)),
     group("Handoff notes", s.handoffs.map((h) => `<li>${link(h.id)} <strong>${e(h.title)}</strong><span class="meta">${e(h.from || "?")} to ${e(h.to || "?")}, ${e(when(h.at))}: ${e(h.note)}</span></li>`)),
   ].join("");
-  const inHand = s.live.length;
-  const lead = `<p class="meta">${plural(inHand, "task")} in hand${s.waiting.length ? ` · ${plural(s.waiting.length, "thing")} waiting on you here` : ""} · <a href="${href("p", p.name, "tasks")}">the whole task list</a></p>`;
+  const inHand = s.live.length, byOverride = (s.overrides ?? []).length;
+  const lead = `<p class="meta">${plural(inHand, "task")} in hand${s.waiting.length ? ` · ${plural(s.waiting.length, "thing")} waiting on you here` : ""} · <span class="merged-by-override">${plural(byOverride, "merge")} by override</span> · <a href="${href("p", p.name, "tasks")}">the whole task list</a></p>`;
   return `<section class="standing" id="standing" aria-label="Where it stands">
   <h2 class="section-title">Where it stands</h2>
   ${lead}
@@ -1546,6 +1561,7 @@ export function renderProjectSettings(p: ProjectRecord, ownerName: string | null
     <dt>Check execution</dt><dd>${p.policy.sandboxOnly ? "Only checks run in a Cloudflare container count" : "Checks count from a Cloudflare container or a runner's clean clone"}</dd>
     <dt>Eligible agents</dt><dd>${p.policy.eligible?.map(e).join(", ") || "Any agent"}</dd>
     <dt>Overlap</dt><dd>${p.policy.refuseOverlap ? "Refused" : "Flagged for review"}</dd>
+    <dt>Overrides</dt><dd>${p.policy.noOverride ? "Refused: every change needs its independent review (<code>atelier init --no-override</code>)" : "Allowed with a reason, confirmed by the owner on the task's page with the Cloudflare Access sign-in or the server's confirmation secret, never the owner token"}</dd>
     <dt>Baseline</dt><dd><code>${e(p.repo)}</code></dd>
   </dl>`;
   const cp = p.policy.approval
@@ -1690,13 +1706,39 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   // The owner's override, offered only while the missing independent review
   // is the one thing blocking this revision, since it waives that and nothing
   // else. Its reason is required and recorded.
+  // A project that forbids overrides (t371) offers neither form and says so.
+  // The forms carry the owner's confirmation, a factor no agent holds: the
+  // Access identity every page carries behind Access, or the server's
+  // confirmation secret, typed into the form (a session alone is not it,
+  // since the owner token buys one). A server with neither offers no form
+  // and says what to set. The second form gives `atelier accept
+  // --override-review` a quarter of an hour's permission for this head,
+  // which the owner token alone never has, and the note says while one stands.
   const overridable = evidenceVisible && item.state === "submitted" && !!item.head && gate.needsAssessor && gate.blockers.length === 1;
-  const override = overridable
+  const allowed = confirmationAt(item, Date.now(), d.ownerActor ?? DEFAULT_OWNER);
+  const factor = d.ownerFactor ?? null;
+  const confirmField = factor === "secret"
+    ? `<label>Confirmation secret<input type="password" name="confirmation" required autocomplete="off"></label>`
+    : "";
+  const confirmWords = factor === "access"
+    ? "Your Cloudflare Access sign-in is the confirmation an override needs; the owner token alone cannot give it."
+    : "The confirmation secret is the confirmation an override needs: the server's own OVERRIDE_SECRET, which no session is given, so the owner token alone cannot give it.";
+  const override = overridable && d.policy.noOverride
+    ? `<p class="meta">This project forbids overrides of the independent review (<code>atelier init --no-override</code>): the revision lands only with an approval from a model of another family than every contributor.</p>`
+    : overridable && factor === null
+    ? `<p class="meta">An override of the independent review needs the owner's own confirmation, which ${e(NO_OWNER_FACTOR)}; then reopen this page. The owner token alone, and the session it signs in, cannot confirm one.</p>`
+    : overridable
     ? `<details class="request-changes"><summary>Accept without an independent review</summary>
       <form class="stack" method="post" action="${action("override")}">${revision}
-        <label>Why is no independent review possible?<textarea name="note" required rows="3" maxlength="${OVERRIDE_REASON_MAX}"></textarea></label>
-        <p class="meta">This records your override and its reason on the task and in the inbox, and accepts the revision. It is not a review.</p>
+        <label>Why is no independent review possible?<textarea name="note" required rows="3" maxlength="${OVERRIDE_REASON_MAX}"></textarea></label>${confirmField}
+        <p class="meta">This records your override and its reason on the task and in the inbox, and accepts the revision. It is not a review. ${confirmWords}</p>
         <button>Override the review and accept</button>
+      </form>
+      <form class="stack" method="post" action="${action("allow-override")}">${revision}${confirmField}
+        <p class="meta">${allowed
+          ? `You allowed an override from the command line for this revision until ${e(when(allowed.until))}: <code>atelier accept ${e(item.id)} --override-review "reason"</code> is taken until then, once.`
+          : `Or allow <code>atelier accept ${e(item.id)} --override-review "reason"</code> from the command line for this revision, for ${OVERRIDE_CONFIRMATION_MS / 60000} minutes and one override; without it the command is refused.`}</p>
+        <button>${allowed ? "Allow it again from now" : "Allow an override from the command line"}</button>
       </form></details>`
     : "";
   // The primary action while the gate waits for the independent review is the
@@ -1851,21 +1893,29 @@ ${framing}${openScope}
   // The head's own runs: a merged check ran on another tree and is shown
   // beside the merge preview instead.
   const checkRows = view.checks.map((c) => {
-    const last = d.evidence
+    const runs = d.evidence
       .filter((x) => x.head === item.head && x.claim === c.claim && x.grade === "observed" && !x.merged && !x.notApplicable && (!d.policy.sandboxOnly || x.where === "sandbox"))
-      .sort((a, b) => a.at.localeCompare(b.at))
-      .pop();
+      .sort((a, b) => a.at.localeCompare(b.at));
+    const last = runs.at(-1);
     const status = c.grade === "pending" ? tag("Waiting", "ask") : c.passed ? tag("Passed", "go") : tag("Failed", "bad");
     const where = c.grade === "observed" ? whereChip(c.where) : "";
     const uncounted = !last && d.policy.sandboxOnly && d.evidence.some((x) => x.head === item.head && x.claim === c.claim && x.grade === "observed" && !x.merged && x.where !== "sandbox");
+    // The load the run started at, one decimal, so a failure under a
+    // saturated machine stays legible beside a later pass (t403).
+    const loadOf = (x: Evidence) => (x.load !== undefined ? `load ${Math.round(x.load * 10) / 10}` : "");
     const detail = last
-      ? `${e(last.by)} · ${e(WHERE[last.where ?? "runner"][0])} · ${when(last.at)}`
+      ? `${e(last.by)} · ${e(WHERE[last.where ?? "runner"][0])} · ${when(last.at)}${loadOf(last) ? ` · ${loadOf(last)}` : ""}`
       : uncounted
         ? "This check ran on a runner, which does not count for this project. Run <code>atelier check --sandbox</code> to run it in a Cloudflare container."
         : "The task owner must run this required check.";
+    // Every result at this head is kept and shown, each with its load, so a
+    // later pass of an unchanged command does not replace its earlier failure.
+    const history = runs.length > 1
+      ? `<ul class="check-runs">${runs.map((x) => `<li>${x.passed ? tag("Passed", "go") : tag("Failed", "bad")}<span class="meta">${e(x.by)} · ${when(x.at)}${loadOf(x) ? ` · ${loadOf(x)}` : ""}</span></li>`).join("")}</ul>`
+      : "";
     return `<details class="check-row"${c.passed === false ? " open" : ""}>
       <summary>${status}<code>${e(c.claim)}</code>${where}</summary>
-      <p class="meta">${detail}</p>${last?.outputTail ? `<pre tabindex="0">${e(last.outputTail)}</pre>` : ""}</details>`;
+      <p class="meta">${detail}</p>${history}${last?.outputTail ? `<pre tabindex="0">${e(last.outputTail)}</pre>` : ""}</details>`;
   }).join("");
   // A check whose paths this revision does not touch is shown, and never blocks.
   const notApplicableRows = view.notApplicable.map((claim) => {
@@ -1882,9 +1932,13 @@ ${framing}${openScope}
   const reviews = latestReviews(d.reviews, bindingOf(item)).map((r) => `<div class="review-note">${tag(r.approve ? "Approved" : "Changes requested", r.approve ? "go" : "ask")}
     <p>${e(r.note || "No note provided.")}</p><p class="meta">${r.tier ? "tier review · " : r.topTier ? "gate review, top tier · " : ""}${e(r.by)} · ${when(r.at)}${recordedText(r, d.ownerActor ?? DEFAULT_OWNER) ? ` · ${e(recordedText(r, d.ownerActor ?? DEFAULT_OWNER)!)}` : ""}</p></div>`).join("");
   const overridden = overrideAt(item, d.ownerActor ?? DEFAULT_OWNER);
+  // An override recorded before the project forbade overrides (t371) counts
+  // for nothing on a task still in hand, as gate counts none; a merged task's
+  // went in on it, and keeps its label.
+  const voided = !!overridden && !!d.policy.noOverride && item.state !== "merged";
   const overrideNote = overridden
-    ? `<div class="review-note">${tag("Review overridden", "ask")}
-    <p>${e(overridden.reason)}</p><p class="meta">${e(overridden.by)} · ${when(overridden.at)} · the project owner's override, not a review</p></div>`
+    ? `<div class="review-note">${tag(voided ? "Override not counted" : "Review overridden", "ask")}
+    <p>${e(overridden.reason)}</p><p class="meta">${e(overridden.by)} · ${when(overridden.at)} · the project owner's override, not a review${voided ? "; this project now forbids overrides, so the change waits for its independent review" : ""}</p></div>`
     : "";
   const blockers = live && !gate.ready
     ? `<details class="disclosure"><summary>Readiness details</summary><ul>${gate.blockers.map((b) => `<li>${e(b)}</li>`).join("")}</ul></details>`
@@ -1896,6 +1950,7 @@ ${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 <section id="changes" class="review-section"><h3>Changes</h3>${renderDiff(diff, item.head, mergedChecks)}${scope}${protectedNote}</section>
 <section id="checks" class="review-section"><h3>Checks and reviews</h3>
   <p class="meta">${view.checks.length ? `${decision.passed} of ${view.checks.length} required checks passed at this revision.` : view.notApplicable.length ? "No required check applies to this revision." : "This project requires no checks."}${view.checks.length && view.notApplicable.length ? ` ${view.notApplicable.length} more ${view.notApplicable.length === 1 ? "does" : "do"} not apply to it.` : ""}${d.policy.sandboxOnly ? " Only checks run in a Cloudflare container count for this project." : ""}</p>
+  ${(d.runs ?? []).filter((r) => r.outcome === "validation_blocked").map((r) => `<aside class="callout"><strong>Validation blocked</strong><p>The build harness could not run the required checks. This is a reported limitation, separate from clean-clone check results.</p><p>${e(r.detail)}</p><p class="meta">${e(r.actor)} · ${e(r.runner)} · ${e(r.at)}</p></aside>`).join("")}
   ${checkRows}${notApplicableRows}${reports}${reviews}${overrideNote}${blockers}
 </section>
 <details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>
