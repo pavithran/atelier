@@ -1780,7 +1780,10 @@ export function ownerState(d: Detail, evidenceVisible: boolean, now = Date.now()
   const { item, gate } = d;
   const owner = d.ownerActor ?? DEFAULT_OWNER;
   const binding = bindingOf(item);
-  const latest = latestReviews(d.reviews, binding);
+  // Every review-based reading below — the owner's own, a rejection, a
+  // send-back — takes the reviews the gate counts: a reviewer who has since
+  // lost the authority to review is no more heard here than there.
+  const latest = countingReviews(d.reviews, binding, d.policy, owner);
   const mine = latest.find((r) => r.by === owner) ?? null;
   const live = item.state === "claimed" || item.state === "submitted";
   const decision = decisionFor(item, d.policy, d.evidence, d.reviews, owner);
@@ -1927,7 +1930,8 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
     ? `<div class="notice" role="status"><h3>${diff && diff !== "unavailable" ? "The displayed revision has changed" : "Changes are unavailable"}</h3>
       <p>Approval and acceptance are unavailable until the displayed changes match this task’s recorded revision. <a href="${href("p", p.name, item.id)}">Reload this task</a>. If the revision changed, the task owner should run <code>atelier push</code> and rerun checks.</p></div>`
     : "";
-  const reviewWanted = decision.action === "review" || latestReviews(d.reviews, bindingOf(item)).some((r) => !r.approve);
+  const counted = countingReviews(d.reviews, bindingOf(item), d.policy, d.ownerActor ?? DEFAULT_OWNER);
+  const reviewWanted = decision.action === "review" || counted.some((r) => !r.approve);
   // While the gate needs the independent review, the owner's approval cannot
   // satisfy it — the decision line and the protected note below both say so —
   // so Approve records the owner's own opinion as a secondary action, never
@@ -1997,7 +2001,7 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   // (it requests the review and waits for its verdict), or waiting for one.
   // The owner's Approve cannot satisfy the gate, so it is not that action,
   // and the override above stays the way on when no reviewer qualifies.
-  const askReview = decision.action === "review" && !latestReviews(d.reviews, bindingOf(item)).some((r) => !r.approve)
+  const askReview = decision.action === "review" && !counted.some((r) => !r.approve)
     ? `<div class="merge-command"><p>To move this task, ask a model of another family to review the revision. In the registered checkout, run:</p>
       <pre tabindex="0">${e(`atelier land ${item.id} --project ${shell(p.name)}`)}</pre>
       <p class="meta">The landing merges main into the workspace, runs the required checks, requests this review — from the model <code>--reviewer</code> names, or one of another family than every contributor — and waits for its verdict, then accepts and merges. Until then the task waits.</p></div>`
@@ -2190,8 +2194,11 @@ ${submissionRounds(d)}
       <p class="meta">Reported, not verified; these never satisfy a required check.</p>
       ${view.reports.map((r) => `<p>${tag("Reported")} ${e(r.claim)} <span class="meta">${e(r.by)}</span></p>`).join("")}</details>`
     : "";
-  const reviews = latestReviews(d.reviews, bindingOf(item)).map((r) => `<div class="review-note">${tag(r.approve ? "Approved" : "Changes requested", r.approve ? "go" : "ask")}
-    <p>${e(r.note || "No note provided.")}</p><p class="meta">${r.tier ? "tier review · " : r.topTier ? "gate review, top tier · " : ""}${e(r.by)} · ${when(r.at)}${recordedText(r, d.ownerActor ?? DEFAULT_OWNER) ? ` · ${e(recordedText(r, d.ownerActor ?? DEFAULT_OWNER)!)}` : ""}</p></div>`).join("");
+  // A review by someone no longer authorised to review stays on the record,
+  // but marked as not counted, as the gate does not count it.
+  const counting = new Set(countingReviews(d.reviews, bindingOf(item), d.policy, d.ownerActor ?? DEFAULT_OWNER));
+  const reviews = latestReviews(d.reviews, bindingOf(item)).map((r) => `<div class="review-note">${tag(r.approve ? "Approved" : "Changes requested", r.approve ? "go" : "ask")}${counting.has(r) ? "" : ` ${tag("Not counted")}`}
+    <p>${e(r.note || "No note provided.")}</p><p class="meta">${counting.has(r) ? "" : "not counted: the reviewer is no longer authorised to review this project · "}${r.tier ? "tier review · " : r.topTier ? "gate review, top tier · " : ""}${e(r.by)} · ${when(r.at)}${recordedText(r, d.ownerActor ?? DEFAULT_OWNER) ? ` · ${e(recordedText(r, d.ownerActor ?? DEFAULT_OWNER)!)}` : ""}</p></div>`).join("");
   const overridden = overrideAt(item, d.ownerActor ?? DEFAULT_OWNER);
   // An override recorded before the project forbade overrides (t371) counts
   // for nothing on a task still in hand, as gate counts none; a merged task's
