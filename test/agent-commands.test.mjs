@@ -170,6 +170,39 @@ test("show names each failed check as the gate reads it, with its tests and a la
   assert.match(bad.output, /--head needs a revision, 7 to 64 hex digits: atelier check-log t1 --head SHA/);
 });
 
+test("show and check-log give a run one attempt number: own, merged, own, and under sandboxOnly a machine run before a container's", async (t) => {
+  const evidence = [];
+  const f = await fixture(t, { evidence });
+  const row = (over) => ({ itemId: "t1", claim: "exit 0", grade: "observed", head: f.head, passed: false, by: actor, where: "runner", changedPaths: ["docs/a.md"], outputTail: "out\n", ...over });
+  evidence.push(
+    row({ id: 1, at: "2026-10-10T12:00:00.000Z", mainHead: "1".repeat(40) }),
+    row({ id: 2, at: "2026-10-10T12:01:00.000Z", passed: true, merged: true, mainHead: "1".repeat(40), changedPaths: null }),
+    row({ id: 3, at: "2026-10-10T12:02:00.000Z", mainHead: "1".repeat(40) }),
+  );
+  const show = await f.run(["show", "t1"]);
+  assert.equal(show.status, 0, show.output);
+  assert.ok(show.output.includes("evidence #3, attempt 3 of 3 at this head"), show.output);
+  const log = await f.run(["check-log", "t1"]);
+  assert.equal(log.status, 0, log.output);
+  assert.ok(log.stdout.includes("· attempt 3 of 3 · failed · on a runner, in a clean clone · 2026-10-10 12:02 UTC · evidence #3\n"), log.output);
+  assert.ok(log.stdout.includes("· attempt 2 of 3 · passed on the merge with main at 11111111 ·"), log.output);
+
+  const sandboxed = [];
+  const g = await fixture(t, { evidence: sandboxed, sandbox: true });
+  const at = (over) => ({ ...row(over), head: g.head });
+  sandboxed.push(
+    at({ id: 1, at: "2026-10-10T12:00:00.000Z" }),
+    at({ id: 2, at: "2026-10-10T12:01:00.000Z", where: "sandbox", by: "atelier/sandbox", run: "k:t1:abc:2" }),
+  );
+  const shown = await g.run(["show", "t1"]);
+  assert.equal(shown.status, 0, shown.output);
+  assert.ok(shown.output.includes("evidence #2, run k:t1:abc:2, attempt 2 of 2 at this head"), shown.output);
+  const logs = await g.run(["check-log", "t1"]);
+  assert.equal(logs.status, 0, logs.output);
+  assert.ok(logs.stdout.includes("· attempt 1 of 2 · failed · on a runner, in a clean clone · 2026-10-10 12:00 UTC · evidence #1 · not counted by the gate: this project counts only runs in a Cloudflare container\n"), logs.output);
+  assert.ok(logs.stdout.includes("· attempt 2 of 2 · failed · in a Cloudflare container · 2026-10-10 12:01 UTC · evidence #2, run k:t1:abc:2\n"), logs.output);
+});
+
 test("show prints no failure block while the gate reads none: a check that failed and then passed, or failed at an earlier head", async (t) => {
   const evidence = [];
   const f = await fixture(t, { evidence });

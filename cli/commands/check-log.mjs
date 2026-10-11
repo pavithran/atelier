@@ -4,8 +4,10 @@ import { I, OWNER, actor, args, call, count, die, itemArg, logReader, project, s
 
 // The retained logs of every check attempt at a head (t436): the ledger
 // head unless --head names one the task stood at earlier, each attempt
-// labelled by check, number among the runs of that check, outcome, where
-// and when it ran and its evidence id (and container run id), with the
+// labelled by check, number among the runs of that check (the number
+// `show` and the landings print for the same run), outcome, where and when
+// it ran and its evidence id (and container run id), and, under
+// sandboxOnly, that the gate does not count a run on a machine, with the
 // stored whole log read by reference where the run kept one and the
 // inline tail, labelled as such, where it did not. Terminal control
 // sequences are dropped from the log; its lines are otherwise printed as
@@ -18,7 +20,7 @@ export default async function checkLogCommand() {
   const asked = typeof args.head === "string" ? args.head.toLowerCase() : null;
   const head = asked ? headsWithChecks(evidence).find((h) => h.head.startsWith(asked))?.head ?? asked : d.item.head;
   if (!head) die(`${id} records no head: nothing has been pushed, so no check has run`);
-  const attempts = checkAttemptsAt(evidence, head);
+  const attempts = checkAttemptsAt(evidence, head, d.policy);
   if (!attempts.length) {
     const others = headsWithChecks(evidence).filter((h) => h.head !== head);
     die(`no check is recorded at ${short(head)} for ${id}${others.length ? `. Heads with recorded checks, newest first: ${others.map((h) => `${short(h.head)} (${count(h.runs, "attempt")})`).join(", ")}; name one with --head SHA` : ""}`);
