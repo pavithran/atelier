@@ -28,6 +28,22 @@ export function formatPolicyDisagreements(mismatches = []) {
     "    Settle which is right; agents are held to the recorded policy."].join("\n");
 }
 
+// A project's model policy in words (ProjectPolicy.familyMode, t394): the
+// default, cross-family review, or single-family mode naming the company,
+// with who switched and when where a switch is recorded. `atelier init`
+// prints it after the policy it sent.
+export function familyModeText(policy) {
+  const mode = policy?.familyMode ?? null;
+  const when = mode ? ` (set by ${mode.by} at ${mode.at})` : "";
+  if (mode?.single) return `single-family, ${mode.single}: building and reviewing use ${mode.single} models only, and a review counts from a different ${mode.single} model than every contributor${when}`;
+  return `cross-family, the default: a protected change needs approval from a model of another company than every contributor${when}`;
+}
+
+// The line a status listing prints under a project in single-family mode,
+// so no one mistakes its reviews for cross-company ones.
+export const singleFamilyLine = (family) =>
+  `Single-family mode (${family}): building and reviewing use ${family} models only; a review counts from a different ${family} model than every contributor, not from another company.`;
+
 // The address of a task's page on the server in use, the link `status` prints
 // beside each merge by override (t371); with no server known, the page's
 // path alone.
@@ -53,6 +69,7 @@ export function statusJson(views, server = "") {
     return {
       name: v.name,
       ...(v.title ? { title: v.title } : {}),
+      ...(v.policy?.familyMode?.single ? { singleFamily: v.policy.familyMode.single } : {}),
       inbox: mine,
       items: v.items.map(itemJson),
       ...(v.mismatches?.length ? { mismatches: v.mismatches } : {}),
@@ -259,6 +276,7 @@ export function formatStatus(views, waiting = {}) {
       .map((i) => [i.id, unoffered(i.dispatch, offers, waiting.now)])
       .filter(([, dead]) => dead !== null));
     lines.push(v.title ? `${v.title} (${v.name})` : v.name);
+    if (v.policy?.familyMode?.single) lines.push(`  ${singleFamilyLine(v.policy.familyMode.single)}`);
     if (!decisions.length && !working.length && !queued.length && !reviews.length) {
       // Only overlaps follow, so the idle line is worded for the owner: it
       // would otherwise read against the heading printed under it.
@@ -343,7 +361,8 @@ function spendLine(usage) {
 
 export function formatStatusBrief(b) {
   const s = b.standing;
-  const lines = [`${oneLine(s.project.title)} (${oneLine(s.project.name)}) as of ${String(s.generatedAt).slice(0, 16).replace("T", " ")} UTC`];
+  const mode = s.familyMode?.single ? ` (single-family: ${s.familyMode.single})` : "";
+  const lines = [`${oneLine(s.project.title)} (${oneLine(s.project.name)})${mode} as of ${String(s.generatedAt).slice(0, 16).replace("T", " ")} UTC`];
   lines.push("Recent merges:");
   const merged = s.merged.slice(0, BRIEF_MERGES);
   if (!merged.length) lines.push("  none");

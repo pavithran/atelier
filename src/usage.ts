@@ -171,7 +171,9 @@ task with exactly one owner. Never edit the project checkout directly.
 7. Reviewing someone else's task: \`atelier diff ID\`, then
    \`atelier review ID --approve|--reject --note "…"\`. Changes to protected
    paths need approval from a model of another family than every agent
-   that worked on the task.
+   that worked on the task. In single-family mode, only a different model
+   of the selected company from every contributor counts; a contributor
+   never reviews its own work.
 8. \`atelier update\` rebases your workspace onto whatever has merged since.
 
 ${OWNER_LANDING}
@@ -241,12 +243,14 @@ ${OWNER_LANDING}
 `,
   review: `## Reviewing
 
-You review one change for Atelier, as a model of another family than everyone
-who wrote it. Read the change with \`atelier diff ID\`, judge it by the
+You review one change for Atelier. By default, you must be a model of another
+family than everyone who wrote it; in single-family mode, you must be a
+different model of the selected company from every contributor. A contributor
+never reviews its own work. Read the change with \`atelier diff ID\`, judge it by the
 project's review bar and the rules for blocking the brief states, and record a
 verdict with \`atelier review ID --approve|--reject --note "…"\`. Changes to
-protected paths need a model of another family than every agent that worked on
-the task. Make no edits: change no files, and do not commit or push.
+protected paths need an independent approval under that family policy. Make no edits:
+change no files, and do not commit or push.
 
 ${OWNER_LANDING}
 `,
@@ -274,10 +278,11 @@ ${OWNER_LANDING}
 
 Standing rules:
 
-- Use builders from several companies, chosen by tier, and not one company's
-  models alone.
+- By default use builders from several companies, chosen by tier. In
+  single-family mode use only the selected company's models.
 - Every protected or coordinated change is reviewed by a model from another
-  company than every agent that worked on it.
+  company than every agent that worked on it; in single-family mode, only a
+  different model of the selected company from every contributor counts.
 - Never override a review, a check or a block, except on the owner's own
   confirmation. Ask, and cite the owner's words; never infer them.
 - Judge each review finding against the code before acting, and record every
@@ -290,18 +295,21 @@ Standing rules:
   project that requires them (\`atelier init --require-criteria\`) refuses it;
   a review of a task without criteria has nothing to judge the change against.
   Write with each criterion the edge cases it implies, and have a model of
-  another company than you read the criteria before the task is dispatched.
-- Before asking for the cross-company review, read the diff against the
+  another company than you (in single-family mode, another model of the
+  selected company) read the criteria before the task is dispatched.
+- Before asking for the independent review, read the diff against the
   criteria yourself; it does not count at the gate, but it catches plain misses.
 - Resolve a mechanical merge conflict yourself (both sides adding help text,
   imports, table rows; fixtures regenerated from the code), with your own
   \`Agent:\` line: you become a contributor, so the reviewer must be of another
-  company than you too. Send a conflict that changes behaviour back to its
+  company than you too, or in single-family mode a different model of the
+  selected company from every contributor. Send a conflict that changes behaviour back to its
   builder with \`atelier dispatch ID --job merge-main\`.
 - Land one task at a time with \`atelier land ID --reviewer H/M\`, which
   merges main, checks, submits, waits for the independent review, then
   accepts and merges; \`--reviewer H/M\` names a reviewer of another family
-  than every contributor. Never land two together. An override while
+  than every contributor, or in single-family mode a different model of the
+  selected company from every contributor. Never land two together. An override while
   accepting is the owner's last resort when no reviewer qualifies, never the
   way to land another agent's work.
 - After each landing, report to the owner with \`atelier status --brief\`: what
@@ -315,7 +323,7 @@ Standing rules:
   brief the past review findings on the files in its scope.
 - After two rejections on the same point, stop resending the task to the same
   builder: judge the findings, then hand it to a builder from another company
-  or ask the owner.
+  (in single-family mode, another model of the selected company) or ask the owner.
 - Feed what you learn back: \`atelier new "Lesson: …"\` for a rule worth
   keeping, and a task on the atelier project for a missing feature.
 - When the owner settles a question for good (who reviews, the review bar, a

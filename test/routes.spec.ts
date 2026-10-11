@@ -348,6 +348,54 @@ it("the review bar route cleans the bar, keeps it on re-init, clears it on an em
   }
 });
 
+// t394: init --single-family COMPANY records the mode with who set it and
+// when; --cross-family (null or "") records the return the same way; a
+// company no model name is recognised by is refused; and a hand dispatch
+// under the mode names only that company's models.
+it("the single-family route records the company with who and when, records the return to cross-family, and refuses an unknown company", async () => {
+  await project("routes-single-family");
+  const put = (fields: Record<string, unknown>, actor = "owner") => worker.fetch(new Request("https://atelier.test/api/projects/routes-single-family", {
+    method: "PUT",
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
+    body: JSON.stringify({ checks: ["npm test"], protected: [], ...fields }),
+  }), artifactsEnv);
+  const modeOf = async (fields: Record<string, unknown>, actor = "owner") =>
+    (((await (await put(fields, actor)).json()) as { project: { policy: { familyMode?: { single: string | null; by: string; at: string } } } }).project.policy.familyMode);
+  expect(await modeOf({})).toBeUndefined();
+  const single = await modeOf({ singleFamily: " Anthropic " });
+  expect(single).toMatchObject({ single: "anthropic", by: "owner" });
+  expect(Number.isFinite(Date.parse(single!.at))).toBe(true);
+  // A re-init that names no mode keeps it.
+  expect(await modeOf({ title: "Kept" })).toEqual(single);
+  // The return is recorded, not dropped: who made it and when.
+  const back = await modeOf({ singleFamily: null });
+  expect(back).toMatchObject({ single: null, by: "owner" });
+  expect(await modeOf({ singleFamily: "openai" })).toMatchObject({ single: "openai", by: "owner" });
+  expect(await modeOf({ singleFamily: "" })).toMatchObject({ single: null, by: "owner" });
+  for (const bad of ["acme", "other", 7, ["anthropic"]]) {
+    const res = await put({ singleFamily: bad });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("bad_single_family");
+  }
+  expect((await put({ singleFamily: "acme" })).status).toBe(400);
+  expect(await modeOf({})).toMatchObject({ single: null, by: "owner" });
+
+  // Under the mode a hand dispatch names one of the company's models only.
+  await put({ singleFamily: "anthropic" });
+  const created = await (await call("POST", "/projects/routes-single-family/items", "owner", { title: "Small edit", scope: ["docs/**"] })).json() as { id: string };
+  const other = await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
+  expect(other.status).toBe(409);
+  const refusal = await other.json() as { error: string; detail: string };
+  expect(refusal.error).toBe("single_family");
+  expect(refusal.detail).toBe("gpt-6-astra is not one of anthropic's models, and this project runs in single-family mode (anthropic): use one of anthropic's models, or return to cross-family review with atelier init --cross-family");
+  expect((await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home", agent: "claude-code", model: "sonnet-5.5" })).status).toBe(200);
+  // A dispatch that names no model leaves the choice to the runner's offer, as before.
+  expect((await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home" })).status).toBe(200);
+  // Back under the default any model may be named.
+  await put({ singleFamily: null });
+  expect((await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" })).status).toBe(200);
+});
+
 it("the review tier route takes models separated by commas or a list, keeps the tier on re-init, clears it on an empty one, and refuses one not harness/model", async () => {
   await project("routes-review-tier");
   const put = (fields: Record<string, unknown>) => worker.fetch(new Request("https://atelier.test/api/projects/routes-review-tier", {
