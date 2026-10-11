@@ -58,6 +58,18 @@ workspace to the task's head, where the builder cannot reach main.
 
 ## Build and plan runners without an owner token
 
+Projects can declare a workspace preparation command with `init --prepare`
+and its input and output paths. The runner runs it after workspace reset and
+automatic merges, before build or plan harnesses and harness-free merge
+finishes. Reviews, integrate and refresh jobs do not run preparation. Manual
+claims print the command and workspace directory for the caller to run.
+
+`ATELIER_PREPARE_TIMEOUT` sets the preparation deadline in positive integer
+milliseconds, from `1` through `2147483647`; it defaults to `600000` (ten
+minutes). Invalid values stop runner startup. Timeout or cancellation
+terminates and cleans up the preparation process group before claim handling.
+Failed preparation is an infrastructure failure and is never cached.
+
 Issue a runner credential **on the owner's machine**:
 
 ```sh
@@ -348,7 +360,7 @@ uses; that folder serves an opencode entry with a custom `command`.
 
 ## Home runner
 
-`atelier runner --name home:NAME [--once] [--config PATH] [--integrate]` polls the queue every 30 seconds, claims one eligible job, and runs its configured harness. A runner offers `build`, `plan`, `merge-main`, `merge-main-task` and `merge-plan` jobs for every harness in its config, and `review` when its config lists it. A build or plan job runs the harness in the claimed workspace; a review job clones the head into a folder of its own, reads the diff and writes a verdict. The task brief is kept outside the workspace. A runner with `--integrate` runs no harness and takes no config: it offers only the `integrate` and `refresh` jobs, merging each part onto its plan's branch as `atelier/integrator`. The runner gives each opencode run a data folder of
+`atelier runner --name home:NAME [--once] [--config PATH] [--integrate]` polls the queue every 30 seconds, claims one eligible job, and runs its configured harness. A runner offers `build`, `plan`, `merge-main`, `merge-main-task` and `merge-plan` jobs for every harness in its config, and `review` when its config lists it. A build or plan job runs the harness in the claimed workspace; a review job clones the head into a folder of its own, reads the diff and writes a verdict. The task brief is kept outside the workspace. A runner with `--integrate` runs no harness and takes no config: it offers only the `integrate` and `refresh` jobs, merging each part onto its plan's branch as `atelier/integrator`. Before its first poll every runner reads `GET /api/version` and refuses to start while the server lacks a capability one of the jobs it offers declares (`JOB_CAPABILITIES`, `src/route-level.ts`; the integrator's jobs need `projects.commit-identity.v1`, `plans.integration.v1` and `runners.scoped-token.v1`; the review job needs the review skip, `reviews.skip.v1` and `reviews.skip-as-runner.v1`, beside the binding and the unparsable route), naming the missing capabilities and the deploy to run, so a runner that would fail its calls one by one stops at once instead. The runner gives each opencode run a data folder of
 its own (`XDG_DATA_HOME`) beside the workspace, removed as the harness ends,
 however it ends: opencode processes sharing
 `~/.local/share/opencode/opencode.db` deadlock on it. The shipped

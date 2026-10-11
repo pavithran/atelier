@@ -137,7 +137,9 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
       const view = () => ({ ...(wf.readError ? { readError: wf.readError } : {}), ...(wf.lastStatus ? { lastStatus: wf.lastStatus } : {}), instance: wf.instance, stage: wf.stage, round: wf.round, ...(wf.checks ? { checks: wf.checks } : {}), ...(wf.files ? { files: wf.files } : {}), status: wf.unreadable ? null : { status: wf.status, ...(wf.error ? { error: { name: "Error", message: wf.error } } : {}), ...(wf.output ? { output: wf.output } : {}) } });
       if (req.method === "GET") { answer = wf.instance ? view() : { instance: null, status: null, stage: null }; wf.reads++; }
       else if (body.event) { wf.events.push(body.event); wf.onEvent?.(body.event, box); answer = { sent: true, instance: wf.instance }; }
-      else if (wf.instance && ["running", "waiting", "queued"].includes(wf.status)) answer = { ...view(), created: false };
+      else if (wf.instance && ["running", "waiting", "queued"].includes(wf.status) && !wf.replace) answer = { ...view(), created: false, ...(wf.attach ?? {}) };
+      // A live instance the server replaces (t430): `wf.replace` names why.
+      else if (wf.instance && wf.replace) { const from = wf.instance; Object.assign(wf, { instance: `land-${item}-r1`, stage: "lease", round: 0, checks: body.checks ?? "container", status: "running" }); wf.started.push(body); answer = { ...view(), created: true, replaced: { from, to: wf.instance, ...wf.replace } }; wf.replace = null; }
       // The checks mode is recorded as the server records it (t305):
       // container where the start names none; `wf.noChecksMode` stands in
       // for a server older than the modes, which records none.
@@ -885,6 +887,22 @@ test("where main and the task each raised the route level from one base, the lan
   assert.deepEqual(merge.body.routeLevel, { base: 6, main: 7, task: 7, was: 7, set: 8 });
 });
 
+test("named legacy mappings stop automatic renumbering until the builder resolves them", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t, { seedRouteLevel: 6 });
+  for (const dir of [f.workspace("t1"), f.checkout]) {
+    writeFileSync(join(dir, "src", "route-level.ts"), 'export const CAPABILITIES = buildCapabilities(CAPABILITY_DECLARATIONS);\nexport const ROUTE_LEVEL = 7;\n');
+    git(dir, "add", "."); git(dir, "commit", "-m", "Raise with a named declaration"); git(dir, "push", "-q", "origin", "main");
+  }
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.notEqual(r.status, 0, r.output);
+  assert.match(r.output, /named capability legacy mappings need manual resolution/);
+  assert.match(r.output, /Move the task's new capability declaration levels above main's 7, set ROUTE_LEVEL to 8/);
+  assert.match(readFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 7;/);
+  assert.notEqual(f.box.states.t1, "merged");
+  assert.doesNotMatch(git(f.workspace("t1"), "log", "--format=%s"), /Raise the route level after merging/);
+});
+
 test("where only main raised the route level, the merge takes main's number and nothing is raised past it", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { seedRouteLevel: 6 });
@@ -1071,13 +1089,13 @@ test("a server at the CLI's route level passes whatever commit it runs", async (
 
 test("a server a route level lower than the CLI's refuses, naming both levels and saying to deploy", async (t) => {
   const f = await landFixture(t);
-  f.box.routeLevel = ROUTE_LEVEL - 1;
+  f.box.routeLevel = 13;
   const before = git(f.workspace("t1"), "rev-parse", "HEAD");
   f.box.requests.length = 0;
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 1, r.output);
-  assert.match(r.output, new RegExp(`runs route level ${ROUTE_LEVEL - 1}`));
-  assert.match(r.output, new RegExp(`this CLI route level ${ROUTE_LEVEL}`));
+  assert.match(r.output, /lacks capabilities projects\.commit-identity\.v1, land\.workflow\.v1/);
+  assert.match(r.output, /route level 13/);
   assert.match(r.output, /Deploy the server/);
   assert.deepEqual(f.box.requests.filter((x) => x.method === "POST"), []);
   assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before);
@@ -1091,14 +1109,13 @@ test("a server a route level lower than the CLI's refuses, naming both levels an
 // above must reach --wait too, before any queued ask is made of it.
 test("a server a route level lower than the CLI's refuses --wait at start, saying to deploy, before any queued ask", async (t) => {
   const f = await landFixture(t);
-  f.box.routeLevel = ROUTE_LEVEL - 1;
+  f.box.routeLevel = 13;
   f.box.lease = { item: "t2", holder: "owner", at: "2026-10-07T09:00:00.000Z", renewedAt: new Date().toISOString() };
   f.box.waiting = [{ item: "t3", holder: "owner", at: "2026-10-07T09:14:00.000Z", renewedAt: new Date().toISOString() }];
   f.box.requests.length = 0;
   const r = await f.run(f.checkout, "land", "t1", "--wait");
   assert.equal(r.status, 1, r.output);
-  assert.match(r.output, new RegExp(`runs route level ${ROUTE_LEVEL - 1}`));
-  assert.match(r.output, new RegExp(`this CLI route level ${ROUTE_LEVEL}`));
+  assert.match(r.output, /lacks capabilities projects\.commit-identity\.v1, land\.workflow\.v1/);
   assert.match(r.output, /Deploy the server/);
   // Nothing was asked of the lease — no queued ask, no take — and the lease
   // and the queue stand exactly as they were.
@@ -1112,8 +1129,7 @@ test("a server that reports no route level refuses, saying to deploy", async (t)
   f.box.routeLevel = null;
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /reports no route level/);
-  assert.match(r.output, new RegExp(`this CLI route level ${ROUTE_LEVEL}`));
+  assert.match(r.output, /neither capabilities nor a route level/);
   assert.match(r.output, /Deploy the server/);
   assert.deepEqual(f.box.requests.filter((x) => x.method === "POST"), []);
   assert.equal(f.box.lease, null);
@@ -1619,6 +1635,34 @@ test("land --workflow ends with the Workflow's own reason when the Workflow fail
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /the landing Workflow land-t1-1 failed: the required checks failed at abcdef12 in the Cloudflare container: npm test/);
   assert.deepEqual(f.posts("/merged"), []);
+});
+
+test("land --workflow says when the server replaced an hours-old instance, and names the replacement on every event and renewal", async (t) => {
+  const f = await landFixture(t);
+  const wf = scriptWorkflow(f);
+  Object.assign(wf, { instance: "land-t1-old", stage: "lease", round: 0, checks: "local", status: "waiting", replace: { reason: "lease-wait", detail: "instance land-t1-old has waited for the landing lease since 2026-10-10T08:00:00.000Z (3.5 hours), at or past the 3 hours limit" } });
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /Replaced t1's landing Workflow land-t1-old with land-t1-r1 \(lease-wait\): instance land-t1-old has waited for the landing lease since .* at or past the 3 hours limit\./);
+  assert.match(r.output, /Landing t1 as a Cloudflare Workflow \(instance land-t1-r1\)/);
+  assert.doesNotMatch(r.output, /Attached to/);
+  const events = f.posts("/landing-workflow").filter((x) => x.body.event);
+  assert.ok(events.length > 0);
+  for (const e of events) assert.equal(e.body.instance, "land-t1-r1");
+  for (const renew of f.posts("/landing-lease").filter((x) => x.body.renew === true)) assert.equal(renew.body.instance, "land-t1-r1");
+});
+
+test("land --workflow reports a named reviewer the server refused to put in place of the live instance's", async (t) => {
+  const f = await landFixture(t);
+  const wf = scriptWorkflow(f);
+  Object.assign(wf, { instance: "land-t1-1", stage: "lease", round: 0, checks: "local", status: "running" });
+  wf.attach = { reviewer: "claude-code/opus-5.5", reviewerRefused: "claude-code/sonnet-5.5 cannot replace the remembered reviewer claude-code/opus-5.5: claude-code/sonnet-5.5 is not of another family than every contributor" };
+  const r = await f.run(f.checkout, "land", "t1", "--workflow", "--reviewer", "claude-code/sonnet-5.5");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /Warning: claude-code\/sonnet-5\.5 cannot replace the remembered reviewer claude-code\/opus-5\.5: .*; the live instance keeps its reviewer\./);
+  assert.match(r.output, /Attached to t1's landing Workflow \(instance land-t1-1/);
+  // Said once: the generic note on kept options is not repeated.
+  assert.doesNotMatch(r.output, /keeps the review options it was started with/);
 });
 
 test("land --workflow refuses an accepted task with no live Workflow, as the plain landing does, and starts nothing", async (t) => {
