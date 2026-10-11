@@ -195,6 +195,8 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
   return { failed, passed };
 }
 
+// The company single-family mode allows is judged by assertEligible too;
+// familyRefusal above already says that refusal in its own words (t394).
 function eligibility(actor: string, policy: ProjectPolicy, owner: string): string | null {
   try {
     assertEligible(actor, policy, owner, "assessor");
@@ -202,7 +204,7 @@ function eligibility(actor: string, policy: ProjectPolicy, owner: string): strin
   } catch (err) {
     const rule = parseRuleError(err);
     if (!rule) throw err;
-    return rule.detail;
+    return rule.code === "single_family" ? null : rule.detail;
   }
 }
 

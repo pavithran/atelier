@@ -191,7 +191,9 @@ export function recordFor(pool: readonly ModelEntry[], events: readonly LedgerEv
 
 // The rule a claim applies, so routing never names a builder the claim
 // would refuse: under a governed policy the executor role, otherwise the
-// project's eligible harnesses.
+// project's eligible harnesses, and the company single-family mode allows,
+// whose refusal the single-family rule in judge() already says in its own
+// words (t394).
 function claimRefusal(actor: string, policy: ProjectPolicy): string | null {
   try {
     assertEligible(actor, policy);
@@ -199,7 +201,7 @@ function claimRefusal(actor: string, policy: ProjectPolicy): string | null {
   } catch (err) {
     const rule = parseRuleError(err);
     if (!rule) throw err;
-    return rule.detail;
+    return rule.code === "single_family" ? null : rule.detail;
   }
 }
 

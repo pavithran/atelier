@@ -110,3 +110,94 @@ it("in cross-family mode the same request stays open and GPT may claim it", asyn
   const claim = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
   expect(claim.singleFamily).toBeNull();
 });
+
+// Every assignment passes assertEligible, which judges the company first
+// (t394): a hold released on a dispatch made before the switch, a plan's
+// planner or part builder rerouted, a planner named or picked, and a handoff.
+const single = async (project: string) => {
+  const L = ledger(project);
+  await L.setProject({ name: project, repo: `${project}--baseline`, policy, createdAt: new Date().toISOString() }, "owner");
+  return L;
+};
+
+it("a hold released on a dispatch made before the switch never keeps another company's model", async () => {
+  const L = await single("single-release");
+  const item = await L.newItem("Task", ["src/**"], "owner");
+  await L.dispatch(item.id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
+  // The policy changes without the switch's withdrawal: the dispatch stays.
+  const record = await L.project();
+  await L.setProject({ ...record, policy: { ...record.policy, familyMode: { single: "anthropic", by: "owner", at: AT } } }, "owner");
+  await refusal(L.releaseHold(item.id, "owner", {}), "single_family", /gpt-6-astra is not one of anthropic's models/);
+  expect((await L.item(item.id)).dispatch?.overlapOk).toBeUndefined();
+  // Naming one of the company's models releases it.
+  const released = await L.releaseHold(item.id, "owner", { agent: "claude-code", model: "opus-5.5" });
+  expect(released.dispatch).toMatchObject({ agent: "claude-code", model: "opus-5.5", overlapOk: true });
+});
+
+it("a plan's planner and a part's builder are never rerouted to another company's model, and no plan is started with one", async () => {
+  const L = await single("single-reroute");
+  await toAnthropic(L, "single-reroute");
+  await refusal(L.newPlan("Ship it", ["src/**"], "owner", GPT, []), "single_family", /not one of anthropic's models/);
+  // The default planner passes over the other companies' models, whatever their rank.
+  const picked = await L.newPlan("Ship the feature", ["src/**"], "owner", null, [entry("gpt-6-astra", "codex"), entry("glm-5.3", "zcode"), entry("opus-5.5", "claude-code")]);
+  expect(picked.planner).toBe(OPUS);
+  const { item } = picked;
+  await refusal(L.reroutePlan(item.id, "owner", GPT), "single_family", /not one of anthropic's models/);
+  await L.claim(item.id, OPUS, RUNNER);
+  const post = await L.postPlan(item.id, OPUS, { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [part] });
+  if (!post.valid) throw new Error(post.errors.join("; "));
+  await L.release(item.id, OPUS, "proposed");
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, [...POOL, entry("sonnet-5.5", "claude-code")]);
+  await refusal(L.reroutePlan(parts[0].id, "owner", GPT), "single_family", /not one of anthropic's models/);
+  expect(familyOf((await L.item(parts[0].id)).dispatch?.model ?? "opus-5.5")).toBe("anthropic");
+});
+
+it("a task is never handed off to another company's model", async () => {
+  const L = await single("single-handoff");
+  await toAnthropic(L, "single-handoff");
+  const item = await L.newItem("Task", ["src/**"], "owner");
+  await L.claim(item.id, OPUS, RUNNER);
+  await refusal(L.handoff(item.id, OPUS, GPT, "over to you"), "single_family", /not one of anthropic's models/);
+  expect((await L.item(item.id)).owner).toBe(OPUS);
+});
+
+it("a switch to single-family mode withdraws a waiting dispatch to another company's model, and the hold has nothing to release", async () => {
+  const L = await single("single-withdraw");
+  const mine = await L.newItem("Mine", ["src/a/**"], "owner");
+  const theirs = await L.newItem("Theirs", ["src/b/**"], "owner");
+  await L.dispatch(mine.id, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
+  await L.dispatch(theirs.id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
+  await toAnthropic(L, "single-withdraw");
+  expect((await L.waiting()).map((i) => i.id)).toEqual([mine.id]);
+  expect((await L.item(theirs.id)).dispatch).toBeNull();
+  const events = (await L.events(theirs.id)) as unknown as LedgerEvent[];
+  expect(events.find((e) => e.kind === "item.undispatched")).toMatchObject({ data: { reason: expect.stringMatching(/switched to single-family mode \(anthropic\)/) } });
+  await refusal(L.releaseHold(theirs.id, "owner", {}), "not_dispatched", /not queued/);
+});
+
+it("a switch to single-family mode blocks a plan whose planner or routed builder is another company's, until the owner reroutes it", async () => {
+  const L = await single("single-plan-switch");
+  const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", GPT, []);
+  await toAnthropic(L, "single-plan-switch");
+  expect((await L.item(item.id)).dispatch).toBeNull();
+  expect((await L.planView(item.id)).blocked).toMatch(/not one of anthropic's models.*atelier plan reroute/);
+  await L.reroutePlan(item.id, "owner", OPUS);
+  expect((await L.item(item.id)).dispatch).toMatchObject({ agent: "claude-code", model: "opus-5.5", job: "plan" });
+});
+
+it("a part routed to another company's builder before the switch is never dispatched to it after", async () => {
+  const L = await single("single-part-switch");
+  const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", OPUS, []);
+  await L.claim(item.id, OPUS, RUNNER);
+  const post = await L.postPlan(item.id, OPUS, { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [part] });
+  if (!post.valid) throw new Error(post.errors.join("; "));
+  await L.release(item.id, OPUS, "proposed");
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, [...POOL, entry("sonnet-5.5", "claude-code")]);
+  await L.reroutePlan(parts[0].id, "owner", GPT);
+  expect((await L.item(parts[0].id)).dispatch).toMatchObject({ model: "gpt-6-astra" });
+  await toAnthropic(L, "single-part-switch");
+  expect((await L.item(parts[0].id)).dispatch).toBeNull();
+  expect((await L.planView(item.id)).blocked).toMatch(/part a is unrouted: codex\/gpt-6-astra is not one of anthropic's models/);
+  await L.reroutePlan(parts[0].id, "owner", "claude-code/sonnet-5.5");
+  expect((await L.item(parts[0].id)).dispatch).toMatchObject({ agent: "claude-code", model: "sonnet-5.5" });
+});

@@ -6,7 +6,7 @@ import { routeParts } from "../src/plans/route.ts";
 import type { Plan, PlanPart } from "../src/plans/schema.ts";
 import { integrationBlockers, type Part } from "../src/plans/integrate.ts";
 import {
-  assertOverridesAllowed, assertSingleFamily, classRequirement, decisionFor, familyRefusal, gate, inboxFor, independentApproval, independentReviewerText, OVERRIDE_FORBIDDEN, overrideForbidden, protectedNeed, PROTECTED_NEED, singleFamily,
+  assertEligible, assertOverridesAllowed, assertSingleFamily, classRequirement, harnessRefusal, roleRefusal, decisionFor, familyRefusal, gate, inboxFor, independentApproval, independentReviewerText, OVERRIDE_FORBIDDEN, overrideForbidden, protectedNeed, PROTECTED_NEED, singleFamily,
   type Evidence, type Item, type ProjectPolicy, type Review,
 } from "../src/rules.ts";
 import { briefFor } from "../src/brief.ts";
@@ -16,6 +16,8 @@ import { independenceRefusal } from "../src/review/independence.ts";
 import { reviewNeeded, type NeedInput, type ReviewRequired } from "../src/review/needed.ts";
 import { pickReviewer, type PickInput } from "../src/review/reviewer.ts";
 import { gateServesTier, pickTierReviewer } from "../src/review/tier.ts";
+import { makeDispatch, retainDispatch } from "../src/dispatch/rules.ts";
+import { namedActor, pickPlanner } from "../src/plans/state.ts";
 
 // t394: a project can opt in to one company's models for everything. The
 // default stays: a protected change needs approval from a model of another
@@ -292,4 +294,45 @@ test("reviewBrief: under single-family mode the brief says so at the top, naming
   const plain = reviewBrief({ need: needOf(crossFamily), item: item(), events: [] });
   assert.ok(plain.includes("You are reviewing one change for Atelier, as a model of another family than everyone who wrote it."), plain);
   assert.ok(!plain.includes("single-family"), plain);
+});
+
+// The one choke point (t394): every assignment passes assertEligible, which
+// judges the company before any role, admission or harness rule.
+test("assertEligible: under single-family mode another company's model is refused in every role, whatever else admits it", () => {
+  const governed: ProjectPolicy = { ...anthropic, agents: { claude: { available: true, eligible_roles: ["executor", "planner", "assessor"] }, codex: { available: true, eligible_roles: ["executor", "planner", "assessor"] } } };
+  const admitted: ProjectPolicy = { ...anthropic, reviewerAdmissions: [{ id: "gpt-6-astra", aliases: [], by: OWNER, reason: "trusted", at: T, active: true }] };
+  for (const policy of [anthropic, governed, admitted]) {
+    for (const role of ["executor", "planner", "assessor"] as const) {
+      assert.throws(() => assertEligible(GPT, policy, OWNER, role), /single_family\|codex\/gpt-6-astra is not one of anthropic's models/);
+      assert.doesNotThrow(() => assertEligible(SONNET, policy, OWNER, role));
+    }
+    assert.match(roleRefusal(GPT, policy, "executor", OWNER) ?? "", /not one of anthropic's models/);
+    assert.equal(roleRefusal(OPUS, policy, "executor", OWNER), null);
+  }
+  // The owner working by hand is no model; a harness alone names no company.
+  assert.doesNotThrow(() => assertEligible(OWNER, anthropic, OWNER));
+  assert.equal(harnessRefusal("codex", anthropic, "executor", OWNER), null);
+  for (const policy of [crossFamily, returned]) assert.doesNotThrow(() => assertEligible(GPT, policy, OWNER, "assessor"));
+});
+
+test("namedActor and pickPlanner: no plan's planner, builder or reviewer is named or picked of another company", () => {
+  for (const role of ["planner", "executor", "assessor"] as const) {
+    assert.throws(() => namedActor(GPT, anthropic, role, OWNER), /single_family/);
+    assert.equal(namedActor(OPUS, anthropic, role, OWNER), OPUS);
+  }
+  const pick = pickPlanner([gpt, glm, opus], [], anthropic);
+  assert.equal(pick.actor, OPUS);
+  assert.deepEqual(pick.passedOver.map((c) => c.actor).sort(), [GPT, "zcode/glm-5.3"]);
+  for (const c of pick.passedOver) assert.match(c.reasons.join("; "), /not one of anthropic's models/);
+  assert.equal(pickPlanner([gpt, glm], [], anthropic).actor, null);
+  assert.notEqual(pickPlanner([gpt, glm, opus], [], crossFamily).passedOver.length, 2);
+});
+
+test("retainDispatch: a released hold never keeps another company's model, even one dispatched before the switch", () => {
+  const d = makeDispatch({ to: "home", agent: "codex", model: "gpt-6-astra" }, OWNER, T);
+  const open = item({ state: "open", owner: null, dispatch: d });
+  assert.throws(() => retainDispatch(open, {}, [], anthropic, OWNER), /single_family\|gpt-6-astra is not one of anthropic's models/);
+  assert.throws(() => retainDispatch(open, { model: "glm-5.3", agent: "zcode" }, [], anthropic, OWNER), /glm-5.3 is not one of anthropic's models/);
+  assert.equal(retainDispatch(open, { agent: "claude-code", model: "opus-5.5" }, [], anthropic, OWNER).model, "opus-5.5");
+  assert.equal(retainDispatch(open, {}, [], crossFamily, OWNER).model, "gpt-6-astra");
 });

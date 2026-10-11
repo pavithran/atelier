@@ -344,6 +344,20 @@ function rerouted(route: PartRoute, record: Pick<PlanRecord, "reroutes" | "revie
   return out;
 }
 
+// A part's route as the company restriction in force allows it (t394):
+// routes are fixed at approval, and the project may have switched to
+// single-family mode since, so a builder of another company is never
+// dispatched. Its alternates of another company are dropped; a builder of
+// another company leaves the part unrouted, which blocks the plan until the
+// owner reroutes it to one of the company's models.
+function companyRoute(route: PartRoute, single: PoolFamily | null): PartRoute {
+  if (!single) return route;
+  const alternates = route.alternates.filter((a) => !companyRefusal(a.actor, single));
+  const foreign = route.builder ? companyRefusal(route.builder.actor, single) : null;
+  if (!foreign) return { ...route, alternates };
+  return { ...route, builder: null, alternates, unrouted: `${foreign}; reroute the part with atelier plan reroute ID --to H/M, naming one of ${single}'s models` };
+}
+
 // Whether the project's policy lets `actor` review, as namedActor judged it
 // when the owner named it; the policy may have changed since.
 function mayAssess(actor: string, policy: ProjectPolicy, owner: string): boolean {
@@ -1002,7 +1016,32 @@ export class Ledger extends DurableObject<Env> {
     const record = mergeProject(row ? JSON.parse(row.value as string) : null, init, at);
     this.setProject(record, actor, at);
     this.withdrawForeignRequests(singleFamily(record.policy), actor, at);
+    this.withdrawForeignDispatches(singleFamily(record.policy), actor, at);
     return record;
+  }
+
+  // Under single-family mode no waiting dispatch names another company's
+  // model (t394): one made before the switch is withdrawn, so no runner of
+  // that company is offered it and no released hold keeps it. A plan's tick
+  // then runs, and a part whose routed builder is of another company blocks
+  // the plan until the owner reroutes it (companyRoute).
+  private withdrawForeignDispatches(single: PoolFamily | null, actor: string, at: string): void {
+    if (!single) return;
+    const plans = new Set<string>();
+    for (const i of this.waiting()) {
+      const d = i.dispatch!;
+      if (!d.model || `${d.agent}/${d.model}` === INTEGRATOR) continue;
+      const refusal = companyRefusal(`${d.agent ?? "agent"}/${d.model}`, single);
+      if (!refusal) continue;
+      this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, i.id);
+      this.log(i.id, actor, "item.undispatched", { reason: `the project switched to single-family mode (${single}): ${refusal}` }, at);
+      if (i.kind === "part") plans.add(i.plan!);
+      else if (i.kind === "plan" && d.job === "plan") {
+        // The planner is asked again only when the owner reroutes the plan.
+        this.setBlocked(i.id, this.planRecord(i.id), `${refusal}; reroute the plan to one of ${single}'s models with atelier plan reroute ${i.id} --to H/M`);
+      }
+    }
+    for (const plan of plans) this.afterPlanChange(plan);
   }
 
   // Under single-family mode, every live review request, open or claimed,
@@ -1528,7 +1567,8 @@ export class Ledger extends DurableObject<Env> {
     // one for another company's model would hand the work to a builder no
     // reviewer of the company could then be shown independent of (t394).
     // A dispatch naming no model is judged when the runner's choice claims it
-    // (assertClaimAllowed).
+    // (assertClaimAllowed). setDispatch judges it again as it is written;
+    // this is said first, before a holder is released for it.
     if (d.model) assertSingleFamily(`${d.agent ?? "agent"}/${d.model}`, this.project().policy, d.model);
     this.assertMergeMainWorkspace(item, d);
     assertDispatchClaimable(item, this.items(), this.project().policy, d, this.owner);
@@ -1538,7 +1578,7 @@ export class Ledger extends DurableObject<Env> {
       this.update(id, { owner: null, state: "open", accepted_head: null }, d.at);
       this.log(id, actor, "item.released", { from: item.owner, note: "dispatched again by the project owner" }, d.at);
     }
-    this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), d.at, id);
+    this.setDispatch(id, d, d.at);
     this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job, head: d.head } : {}), ...(d.overlapOk ? { overlapOk: true } : {}) }, d.at);
     return this.item(id);
   }
@@ -1553,7 +1593,7 @@ export class Ledger extends DurableObject<Env> {
     const d = retainDispatch(item, input, this.items(), this.project().policy, this.owner);
     if (JSON.stringify(d) !== JSON.stringify(item.dispatch)) {
       const at = new Date().toISOString();
-      this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), at, id);
+      this.setDispatch(id, d, at);
       this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, overlapOk: true, retained: true, ...(d.job ? { job: d.job, head: d.head } : {}) }, at);
     }
     return this.item(id);
@@ -2025,7 +2065,6 @@ export class Ledger extends DurableObject<Env> {
     if (from !== this.owner) assertOwner(item, from);
     assertHandoffTarget(to, this.owner);
     assertEligible(to, this.project().policy, this.owner);
-    assertSingleFamily(to, this.project().policy);
     assertNotBlocked(item);
     if (item.state === "accepted") this.acceptedReworkAllowed(item, from);
     else if (item.state !== "claimed" && item.state !== "submitted") throw new RuleError("closed", `${id} is ${item.state}`);
@@ -3543,13 +3582,22 @@ export class Ledger extends DurableObject<Env> {
   // The plan job's dispatch: to a home runner, for the planner's harness and
   // model. The full goal belongs to the plan record and its job brief, not
   // the short dispatch note.
+  // Every dispatch stored passes here (test/single-family-scan.test.ts):
+  // one naming a model of another company than single-family mode allows is
+  // refused before it is written, whoever made it (t394). Atelier's own
+  // integrator is no company's model.
+  private setDispatch(id: string, d: Dispatch, at: string): void {
+    if (d.model && `${d.agent}/${d.model}` !== INTEGRATOR) assertSingleFamily(`${d.agent ?? "agent"}/${d.model}`, this.project().policy, d.model);
+    this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), at, id);
+  }
+
   private planDispatch(planner: string, by: string, at: string): Dispatch {
     const slash = planner.indexOf("/");
     return { ...makeDispatch({ to: "home", agent: planner.slice(0, slash), model: planner.slice(slash + 1), note: "Read the goal in the plan brief and propose a plan." }, by, at), job: "plan" };
   }
 
   private writeDispatch(id: string, d: Dispatch, extra: Record<string, unknown> = {}): void {
-    this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), d.at, id);
+    this.setDispatch(id, d, d.at);
     this.log(id, d.by, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job } : {}), ...extra }, d.at);
   }
 
@@ -3651,7 +3699,7 @@ export class Ledger extends DurableObject<Env> {
     const result = planActions({
       plan: planWithAdded(this.approvedPlan(id, approval.hash), record),
       parts: parts.map((p) => ({ key: p.partKey!, state: p.state })),
-      routes: routesOf(record).map((r) => rerouted(r, record)),
+      routes: routesOf(record).map((r) => companyRoute(rerouted(r, record), singleFamily(this.project().policy))),
       events, maxParallel: approval.limits.maxParallel, deadline: approval.deadline, budget: null, now: at,
       reviewers: partReviewers(byPartKey(all, parts)),
       holds: added.map((a) => a.part.key),
