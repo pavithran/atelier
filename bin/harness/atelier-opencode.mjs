@@ -4,6 +4,7 @@
 // by default, with the provider configs `atelier runner setup` wrote in DIR
 // and its keys read from the runner's credential store (cli/harness/adapter.mjs;
 // docs/runners.md).
-import { runAdapter } from "../../cli/harness/adapter.mjs";
+// It reports a provider's usage limit as the runner reads it (limit.mjs).
+import { runWithLimits } from "./limit.mjs";
 
-process.exitCode = runAdapter("opencode", process.argv.slice(2));
+process.exitCode = runWithLimits("opencode", process.argv.slice(2));
