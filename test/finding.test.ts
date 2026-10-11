@@ -102,3 +102,18 @@ test("precision counts identical findings of two reviews by one reviewer as two,
   const upgraded = of([verdict(20, "refuted"), verdict(21, "confirmed", { review: 10 })]);
   assert.deepEqual([upgraded?.judged, upgraded?.upheld, upgraded?.refuted], [1, 1, 0]);
 });
+
+test("precision places a legacy verdict on the newest review at its head before it, where the review events are given", () => {
+  const window = precisionWindow(new Date("2026-10-06T00:00:00.000Z"));
+  const of = (events: LedgerEvent[]) => buildPrecision([{ project: "p", events }], window, OWNER).models.get("gpt-6-astra");
+  const reviewed = (seq: number): LedgerEvent => ({ seq, itemId: "t21", at: T, actor: GPT, kind: "review.rejected", data: { head: H1, findings: [blocker] } });
+  // The legacy verdict at 20 was on review 12; a later verdict naming review 10 is on another review.
+  const apart = of([reviewed(10), reviewed(12), verdict(20, "refuted"), verdict(21, "confirmed", { review: 10 })]);
+  assert.deepEqual([apart?.judged, apart?.refuted, apart?.upheld], [2, 1, 1]);
+  // A later verdict naming review 12 replaces it.
+  const replaced = of([reviewed(10), reviewed(12), verdict(20, "refuted"), verdict(21, "confirmed", { review: 12 })]);
+  assert.deepEqual([replaced?.judged, replaced?.refuted, replaced?.upheld], [1, 0, 1]);
+  // Legacy verdicts among themselves count once, as they always have.
+  const legacy = of([reviewed(10), verdict(20, "refuted"), reviewed(12), verdict(21, "confirmed")]);
+  assert.deepEqual([legacy?.judged, legacy?.upheld], [1, 1]);
+});
