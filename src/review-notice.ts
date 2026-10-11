@@ -4,7 +4,7 @@
 // controllingRule follows changeClass in src/rules.ts, which decides the
 // class; this names the rule that decided it.
 
-import { checkFiles, classRequirement, matchesFolded, matchesAny, SHIP_FILES, type ChangeClass, type ProjectPolicy } from "./rules.ts";
+import { protectedRuleGroups, classRequirement, matchesFolded, matchesAny, type ChangeClass, type ProjectPolicy } from "./rules.ts";
 
 export interface ControllingRule {
   kind: ChangeClass;
@@ -22,13 +22,7 @@ export interface PolicySource {
 
 export function controllingRule(paths: readonly string[], policy: ProjectPolicy): ControllingRule | null {
   if (!paths.length) return null;
-  const groups: [string, string[]][] = [
-    ["the project's protected paths", policy.protected ?? []],
-    ["the files its required checks run", checkFiles(policy.checks)],
-    ["the execution policy's protected_path_patterns", policy.execution?.protected_path_patterns ?? []],
-    ["the ship files", SHIP_FILES],
-    ["the files its ship order runs", checkFiles(policy.shipRuns ?? [])],
-  ];
+  const groups = protectedRuleGroups(policy);
   for (const [origin, globs] of groups) {
     for (const path of paths) {
       const glob = globs.find((g) => matchesFolded(path, [g]));
@@ -76,8 +70,9 @@ export interface Instructions { file: string; text: string }
 // with. A heuristic on wording, so it names the line for a person to settle.
 export function reviewDisagreements(policy: ProjectPolicy, instructions: readonly Instructions[]): string[] {
   const requires: string[] = [];
-  const protectedGlobs = [...new Set([...policy.protected, ...checkFiles(policy.checks), ...(policy.execution?.protected_path_patterns ?? []), ...SHIP_FILES, ...checkFiles(policy.shipRuns ?? [])])];
+  const protectedGlobs = [...new Set(protectedRuleGroups(policy).flatMap(([, globs]) => globs))];
   if (protectedGlobs.length) requires.push(`a protected change (${protectedGlobs.slice(0, 4).join(", ")}${protectedGlobs.length > 4 ? ", …" : ""}) needs a review from another model family`);
+  if (policy.postMerge) requires.push("the post-merge policy protects all repository paths (**), so every change needs a review from another model family");
   if (policy.execution?.allowed_classes.includes("coordinated")) requires.push("a coordinated change needs a review from a different model than every contributor");
   if (!requires.length) return [];
   const out: string[] = [];
