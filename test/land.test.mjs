@@ -1,4 +1,5 @@
 import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
+import { WORKSPACE_REASON_MAX } from "../src/check-failure.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
@@ -1762,6 +1763,37 @@ test("land --workflow with a failing local check reports the workspace failed, n
   const check = f.posts("/land").find((x) => x.body.step === "check");
   assert.equal(check?.body.failed, true);
   assert.deepEqual(f.posts("/merged"), []);
+});
+
+test("land --workflow fits a long local-check failure to what the Workflow records, keeping every failed check and the check-log line", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  const wf = scriptWorkflow(f);
+  // The first check's output runs long (60 lines of some 100 characters,
+  // past what the summary shows and what the recorder keeps inline), and
+  // the second check fails after it.
+  const line = `not ok 1 - the long check ${"x".repeat(70)}`;
+  f.box.checks = [`yes '${line}' | head -n 60; exit 3`, "exit 4"];
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  assert.equal(r.status, 1, r.output);
+  const pointer = "  Whole logs of every attempt at this head: atelier check-log t1";
+  // The terminal prints the summary whole: both checks, the first's 20-line tail, then the pointer.
+  const printed = r.output.slice(r.output.indexOf("Failed checks at"), r.output.indexOf(pointer) + pointer.length);
+  assert.ok(printed.length > WORKSPACE_REASON_MAX, String(printed.length));
+  assert.match(printed, /\n {2}`yes 'not ok 1 - the long check x+' \| head -n 60; exit 3` failed on a runner, in a clean clone at .*: evidence #1, attempt 1 of 1 at this head\n {4}failing tests \(tap, read from a tail of the output, so names cut with the rest are not listed\): the long check x+\n {4}log: inline tail only \(a check run on a machine keeps its last 3,500 characters inline, and this output was longer\); last 20 of \d+ lines:\n/, printed);
+  assert.match(printed, /\n {2}`exit 4` failed on a runner, in a clean clone at .*: evidence #2, attempt 1 of 1 at this head\n/, printed);
+  // The 20-line tail: 19 of the output's lines, then the sha256 line the recorder appends.
+  assert.equal(printed.split("\n").filter((l) => l.startsWith(`      ${line}`)).length, 19, printed);
+  // The Workflow is sent the same failure fitted to its record's size, not
+  // cut at it: the first line, both checks, and the check-log line survive.
+  assert.equal(wf.events.length, 1);
+  assert.equal(wf.events[0].payload.failed, true);
+  const reason = wf.events[0].payload.reason;
+  assert.ok(reason.length <= WORKSPACE_REASON_MAX, String(reason.length));
+  assert.ok(reason.startsWith("atelier check failed (exit 2):\nFailed checks at "), reason);
+  assert.ok(reason.includes("`exit 4`"), reason);
+  assert.ok(reason.endsWith(`\n${pointer}`), reason);
+  assert.ok(!reason.includes("…\n" + pointer), reason);
 });
 
 test("land --workflow --checks container runs no check here; --checks is refused without --workflow or with another mode; a server with no modes is warned of", async (t) => {

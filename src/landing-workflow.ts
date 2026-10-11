@@ -64,7 +64,7 @@ import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
 import { refusalOf, refusalText } from "./checks";
 import { baseRepoOf } from "./plans/integrate";
 import { evidenceAt, parseRuleError, type Evidence } from "./rules";
-import { effectiveFailures, failureDetail, resolveFailures } from "./check-failure.ts";
+import { WORKSPACE_REASON_MAX, effectiveFailures, failureDetail, resolveFailures } from "./check-failure.ts";
 import { getLarge } from "./large.ts";
 import { landingLeasePollMs, type LandingLease } from "./landing-lease.ts";
 import { LANDING_LEASE_WAIT_LIMIT_MS, leaseTimeout } from "./landing/lease-wait.ts";
@@ -400,10 +400,10 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         payload = got.payload as WorkspaceReport;
       } catch { /* nothing in this chunk; the next chunk waits on */ }
       if (payload && payload.round === round) {
-        if (payload.failed === true) throw new NonRetryableError(String(payload.reason ?? "a workspace step of the landing failed").slice(0, 2000));
+        if (payload.failed === true) throw new NonRetryableError(String(payload.reason ?? "a workspace step of the landing failed").slice(0, WORKSPACE_REASON_MAX));
         if (payload.conflict === true) {
           const files = Array.isArray(payload.files) ? payload.files.map(String) : [];
-          return { conflict: true, files, reason: String(payload.reason ?? `the merge of main stopped on conflicts in ${files.join(", ")}`).slice(0, 2000) };
+          return { conflict: true, files, reason: String(payload.reason ?? `the merge of main stopped on conflicts in ${files.join(", ")}`).slice(0, WORKSPACE_REASON_MAX) };
         }
         const head = String(payload.head ?? "");
         if (!HASH.test(head)) throw new NonRetryableError(`the workspace report is malformed (its head is not a commit hash); run atelier land ${p.item} --workflow again`);
