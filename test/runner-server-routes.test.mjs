@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { agentRoute, runnerRoute } from "../src/tokens.ts";
+import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { RUNNER_ROUTES, serveRunner } from "./helpers/runner-server.mjs";
 
 // The shared fake runner server (test/helpers/runner-server.mjs) must serve
@@ -37,4 +38,12 @@ test("answers override a route, by item verb or by template", async (t) => {
   assert.equal((await fetch(`${server.url}/api/projects/demo/items/t1/claim`, { method: "POST", body: "{}" })).status, 409);
   assert.deepEqual(await (await fetch(`${server.url}/api/config`)).json(), { runner: "r" });
   assert.deepEqual(server.requests, ["POST claim"]);
+});
+
+test("the version answer publishes the server's capabilities beside its route level", async (t) => {
+  const server = await serveRunner();
+  t.after(server.close);
+  const version = await (await fetch(`${server.url}/api/version`)).json();
+  assert.equal(version.routeLevel, ROUTE_LEVEL);
+  assert.deepEqual(version.capabilities, [...SERVER_CAPABILITIES]);
 });

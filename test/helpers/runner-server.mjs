@@ -1,9 +1,9 @@
 import { createServer } from "node:http";
-import { ROUTE_LEVEL } from "../../src/route-level.ts";
+import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../../src/route-level.ts";
 
 // One fake server for every runner route. RUNNER_ROUTES lists the routes
 // src/tokens.ts runnerRoute accepts; the server answers each of them (404 for
-// anything else) and test/runner-routes.test.mjs fails when the two disagree,
+// anything else) and test/runner-server-routes.test.mjs fails when the two disagree,
 // so a route added to runnerRoute breaks that one test, not every runner test.
 // Paths below are relative to /api; ":project" and ":id" are single segments,
 // "*" is any one trailing segment.
@@ -51,7 +51,7 @@ export function serveRunner({ project = "demo", id = "t1", answers = {} } = {}) 
       const parts = new URL(req.url, "http://localhost").pathname.split("/").filter(Boolean).slice(1);
       const body = text ? JSON.parse(text) : {};
       let status = 404, json = { error: "not_found", detail: `no such route: ${req.method} ${req.url}` };
-      if (req.method === "GET" && parts.join("/") === "version") [status, json] = [200, { commit: "0".repeat(40), routeLevel: ROUTE_LEVEL }];
+      if (req.method === "GET" && parts.join("/") === "version") [status, json] = [200, { commit: "0".repeat(40), routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES }];
       else {
         const key = routeKey(req.method, parts);
         const isItem = key?.includes(ITEM) && parts[1] === project && parts[3] === id;
