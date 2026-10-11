@@ -555,6 +555,70 @@ test("a Workflow landing with --no-triage records the bypass before reporting th
   assert.equal(refused.log.find((c) => c.body?.event?.type === "workspace")?.body.event.payload.failed, true);
 });
 
+// ── review findings on f1f371c ──────────────────────────────────────────────
+
+test("a status Object.prototype has, such as constructor, is malformed, and only every status met proceeds (t475)", async (t) => {
+  for (const status of ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"]) {
+    const parsed = parseTriage(reply([met(1), met(2, { status })]), 2);
+    assert.equal(parsed.ok, false, status);
+    assert.match(parsed.error, /entry 2: "status" must be met, not-met or unsure/, status);
+  }
+  // A result whose status is none of the three, however it got there, stops.
+  const forged = [{ n: 1, status: "met" }, { n: 2, status: "constructor" }];
+  assert.deepEqual(decideTriage(forged), { proceed: false, notMet: [2], unsure: [] });
+  assert.equal(decideTriage([{ n: 1, status: "met" }, { n: 2, status: undefined }]).proceed, false);
+
+  const l = landing(t, { args: { triage: "codex/gpt-6-astra" }, answers: [reply([met(1), met(2, { status: "constructor" })])] });
+  await assert.rejects(runLand(l.io), /reply could not be read: entry 2: "status" must be met, not-met or unsure, not "constructor"/);
+  assert.deepEqual(l.commands(), ["push", "check"], "nothing submitted");
+  assert.equal(l.reviewAsked(), false);
+});
+
+// The owner's commands a stop advertises, as runLand's arguments.
+function advertised(message) {
+  return [...message.matchAll(/atelier land t1((?: --[a-z-]+(?: [^\s"]+)?)*?) --(override-triage|no-triage) "REASON"/g)].map(([, rest, flag]) => {
+    const args = {};
+    const words = rest.trim().split(/\s+/).filter(Boolean);
+    for (let i = 0; i < words.length; i++) {
+      if (words[i] === "--workflow") args.workflow = true;
+      else if (words[i] === "--triage") args.triage = words[++i];
+      else throw new Error(`unexpected ${words[i]} in ${rest}`);
+    }
+    return { flag, args: { ...args, [flag]: "checked by hand" } };
+  });
+}
+
+for (const workflow of [false, true]) {
+  test(`every way past a stopped triage the ${workflow ? "Workflow" : "plain"} landing advertises runs as given and is recorded, with --triage H/M or the project's setting (t475)`, async (t) => {
+    const notMet = reply([met(1), met(2, { status: "not-met" })]);
+    for (const [setup, flags] of [
+      [{ args: { triage: "codex/gpt-6-astra" } }, ["override-triage"]],
+      [{ project: { triage: "codex/gpt-6-astra" } }, ["override-triage", "no-triage"]],
+    ]) {
+      const first = landing(t, { ...setup, workflow, answers: [notMet] });
+      let message = "";
+      await assert.rejects(runLand(first.io), (error) => { message = error.message; return true; });
+      assert.match(message, /triage of t1 by codex\/gpt-6-astra stopped/);
+      const ways = advertised(message);
+      assert.deepEqual(ways.map((w) => w.flag), flags, message);
+      for (const way of ways) {
+        assert.deepEqual(resolveTriage({ triage: way.args.triage, noTriage: way.args["no-triage"], override: way.args["override-triage"], project: setup.project?.triage }).error, undefined, JSON.stringify(way.args));
+        const { workflow: wf, ...args } = way.args;
+        assert.equal(wf === true, workflow, "the retry keeps --workflow");
+        const again = landing(t, { ...setup, workflow, args: { ...args, "no-review": true }, events: first.recorded, answers: [notMet] });
+        await runLand(again.io);
+        assert.equal(again.asked.length, 0, `${way.flag}: the model is not asked again`);
+        const outcome = way.flag === "no-triage" ? "bypassed" : "overridden";
+        const record = again.triages().find((d) => d.outcome === outcome && d.reason === "checked by hand");
+        assert.ok(record, `${way.flag} is recorded`);
+        assert.deepEqual([record.head, record.base, record.criteria], [HEAD, BASE, criteriaOf({ accept: CRITERIA })]);
+        if (workflow) assert.ok(again.at((c) => c.path?.endsWith("/land") && c.body.outcome === outcome) < again.at((c) => c.body?.event?.type === "workspace" && c.body.event.payload.head));
+        else assert.deepEqual(again.commands(), ["push", "check", "submit"]);
+      }
+    }
+  });
+}
+
 // ── the binding the Workflow checks, and the project's setting ──────────────
 
 test("a triage stands for a landing only while the head and criteria are the bound ones and a pass, bypass or override is recorded at that binding (t475)", () => {
