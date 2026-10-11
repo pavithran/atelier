@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { excludeScratch } from "./scratch.mjs";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -17,6 +17,66 @@ import { parseVerdict, VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { rolePrompt, ROLE_PROMPT_MAX } from "../src/usage.ts";
+import { builderRefusals } from "../src/commit-identity.ts";
+
+// ── commit identity (t451) ────────────────────────────────────────────────
+
+// Where a claim keeps the project's commit identity policy in a workspace,
+// beside the user.name and user.email it writes into .git/config, for the
+// runner to check a builder's identity against before it starts.
+export const IDENTITY_FILE = "atelier-identity.json";
+
+export function readIdentityPolicy(workspace) {
+  try { return JSON.parse(readFileSync(join(workspace, ".git", IDENTITY_FILE), "utf8")); } catch { return null; }
+}
+
+// The author and committer identity Git gives a commit made in `dir` with
+// `env`, field by field, with the setting each comes from. Git takes a
+// field from GIT_AUTHOR_* or GIT_COMMITTER_* in the environment first, then
+// author.* or committer.*, then user.* in its config, then, for the address
+// alone, EMAIL; with none of them it guesses from the machine's user and
+// host names, which reads as null here. The value is Git's own (git var), so
+// a setting this order misses still shows as what a commit would carry.
+export function resolveIdentity(dir, env, run = spawnSync) {
+  const gitIn = (args) => run("git", args, { cwd: dir, env, encoding: "utf8" });
+  const config = (key) => {
+    const r = gitIn(["config", "--show-origin", "--get", key]);
+    if (r.status !== 0 || !r.stdout.trim()) return null;
+    const [origin, ...value] = r.stdout.replace(/\n$/, "").split("\t");
+    return { value: value.join("\t"), from: `${key} in ${origin.replace(/^file:/, "")}` };
+  };
+  const out = {};
+  for (const role of ["author", "committer"]) {
+    const ident = gitIn(["var", `GIT_${role.toUpperCase()}_IDENT`]);
+    const m = ident.status === 0 ? /^(.*) <([^>]*)> \d+ [+-]\d{4}$/.exec(ident.stdout.trim()) : null;
+    const field = (name, extra = []) => {
+      const variable = `GIT_${role.toUpperCase()}_${name.toUpperCase()}`;
+      if (env[variable] !== undefined) return { set: env[variable], from: `${variable} in the environment` };
+      const set = config(`${role}.${name}`) ?? config(`user.${name}`);
+      if (set) return { set: set.value, from: set.from };
+      for (const e of extra) if (env[e]) return { set: env[e], from: `${e} in the environment` };
+      return { set: null, from: `user.${name} in the workspace's .git/config (atelier claim sets it from the project's policy)` };
+    };
+    const name = field("name"), email = field("email", ["EMAIL"]);
+    // A field nothing sets is Git's guess, and counts as missing.
+    out[role] = {
+      name: name.set === null ? null : (m?.[1] ?? name.set) || null,
+      email: email.set === null ? null : (m?.[2] ?? email.set) || null,
+      nameFrom: name.from, emailFrom: email.from,
+      // Git could not form this identity from its settings (an empty or
+      // disallowed name, say): what Git said, so the refusal names it.
+      ...(ident.status !== 0 ? { unusable: String(ident.stderr ?? "").trim().split("\n")[0] || `git var exited ${ident.status}` } : {}),
+    };
+  }
+  return out;
+}
+
+// Why a builder may not start in `workspace` with `env`: one line per
+// author or committer field the project's policy refuses, naming the
+// setting to fix. Empty when it may.
+export function identityRefusals(workspace, env, project, run = spawnSync) {
+  return builderRefusals(readIdentityPolicy(workspace), resolveIdentity(workspace, env, run), project);
+}
 
 export function offerFrom(config, name) {
   if (typeof name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(name)) throw new Error("use --name home:NAME");
@@ -782,9 +842,16 @@ export async function runTask(assignment, config, name, io) {
       // is removed when the harness ends, however it ends, before anything else.
       const dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
       try {
+        // The builder commits with the identity Git resolves in exactly the
+        // environment it gets (t451): the policy the claim wrote must allow
+        // its author and committer, or it does not start. A refusal is the
+        // runner's setup, not the model's work, and names the setting to fix.
+        const runEnv = harnessRunEnv(env, dataHome, item.id, "build", name, project, actor);
+        const refused = await io.identityRefusals(workspace, runEnv, project);
+        if (refused.length) throw Object.assign(new Error(`commit identity refused before the builder started: ${refused.join("; ")}`), { infrastructure: true });
         advance({ type: "start" });
         taskFailure = true;
-        result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name, project, actor), { capture: true, stream: true });
+        result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, runEnv, { capture: true, stream: true });
       } finally {
         if (dataHome) {
           try { await io.removeDataHome(dataHome); }
@@ -1625,6 +1692,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       await resetTo(cwd, `refs/remotes/origin/${branch}`);
     },
     // `env` is the harness's whole environment (harnessEnv); `io.env` is the runner's.
+    identityRefusals: async (cwd, env, project) => identityRefusals(cwd, env, project),
     harness: (argv, cwd, env, { capture = false, captureError = false, stream = false } = {}) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS, env, stream, ...(capture ? { capture } : {}), ...(captureError ? { captureError } : {}) }),
     // { actor, head, detail }; a marker that does not parse holds nothing back.
     readValidationBlock: async (cwd) => {
