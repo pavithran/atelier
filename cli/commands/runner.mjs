@@ -109,6 +109,14 @@ export default async function runnerCommand() {
         await resolveTokenActor();
         return postAsRunner(`${I(body.project, body.item)}/review-skip`, body, runner, signal, tokenRunner ? body.actor : OWNER);
       },
+      // A build or plan job this runner gives up under its dispatch, after
+      // failed runs or infrastructure failures in a row, is reported the
+      // same way (t420), so status and show name this runner as what passes
+      // it by.
+      async reportRunSkip(body, runner, signal) {
+        await resolveTokenActor();
+        return postAsRunner(`${I(body.project, body.item)}/run-skip`, body, runner, signal, tokenRunner ? body.actor : OWNER);
+      },
     });
   } catch (error) { die(error.message); }
 }

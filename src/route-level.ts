@@ -39,4 +39,6 @@
 
 // 26: review-renew and five-minute leases; release and verdicts name the
 // exact request generation, and expired requests are reoffered (t351).
-export const ROUTE_LEVEL = 26;
+// 27: a runner reports a build or plan job it gives up to run-skip, and its
+// poll asks the queue `why` dispatches wait (t420).
+export const ROUTE_LEVEL = 27;

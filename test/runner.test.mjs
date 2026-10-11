@@ -1176,6 +1176,7 @@ test("runner stops retrying after two failures even when the task revision chang
     const { io, calls, logs } = fixture({ head: "before", code: 1, timedOut: failure === "timeout" });
     if (failure === "spawn") io.harness = async () => { throw new Error("ENOENT"); };
     let polls = 0;
+    const skips = [];
     await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
       workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
       async queue() {
@@ -1183,9 +1184,14 @@ test("runner stops retrying after two failures even when the task revision chang
         return [{ ...assignment, item: { ...assignment.item, updatedAt: String(polls) } },
           { ...assignment, item: { ...assignment.item, id: "t14" } }];
       },
+      reportRunSkip: async (body, runner) => { skips.push([runner, body]); },
     });
     assert.deepEqual(calls.filter((c) => c.argv?.[0] === "claim").map((c) => c.argv[1]), ["t13", "t13", "t14"]);
     assert.equal(logs.filter((s) => s.includes("needs the owner's attention")).length, 1);
+    // t420: the skip goes to the server under this runner's name, once, so
+    // status and show name it however many run reports follow.
+    assert.deepEqual(skips.map(([runner, b]) => [runner, b.project, b.item, b.actor, b.role, b.kind, b.failures]), [["home:studio", "atelier", "t13", assignment.actor, "build", "failures", 2]]);
+    assert.ok(skips[0][1].note);
   }
 });
 
@@ -1579,10 +1585,16 @@ test("real runner caps reset, claim and finish failures while serving the next t
     execFileSync("git", ["config", "user.email", "runner@example.test"], { cwd: healthy });
     writeFileSync(join(healthy, ".git", "atelier-identity.json"), readFileSync(join(workspace, ".git", "atelier-identity.json")));
     if (failure === "reset") writeFileSync(join(workspace, ".git", "index.lock"), "stale");
-    const claims = [], releases = [], runs = [], finishes = [], logs = [];
-    let polls = 0;
+    const claims = [], releases = [], runs = [], finishes = [], logs = [], skips = [];
+    let polls = 0, refusedOnce = false;
     await runRunner(args, {
       workspacePath: (_, id) => join(dir, id), wait: () => tick(),
+      // t420: infrastructure failures send no run report, so the skip is
+      // reported itself; the first attempt fails and is tried again.
+      reportRunSkip: async (body, runner) => {
+        if (!refusedOnce) { refusedOnce = true; throw new Error("503 busy"); }
+        skips.push([runner, body]);
+      },
       queue: async () => {
         if (++polls === 5) { process.emit("SIGINT"); return []; }
         return [assignment, { ...assignment, item: { ...assignment.item, id: "t14" } }]
@@ -1612,6 +1624,10 @@ test("real runner caps reset, claim and finish failures while serving the next t
     assert.match(attention[0], /atelier\/t13.*3 consecutive infrastructure failures/);
     assert.ok(attention[0].includes(failure === "reset" ? "index.lock" : `${failure} unavailable`));
     if (failure === "reset") assert.equal(readFileSync(join(workspace, ".git", "index.lock"), "utf8"), "stale");
+    assert.deepEqual(skips.map(([runner, b]) => [runner, b.item, b.role, b.kind, b.failures]), [["home:studio", "t13", "build", "infrastructure", 3]]);
+    assert.ok(skips[0][1].note.includes(failure === "reset" ? "index.lock" : `${failure} unavailable`));
+    assert.ok(logs.some((s) => /could not report the run skip for atelier\/t13: 503 busy; trying again next poll/.test(s)));
+    assert.ok(logs.includes("reported the run skip for atelier/t13"));
   }
 });
 
