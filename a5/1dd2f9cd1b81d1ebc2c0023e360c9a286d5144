@@ -1,0 +1,24 @@
+atelier atelier/t505 "A review runner survives its first lease call"
+accepted head b9b8ca88259382e25c763a9b4afe66f5ca1d802f
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-11T06:46:41.218Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-11T06:46:44.720Z
+REVIEW approve by codex/gpt-6-astra at b9b8ca88259382e25c763a9b4afe66f5ca1d802f, recorded by codex/gpt-6-astra
+2026-10-11T06:34:14.864Z pavi item.created
+2026-10-11T06:34:18.312Z claude-code/opus-5.5 item.claimed
+2026-10-11T06:34:38.595Z claude-code/opus-5.5 fork.created
+2026-10-11T06:41:58.220Z pavi land.lease
+2026-10-11T06:42:04.826Z pavi land.merge
+2026-10-11T06:42:15.178Z pavi land.regenerate
+2026-10-11T06:42:17.336Z claude-code/opus-5.5 push.observed
+2026-10-11T06:42:17.841Z pavi land.push
+2026-10-11T06:46:41.656Z claude-code/opus-5.5 evidence.observed
+2026-10-11T06:46:44.859Z claude-code/opus-5.5 evidence.observed
+2026-10-11T06:46:45.301Z pavi land.check
+2026-10-11T06:46:46.281Z claude-code/opus-5.5 item.submitted
+2026-10-11T06:46:46.311Z pavi land.submit
+2026-10-11T06:46:46.505Z pavi review.requested
+2026-10-11T06:47:00.301Z codex/gpt-6-astra review.claimed
+2026-10-11T06:47:58.093Z codex/gpt-6-astra review.approved
+2026-10-11T06:48:02.664Z pavi land.review
+2026-10-11T06:48:02.897Z pavi item.accepted
+2026-10-11T06:48:02.928Z pavi land.accept
