@@ -3,6 +3,7 @@ import { assertCriteriaAllowed, assertReviewAllowed } from "./rules.ts";
 import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
 import { scanCommit } from "./secret-scan.ts";
+import { criteriaOf } from "./criteria.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim, type ReviewerAvailability } from "./ledger.ts";
@@ -2369,6 +2370,22 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       const expected = String(form.get("head") ?? "");
       if (before.head) assertRevision(before, expected);
       if (["accept", "override", "allow-override", "approve", "reject"].includes(verb)) await verifyRevision(env, ref.key, id, expected);
+      // Every form of the page carries the criteria it showed beside the
+      // head: the decision forms must name them, and any form that does is
+      // refused once they changed, so an override or a permission is never
+      // made from a page showing other criteria than the task's (t457).
+      const shownCriteria = form.get("criteria");
+      if ((TASK_FORMS.has(verb) || shownCriteria !== null) && shownCriteria !== criteriaOf(before)) {
+        throw new RuleError("stale_criteria", `${id}'s acceptance criteria changed since you opened this page; reload it and read them again`, 409);
+      }
+      // An override sent from a page drawn before the task was accepted (an
+      // old tab) would record a second override and acceptance; it is
+      // refused, the page drawn again with the acceptance on it (t457).
+      if (verb === "override" && before.state !== "submitted") {
+        throw new RuleError("not_submitted", before.state === "accepted"
+          ? `${id} was already accepted at ${(before.acceptedHead ?? before.head ?? "").slice(0, 8)} since this page was drawn, so this override would record a second override and acceptance`
+          : `${id} is ${before.state}; an override is made only on a submitted revision`, 409);
+      }
       if (verb === "accept" || verb === "override") await assertPlanMergeable(env, L, id);
       // The override forms are the owner's confirmation only with the factor
       // no agent holds (t371, ownerFactorIn): posted with the owner token as a

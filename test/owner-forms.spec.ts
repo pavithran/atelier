@@ -64,12 +64,49 @@ it("criterion 6: a stale head or stale criteria on Approve re-renders the page w
   expect(html).not.toContain("Approved by you");
   const staleCriteria = await post("approve", { criteria: "sha256:" + "f".repeat(64) });
   expect(staleCriteria.status).toBe(409);
-  expect(alertFor(await staleCriteria.text(), "approve")).toMatch(/^<p class="error form-error" role="alert" id="error-approve">t1(&#39;|&#x27;|')s acceptance criteria changed since this review read them/);
+  expect(alertFor(await staleCriteria.text(), "approve")).toMatch(/^<p class="error form-error" role="alert" id="error-approve">t1(&#39;|&#x27;|')s acceptance criteria changed since you opened this page; reload it and read them again\. Nothing was recorded/);
   expect(await L.reviewsFor("t1")).toEqual([]);
   // The same approval, sent from a current page, is recorded and said beside the actions.
   const ok = await post("approve", {});
   expect(ok.status).toBe(303);
   expect(ok.headers.get("location")).toBe("https://atelier.test/p/forms-stale/t1");
+});
+
+it("criterion 6: stale criteria refuse the override and the command-line permission as they refuse Approve", async () => {
+  const { L, post } = await setup("forms-stale-criteria");
+  const stale = "sha256:" + "f".repeat(64), reason = "No other family today";
+  const override = await post("override", { criteria: stale, note: reason, confirmation: SECRET });
+  expect(override.status).toBe(409);
+  const html = await override.text();
+  expect(alertFor(html, "override")).toMatch(/^<p class="error form-error" role="alert" id="error-override">t1(&#39;|&#x27;|')s acceptance criteria changed since you opened this page/);
+  expect(html).toContain(`>${reason}</textarea>`);
+  expect(html).not.toContain(SECRET);
+  expect((await L.item("t1")).state).toBe("submitted");
+  const missing = await post("override", { criteria: "", note: reason, confirmation: SECRET });
+  expect(missing.status).toBe(409);
+  expect((await L.item("t1")).state).toBe("submitted");
+  const permission = await post("allow-override", { criteria: stale, confirmation: SECRET });
+  expect(permission.status).toBe(409);
+  expect(alertFor(await permission.text(), "allow-override")).toMatch(/acceptance criteria changed since you opened this page/);
+  expect((await L.item("t1")).overrideConfirmation).toBeUndefined();
+  const events = await L.events("t1") as unknown as { kind: string }[];
+  expect(events.filter((v) => v.kind === "review.overridden" || v.kind === "override.allowed" || v.kind === "item.accepted")).toEqual([]);
+});
+
+it("criterion 6: an old tab's second override after acceptance is refused on the page and records nothing more", async () => {
+  const { L, post } = await setup("forms-second-override");
+  expect((await post("override", { note: "No other family", confirmation: SECRET })).status).toBe(303);
+  expect((await L.item("t1")).state).toBe("accepted");
+  const count = async () => (await L.events("t1") as unknown as { kind: string }[]).filter((v) => v.kind === "review.overridden" || v.kind === "item.accepted").length;
+  expect(await count()).toBe(2);
+  // The same form again, from a tab drawn before the acceptance.
+  const again = await post("override", { note: "Second <try> from an old tab", confirmation: SECRET });
+  expect(again.status).toBe(409);
+  const html = await again.text();
+  expect(html).toContain('role="alert" id="error-override">t1 was already accepted at aaaaaaaa since this page was drawn, so this override would record a second override and acceptance. Nothing was recorded from this attempt.');
+  expect(html).toContain("<blockquote>Second &lt;try&gt; from an old tab</blockquote>");
+  expect(html).not.toContain(SECRET);
+  expect(await count()).toBe(2);
 });
 
 it("criterion 6: a refused override keeps its reason, never echoes the secret, and reopens the disclosure", async () => {
