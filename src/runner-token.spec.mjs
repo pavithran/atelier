@@ -48,6 +48,17 @@ async function setup() {
   return { name, L, token, api, request, offer, base, poll, claim, upstream, bindings, push: () => { forkHead = "b".repeat(40); } };
 }
 
+it("refuses runner tokens on board and area routes", async () => {
+  const t = await setup();
+  for (const section of ["board", "areas", "areas/a1"]) {
+    for (const method of ["GET", "POST", "DELETE"]) {
+      const response = await t.api(method, `/projects/${t.name}/${section}`);
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({ error: "runner_forbidden" });
+    }
+  }
+});
+
 it("issues normalized runner/project credentials, requires owner and one existing project", async () => {
   const t = await setup();
   expect(t.token.runner).toBe("home:studio");

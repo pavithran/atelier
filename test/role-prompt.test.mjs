@@ -54,7 +54,9 @@ const ORCHESTRATE_RULES = [
   /override[\s\S]*?last resort[\s\S]*?never the\s+way to land another\s+agent's work/,
   /Report every run that ended without a result/,
   /On a stall/,
-  /repeated rejection/,
+  /two rejections on the same\s+point/,
+  /edge cases it\s+implies/,
+  /mechanical\s+(merge\s+)?conflict/,
 ];
 
 test("the orchestrate guide states each standing rule and names docs/orchestrating.md", () => {
