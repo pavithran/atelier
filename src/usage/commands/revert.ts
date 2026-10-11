@@ -2,6 +2,7 @@ import type { CommandSpec } from "../command.ts";
 
 const spec: CommandSpec = {
   name: "revert",
+  capabilities: ["projects.commit-identity.v1"],
   forms: [
     {
       group: "Undo", line: 1, slot: 10, only: "cli",
