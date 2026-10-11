@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockup: Projects — Atelier</title>
+<link rel="stylesheet" href="mockup.css">
+<style>
+  .pcard h2 { margin: 0 0 4px; }
+  .pcard h2 a { color: var(--text-bright); text-decoration: none; }
+  .pcard .wait { font-weight: 700; color: var(--signal); }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+  .seg-go { background: var(--observed); } .seg-ask { background: var(--signal); }
+  .seg-caution { background: var(--caution); } .seg-fault { background: var(--fault); }
+  .seg-neutral { background: var(--text-muted); } .seg-done { background: var(--line-bright); }
+</style>
+</head>
+<body>
+<div class="mock-head">
+  <p class="mock-back"><a href="index.html">All mockups</a></p>
+  <p class="mock-title">Projects (the portfolio)</p>
+  <p class="mock-routes">Covers <code>/home</code>, titled "Projects" (and <code>/projects</code>, which answers 301 to it). Drawn: five projects — dense, empty and unavailable.</p>
+</div>
+
+<div class="frames">
+<figure class="frame desktop">
+<figcaption>Desktop · 1440 · /home</figcaption>
+<div class="screen">
+<header class="ob">
+  <a class="skip" href="#d-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <ul>
+      <li><a href="/decisions">Decisions <span class="count">(14)</span></a></li>
+      <li><a href="/home" aria-current="page">Projects</a><a class="mk" href="#n5">5</a></li>
+      <li><a href="/studio">Activity</a></li>
+    </ul>
+    <span class="spacer"></span>
+    <details><summary>Project ▾</summary><div class="menu-panel"><a href="/p/ledger-core">Ledger Core <span>9</span></a><a href="/p/field-notes">Field Notes <span>4</span></a><a href="/p/open-tool">Open Tool <span>1</span></a><a href="/p/blank-slate">blank-slate</a><a href="/p/cold-storage">cold-storage <span>unavailable</span></a></div></details>
+    <details><summary>Owner ▾</summary><div class="menu-panel"><a href="/models">Models</a><a href="/usage">Usage</a><hr><a href="/logout">Sign out</a></div></details>
+  </nav>
+</header>
+<main id="d-main" class="app-main">
+  <h1>Projects</h1>
+  <ul class="legend plain" aria-label="Legend for the bars">
+    <li><span class="tag ask">Waiting on you</span></li><li><span class="tag fault">Checks failed / Sent back</span></li><li><span class="tag caution">Blocked / stale</span></li><li><span class="tag neutral">Working / Ready to start</span></li><li><span class="tag done">Merged / Closed</span></li><li><a class="mk" href="#n1">1</a></li>
+  </ul>
+  <ul class="cols-3 plain">
+    <li class="card pcard">
+      <h2><a href="/p/ledger-core">Ledger Core</a></h2>
+      <p style="margin:0"><span class="wait">9 waiting on you</span> <span class="muted">· 200 tasks · 9 working · 3 checks failed</span><a class="mk" href="#n2">2</a></p>
+      <div class="tally" role="img" aria-label="Of 200: 9 waiting, 4 failed or sent back, 3 blocked or stale, 22 working or ready to start, 162 merged or closed"><span class="seg-ask" style="width:4.5%"></span><span class="seg-fault" style="width:2%"></span><span class="seg-caution" style="width:1.5%"></span><span class="seg-neutral" style="width:11%"></span><span class="seg-done" style="width:81%"></span></div>
+      <p class="muted" style="margin:0;font-size:14px">Top: <a href="/p/ledger-core/t195">t195 Needs review</a> · last merge 2 h ago</p>
+    </li>
+    <li class="card pcard">
+      <h2><a href="/p/field-notes">Field Notes</a></h2>
+      <p style="margin:0"><span class="wait">4 waiting on you</span> <span class="muted">· 70 tasks · 3 working</span></p>
+      <div class="tally" role="img" aria-label="Of 70: 4 waiting, 3 working, 63 merged or closed"><span class="seg-ask" style="width:6%"></span><span class="seg-neutral" style="width:4%"></span><span class="seg-done" style="width:90%"></span></div>
+      <p class="muted" style="margin:0;font-size:14px">Top: <a href="/p/field-notes/t64">t64 Needs review</a> · last merge 6 h ago</p>
+    </li>
+    <li class="card pcard">
+      <h2><a href="/p/open-tool">Open Tool</a></h2>
+      <p style="margin:0"><span class="wait">1 waiting on you</span> <span class="muted">· 40 tasks · 2 working</span></p>
+      <div class="tally" role="img" aria-label="Of 40: 1 waiting, 2 working, 37 merged or closed"><span class="seg-ask" style="width:2.5%"></span><span class="seg-neutral" style="width:5%"></span><span class="seg-done" style="width:92.5%"></span></div>
+      <p class="muted" style="margin:0;font-size:14px">Shown publicly, named · <a href="/p/open-tool/settings#showcase">Settings</a><a class="mk" href="#n3">3</a></p>
+    </li>
+    <li class="card pcard">
+      <h2><a href="/p/blank-slate">blank-slate</a></h2>
+      <p class="muted" style="margin:0 0 10px">No tasks yet.</p>
+      <a class="btn small" href="/p/blank-slate/tasks?new=1">Create the first task</a>
+    </li>
+    <li class="card pcard" style="border-color:var(--caution)">
+      <h2><a href="/p/cold-storage">cold-storage</a></h2>
+      <p style="margin:0 0 10px"><span class="tag caution">Unavailable</span> <span class="muted">its ledger could not be read at 12:00 UTC</span></p>
+      <a class="btn small" href="/home">Retry</a><a class="mk" href="#n4">4</a>
+    </li>
+  </ul>
+</main>
+</div>
+</figure>
+
+<figure class="frame phone">
+<figcaption>Phone · 390 · /home</figcaption>
+<div class="screen">
+<header class="ob phone">
+  <a class="skip" href="#p-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <a href="/decisions">Decisions <span class="count">(14)</span></a>
+    <span class="spacer"></span>
+    <details><summary>Menu ▾</summary><div class="menu-panel"><a href="/home" aria-current="page">Projects</a><a href="/studio">Activity</a><hr><a href="/models">Models</a><a href="/usage">Usage</a><a href="/logout">Sign out</a></div></details>
+  </nav>
+</header>
+<main id="p-main" class="app-main">
+  <h1>Projects</h1>
+  <ul class="plain" style="display:grid;gap:10px">
+    <li class="card pcard"><h2><a href="/p/ledger-core">Ledger Core</a></h2><p style="margin:0"><span class="wait">9 waiting</span> <span class="muted">· 200 tasks · 3 failed</span></p>
+      <div class="tally" role="img" aria-label="Of 200: 9 waiting, 4 failed or sent back, 3 blocked or stale, 22 working or ready, 162 done"><span class="seg-ask" style="width:4.5%"></span><span class="seg-fault" style="width:2%"></span><span class="seg-caution" style="width:1.5%"></span><span class="seg-neutral" style="width:11%"></span><span class="seg-done" style="width:81%"></span></div></li>
+    <li class="card pcard"><h2><a href="/p/field-notes">Field Notes</a></h2><p style="margin:0"><span class="wait">4 waiting</span> <span class="muted">· 70 tasks</span></p></li>
+    <li class="card pcard"><h2><a href="/p/open-tool">Open Tool</a></h2><p style="margin:0"><span class="wait">1 waiting</span> <span class="muted">· 40 tasks</span></p></li>
+    <li class="card pcard"><h2><a href="/p/blank-slate">blank-slate</a></h2><a class="btn small" href="/p/blank-slate/tasks?new=1">Create the first task</a></li>
+    <li class="card pcard"><h2><a href="/p/cold-storage">cold-storage</a></h2><p style="margin:0 0 8px"><span class="tag caution">Unavailable</span></p><a class="btn small" href="/home">Retry</a></li>
+  </ul>
+</main>
+</div>
+</figure>
+</div>
+
+<section class="notes" aria-labelledby="notes-h">
+  <h2 id="notes-h">Notes</h2>
+  <ol>
+    <li id="n1"><span class="num">1</span><div>The 32-word lead becomes a legend of the bar's roles, each with its word. <span class="cite">F8 → P11</span></div></li>
+    <li id="n2"><span class="num">2</span><div>Cards keep the tally and waiting first; "9 waiting on you" is the same number as Decisions' Ledger Core group and the Overview. <span class="cite">F7 → P6</span></div></li>
+    <li id="n3"><span class="num">3</span><div>No showcase select on the cards: the setting moves to each project's Settings, and the card only states it with a link. <span class="cite">F1, F16 → P10</span></div></li>
+    <li id="n4"><span class="num">4</span><div>cold-storage reads "Unavailable" with a Retry, inside the page and the bar, rather than breaking the portfolio; blank-slate offers its first task. <span class="cite">F13, F21 → P2, P5, P17</span></div></li>
+    <li id="n5"><span class="num">5</span><div>"Projects" is now a destination in row 1; the rail's Home and the sentence linking Flow and History are replaced by Activity. <span class="cite">F1 → P1</span></div></li>
+  </ol>
+</section>
+</body>
+</html>

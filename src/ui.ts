@@ -1,6 +1,7 @@
 import { taskPage } from "./task-page.ts";
 import { renderBoard } from "./board-html.ts";
-import type { BoardSnapshot } from "./board.ts";
+import type { BoardSnapshot, Stage } from "./board.ts";
+import { OWNER_CALL_LABEL, STAGE_LABEL, legacyFields, stageCounts, type Attention, type LegacyFields, type OwnerTask } from "./attention.ts";
 import { layersFigure } from "./diagrams.ts";
 import { sessionNoteText, type SessionNote } from "./sessions.ts";
 // Server-rendered pages. Every action is a plain form post and every page
@@ -10,7 +11,7 @@ import { sessionNoteText, type SessionNote } from "./sessions.ts";
 // Colours, type, spacing and radii come from the portfolio theme (theme.css);
 // layout.css only arranges them.
 
-import { TEXT_CONTROLS } from "./text.ts";
+import { DISPATCH_NOTE_MAX, notePreview, TEXT_CONTROLS } from "./text.ts";
 import { appliesText, checkClasses, classText, type CheckClass } from "./checks.ts";
 import theme from "./theme.css";
 import layout from "./layout.css";
@@ -24,6 +25,7 @@ import { NO_AGENT, type ImportedHistory } from "./import/history";
 import { HARNESSES, PROVIDERS, type ModelEntry } from "./models/pool";
 import type { ModelRecord } from "./models/record";
 import { PRECISION_MIN_JUDGED, precisionTerm, type PrecisionRecord, type ReviewerPrecision } from "./models/precision.ts";
+import { judged, judgementTotals, type ActingJudgement, type JudgementRecord } from "./models/judgement.ts";
 import { reliabilityLine, roundsPerMerge, runTotal, RUN_OUTCOMES, type Cause, type KindMeasures, type ModelReliability, type Reliability } from "./models/reliability.ts";
 import { clockTime, dayOf, shortStamp, stamp, weekdayOf, zoneLabel } from "./time";
 import { duration, type GatewayView } from "./usage/gateway.ts";
@@ -41,8 +43,8 @@ import type { PartRoute } from "./plans/route.ts";
 // refreshes itself, in seconds, or nothing for the scrubber alone.
 export interface Live { nonce: string; refresh?: number }
 import {
-  bindingOf, confirmationAt, DEFAULT_OWNER, decisionFor, evidenceAt, isOwnCall, latestReviews, mergedByOverride, mergedChecksAt, NO_OWNER_FACTOR, OVERRIDE_CONFIRMATION_MS, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey,
-  type Finding, type Evidence, type Gate, type InboxEntry, type Item, type MergedCheckView, type OwnerFactor, type ProjectPolicy, type Review, type UnparsableReply,
+  bindingOf, confirmationAt, DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, mergedByOverride, mergedChecksAt, NO_OWNER_FACTOR, OVERRIDE_CONFIRMATION_MS, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey, singleFamily,
+  type Finding, type Evidence, type FamilyMode, type Gate, type InboxEntry, type Item, type MergedCheckView, type OwnerFactor, type ProjectPolicy, type Review, type UnparsableReply,
 } from "./rules";
 
 // What a page calls a project: its title when it has one, else its name. Links,
@@ -197,6 +199,44 @@ const KIND: Record<InboxEntry["kind"], [string, string]> = {
   "plan-blocked": ["Plan blocked", "bad"],
 };
 
+// The owner's calls and the pipeline's stages as the waiting lists tag them
+// (attentionFor in src/attention.ts places each task once).
+const CALL_TONE: Record<OwnerTask["call"], string> = {
+  "clear-secret": "bad", unblock: "ask", "decide-plan": "bad", "approve-plan": "ask", accept: "go", override: "bad", ship: "ask", "start-runner": "bad",
+};
+const callTag = (t: OwnerTask) => tag(OWNER_CALL_LABEL[t.call], CALL_TONE[t.call]);
+
+// Where an owner item's call is performed: the task page's form, or Ship.
+const actionLink = (t: OwnerTask) => `<a href="${e(t.href)}">${t.call === "ship" ? "Open Ship" : "Open the task page"}</a>`;
+
+// One owner item: the task, its call, the sentence that says what to do and
+// the link to where it is done.
+function ownerRow(t: OwnerTask, projectTitle?: string): string {
+  return `<li class="owner-call"><a href="${e(t.href)}"><strong>${e(t.title)}</strong></a>${callTag(t)}<span class="meta">${projectTitle ? `${e(projectTitle)} · ` : ""}${e(t.id)}</span>
+    <p>${e(t.sentence)} ${actionLink(t)}</p></li>`;
+}
+
+// The pipeline's tasks, counted by stage, and the overlapping scopes, each in
+// a disclosure: they are the orchestrator's and the reviewers', never inline
+// with what waits on the owner.
+function pipelineDisclosure(a: Attention, projectTitle?: string, waitsFor: Map<string, string> = new Map()): string {
+  if (!a.pipeline.length) return "";
+  const counts = stageCounts(a).map(([s, n]) => `${n} ${STAGE_LABEL[s]}`).join(" · ");
+  const rows = a.pipeline.map((t) => `<li><a href="${href("p", a.project, t.id)}">${e(t.title)}</a><span class="meta">${projectTitle ? `${e(projectTitle)} · ` : ""}${e(t.id)} · ${e(STAGE_LABEL[t.stage])}${waitsFor.has(`${a.project}/${t.id}`) ? `, for ${e(waitsFor.get(`${a.project}/${t.id}`)!)}` : ""}${t.notices.length ? ` · ${t.notices.map((k) => e(KIND[k][0])).join(", ")}` : ""}</span></li>`).join("");
+  return `<details class="disclosure pipeline"><summary>${plural(a.pipeline.length, "task")} in the pipeline: ${counts}</summary>
+    <p class="meta">The orchestrator, runners and reviewers move these; none waits on you.</p><ul class="home-rows">${rows}</ul></details>`;
+}
+
+function overlapDisclosure(a: Attention): string {
+  if (!a.overlaps.length) return "";
+  return `<details class="disclosure overlaps"><summary>${plural(a.overlaps.length, "pair")} of tasks with overlapping scopes</summary>
+    <ul class="home-rows">${a.overlaps.map(([x, y]) => `<li><a href="${href("p", a.project, x)}">${e(x)}</a> and <a href="${href("p", a.project, y)}">${e(y)}</a> name overlapping paths</li>`).join("")}</ul>
+    <p class="meta">Expect a merge conflict when the second lands; nothing waits on you.</p></details>`;
+}
+
+const unknownNotice = (a: Attention) => a.unknown.length
+  ? `<div class="notice" role="status"><h3>Not everything was read</h3><ul>${a.unknown.map((x) => `<li>${e(x)}</li>`).join("")}</ul></div>` : "";
+
 // ── where evidence came from ───────────────────────────────────────────────
 // Both places are Atelier's own runs: a Cloudflare container started by the
 // Worker, or Atelier's command in a clean clone of the pushed head on a runner.
@@ -275,13 +315,13 @@ function taskStory(project: string, d: Detail): Story | null {
 
 // A waiting decision as a card: the row that selects it, the brief in one line,
 // the task's thread in miniature with each review as an edge, and a link to the task page.
-// A plan's own entry (approve-plan, plan-blocked) carries its decision in its
+// A plan's own call (approve-plan, decide-plan) carries its decision in its
 // reason, which the card shows in place of the item's brief: the brief reads
 // the plan item as a task, and knows nothing of its proposal or its parts.
-function decisionCard(row: string, project: string, d: Detail, lead?: InboxEntry): string {
+function decisionCard(row: string, project: string, d: Detail, lead?: OwnerTask): string {
   const brief = briefFor(d, d.events);
-  const b = lead && (lead.kind === "approve-plan" || lead.kind === "plan-blocked")
-    ? { ...brief, recommendation: { verdict: "decide" as const, reason: lead.reason } } : brief;
+  const b = lead && (lead.call === "approve-plan" || lead.call === "decide-plan")
+    ? { ...brief, recommendation: { verdict: "decide" as const, reason: lead.why } } : brief;
   const owner = d.ownerActor ?? DEFAULT_OWNER;
   const story = taskStory(project, d);
   const thread = story
@@ -291,12 +331,12 @@ function decisionCard(row: string, project: string, d: Detail, lead?: InboxEntry
     <div class="card-body">
       <p class="card-brief">${tag(b.recommendation.verdict, VERDICT_TONE[b.recommendation.verdict])}<span>${e(b.recommendation.reason)}</span></p>
       ${thread}
-      <p class="meta card-links"><a href="${href("p", project, d.item.id)}">Open the task page</a></p>
+      <p class="meta card-links">${lead ? actionLink(lead) : `<a href="${href("p", project, d.item.id)}">Open the task page</a>`}</p>
     </div></li>`;
 }
 
 export function renderInbox(
-  entries: InboxEntry[],
+  attention: Attention[],
   projects: ProjectRecord[],
   ownerName: string | null = null,
   selected?: ReviewContext,
@@ -309,51 +349,36 @@ export function renderInbox(
   live?: Live,
 ): string {
   const names = titleMap(projects);
-  // The lead developer's own decisions come first, under the heading the page
-  // has always used; the rest — what the orchestrator and runners handle — is
-  // listed apart, so only the human's calls read as needing the human.
-  const groups = new Map<string, InboxEntry[]>();
-  const handledGroups = new Map<string, InboxEntry[]>();
-  for (const x of entries) {
-    const key = `${x.project}/${x.itemId}`;
-    const bucket = isOwnCall(x.kind) ? groups : handledGroups;
-    bucket.set(key, [...(bucket.get(key) ?? []), x]);
-  }
-  const rows = [...groups.values()].map(([lead, ...more]) => {
-    const [label, tone] = KIND[lead.kind];
-    const current = selected?.project.name === lead.project && selected.detail.item.id === lead.itemId;
-    const extra = more.length ? `<span class="meta">${more.map((m) => e(KIND[m.kind][0])).join(" · ")}</span>` : "";
-    const row = `<a class="decision-row${current ? " selected" : ""}" href="${selectedHref(lead.project, lead.itemId)}"${current ? ' aria-current="true"' : ""}>
-      ${icon("decisions")}<span><strong>${e(lead.title)}</strong><span class="meta">${e(names.get(lead.project) ?? lead.project)} · ${e(lead.itemId)}</span>${extra}</span>${tag(label, tone)}${icon("arrow")}</a>`;
-    const detail = details.get(`${lead.project}/${lead.itemId}`);
-    return detail ? decisionCard(row, lead.project, detail, lead) : `<li>${row}</li>`;
+  // What waits on the owner, one row per task, placed by attentionFor; what
+  // the pipeline carries and overlapping scopes stay in disclosures below.
+  const own = attention.flatMap((a) => a.owner.map((t) => ({ project: a.project, t })));
+  const rows = own.map(({ project, t }) => {
+    const current = selected?.project.name === project && selected.detail.item.id === t.id;
+    const row = `<a class="decision-row${current ? " selected" : ""}" href="${selectedHref(project, t.id)}"${current ? ' aria-current="true"' : ""}>
+      ${icon("decisions")}<span><strong>${e(t.title)}</strong><span class="meta">${e(names.get(project) ?? project)} · ${e(t.id)}</span><span class="meta">${e(t.sentence)}</span></span>${callTag(t)}${icon("arrow")}</a>`;
+    const detail = details.get(`${project}/${t.id}`);
+    return detail ? decisionCard(row, project, detail, t) : `<li>${row}<p class="meta card-links">${actionLink(t)}</p></li>`;
   }).join("");
-  const handledRows = [...handledGroups.values()].map(([lead, ...more]) => {
-    const [label, tone] = KIND[lead.kind];
-    const extra = more.length ? `<span class="meta">${more.map((m) => e(KIND[m.kind][0])).join(" · ")}</span>` : "";
-    return `<li><a class="decision-row" href="${href("p", lead.project, lead.itemId)}">${icon("decisions")}<span><strong>${e(lead.title)}</strong><span class="meta">${e(names.get(lead.project) ?? lead.project)} · ${e(lead.itemId)}</span>${extra}</span>${tag(label, tone)}${icon("arrow")}</a></li>`;
-  }).join("");
+  // A queued task's row names the runner it waits for.
+  const waitsFor = new Map(queued.map(({ project, item }) => [`${project.name}/${item.id}`, describeDispatch(item.dispatch!)]));
+  const elsewhere = attention.map((a) => pipelineDisclosure(a, names.get(a.project) ?? a.project, waitsFor) + overlapDisclosure(a)).join("");
+  const unknown = attention.map(unknownNotice).join("");
+  // The projects not read in full, by title: the list says it may be
+  // incomplete, and so does the resting panel beside it.
+  const notRead = [...new Set([...attention.filter((a) => a.unknown.length).map((a) => a.project), ...projectViews.filter((p) => p.unavailable).map((p) => p.project.name)])]
+    .map((n) => names.get(n) ?? n);
+  const incomplete = notRead.length > 0;
 
-  const needs = new Set(entries.map((x) => `${x.project}/${x.itemId}`));
-  const working = projectViews.flatMap(({ project, items }) =>
-    items.filter((i) => i.state === "claimed" && !needs.has(`${project.name}/${i.id}`)).map((item) => ({ project, item })));
-  const workingList = working.length
-    ? `<h2 class="section-title">Working</h2><ul class="decision-list">${working.map(({ project, item }) =>
-        `<li><a class="decision-row" href="${href("p", project.name, item.id)}">${icon("decisions")}<span><strong>${e(item.title)}</strong><span class="meta">${e(titleOf(project))} · ${e(item.owner ?? "Unassigned")}</span></span>${icon("arrow")}</a></li>`).join("")}</ul>`
-    : "";
-
-  const lead = groups.size
-    ? `${groups.size} decision${groups.size === 1 ? " needs" : "s need"} your attention.`
-    : "Nothing is waiting on you.";
+  const lead = own.length
+    ? `${own.length} task${own.length === 1 ? " needs" : "s need"} your attention.`
+    : incomplete ? "Nothing is known to be waiting on you; more may be waiting." : "Nothing is waiting on you.";
   const queue = `<section class="queue">
   <header><h1>Decisions</h1><p class="lead">${lead}</p></header>
   ${floorStrip(floor, now)}
   <h2 class="section-title">Needs your attention</h2>
-  ${rows ? `<ul class="decision-list">${rows}</ul>` : `<div class="empty"><h3>You’re clear.</h3><p>New reviews and blockers will appear here. <a href="/studio">Watch the studio</a>.</p></div>`}
-  ${handledRows ? `<h2 class="section-title">Handled by the orchestrator</h2><ul class="decision-list">${handledRows}</ul>` : ""}
-  ${workingList}
-  ${queued.length ? `<h2 class="section-title">Waiting for a runner</h2><ul class="decision-list">${queued.map(({ project, item }) =>
-    `<li><a class="decision-row" href="${href("p", project.name, item.id)}">${icon("studio")}<span><strong>${e(item.title)}</strong><span class="meta">${e(titleOf(project))} · ${e(item.id)} · for ${e(describeDispatch(item.dispatch!))}</span></span>${icon("arrow")}</a></li>`).join("")}</ul>` : ""}
+  ${rows ? `<ul class="decision-list">${rows}</ul>` : incomplete ? '<div class="empty"><h3>The list may be incomplete.</h3><p>Some records could not be read. Refresh to try again.</p></div>' : `<div class="empty"><h3>You’re clear.</h3><p>New reviews and blockers will appear here. <a href="/studio">Watch the studio</a>.</p></div>`}
+  ${unknown}
+  ${elsewhere}
   ${projectViews.some((p) => p.unavailable) ? '<p role="status" class="error">Some projects could not be read. Refresh to try again; this list may be incomplete.</p>' : ""}
   ${!projects.length ? '<div class="empty"><h3>Bring your first project.</h3><p>In its checkout, run <code>atelier init</code> to register it.</p></div>' : ""}
 </section>`;
@@ -366,7 +391,7 @@ export function renderInbox(
   const sheet = selected
     ? `<section class="review-sheet" id="review" aria-label="Selected task">${back}${reviewBody(selected)}</section>`
     : latest?.story.threads.length
-      ? `<section class="review-sheet resting has-graph" aria-label="Latest work">${restingGraph(latest.story, latest.owner)}</section>`
+      ? `<section class="review-sheet resting has-graph" aria-label="Latest work">${restingGraph(latest.story, latest.owner, notRead)}</section>`
       : `<section class="review-sheet resting"><div>${icon("check")}<h2>Space to focus.</h2><p>Select a decision to see the changes, the evidence, and your next action.</p><a href="/studio">Watch the studio</a></div></section>`;
   return page("Decisions", `<div class="desk${selected ? " has-selection" : ""}">${queue}${sheet}</div>`, "Decisions", ownerName, 0, true, live);
 }
@@ -379,6 +404,7 @@ const taskHref = (project: string) => (th: { id: string }) => href("p", project,
 // The owner's label at the start of a sentence.
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
+const listed = (xs: string[]) => xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`;
 
 const LOCAL_KEY = '<li><i style="--c:var(--text-muted);border:1.5px dotted currentColor;border-radius:50%;background:var(--shell)"></i>dotted: ran locally</li>';
 
@@ -412,12 +438,17 @@ function headline(t: Tally, who = "You"): string {
     agents ? `${plural(agents, "agent")} did the other ${t.agentMoves} moves${t.sentBack ? `, and sent work back ${plural(t.sentBack, "time")}` : ""}.` : "No agent has started yet."}</span>`;
 }
 
-function restingGraph(s: Story, owner: string): string {
+// `notRead` names the projects whose records were not all read; while any
+// is, the panel never says nothing is waiting (t504).
+function restingGraph(s: Story, owner: string, notRead: string[] = []): string {
   const t = s.tally;
+  const waiting = notRead.length
+    ? `The list may be incomplete: some records of ${e(listed(notRead))} could not be read, so more may be waiting on you.`
+    : "Nothing is waiting on you.";
   return `<div class="resting-graph">
   <span class="kicker">${e(s.title)} · the work so far${s.partial ? " · the most recent part of the record" : ""}</span>
   <h2><span class="you">You made ${plural(t.decisions, "decision")}.</span> ${plural(t.agents.length, "agent")} made ${t.agentMoves} moves.</h2>
-  <p>Nothing is waiting on you. Each thread is a task an agent took off main; it flows back only when you accept it.</p>
+  <p>${waiting} Each thread is a task an agent took off main; it flows back only when you accept it.</p>
   ${legendLine(Object.keys(t.byVendor) as Vendor[], t.localRuns > 0)}
   <div class="stage-scroll">${drawStory(s, owner, { compact: true, replaySeconds: 6, href: taskHref(s.project) })}</div>
   <a href="/flow">See the whole flow</a>
@@ -573,7 +604,7 @@ function flowParts(stories: Story[], t: Tally, owner: string, href?: (s: Story) 
     ["Claimed", "One agent takes it and gets its own fork in Cloudflare Artifacts. Nobody else can write there.", `${plural(t.claims, "claim")}, ${plural(t.handoffs, "handoff")}`, "var(--m-anthropic)"],
     ["Worked", `The agent commits and pushes to its fork, never to ${yours} checkout.`, `${plural(t.pushes, "push", "pushes")}`, "var(--m-openai)"],
     ["Checked", "The project's checks run in a fresh clone of exactly the pushed head, on the machine that asks for them; in a Cloudflare container only with --sandbox, or where the project requires it.", `${plural(t.checks, "check")} observed${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}`, "var(--observed)"],
-    ["Reviewed", `Changes to protected files need an approval from a model of another family than every contributor; ${yours} own approval does not count. Without one, ${who === "You" ? "you" : who} can accept only by recording an override with its reason.`, `${plural(t.approvals, "approval")}, ${t.sentBack} sent back`, "var(--m-zai)"],
+    ["Reviewed", `Changes to protected files need an approval from a model of another family than every contributor by default, or a different model of the selected company from every contributor in single-family mode; ${yours} own approval does not count. Without one, ${who === "You" ? "you" : who} can accept only by recording an override with its reason.`, `${plural(t.approvals, "approval")}, ${t.sentBack} sent back`, "var(--m-zai)"],
     ["Decided", `${cap(who)} ${who === "You" ? "see" : "sees"} the diff, the evidence and the reviews, and ${who === "You" ? "accept" : "accepts"} one revision.`, `${plural(t.accepts, "acceptance")}`, "var(--m-owner)"],
     ["Merged", `It merges into main on ${yours} machine, with its whole history attached as a git note.`, `${t.merges} merged`, "var(--main-line)"],
   ].map(([b, p, n, c]) => `<li style="--c:${c}"><b>${e(b)}</b><p>${e(p)}</p><span class="n">${e(n)}</span></li>`).join("");
@@ -729,7 +760,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
 
 const STATUS_TONE: Record<string, string> = { available: "go", refused: "bad", slow: "ask", unknown: "" };
 
-export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }, reliability: Reliability = new Map(), gateway: GatewayView | null = null, precision: PrecisionRecord | null = null, speed: SpeedRecord | null = null): string {
+export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }, reliability: Reliability = new Map(), gateway: GatewayView | null = null, precision: PrecisionRecord | null = null, speed: SpeedRecord | null = null, judgement: JudgementRecord | null = null): string {
   const card = (m: ModelEntry) => {
     const actors = [m.id, ...m.aliases].map((id) => `${m.harness}/${id}`);
     // The entry's model across every project and harness, by modelKey; an
@@ -768,6 +799,7 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
   ${group("cloud", "In the cloud", "No cloud models yet. Add one reached through a harness sign-in or an API key in your Keychain.")}
   ${reliabilitySection(reliability, ownerName, window)}
   ${precision ? precisionSection(precision) : ""}
+  ${judgement ? judgementSection(judgement) : ""}
   ${speed ? speedSection(speed) : ""}
   ${gateway ? gatewaySection(gateway) : ""}
   <details class="new-task"><summary>+ Add a model</summary>
@@ -803,11 +835,38 @@ export function precisionSection(p: PrecisionRecord): string {
     <td class="num">${r.ranked ? `${Math.round(r.precision! * 100)}%<span class="meta">routing term ${precisionTerm(r).toFixed(2)}</span>` : `<span class="meta">n=${r.judged}, too few to rank</span>`}</td></tr>`;
   return `<section class="precision" aria-label="Review precision by reviewer">
   <h2 class="section-title">Review precision · ${e(from)} to ${e(to)}</h2>
-  <p class="meta">Of each reviewer's blocking findings the owner judged with <code>atelier finding</code> from ${e(from)} to ${e(to)} (the last ${p.window.days} days, every project), the share that held up: confirmed or fixed, over all judged. Each finding counts once, by its newest verdict. Routing asks qualifying reviewers in order of this precision, smoothed by one held and one refuted, and only after every rule has passed: another family than every contributor, available and allowed. With fewer than ${PRECISION_MIN_JUDGED} judged a reviewer is too few to rank and orders as neutral.</p>
+  <p class="meta">Of each reviewer's blocking findings the owner judged with <code>atelier finding</code> from ${e(from)} to ${e(to)} (the last ${p.window.days} days, every project), the share that held up: confirmed or fixed, over all judged. Each finding counts once, by its newest verdict. Routing asks qualifying reviewers in order of this precision, smoothed by one held and one refuted, and only after every rule has passed: another family than every contributor by default, or a different model of the selected company from every contributor in single-family mode, available and allowed. With fewer than ${PRECISION_MIN_JUDGED} judged a reviewer is too few to rank and orders as neutral.</p>
   ${rows.length ? `<table class="usage-table">
     <thead><tr><th scope="col">Reviewer</th><th scope="col">Judged blocking findings</th><th scope="col">Held up</th><th scope="col">Refuted</th><th scope="col">Precision</th></tr></thead>
     <tbody>${rows.map(row).join("")}</tbody>
   </table>` : `<p class="empty">No blocking finding was judged from ${e(from)} to ${e(to)}.</p>`}
+</section>`;
+}
+
+// ── the orchestrator's judgements ──────────────────────────────────────────
+// Each harness/model that acted for the owner (src/models/judgement.ts): its
+// verdicts on findings, split into upheld, contradicted and unresolved, and
+// apart from them the decisions and overrides it recorded, which have no
+// outcome and get no score. Events no model was named on are one row of
+// their own, unknown.
+
+export function judgementSection(j: JudgementRecord): string {
+  const from = j.window.from.slice(0, 10), to = j.window.to.slice(0, 10);
+  const totals = judgementTotals(j);
+  const rows = [...j.models, ...(judged(j.unknown) ? [j.unknown] : [])];
+  const row = (r: ActingJudgement) => `<tr><th scope="row">${r.model ? `<code>${e(r.model)}</code><span class="meta">${r.actors.map(e).join(", ")}</span>` : `unknown<span class="meta">no acting model recorded</span>`}</th>
+    <td class="num">${r.verdicts}</td><td class="num">${r.upheld}</td><td class="num">${r.contradicted}</td><td class="num">${r.unresolved}</td>
+    <td class="num">${r.decisionsRecorded}<span class="meta">${r.decisionsWithdrawn} withdrawn</span></td><td class="num">${r.overrides}</td></tr>`;
+  const causes = rows.flatMap((r) => r.contradictions.map((c) => ({ ...c, model: r.model })));
+  return `<section class="judgement" aria-label="Judgements by acting model">
+  <h2 class="section-title">The orchestrator's judgements · ${e(from)} to ${e(to)}</h2>
+  <p class="meta">What each harness/model acting for the owner recorded from ${e(from)} to ${e(to)} (the last ${j.window.days} days, every project), named with <code>--as</code>; the authority stays the owner's. The acting model is declared, not verified: Atelier checks it names a model in the pool, but the owner token cannot prove which model typed the command. A verdict on a finding is upheld when a later verdict by another named model agrees, contradicted when a later verdict corrects it or a defect names it with <code>atelier defect --contradicts</code>, and unresolved otherwise: no defect is not proof a verdict was right. Decisions and overrides are counted, never scored. Events recorded before Atelier kept the acting model, or without one, stay unknown.</p>
+  <p class="meta">Totals: ${plural(totals.verdicts, "verdict")}: ${totals.upheld} upheld, ${totals.contradicted} contradicted, ${totals.unresolved} unresolved; ${plural(totals.decisionsRecorded, "decision")} recorded, ${totals.decisionsWithdrawn} withdrawn; ${plural(totals.overrides, "override")}.</p>
+  ${rows.length ? `<table class="usage-table">
+    <thead><tr><th scope="col">Acting model (declared)</th><th scope="col">Verdicts</th><th scope="col">Upheld</th><th scope="col">Contradicted</th><th scope="col">Unresolved</th><th scope="col">Decisions</th><th scope="col">Overrides</th></tr></thead>
+    <tbody>${rows.map(row).join("")}</tbody>
+  </table>` : `<p class="empty">Nothing was judged for the owner from ${e(from)} to ${e(to)}.</p>`}
+  ${causes.length ? `<ul class="causes">${causes.map((c) => `<li class="meta">${when(c.at)} · ${c.model ? `<code>${e(c.model)}</code>` : "unknown"}'s verdict (event ${c.event}) on <code>${e(c.project)}/${e(c.item)}</code> ${c.by === "defect" ? "contradicted by a defect" : "corrected"}: ${e(c.note)}</li>`).join("")}</ul>` : ""}
 </section>`;
 }
 
@@ -1160,22 +1219,24 @@ function pulseGraph(p: Pulse): string {
 // Home is the portfolio (PAVI's direction, 2026-10-06): one card per project
 // with what needs the owner there, what is running, its two weeks of activity
 // and its last merge. Projects with something waiting come first. `waiting`
-// is that project's own inbox; `showcase` is the public showcase setting by
+// is that project's placement (attentionFor), or absent when it was not
+// read, which the card says; `showcase` is the public showcase setting by
 // project name, so each card carries the owner's control over what is
 // published, under the card's own link.
 export interface HomeView extends ProjectView {
-  waiting?: InboxEntry[];
+  waiting?: Attention;
+  // The project's recent moves could not be read: the card says so rather
+  // than reading as a quiet fortnight.
+  eventsUnread?: boolean;
 }
 
 export function renderHome(views: HomeView[], ownerName: string | null = null, now = new Date(), owner = DEFAULT_OWNER, showcase: Record<string, "named" | "anonymous"> = {}): string {
   const vendors = new Set<Vendor>();
   const ranked = views.map((v) => {
-    // The lead developer's own decisions are what the card counts as waiting
-    // on the human; the rest the orchestrator and runners handle on their own.
-    const entries = v.waiting ?? [];
-    const waiting = [...new Set(entries.filter((x) => isOwnCall(x.kind)).map((x) => x.itemId))];
-    const handled = [...new Set(entries.filter((x) => !isOwnCall(x.kind)).map((x) => x.itemId))];
-    return { v, waiting, handled, lastAt: "" };
+    // What waits on the owner is what attentionFor places under the owner's
+    // calls, one per task; the pipeline stays in a disclosure.
+    const a = v.unavailable ? undefined : v.waiting;
+    return { v, a, waiting: a?.owner ?? [], lastAt: "" };
   });
   for (const { v } of ranked) {
     const p = buildPulse(v.events ?? [], owner, now, !!v.cut);
@@ -1185,32 +1246,21 @@ export function renderHome(views: HomeView[], ownerName: string | null = null, n
   // portfolio still reads newest first.
   const order = ranked.map((r) => ({ ...r, lastAt: buildPulse(r.v.events ?? [], owner, now, !!r.v.cut).lastAt ?? "" }))
     .sort((a, b) => b.waiting.length - a.waiting.length || b.lastAt.localeCompare(a.lastAt));
-  const cards = order.map(({ v, waiting, handled }) => {
+  const cards = order.map(({ v, a, waiting }) => {
     const { project, items, unavailable, events, cut } = v;
     const count = (states: string[]) => items.filter((i) => states.includes(i.state)).length;
     const p = buildPulse(events ?? [], owner, now, !!cut);
     const running = items.filter((i) => LIVE_STATES.includes(i.state));
     const lastMerge = lastMerged(items)[0];
-    const tally = `<p class="card-tally"><span><b>${waiting.length}</b>waiting on you</span><span><b>${count(["claimed", "submitted", "accepted"])}</b>running</span><span><b>${count(["open"])}</b>ready to start</span><span><b>${count(["merged"])}</b>merged</span></p>`;
+    // A count not read is said as unknown, never as none.
+    const waitCount = a ? `${waiting.length}${a.unknown.length ? "?" : ""}` : "?";
+    const tally = `<p class="card-tally"><span><b>${waitCount}</b>waiting on you</span><span><b>${count(["claimed", "submitted", "accepted"])}</b>running</span><span><b>${count(["open"])}</b>ready to start</span><span><b>${count(["merged"])}</b>merged</span></p>`;
     const last = p.lastAt ? ` · last activity ${e(ago(p.lastAt, now))}` : "";
-    const line = p.moves || p.decisions
+    const line = v.eventsUnread ? "Its recent moves could not be read." : p.moves || p.decisions
       ? `${plural(p.moves, "move")} by ${plural(p.agents.length, "agent")} and ${plural(p.decisions, "decision")} in two weeks${p.cut ? ", from the most recent part of the record" : ""}${last}.`
       : `No moves in the last two weeks${last}.`;
-    const waitingRows = v.waiting ?? [];
-    const waitRows = waiting.slice(0, 3).map((id) => {
-      // The entry's own title, so the row stands even when the items list
-      // was read apart from it. A task may carry both an own call and a
-      // handled one, so each list finds the entry of its own kind, not merely
-      // the first entry that names the item.
-      const w = waitingRows.find((x) => x.itemId === id && isOwnCall(x.kind));
-      return w ? `<li><a href="${href("p", project.name, id)}">${e(w.title)}</a>${tag(KIND[w.kind][0], KIND[w.kind][1])}</li>` : "";
-    }).join("");
-    const more = waiting.length > 3 ? `<li class="meta">and ${waiting.length - 3} more</li>` : "";
-    const handledRows = handled.slice(0, 3).map((id) => {
-      const w = waitingRows.find((x) => x.itemId === id && !isOwnCall(x.kind));
-      return w ? `<li><a href="${href("p", project.name, id)}">${e(w.title)}</a>${tag(KIND[w.kind][0], KIND[w.kind][1])}</li>` : "";
-    }).join("");
-    const handledMore = handled.length > 3 ? `<li class="meta">and ${handled.length - 3} more</li>` : "";
+    const waitRows = waiting.slice(0, 3).map((t) => ownerRow(t)).join("");
+    const more = waiting.length > 3 ? `<li class="meta">and ${waiting.length - 3} more on <a href="/decisions">Decisions</a></li>` : "";
     const runRows = running.slice(0, 3).map((i) =>
       `<li><a href="${href("p", project.name, i.id)}">${e(i.title)}</a><span class="meta">${e(stateLabel[i.state])} · ${e(i.owner ?? "nobody")}</span></li>`).join("");
     const mergeLine = lastMerge
@@ -1220,7 +1270,8 @@ export function renderHome(views: HomeView[], ownerName: string | null = null, n
       ? '<p class="meta">Temporarily unavailable. Open to retry.</p>'
       : `${pulseGraph(p)}<p class="meta">${line}</p>
     ${waitRows ? `<h3>Waiting on you</h3><ul class="home-rows">${waitRows}${more}</ul>` : ""}
-    ${handledRows ? `<h3>Handled by the orchestrator</h3><ul class="home-rows">${handledRows}${handledMore}</ul>` : ""}
+    ${a ? unknownNotice(a) : '<p class="meta">What waits on you here could not be read.</p>'}
+    ${a ? pipelineDisclosure(a) + overlapDisclosure(a) : ""}
     ${runRows ? `<h3>Running</h3><ul class="home-rows">${runRows}</ul>` : ""}
     ${mergeLine}`;
     const mode = showcase[project.name];
@@ -1254,7 +1305,15 @@ export interface Standing {
   generatedAt: string;
   session?: SessionNote;
   live: { id: string; title: string; state: string; owner: string | null; since: string | null }[];
-  waiting: { id: string; title: string; kind: InboxEntry["kind"]; kinds: InboxEntry["kind"][]; reason: string; brief: { verdict: string; line: string } | null }[];
+  // What waits on the owner, one entry per task, as attentionFor places it
+  // (src/attention.ts): the call, the sentence saying what to do and the link
+  // to where it is done, with the brief's verdict after it; `kind`, `kinds`
+  // and `reason` are the fields older clients read (legacyFields).
+  waiting: (OwnerTask & LegacyFields & { brief: { verdict: string; line: string } | null })[];
+  // The rest of the live tasks, counted by their pipeline stage, and the pairs
+  // whose scopes overlap: the orchestrator's and the reviewers', not the owner's.
+  pipeline: { stage: Stage; count: number }[];
+  overlaps: [string, string][];
   queued: { id: string; title: string; to: string; agent: string | null; model: string | null; by: string; at: string; note: string }[];
   merged: { id: string; title: string; at: string; commit: string | null; line: string | null }[];
   // Every merge that went in on the owner's override of the independent
@@ -1263,6 +1322,10 @@ export interface Standing {
   overrides: { id: string; title: string; at: string; reason: string }[];
   handoffs: { id: string; title: string; from: string; to: string; note: string; at: string }[];
   controlPlane: { approval: string; protected: string[]; eligible: string[]; refuseOverlap: boolean } | null;
+  // The project's model policy (t394): single-family mode naming the
+  // company, or a recorded return to cross-family review; null when never
+  // switched. `atelier status --project` says so under the project's name.
+  familyMode: FamilyMode | null;
   // Each registered check, its class, that class in words (src/checks.ts),
   // and the paths it applies to, or null when it applies to every change.
   checks: { command: string; class: CheckClass; text: string; paths: string[] | null }[];
@@ -1290,15 +1353,16 @@ export function standingTasks(items: Item[]): string[] {
 }
 
 // `taskEvents` holds each of those tasks' own events, newest first, at most
-// `limit` of each; `details` the Ledger's detail for the waiting tasks, which
+// `limit` of each; `attention` the project's placement (attentionFor), whose
+// owner calls are what waits; `details` the Ledger's detail for those tasks, which
 // the brief reads. Holders come from the items, since-when and handoff notes
 // from the task's own events, and merges from the merged items. What an
 // event window may have cut off is reported in `partial`, never guessed.
 export function buildStanding(
   p: ProjectRecord, items: Item[], taskEvents: Map<string, LedgerEvent[]>, limit: number,
-  inbox: InboxEntry[], details: Map<string, Detail>, now: Date,
+  attention: Attention, details: Map<string, Detail>, now: Date,
 ): Standing {
-  const partial: string[] = [];
+  const partial: string[] = [...attention.unknown];
   const byId = new Map(items.map((i) => [i.id, i]));
   const own = (id: string) => [...(taskEvents.get(id) ?? [])].sort((a, b) => b.seq - a.seq);
   // What is found in a task's events is right; what is not found may lie beyond them.
@@ -1313,19 +1377,12 @@ export function buildStanding(
     return { id: i.id, title: i.title, state: i.state, owner: i.owner, since: made?.at ?? null };
   });
 
-  // One line per waiting task: the inbox's own kind and reasons, which are what
-  // the owner must act on, and the brief's verdict after them.
-  const groups = new Map<string, InboxEntry[]>();
-  for (const x of [...inbox].sort((a, b) => b.weight - a.weight)) {
-    if (x.kind !== "failing" && byId.has(x.itemId)) groups.set(x.itemId, [...(groups.get(x.itemId) ?? []), x]);
-  }
-  const waiting = [...groups.entries()].map(([id, entries], n) => {
-    const d = n < STANDING_BRIEFS ? details.get(id) : undefined;
+  // One line per task waiting on the owner, in the rule's order, with the
+  // brief's verdict after the call for the first few.
+  const waiting = attention.owner.map((t, n) => {
+    const d = n < STANDING_BRIEFS ? details.get(t.id) : undefined;
     const b = d ? briefFor(d, d.events) : null;
-    return {
-      id, title: byId.get(id)!.title, kind: entries[0].kind, kinds: entries.map((x) => x.kind), reason: entries.map((x) => x.reason).join("; "),
-      brief: b ? { verdict: b.recommendation.verdict, line: b.recommendation.reason } : null,
-    };
+    return { ...t, ...legacyFields(t), brief: b ? { verdict: b.recommendation.verdict, line: b.recommendation.reason } : null };
   });
 
   const merged = lastMerged(items).map((i) => {
@@ -1345,6 +1402,8 @@ export function buildStanding(
     project: { name: p.name, title: titleOf(p), repo: p.repo },
     generatedAt: now.toISOString(),
     live, waiting,
+    pipeline: stageCounts(attention).map(([stage, count]) => ({ stage, count })),
+    overlaps: attention.overlaps,
     queued: items.filter((i) => i.state === "open" && !i.owner && i.dispatch).map((i) => ({
       id: i.id, title: i.title, to: i.dispatch!.to, agent: i.dispatch!.agent ?? null, model: i.dispatch!.model ?? null, by: i.dispatch!.by, at: i.dispatch!.at, note: i.dispatch!.note ?? "",
     })),
@@ -1355,6 +1414,7 @@ export function buildStanding(
     controlPlane: p.policy.approval
       ? { approval: p.policy.approval, protected: p.policy.protected, eligible: p.policy.eligible ?? [], refuseOverlap: !!p.policy.refuseOverlap }
       : null,
+    familyMode: p.policy.familyMode ?? null,
     checks: checkClasses(p.policy).map((v) => ({ command: v.command, class: v.class, text: classText(v), paths: p.policy.checkPaths?.find((c) => c.command === v.command)?.paths ?? null })),
     partial,
   };
@@ -1369,23 +1429,34 @@ function standingSection(p: ProjectRecord, s: Standing): string {
   const group = (title: string, rows: string[]) => rows.length ? `<h3>${e(title)}</h3><ul class="standing-list">${rows.join("")}</ul>` : "";
   const runner = (q: Standing["queued"][number]) => `${q.to}${q.agent ? ` ${q.agent}` : ""}${q.model ? `/${q.model}` : ""}`;
   const groups = [
-    group("Waiting on the owner", s.waiting.map((w) => `<li>${link(w.id)} <strong>${e(w.title)}</strong>${tag(KIND[w.kind][0], KIND[w.kind][1])}<span class="meta">${e(w.reason)}${w.brief ? ` · brief, ${e(w.brief.verdict)}: ${e(w.brief.line)}` : ""}</span></li>`)),
-    group("Queued for a runner", s.queued.map((q) => `<li>${link(q.id)} <strong>${e(q.title)}</strong><span class="meta">for ${e(runner(q))} · sent by ${e(q.by)} ${e(when(q.at))}${q.note ? ` · ${e(q.note)}` : ""}</span></li>`)),
+    group("Waiting on the owner", s.waiting.map((w) => `<li>${link(w.id)} <strong>${e(w.title)}</strong>${callTag(w)}<p>${e(w.sentence)} ${actionLink(w)}</p><span class="meta">${e(w.why)}${w.brief ? ` · brief, ${e(w.brief.verdict)}: ${e(w.brief.line)}` : ""}</span></li>`)),
+    group("Queued for a runner", s.queued.map((q) => `<li>${link(q.id)} <strong>${e(q.title)}</strong><span class="meta">for ${e(runner(q))} · sent by ${e(q.by)} ${e(when(q.at))}${q.note ? ` · ${e(notePreview(q.note))}` : ""}</span></li>`)),
     group("Last merges", s.merged.map((m) => `<li>${link(m.id)} <strong>${e(m.title)}</strong><span class="meta">${e(when(m.at))}${m.commit ? ` · <code>${e(m.commit.slice(0, 8))}</code>` : ""}${m.line ? ` · ${e(m.line)}` : ""}</span></li>`)),
     // Every merge by override, each linked, under the count the lead line gives (t371).
     group(`Merged by override: ${plural((s.overrides ?? []).length, "merge")}`, (s.overrides ?? []).map((o) => `<li>${link(o.id)} <strong>${e(o.title)}</strong><span class="meta">${e(when(o.at))} · the owner's override, not a review: ${e(o.reason)}</span></li>`)),
     group("Handoff notes", s.handoffs.map((h) => `<li>${link(h.id)} <strong>${e(h.title)}</strong><span class="meta">${e(h.from || "?")} to ${e(h.to || "?")}, ${e(when(h.at))}: ${e(h.note)}</span></li>`)),
   ].join("");
   const inHand = s.live.length, byOverride = (s.overrides ?? []).length;
-  const lead = `<p class="meta">${plural(inHand, "task")} in hand${s.waiting.length ? ` · ${plural(s.waiting.length, "thing")} waiting on you here` : ""} · <span class="merged-by-override">${plural(byOverride, "merge")} by override</span> · <a href="${href("p", p.name, "tasks")}">the whole task list</a></p>`;
+  const lead = `<p class="meta">${plural(inHand, "task")} in hand${s.waiting.length ? ` · ${plural(s.waiting.length, "task")} waiting on you here` : ""} · <span class="merged-by-override">${plural(byOverride, "merge")} by override</span> · <a href="${href("p", p.name, "tasks")}">the whole task list</a></p>`;
   return `<section class="standing" id="standing" aria-label="Where it stands">
   <h2 class="section-title">Where it stands</h2>
   ${lead}
   <p class="meta">Generated from Atelier's record as of ${e(when(s.generatedAt))}. <code>atelier status --project ${e(p.name)}</code> prints the same as text; ${e(`/api/projects/${p.name}/standing`)} returns it as JSON.</p>
   ${s.partial.length ? `<div class="notice" role="status"><h3>Part of this record is not shown</h3><ul>${s.partial.map((x) => `<li>${e(x)}</li>`).join("")}</ul></div>` : ""}
-  ${groups || '<p class="empty">Nothing is waiting, queued or recently merged.</p>'}
+  ${groups || `<p class="empty">${s.partial.length ? "Nothing waiting, queued or recently merged is shown in the part read." : "Nothing is waiting, queued or recently merged."}</p>`}
+  ${standingDisclosures(p, s)}
   ${s.session ? `<h3>Newest session</h3>${sessionNoteText(s.session).split("\n").map((line) => `<p class="meta">${e(line)}</p>`).join("")}` : ""}
 </section>`;
+}
+
+// The pipeline's counts and the overlapping scopes, each in a disclosure
+// below what waits on the owner.
+function standingDisclosures(p: ProjectRecord, s: Standing): string {
+  const total = (s.pipeline ?? []).reduce((n, x) => n + x.count, 0);
+  const pipeline = total
+    ? `<details class="disclosure pipeline"><summary>${plural(total, "task")} in the pipeline: ${s.pipeline.map((x) => `${x.count} ${STAGE_LABEL[x.stage]}`).join(" · ")}</summary><p class="meta">The orchestrator, runners and reviewers move these; none waits on you. <a href="${href("p", p.name, "tasks")}">The task list</a> names each.</p></details>`
+    : "";
+  return pipeline + overlapDisclosure({ project: p.name, owner: [], pipeline: [], overlaps: s.overlaps ?? [], unknown: [] });
 }
 
 // Every task in one list: open, held, in review or closed, each row with its
@@ -1423,9 +1494,25 @@ export function projectTabs(p: ProjectRecord, active: string): string {
 // its tab bar. `active` is the tab the page is, "Log" for a commit or a
 // path's history (finding 24), and Tasks for a task's own page. `live` adds
 // the live script without a refresh, as the Flow tab's replay needs.
+// The model policy in words, for the project's pages (t394): single-family
+// mode names the company, so nobody takes the project's reviews for
+// cross-company ones; the default says so only where a switch back is
+// recorded, with who made it and when.
+export function familyModeText(policy: ProjectPolicy): string {
+  const mode = policy.familyMode ?? null;
+  const when = mode ? ` (set by ${mode.by} ${when_(mode.at)})` : "";
+  if (mode?.single) return `Single-family mode, ${mode.single}: building and reviewing use ${mode.single} models only, and a review counts from a different ${mode.single} model than every contributor, not from another company${when}`;
+  return `Cross-family, the default: a protected change needs approval from a model of another company than every contributor${when}`;
+}
+const when_ = (at: string) => (Number.isFinite(Date.parse(at)) ? `on ${at.slice(0, 10)}` : `at ${at}`);
+
+// The line every tab of a single-family project's page carries under its
+// title, so the mode is seen wherever the project is read.
+const familyModeBanner = (p: ProjectRecord) => (singleFamily(p.policy) ? `<p class="meta family-mode" role="note">${e(familyModeText(p.policy))}.</p>` : "");
+
 function projectPage(p: ProjectRecord, active: string, body: string, ownerName: string | null = null, title?: string, live?: Live): string {
   return page(title ?? titleOf(p), `<div class="page-width">
-  <header class="proj-head"><h1>${e(titleOf(p))}</h1>${projectTabs(p, active)}</header>
+  <header class="proj-head"><h1>${e(titleOf(p))}</h1>${familyModeBanner(p)}${projectTabs(p, active)}</header>
   ${body}</div>`, "Home", ownerName, 0, true, live);
 }
 
@@ -1443,11 +1530,14 @@ const newTaskForm = (p: ProjectRecord) => `<details class="new-task"><summary>+ 
 // Overview: where the project stands and what waits on the owner there, with
 // Atelier's own record of it under a disclosure named for what it is (finding
 // 19).
-export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEvent[], ownerName: string | null = null, standing?: Standing, board?: BoardSnapshot): string {
+// `events` or `board` null: not read, which the page says rather than
+// showing an empty record or no tasks.
+export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEvent[] | null, ownerName: string | null = null, standing?: Standing, board?: BoardSnapshot | null): string {
+  const unread = (what: string) => `<p class="notice" role="status">${what} could not be read.</p>`;
   return projectPage(p, "Overview", `
   ${standing ? standingSection(p, standing) : ""}
-  ${board ? renderBoard(p.name, board) : ""}
-  <details class="disclosure"><summary>Ledger events</summary>${eventTable(events, true)}</details>
+  ${board ? renderBoard(p.name, board) : board === null ? unread("The task board") : ""}
+  <details class="disclosure"><summary>Ledger events</summary>${events ? eventTable(events, true) : unread("The project's events")}</details>
   `, ownerName);
 }
 
@@ -1473,7 +1563,7 @@ export function renderProjectFlow(p: ProjectRecord, story: Story, owner: string,
 // Plans (task t17): each plan as one unit, with its parts, each part's state
 // and why it went to the agent that holds it, read from the same view as
 // `atelier plan show` (GET items/tN/plan).
-function routeLines(route: PartRoute | null | undefined, preview: boolean): string[] {
+function routeLines(route: PartRoute | null | undefined, preview: boolean, policy: ProjectPolicy): string[] {
   if (!route) return [];
   const lead = preview ? "would be built by" : "built by";
   const lines: string[] = [];
@@ -1483,7 +1573,7 @@ function routeLines(route: PartRoute | null | undefined, preview: boolean): stri
     // A reviewer the plan picked in place of the routed one says whom it
     // replaced and why.
     const change = route.reviewerChange;
-    lines.push(`reviewer ${route.reviewer.actor}, of another family${change ? `, in place of ${change.from ?? "no reviewer"}: ${change.reason}` : ""}`);
+    lines.push(`reviewer ${route.reviewer.actor}, ${singleFamily(policy) ? `a different ${singleFamily(policy)} model from every contributor (single-family mode)` : "of another family"}${change ? `, in place of ${change.from ?? "no reviewer"}: ${change.reason}` : ""}`);
   }
   if (route.unrouted) lines.push(`unrouted: ${route.unrouted}`);
   return lines;
@@ -1498,7 +1588,7 @@ function planPartRow(p: ProjectRecord, v: PlanView, part: PlanPartView): string 
     : `${stateLabel[part.state]}${part.owner && part.state !== "open" ? ` · ${e(part.owner)}` : ""}`;
   const deps = part.dependsOn.length ? `depends on ${part.dependsOn.map((d) => `${d.key} (${d.id ?? "?"})`).join(", ")}` : "";
   const lines = [
-    ...routeLines(part.route, false),
+    ...routeLines(part.route, false, p.policy),
     part.attempts.length ? `attempts: ${part.attempts.map((a) => `${a.actor} ${ATTEMPT_WORDS[a.outcome]}`).join("; ")}` : "",
     part.state === "integrated" && part.integration ? `integrated as ${part.integration.mergeCommit.slice(0, 8)}` : "",
     deps,
@@ -1513,7 +1603,7 @@ function planUnit(p: ProjectRecord, v: PlanView): string {
   const proposal = v.proposal && v.plan && !a
     ? `<p class="meta">Proposal ${v.proposal.count}, by ${e(v.proposal.by)} at ${e(when(v.proposal.at))}: ${plural(v.plan.parts.length, "part")}. Hash <code>${e(v.proposal.hash.slice(0, 12))}</code>${v.proposal.answered ? "" : ", not yet answered"}.</p>
     <ul class="plan-parts">${v.plan.parts.map((part) => {
-      const lines = routeLines(v.preview?.find((r) => r.key === part.key), true);
+      const lines = routeLines(v.preview?.find((r) => r.key === part.key), true, p.policy);
       return `<li class="plan-part"><div class="plan-part-head">${e(part.key)} <strong>${e(part.title)}</strong>${tag(`${part.taskKind}, size ${part.size}`)}</div>
       <p class="meta">${e(part.brief.replace(/\s+/g, " ").trim())}</p>
       ${lines.length ? `<ul class="plan-lines">${lines.map((l) => `<li>${e(l)}</li>`).join("")}</ul>` : ""}</li>`;
@@ -1556,6 +1646,7 @@ export function renderProjectSettings(p: ProjectRecord, ownerName: string | null
     <dt>Required checks</dt><dd>${checkClasses(p.policy).map((v) => `<code>${e(v.command)}</code> <span class="meta">${e(classText(v))}${p.policy.checkPaths?.some((c) => c.command === v.command) ? `; ${e(appliesText(p.policy, v.command))}` : ""}</span>`).join("<br>") || "None configured"}</dd>
     <dt>Protected files</dt><dd>${p.policy.protected.map(e).join(", ") || "None configured"}</dd>
     <dt>Check execution</dt><dd>${p.policy.sandboxOnly ? "Only checks run in a Cloudflare container count" : "Checks count from a Cloudflare container or a runner's clean clone"}</dd>
+    <dt>Models</dt><dd>${e(familyModeText(p.policy))}</dd>
     <dt>Eligible agents</dt><dd>${p.policy.eligible?.map(e).join(", ") || "Any agent"}</dd>
     <dt>Overlap</dt><dd>${p.policy.refuseOverlap ? "Refused" : "Flagged for review"}</dd>
     <dt>Overrides</dt><dd>${p.policy.noOverride ? "Refused: every change needs its independent review (<code>atelier init --no-override</code>)" : "Allowed with a reason, confirmed by the owner on the task's page with the Cloudflare Access sign-in or the server's confirmation secret, never the owner token"}</dd>
@@ -1676,6 +1767,9 @@ function submissionRounds(d: Detail): string {
 
 function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext): string {
   const { item, gate } = d;
+  // The company the project runs on alone (t394), named wherever the page
+  // says what review the change needs, so the ask is never a cross-company one.
+  const single = singleFamily(d.policy);
   const presentation = taskPage(d);
   const notices = presentation.notices.map(n => `<details class="disclosure"><summary>${e(n.kind)} · ${n.originals.length} reports · ${e(n.check || "check unknown")} · ${n.originals.every(r => r.superseded) ? "Superseded" : `${n.originals.filter(r => !r.superseded).length} unresolved`}</summary>
     <p class="meta">Criteria binding: ${e(n.criteria || "unknown")}. A reported limitation is superseded only by an observed pass covering the same check and binding.</p>
@@ -1735,7 +1829,7 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
     ? "Your Cloudflare Access sign-in is the confirmation an override needs; the owner token alone cannot give it."
     : "The confirmation secret is the confirmation an override needs: the server's own OVERRIDE_SECRET, which no session is given, so the owner token alone cannot give it.";
   const override = overridable && d.policy.noOverride
-    ? `<p class="meta">This project forbids overrides of the independent review (<code>atelier init --no-override</code>): the revision lands only with an approval from a model of another family than every contributor.</p>`
+    ? `<p class="meta">This project forbids overrides of the independent review (<code>atelier init --no-override</code>): the revision lands only with an approval from ${single ? `a different ${single} model from every contributor (single-family mode)` : "a model of another family than every contributor"}.</p>`
     : overridable && factor === null
     ? `<p class="meta">An override of the independent review needs the owner's own confirmation, which ${e(NO_OWNER_FACTOR)}; then reopen this page. The owner token alone, and the session it signs in, cannot confirm one.</p>`
     : overridable
@@ -1758,9 +1852,9 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   // The owner's Approve cannot satisfy the gate, so it is not that action,
   // and the override above stays the way on when no reviewer qualifies.
   const askReview = decision.action === "review"
-    ? `<div class="merge-command"><p>To move this task, ask a model of another family to review the revision. In the registered checkout, run:</p>
+    ? `<div class="merge-command"><p>To move this task, ask ${single ? `a different ${single} model (single-family mode)` : "a model of another family"} to review the revision. In the registered checkout, run:</p>
       <pre tabindex="0">${e(`atelier land ${item.id} --project ${shell(p.name)}`)}</pre>
-      <p class="meta">The landing merges main into the workspace, runs the required checks, requests this review — from the model <code>--reviewer</code> names, or one of another family than every contributor — and waits for its verdict, then accepts and merges. Until then the task waits.</p></div>`
+      <p class="meta">The landing merges main into the workspace, runs the required checks, requests this review — from the model <code>--reviewer</code> names, or one ${single ? `that is a different ${single} model from every contributor` : "of another family than every contributor"} — and waits for its verdict, then accepts and merges. Until then the task waits.</p></div>`
     : "";
   const merge = decision.action === "merge"
     ? `<div class="merge-command"><p>In the registered checkout, run:</p>
@@ -1783,14 +1877,15 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   const dispatchBox = item.state === "open" && !item.owner
     ? item.dispatch
       ? `<div class="notice" role="status"><h3>Waiting for ${e(describeDispatch(item.dispatch))}</h3>
-        <p>Sent by ${e(item.dispatch.by)} ${when(item.dispatch.at)}${item.dispatch.note ? `: ${e(item.dispatch.note)}` : ""}. The first matching runner to ask for work claims it.</p>
+        <p>Sent by ${e(item.dispatch.by)} ${when(item.dispatch.at)}. The first matching runner to ask for work claims it.</p>
+        ${item.dispatch.note ? `<p class="dispatch-note">${e(item.dispatch.note)}</p>` : ""}
         <form method="post" action="${action("undispatch")}">${revision}<button>Withdraw</button></form></div>`
       : `<details class="request-changes dispatch-form"><summary>Send to an agent</summary>
         <form class="stack" method="post" action="${action("dispatch")}">${revision}
           <label>Where<select name="to"><option value="any">Any runner</option><option value="home">Home runner (your Macs and the Mac Studio)</option><option value="cloud">Cloud runner</option></select></label>
           <label>Agent<select name="agent"><option value="">Runner's choice</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="zcode">ZCode (GLM)</option><option value="opencode">OpenCode (local models)</option><option value="antigravity">Antigravity (Gemini)</option><option value="gemini-cli">Gemini CLI</option></select></label>
           <label>Model <span class="meta">optional, as the runner names it</span><input type="text" name="model" placeholder="e.g. glm-5.3-flash"></label>
-          <label>Note for the agent <span class="meta">optional</span><input type="text" name="note" maxlength="500"></label>
+          <label>Note for the agent <span class="meta">optional; a full set of findings fits</span><textarea name="note" rows="4" maxlength="${DISPATCH_NOTE_MAX}"></textarea></label>
           <button class="primary">Send</button>
         </form></details>`
     : "";
@@ -1898,7 +1993,7 @@ ${submissionRounds(d)}
       <ul>${gate.outOfScope.map((f) => `<li><code>${e(f)}</code></li>`).join("")}</ul></details>`
     : "";
   const protectedNote = gate.needsAssessor
-    ? `<div class="notice"><h3>${gate.changeClass === "coordinated" ? "Coordinated change" : "Protected change"}</h3><p>${e(gate.requirement ? `${gate.requirement}.` : "These files affect protected behavior and need an approval from a model of another family than every contributor.")} Your own approval does not count as that review.</p></div>`
+    ? `<div class="notice"><h3>${gate.changeClass === "coordinated" ? "Coordinated change" : "Protected change"}</h3><p>${e(gate.requirement ? `${gate.requirement}.` : `These files affect protected behavior and need an approval from ${single ? `a different ${single} model than every contributor (single-family mode)` : "a model of another family than every contributor"}.`)} Your own approval does not count as that review.</p></div>`
     : "";
 
   // The head's own runs: a merged check ran on another tree and is shown

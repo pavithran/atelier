@@ -185,8 +185,9 @@ test('plan parts receive their documented retry recovery instead of ordinary dis
 
 
 test('core holds have an independent limit and recover the held dispatch without rebuilding the blocker', () => {
+  // A submitted blocker holds only while its landing holds the lease (t473).
   const waiting = item({ id: 't2', state: 'open', owner: null, dispatch: { to: 'home', agent: null, model: null, by: 'owner', at: at(99999999), note: '' } });
-  const s = snapshot({ items: [item({ state: 'submitted' }), waiting], events: [event(1, 'item.claimed', 1800001)] });
+  const s = snapshot({ items: [item({ state: 'submitted' }), waiting], events: [event(1, 'item.claimed', 1800001)], lease: { item: 't1', holder: 'owner', at: at(1000) } });
   const entry = report(s).entries[0];
   assert.equal(entry.kind, 'core-hold');
   assert.equal(entry.recovery, 'Land the blocker with atelier land t1 --project "demo"; or, if the overlap is harmless, atelier dispatch t2 --to home --note \'\' --overlap-ok --project "demo"');
@@ -203,6 +204,7 @@ test('core holds have an independent limit and recover the held dispatch without
   assert.equal(accepted.evidence, entry.evidence);
   assert.match(commandUsage('stuck'), /merge if already accepted/);
   s.items[0].state = 'merged';
+  s.lease = null; // the landing ended with the merge
   assert.deepEqual(kinds(report(s)), []);
 });
 test('each task rule preserves its suggestion without dispatching or releasing the task', () => {
@@ -219,7 +221,7 @@ test('core-hold override preserves routing, literal notes and merge-main context
   for (const job of [undefined, 'merge-main']) {
     const dispatch = { to: 'cloud', agent: 'codex', model: 'gpt-6-astra', note: 'Owner\'s "note": $HOME `literal`\nnext line', by: 'owner', at: at(99999999), ...(job ? { job, head: 'b'.repeat(40) } : {}) };
     const waiting = item({ id: 't2', state: 'open', owner: null, dispatch });
-    const s = snapshot({ items: [item({ state: 'submitted' }), waiting], events: [event(1, 'item.claimed', 1800001)] });
+    const s = snapshot({ items: [item({ state: 'submitted' }), waiting], events: [event(1, 'item.claimed', 1800001)], lease: { item: 't1', holder: 'owner', at: at(1000) } });
     const recovery = report(s).entries[0].recovery.split('if the overlap is harmless, atelier ')[1];
     // Only printf runs: exercise shell tokenisation of the displayed arguments.
     const argv = execFileSync('/bin/sh', ['-c', `printf '%s\\0' ${recovery}`], { encoding: 'utf8' }).split('\0').slice(0, -1);

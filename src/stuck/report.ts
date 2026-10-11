@@ -97,7 +97,8 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
         add("review", r.item, `review request ${r.id} claimed by ${r.claimedBy}`, since, `${command(`review-release ${r.item} --note "Release stalled review claim"`)} --as ${r.claimedBy}`);
     }
     for (const item of live.filter((i) => i.state === "open" && i.dispatch)) {
-      const held = coreHold(item, live, snapshot.coreFiles);
+      // Since t473 a submitted blocker holds only while the landing lease names it.
+      const held = coreHold(item, live, snapshot.coreFiles, lease, time);
       const blocker = held && live.find((i) => i.id === held.id);
       if (!blocker) continue;
       const hold = holdStart(blocker, events), push = pushObservedAt(blocker, events);

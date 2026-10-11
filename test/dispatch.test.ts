@@ -62,8 +62,8 @@ test("a dispatched task is claimed only by a matching runner under the requested
 });
 
 test("a dispatch note over its limit is refused, never cut", () => {
-  assert.equal(makeDispatch({ note: "n".repeat(500) }, "pavi", T).note, "n".repeat(500));
-  assert.throws(() => makeDispatch({ note: "n".repeat(501) }, "pavi", T), /the dispatch note is 501 characters; the limit is 500\. Shorten it and send it again/);
+  assert.equal(makeDispatch({ note: "n".repeat(2000) }, "pavi", T).note, "n".repeat(2000));
+  assert.throws(() => makeDispatch({ note: "n".repeat(2001) }, "pavi", T), /the dispatch note is 2001 characters; the limit is 2000\. Shorten it and send it again/);
 });
 
 // A merge-main dispatch (t243) sends a task whose landing conflicted with
@@ -161,13 +161,12 @@ test("the core files hold a building dispatch whose scope overlaps a live item's
   assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [live], []), null);
   assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [live], undefined), null);
   // Two scopes that each reach a core glob, but not the same path, hold nothing.
-  const both = item({ id: "t1", scope: ["src/index.ts"], state: "submitted", owner: "x/y" });
+  const both = item({ id: "t1", scope: ["src/index.ts"], state: "claimed", owner: "x/y" });
   assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [both], ["src/**"]), null);
   // An unscoped item reaches every core file.
   assert.equal(coreHold(waiting({ scope: [] }), [live], core)?.core, "src/ledger.ts");
-  // Submitted and accepted items hold; merged, abandoned, open and integrated ones do not.
-  for (const state of ["submitted", "accepted"]) assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...live, state }], core)?.id, "t1", state);
-  for (const state of ["merged", "abandoned", "open", "integrated"]) assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...live, state }], core), null, state);
+  // Without a live landing lease, only claimed items hold core files.
+  for (const state of ["submitted", "accepted", "merged", "abandoned", "open", "integrated"]) assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...live, state }], core), null, state);
   // The owner's override, and the jobs that build nothing, are never held; merge-main is.
   assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"], dispatch: makeDispatch({ overlapOk: true }, "pavi", T) }), [live], core), null);
   for (const job of ["plan", "integrate", "refresh", "review"]) assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"], dispatch: { ...d, job } }), [live], core), null, job);
@@ -177,10 +176,11 @@ test("the core files hold a building dispatch whose scope overlaps a live item's
   const queuedPart = waiting({ scope: ["src/ledger.ts"], kind: "part", plan: "t4" });
   assert.equal(coreHold(queuedPart, [sibling], core), null);
   assert.equal(coreHold(queuedPart, [sibling, live], core)?.id, "t1");
-  // A plan item its planner or the integrator holds changes no main; a submitted one does.
+  // A claimed plan does not hold core files; a submitted plan holds only while landing.
   const planItem = item({ id: "t6", scope: ["src/**"], state: "claimed", owner: "atelier/integrator", kind: "plan" });
   assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [planItem], core), null);
-  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...planItem, state: "submitted" }], core)?.id, "t6");
+  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...planItem, state: "submitted" }], core), null);
+  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...planItem, state: "submitted" }], core, { item: "t6", holder: "pavi", at: T }, Date.parse(T))?.id, "t6");
 });
 
 test("a dispatch keeps the owner's overlap override only when it is asked for", () => {

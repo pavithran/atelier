@@ -1,5 +1,14 @@
 # Landing and merging
 
+The cross-company rules below describe the default policy. With
+`atelier init --single-family COMPANY`, building and reviewing use only that
+company's models: a reviewer must be a different model from every contributor,
+never a contributor under another harness. This exception also applies to
+criteria review, handoffs and conflict contributors. Only that company's tier
+models qualify; if none qualifies, no separate tier review is requested.
+`atelier init --cross-family` restores the default; both switches record who
+made them and when. See [Single-family mode](gate.md#single-family-mode).
+
 How accepted work reaches the project: `atelier finish`, `atelier merge`
 with its journal and cancel, and `atelier land`, which runs the whole second
 half of a task in one command. The README's "Landing" section gives the
@@ -175,7 +184,8 @@ The steps in between:
    `land` and runner jobs) require `projects.commit-identity.v1`;
    `models admit`, `withdraw` and `reviewers` require `reviews.admission.v1`;
    `init` and `land` require the durable post-merge runs, `land.post-merge.v1`
-   (t477), and `land --post-merge` asks for that one alone; `stuck` requires
+   (t477), and `land --post-merge` asks for that one alone; they also
+   require the landing's triage step, `land.triage.v1` (t475); `stuck` requires
    the stuck report, `projects.stuck.v1` (t441). The home runner checks the
    union of its jobs' (`JOB_CAPABILITIES`, `src/route-level.ts`) before its
    first poll, the integrator's `integrate` and `refresh` jobs included;
@@ -196,7 +206,7 @@ The steps in between:
    `reviews.skip.v1`, 22 `reviews.skip-as-runner.v1`, 23 `areas.manage.v1`
    and `areas.board.v1`, 24 `projects.commit-identity.v1`, 25
    `reviews.admission.v1`, 26 `reviews.lease.v1`, 27 `land.post-merge.v1`,
-   30 `projects.stuck.v1`)
+   28 `land.triage.v1`, 30 `projects.stuck.v1`)
    and nothing else; a capability added later has no
    level, so a legacy server is refused for it. While the migration lasts
    the number still rises by one with each such change and gates legacy
@@ -250,6 +260,68 @@ them beside it (`fromMainCount`); the hashes themselves are in the merge,
 which names main's head. `--dry-run` prints the steps and the refusals
 without changing anything.
 
+### Triage before the review
+
+A landing can have one model triage the change before the review is asked
+for (t475), so a change that plainly misses a criterion goes back to its
+holder without spending a review round. The model is `--triage H/M`, or else
+the project's `triage` setting (the policy's, set with `atelier init --triage
+H/M` and cleared with `--triage ""`, or `"triage": "H/M"` in this Mac's
+registration of the project in the Atelier config); with neither, no triage
+runs. A model of the builder's own company may triage, since triage
+is not the independent review; the pool's rules still apply: the model must
+be in the pool, not refused, and not paid per token. It runs on the owner's
+Mac through its harness's adapter (`bin/harness`), read-only, for at most 30
+minutes (`ATELIER_LAND_TRIAGE_TIMEOUT` milliseconds).
+
+The triage runs after the push and before the required checks. A
+submission asks for the review, and so does the checks' passing evidence for
+a task already submitted at an older head: the push withdraws its open
+review request, and that evidence asks it again at the pushed head. Since
+the triage runs first, one that stops has asked nothing of a reviewer. If the task was
+submitted before the landing, the stop says it stays submitted, with any
+request already open at the pushed head left open.
+
+The triage reads the pushed head — after the merge of main and the
+regeneration — as a diff against its merge base with main, with the task's
+acceptance criteria (and a part's, numbered after them) as they are now.
+For each criterion it answers met, not-met or unsure, with its evidence and
+a file and line, or the reason no location applies. Its brief has it trace
+the production request paths the change touches and list the runtime
+behaviour it could not verify. A result is bound to the head, the merge base
+and the criteria binding, and a pass recorded at the same binding by the same
+model is not asked for twice. The criteria are read again just before the
+submission, and criteria changed by then are triaged again with nothing yet
+submitted. Criteria changed after the submission stop the landing before the
+review request, saying the task is submitted and no review was asked for;
+running the landing again triages the new criteria.
+
+Through the Workflow, the landing is started as one that triages and the
+machine holding the workspace reports the triage's merge base and criteria
+binding with the head. The Workflow submits, and later asks for the review,
+only while the Ledger holds a pass, bypass or override recorded at that whole
+binding and the task's head and criteria are still those; otherwise it ends,
+saying what moved, with the lease released.
+
+Only every criterion met goes on. A criterion not met or unsure, a task with
+no criteria, a reply that cannot be read, a timeout, or a model that is
+unavailable stops the landing before the task is submitted (through the
+Workflow, before the head is reported, so the Workflow submits nothing): the
+findings are printed with the command to run again, the lease is released,
+and the task stays with its holder, its merged head pushed. The project
+owner can skip the triage with `--no-triage "REASON"`, or go past a stop with
+`--override-triage "REASON"`; either is recorded with the head and the
+criteria binding before the landing goes on, and a record the server
+refuses — it takes one only from the signed-in project owner — stops the
+landing. Neither stands in for the independent review.
+
+Triage is recorded as `land.triage` events (the binding, the model, the
+outcome — passed, stopped, bypassed or overridden — each criterion's status,
+and the owner's reason), never as a review: it adds no approval, rejection
+or round, and the gate decides as it did. After a pass or a bypass the
+landing goes on under the review rules as they are, whether no review is
+needed, an approval already covers the change, or `--no-review` was given.
+
 ## Landing through a Cloudflare Workflow
 
 `atelier land t9 --workflow` lands the task through a Cloudflare Workflow
@@ -298,9 +370,10 @@ Ledger (`lease`, `workspace`, `conflict`, `checks`, `review`, `merge`,
 two of them:
 
 - At `workspace` the Workflow holds the lease, and the command merges main,
-  regenerates and pushes with the same code as the plain landing, in the
-  `local` checks mode runs the required checks in a clean clone (the plain
-  landing's `atelier check` step), renewing the lease meanwhile, then
+  regenerates and pushes with the same code as the plain landing, triages
+  when the landing triages, in the `local` checks mode then runs the
+  required checks in a clean clone (the plain landing's `atelier check`
+  step), renewing the lease meanwhile, and
   reports the pushed head as a `workspace` event. A check that fails is
   reported as a failed workspace step instead, which ends the Workflow with
   the check's output.
@@ -317,7 +390,8 @@ required checks run; `local` is the default. The mode is a flag only: the
 project's policy holds no default for it (adding an `atelier init` field
 was more than this change needed, t305).
 
-- `local`: after the push, the command runs the required checks on the
+- `local`: after the push (and the triage, when the landing triages), the
+  command runs the required checks on the
   owner's machine in a clean clone of the pushed head, exactly as the plain
   landing does, and the server records each result as observed evidence at
   the head it reads from Artifacts (only the task's holder can record a

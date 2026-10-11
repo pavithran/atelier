@@ -1,6 +1,7 @@
 // atelier queue. Its forms, flags and help are declared in src/usage/commands/queue.ts.
 import { holdText } from "../../src/dispatch/rules.ts";
-import { OWNER, apiToken, die, project, resolveTokenActor, server, tokenActor } from "../atelier.mjs";
+import { notePreview } from "../../src/text.ts";
+import { OWNER, apiToken, die, flat, project, resolveTokenActor, server, tokenActor } from "../atelier.mjs";
 
 // Everything waiting for a runner, across projects, oldest first.
 export default async function queueCommand() {
@@ -14,6 +15,8 @@ export default async function queueCommand() {
   for (const { project, item } of queued) {
     const d = item.dispatch;
     console.log(`${project}/${item.id}  for ${d.to}${d.agent ? ` ${d.agent}` : ""}${d.model ? `/${d.model}` : ""}${d.job === "merge-main" ? "  merge-main" : ""}  ${item.title}`);
+    const preview = notePreview(d.note);
+    if (preview) console.log(`  note: ${flat(preview)}`);
     if (item.held) console.log(`  held: ${holdText(item.held)}`);
   }
 }
