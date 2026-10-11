@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
-import type { LedgerEvent } from "../src/ledger.ts";
+import type { ReviewClaim, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import type { PlanView } from "../src/plans/show.ts";
@@ -78,8 +78,8 @@ async function submittedPlan(L: L) {
   await L.submit(a, builder);
   const waiting = (await L.reviewWaiting()).filter((w) => w.id === a);
   const reviewer = `${waiting[0].dispatch!.agent}/${waiting[0].dispatch!.model}`;
-  await L.claimReview(a, reviewer, RUNNER);
-  await L.addReview({ itemId: a, criteria: await L.criteria(a), by: reviewer, head: PART_A, approve: true, note: "Good", at: new Date().toISOString() });
+  const reviewClaim1 = await L.claimReview(a, reviewer, RUNNER) as unknown as ReviewClaim;
+  await L.addReview({ request: reviewClaim1.request, itemId: a, criteria: await L.criteria(a), by: reviewer, head: PART_A, approve: true, note: "Good", at: new Date().toISOString() });
   await L.claim(item.id, INTEGRATOR, RUNNER, true);
   await L.integratePart(item.id, INTEGRATOR, "a", MA, true);
   await L.recordPush(item.id, INTEGRATOR, MA, MA);
