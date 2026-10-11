@@ -29,6 +29,7 @@ const config = { agents: [{ agent: "opencode", models: [model], command: ["openc
 const assignment = { project: "atelier", item: { id: "t21", dispatch: { job: "review" } }, agent: "opencode", model, actor: `opencode/${model}` };
 
 const claimed = {
+  request: 41,
   item: { id: "t21", title: "Review rules", base: H0, scope: ["src/review/**"], fork: "p--t21", head: H1 },
   head: H1,
   need: {
@@ -583,26 +584,37 @@ test("a review skip report the server refuses is dropped after the refusal, not 
 // t213: an interrupt during a review still gives the request back, with the
 // cleanup deadline a build's release gets, since the runner's own signal is
 // already aborted by then.
-test("an interrupted review releases the request through the real CLI helper", { timeout: 10_000 }, async (t) => {
+test("SIGTERM stops the review child before bounded, generation-fenced cleanup", { timeout: 10_000 }, async (t) => {
   const args = { ...runnerConfig(t), once: undefined };
   const { io } = fixture();
   const { cli, stopped, ...taskIO } = io;
-  const releases = [];
-  // The harness interrupts the runner; a review the runner refuses before the
-  // claim never reaches it, so the queue stops the runner itself after a few
-  // polls, and the assertion below fails instead of the poll loop spinning.
+  const order = [];
+  const oldServer = process.env.ATELIER_SERVER;
+  process.env.ATELIER_SERVER = "https://atelier.test";
+  t.after(() => { if (oldServer === undefined) delete process.env.ATELIER_SERVER; else process.env.ATELIER_SERVER = oldServer; });
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    assert.match(String(url), /\/review-release$/);
+    assert.equal(options.signal.aborted, false);
+    assert.equal(options.headers.authorization, `Bearer ${FAKE_TOKEN}`);
+    assert.equal(JSON.parse(options.body).request, claimed.request);
+    order.push("release");
+    // A hanging cleanup is bounded even though the runner's main signal
+    // is already aborted. The lease recovers this unanswered release.
+    await new Promise((resolve) => options.signal.addEventListener("abort", resolve, { once: true }));
+    throw new Error("cleanup timed out");
+  });
   let polls = 0;
   await runRunner(args, {
-    workspacePath: io.workspacePath, wait: () => tick(), queue: async () => { if (++polls > 3) process.emit("SIGINT"); return [assignment]; },
-    taskIO: { ...taskIO, async harness() { process.emit("SIGINT"); return { code: 0 }; } },
-    async executeChild(argv, options) {
+    workspacePath: io.workspacePath, wait: () => tick(), queue: async () => { if (++polls > 3) process.emit("SIGTERM"); return [assignment]; },
+    taskIO: { ...taskIO, async harness() { process.emit("SIGTERM"); order.push("child stopped"); return { code: 0 }; } },
+    async executeChild(argv) {
       if (argv[2] === "review-claim") return { code: 0, output: JSON.stringify(claimed) };
-      if (argv[2] === "review-release") releases.push({ signal: options.signal, step: options.step });
       return { code: 0, output: "" };
     },
   });
-  assert.deepEqual(releases, [{ signal: undefined, step: "cleanup" }]);
+  assert.deepEqual(order, ["child stopped", "release"]);
 });
+
 
 // t230, with real git: the review diff runs from the merge base of the head
 // and the branch the item merges into, never from the fork point, so commits
@@ -844,8 +856,58 @@ test("runReview names the claim's criteria binding and request with the verdict,
   assert.ok(brief.includes("1. Reviews are bound") && brief.includes("1. Tests pass"));
   // A claim from a server that gave no binding sends none: the server refuses
   // the verdict rather than the runner filling one in.
-  const older = fixture();
+  const older = fixture({ claim: { ...claimed, request: undefined } });
   await runReview(assignment, config, "home:studio", older.io);
   const unbound = older.calls.find((c) => c.argv && c.argv[0] === "review").argv;
   assert.ok(!unbound.includes("--criteria") && !unbound.includes("--request"));
+});
+
+
+test("runReview renews every thirty seconds throughout a forty-minute review", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const { io, calls } = fixture();
+  io.harness = async () => {
+    for (let minute = 0; minute < 80; minute++) {
+      t.mock.timers.tick(30_000);
+      await tick();
+    }
+    return { code: 0 };
+  };
+  assert.equal((await runReview(assignment, config, "home:studio", io)).phase, "reviewed");
+  const renewals = calls.filter((c) => c.argv?.[0] === "review-renew");
+  assert.equal(renewals.length, 80);
+  for (const call of renewals) {
+    assert.equal(call.token, FAKE_TOKEN);
+    assert.equal(call.argv[call.argv.indexOf("--request") + 1], String(claimed.request));
+  }
+  t.mock.timers.tick(300_000);
+  await tick();
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-renew").length, 80);
+});
+
+test("a lost claim response leaves recovery to expiry and never sends unfenced cleanup", async () => {
+  const { io, calls } = fixture();
+  const cli = io.cli;
+  io.cli = async (...args) => {
+    await cli(...args);
+    if (args[0][0] === "review-claim") throw new Error("claim response lost");
+    return "{}";
+  };
+  assert.equal((await runReview(assignment, config, "home:studio", io)).phase, "failed");
+  assert.equal(calls.some((c) => c.argv?.[0] === "review-release"), false);
+});
+
+test("a renewal refused as stale prevents a late verdict from the review child", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const { io, calls } = fixture();
+  const cli = io.cli;
+  io.cli = async (...args) => {
+    if (args[0][0] === "review-renew") throw Object.assign(new Error("stale claim"), { status: 409 });
+    return cli(...args);
+  };
+  io.harness = async () => { t.mock.timers.tick(30_000); await tick(); return { code: 0 }; };
+  assert.equal((await runReview(assignment, config, "home:studio", io)).phase, "failed");
+  assert.equal(calls.some((c) => c.argv?.[0] === "review"), false);
+  const release = calls.find((c) => c.argv?.[0] === "review-release");
+  assert.equal(release.argv[release.argv.indexOf("--request") + 1], String(claimed.request));
 });

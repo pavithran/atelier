@@ -1756,3 +1756,11 @@ export function pushNotice(value: unknown, namespace = "atelier"): PushNotice | 
   if (!v.source.repoName || !ref?.startsWith("refs/heads/") || !after || !/^[a-f0-9]{40,64}$/.test(after) || /^0+$/.test(after)) return null;
   return { repo: v.source.repoName, ref, after };
 }
+
+// Review leases use the server clock. Renewal is coalesced to one write per
+// 30 seconds; five minutes without one fences the claim, even after SIGKILL.
+export const REVIEW_RENEW_MS = 30_000;
+export const REVIEW_LEASE_MS = 5 * 60_000;
+export function reviewLeaseExpired(renewedAt: string | null | undefined, now: number): boolean {
+  return !renewedAt || !Number.isFinite(Date.parse(renewedAt)) || now - Date.parse(renewedAt) >= REVIEW_LEASE_MS;
+}
