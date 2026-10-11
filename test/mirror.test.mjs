@@ -455,6 +455,25 @@ test("a pointer completed by adding only its size line is read as a pointer and 
   assert.equal(refused.ok, false, refused.text);
   assert.match(refused.text, new RegExp(`cannot scan ${c} data/absent\\.txt: LFS object ${absent.slice(0, 12)} is not in the checkout's LFS storage`));
   assert.equal(g.head(), g.git(g.checkout, "rev-parse", "main~1"));
+  // A pointer completed by deleting a stray line adds nothing at all: the
+  // commit's patch has only removed lines, and the blob is still read whole.
+  const h = fixture(t);
+  const hidden = `model\npassword = ${KEY}\n`;
+  const hoid = createHash("sha256").update(hidden).digest("hex");
+  const sound = `version https://git-lfs.github.com/spec/v1\noid sha256:${hoid}\nsize ${Buffer.byteLength(hidden)}\n`;
+  h.put("data/stray.txt", `${sound}# stray: no key and value\n`); h.commit("Stray");
+  const stray = h.publish();
+  assert.equal(stray.ok, true, stray.text);
+  h.put(join(".git", "lfs", "objects", hoid.slice(0, 2), hoid.slice(2, 4), hoid), hidden);
+  h.put("data/stray.txt", sound);
+  const trimmed = h.commit("Trim").slice(0, 12);
+  const only = h.git(h.checkout, "diff-tree", "-p", "-U0", "--no-commit-id", "HEAD");
+  assert.ok(!/^\+[^+]/m.test(only), only);
+  const trim = h.publish();
+  assert.equal(trim.ok, false, trim.text);
+  assert.ok(trim.text.includes(`${trimmed} data/stray.txt (LFS object ${hoid.slice(0, 12)}):2: secret`), trim.text);
+  assert.ok(!trim.text.includes(KEY));
+  assert.equal(h.head(), h.git(h.checkout, "rev-parse", "main~1"));
 });
 
 test("lfsPointer and lfsObject read the spec's pointer and check the object against it", (t) => {
