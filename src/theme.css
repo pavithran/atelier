@@ -1,70 +1,71 @@
-/* Atelier's palette B. Near-black ground with slightly raised panels, white
-   and warm-white text, a muted grey checked for contrast, and electric blue
-   as the one accent. Red is for failures only (fault) and green for an
-   observed pass only (observed), used sparingly; caution is a tint of the
-   accent, so no second hue competes with it. Model and company colours live
-   in layout.css and are drawn only inside charts. The light theme keeps the
-   same roles at stops that pass WCAG AA on its paper. test/theme.test.ts
-   checks every text pair against AA. This file replaced the portfolio's
-   synced Night set, so bin/sync-theme no longer applies to it. */
+/* Atelier's colours are the portfolio's Night set (PAVI, d24): a near-black
+   ground with slightly raised panels, white text, a muted grey checked for
+   contrast, gold for links, primary actions and the owner, orange for
+   caution, red for failures, rejections, diff deletions and destructive
+   actions, and green for an observed pass and diff additions. Model and
+   company colours live in layout.css and are drawn only in charts, lane
+   threads and graph marks. The light theme keeps the same roles at stops
+   that pass WCAG AA on its paper. test/theme.test.ts checks every text pair
+   against AA. Only Night and its light counterpart are kept here; the set's
+   other named themes are not, so bin/sync-theme no longer applies. */
 :root {
   color-scheme: dark;
 
   /* Structure */
-  --shell: #0a0a0f;
-  --shell-rgb: 10,10,15;
-  --surface: #0a0a0f;
-  --surface-rgb: 10,10,15;
-  --surface-raised: #12121a;
-  --surface-raised-rgb: 18,18,26;
-  --inset: #1a1a24;
-  --line: #262633;
-  --line-bright: #3a3a4a;
+  --shell: #0a0e13;
+  --shell-rgb: 10,14,19;
+  --surface: #07090c;
+  --surface-rgb: 7,9,12;
+  --surface-raised: #0c1015;
+  --surface-raised-rgb: 12,16,21;
+  --inset: #121a24;
+  --line: #1c232c;
+  --line-bright: #2c3744;
   --lift-rgb: 255,255,255;
   --shadow-rgb: 0,0,0;
 
   /* Text */
-  --text: #ececf2;
-  --text-rgb: 236,236,242;
+  --text: #eef2f5;
+  --text-rgb: 238,242,245;
   --text-bright: #ffffff;
-  --text-muted: #a0a0b0;
-  --text-dim: #8e8e9e;
+  --text-muted: #8f9cab;
+  --text-dim: #7d8a98;
 
-  /* Signal: the one accent */
-  --signal: #4d8bff;
-  --signal-rgb: 77,139,255;
-  --signal-hot: #7aa8ff;
-  --signal-hot-rgb: 122,168,255;
-  --signal-bright: #c9dbff;
-  --signal-deep-rgb: 14,26,51;
-  --wire: #2a4a80;
-  --wire-frozen: #33415c;
-  --wire-captured: #2a4a80;
-  --wire-offline: #3a3a4a;
+  /* Signal */
+  --signal: #ffd166;
+  --signal-rgb: 255,209,102;
+  --signal-hot: #ffdf8f;
+  --signal-hot-rgb: 255,223,143;
+  --signal-bright: #fff0c7;
+  --signal-deep-rgb: 38,31,12;
+  --wire: #6b5a2c;
+  --wire-frozen: #5a5034;
+  --wire-captured: #6b5a2c;
+  --wire-offline: #2c3744;
 
-  /* Observed: a pass Atelier saw, and nothing else */
-  --observed: #4fd18b;
-  --observed-rgb: 79,209,139;
-  --observed-deep-rgb: 22,70,46;
-  --observed-line: #1f5138;
+  /* Observed */
+  --observed: #5fe08f;
+  --observed-rgb: 95,224,143;
+  --observed-deep-rgb: 40,110,70;
+  --observed-line: #24553a;
 
-  /* Caution: a tint of the accent */
-  --caution: #9cbcff;
-  --caution-rgb: 156,188,255;
-  --caution-bright: #c9dbff;
-  --caution-line: #2a4a80;
-  --warning: #9cbcff;
-  --warning-rgb: 156,188,255;
+  /* Caution */
+  --caution: #ffb547;
+  --caution-rgb: 255,181,71;
+  --caution-bright: #ffd08a;
+  --caution-line: #5e4520;
+  --warning: #ffb547;
+  --warning-rgb: 255,181,71;
 
-  /* Fault: failures only */
-  --fault: #ff5a5f;
-  --fault-rgb: 255,90,95;
+  /* Fault */
+  --fault: #ff4d74;
+  --fault-rgb: 255,77,116;
 
   /* Accent */
-  --music-accent: #4d8bff;
-  --music-accent-rgb: 77,139,255;
-  --music-accent-line: #2a4a80;
-  --on-accent: #0a0a0f;
+  --music-accent: #ffd166;
+  --music-accent-rgb: 255,209,102;
+  --music-accent-line: #6b5a2c;
+  --on-accent: #07090c;
 
   /* Material */
   --texture-blend: normal;
@@ -74,60 +75,60 @@
     color-scheme: light;
 
     /* Structure */
-    --shell: #f0f0f5;
-    --shell-rgb: 240,240,245;
-    --surface: #f7f7fa;
-    --surface-rgb: 247,247,250;
-    --surface-raised: #ffffff;
-    --surface-raised-rgb: 255,255,255;
-    --inset: #ececf2;
-    --line: #d6d6e0;
-    --line-bright: #a8a8b8;
-    --lift-rgb: 20,20,28;
-    --shadow-rgb: 20,20,28;
+    --shell: #ebe8df;
+    --shell-rgb: 235,232,223;
+    --surface: #f6f4ee;
+    --surface-rgb: 246,244,238;
+    --surface-raised: #eeebe2;
+    --surface-raised-rgb: 238,235,226;
+    --inset: #e4e0d5;
+    --line: #cfcabd;
+    --line-bright: #a39d8f;
+    --lift-rgb: 20,24,29;
+    --shadow-rgb: 20,24,29;
 
     /* Text */
-    --text: #14141c;
-    --text-rgb: 20,20,28;
-    --text-bright: #05050a;
-    --text-muted: #50505f;
-    --text-dim: #5a5a6a;
+    --text: #14181d;
+    --text-rgb: 20,24,29;
+    --text-bright: #05070a;
+    --text-muted: #4b5562;
+    --text-dim: #55606d;
 
-    /* Signal: the one accent */
-    --signal: #1d59c9;
-    --signal-rgb: 29,89,201;
-    --signal-hot: #1a52bd;
-    --signal-hot-rgb: 26,82,189;
-    --signal-bright: #123d8f;
-    --signal-deep-rgb: 219,230,252;
-    --wire: #8fb0ee;
-    --wire-frozen: #aab6cc;
-    --wire-captured: #8fb0ee;
-    --wire-offline: #d6d6e0;
+    /* Signal */
+    --signal: #735200;
+    --signal-rgb: 115,82,0;
+    --signal-hot: #6b4b00;
+    --signal-hot-rgb: 107,75,0;
+    --signal-bright: #3d2b00;
+    --signal-deep-rgb: 250,238,205;
+    --wire: #c9ad6a;
+    --wire-frozen: #c2b28a;
+    --wire-captured: #c9ad6a;
+    --wire-offline: #cfcabd;
 
-    /* Observed: a pass Atelier saw, and nothing else */
-    --observed: #166a3c;
-    --observed-rgb: 22,106,60;
-    --observed-deep-rgb: 210,236,220;
-    --observed-line: #9ccdb0;
+    /* Observed */
+    --observed: #185a33;
+    --observed-rgb: 24,90,51;
+    --observed-deep-rgb: 205,232,214;
+    --observed-line: #9cc9ad;
 
-    /* Caution: a tint of the accent */
-    --caution: #1a52bd;
-    --caution-rgb: 26,82,189;
-    --caution-bright: #123d8f;
-    --caution-line: #8fb0ee;
-    --warning: #1a52bd;
-    --warning-rgb: 26,82,189;
+    /* Caution */
+    --caution: #7d4d00;
+    --caution-rgb: 125,77,0;
+    --caution-bright: #5c3900;
+    --caution-line: #d8b98a;
+    --warning: #7d4d00;
+    --warning-rgb: 125,77,0;
 
-    /* Fault: failures only */
-    --fault: #b0222a;
-    --fault-rgb: 176,34,42;
+    /* Fault */
+    --fault: #9e1539;
+    --fault-rgb: 158,21,57;
 
     /* Accent */
-    --music-accent: #1d59c9;
-    --music-accent-rgb: 29,89,201;
-    --music-accent-line: #8fb0ee;
-    --on-accent: #ffffff;
+    --music-accent: #735200;
+    --music-accent-rgb: 115,82,0;
+    --music-accent-line: #c9ad6a;
+    --on-accent: #fffaf0;
 
     /* Material */
     --texture-blend: multiply;

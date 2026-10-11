@@ -2,12 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 
-// Palette B (t367): near-black ground, warm-white text, a muted grey that
-// still reads, electric blue as the one accent, red for failures only and
-// green for an observed pass only. These tests read the stylesheets the
-// pages inline and hold them to that: every text colour meets WCAG AA on
-// every surface it can sit on, in dark and in light, and no other hue (the
-// old copper and brown among them) is left outside the agents' chart colours.
+// The Night palette (PAVI, d24; t367): near-black ground, white text, a
+// muted grey that still reads, gold for links, primary actions and the
+// owner, orange for caution, red for failures and green for an observed
+// pass. These tests read the stylesheets the pages inline and hold them to
+// that: every text colour meets WCAG AA on every surface it can sit on, in
+// dark and in light, and no other hue is set outside the agents' colours,
+// which are drawn only in charts, lane threads and graph marks.
 
 const theme = readFileSync("src/theme.css", "utf8");
 const layout = readFileSync("src/layout.css", "utf8");
@@ -45,15 +46,17 @@ const dark = tokens(theme.slice(theme.indexOf(":root {"), theme.indexOf("@media"
 const lightStart = theme.indexOf("@media (prefers-color-scheme: light)");
 const light = tokens(theme.slice(lightStart, theme.indexOf("\n}\n", lightStart)));
 
-test("the theme has palette B and nothing else: one dark set and its light counterpart", () => {
+test("the theme is Night and nothing else: one dark set and its light counterpart", () => {
   assert.doesNotMatch(theme, /data-theme=/, "a second named theme is left in theme.css");
-  assert.equal(dark.get("surface"), "#0a0a0f");
-  assert.equal(dark.get("shell"), "#0a0a0f");
-  assert.equal(dark.get("text"), "#ececf2");
-  assert.equal(dark.get("signal"), "#4d8bff");
-  assert.equal(dark.get("music-accent"), "#4d8bff");
-  // Panels are raised from the ground, a little.
-  for (const t of ["surface-raised", "inset"]) assert.ok(luminance(rgb(dark.get(t)!)) > luminance(rgb("#0a0a0f")), `${t} is not raised`);
+  assert.equal(dark.get("surface"), "#07090c");
+  assert.equal(dark.get("signal"), "#ffd166");
+  assert.equal(dark.get("music-accent"), "#ffd166");
+  assert.equal(dark.get("caution"), "#ffb547");
+  // The ground is near-black, and panels are raised from it, a little.
+  assert.ok(luminance(rgb(dark.get("surface")!)) < 0.01, "the ground is not near-black");
+  for (const t of ["surface-raised", "inset"]) assert.ok(luminance(rgb(dark.get(t)!)) > luminance(rgb(dark.get("surface")!)), `${t} is not raised`);
+  // Palette B's blue is gone.
+  assert.doesNotMatch(theme, /#4d8bff|#7aa8ff|#1d59c9/i);
   assert.ok(light.size > 20, "the light theme is missing");
 });
 
@@ -70,13 +73,16 @@ for (const [name, set] of [["dark", dark], ["light", light]] as const) {
     assert.ok(onAccent >= 4.5, `${name}: --on-accent on --signal is ${onAccent.toFixed(2)}:1`);
   });
 
-  test(`blue is the one accent, red only for failures and green only for a pass, ${name}`, () => {
+  test(`gold is the accent, orange caution, red failures and green a pass, ${name}`, () => {
     for (const [token, hex] of set) {
       if (chroma(hex) < NEUTRAL) continue;
       const h = hue(hex);
-      if (token.startsWith("fault")) assert.ok(h >= 345 || h <= 10, `--${token} ${hex} is not red`);
+      // Night's greys lean a little blue: the ground, panels, lines and text.
+      if (/^(shell|surface|inset|line|text|lift|shadow|wire-offline)/.test(token)) { assert.ok(chroma(hex) < 0.15, `--${token} ${hex} is not a grey`); continue; }
+      if (token.startsWith("fault")) assert.ok(h >= 335 || h <= 10, `--${token} ${hex} is not red`);
       else if (token.startsWith("observed")) assert.ok(h >= 120 && h <= 160, `--${token} ${hex} is not green`);
-      else assert.ok(h >= 205 && h <= 230, `--${token} ${hex} (hue ${Math.round(h)}) is not the accent's blue`);
+      else if (/^(caution|warning)/.test(token)) assert.ok(h >= 30 && h <= 40, `--${token} ${hex} (hue ${Math.round(h)}) is not orange`);
+      else assert.ok(h >= 40 && h <= 48, `--${token} ${hex} (hue ${Math.round(h)}) is not the accent's gold`);
     }
   });
 }
@@ -258,7 +264,7 @@ for (const [name, set, own] of THEMES) {
   });
 }
 
-test("company colours are painted only inside charts and their legends", () => {
+test("company colours are painted only in charts, lane threads, graph marks and their legends", () => {
   // Every rule that paints with --c (the company colour a chart sets) or a
   // --m-<family> token, other than the owner's, which is the accent.
   const CHARTS = /^(\.span-(past|now|label)|\.tally-bar|\.legend-line|\.(graph|track-svg) |\.g-|\.moments \.dot$)/;
@@ -271,16 +277,13 @@ test("company colours are painted only inside charts and their legends", () => {
   }
 });
 
-test("no copper or brown is left in the page styles; only the agents' chart colours carry another hue", () => {
-  for (const [file, css] of [["src/theme.css", theme], ["src/layout.css", layout], ["src/how.css", how]] as const) {
+test("the page styles set no colour of their own; only the agents' colours carry a hue outside the theme", () => {
+  for (const [file, css] of [["src/layout.css", layout], ["src/how.css", how]] as const) {
     for (const line of css.split("\n")) {
-      // One colour per family of agent, drawn inside charts and their legends.
+      // One colour per family of agent, drawn in charts, lane threads and graph marks.
       if (/^\s*--m-[a-z]+:/.test(line)) continue;
-      for (const [hex] of line.matchAll(/#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b/g)) {
-        const h = hue(hex);
-        assert.ok(!(chroma(hex) >= NEUTRAL && h >= 15 && h <= 50), `${file}: ${hex} is copper or brown: ${line.trim()}`);
-        if (file !== "src/theme.css") assert.ok(chroma(hex) < NEUTRAL, `${file}: ${hex} sets a colour outside the theme: ${line.trim()}`);
-      }
+      for (const [hex] of line.matchAll(/#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b/g))
+        assert.ok(chroma(hex) < NEUTRAL, `${file}: ${hex} sets a colour outside the theme: ${line.trim()}`);
     }
   }
 });

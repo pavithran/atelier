@@ -28,14 +28,14 @@
 .how-fig svg { display: block; width: 100%; min-width: 880px; height: auto; color: var(--text); }
 .how-fig figcaption { max-width: 80ch; margin-top: 12px; font-size: 14px; color: var(--text-muted); }
 .hw-lane { fill: rgba(var(--lift-rgb), .04); }
-.hw-lane-rec { fill: rgba(var(--signal-rgb), .06); }
+.hw-lane-rec { fill: rgba(var(--observed-rgb), .07); }
 .hw-lane-label { fill: var(--text-muted); font: 500 12px var(--font-sans); }
 .hw-node { fill: var(--surface); stroke: var(--line-bright); stroke-width: 1.25; }
 .hw-node.hw-owner { stroke: var(--signal); }
 .hw-node.hw-cond { stroke-dasharray: 5 3; }
 .hw-name { fill: var(--text-bright); font: 600 12px var(--font-sans); }
 .hw-cmd { fill: var(--text-muted); font: 500 11px var(--font-mono); }
-.hw-rec { fill: var(--surface); stroke: var(--wire); stroke-width: 1; }
+.hw-rec { fill: var(--surface); stroke: var(--observed); stroke-width: 1; }
 .hw-recs { fill: var(--text); font: 400 11px var(--font-sans); }
 .hw-move { fill: var(--text-muted); font: italic 400 11px var(--font-sans); }
 .hw-note { fill: var(--text-muted); font: italic 400 11px var(--font-sans); }
