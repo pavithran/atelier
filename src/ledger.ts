@@ -19,6 +19,7 @@ import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./c
 import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
 import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, makeDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
+import { allSkipped } from "./landing-verdict";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
 import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
@@ -259,6 +260,7 @@ const LAND_DATA: Record<string, "string" | "boolean" | "strings"> = {
   head: "string", mergeCommit: "string", fromMain: "strings", conflicts: "strings",
   resolvedBy: "string", reviewer: "string", verdict: "string", command: "string",
   reason: "string", changed: "boolean", failed: "boolean", skipped: "boolean", requested: "boolean",
+  runners: "strings",
 };
 export const LAND_JSON_MAX = 4000;
 
@@ -1524,9 +1526,10 @@ export class Ledger extends DurableObject<Env> {
   // Both halves of the queue in one call, as a runner's poll reads them:
   // the open tasks waiting (waiting) and the open review requests
   // (reviewWaiting).
-  queued(): { waiting: (Item & { held?: CoreHold })[]; reviews: Item[] } {
+  queued(): { waiting: (Item & { held?: CoreHold })[]; reviews: (Item & { request: number })[] } {
     // The open criteria reviews (t438) are offered with the code reviews:
-    // each carries its own dispatch, whose job names criteria-review.
+    // each carries its own dispatch, whose job names criteria-review, and
+    // its request is the criteria review's own number.
     return { waiting: this.waiting(), reviews: [...this.reviewWaiting(), ...this.criteriaReviewWaiting()] };
   }
 
@@ -3667,10 +3670,13 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // Open review requests, as the queue offers them: the part item with its
-  // dispatch overlaid by the review dispatch, whose job names "review".
-  // Each part is read once, however many requests name it.
-  reviewWaiting(): Item[] {
-    const requests = this.sql.exec(`SELECT item, head, dispatch FROM review_requests WHERE state = 'open' ORDER BY id`).toArray();
+  // dispatch overlaid by the review dispatch, whose job names "review", and
+  // the request's own number in `request`, so a runner can tell one review
+  // request from the next at the same head and end its skip of the earlier
+  // one when a new request is made (t353). Each part is read once, however
+  // many requests name it.
+  reviewWaiting(): (Item & { request: number })[] {
+    const requests = this.sql.exec(`SELECT id, item, head, dispatch FROM review_requests WHERE state = 'open' ORDER BY id`).toArray();
     if (!requests.length) return [];
     const ids = [...new Set(requests.map((r) => r.item as string))];
     const rows = this.sql.exec(`SELECT * FROM items WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(ids)).toArray();
@@ -3678,8 +3684,60 @@ export class Ledger extends DurableObject<Env> {
     return requests.map((r) => {
       const item = items.get(r.item as string);
       if (!item) throw new RuleError("no_item", `no item ${r.item as string}`, 404);
-      return { ...item, head: r.head as string, dispatch: JSON.parse(r.dispatch as string) as Dispatch };
+      return { ...item, head: r.head as string, request: r.id as number, dispatch: JSON.parse(r.dispatch as string) as Dispatch };
     });
+  }
+
+  // A runner's word that it will not serve review request `request` of this
+  // item, recorded as a `review.skipped` event under the runner's name and
+  // the request's number (t353). The landing waiting on the review reads
+  // these to say, by runner, when every runner that offers the reviewer has
+  // skipped, instead of waiting out the hour. The request must be the item's
+  // and at `head`, so a report never lands against nothing; a request no
+  // longer open is still recorded, since a report may arrive late.
+  recordReviewSkip(itemId: string, request: number, head: string, runner: string, actor: string, note: string, proved = false): void {
+    this.item(itemId);
+    const row = this.sql.exec(`SELECT head FROM review_requests WHERE id = ? AND item = ?`, request, itemId).toArray()[0];
+    if (!row) throw new RuleError("no_request", `no review request ${request} of ${itemId}`, 404);
+    if (row.head !== head) throw new RuleError("bad_head", `review request ${request} of ${itemId} is at ${(row.head as string).slice(0, 8)}, not ${head.slice(0, 8)}`, 409);
+    const at = new Date().toISOString();
+    this.log(itemId, actor, "review.skipped", { head, request, runner, ...(note ? { note: note.slice(0, REASON_MAX) } : {}) }, at, proved);
+  }
+
+  // The runners that have skipped review request `request`, as the landing's
+  // wait reads them. Matched by the request's number alone: a skip of an
+  // earlier request at the same head (an earlier landing's, or one whose
+  // claim lapsed) is that request's and counts for nothing against this one,
+  // however late it was reported.
+  reviewSkips(itemId: string, request: number): { runner: string; at: string; note?: string }[] {
+    const rows = this.sql.exec(`SELECT at, data FROM events WHERE item_id = ? AND kind = 'review.skipped' ORDER BY seq`, itemId).toArray();
+    return rows.flatMap((r) => {
+      const data = JSON.parse(r.data as string) as { request?: unknown; runner?: unknown; note?: unknown };
+      if (data.request !== request) return [];
+      return [{ runner: String(data.runner ?? ""), at: r.at as string, ...(typeof data.note === "string" && data.note ? { note: data.note } : {}) }];
+    });
+  }
+
+  // Withdraws the open gate request at `head` when every live runner that
+  // offers its reviewer for the review job has skipped it (t353), recording
+  // a `review.withdrawn` event that names the request and the runners, and
+  // says so for the new request's reason; null when no open request stands
+  // there, or a runner is left that may still serve it. A claimed request is
+  // being served and is never judged here; without live offers nothing is
+  // known to have skipped, as the landing's own wait reads it (allSkipped).
+  private renewSkippedRequest(id: string, head: string, offers: readonly SeenOffer[], actor: string, at: string, proved: boolean): string | null {
+    const open = this.sql.exec(`SELECT id, dispatch FROM review_requests WHERE item = ? AND head = ? AND state = 'open' AND tier IS NULL ORDER BY id DESC LIMIT 1`, id, head).toArray()[0];
+    if (!open) return null;
+    const d = JSON.parse(open.dispatch as string) as Dispatch;
+    const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
+    if (!asked) return null;
+    const request = open.id as number;
+    const runners = allSkipped(asked, offers, this.reviewSkips(id, request));
+    if (!runners) return null;
+    const names = runners.join(", ");
+    this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, request);
+    this.log(id, actor, "review.withdrawn", { head, reviewer: asked, request, runners, reason: `every runner that offers ${asked} skipped review request ${request} (${names}); the owner asked again` }, at, proved);
+    return `The earlier request at this head (${request}) was withdrawn: every runner that offers ${asked} had skipped it (${names}), so the review is asked anew for them to serve.`;
   }
 
   // The live review request for a part, as planView shows it: the reviewer
@@ -3851,7 +3909,13 @@ export class Ledger extends DurableObject<Env> {
   // where the gate needs none; only a gate that cannot proceed (checks not
   // passing, a rejection at this head whose blocking findings the owner has
   // not refuted, no push) refuses, with its reason.
-  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean } {
+  // The answer names the request's number (`request`, t353), the one the
+  // queue gives runners in each review task, so the landing waiting on the
+  // verdict and the runner skipping the review name the same request. With
+  // the live runner offers (`offers`), an open request at this head that
+  // every runner offering its reviewer has skipped is withdrawn and asked
+  // anew (renewSkippedRequest), so the runners serve the new request.
+  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }, offers?: readonly SeenOffer[]): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean; request?: number } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner asks for a review", 403);
     const item = this.item(id);
     // A named reviewer is judged even when a request already stands, so a
@@ -3879,6 +3943,14 @@ export class Ledger extends DurableObject<Env> {
         this.log(id, actor, "review.withdrawn", { head: item.head, reviewer: asked, reason: `the project owner named ${reviewer} to review it` }, at, proved);
       }
     }
+    // An open request at this head that every runner offering its reviewer
+    // has skipped (t353) will never be claimed: each runner keeps its skip
+    // until the request changes, and the landing that waited on it said so
+    // by runner name. The owner asking again is the attention the skip asked
+    // for, so the request is withdrawn here and asked anew below, under a
+    // fresh number the runners serve again. Judged only when the caller has
+    // the live offers; a claimed request is being served and stays.
+    const renewed = item.head && offers ? this.renewSkippedRequest(id, item.head, offers, actor, at, proved) : null;
     const need = reviewNeeded({
       item, part: item.kind === "part", policy,
       evidence: this.evidenceFor(id), reviews: this.reviewsFor(id),
@@ -3886,7 +3958,7 @@ export class Ledger extends DurableObject<Env> {
     });
     // The newest live request: an older one at this head is one whose claim
     // lapsed, since a new request is made only when every earlier one has.
-    const live = this.sql.exec(`SELECT dispatch FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL ORDER BY id DESC LIMIT 1`, id, item.head).toArray()[0];
+    const live = this.sql.exec(`SELECT id, dispatch FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL ORDER BY id DESC LIMIT 1`, id, item.head).toArray()[0];
     if (!need.needed) {
       if (live) {
         const dispatch = JSON.parse(live.dispatch as string) as Dispatch;
@@ -3904,7 +3976,7 @@ export class Ledger extends DurableObject<Env> {
           throw new RuleError("review_requested", `a review of ${id} at ${item.head!.slice(0, 8)} is already requested from ${standing}; wait for its verdict, or let its claim lapse before naming ${reviewer}`, 409);
         }
         const recordedReason = records ? this.events(id, Number.MAX_SAFE_INTEGER).find((e) => e.kind === "review.requested" && e.data.head === item.head && e.data.reviewer === standing)?.data.reason : null;
-        return { needed: true, requested: false, reason: [need.reason, typeof recordedReason === "string" ? recordedReason : ""].filter(Boolean).join(" "), at: this.requestedAt(id, item.head!) ?? at, head: item.head!, reviewer: dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : undefined };
+        return { needed: true, requested: false, reason: [need.reason, typeof recordedReason === "string" ? recordedReason : ""].filter(Boolean).join(" "), at: this.requestedAt(id, item.head!) ?? at, head: item.head!, reviewer: dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : undefined, request: live.id as number };
       }
       if (wanted) throw new RuleError("review_blocked", `${id} cannot be reviewed now: ${need.reason}`, 409);
       return { needed: false, reason: need.reason };
@@ -3941,10 +4013,10 @@ export class Ledger extends DurableObject<Env> {
     const where = records ? pool.find((m) => sameActor(`${m.harness}/${m.id}`, chosen))?.where ?? "home" : "home";
     const dispatch = { ...makeDispatch({ to: where, agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
     const topTier = this.gateIsTier(item, need, chosen);
-    this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?)`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item));
+    const made = this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?) RETURNING id`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item)).one();
     this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: "land", ...(choiceReason ? { reason: choiceReason } : {}), ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
     this.askTierReview(item, need, chosen, actor, at, proved);
-    return { needed: true, requested: true, reason: [need.reason, choiceReason].filter(Boolean).join(" "), at, head: need.head, reviewer: chosen };
+    return { needed: true, requested: true, reason: [need.reason, choiceReason, renewed ?? ""].filter(Boolean).join(" "), at, head: need.head, reviewer: chosen, request: made.id as number };
   }
 
   // When the newest review.requested event for a head was recorded, so a
@@ -4274,14 +4346,17 @@ export class Ledger extends DurableObject<Env> {
 
   // Open criteria reviews, as the queue offers them: the item with its
   // dispatch overlaid by the review's, whose job names "criteria-review".
-  criteriaReviewWaiting(): Item[] {
-    const rows = this.sql.exec(`SELECT item, dispatch FROM criteria_reviews WHERE state = 'open' ORDER BY id`).toArray();
+  criteriaReviewWaiting(): (Item & { request: number })[] {
+    const rows = this.sql.exec(`SELECT id, item, dispatch FROM criteria_reviews WHERE state = 'open' ORDER BY id`).toArray();
     if (!rows.length) return [];
     const ids = [...new Set(rows.map((r) => r.item as string))];
     const items = new Map(this.withPushActors(this.sql.exec(`SELECT * FROM items WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(ids)).toArray()).map((i) => [i.id, i]));
+    // The row's request is the criteria review's own number, the one the
+    // runner's claim answers with (claimCriteriaReview), so the runner keys
+    // the review's refusals and failures by it, apart from the task's build.
     return rows.flatMap((r) => {
       const item = items.get(r.item as string);
-      return item ? [{ ...item, dispatch: JSON.parse(r.dispatch as string) as Dispatch }] : [];
+      return item ? [{ ...item, request: r.id as number, dispatch: JSON.parse(r.dispatch as string) as Dispatch }] : [];
     });
   }
 

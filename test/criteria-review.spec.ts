@@ -82,7 +82,9 @@ it("a task's criteria are recorded by revision with their author, and under the 
   expect(await waiting(L)).toEqual([{ id, job: "criteria-review", reviewer: GLM }]);
   // Asking again while it is open repeats nothing; the queue offers it to the reviewer named.
   expect((await L.requestCriteriaReview(id, "owner", null, POOL)).requested).toBe(false);
-  expect((await L.queued()).reviews.map((i) => i.dispatch?.job)).toEqual(["criteria-review"]);
+  // The queue's row carries the review's own number as its request, the
+  // one the claim answers with, so a runner keys its failures by it.
+  expect((await L.queued()).reviews.map((i) => [i.dispatch?.job, i.request])).toEqual([["criteria-review", 1]]);
   await refusal(L.claimCriteriaReview(id, GPT, RUNNER), "wrong_agent", /asks for zcode/);
   await refusal(L.claimCriteriaReview(id, GLM, null), "dispatched", /waits for a runner/);
   const claim = await L.claimCriteriaReview(id, GLM, RUNNER) as unknown as CriteriaReviewClaim;

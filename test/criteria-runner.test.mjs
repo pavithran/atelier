@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runCriteriaReview, runReview, jobOf } from "../cli/runner.mjs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { runCriteriaReview, runReview, runRunner, jobOf } from "../cli/runner.mjs";
 import { parseConfig } from "../cli/runner-config.mjs";
 
 // The criteria review job (t438): the runner claims the review of a task's
@@ -206,4 +209,50 @@ test("runReview lets the code reviewer defer a criterion the claim's criteria re
   assert.ok(!unflagged.brief.includes("deferred"));
   assert.ok(unflagged.calls.some((c) => c.argv?.[0] === "review-unparsable"));
   assert.ok(!unflagged.calls.some((c) => c.argv?.[0] === "review"));
+});
+
+test("two failed criteria reviews skip that review alone: the task's build and the next criteria review are still taken", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-criteria-loop-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify({ ...config, jobs: ["build", "criteria-review"] }));
+  t.mock.method(console, "log", () => {});
+  // The reviewer's harness exits 1 every time, so each criteria review is a
+  // task failure for the runner's per-process cap.
+  const { io, logs } = fixture({ code: 1 });
+  const claims = [];
+  const { cli } = io;
+  io.cli = async (argv, cwd, callOptions) => {
+    if (argv[0] === "claim") {
+      claims.push(["claim", argv[1]]);
+      throw Object.assign(new Error("overlap"), { claimRefused: true });
+    }
+    if (argv[0] === "criteria-review-claim") claims.push([argv[0], Number(argv[argv.indexOf("--request") + 1] || 0) || null]);
+    return cli(argv, cwd, callOptions);
+  };
+  const review = (request) => ({ ...assignment, item: { ...assignment.item, request, updatedAt: String(request) } });
+  const build = { ...assignment, item: { id: "t21", title: "Faster search", scope: ["src/**"] } };
+  let polls = 0;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+    workspacePath: io.workspacePath, taskIO: io, wait: () => new Promise((resolve) => setImmediate(resolve)),
+    async queue() {
+      polls++;
+      // The first criteria review fails twice; the build of the same task is
+      // offered beside it each time.
+      if (polls <= 3) return [review(1), build];
+      // The owner edits the criteria and asks again: a new review request.
+      if (polls === 4) return [review(1), review(2), build];
+      process.emit("SIGTERM");
+      return [];
+    },
+  });
+  const taken = claims.map(([command]) => command);
+  // Polls 1 and 2 fail the first review, and poll 3 passes it by for the
+  // build, which counting the failures under the task (project, item) would
+  // have skipped too. Poll 4 takes the new review request fresh.
+  assert.deepEqual(taken, ["criteria-review-claim", "criteria-review-claim", "claim", "criteria-review-claim"]);
+  assert.equal(claims[2][1], "t21");
+  const attention = logs.filter((s) => s.includes("needs the owner's attention after 2 failures"));
+  assert.equal(attention.length, 1);
+  assert.match(attention[0], /atelier\/t21/);
 });

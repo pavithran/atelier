@@ -95,7 +95,10 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
 }
 
 // A separate allowlist: runner credentials never inherit an agent's review,
-// integration, handoff or owner privileges.
+// integration, handoff or owner privileges. review-skip is a runner's own
+// word, not a review: it says the runner will not serve a review job it was
+// offered (t353), and the gateway takes it only for such a job, as it takes
+// a run report (assertRunnerReport).
 export function runnerRoute(method: string, parts: string[], body: Record<string, unknown> = {}): boolean {
   if (parts.length === 1) return method === "GET" && parts[0] === "config" || method === "POST" && ["queue", "runs"].includes(parts[0]);
   if (parts[0] !== "projects" || !parts[1]) return false;
@@ -104,7 +107,7 @@ export function runnerRoute(method: string, parts: string[], body: Record<string
   if (parts[2] !== "items" || !/^t[0-9]+$/.test(parts[3])) return false;
   if (["read-token", "base-token"].includes(parts[4]) && body.scope === "write") return false;
   if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "job-brief", "diff"].includes(parts[4]) || parts.length === 6 && ["sandbox", "logs", "diffs"].includes(parts[4]);
-  return method === "POST" && parts.length === 5 && ["claim", "read-token", "base-token", "push", "evidence", "sandbox", "submit", "plan", "release"].includes(parts[4]);
+  return method === "POST" && parts.length === 5 && ["claim", "read-token", "base-token", "push", "evidence", "sandbox", "submit", "plan", "release", "review-skip"].includes(parts[4]);
 }
 
 export function runnerDenied(token: AgentToken): RuleError {

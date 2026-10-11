@@ -113,8 +113,9 @@ and releases. Neither completion needs an owner token. A restart polls and
 resumes jobs held by the same runner before taking new jobs.
 
 Only polling, configuration/base reads, authorized job reads, claiming,
-Git push, checks/evidence, submission, plan posting, release and job reports
-are permitted. Owner acceptance, merge/land, overrides, criteria edits,
+Git push, checks/evidence, submission, plan posting, release, job reports
+and review skips (a runner's word that it will not serve a review job its
+poll was offered, posted as that job's actor) are permitted. Owner acceptance, merge/land, overrides, criteria edits,
 decisions, token administration, policy changes and browser access return
 403 with the runner name and token ID, never the secret. Invalid, expired or
 revoked API credentials return 401. Reviews still use the model's own agent
@@ -152,7 +153,7 @@ machine with no owner token:
 
 Do not promote the deployment if this smoke check fails. Local validation:
 `npm test`, `npm run typecheck`, `node --test cli/runner-token.test.mjs cli/runner-git.test.mjs` and
-`npx vitest run --config cli/runner-vitest.config.mjs`. The task-specific
+`npx vitest run src/runner-token.spec.mjs` (it runs under `npm test` too). The task-specific
 tests live in `src/` and `cli/` to stay within this task's scope.
 
 ## Setting up a runner
@@ -347,7 +348,7 @@ uses; that folder serves an opencode entry with a custom `command`.
 
 ## Home runner
 
-`atelier runner --name home:NAME [--once] [--config PATH] [--integrate]` polls the queue every 30 seconds, claims one eligible job, and runs its configured harness. A runner offers `build`, `plan`, `merge-main`, `merge-main-task` and `merge-plan` jobs for every harness in its config, and `review` when its config lists it. A build or plan job runs the harness in the claimed workspace; a review job clones the head into a folder of its own, reads the diff and writes a verdict. The task brief is kept outside the workspace. A runner with `--integrate` runs no harness and takes no config: it offers only the `integrate` and `refresh` jobs, merging each part onto its plan's branch as `atelier/integrator`. The runner gives each opencode run a data folder of
+`atelier runner --name home:NAME [--once] [--config PATH] [--integrate]` polls the queue every 30 seconds, claims one eligible job, and runs its configured harness. A runner offers `build`, `plan`, `merge-main`, `merge-main-task` and `merge-plan` jobs for every harness in its config, and `review` and `criteria-review` when its config lists them. A build or plan job runs the harness in the claimed workspace; a review job clones the head into a folder of its own, reads the diff and writes a verdict. A criteria-review job (t438, `runCriteriaReview`) judges a task's acceptance criteria before it is built, so there is no change to clone: the runner claims the review with `criteria-review-claim`, writes the brief the server built into an empty folder of its own, hands the harness a `{diff_file}` that says there is no diff and a `{verdict_file}`, and posts the verdict with `criteria-verdict`, bound to the criteria revision, binding and review number the claim gave, so a verdict on criteria that changed while the harness ran is refused rather than counted. A harness that fails, times out or writes a reply no verdict can be read from records the failure with `criteria-review-failed`, which approves nothing, and the review may be asked for again. The queue offers open criteria reviews beside code reviews, each under its own `request` number, and the runner takes them ahead of builds as it takes reviews. The task brief is kept outside the workspace. A runner with `--integrate` runs no harness and takes no config: it offers only the `integrate` and `refresh` jobs, merging each part onto its plan's branch as `atelier/integrator`. The runner gives each opencode run a data folder of
 its own (`XDG_DATA_HOME`) beside the workspace, removed as the harness ends,
 however it ends: opencode processes sharing
 `~/.local/share/opencode/opencode.db` deadlock on it. The shipped
@@ -368,7 +369,12 @@ releases a claim only when no new commit was made. Otherwise the claim stays
 in place for inspection. Two counters are kept for each project and task id,
 across revision changes. The task counter never resets. Two task failures,
 including harness failures and finish failures other than exit 4, skip the
-task for the rest of the process. A separate counter skips it after three consecutive infrastructure failures,
+task for the rest of the process. A review's failures count under the review
+it answered (its head and request number), and a criteria review's under that
+review's request number (`failureKey` in `cli/runner.mjs`), never under the
+task: two failed reviews of a task's criteria skip that review alone, and the
+task's build, and the next criteria review the owner asks for after editing
+them, are still taken. A separate counter skips it after three consecutive infrastructure failures,
 including claim errors other than refusals, workspace preparation errors,
 HEAD read errors after successful harness exits, and finish exit 4. This
 counter resets on a task failure, success, claim refusal or validation skip. Claim refusals and validation skips do not
@@ -418,7 +424,7 @@ runner starts the command inside the review clone, which need not hold it.
 
 Agent ids are `opencode`, `claude-code`, `codex`, `zcode`, `gemini-cli` or `antigravity`. Set model ids
 and command arguments to match the installed harness. Commands are argv
-arrays with `{model}` and `{brief_file}` placeholders. For a build job, `{workspace}` is the claimed workspace. For a plan job, `{plan_file}` is where the harness writes the plan document. For a review job, `{diff_file}` is the diff to review and `{verdict_file}` is where the harness writes its verdict. The runner invokes them directly without a shell. The example requires that
+arrays with `{model}` and `{brief_file}` placeholders. For a build job, `{workspace}` is the claimed workspace. For a plan job, `{plan_file}` is where the harness writes the plan document. For a review job, `{diff_file}` is the diff to review and `{verdict_file}` is where the harness writes its verdict; a criteria-review job uses the same two, with a `{diff_file}` that says there is no diff, so a config listing `criteria-review` names a command with `{verdict_file}`. The runner invokes them directly without a shell. The example requires that
 model to be configured in opencode. `env` is optional: the names of the
 runner's variables this harness also gets, such as a provider key it reads or
 `XDG_CONFIG_HOME`; a name starting with `ATELIER_` is refused. A runner started
@@ -429,13 +435,12 @@ deadline from 45 minutes, and `finishTimeoutMs` to change the whole finish
 deadline from 60 minutes. Expiry ends the process group as above. A finish
 timeout leaves the claim held.
 
-A runner takes a new job only while the machine's load average is under a
-limit, so a saturated machine is not handed another harness to run on top of
-the rest (t403). The limit is the core count by default; set `loadLimit` to a
-number to change it, and the runner holds off while the load is at or above
-it, saying so on each poll it skips. The reading is the one-minute load
-average, and it is checked again before each job in a poll, so finishing a
-heavy job lets the load fall before another begins.
+Runner admission no longer uses load average. Individual test commands share
+[the host test-slot pool](test-slots.md), including commands an agent runs
+through the documented wrapper. Review harnesses inherit review priority;
+build and plan harnesses inherit ordinary priority. The runner includes the
+wrapper's absolute path in build, plan and review briefs. The old `loadLimit`
+setting is ignored.
 
 ```sh
 atelier runner --name home:studio
