@@ -52,6 +52,26 @@ async function pushedTask(project: string, instance: string) {
 
 const observed = (L: ReturnType<typeof ledger>, id: string, head: string) =>
   L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["README.md"] } as never);
+
+it("container Workflow checks pass the declared preparation to their runner", async () => {
+  const project = "wf-preparation", instance = "wf-preparation-1";
+  const { L, id } = await pushedTask(project, instance);
+  const prepare = { command: "npm ci", inputs: ["package.json"], outputs: ["node_modules"], declaration: { command: "npm ci", by: "command" as const } };
+  const record = await L.project();
+  await L.setProject({ ...record, policy: { ...record.policy, checks: ["npm test"], prepare } }, "owner");
+  await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, instance);
+  await wf.modify(async (m) => {
+    await m.disableSleeps();
+    await m.mockStepResult({ name: "confirm the fork's head" }, { head: H1 });
+    await m.mockStepResult({ name: "read the check run #0" }, { status: "failed", error: "test stopped after request" });
+  });
+  await env.LANDING_WORKFLOW.create({ id: instance, params: params(project, id) });
+  await send(instance, "workspace", { round: 0, head: H1, mainHead: null, mergedIn: false });
+  await wf.waitForStatus("errored");
+  const runId = `${project}:${id}:${H1.slice(0, 12)}:wf-${instance}`;
+  const state = await env.RUNNER.get(env.RUNNER.idFromName(runId)).state();
+  expect(state?.request.prepare).toEqual(prepare);
+});
 const params = (project: string, item: string) => ({ project, key: project, item, actor: "owner", pollMs: 10, mergePollMs: 10 });
 const kinds = async (L: ReturnType<typeof ledger>, id: string) => ((await L.events(id)) as unknown as LedgerEvent[]).map((e) => e.kind);
 const send = async (instance: string, type: string, payload: unknown) => (await env.LANDING_WORKFLOW.get(instance)).sendEvent({ type, payload });

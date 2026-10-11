@@ -884,7 +884,7 @@ it("a dispatch is withdrawn only from an open task, and a refusal says why and w
   await refusal(L.undispatch(item.id, "owner"), "not_dispatched",
     new RegExp(`^${item.id} is claimed by opencode/glm-5.3-flash; its dispatch applies again only if it is released, so withdraw it then$`));
   await L.abandon(item.id, "owner", "not needed");
-  await refusal(L.undispatch(item.id, "owner"), "not_dispatched", new RegExp(`^${item.id} is abandoned, so its dispatch no longer applies and there is nothing to withdraw$`));
+  await refusal(L.undispatch(item.id, "owner"), "not_dispatched", new RegExp(`^${item.id} is not queued for a runner, so there is no dispatch to withdraw$`));
 });
 
 // t235: a runner's dead run leaves its claims behind. The jobs the queue can
@@ -1735,4 +1735,62 @@ it("a gate request the criteria change withdrew is carried at the same head once
   await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
   expect(await live(L)).toEqual([expect.objectContaining({ head: H1, state: "open" })]);
   expect(((await L.events("t1")) as unknown as LedgerEvent[]).find((e) => e.kind === "review.requested")!.data).toMatchObject({ reviewer: GPT, via: "head-moved" });
+});
+
+for (const terminal of ["abandoned", "merged"] as const) {
+  it(`${terminal} clears dispatch and every live review, and refuses all claims`, async () => {
+    const L = await setup(`terminal-${terminal}`);
+    await L.newItem("Closed work", [], "owner");
+    await L.dispatch("t1", "owner", { to: "home" });
+    expect(await L.waiting()).toHaveLength(1);
+    await runInDurableObject(L, async (_instance, state) => {
+      for (const status of ["open", "claimed"]) {
+        for (const tier of [null, 1]) {
+          state.storage.sql.exec(`INSERT INTO review_requests (item, head, dispatch, state, tier) VALUES (?, ?, ?, ?, ?)`,
+            "t1", H1, JSON.stringify({ to: "home", agent: "codex", model: "gpt-5.5" }), status, tier);
+        }
+      }
+      if (terminal === "merged") state.storage.sql.exec(`UPDATE items SET state = 'accepted', accepted_head = ? WHERE id = 't1'`, H1);
+    });
+    if (terminal === "abandoned") await L.abandon("t1", "owner", "Stop");
+    else await L.merged("t1", "owner", H2, true);
+    expect(await L.item("t1")).toMatchObject({ state: terminal, dispatch: null });
+    expect(await L.waiting()).toEqual([]);
+    expect(await L.reviewWaiting()).toEqual([]);
+    await runInDurableObject(L, async (_instance, state) => {
+      expect(state.storage.sql.exec(`SELECT state FROM review_requests`).toArray().map(r => r.state)).toEqual(Array(4).fill("withdrawn"));
+    });
+    for (const actor of [A, "atelier/integrator"]) await refusal(L.claim("t1", actor, null, true), "closed", new RegExp(terminal));
+    await refusal(L.claimReview("t1", B, null), "closed", new RegExp(terminal));
+    await refusal(L.dispatch("t1", "owner", { to: "home" }), "closed", new RegExp(terminal));
+    await L.unclaim("t1", A, "not_ready");
+    expect((await L.item("t1")).state).toBe(terminal);
+  });
+}
+
+it("claim rollback preserves closure, newer claims, and a holder's retry", async () => {
+  const L = await setup("rollback-reservation");
+  await L.newItem("One", [], "owner");
+  const first = await L.claim("t1", A);
+  await L.release("t1", A, "Retry elsewhere");
+  const second = await L.claim("t1", A);
+  await L.unclaim("t1", A, "not_ready", false, first.generation);
+  expect((await L.item("t1")).state).toBe("claimed");
+  const retry = await L.claim("t1", A);
+  await L.unclaim("t1", A, "not_ready", false, retry.generation);
+  expect((await L.item("t1")).owner).toBe(A);
+  await L.abandon("t1", "owner", "Stop during fork");
+  await L.unclaim("t1", A, "not_ready", false, second.generation);
+  expect((await L.item("t1")).state).toBe("abandoned");
+});
+
+it("failed claim restores its prior state instead of assuming it was open", async () => {
+  const L = await setup("rollback-prior-state");
+  await L.newItem("Submitted without a holder", [], "owner");
+  await runInDurableObject(L, async (_instance, state) => {
+    state.storage.sql.exec(`UPDATE items SET state = 'submitted' WHERE id = 't1'`);
+  });
+  const claim = await L.claim("t1", A);
+  await L.unclaim("t1", A, "not_ready", false, claim.generation);
+  expect(await L.item("t1")).toMatchObject({ state: "submitted", owner: null, runner: null });
 });
