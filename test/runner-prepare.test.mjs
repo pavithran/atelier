@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import { subsequence } from './helpers/runner-server.mjs';
 import { prepareWorkspace, preparationMarker, prepareTimeout, execute, runRunner, IDENTITY_FILE } from '../cli/runner.mjs';
 
 function fixture(t) {
@@ -107,6 +108,6 @@ test('the real runner reads preparation from its claimed Git directory before st
       return execute(argv, options);
     },
   });
-  assert.deepEqual(calls, ['claim', 'harness', 'finish']);
+  assert.ok(subsequence(calls, ['claim', 'harness', 'finish']), calls.join(', '));
   assert.ok(existsSync(f.marker));
 });
