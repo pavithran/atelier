@@ -153,7 +153,7 @@ machine with no owner token:
 
 Do not promote the deployment if this smoke check fails. Local validation:
 `npm test`, `npm run typecheck`, `node --test cli/runner-token.test.mjs cli/runner-git.test.mjs` and
-`npx vitest run --config cli/runner-vitest.config.mjs`. The task-specific
+`npx vitest run src/runner-token.spec.mjs` (it runs under `npm test` too). The task-specific
 tests live in `src/` and `cli/` to stay within this task's scope.
 
 ## Setting up a runner
