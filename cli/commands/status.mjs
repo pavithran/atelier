@@ -62,7 +62,9 @@ export default async function statusCommand() {
     const { items, project } = await call("GET", P(p.name), undefined, OWNER);
     const path = cfg.projects?.[p.name]?.path;
     const mismatches = project?.policy && path ? reviewDisagreements(project.policy, readInstructions(path)) : [];
-    return { name: p.name, title: p.title, items, inbox, mismatches };
+    // The policy comes along so the listing can say a project runs in
+    // single-family mode (formatStatus).
+    return { name: p.name, title: p.title, items, inbox, mismatches, policy: p.policy ?? null };
   }));
   if (args.json) return console.log(JSON.stringify(statusJson(views, server()), null, 2));
   const strays = formatStrays(localStrays());
