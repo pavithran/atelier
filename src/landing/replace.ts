@@ -37,9 +37,9 @@ export function replacementFor(record: LandingWorkflowRecord, named: string | nu
     return { replace: { reason: "lease-wait", detail: `instance ${record.instance} has waited for the landing lease since ${record.stageAt} (${hours(elapsed)}), at or past the ${hours(LANDING_LEASE_WAIT_LIMIT_MS)} limit` } };
   }
   const remembered = record.reviewer ?? null;
-  if (named === null || named === remembered) return { replace: null };
+  if (named === null || remembered === null || named === remembered) return { replace: null };
   if (!BEFORE_ACCEPTANCE.includes(record.stage) || item.state === "accepted" || item.state === "merged") return { replace: null };
-  const stale = remembered === null ? "its reviewer was not recorded" : reviewerIneligibility(remembered, item);
+  const stale = reviewerIneligibility(remembered, item);
   if (!stale) return { replace: null };
   const refused = reviewerIneligibility(named, item);
   if (refused) return { replace: null, refused: `${named} cannot replace the remembered reviewer ${remembered}: ${refused}` };

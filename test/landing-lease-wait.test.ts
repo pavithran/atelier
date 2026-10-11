@@ -63,6 +63,8 @@ test("the route replaces a live instance only past the lease-wait limit or for a
   const refused = replacementFor(atReview, "claude-code/sonnet-5.5", item, T0);
   assert.equal(refused.replace, null);
   assert.match(refused.refused!, /claude-code\/sonnet-5\.5 cannot replace the remembered reviewer/);
+  // No remembered reviewer does not imply an ineligible reviewer.
+  assert.deepEqual(replacementFor(record({ stage: "review" }), "codex/gpt-5.5", item, T0), { replace: null });
   // An eligible remembered reviewer, the same name, none named, or a stage past acceptance: attach.
   assert.deepEqual(replacementFor(record({ stage: "review", reviewer: "codex/gpt-5.5" }), "gemini-cli/gemini-3-pro", item, T0), { replace: null });
   assert.deepEqual(replacementFor(atReview, OPUS, item, T0), { replace: null });
