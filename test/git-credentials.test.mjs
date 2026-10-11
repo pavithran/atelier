@@ -1,3 +1,4 @@
+import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
@@ -121,6 +122,7 @@ process.exit(r.status ?? 1);
 }
 
 test("claim, re-claim, push and check authenticate without a token in any git argument", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await fixture(t);
   const start = await f.run(["start", "t1"], f.source);
   assert.equal(start.status, 0, start.output);
