@@ -1,14 +1,15 @@
+import { parsePostMerge, currentStep } from "./post-merge.ts";
 import { runnerGitRequest } from "./runner-git.ts";
-import { assertCriteriaAllowed, assertReviewAllowed } from "./rules.ts";
+import { assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed } from "./rules.ts";
 import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
-import { itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
+import { changedPaths, itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
 import { scanCommit } from "./secret-scan.ts";
 import { criteriaOf } from "./criteria.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim, type ReviewerAvailability } from "./ledger.ts";
 import { accessSettings, accessVouches } from "./access.ts";
-import { ROUTE_LEVEL } from "./route-level.ts";
+import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, type Evidence, type Item, type OwnerFactor } from "./rules";
@@ -24,6 +25,7 @@ import { suggestBuilder } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { buildPrecision, precisionWindow } from "./models/precision.ts";
+import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, registeredActing } from "./models/judgement.ts";
 import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
@@ -62,7 +64,9 @@ const READ_TTL = 3600;
 // The override forms need the first and, as the owner's confirmation (t371),
 // the second or the confirmation secret (ownerFactorIn): a session alone is
 // not that confirmation, since without Access the owner token buys one.
-type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null; waitUntil?: (p: Promise<unknown>) => void; signedIn?: boolean; access?: boolean };
+// `acting` is the harness/model an owner-token request names as acting for
+// the owner (X-Atelier-Acting, src/models/judgement.ts), or null.
+type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null; acting?: string | null; waitUntil?: (p: Promise<unknown>) => void; signedIn?: boolean; access?: boolean };
 
 // ── auth ───────────────────────────────────────────────────────────────────
 // The owner bearer token may declare any actor for orchestration. Agent tokens
@@ -961,8 +965,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[0] === "reliability" && parts.length === 1 && m === "GET") {
     // `speed` is each model's pace over the window; `atelier runner --usage`
     // prints it, and says so when an older server sends none.
-    const { reliability, speed, events, unread } = await trackRecords(env);
-    const res = json({ events, models: reliabilityJson(reliability), speed });
+    // `judgement` is each acting model's verdicts on findings, decisions and
+    // overrides over its window, with the window's totals.
+    const { sources, reliability, speed, events, unread } = await trackRecords(env);
+    const judgement = buildJudgement(sources, judgementWindow(new Date()), ownerActor(env), await index(env).models());
+    const res = json({ events, models: reliabilityJson(reliability), speed, judgement: { ...judgement, totals: judgementTotals(judgement) } });
     if (unread.length) res.headers.set("x-atelier-incomplete", unread.map((p) => p.name).sort().join(","));
     return res;
   }
@@ -1080,6 +1087,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         return { command: value.command, inputs: value.inputs, outputs: value.outputs,
           ...(value.declaration !== undefined ? { declaration: parseDeclarations([value.declaration])[0] } : {}) };
       })() } : {}),
+      ...(has("postMerge") ? { postMerge: parsePostMerge(body.postMerge, actor, new Date().toISOString()) } : {}),
       ...(has("checks") ? { checks: asStrings(body.checks, "checks") } : {}),
       ...(has("checkClasses") ? { checkClasses: parseDeclarations(body.checkClasses) } : {}),
       ...(has("checkPaths") ? { checkPaths: parseCheckPaths(body.checkPaths) } : {}),
@@ -1201,13 +1209,55 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // names the landing Workflow `instance` it acts for (the Workflow
   // executor's) is refused once another instance replaced it (t430).
   if (parts[2] === "landing-lease" && parts.length === 3) {
-    if (m === "GET") return json({ lease: await L.readProjectLanding(), waiting: await L.readLandingQueue() });
+    if (m === "GET") {
+      const postMerge = await L.activePostMerge();
+      return json({ lease: await L.readProjectLanding(), waiting: await L.readLandingQueue(), ...(postMerge ? { postMerge } : {}) });
+    }
     requireOwner(env, actor);
     const instance = typeof body.instance === "string" && body.instance ? body.instance : undefined;
     if (body.cancel === true) return json(await L.cancelProjectLanding(String(body.item ?? ""), actor, instance));
     if (body.renew === true) return json({ lease: await L.renewProjectLanding(String(body.item ?? ""), actor, instance) });
     if (body.queued === true) return json(await L.queueProjectLanding(String(body.item ?? ""), actor, body.leave === true, instance));
     return json(await L.beginProjectLanding(String(body.item ?? ""), actor, instance));
+  }
+  if (parts[2] === "post-merge" && parts.length === 4) {
+    const item = parts[3];
+    if (m === "GET") return json({ run: await L.postMergeRun(item) });
+    requireOwner(env, actor);
+    const run = await L.postMergeRun(item);
+    if (!run || run.id !== body.run) throw new RuleError("stale_run", "post-merge run changed", 409);
+    if (body.action === "prepare") {
+      if (!run.after) throw new RuleError("post_merge_blocked", "merge not recorded", 409);
+      using repo = await env.ARTIFACTS.get((await L.project()).repo);
+      const before = await repo.readCommit(run.before), after = await repo.readCommit(run.after);
+      if (!before || !after) throw new RuleError("missing_history", "post-merge diff history is unavailable", 409);
+      const paths = await changedPaths(repoReader(repo), before.treeHash, after.treeHash);
+      return json({ run: await L.preparePostMerge(item, run.id, paths, actor) });
+    }
+    let deployment;
+    const step = run.policy.steps.find(s => s.name === currentStep(run)?.name);
+    if (step?.class === "deploy" && ((body.action === "finish" && body.passed === true) || (body.action === "reconcile" && body.resolution === "completed"))) {
+      // Observe independently of the executor's command result. No owner
+      // credential is sent to the version endpoint and redirects are refused.
+      using repo = await env.ARTIFACTS.get((await L.project()).repo);
+      const commit = await repo.readCommit(run.after!);
+      if (!commit) throw new RuleError("missing_history", "deployment source unavailable", 409);
+      const node = await walk(repoReader(repo), commit.treeHash, ["src", "route-level.ts"]);
+      let requiredLevel = ROUTE_LEVEL;
+      if (node) {
+        if (node.kind !== "blob") throw new RuleError("missing_history", "deployment route level is not a file", 409);
+        const blob = await repo.readBlob(node.hash);
+        if (!blob || blob.size > 65536) throw new RuleError("missing_history", "deployment route level is unavailable", 409);
+        const level = /export\s+const\s+ROUTE_LEVEL\s*=\s*(\d+)\s*;/.exec(await blob.text());
+        if (!level) throw new RuleError("missing_history", "deployment route level cannot be read", 409);
+        requiredLevel = Math.max(requiredLevel, Number(level[1]));
+      }
+      const response = await fetch(step.versionUrl!, { redirect: "error", signal: AbortSignal.timeout(15000) });
+      const v = await response.json() as { commit?: unknown; routeLevel?: unknown };
+      if (!response.ok || v.commit !== run.after || !Number.isInteger(v.routeLevel) || Number(v.routeLevel) < requiredLevel) throw new RuleError("deployment_unverified", "deployment does not report the pinned commit and required route level", 409);
+      deployment = { commit: String(v.commit), routeLevel: Number(v.routeLevel) };
+    }
+    return json({ run: await L.postMergeAction(item, actor, { run: String(body.run), action: String(body.action), attempt: typeof body.attempt === "string" ? body.attempt : undefined, passed: body.passed === true, output: body.output, commandOutcome: body.commandOutcome === "passed" ? "passed" : "failed", publication: body.publication as { source: string; remote: string | null; commits: number } | undefined, reason: body.reason, resolution: body.resolution }, deployment) });
   }
   if (parts[2] === "baseline-token" && m === "POST") {
     const scope = body.scope === "write" ? "write" : "read";
@@ -1228,8 +1278,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "decisions") {
     if (parts.length === 3 && m === "GET") return json({ decisions: await L.decisions() });
     requireOwner(env, actor);
-    if (parts.length === 3 && m === "POST") return json(await L.recordDecision(body, actor), 201);
-    if (parts.length === 5 && parts[4] === "withdraw" && m === "POST") return json(await L.withdrawDecision(parts[3], actor, body.note));
+    if (parts.length === 3 && m === "POST") return json(await L.recordDecision(body, actor, c.acting ?? null), 201);
+    if (parts.length === 5 && parts[4] === "withdraw" && m === "POST") return json(await L.withdrawDecision(parts[3], actor, body.note, c.acting ?? null));
     throw new RuleError("not_found", "no such route", 404);
   }
   // Protected actions: the owner's approvals and the steps a ship ran (src/actions-api.ts).
@@ -1345,6 +1395,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // predicted conflict sends the part back to its builder without a runner
       // trip (docs/orchestrator.md, section 5).
       const before = await L.item(id);
+      assertNotTerminal(before);
       if (before.kind === "plan" && before.dispatch?.job === "integrate" && before.dispatch.part && actor === INTEGRATOR) {
         const conflict = await predictConflict(env, L, before);
         if (conflict) {
@@ -1378,7 +1429,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // A give-up that fails is logged, and the claim's own failure is
           // answered: the claimer still holds an item with no fork, which its
           // retry forks (t349).
-          await L.unclaim(id, actor, codeOf(err).trim(), !!c.token).catch((e) => console.error(errorLine(`give up ${id} after a failed fork`, e)));
+          await L.unclaim(id, actor, codeOf(err).trim(), !!c.token, generation).catch((e) => console.error(errorLine(`give up ${id} after a failed fork`, e)));
           throw err;
         }
       } else {
@@ -1388,7 +1439,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         try {
           moved = await movePartFork(env, L, item, p, actor, !!c.token);
         } catch (err) {
-          if (before.owner !== actor) await L.unclaim(id, actor, codeOf(err).trim(), !!c.token);
+          if (before.owner !== actor) await L.unclaim(id, actor, codeOf(err).trim(), !!c.token, generation);
           throw err;
         }
       }
@@ -1566,7 +1617,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (!item.fork || !item.head) throw new RuleError("nothing_pushed", `${id} has nothing pushed to check`);
       const p = await L.project();
       if (!p.policy.checks.length) throw new RuleError("no_checks", `${project} has no required checks`);
-      const refused = p.policy.checks.flatMap((claim) => { const why = refusalOf(claim); return why ? [refusalText(claim, why)] : []; });
+      const refused = [...(p.policy.prepare ? [p.policy.prepare.command] : []), ...p.policy.checks].flatMap((claim) => { const why = refusalOf(claim); return why ? [refusalText(claim, why)] : []; });
       if (refused.length) throw new RuleError("not_read_only", `${refused.join(". ")}. The project owner replaces it with atelier init --check; until then the container runs nothing.`, 409);
       // The run is named and the runner records to the Ledger by the key, so a
       // run started under one of the project's names is read under any other.
@@ -1574,6 +1625,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const request: RunRequest = {
         runId, project: ref.key, itemId: id, baselineRepo: await baseRepo(env, L, item, p.repo), fork: item.fork, head: item.head,
         checks: p.policy.checks, requestedBy: actor,
+        ...(p.policy.prepare ? { prepare: p.policy.prepare } : {}),
         ...(body.merged === true ? { merged: true } : {}),
       };
       if (p.policy.checkPaths?.length) request.checkPaths = p.policy.checkPaths;
@@ -1583,6 +1635,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json({ runId, state }, 202);
     }
     case "dispatch": {
+      assertNotTerminal(await L.item(id));
       // --overlap-ok alone on a waiting dispatch releases its hold and keeps
       // everything else. An explicit snapshot is checked atomically even if
       // a runner has since claimed it; an already-owned task is redispatched.
@@ -1596,7 +1649,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       let suggestion;
       // atelier dispatch with no --agent asks for the suggestion; a dispatch
       // that names no agent without asking stays open to any runner's agent.
-      if (body.suggest === true && !body.agent && body.job !== "merge-main") {
+      // An overlap override of an existing dispatch keeps its builder
+      // restrictions unless named, so it asks for no suggestion.
+      if (body.suggest === true && !body.agent && body.job !== "merge-main" && !(body.overlapOk === true && (await L.item(id)).dispatch)) {
         requireOwner(env, actor);
         const [pool, track, item, p] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project()]);
         suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env) }, body);
@@ -2042,7 +2097,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const availability = overrideReview !== undefined ? await reviewerAvailability(env, L, id) : undefined;
       let item: Item;
       try {
-        item = await L.accept(id, actor, String(body.head ?? ""), overrideReview, typeof body.note === "string" ? body.note : undefined, undefined, availability);
+        item = await L.accept(id, actor, String(body.head ?? ""), overrideReview, typeof body.note === "string" ? body.note : undefined, undefined, availability, undefined, c.acting ?? null);
       } catch (err) {
         const rule = parseRuleError(err);
         if (rule?.code === "override_unconfirmed") {
@@ -2067,7 +2122,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const commit = /^[a-f0-9]{40,64}$/.test(merge) ? await baseline.readCommit(merge) : null;
       const history = await baseline.log({limit:1000});
       const observed = !!commit && commit.parents.includes(item.acceptedHead ?? "") && history.some(c=>c.hash===merge);
-      return json(await L.merged(id, actor, merge, observed, item.acceptedHead));
+      const merged = await L.merged(id, actor, merge, observed, item.acceptedHead);
+      const postMerge = await L.postMergeRun(id);
+      return json({ ...merged, ...(postMerge ? { postMerge } : {}) });
     }
     case "landing": {
       requireOwner(env, actor);
@@ -2082,11 +2139,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const item = await L.item(id);
         const p = await L.project();
         const top = item.acceptedHead ? await headOf(env, p.repo) : null;
-        const landed = !!top && (await holdsCommit(env, p.repo, top, item.acceptedHead!)).holds === true;
+        const ancestry = top ? (await holdsCommit(env, p.repo, top, item.acceptedHead!)).holds : null;
+        if (await L.postMergeRun(id) && ancestry === null) throw new RuleError("missing_history", "cannot cancel a post-merge reservation without proving the accepted revision is absent from the baseline", 409);
+        const landed = ancestry === true;
         if (landed) throw new RuleError("landed", `${id} is already merged on the baseline; run atelier merge ${id} to record it`, 409);
         return json(await L.cancelLanding(id, actor));
       }
-      return json(await L.beginLanding(id, actor, String(body.head ?? "")));
+      const project = await L.project();
+      // Steps may be enabled while this landing is in progress. Observe its
+      // original baseline now, even if there is no post-merge policy yet.
+      const generation = await L.mergeGeneration();
+      const before = await headOf(env, project.repo);
+      return json(await L.beginLanding(id, actor, String(body.head ?? ""), before ?? undefined, generation));
     }
     case "plan":
       if (parts.length > 6) break;
@@ -2106,13 +2170,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "defect": {
       requireOwner(env, actor);
       const { note, foundIn } = cleanDefect(body);
-      return json(await L.traceDefect(id, actor, note, foundIn), 201);
+      const contradicts = cleanContradicts(body.contradicts, [ref.name, ...ref.names.filter((n) => n !== ref.name)], id);
+      return json(await L.traceDefect(id, actor, note, foundIn, contradicts), 201);
     }
     case "finding": {
       requireOwner(env, actor);
       const { head, index, verdict, note } = cleanFinding(body);
-      await L.addFinding(id, actor, head, index, verdict, note);
-      return json({ id, head, index, verdict }, 201);
+      const { review, by, event } = await L.addFinding(id, actor, head, index, verdict, note, { reviewSeq: body.reviewSeq, reviewer: body.reviewer }, c.acting ?? null);
+      return json({ id, head, index, verdict, review, by, event, ...(c.acting ? { acting: c.acting } : {}) }, 201);
     }
   }
   throw new RuleError("not_found", "no such route", 404);
@@ -2237,7 +2302,10 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
   // Review precision over the last PRECISION_WINDOW_DAYS, from the same events;
   // each model's speed comes with the track record (trackRecords).
   const precision = buildPrecision(track.sources, precisionWindow(new Date()), ownerActor(env));
-  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway, precision, track.speed), error ? 400 : 200);
+  // The orchestrator's judgements over the last JUDGEMENT_WINDOW_DAYS, by the
+  // harness/model that acted for the owner (src/models/judgement.ts).
+  const judgement = buildJudgement(track.sources, judgementWindow(new Date()), ownerActor(env), entries as unknown as ModelEntry[]);
+  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway, precision, track.speed, judgement), error ? 400 : 200);
 }
 
 // ── AI Gateway ───────────────────────────────────────────────────────────────
@@ -2962,14 +3030,16 @@ export default {
       }
       const how = await authorised(req, env);
       if (parts[0] === "api") {
-        // The server's version: the deployed main commit and its route
-        // level (src/route-level.ts). It answers without a token: the
-        // commit of a public repository and a route level are not secret,
-        // and a session checks them before it signs in. atelier land
-        // refuses on the level, saying to deploy, when the server's is
-        // lower than the CLI's.
+        // The server's version: the deployed main commit, its route level
+        // and the capabilities it supports (src/route-level.ts). It answers
+        // without a token: the commit of a public repository, a route level
+        // and capability names are not secret, and a session checks them
+        // before it signs in. Each CLI command and runner job checks the
+        // capabilities it declares against this list before its first
+        // dependent request, refusing with the missing names and saying to
+        // deploy; a CLI from before capabilities reads routeLevel alone.
         if (parts.length === 2 && parts[1] === "version" && (req.method === "GET" || req.method === "HEAD")) {
-          return json({ commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, routeLevel: ROUTE_LEVEL });
+          return json({ commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES });
         }
         if (how !== "api" && (typeof how !== "object" || !how)) {
           // A path that names no part of the API answers 404 whoever asks:
@@ -2993,6 +3063,12 @@ export default {
           if (token?.runner) throw runnerDenied(token);
           return json({ error: "bad_actor", detail: "set X-Atelier-Actor to harness/model, or the project owner's actor" }, 400);
         }
+        // The acting harness/model is checked here, for every route, so a
+        // malformed name, or one an agent or runner token sends, is refused
+        // before anything is recorded. A name must be a model in the pool;
+        // it is kept as declared, since the owner token cannot prove it.
+        const declaredActing = cleanActing(req.headers.get(ACTING_HEADER), ownerActor(env), !!token);
+        const acting = declaredActing === null ? null : registeredActing(declaredActing, await index(env).models());
         const body = req.method === "GET" ? {} : await req.json().catch(() => ({}));
         // Routes read fields from the body, so anything but a JSON object is refused here.
         if (typeof body !== "object" || body === null || Array.isArray(body)) {
@@ -3032,7 +3108,7 @@ export default {
         }
         let res: Response;
         try {
-          res = await api({ env, req, url, actor, body, token, ref, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
+          res = await api({ env, req, url, actor, body, token, ref, acting, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
         } catch (error) {
           if (token?.runner && parseRuleError(error)?.status === 403) throw runnerDenied(token);
           throw error;
