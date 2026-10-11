@@ -337,7 +337,7 @@ export async function serverVersion() {
 export async function requireCapabilities(cmd, word = args._[1]) {
   if (cmd === "init" && args["rename-local"] === true) return;
   if (COMMANDS[cmd]?.capabilityCheck === "handler") return;
-  const required = requiredForCommand(cmd, word);
+  const required = requiredForCommand(cmd, word, args);
   if (!required.length) return;
   const check = checkCapabilities(await serverVersion(), required);
   if (!check.ok) die(`${check.message}, then run atelier ${cmd} again`, check.kind === "unavailable" ? 4 : 1);

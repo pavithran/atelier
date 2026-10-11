@@ -1008,8 +1008,8 @@ async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, g
         const levelFile = join(dir, "src", "route-level.ts");
         // A numeric raise alone would falsely map the task's capabilities to
         // main's old level. Keep the merge for the builder to resolve explicitly.
-        if (/\bdeclare\s*\(/.test(readFileSync(levelFile, "utf8"))) {
-          throw new StepError(`main and ${id} each raised the route level from ${baseLevel}; named capability legacy mappings need manual resolution. Move the task's new declare() levels above main's ${mainLevel}, set ROUTE_LEVEL to ${rightLevel}, and commit before rerunning atelier land ${id}. Keep main's published mappings unchanged.`);
+        if (/\b(?:declare|buildCapabilities)\s*\(/.test(readFileSync(levelFile, "utf8"))) {
+          throw new StepError(`main and ${id} each raised the route level from ${baseLevel}; named capability legacy mappings need manual resolution. Move the task's new capability declaration levels above main's ${mainLevel}, set ROUTE_LEVEL to ${rightLevel}, and commit before rerunning atelier land ${id}. Keep main's published mappings unchanged.`);
         }
         writeFileSync(levelFile, readFileSync(levelFile, "utf8").replace(/export const ROUTE_LEVEL = \d+;/, `export const ROUTE_LEVEL = ${rightLevel};`));
         git(["add", "--", "src/route-level.ts"], { cwd: dir });

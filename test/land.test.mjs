@@ -889,13 +889,13 @@ test("named legacy mappings stop automatic renumbering until the builder resolve
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { seedRouteLevel: 6 });
   for (const dir of [f.workspace("t1"), f.checkout]) {
-    writeFileSync(join(dir, "src", "route-level.ts"), 'declare("tasks.new.v1", 7, "new behaviour");\nexport const ROUTE_LEVEL = 7;\n');
+    writeFileSync(join(dir, "src", "route-level.ts"), 'export const CAPABILITIES = buildCapabilities(CAPABILITY_DECLARATIONS);\nexport const ROUTE_LEVEL = 7;\n');
     git(dir, "add", "."); git(dir, "commit", "-m", "Raise with a named declaration"); git(dir, "push", "-q", "origin", "main");
   }
   const r = await f.run(f.checkout, "land", "t1");
   assert.notEqual(r.status, 0, r.output);
   assert.match(r.output, /named capability legacy mappings need manual resolution/);
-  assert.match(r.output, /Move the task's new declare\(\) levels above main's 7, set ROUTE_LEVEL to 8/);
+  assert.match(r.output, /Move the task's new capability declaration levels above main's 7, set ROUTE_LEVEL to 8/);
   assert.match(readFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 7;/);
   assert.notEqual(f.box.states.t1, "merged");
   assert.doesNotMatch(git(f.workspace("t1"), "log", "--format=%s"), /Raise the route level after merging/);

@@ -1,3 +1,4 @@
+import { CAPABILITY_DECLARATIONS } from "./capability-declarations.ts";
 import type { CommandModule } from "./usage/command.ts";
 import { COMMAND_MODULES } from "./usage/commands/index.ts";
 
@@ -17,11 +18,9 @@ import { COMMAND_MODULES } from "./usage/commands/index.ts";
 // a change that is not compatible with it takes a new name (…v2), and the
 // old one stays published for as long as the server still behaves that way,
 // so a client that needs v1 is not satisfied by a server that has only v2.
-// Each capability is one `declare` line of its own in CAPABILITIES, under
-// its family, so additions in separated existing families can
-// merge cleanly (test/capabilities.test.mjs merges them with git
-// merge-file). Same-family additions and two new families can conflict:
-// resolve by retaining both declarations, then validate names and levels.
+// Each capability is one line in src/capability-declarations.ts. Its
+// merge=union attribute retains independent additions, including names in
+// the same family. Duplicate names still fail validation after a merge.
 // buildCapabilities refuses a name declared twice, or one that
 // is not well formed, when this module loads, and commandCapabilities
 // refuses a command that requires a name no declaration publishes.
@@ -51,41 +50,12 @@ export function buildCapabilities<const T extends readonly CapabilityDeclaration
   return Object.freeze(declarations);
 }
 
-// One declaration, its name kept as a literal type so a command module that
-// requires a name this file does not declare fails to type-check as well.
-const declare = <const N extends string>(name: N, level: number | undefined, summary: string) => ({ name, level, summary });
-
-// Every capability, one line each, grouped by family: add a new one under
-// its family (a new family at the end), with the route level the change
-// raises ROUTE_LEVEL to while the migration lasts, or no level after it.
-// The level 6 raise is two declarations, as the two sides of the route may
-// part: an integrator needs plans.integration.v1, an owner plans.refresh.v1
-// (32d5755, 2026-10-06, the integration branch per plan, and 933d198).
-export const CAPABILITIES = buildCapabilities([
-  // plans: the integration branch an integrator keeps per plan
-  declare("plans.integration.v1", 6, "the integrated, integration-failed, refreshed and refresh-failed routes a plan's integrator posts"),
-  declare("plans.refresh.v1", 6, "the plan refresh route, which atelier plan refresh and atelier merge post to take main into a plan's branch"),
-  // land: the landing
-  declare("land.workflow.v1", 14, "the landing-workflow routes behind atelier land --workflow"),
-  // items: what a task carries
-  declare("items.brief-criteria.v1", 15, "items take a brief and acceptance criteria apart from the title; edit takes a title"),
-  // reviews: requests, claims, verdicts and skips
-  declare("reviews.criteria-binding.v1", 16, "a review names the binding of the criteria it judged and the request it claimed"),
-  declare("reviews.unparsable.v1", 17, "the review-unparsable route a runner's review job calls"),
-  declare("reviews.skip.v1", 21, "the review-skip route a runner posts for a review it will not serve; the queue's review tasks and the review request's answer name the request's number, and the landing counts skips by it"),
-  declare("reviews.skip-as-runner.v1", 22, "a runner token posts review-skip for a review job it was offered, under the job's actor"),
-  declare("reviews.admission.v1", 25, "owner admission, withdrawal and listing of outside reviewers"),
-  // models: the pool
-  declare("models.note.v1", 18, "dated owner notes under a pool model"),
-  // projects: what a project requires of its tasks
-  declare("projects.require-criteria.v1", 19, "a project that requires criteria refuses a task filed or cleared without them"),
-  declare("projects.commit-identity.v1", 24, "project policy carries commitIdentity; init records commitName, commitEmail, agentEmails, privateEmails and publicMirrors"),
-  // runners: credentials
-  declare("runners.scoped-token.v1", 20, "runner-scoped API credentials and the revocable Git gateway"),
-  // areas: function areas and the board
-  declare("areas.manage.v1", 23, "the area routes (list, create, rename, remove) and a task's assignment to an area by new and edit --area"),
-  declare("areas.board.v1", 23, "the board snapshot, every task grouped by function area, which atelier board and the project page read"),
-]);
+// Add one declaration with the level the change raises ROUTE_LEVEL to
+// during migration, or level: undefined afterward. Keep names as literal
+// types so undeclared requirements also fail typechecking.
+// Level 6 guarantees both sides of integration: plans.integration.v1 for
+// integrators and plans.refresh.v1 for owners (32d5755 and 933d198).
+export const CAPABILITIES = buildCapabilities(CAPABILITY_DECLARATIONS);
 
 // Every published name, as a type: a command module's `capabilities` holds these.
 export type CapabilityName = (typeof CAPABILITIES)[number]["name"];
@@ -130,11 +100,14 @@ export const COMMAND_CAPABILITIES: Readonly<Record<string, readonly string[]>> =
 // after the command names a subcommand that declares some, that
 // subcommand's. `atelier models` lists the pool on any server; `atelier
 // models note` needs models.note.v1.
-export function requiredForCommand(command: string, word?: string): string[] {
+// new declares area support, but only requires it when --area is supplied.
+export function requiredForCommand(command: string, word?: string, flags: Readonly<Record<string, unknown>> = {}): string[] {
   const d = DECLARED[command];
   if (!d) return [];
   const sub = word !== undefined && Object.hasOwn(d.subcommands, word) ? d.subcommands[word] : [];
-  return [...new Set([...d.own, ...sub])];
+  return [...new Set([...d.own, ...sub])].filter((name) =>
+    command !== "new" || name !== "areas.manage.v1" || flags.area !== undefined,
+  );
 }
 
 // What each runner job needs. A job absent here runs without asking. Every
@@ -208,9 +181,10 @@ export function checkCapabilities(version: unknown, required: readonly string[])
 // workspace's HEAD holds main — its own merge or a rerun of one resolved
 // by hand — compares this file at the task's fork point, its head and
 // main's head, and raises the merged level to main's plus the task's own
-// raise (named declarations require manual mapping resolution), so each number keeps meaning one set of routes. Since t458 the
-// number gates nothing on its own: each raise declares the capability it
-// stands for in CAPABILITIES above, with the level it was raised to, and
+// raise for legacy files. With named declarations, landing instead refuses
+// automatic arithmetic until the builder resolves the legacy mappings.
+// The number still gates legacy clients: each raise declares the capability
+// it stands for in src/capability-declarations.ts with its guaranteed level;
 // test/capabilities.test.mjs fails a raise that declares none, or a
 // declaration with a level this number has not reached. 14: the
 // landing-workflow routes, behind atelier land --workflow (t280). 15: items
@@ -224,7 +198,7 @@ export function checkCapabilities(version: unknown, required: readonly string[])
 // (t406).
 // 19: a project that requires criteria refuses a task filed or cleared
 // without them, and init takes --require-criteria (t397).
-// Runner-scoped API credentials and revocable Git gateway (t444).
+// 20: runner-scoped API credentials and revocable Git gateway (t444).
 // 21: a runner reports a review it will not serve to review-skip, the
 // queue's review tasks and the review request's answer name the request's
 // number, and the landing counts skips by it (t353). 22: a runner token

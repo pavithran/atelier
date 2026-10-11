@@ -194,14 +194,14 @@ The steps in between:
    and `areas.board.v1`, 24 `projects.commit-identity.v1`, 25
    `reviews.admission.v1`) and nothing else; a capability added later has no
    level, so a legacy server is refused for it. While the migration lasts
-   the number still rises by one with each such change, but gates nothing
-   by itself: the change declares the capability it stands for with the
-   level it raised the number to, one `declare` line under the capability's
-   family in `src/route-level.ts`, apart from the `ROUTE_LEVEL` block, so a
-   raise on one side and a declaration on the other, or two declarations
-   under separated existing families, merge cleanly. Same-family additions
-   and two new families can conflict: retain both declarations and validate
-   their names and legacy levels. Landing refuses automatic numeric raises
+   the number still rises by one with each such change and gates legacy
+   clients: the change declares the capability it stands for with the
+   level it raised the number to, one declaration per line in
+   `src/capability-declarations.ts`. Its `merge=union` attribute in
+   `.gitattributes` retains independent additions, including two in the same
+   family or two new families. `buildCapabilities` refuses duplicate names
+   after merging; validate legacy levels as well. Landing refuses automatic
+   numeric raises
    when named declarations are present: move the task's new declaration
    levels above main's level along with ROUTE_LEVEL, keeping main's
    published mappings unchanged, then commit and rerun; `test/capabilities.test.mjs` fails a
