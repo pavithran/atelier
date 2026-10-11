@@ -1787,8 +1787,8 @@ export function ownerState(d: Detail, evidenceVisible: boolean, now = Date.now()
   const independentRejection = latest.find((r) => r.by !== owner && !r.approve);
   const independent: StateCell = { label: "Independent review", ...(
     overridden && !voided ? { text: `Overridden by you, ${when(overridden.at)}: not a review`, tone: "ask" as const }
-    : independentRejection ? { text: `Changes requested by ${independentRejection.by}`, tone: "bad" as const }
-    : gate.needsAssessor ? { text: "Required and not yet given; your approval does not count as it", tone: "ask" as const }
+    : independentRejection ? { text: `Rejected by ${independentRejection.by} at ${short(independentRejection.head)}`, tone: "bad" as const }
+    : gate.needsAssessor ? { text: decision.action === "review" ? "Required, not yet given" : "Required and not yet given; your approval does not count as it", tone: "ask" as const }
     : independentReview ? { text: `Approved by ${independentReview.by}`, tone: "go" as const }
     : !item.head ? { text: "No revision to review yet", tone: "" as const }
     : changed === null && live ? { text: "Pending: the changed paths are not yet observed", tone: "ask" as const }
@@ -1799,29 +1799,36 @@ export function ownerState(d: Detail, evidenceVisible: boolean, now = Date.now()
   const secretHeld = !!item.head && (item.secretScan === item.head || (item.secret ?? []).some((f) => f.head === item.head && !f.cleared));
   const blockers = gate.blockers.length;
   const acceptance: StateCell = { label: "Acceptance", ...(
-    item.state === "merged" ? { text: `Merged${item.acceptedHead ? ` at ${short(item.acceptedHead)}` : ""}`, tone: "go" as const }
+    item.state === "merged" ? { text: item.acceptedHead ? `Accepted at ${short(item.acceptedHead)}` : "Accepted", tone: "go" as const }
     : item.state === "abandoned" ? { text: "Closed without merging", tone: "" as const }
     : item.state === "accepted" ? { text: `Accepted at ${short(item.acceptedHead)}; not yet merged`, tone: "go" as const }
     : item.state === "integrated" ? { text: `Integrated into ${item.plan ?? "its plan"}${item.head ? ` at ${short(item.head)}` : ""}; lands with the plan`, tone: "go" as const }
     : item.state === "blocked" ? { text: "Not possible while the task is blocked", tone: "ask" as const }
     : live && item.head && !evidenceVisible ? { text: "Unavailable until the changes shown match the recorded revision", tone: "ask" as const }
     : item.state !== "submitted" ? { text: "Not submitted yet", tone: "" as const }
-    : gate.ready ? { text: "Ready to accept", tone: "go" as const }
+    : gate.ready ? { text: "Not yet recorded; nothing blocks it", tone: "go" as const }
     : { text: `Not ready: ${plural(blockers, "blocker")}`, tone: "bad" as const }) };
 
+  // The headline above states the state and its reason; this line gives only
+  // the move that follows, or who it waits on, never the state again (t498).
+  const sentBack = item.state === "submitted" && latest.some((r) => !r.approve);
+  const holder = item.owner ? `the task owner, ${item.owner}` : "the task owner";
+  const holderMid = item.owner ? `${holder},` : holder;
   const next: OwnerState["next"] =
-    item.state === "merged" ? { kind: "complete", text: "Complete: the revision is merged. Deploying is a separate action." }
-    : item.state === "abandoned" ? { kind: "complete", text: "Complete: the task was closed without merging." }
+    item.state === "merged" || item.state === "abandoned" ? { kind: "complete", text: "Nothing waits on you." }
     : item.state === "blocked" ? { kind: "next", text: "Unblock the task once what it waits on is settled." }
-    : item.state === "accepted" ? { kind: "next", text: "Run the merge command below in the registered checkout." }
-    : item.state === "integrated" ? { kind: "waiting", text: `Waiting for ${item.plan ?? "its plan"} to land: this part is submitted and integrated into the plan's branch, and is accepted and merged with the plan, not on its own.` }
+    : item.state === "accepted" ? { kind: "next", text: "Merging, with the command below." }
+    : item.state === "integrated" ? { kind: "waiting", text: `For ${item.plan ?? "its plan"} to land: this part is submitted and integrated into the plan's branch, and is accepted and merged with the plan, not on its own.` }
     : live && item.head && !evidenceVisible ? { kind: "next", text: "Reload this task; approval and acceptance wait until the changes shown match the recorded revision." }
-    : secretHeld ? { kind: item.secretScan === item.head ? "waiting" : "next", text: item.secretScan === item.head ? "Waiting for the secret scan of this revision to complete." : "Check the flagged line and clear the flag if it is not a secret." }
-    : decision.action === "accept" ? { kind: "next", text: "Accept the revision." }
-    : decision.action === "review" ? { kind: "waiting", text: `Waiting for an independent review: ask one with the landing command below.${gate.blockers.length === 1 && !d.policy.noOverride ? " If no reviewer qualifies, the override below is the way on." : ""}` }
+    : secretHeld ? { kind: item.secretScan === item.head ? "waiting" : "next", text: item.secretScan === item.head ? "For the secret scan of this revision to complete." : "Check the flagged line and clear the flag if it is not a secret." }
+    : decision.action === "accept" ? { kind: "next", text: "Accept revision, below; the merge command follows." }
     : item.state === "submitted" && mine && !mine.approve && !gate.needsAssessor && gate.blockers.length === 1 ? { kind: "next", text: "Approve the revision if your concern is met; otherwise wait for the task owner's next push." }
-    : item.state === "open" ? { kind: item.dispatch ? "waiting" : "next", text: item.dispatch ? "Waiting for a runner to claim the task." : "Send the task to an agent, or wait for one to claim it." }
-    : { kind: "waiting", text: `Waiting: ${decision.detail}` };
+    // A rejection at this revision blocks whatever review is asked next, so
+    // the way on is a new revision, not a landing (which asks for a review).
+    : sentBack ? { kind: "waiting", text: `For ${holderMid} to address the review and push a new revision; a landing then asks for a fresh review.` }
+    : decision.action === "review" ? { kind: "next", text: "Run the landing command below." }
+    : item.state === "open" ? { kind: item.dispatch ? "waiting" : "next", text: item.dispatch ? "For a runner to claim the task." : "Send the task to an agent, or wait for one to claim it." }
+    : { kind: "waiting", text: `For ${holder}.` };
 
   return { approval, independent, permission, acceptance, next };
 }
@@ -1830,8 +1837,15 @@ const NEXT_LABEL: Record<OwnerState["next"]["kind"], string> = { next: "Next", w
 
 function ownerStateBlock(s: OwnerState): string {
   const row = (c: StateCell) => `<div><dt>${e(c.label)}</dt><dd${c.tone ? ` class="${c.tone}"` : ""}>${e(c.text)}</dd></div>`;
+  // The owner's own approval, once recorded, is said here once, beside the
+  // actions below it, with its short head and zoned time (t457); Approve is
+  // then not offered again.
+  const mine = s.approval.review;
+  const approval = mine?.approve
+    ? `<div><dt>${e(s.approval.label)}</dt><dd class="go"><span class="approval-recorded" role="status"><strong>Approved by you</strong> at <code>${e(short(mine.head))}</code> · <time datetime="${e(mine.at)}">${e(stamp(mine.at))}</time></span></dd></div>`
+    : row(s.approval);
   return `<section class="owner-state" aria-label="Where this revision stands">
-  <dl>${[s.approval, s.independent, s.permission, s.acceptance].map(row).join("")}</dl>
+  <dl>${approval}${[s.independent, s.permission, s.acceptance].map(row).join("")}</dl>
   <p class="next-action"><strong>${NEXT_LABEL[s.next.kind]}:</strong> ${e(s.next.text)}</p>
 </section>`;
 }
@@ -1891,16 +1905,14 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   // the primary one. Where the owner's approval counts, on a revision a review
   // at this head sent back, it stays primary.
   // The owner's own approval at this head and criteria, once recorded, is
-  // said beside the actions, and Approve is not offered again while it
-  // approves (t457): a press that changed nothing on the page read as failed.
+  // said once, in the owner-state block just above the actions, and Approve
+  // is not offered again while it approves (t457): a press that changed
+  // nothing on the page read as failed.
   const state = ownerState(d, evidenceVisible);
   const mine = state.approval.review;
   const reload = href("p", p.name, item.id);
   const fail = (verb: FormError["verb"]) => formErrorText(d.formError, verb, reload);
   const described = (verb: FormError["verb"]) => d.formError?.verb === verb ? ` aria-describedby="error-${verb}"` : "";
-  const approved = mine?.approve
-    ? `<p class="approval-recorded" role="status"><strong>Approved by you</strong> at <code>${e(short(mine.head))}</code> · <time datetime="${e(mine.at)}">${e(stamp(mine.at))}</time>${gate.needsAssessor ? '<span class="meta"> · your own opinion, not the independent review</span>' : ""}</p>`
-    : "";
   const approve = evidenceVisible && live && item.head && reviewWanted && !mine?.approve
     ? `<form method="post" action="${action("approve")}">${revision}<button${gate.needsAssessor ? "" : ' class="primary"'}${described("approve")}>Approve revision</button>${fail("approve")}</form>`
     : "";
@@ -1956,7 +1968,7 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   // (it requests the review and waits for its verdict), or waiting for one.
   // The owner's Approve cannot satisfy the gate, so it is not that action,
   // and the override above stays the way on when no reviewer qualifies.
-  const askReview = decision.action === "review"
+  const askReview = decision.action === "review" && !latestReviews(d.reviews, bindingOf(item)).some((r) => !r.approve)
     ? `<div class="merge-command"><p>To move this task, ask a model of another family to review the revision. In the registered checkout, run:</p>
       <pre tabindex="0">${e(`atelier land ${item.id} --project ${shell(p.name)}`)}</pre>
       <p class="meta">The landing merges main into the workspace, runs the required checks, requests this review — from the model <code>--reviewer</code> names, or one of another family than every contributor — and waits for its verdict, then accepts and merges. Until then the task waits.</p></div>`
@@ -2049,7 +2061,7 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   ${presentation.unknowns.map(x => `<p class="meta">${e(x)}</p>`).join("")}
   ${evidenceNotice}
   ${ownerStateBlock(state)}
-  <div class="actions">${unplaced}${approved}${approve}${accept}${override}${reject}${dispatchBox}${blockBox}</div>
+  <div class="actions">${unplaced}${approve}${accept}${override}${reject}${dispatchBox}${blockBox}</div>
   ${secretBox}
   ${askReview}${merge}${reaccept}
   <p class="meta revision">${item.head ? `Revision <code>${short(item.head)}</code>` : "No revision pushed yet"}${item.owner ? ` · ${e(item.owner)}` : ""}</p>
