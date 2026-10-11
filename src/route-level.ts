@@ -214,4 +214,6 @@ export function checkCapabilities(version: unknown, required: readonly string[])
 
 // 26: review-renew and five-minute leases; release and verdicts name the
 // exact request generation, and expired requests are reoffered (t351).
-export const ROUTE_LEVEL = 26;
+// 27: durable owner-approved post-merge steps and recovery (t477,
+// land.post-merge.v1).
+export const ROUTE_LEVEL = 27;
