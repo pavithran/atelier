@@ -10,7 +10,7 @@ import {
   REVIEW_RENEW_MS, reviewLeaseExpired,
   reviewerAdmission, admissionActor, actorFamily, familyRefusal, modelKey, type ReviewerAdmission,
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
-  assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, RuleError, sameActor, validActor,
+  assertNotTerminal, assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, RuleError, sameActor, validActor,
   type OverrideConfirmation, type OwnerFactor,
   assertBlockable, assertNotBlocked, blockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
@@ -1433,6 +1433,7 @@ export class Ledger extends DurableObject<Env> {
   claim(id: string, actor: string, runner: { runner: string; kind: RunnerKind } | null = null, proved = false, runnerToken?: AgentToken): { item: Item; needsFork: boolean; generation: number; replaces: string | null } {
     const at = new Date().toISOString();
     const item = this.item(id);
+    assertNotTerminal(item);
     if (runnerToken) this.assertRunnerJob(runnerToken, id, actor, true);
     this.assertPlanClaim(item, actor);
     assertDispatchedClaim(item, actor, runner);
@@ -1475,7 +1476,11 @@ export class Ledger extends DurableObject<Env> {
     // The claim records the binding of the criteria the holder takes the
     // task under (src/criteria.ts), so the record shows what it was asked.
     this.log(id, actor, "item.claimed", { ...(runner ? { runner: runner.runner } : {}), criteria: criteriaOf(item) }, at, proved);
-    return { item: this.item(id), needsFork: !item.fork, ...this.reserve(id) };
+    const reserved = this.reserve(id);
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `claim-rollback:${id}`, JSON.stringify({
+      generation: reserved.generation, state: item.state, owner: item.owner, runner: item.runner ?? null,
+    }));
+    return { item: this.item(id), needsFork: !item.fork, ...reserved };
   }
 
   private reserve(id: string): { generation: number; replaces: string | null } {
@@ -1548,6 +1553,7 @@ export class Ledger extends DurableObject<Env> {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner dispatches", 403);
     const item = this.item(id);
     this.assertNotPlanned(item);
+    assertNotTerminal(item);
     const d = retainDispatch(item, input, this.items(), this.project().policy, this.owner);
     if (JSON.stringify(d) !== JSON.stringify(item.dispatch)) {
       const at = new Date().toISOString();
@@ -1572,6 +1578,7 @@ export class Ledger extends DurableObject<Env> {
   checkDispatch(id: string, actor: string, input?: Record<string, unknown>): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner dispatches", 403);
     const item = this.item(id);
+    assertNotTerminal(item);
     this.assertNotPlanned(item);
     if (item.state === "accepted") this.acceptedReworkAllowed(item, actor);
     if (!this.holds(item)) assertDispatchable(item);
@@ -1668,11 +1675,19 @@ export class Ledger extends DurableObject<Env> {
       .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at));
   }
 
-  // A failed fork must not leave an owner holding nothing.
-  unclaim(id: string, actor: string, reason: string, proved = false): void {
+  // Restore only the reservation that changed ownership. A late fork failure
+  // cannot undo closure, a handoff, or another claim (including the same actor).
+  unclaim(id: string, actor: string, reason: string, proved = false, generation?: number): void {
+    const item = this.item(id);
+    const row = this.sql.exec(`SELECT claim_gen FROM items WHERE id = ?`, id).one();
+    const saved = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `claim-rollback:${id}`).toArray()[0];
+    if (!saved || item.state !== "claimed" || item.owner !== actor) return;
+    const prior = JSON.parse(saved.value as string) as { generation: number; state: string; owner: string | null; runner: string | null };
+    if (row.claim_gen !== prior.generation || (generation !== undefined && generation !== prior.generation)) return;
     const at = new Date().toISOString();
     this.dropRunnerJobs(id);
-    this.update(id, { owner: null, state: "open" }, at);
+    this.update(id, { owner: prior.owner, state: prior.state, runner: prior.runner }, at);
+    this.sql.exec(`DELETE FROM meta WHERE key = ?`, `claim-rollback:${id}`);
     this.log(id, actor, "item.claim_failed", { reason }, at, proved);
   }
 
@@ -2674,7 +2689,6 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     this.update(id, { state: "merged", owner: null }, at);
     this.log(id, actor, "item.merged", { mergeCommit, head: item.acceptedHead, observedOnBaseline: observed }, at);
-    this.withdrawTierRequests(id, "the change was merged", at);
     // Main is at the merge now, so the record is made for the plans in
     // flight to compare at their next tick. A plan's own merge closes it
     // first, and nothing refreshes a closed plan, so it never takes its own
@@ -2704,7 +2718,6 @@ export class Ledger extends DurableObject<Env> {
     this.update(id, { state: "abandoned", owner: null, blocked: null }, at);
     this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing-workflow:${id}`);
     this.log(id, actor, "item.abandoned", { note, ...(deliveredBy ? { deliveredBy } : {}) }, at);
-    this.withdrawTierRequests(id, "the task was closed", at);
     this.afterPlanChange(id);
     return this.item(id);
   }
@@ -3884,7 +3897,7 @@ export class Ledger extends DurableObject<Env> {
     const ids = [...new Set(requests.map((r) => r.item as string))];
     const rows = this.sql.exec(`SELECT * FROM items WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(ids)).toArray();
     const items = new Map(this.withPushActors(rows).map((i) => [i.id, i]));
-    return requests.map((r) => {
+    return requests.filter((r) => !["merged", "abandoned"].includes(items.get(r.item as string)?.state ?? "")).map((r) => {
       const item = items.get(r.item as string);
       if (!item) throw new RuleError("no_item", `no item ${r.item as string}`, 404);
       return { ...item, head: r.head as string, request: r.id as number, dispatch: JSON.parse(r.dispatch as string) as Dispatch };
@@ -3988,6 +4001,7 @@ export class Ledger extends DurableObject<Env> {
   // (t197 waited with a review routed to a contributor). The tick rescues
   // the plan, never the claim, so the refusal is thrown as it was.
   async claimReview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved = false): Promise<ReviewClaim> {
+    assertNotTerminal(this.item(itemId));
     try {
       return await this.bindReview(itemId, actor, runner, proved);
     } catch (err) {
@@ -4921,6 +4935,22 @@ export class Ledger extends DurableObject<Env> {
   // log alike, so an item's updatedAt and the event that changed it never
   // differ, and a reader comparing the two sees one moment.
   private update(id: string, fields: Record<string, string | null>, at: string): void {
+    if (fields.state === "merged" || fields.state === "abandoned") {
+      this.ctx.storage.transactionSync(() => {
+        const state = fields.state!;
+        // The inner update has no state field, avoiding recursive closure.
+        const rest: Record<string, string | null> = { ...fields, dispatch: null };
+        delete rest.state;
+        this.update(id, rest, at);
+        this.sql.exec(`UPDATE items SET state = ? WHERE id = ?`, state, id);
+        for (const r of this.sql.exec(`SELECT id, head, dispatch, tier FROM review_requests WHERE item = ? AND state IN ('open', 'claimed') ORDER BY id`, id).toArray()) {
+          const d = JSON.parse(r.dispatch as string) as Dispatch;
+          this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
+          this.log(id, ORCHESTRATOR, "review.withdrawn", { head: r.head, reviewer: d.agent && d.model ? `${d.agent}/${d.model}` : null, reason: `the task was ${state}`, ...(r.tier ? { tier: true } : {}) }, at);
+        }
+      });
+      return;
+    }
     // A change of owner always ends the previous holder's runner, and moves
     // the claim generation on, so no claim the previous holder had in flight
     // can record its token afterwards.
