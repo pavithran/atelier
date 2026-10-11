@@ -313,11 +313,11 @@ not assemble it by hand.
 **Deploy when the CLI needs it.** On a machine where the CLI runs from the
 project's own checkout, a merge that adds a route the CLI calls, or changes
 the meaning of a route the CLI already calls, breaks every check until the
-server has the new behaviour too. Each such merge raises `ROUTE_LEVEL`
-(`src/route-level.ts`) by one, and `atelier land` and the home runner refuse
-before they start while the server's route level (`GET /api/version`) is
-older than the CLI's, naming both levels and saying to deploy. Deploy after
-such merges, before landing the next task or starting a runner.
+server has the new behaviour too. Such a merge declares a named capability
+(below), and `atelier land`, every command that needs it and the home runner
+refuse before they start while the server (`GET /api/version`) lacks it,
+naming the missing capability and saying to deploy. Deploy after such
+merges, before landing the next task or starting a runner.
 
 Since t458 they check named capabilities instead: each command declares what
 it needs in its module (`capabilities` in `src/usage/commands/NAME.ts`, or
@@ -331,11 +331,10 @@ that adds API behaviour a command relies on declares a new capability on a
 line of its own under its family in `src/route-level.ts` and names it in
 that command's module, or in the job's row; a command that names one the
 file does not declare fails to load, naming the module. An incompatible
-change takes a new name (`…v2`). Keep raising `ROUTE_LEVEL` for now, as
-the migration in [Landing](landing.md) says, since servers that predate
-capabilities are read through it, and give the new declaration the level
-the raise reaches: the number gates nothing on its own, and
-`test/capabilities.test.mjs` fails a raise that declares no capability.
+change takes a new name (`…v2`). Do not raise `ROUTE_LEVEL`: it is frozen
+(t522) and published only for clients and servers that predate
+capabilities, as [Landing](landing.md) says; a new declaration has no
+level, and `test/capabilities.test.mjs` pins the frozen number.
 
 **Keep the machine's load down.** Checks run the whole suite. A dozen agents
 and checks at once pushed the load average past 100 and made timing tests
@@ -492,7 +491,7 @@ zero means they all finished, any other status holds the queue.
 | `tN landed through the landing Workflow` | Merged on main | "After each merge" |
 | `paused at its conflict stage` | Main has moved and the merge conflicts | "Conflicts" |
 | `… rejected tN at SHA: …` | The reviewer asked for changes | "Judging a review" |
-| `… route level N, this CLI route level N+1` | A merge raised `ROUTE_LEVEL` and the server is older | Deploy, then queue the task again |
+| `… lacks capabilities …` | A merge declared a capability the server does not publish yet | Deploy, then queue the task again |
 | `the landing lease was not tN's within 3 hours` | The landing reattached to an old Workflow run that had been waiting for the lease and has now timed out (t430) | Queue the task again: the next landing starts a fresh run |
 | `FAIL … npm test @ SHA` | The checks failed in a clean clone at the merged head, or ran out of time (`check exceeded its time limit` in the landing's output) | If it timed out, the machine was too loaded: lower the load, or raise `ATELIER_CHECK_TIMEOUT` for the landing, and queue it again. Otherwise run the suite in the task's workspace, keeping the whole output, to name the failing test; then send it back or fix it |
 
@@ -592,16 +591,16 @@ that verification after deployment; a local pass cannot stand in for it.
    flaky test to file, one that repeats is a break on main to send back to
    the task that caused it.
 3. Deploy once the suite passes (the owner's decision d6: landed changes are
-   deployed after main's full suite passes, not only when `ROUTE_LEVEL`
-   rises):
+   deployed after main's full suite passes, not only when a capability is
+   added):
 
    ```sh
-   git diff $PREVIOUS HEAD -- src/route-level.ts
+   git diff $PREVIOUS HEAD -- src/capability-declarations.ts
    npm run deploy
    ```
 
-   The diff shows whether `ROUTE_LEVEL` rose; if it did, queue again every
-   landing refused on route level once the deploy is done. `npm run deploy`
+   The diff shows whether a capability was declared; if one was, queue
+   again every landing refused for lacking it once the deploy is done. `npm run deploy`
    does not run tests, which is why step 2 comes first. If it fails, report
    the error and queue no landing that needs the new route.
 4. Publish main to the public mirror once it is checked (t433 makes this a

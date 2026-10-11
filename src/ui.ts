@@ -147,11 +147,11 @@ export function page(title: string, body: string, active = "Decisions", ownerNam
 
 // The shell of the pages anyone can read: no rail, and no link into a signed-in
 // page. `main` is the inner HTML of <main>; `css` is appended after the site's.
-export function publicPage(o: { title: string; description: string; brand: string; nav: [label: string, url: string][]; mainClass: string; main: string; css?: string }): string {
+export function publicPage(o: { title: string; description: string; brand: string; nav: [label: string, url: string][]; mainClass: string; main: string; css?: string; head?: string }): string {
   const nav = o.nav.map(([label, url]) => `<a href="${url}">${e(label)}</a>`).join("");
   return `<!doctype html><html lang="en" data-theme="night"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark light">
+<meta name="color-scheme" content="dark light">${o.head ?? ""}
 <meta name="description" content="${e(o.description)}">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="${FONTS}">
@@ -293,6 +293,26 @@ export function renderLogin(error?: string, showcase = false, backdrop?: { stori
     <button class="primary">Sign in</button>
   </form>
   <p class="meta">${showcase ? 'Not the owner? <a href="/">See the public showcase</a>, or read ' : "Read "}<a href="/how">how Atelier works</a>.</p>
+</section>`,
+  });
+}
+
+// Behind Cloudflare Access (t534), a request that arrived from another site
+// — the hop back from Access's own sign-in among them — starts no session and
+// carries no SameSite=Strict cookie, so it is answered with this page, which
+// sends the browser on to the same address at once. That second request is
+// the page's own, same-origin, and the Worker starts the session there.
+export function renderSignInContinue(path: string): string {
+  return publicPage({
+    title: "Signing in · Atelier",
+    description: "Signing in to Atelier through Cloudflare Access.",
+    brand: "/",
+    nav: [["How it works", "/how"]],
+    mainClass: "login-page",
+    head: `\n<meta http-equiv="refresh" content="0;url=${e(path)}">`,
+    main: `<section class="login">
+  <h1>Signing you in</h1>
+  <p class="lead">Cloudflare Access has signed you in. <a href="${e(path)}">Continue</a> if this page stays.</p>
 </section>`,
   });
 }
