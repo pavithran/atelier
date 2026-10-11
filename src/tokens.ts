@@ -135,6 +135,14 @@ export function runnerDenied(token: AgentToken): RuleError {
 // `public` call needs no token at all. `integrator: true` marks a runner
 // call the integrate and refresh jobs make too, under the integrator's
 // token. `jobs` says which jobs make the call.
+//
+// A `preflight` call is made by every atelier command the runner spawns,
+// before the command's handler runs: the capability check (t458,
+// requireCapabilities in cli/atelier.mjs) reads the server's version through
+// serverVersion, which builds its URL from this declaration. It is public,
+// so it carries no token and names no command;
+// test/runner-routes-helpers.test.mjs fails a fetch in serverVersion that
+// does not go to a declared preflight call.
 export type CallCredential = "runner" | "agent" | "public";
 export type RunnerJob = "build" | "plan" | "review" | "integrate" | "refresh";
 export interface RunnerCall {
@@ -147,7 +155,7 @@ export interface RunnerCall {
   // The body fields a POST may carry; "document" when the body is a whole
   // plan document rather than fields; [] for no body, as every GET.
   body: readonly string[] | "document";
-  via: "runner" | "cli";
+  via: "runner" | "cli" | "preflight";
   // The atelier command that makes a `cli` call.
   command?: string;
   jobs: readonly RunnerJob[];
@@ -161,6 +169,8 @@ const INTEGRATE: readonly RunnerJob[] = ["integrate", "refresh"];
 export const RUNNER_CALLS: readonly RunnerCall[] = [
   // The runner's own calls, before and between jobs.
   { name: "version", method: "GET", path: "/version", credential: "public", body: [], via: "runner", jobs: [] },
+  // The capability check every spawned command makes first (t458).
+  { name: "capabilities", method: "GET", path: "/version", credential: "public", body: [], via: "preflight", jobs: ["build", "plan", "review", "integrate", "refresh"], integrator: true },
   { name: "config", method: "GET", path: "/config", credential: "runner", body: [], via: "runner", jobs: [] },
   { name: "queue", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents"], via: "runner", jobs: [] },
   { name: "runs", method: "POST", path: "/runs", credential: "runner", body: ["actor", "role", "outcome", "project", "item", "detail"], via: "runner", jobs: ["build", "plan", "review"] },
