@@ -7,7 +7,7 @@ import { changedPaths, itemDiff, landingOf, measureWorkspace, mergedDiff, render
 import { scanCommit } from "./secret-scan.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
-import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
+import { assertNameFree, assertProjectRemovable, LANDING_DETAIL_MAX, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
 import { accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
@@ -16,15 +16,16 @@ import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, 
 import { briefFor, cleanSummary } from "./brief.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
-import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
+import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderStudio, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
-import { cleanEntry, cleanNote, cleanStatus, type ModelEntry } from "./models/pool";
+import { cleanEntry, cleanNote, cleanStatus, POOL_FAMILIES, type ModelEntry, type PoolFamily } from "./models/pool";
 import { suggestionRecords } from "./models/suggestion-records.ts";
 import { suggestBuilder } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { buildPrecision, precisionWindow } from "./models/precision.ts";
+import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, registeredActing } from "./models/judgement.ts";
 import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
@@ -32,7 +33,9 @@ import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderB
 import { addTally, buildStory, emptyTally, VENDOR_NAMES, type Story } from "./graph";
 import { buildPulse } from "./pulse";
 import { projectKind } from "./kind";
-import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
+import { assign, parseRunner, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
+import { attentionFor } from "./attention.ts";
+import { readStanding, type StandingSource } from "./standing-read.ts";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
 import { readGatewayFigures, type GatewayView } from "./usage/gateway.ts";
@@ -51,6 +54,7 @@ import { LANDING_CHECKS_MODES, type LandingChecksMode } from "./landing-workflow
 import { ENDED, LANDING_CREATE_RECONCILE_MS, replacementFor, terminateConfirmed, type Replacement } from "./landing/replace.ts";
 import { replacementInstanceId } from "./landing/lease-wait.ts";
 import { renderHow } from "./how.ts";
+import { triageSettingRefusal } from "./review/triage.ts";
 
 const WRITE_TTL = 8 * 3600;
 const READ_TTL = 3600;
@@ -63,7 +67,9 @@ const READ_TTL = 3600;
 // The override forms need the first and, as the owner's confirmation (t371),
 // the second or the confirmation secret (ownerFactorIn): a session alone is
 // not that confirmation, since without Access the owner token buys one.
-type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null; waitUntil?: (p: Promise<unknown>) => void; signedIn?: boolean; access?: boolean };
+// `acting` is the harness/model an owner-token request names as acting for
+// the owner (X-Atelier-Acting, src/models/judgement.ts), or null.
+type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null; acting?: string | null; waitUntil?: (p: Promise<unknown>) => void; signedIn?: boolean; access?: boolean };
 
 // ── auth ───────────────────────────────────────────────────────────────────
 // The owner bearer token may declare any actor for orchestration. Agent tokens
@@ -290,20 +296,22 @@ const TASK_EVENTS = 300;
 // Where a project stands, from its Ledger: the page and the JSON route share it.
 // Each section reads its own source: items for holders and merges, and the
 // events of the tasks it names, never a window over the whole project's record.
+// What cannot be read is labelled, not fatal (readStanding).
 async function standingOf(env: Env, key: string): Promise<Standing> {
-  const L = ledger(env, key);
-  const now = new Date();
-  const [project, items, inbox] = await Promise.all([L.project(), L.items(), L.inbox(now.toISOString())]);
-  const taskEvents = new Map<string, LedgerEvent[]>();
-  await Promise.all(standingTasks(items).map(async (id) => {
-    try { taskEvents.set(id, (await L.events(id, TASK_EVENTS)) as unknown as LedgerEvent[]); } catch { /* reported as not read */ }
-  }));
-  const ids = [...new Set(inbox.filter((x) => x.kind !== "failing").map((x) => x.itemId))].slice(0, STANDING_BRIEFS);
-  const details = new Map<string, Detail>();
-  await Promise.all(ids.map(async (id) => {
-    try { details.set(id, (await L.detail(id)) as unknown as Detail); } catch { /* the line keeps the inbox's own reason */ }
-  }));
-  return { ...buildStanding(project, items, taskEvents, TASK_EVENTS, inbox, details, now), session: (await L.sessions(1))[0] };
+  const [offers, pool] = await Promise.all([offersOf(env), poolOf(env)]);
+  return readStanding(ledger(env, key) as unknown as StandingSource, offers, pool, TASK_EVENTS, new Date());
+}
+
+// The runner offers as the index recorded them, or null when they could not
+// be read, which the waiting lists say rather than read as no runner.
+async function offersOf(env: Env): Promise<SeenOffer[] | null> {
+  try { return await index(env).runnerOffers(); } catch { return null; }
+}
+// The model pool, which tells whether a protected change has a qualifying
+// reviewer or waits on the owner's override, or null when it could not be
+// read, which leaves that unknown and says so rather than counting none.
+async function poolOf(env: Env): Promise<ModelEntry[] | null> {
+  try { return await index(env).models(); } catch { return null; }
 }
 // Waiting decisions drawn as cards; the rest of the list stays as plain rows.
 const CARD_LIMIT = 12;
@@ -626,6 +634,16 @@ function reviewBarArg(value: unknown): string | null {
   return text || null;
 }
 
+// The project's triage model (src/review/triage.ts) as init sends it:
+// harness/model under a harness Atelier ships an adapter for; null or ""
+// clears it, and a landing then triages only when it names a model.
+function triageArg(value: unknown): string | null {
+  if (value === null || value === "") return null;
+  const refusal = triageSettingRefusal(value);
+  if (refusal) throw new RuleError("bad_triage", refusal, 400);
+  return value as string;
+}
+
 // The project's review tier (src/review/tier.ts) as init sends it: a list
 // of harness/model actors, or one string of them separated by commas. Blank
 // entries are dropped and repeats kept once, in the owner's order; an empty
@@ -642,6 +660,18 @@ function parseReviewTier(value: unknown): string[] {
   }
   if (out.length > REVIEW_TIER_MAX) throw new RuleError("too_long", `the review tier lists at most ${REVIEW_TIER_MAX} models`, 400);
   return out;
+}
+
+// The company a project runs on alone (`atelier init --single-family`,
+// ProjectPolicy.familyMode): one of the families a model's name is
+// recognised as, in any letter case. Null or "" returns the project to
+// cross-family review (`--cross-family`).
+function singleFamilyArg(value: unknown): PoolFamily | null {
+  if (value === null || value === "") return null;
+  if (typeof value !== "string") throw new RuleError("bad_single_family", `single-family mode names one company, one of ${POOL_FAMILIES.join(", ")}, or "" to return to cross-family review`, 400);
+  const family = value.trim().toLowerCase() as PoolFamily;
+  if (!POOL_FAMILIES.includes(family)) throw new RuleError("bad_single_family", `"${value}" is not a company Atelier recognises models by; single-family mode takes one of ${POOL_FAMILIES.join(", ")}`, 400);
+  return family;
 }
 
 // A token for one repository. `branch` is the project's branch, from
@@ -901,7 +931,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     throw new RuleError("not_found", "no such route", 404);
   }
-  if (parts[0] === "inbox" && m === "GET") return json(await inbox(env, c.token));
+  if (parts[0] === "inbox" && m === "GET") {
+    const read = await inbox(env, c.token);
+    const res = json(c.url.searchParams.get("unread") === "1" ? read : read.entries);
+    // Older clients keep the list shape, but a failed read is still labelled.
+    if (read.unread.length) res.headers.set("x-atelier-incomplete", read.unread.slice().sort().join(","));
+    return res;
+  }
   // The model pool requires the owner token. Owner tools may read it and
   // report runner status; changes also require the owner actor.
   if (parts[0] === "models") {
@@ -962,8 +998,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[0] === "reliability" && parts.length === 1 && m === "GET") {
     // `speed` is each model's pace over the window; `atelier runner --usage`
     // prints it, and says so when an older server sends none.
-    const { reliability, speed, events, unread } = await trackRecords(env);
-    const res = json({ events, models: reliabilityJson(reliability), speed });
+    // `judgement` is each acting model's verdicts on findings, decisions and
+    // overrides over its window, with the window's totals.
+    const { sources, reliability, speed, events, unread } = await trackRecords(env);
+    const judgement = buildJudgement(sources, judgementWindow(new Date()), ownerActor(env), await index(env).models());
+    const res = json({ events, models: reliabilityJson(reliability), speed, judgement: { ...judgement, totals: judgementTotals(judgement) } });
     if (unread.length) res.headers.set("x-atelier-incomplete", unread.map((p) => p.name).sort().join(","));
     return res;
   }
@@ -1129,6 +1168,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // What may block a review, stated in every review brief: text, or
       // null or "" to clear it and state the default bar.
       ...(has("reviewBar") ? { reviewBar: reviewBarArg(body.reviewBar) } : {}),
+      // The model that triages a landing before its review (t475):
+      // harness/model, or null or "" to clear it.
+      ...(has("triage") ? { triage: triageArg(body.triage) } : {}),
       // The top review tier: harness/model actors, or [] or "" to clear it.
       ...(has("reviewTier") ? { reviewTier: body.reviewTier === null ? [] : parseReviewTier(body.reviewTier) } : {}),
       ...(has("protected") ? { protected: asStrings(body.protected, "protected") } : {}),
@@ -1143,6 +1185,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // Overrides of the independent review refused in this project (t371).
       ...(has("noOverride") ? { noOverride: Boolean(body.noOverride) } : {}),
       ...(has("approval") ? { approval: approvalArg(body.approval) } : {}),
+      // The model policy (t394): a company to run on alone, or null or ""
+      // to return to cross-family review; the switch records who made it.
+      ...(has("singleFamily") ? { familyMode: { single: singleFamilyArg(body.singleFamily), by: actor } } : {}),
       // The project's commit identity (t451): each field given replaces the
       // recorded one, and the whole is checked as the policy is merged
       // (settleCommitIdentity), so an invalid one is refused before anything is made.
@@ -1304,8 +1349,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "decisions") {
     if (parts.length === 3 && m === "GET") return json({ decisions: await L.decisions() });
     requireOwner(env, actor);
-    if (parts.length === 3 && m === "POST") return json(await L.recordDecision(body, actor), 201);
-    if (parts.length === 5 && parts[4] === "withdraw" && m === "POST") return json(await L.withdrawDecision(parts[3], actor, body.note));
+    if (parts.length === 3 && m === "POST") return json(await L.recordDecision(body, actor, c.acting ?? null), 201);
+    if (parts.length === 5 && parts[4] === "withdraw" && m === "POST") return json(await L.withdrawDecision(parts[3], actor, body.note, c.acting ?? null));
     throw new RuleError("not_found", "no such route", 404);
   }
   // Protected actions: the owner's approvals and the steps a ship ran (src/actions-api.ts).
@@ -1411,7 +1456,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       readError = String((error as Error)?.message ?? error);
     }
     const queued = (await L.readLandingQueue()).some((row) => row.item === id);
-    return json({ ...remembered, status, lastStatus: status && status.status !== "unknown" ? { status: status.status, ...(status.error ? { error: { name: status.error.name.slice(0, 200), message: status.error.message.slice(0, 2000) } } : {}) } : remembered.lastStatus ?? null, ...(readError ? { readError } : {}), queued });
+    return json({ ...remembered, status, lastStatus: status && status.status !== "unknown" ? { status: status.status, ...(status.error ? { error: { name: status.error.name.slice(0, 200), message: status.error.message.slice(0, LANDING_DETAIL_MAX) } } : {}) } : remembered.lastStatus ?? null, ...(readError ? { readError } : {}), queued });
   }
   if (m !== "POST") throw new RuleError("not_found", "no such route", 404);
 
@@ -1675,7 +1720,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       let suggestion;
       // atelier dispatch with no --agent asks for the suggestion; a dispatch
       // that names no agent without asking stays open to any runner's agent.
-      if (body.suggest === true && !body.agent && body.job !== "merge-main") {
+      // An overlap override of an existing dispatch keeps its builder
+      // restrictions unless named, so it asks for no suggestion.
+      if (body.suggest === true && !body.agent && body.job !== "merge-main" && !(body.overlapOk === true && (await L.item(id)).dispatch)) {
         requireOwner(env, actor);
         const [pool, track, item, p] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project()]);
         suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env) }, body);
@@ -1897,6 +1944,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
                     checks: remembered.checks ?? "container",
                     ...(remembered.reviewer ? { reviewer: remembered.reviewer } : {}),
                     ...(remembered.noReview ? { noReview: true } : {}),
+                    ...(remembered.triage ? { triage: true } : {}),
                   },
                 });
               } catch {
@@ -1951,7 +1999,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // that names none, the ones the replaced instance was started with.
       const reviewer = named ?? (remembered && body.noReview !== true ? remembered?.reviewer ?? null : null);
       const noReview = body.noReview === true || (!!remembered && named === null && remembered?.noReview === true);
-      const options = { checks, ...(reviewer ? { reviewer } : {}), ...(noReview ? { noReview: true } : {}) };
+      // A landing that triages (t475): the Workflow submits and asks for
+      // the review only while a triage recorded at the reported head,
+      // merge base and criteria lets it go on. The record keeps it, so an
+      // instance reconciled from its claim triages too.
+      const options = { checks, ...(reviewer ? { reviewer } : {}), ...(noReview ? { noReview: true } : {}), ...(body.triage === true ? { triage: true } : {}) };
       // Who starts the next instance is decided in the Ledger before anything
       // is created (t430). The instance that follows a remembered one has an
       // id derived from it, so every request that follows it (two replacing
@@ -2120,7 +2172,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const overrideReview = body.overrideReview === undefined ? undefined : typeof body.overrideReview === "string" ? body.overrideReview : "";
       let item: Item;
       try {
-        item = await L.accept(id, actor, String(body.head ?? ""), overrideReview, typeof body.note === "string" ? body.note : undefined);
+        item = await L.accept(id, actor, String(body.head ?? ""), overrideReview, typeof body.note === "string" ? body.note : undefined, undefined, c.acting ?? null);
       } catch (err) {
         const rule = parseRuleError(err);
         if (rule?.code === "override_unconfirmed") {
@@ -2192,13 +2244,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "defect": {
       requireOwner(env, actor);
       const { note, foundIn } = cleanDefect(body);
-      return json(await L.traceDefect(id, actor, note, foundIn), 201);
+      const contradicts = cleanContradicts(body.contradicts, [ref.name, ...ref.names.filter((n) => n !== ref.name)], id);
+      return json(await L.traceDefect(id, actor, note, foundIn, contradicts), 201);
     }
     case "finding": {
       requireOwner(env, actor);
       const { head, index, verdict, note } = cleanFinding(body);
-      const { review, by } = await L.addFinding(id, actor, head, index, verdict, note, { reviewSeq: body.reviewSeq, reviewer: body.reviewer });
-      return json({ id, head, index, verdict, review, by }, 201);
+      const { review, by, event } = await L.addFinding(id, actor, head, index, verdict, note, { reviewSeq: body.reviewSeq, reviewer: body.reviewer }, c.acting ?? null);
+      return json({ id, head, index, verdict, review, by, event, ...(c.acting ? { acting: c.acting } : {}) }, 201);
     }
   }
   throw new RuleError("not_found", "no such route", 404);
@@ -2323,7 +2376,10 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
   // Review precision over the last PRECISION_WINDOW_DAYS, from the same events;
   // each model's speed comes with the track record (trackRecords).
   const precision = buildPrecision(track.sources, precisionWindow(new Date()), ownerActor(env));
-  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway, precision, track.speed), error ? 400 : 200);
+  // The orchestrator's judgements over the last JUDGEMENT_WINDOW_DAYS, by the
+  // harness/model that acted for the owner (src/models/judgement.ts).
+  const judgement = buildJudgement(track.sources, judgementWindow(new Date()), ownerActor(env), entries as unknown as ModelEntry[]);
+  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway, precision, track.speed, judgement), error ? 400 : 200);
 }
 
 // ── AI Gateway ───────────────────────────────────────────────────────────────
@@ -2494,12 +2550,26 @@ function isHeld(item: Item): boolean {
   return item.state === "claimed" && !!item.owner;
 }
 
+// The portfolio's notices, each project's read on its own: a project whose
+// Ledger cannot be read drops out of the list instead of failing it, so the
+// healthy projects' notices still reach the owner. With GET
+// /inbox?unread=1 the answer names those projects, `{ entries, unread }`, so
+// a reader passes them to attentionFor as not read (null notices) rather than
+// as nothing waiting; the bare list stays for older clients, with unread
+// projects named in the x-atelier-incomplete response header.
 async function inbox(env: Env, token?: AgentToken) {
   const projects = (await index(env).projects()).filter((p) => inScope(token, namesOf(p)));
   const now = new Date().toISOString();
-  const pool = await index(env).models();
-  const lists = await Promise.all(projects.map((p) => ledgerOf(env, p).inbox(now, pool)));
-  return lists.flat().sort((a, b) => b.weight - a.weight);
+  const pool = await poolOf(env);
+  const lists = await Promise.allSettled(projects.map((p) => ledgerOf(env, p).inbox(now, pool)));
+  const unread: string[] = [];
+  const entries = lists.flatMap((r, i) => {
+    if (r.status === "fulfilled") return r.value;
+    console.error("project inbox unavailable", projects[i].name, codeOf(r.reason).trim());
+    unread.push(projects[i].name);
+    return [];
+  }).sort((a, b) => b.weight - a.weight);
+  return { entries, unread };
 }
 
 // Whether a revision is on a project's main line as Atelier holds it: the
@@ -2594,7 +2664,10 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const ref = await resolveProject(env, named ?? "");
     const project = ref.name;
     const L = ledger(env, ref.key);
-    const note = String(form.get("note") ?? "");
+    // A browser posts each line break of a textarea as CRLF, which the page
+    // counts as one character; the dispatch form folds them to LF here, so
+    // the limit the page showed holds. The API and CLI text is never changed.
+    const note = verb === "dispatch" ? String(form.get("note") ?? "").replace(/\r\n?/g, "\n") : String(form.get("note") ?? "");
     const owner = ownerActor(env);
     if (id === "new" && !verb) {
       // A long title with no brief becomes the brief, with a short title derived from it (itemText).
@@ -2698,13 +2771,18 @@ async function homePage(c: Ctx): Promise<Response> {
   const { env } = c;
   const { projects, views } = await projectViews(env);
   const now = new Date();
+  const [offers, pool] = await Promise.all([offersOf(env), poolOf(env)]);
   const home: HomeView[] = await Promise.all(views.map(async (v) => {
     if (v.unavailable) return v;
-    try {
-      const L = ledgerOf(env, v.project);
-      const events = (await L.events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
-      return { ...v, events, cut: events.length >= STORY_EVENTS, waiting: await L.inbox(now.toISOString()) };
-    } catch { return { ...v, unavailable: true }; }
+    // Each read on its own: the moves or the notices not read are said on
+    // the card, and what waits on the owner from the tasks read still shows.
+    const L = ledgerOf(env, v.project);
+    const [events, inbox] = await Promise.all([
+      (L.events(undefined, STORY_EVENTS) as Promise<unknown>).catch(() => null) as Promise<LedgerEvent[] | null>,
+      L.inbox(now.toISOString(), pool).catch(() => null),
+    ]);
+    const waiting = attentionFor(v.project.name, v.items, inbox, offers, now);
+    return events ? { ...v, events, cut: events.length >= STORY_EVENTS, waiting } : { ...v, eventsUnread: true, waiting };
   }));
   // The showcase setting as the cards read it: a mode per project, under
   // whichever of its names the setting's row holds.
@@ -2802,15 +2880,16 @@ async function decisionsPage(c: Ctx, live: { nonce: string; refresh: number }): 
       return buildStory(v.project.name, v.items, events, owner, events.length >= STORY_EVENTS, titleOf(v.project));
     } catch { return null; }
   };
-  const lists = await Promise.all(views.map(async v => {
-    if (v.unavailable) return [];
-    try { return await ledgerOf(env, v.project).inbox(new Date().toISOString()); }
-    catch { v.unavailable = true; return []; }
+  const [offers, pool] = await Promise.all([offersOf(env), poolOf(env)]);
+  const attention = await Promise.all(views.map(async (v) => {
+    if (v.unavailable) return attentionFor(v.project.name, null, null, offers, now);
+    const inbox = await ledgerOf(env, v.project).inbox(now.toISOString(), pool).catch(() => null);
+    return attentionFor(v.project.name, v.items, inbox, offers, now);
   }));
-  const entries = lists.flat().sort((a,b)=>b.weight-a.weight);
+  const first = attention.flatMap((a) => a.owner.map((t) => ({ project: a.project, itemId: t.id })));
   const queued = views.flatMap((v) => v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch).map((item) => ({ project: v.project, item })));
-  const projectName = c.url.searchParams.get("project") ?? entries[0]?.project;
-  const task = c.url.searchParams.get("task") ?? entries[0]?.itemId;
+  const projectName = c.url.searchParams.get("project") ?? first[0]?.project;
+  const task = c.url.searchParams.get("task") ?? first[0]?.itemId;
   const project = projectName === undefined ? undefined : projectNamed(projects, projectName);
   let selected: ReviewContext | undefined;
   if (project && task) {
@@ -2823,7 +2902,7 @@ async function decisionsPage(c: Ctx, live: { nonce: string; refresh: number }): 
   // need the task's own record; a dozen cards is enough for one screen of work.
   const details = new Map<string, Detail>();
   const seen = new Set<string>();
-  await Promise.all(entries.filter((x) => !seen.has(`${x.project}/${x.itemId}`) && seen.add(`${x.project}/${x.itemId}`)).slice(0, CARD_LIMIT).map(async (x) => {
+  await Promise.all(first.filter((x) => !seen.has(`${x.project}/${x.itemId}`) && seen.add(`${x.project}/${x.itemId}`)).slice(0, CARD_LIMIT).map(async (x) => {
     // An entry names its project as the Ledger's record does; the listed record says where that Ledger is.
     const p = projectNamed(projects, x.project);
     if (!p) return;
@@ -2832,7 +2911,7 @@ async function decisionsPage(c: Ctx, live: { nonce: string; refresh: number }): 
   const recent = (v: FloorView) => v.events[0]?.at ?? "";
   const busiest = [...floorViews].sort((a, b) => recent(b).localeCompare(recent(a)))[0];
   const latest = busiest && !selected ? await story(busiest) : null;
-  return html(renderInbox(entries, projects, ownerName(env), selected, views, floor, now, queued, latest ? { story: latest, owner } : undefined, details, live), 200, live.nonce);
+  return html(renderInbox(attention, projects, ownerName(env), selected, views, floor, now, queued, latest ? { story: latest, owner } : undefined, details, live), 200, live.nonce);
 }
 
 // ── a project's area ───────────────────────────────────────────────────────
@@ -2851,9 +2930,13 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
     const p = await L.project();
     switch (parts.length === 2 ? "overview" : parts[2]) {
       case "overview": {
+        // What the Overview cannot read is said on it, not fatal to it: the
+        // standing labels its own gaps, and the board and the events table say
+        // they were not read.
         const standing = await standingOf(env, ref.key);
-        const board = await L.board();
-        return html(renderProject(p, board.items, await L.events(undefined, 40) as unknown as LedgerEvent[], ownerName(env), standing, board));
+        const board = await L.board().catch(() => null);
+        const events = await (L.events(undefined, 40) as Promise<unknown>).catch(() => null) as LedgerEvent[] | null;
+        return html(renderProject(p, board?.items ?? [], events, ownerName(env), standing, board));
       }
       case "tasks": {
         const board = await L.board();
@@ -2947,7 +3030,7 @@ export default {
     // Pages show times in the owner's zone (src/time.ts).
     setTimeZone((env as unknown as Settings).TIMEZONE);
     try {
-      if (pathname.startsWith("/git/runner/")) return await runnerGitRequest(req, url, { ledger: (key) => ledger(env, key), token: (hash) => index(env).agentToken(hash), artifacts: env.ARTIFACTS });
+      if (pathname.startsWith("/git/runner/")) return await runnerGitRequest(req, url, { ledger: (key) => ledger(env, key), token: (hash) => index(env).agentToken(hash), artifacts: env.ARTIFACTS, waitUntil: ctx ? (promise) => ctx.waitUntil(promise) : undefined });
       // The front door: atelier.zone itself is the public showcase, for a
       // visitor or a judge who types the domain, answered before the sign-in
       // check as every public page is. /showcase serves the same page, so the
@@ -3028,6 +3111,12 @@ export default {
           if (token?.runner) throw runnerDenied(token);
           return json({ error: "bad_actor", detail: "set X-Atelier-Actor to harness/model, or the project owner's actor" }, 400);
         }
+        // The acting harness/model is checked here, for every route, so a
+        // malformed name, or one an agent or runner token sends, is refused
+        // before anything is recorded. A name must be a model in the pool;
+        // it is kept as declared, since the owner token cannot prove it.
+        const declaredActing = cleanActing(req.headers.get(ACTING_HEADER), ownerActor(env), !!token);
+        const acting = declaredActing === null ? null : registeredActing(declaredActing, await index(env).models());
         const body = req.method === "GET" ? {} : await req.json().catch(() => ({}));
         // Routes read fields from the body, so anything but a JSON object is refused here.
         if (typeof body !== "object" || body === null || Array.isArray(body)) {
@@ -3067,7 +3156,7 @@ export default {
         }
         let res: Response;
         try {
-          res = await api({ env, req, url, actor, body, token, ref, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
+          res = await api({ env, req, url, actor, body, token, ref, acting, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
         } catch (error) {
           if (token?.runner && parseRuleError(error)?.status === 403) throw runnerDenied(token);
           throw error;

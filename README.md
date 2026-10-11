@@ -1,5 +1,14 @@
 # Atelier
 
+The cross-company rules below describe the default policy. With
+`atelier init --single-family COMPANY`, building and reviewing use only that
+company's models: a reviewer must be a different model from every contributor,
+never a contributor under another harness. This exception also applies to
+criteria review, handoffs and conflict contributors. Only that company's tier
+models qualify; if none qualifies, no separate tier review is requested.
+`atelier init --cross-family` restores the default; both switches record who
+made them and when. See [Single-family mode](docs/gate.md#single-family-mode).
+
 Atelier is a multi-agent system for software work, built on Git: a planner
 splits a goal into parts, builders of several model families work them at
 the same time, each in its own fork, reviewers of another family check each
@@ -296,7 +305,9 @@ and names that step. The individual steps remain available: `claim`,
 `report` (a Reported claim), `submit`, `handoff`, `release`, and `block`
 with `unblock` for a task waiting on something outside it.
 
-`atelier inbox` and `atelier show ID` print the owner's decision briefs with
+`atelier inbox` prints each task that waits on the owner, one per task with
+what to do and the link to do it (docs/owner.md, "What waits on the owner").
+`atelier show ID` prints a task's decision brief with
 the recorded evidence, a recommendation and the task's address; an agent
 can relay that text unchanged. Both accept `--json`; the same brief is
 `GET /api/projects/NAME/items/ID/brief`, which requires sign-in. The owner
@@ -411,7 +422,7 @@ or fails to fix while claiming to, a behaviour change without a test that
 covers it, docs or help that now contradict the code, a breaking change to a
 command, route or API field without a migration, or a visible regression on a
 user-facing page; anything else is a follow-up. `atelier init --review-tier
-H/M,H/M` names a top tier of reviewers that reviews every protected change.
+H/M,H/M` names a top tier of reviewers that reviews protected changes when a tier model qualifies under the family policy.
 
 The owner records a verdict on each finding with `atelier finding ID --head
 SHA --index N --verdict confirmed|refuted|fixed`. A later review of the task

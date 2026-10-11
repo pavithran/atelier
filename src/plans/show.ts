@@ -7,7 +7,7 @@
 
 import { criteriaOf } from "../criteria.ts";
 import type { Brief, Verdict } from "../brief.ts";
-import { holdText, liveOffers, unoffered, type CoreHold, type Dispatch, type SeenOffer } from "../dispatch/rules.ts";
+import { holdRelease, holdText, liveOffers, unoffered, type CoreHold, type Dispatch, type SeenOffer } from "../dispatch/rules.ts";
 import type { Item, ItemState } from "../rules.ts";
 import { TEXT_CONTROLS } from "../text.ts";
 import { chargesBuilder, type Attempt, type IntegrationFailure, type PlanPhase } from "./phase.ts";
@@ -38,7 +38,7 @@ export interface PlanPartView {
   scope: string[];
   dependsOn: { key: string; id: string | null }[];
   dispatch: Dispatch | null;
-  held?: CoreHold | null;         // while queued: the live item outside the plan it waits on (coreHold)
+  held?: CoreHold | null;         // while queued: the claimed or landing items outside the plan it waits on (coreBlockers)
   route: PartRoute | null;        // the routing fixed at approval, with the owner's reroute
   attempts: Attempt[];            // counted from the owner's latest reroute or retry
   gate: { ready: boolean; blockers: string[] } | null;  // while submitted or accepted
@@ -106,11 +106,11 @@ function ownerStep(p: PlanPartView, flag: string): string | null {
   return `not ready: ${p.gate.blockers.map(flat).join("; ")}`;
 }
 
-// A queued part the project's core files hold: the live item it waits on,
-// and that the queue offers it once that item merges or is abandoned.
+// A queued part the project's core files hold: the items it waits on, and
+// that the queue offers it once each stops holding.
 function heldLine(p: PlanPartView): string | null {
   if (!p.held || !p.dispatch || p.state !== "open") return null;
-  return `held in the queue: ${holdText(p.held)}; offered once ${p.held.id} merges or is abandoned`;
+  return `held in the queue: ${holdText(p.held)}; ${holdRelease(p.held)}`;
 }
 
 function attemptsLine(attempts: Attempt[]): string | null {

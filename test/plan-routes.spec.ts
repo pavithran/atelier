@@ -135,7 +135,8 @@ it("the holder posts its plan through the route, and an invalid one is a 422 tha
   const page = await worker.fetch(new Request(`https://atelier.test/decisions?project=${name}&task=${id}`, { headers: { cookie } }), testEnv);
   expect(page.status).toBe(200);
   const html = await page.text();
-  expect(html).toContain("Plan to approve");
+  expect(html).toContain("Approve plan");
+  expect(html).toContain("Read the planner&#39;s split, then approve it by its hash or send it back with a note.");
   const card = /<p class="card-brief">(.*?)<\/p>/s.exec(html)?.[1] ?? "";
   expect(card).toContain("decide");
   expect(card).toContain(`atelier plan show ${id} --project ${name}`);
