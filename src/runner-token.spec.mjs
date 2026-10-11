@@ -136,6 +136,8 @@ it("allows job reads, held-job resume, evidence, release and reports; invalid cr
   await t.claim();
   for (const path of [`/projects/${t.name}`, `${t.base}`, `${t.base}/brief`, `/projects/${t.name}/decisions`]) expect((await t.api("GET", path)).status).toBe(200);
   for (const verb of ["read-token", "base-token"]) expect((await t.api("POST", `${t.base}/${verb}`, {})).status).toBe(200);
+  // The project's baseline token, which a build's runner reads main through
+  // before it submits (t435), is covered in test/runner-baseline-token.spec.ts.
   expect((await t.poll()).status).toBe(200);
   expect((await t.api("POST", `${t.base}/claim`, {})).status).toBe(200);
   expect((await t.api("POST", `${t.base}/evidence`, { claim: "inspected", kind: "note", head: HEAD, passed: true })).status).toBe(200);

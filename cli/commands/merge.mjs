@@ -9,7 +9,7 @@ import { carryTask, loadPairs, rebuild, savePairs } from "../fresh.mjs";
 import { provenanceNote } from "../provenance.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { IDENTITY_LOG_FORMAT, isPublicMirror, NO_IDENTITY, parseIdentityLog, publicRefusals } from "../../src/commit-identity.ts";
-import { I, OWNER, P, actor, args, at, call, cfg, die, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, overrideArg, project, refreshControlPlane, request, server, short, writeReceipt } from "../atelier.mjs";
+import { I, OWNER, P, actingHeaders, actor, args, at, call, cfg, die, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, overrideArg, project, refreshControlPlane, request, server, short, writeReceipt } from "../atelier.mjs";
 
 // The project owner merges an exact revision. With --head, a submitted item
 // is first approved (with --approve) and accepted at that revision only.
@@ -131,7 +131,7 @@ export default async function mergeCommand() {
       if (d.item.head!==args.head) die("the task changed; review the new revision before merging");
       // The owner approves here the criteria this command read with the head.
       if (args.approve) await call("POST",`${I(name,id)}/review`,{head:args.head,criteria:d.criteria,approve:true,note:args.note??""},OWNER);
-      await call("POST",`${I(name,id)}/accept`,{head:args.head,...(reason!==undefined?{overrideReview:reason}:{})},OWNER);
+      await call("POST",`${I(name,id)}/accept`,{head:args.head,...(reason!==undefined?{overrideReview:reason}:{})},OWNER,reason!==undefined?actingHeaders():{});
     }
   }
   const gitDir=git(["rev-parse","--absolute-git-dir"],{cwd}), landing=landingHome(gitDir);
