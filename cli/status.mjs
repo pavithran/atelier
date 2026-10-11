@@ -128,10 +128,9 @@ export function formatLocal(local) {
 }
 
 // The command that answers an inbox entry, where there is one.
-function nextCommand(entry, project) {
+export function nextCommand(entry, project) {
   const flag = ` --project ${project}`;
-  if (entry.kind === "accept") return `atelier accept ${entry.itemId}${flag}`;
-  if (entry.kind === "assess") return `atelier land ${entry.itemId} --reviewer ${entry.reviewer ?? "H/M"}${flag}`;
+  if (entry.kind === "accept" || entry.kind === "assess") return `atelier land ${entry.itemId} --reviewer ${entry.reviewer ?? "H/M"}${flag}`;
   if (entry.kind === "merge") return `atelier merge ${entry.itemId}${flag}`;
   if (entry.kind === "ship") return `atelier ship --dry-run${flag}`;
   if (entry.kind === "stale") return `atelier release ${entry.itemId}${flag}`;
@@ -363,7 +362,7 @@ export function formatStatusBrief(b) {
   lines.push(!lease ? "Landing: none running."
     : lease.unreadable ? `Landing: the lease could not be read (${oneLine(lease.unreadable)}).`
       : `Landing: ${lease.item} held by ${lease.holder} since ${lease.since}.`);
-  lines.push(`Waiting on the owner: ${s.waiting.length ? named(s.waiting.map((w) => `${w.id} ${w.kind}`)) : "nothing"}.`);
+  lines.push(`Waiting on the owner: ${s.waiting.length ? named(s.waiting.map((w) => `${w.id} ${w.kind}${nextCommand({ ...w, itemId: w.id }, s.project.name) ? `; next: ${oneLine(nextCommand({ ...w, itemId: w.id }, s.project.name))}` : ""}`)) : "nothing"}.`);
   lines.push(spendLine(b.usage));
   return lines.join("\n");
 }
