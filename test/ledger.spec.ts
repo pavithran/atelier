@@ -348,7 +348,8 @@ it("decision 2026-10-09: the inbox names the reviewer a land would use for an as
   // Only the contributor's own model is available: the entry names no reviewer.
   const none = await L.inbox(T, [entry("opus-5.5", { harness: "claude-code" })]);
   expect(none[0].reviewer).toBeNull();
-  expect((await L.inbox(T)).map((e) => [e.kind, e.reviewer])).toEqual([["assess", null]]);
+  // With no pool given the reviewer is left unset: not read, never "none qualifies".
+  expect((await L.inbox(T)).map((e) => [e.kind, e.reviewer])).toEqual([["assess", undefined]]);
 });
 
 it("the holder under another letter case, profile or registered name cannot review, and that model's approval does not count", async () => {
@@ -997,6 +998,15 @@ it("an init is merged into the project in one step and keeps every field it does
   expect(mergeProject(tiered, { ...base, title: "V" }, "later").policy.reviewTier).toEqual(["claude-code/opus-5.5", "codex/gpt-6.1-sol"]);
   expect(mergeProject(tiered, { ...base, reviewTier: [] }, "later").policy).not.toHaveProperty("reviewTier");
   expect(mergeProject(tiered, { ...base, reset: true }, "later").policy).not.toHaveProperty("reviewTier");
+  // t394: the model policy is unset by default; a switch is stamped with the
+  // init's time and who made it, kept by an init that does not name it, and
+  // a return to cross-family review is recorded the same way, not dropped.
+  expect(full.policy).not.toHaveProperty("familyMode");
+  const single = mergeProject(full, { ...base, familyMode: { single: "anthropic", by: "pavi" } }, "2026-10-09T10:00:00Z");
+  expect(single.policy.familyMode).toEqual({ single: "anthropic", by: "pavi", at: "2026-10-09T10:00:00Z" });
+  expect(mergeProject(single, { ...base, title: "V" }, "later").policy.familyMode).toEqual({ single: "anthropic", by: "pavi", at: "2026-10-09T10:00:00Z" });
+  expect(mergeProject(single, { ...base, familyMode: { single: null, by: "pavi" } }, "2026-10-10T10:00:00Z").policy.familyMode).toEqual({ single: null, by: "pavi", at: "2026-10-10T10:00:00Z" });
+  expect(mergeProject(single, { ...base, reset: true }, "later").policy).not.toHaveProperty("familyMode");
   // reset starts the policy over and keeps the project's identity.
   const reset = mergeProject(full, { ...base, reset: true }, "later");
   expect(reset.policy).toEqual({ checks: [], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*", ".atelier/prompts/**"], eligible: [], refuseOverlap: false, sandboxOnly: false });
