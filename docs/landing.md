@@ -161,9 +161,10 @@ The steps in between:
    (`requireCapabilities`, `cli/atelier.mjs`); `land` alone makes the same
    check itself, after `--release-lease`, which touches only the lease
    route so a stuck lease can be freed while the server is behind, and
-   before the lease is read. `new`, `edit`, `init`,
-   `merge`, `review`, `review-claim`, `review-unparsable`, `token issue` and
-   `token store` declare theirs; a command with none, and `help`, `--help`
+   before the lease is read. `new`, `edit`, `init`, `merge`, `plan refresh`,
+   `review`, `review-claim`, `review-unparsable`, `token issue`, `token
+   store` and the integrator's `integrated`, `integration-failed`,
+   `refreshed` and `refresh-failed` declare theirs; a command with none, and `help`, `--help`
    and `--version` of any command, asks nothing, so the offline commands
    work with no server at all. The home runner checks the union of its
    jobs' (`JOB_CAPABILITIES`, `src/route-level.ts`) before its first poll,
@@ -174,7 +175,8 @@ The steps in between:
    predates capabilities still works: a reply with only `routeLevel` N
    guarantees the capabilities declared with level N or lower
    (`src/route-level.ts`: 6 `plans.integration.v1`, the integrate and
-   refresh job routes the commits named there added; 14 `land.workflow.v1`,
+   refresh job routes the commits named there added, and `plans.refresh.v1`,
+   the owner's plan refresh route from the same raise; 14 `land.workflow.v1`,
    15 `items.brief-criteria.v1`, 16 `reviews.criteria-binding.v1`, 17
    `reviews.unparsable.v1`, 18 `models.note.v1`, 19
    `projects.require-criteria.v1`, 20 `runners.scoped-token.v1`) and nothing
