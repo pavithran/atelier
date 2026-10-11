@@ -1,0 +1,52 @@
+atelier atelier/t491 "Releasing a held dispatch says which hold it released and can clear a builder…"
+accepted head 66c98e42e6a614ccf2c782a801f8f057c916b25f
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-11T15:55:36.679Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-11T15:55:40.634Z
+REVIEW approve by antigravity/gemini-3.1-pro at 66c98e42e6a614ccf2c782a801f8f057c916b25f, recorded by antigravity/gemini-3.1-pro
+2026-10-11T01:17:05.036Z pavi item.created
+2026-10-11T02:40:26.272Z pavi item.edited
+2026-10-11T02:40:26.272Z pavi item.criteria_changed
+2026-10-11T02:40:26.744Z pavi item.dispatched
+2026-10-11T03:06:06.027Z codex/gpt-6-astra item.claimed
+2026-10-11T03:06:13.849Z codex/gpt-6-astra fork.created
+2026-10-11T03:14:40.466Z codex/gpt-6-astra push.observed
+2026-10-11T03:19:35.689Z codex/gpt-6-astra evidence.observed
+2026-10-11T03:19:38.554Z codex/gpt-6-astra evidence.observed
+2026-10-11T03:27:39.589Z codex/gpt-6-astra push.observed
+2026-10-11T03:32:50.999Z codex/gpt-6-astra evidence.observed
+2026-10-11T03:32:54.579Z codex/gpt-6-astra evidence.observed
+2026-10-11T03:51:05.545Z codex/gpt-6-astra evidence.observed
+2026-10-11T03:51:09.046Z codex/gpt-6-astra evidence.observed
+2026-10-11T05:55:06.784Z codex/gpt-6-astra push.observed
+2026-10-11T06:05:38.726Z codex/gpt-6-astra evidence.observed
+2026-10-11T06:05:42.936Z codex/gpt-6-astra evidence.observed
+2026-10-11T06:14:00.724Z codex/gpt-6-astra push.observed
+2026-10-11T06:24:29.426Z codex/gpt-6-astra evidence.observed
+2026-10-11T06:24:34.088Z codex/gpt-6-astra evidence.observed
+2026-10-11T06:32:35.059Z codex/gpt-6-astra push.observed
+2026-10-11T06:37:09.452Z codex/gpt-6-astra evidence.observed
+2026-10-11T06:37:12.894Z codex/gpt-6-astra evidence.observed
+2026-10-11T06:37:37.794Z codex/gpt-6-astra item.submitted
+2026-10-11T06:42:07.254Z pavi item.released
+2026-10-11T06:42:07.254Z pavi item.dispatched
+2026-10-11T06:51:21.257Z pavi item.dispatched
+2026-10-11T08:45:46.931Z claude-code/opus-5.5 item.claimed
+2026-10-11T08:50:57.767Z claude-code/opus-5.5 push.observed
+2026-10-11T08:55:25.783Z claude-code/opus-5.5 evidence.observed
+2026-10-11T08:55:28.445Z claude-code/opus-5.5 evidence.observed
+2026-10-11T08:55:28.830Z claude-code/opus-5.5 item.submitted
+2026-10-11T15:48:29.705Z pavi land.lease
+2026-10-11T15:48:36.318Z pavi land.merge
+2026-10-11T15:48:49.490Z pavi land.regenerate
+2026-10-11T15:49:01.927Z claude-code/opus-5.5 push.observed
+2026-10-11T15:49:03.051Z pavi land.push
+2026-10-11T15:55:37.558Z claude-code/opus-5.5 evidence.observed
+2026-10-11T15:55:40.989Z claude-code/opus-5.5 evidence.observed
+2026-10-11T15:55:41.490Z pavi land.check
+2026-10-11T15:55:44.453Z pavi review.requested
+2026-10-11T15:55:53.580Z antigravity/gemini-3.1-pro review.claimed
+2026-10-11T15:55:54.422Z antigravity/gemini-3.1-pro review.diff
+2026-10-11T15:58:11.837Z antigravity/gemini-3.1-pro review.approved
+2026-10-11T15:58:17.694Z pavi land.review
+2026-10-11T15:58:18.297Z pavi item.accepted
+2026-10-11T15:58:18.340Z pavi land.accept
