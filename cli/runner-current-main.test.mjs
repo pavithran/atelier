@@ -6,8 +6,10 @@
 // runs it, a baseline that cannot be fetched is an infrastructure failure,
 // not the model's, and an edit of the build's in code main moved to another
 // file (t471's comparison) goes back to the same harness to port, after a
-// clean merge or with a conflicting one. Real git in a baseline and a
-// workspace cloned from it; the harness, the CLI and the server are stubs.
+// clean merge or with a conflicting one, and the port is checked after the
+// harness, so an exit without the port submits nothing. Real git in a
+// baseline and a workspace cloned from it; the harness, the CLI and the
+// server are stubs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -44,7 +46,7 @@ const landingGit = (cwd, args, { token, allowFail = false, raw = false, env = nu
   return raw ? r.stdout : r.stdout.trim();
 };
 
-function fixture(t, { conflict = false, generatedConflict = false, regenerate = null, rework = false, resumed = false, unresolved = false, discardWork = false, failFetch = false, advanceDuringResolution = false, mergeJob = false, moved = null, failPort = false } = {}) {
+function fixture(t, { conflict = false, generatedConflict = false, regenerate = null, rework = false, resumed = false, unresolved = false, discardWork = false, failFetch = false, advanceDuringResolution = false, mergeJob = false, moved = null, failPort = false, noPort = false } = {}) {
   const root = mkdtempSync(join(process.cwd(), '.runner-main-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const main = join(root, 'main'), workspace = join(root, 'work');
@@ -102,6 +104,18 @@ function fixture(t, { conflict = false, generatedConflict = false, regenerate = 
         assert.match(briefs.at(-1), /lib\.txt lines 2-7 moved to moved\.txt lines 1-6/);
         assert.equal(merging, moved === 'conflict', 'a clean merge is committed before the builder ports');
         if (failPort) return { code: 1 };
+        if (noPort) {
+          // Exit 0 without porting: the conflict is resolved to main's side
+          // and committed, the clean merge is left as the runner committed
+          // it, so the merge is complete and holds both heads, and the
+          // moved code never got the edit.
+          if (merging) {
+            writeFileSync(join(cwd, 'lib.txt'), LIB_ON_MAIN);
+            git(cwd, 'add', 'lib.txt');
+            git(cwd, 'commit', '-q', '--no-edit');
+          }
+          return { code: 0 };
+        }
         writeFileSync(join(cwd, 'moved.txt'), PORTED[moved]);
         writeFileSync(join(cwd, 'lib.txt'), LIB_ON_MAIN);
         git(cwd, 'add', 'moved.txt', 'lib.txt');
@@ -361,8 +375,31 @@ for (const kind of ['clean', 'conflict']) test(`an edit in code main moved to an
   assert.equal(records[0].findings.length, 1);
   assert.equal(records[0].main, f.latest);
   assert.equal(f.gitCalls.filter((args) => args[0] === 'fetch').length, 2, 'main is read again after the port');
+  assert.ok(f.logs.some((line) => line === 'the port is verified: the edit is at its destination'), f.logs.join('\n'));
   assert.ok(f.finished);
   assert.deepEqual(finishSummary(f), ['--summary', `Built t435 with main at ${f.latest} merged`]);
+});
+
+// A harness exit is no evidence of the port: the comparison is made again
+// after the harness and each edit is required at its destination, so a
+// harness that exits 0 without porting ends failed, the model's failure,
+// with nothing submitted — after a clean merge, which the runner committed
+// and the harness left as it was, and after a conflicting one the harness
+// resolved to main's side, so the merge is complete and holds both heads.
+for (const kind of ['clean', 'conflict']) test(`a harness that exits 0 without porting the moved edit, after a ${kind} merge of main, is the model's failure and nothing is submitted`, async (t) => {
+  const f = fixture(t, { moved: kind, noPort: true });
+  const state = await runTask(f.job, config, 'home', f.io);
+  assert.equal(state.phase, 'failed', JSON.stringify(state));
+  assert.match(state.reason, /^an edit of the build's in code main moved to another file was not ported to its destination: lib\.txt lines 2-7 moved to moved\.txt lines 1-6: the task /);
+  assert.match(state.reason, /; moved\.txt at the build's head does not hold the moved code with the task's edit made$/);
+  assert.equal(state.taskFailure, true);
+  assert.equal(f.harnessCalls, 2);
+  assert.equal(f.finished, false);
+  // The merge itself was complete: the failure is the port's alone.
+  assert.equal(existsSync(join(f.workspace, '.git', 'MERGE_HEAD')), false);
+  assert.equal(git(f.workspace, 'merge-base', f.latest, 'HEAD'), f.latest);
+  assert.equal(readFileSync(join(f.workspace, 'moved.txt'), 'utf8'), MOVED_ON_MAIN);
+  assert.ok(!f.logs.some((line) => /the port is verified/.test(line)), f.logs.join('\n'));
 });
 
 test('a harness that fails to port the moved edit is the model\'s failure, like an unresolved conflict, and nothing is submitted', async (t) => {
