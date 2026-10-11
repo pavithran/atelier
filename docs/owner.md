@@ -54,15 +54,20 @@ the built-in rules (docs/setup.md, "Commit identity").
 Bare `publish` still pushes the baseline only. It fetches the mirror's branch,
 then checks every commit the mirror lacks (all history when it is empty,
 merged ancestry included, content deleted later included): author and committer
-email must equal `commitEmail`; no line may match the push scan's secret rules, a
+email must equal `commitEmail`; no added line, no line of the commit object
+(author and committer names, every header and the whole message) and no path
+name a commit adds, renames or deletes may match the push scan's secret rules, a
 private address (RFC 1918, carrier-grade NAT, link-local, unique-local and
 link-local IPv6 including compressed endings such as `fe80::`, `.internal`,
 `.local`, `.lan`, `.corp`, `.intranet`, `.home.arpa` hosts), a declared private
 email or a `privatePatterns` regex; no path may match a `privatePaths` glob (a
-glob with no `/` matches a name at any depth). A Git LFS pointer publishes its
+glob with no `/` matches a name at any depth). Replace refs and grafts
+(`refs/replace/*`, `info/grafts`) are ignored, as the push ignores them, and
+`diff.ignoreSubmodules` or `submodule.*.ignore` cannot hide a submodule. A Git LFS pointer publishes its
 object, so the object is read from the checkout's LFS storage and scanned, or
 the commit is refused. Findings name commit, path and line, never the matched
-text. Binary, oversized, unreadable or submodule content is refused with its
+text; a path whose name matches is given by its place in the commit's file list
+(`git diff-tree -r -c --root --no-renames COMMIT`), not by name. Binary, oversized, unreadable or submodule content is refused with its
 path and reason. A missing or invalid policy, a remote whose URL is not the
 declared destination, and a diverged or ahead mirror are refused before any
 push. The push sends only the scanned commit to the branch at the declared

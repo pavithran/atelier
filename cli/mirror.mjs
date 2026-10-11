@@ -15,6 +15,16 @@
 // blocks, bearer tokens and secret assignments), plus PRIVATE_ADDRESS below.
 // Both publish REMOTE and wrap --push use this check.
 //
+// What Git shows is what the push sends: every Git command of the check and
+// the push runs with replace refs off (GIT_NO_REPLACE_OBJECTS) and with no
+// graft file (GIT_GRAFT_FILE at a path that cannot exist), so neither a
+// `git replace` of a blob nor a graft, by replace ref or info/grafts, can show
+// the scan other content or a shorter ancestry than the objects pushed.
+// Commit objects are scanned whole (author and committer names, every other
+// header and the full message) and so is every path name a commit adds,
+// changes or deletes, under the same rules as content; a flagged name is
+// never printed, and the path is named by its place in the commit's list.
+//
 // Git LFS: the push to a mirror uploads the project's LFS objects (gitEnv's
 // ownerRemote), so a pointer file a commit adds or changes publishes the
 // object it names, and the pointer alone proves nothing about that object.
@@ -45,6 +55,11 @@ export const PRIVATE_ADDRESS = [
 ];
 
 const fail = (why) => ({ ok: false, why });
+
+// The environment of every Git command the check and the push run (above).
+// `/dev/null/…` cannot exist, so Git reads no graft file whatever the
+// checkout holds.
+export const SCAN_ENV = Object.freeze({ GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null/atelier-no-grafts" });
 
 // Validate the registered policy again before contacting any destination.
 export function readPolicy(policy) {
@@ -118,9 +133,9 @@ export function publishCheckoutRemote({ git, dir, branch, remote, say, identity 
 // differs from every parent, as its patch does. `raw` is a git runner that
 // returns the result (cwd set, failure allowed).
 export function changedFiles(raw, commit) {
-  const names = raw(["log", "-1", "--format=", "--name-only", "-z", "--root", "-c", "--no-renames", commit]);
+  const names = raw(["log", "-1", "--format=", "--name-only", "-z", "--root", "-c", "--no-renames", "--ignore-submodules=none", commit]);
   if (names.status !== 0) return fail("git log --name-only failed");
-  const tree = raw(["diff-tree", "-r", "-z", "--no-renames", "--root", "--no-commit-id", "-c", commit]);
+  const tree = raw(["diff-tree", "-r", "-z", "--no-renames", "--ignore-submodules=none", "--root", "--no-commit-id", "-c", commit]);
   if (tree.status !== 0) return { ok: false, why: firstLine(tree.stderr) || "git diff-tree failed" };
   const parts = tree.stdout.split("\0"), list = [];
   for (let i = 0; i + 1 < parts.length; i += 2) {
@@ -197,14 +212,14 @@ export function headerPath(line) {
 // alone holds is.
 export function commitPatch(raw, commit) {
   const shown = raw(["-c", "core.quotepath=true", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false", "-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/", "-c", "diff.suppressBlankEmpty=false",
-    "log", "-1", "--format=", "-p", "-c", "-r", "--root", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "-U0", commit]);
+    "log", "-1", "--format=", "-p", "-c", "-r", "--root", "--no-renames", "--ignore-submodules=none", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "-U0", commit]);
   if (shown.status !== 0) return { ok: false, why: firstLine(shown.stderr) || "git log -p failed" };
   const files = new Map();
   let file = null, columns = 0, line = 0, inHunk = false;
   for (const text of shown.stdout.split("\n")) {
     if (text.startsWith("diff ")) {
       const path = headerPath(text);
-      if (path === null) return { ok: false, why: `unreadable patch header: ${text.slice(0, 40)}` };
+      if (path === null) return { ok: false, why: "a patch header that names no path it can read" }; // the header is not printed: it holds the path
       file = files.get(path) ?? { path, binary: false, added: [] };
       files.set(path, file);
       inHunk = false;
@@ -226,6 +241,36 @@ export function commitPatch(raw, commit) {
     line++;
   }
   return { ok: true, files: [...files.values()] };
+}
+
+// A commit object's text as the push sends it, line by line, each named for
+// a finding: a header by its key (a continuation line by the header it
+// continues, as a signature or a merged tag's text runs on), a message line
+// by its number. An object that is not UTF-8 text, or holds a NUL, is not
+// read (a message in UTF-16 would spread a key out between NULs).
+export function commitText(raw, commit) {
+  const shown = raw(["cat-file", "commit", commit], { bytes: true });
+  if (shown.status !== 0) return fail(`cannot be read (${firstLine(String(shown.stderr ?? "")) || "git cat-file failed"})`);
+  let text;
+  if (Buffer.isBuffer(shown.stdout)) {
+    if (shown.stdout.includes(0)) return fail("holds a NUL byte");
+    try { text = new TextDecoder("utf-8", { fatal: true }).decode(shown.stdout); }
+    catch { return fail("is not UTF-8 text"); }
+  } else {
+    text = String(shown.stdout);
+    if (text.includes("\0")) return fail("holds a NUL byte");
+    if (text.includes("\ufffd")) return fail("is not UTF-8 text");
+  }
+  const lines = [];
+  let header = true, key = "", n = 0;
+  for (const line of text.split("\n")) {
+    if (header) {
+      if (line === "") { header = false; continue; }
+      if (!line.startsWith(" ")) key = line.split(" ")[0];
+      lines.push({ where: `${key} header`, text: line });
+    } else lines.push({ where: `message line ${++n}`, text: line });
+  }
+  return { ok: true, lines };
 }
 
 // A Git LFS pointer, or null when the text is not one: the spec's `version`
@@ -322,7 +367,7 @@ export function publishMirror({ git, dir, branch, remote, say, identity }) {
 // the check; a destination given as a URL is pushed to by that URL.
 function checkAndPush({ git, dir, branch, remote, say, policy, destination, urlNow, url }) {
   const refuse = (...lines) => { for (const l of lines) say(l); return { ok: false }; };
-  const raw = (args, opts = {}) => git(args, { cwd: dir, allowFail: true, ...opts });
+  const raw = (args, opts = {}) => git(args, { cwd: dir, allowFail: true, ...opts, env: { ...opts.env, ...SCAN_ENV } });
   const out = (args) => { const r = raw(args); return r.status === 0 ? r.stdout.trim() : null; };
   const mirror = { destination, email: policy.email };
   const ref = `refs/heads/${branch}`;
@@ -332,7 +377,9 @@ function checkAndPush({ git, dir, branch, remote, say, policy, destination, urlN
   // 2. The mirror's head, fetched before anything is scanned.
   const listed = raw(["ls-remote", "--refs", mirror.destination, ref]);
   if (listed.status !== 0) return refuse(`Not published: the mirror cannot be read: ${firstLine(listed.stderr) || "git ls-remote failed"}`);
-  const advertised = listed.stdout.trim().split("\n").filter(Boolean).map((l) => l.split(/\s+/)[0]);
+  // ls-remote matches a pattern as a tail (refs/heads/x/refs/heads/main
+  // matches refs/heads/main), so only the exact name is the mirror's head.
+  const advertised = listed.stdout.trim().split("\n").filter(Boolean).map((l) => l.split(/\s+/)).filter(([, name]) => name === ref).map(([sha]) => sha);
   let head = null;
   if (advertised.length) {
     const fetched = raw(["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", mirror.destination, ref]);
@@ -358,11 +405,29 @@ function checkAndPush({ git, dir, branch, remote, say, policy, destination, urlN
   const commits = listing.stdout.split("\n").filter(Boolean);
   const findings = [], refusals = [];
 
+  const rulesFor = (text) => {
+    const rules = [];
+    if (scanLine(text)) rules.push("secret");
+    if (policy.privateEmails.some((email) => text.toLowerCase().includes(email.toLowerCase()))) rules.push("private-email");
+    for (const [name, rx] of PRIVATE_ADDRESS) if (rx.test(text)) rules.push(name);
+    if (policy.patterns.some((rx) => rx.test(text))) rules.push("private-pattern");
+    return rules;
+  };
+
   for (const c of commits) {
     const who = raw(["log", "-1", "--format=%ae%x00%ce", c]);
+    if (who.status !== 0) { refusals.push(`${c.slice(0, 12)}: the commit's author and committer cannot be read (${firstLine(who.stderr) || "git log failed"})`); continue; }
     const [ae, ce] = who.stdout.replace(/\n$/, "").split("\0");
     const wrong = [!sameEmail(ae ?? "", mirror.email) ? "author" : null, !sameEmail(ce ?? "", mirror.email) ? "committer" : null].filter(Boolean);
     if (wrong.length) findings.push(`${c.slice(0, 12)}: ${wrong.join(" and ")} email is not ${mirror.email}`);
+    // The commit object itself is published: its headers (author and
+    // committer names, a merged tag's text, a signature) and its message.
+    const object = commitText(raw, c);
+    if (!object.ok) { refusals.push(`${c.slice(0, 12)}: the commit object ${object.why}`); continue; }
+    for (const { where, text } of object.lines) {
+      const rules = rulesFor(text);
+      if (rules.length) findings.push(`${c.slice(0, 12)}: commit ${where}: ${rules.join(", ")}`);
+    }
   }
 
   // Each commit is read on its own, as `git log -p --name-only` over the
@@ -375,22 +440,26 @@ function checkAndPush({ git, dir, branch, remote, say, policy, destination, urlN
   // their line numbers in the commit. A merge is read as a combined diff:
   // what it holds that no parent held, and the parents are read as commits
   // of their own, published or outgoing.
-  const rulesFor = (text) => {
-    const rules = [];
-    if (scanLine(text)) rules.push("secret");
-    if (policy.privateEmails.some((email) => text.toLowerCase().includes(email.toLowerCase()))) rules.push("private-email");
-    for (const [name, rx] of PRIVATE_ADDRESS) if (rx.test(text)) rules.push(name);
-    if (policy.patterns.some((rx) => rx.test(text))) rules.push("private-pattern");
-    return rules;
-  };
   let storage;
   for (const c of commits) {
     const files = changedFiles(raw, c);
     if (!files.ok) { refusals.push(`${c.slice(0, 12)}: the commit's file list cannot be read (${files.why})`); continue; }
     const scan = new Map(); // path -> blob
+    const labels = new Map(); // path -> how findings name it
+    files.list.forEach(({ path, mode }, i) => {
+      // Every name the commit adds, changes or deletes is in the trees the
+      // mirror receives, so it is read like a line. A flagged name is never
+      // printed: the path is given by its place in the commit's file list
+      // (`git diff-tree -r -c --root --no-renames COMMIT`).
+      const rules = rulesFor(path);
+      if (!rules.length) { labels.set(path, `${c.slice(0, 12)} ${path}`); return; }
+      const place = `path ${i + 1} of ${files.list.length}, name withheld`;
+      labels.set(path, `${c.slice(0, 12)} (${place})`);
+      findings.push(`${c.slice(0, 12)}: a path the commit ${/^0+$/.test(mode) ? "deletes" : "adds or changes"} (${place}): ${rules.join(", ")}`);
+    });
     for (const { path, mode, sha, size } of files.list) {
-      if (/^0+$/.test(mode)) continue; // a deletion adds nothing; the commit that added the path is scanned
-      const at = `${c.slice(0, 12)} ${path}`;
+      if (/^0+$/.test(mode)) continue; // a deletion adds no content; the commit that added the path is scanned
+      const at = labels.get(path);
       if (policy.paths.some((m) => m(path))) findings.push(`${at}: the path matches a private path glob`);
       if (mode === "160000") { refusals.push(`${at}: a submodule, whose content is in another repository`); continue; }
       if (size === null) { refusals.push(`${at}: unreadable (object ${sha.slice(0, 12)} is missing or corrupt)`); continue; }
@@ -404,7 +473,7 @@ function checkAndPush({ git, dir, branch, remote, say, policy, destination, urlN
       if (!scan.has(file.path)) continue;
       const blob = scan.get(file.path);
       scan.delete(file.path);
-      const at = `${c.slice(0, 12)} ${file.path}`;
+      const at = labels.get(file.path);
       if (file.added.some(({ text }) => text.includes("\ufffd"))) { refusals.push(`${at}: content cannot be decoded reliably as UTF-8`); continue; }
       if (file.binary) { refusals.push(`${at}: binary content`); continue; }
       for (const { line, text } of file.added) {
@@ -434,7 +503,7 @@ function checkAndPush({ git, dir, branch, remote, say, policy, destination, urlN
     }
     // A path the file list names whose patch did not come back is not
     // stepped over: nothing was read for it.
-    for (const path of scan.keys()) refusals.push(`${c.slice(0, 12)} ${path}: no patch for the path in the commit's diff`);
+    for (const path of scan.keys()) refusals.push(`${labels.get(path)}: no patch for the path in the commit's diff`);
   }
 
   const problems = findings.length + refusals.length;

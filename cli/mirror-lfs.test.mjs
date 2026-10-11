@@ -29,7 +29,7 @@ test("a replaced LFS extension cannot publish an intermediate secret or a missin
     const git = (args, opts = {}) => {
       const result = spawnSync("git", args, {
         cwd: checkout, encoding: opts.bytes ? null : "utf8", input: opts.input,
-        env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" },
+        env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", ...opts.env },
       });
       if (!opts.allowFail) assert.equal(result.status, 0, result.stderr);
       return result;
@@ -77,7 +77,7 @@ function repository(t) {
   mkdirSync(checkout);
   const git = (args, opts = {}) => {
     const result = spawnSync("git", args, { cwd: checkout, encoding: opts.bytes ? null : "utf8", input: opts.input,
-      env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" } });
+      env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", ...opts.env } });
     if (!opts.allowFail) assert.equal(result.status, 0, String(result.stderr));
     return result;
   };
@@ -164,4 +164,28 @@ test("with no public mirror declared, wrap pushes a remote without the public ch
   const identity = { name: "Owner", email, agentEmails: [] };
   assert.equal(publishCheckoutRemote({ ...f.options, identity }).ok, true, f.lines.join("\n"));
   assert.equal(f.git(["--git-dir", f.mirror, "rev-parse", "main"]).stdout.trim(), tip);
+});
+
+test("wrap's check of an undeclared remote ignores replace refs and reads the commit message", (t) => {
+  for (const mode of ["replace", "message"]) {
+    const f = repository(t);
+    writeFileSync(join(f.checkout, "data.txt"), mode === "replace" ? `key = ${secret}\n` : "safe\n");
+    let tip;
+    if (mode === "message") { f.git(["add", "-A"]); f.git(["commit", "-qm", `Change ${secret}`]); tip = f.git(["rev-parse", "HEAD"]).stdout.trim(); }
+    else tip = f.commit();
+    if (mode === "replace") {
+      const blob = f.git(["rev-parse", "HEAD:data.txt"]).stdout.trim();
+      const clean = f.git(["hash-object", "-w", "--stdin"], { input: "safe\n" }).stdout.trim();
+      f.git(["replace", blob, clean]);
+    }
+    const other = join(f.checkout, "..", "other.git");
+    f.git(["init", "-q", "--bare", "-b", "main", other]);
+    f.git(["remote", "add", "private", other]);
+    const result = publishCheckoutRemote({ ...f.options, remote: "private" });
+    const output = f.lines.join("\n");
+    assert.equal(result.ok, false, `${mode}: ${output}`);
+    assert.ok(output.includes(mode === "replace" ? `${tip.slice(0, 12)} data.txt:1: secret` : `${tip.slice(0, 12)}: commit message line 1: secret`), `${mode}: ${output}`);
+    assert.ok(!output.includes(secret), mode);
+    assert.equal(f.git(["--git-dir", other, "for-each-ref"]).stdout.trim(), "", mode);
+  }
 });

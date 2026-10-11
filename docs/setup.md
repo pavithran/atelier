@@ -274,9 +274,12 @@ clears the list, and `--reset` drops the identity with the rest of the policy.
 The fields travel in `PUT /api/projects/NAME` as `commitName`, `commitEmail`,
 `agentEmails`, `privateEmails`, `publicMirrors`, `publicMirrorDestinations`,
 `privatePaths` and `privatePatterns`, and are stored as
-`policy.commitIdentity`. They raise the route level to 24
-(`src/route-level.ts`): `atelier land` and the runner refuse a server below
-it, since one would not record or return the identity.
+`policy.commitIdentity`. The identity fields (`commitName`, `commitEmail`,
+`agentEmails`, `privateEmails`, `publicMirrors`) came with route level 24
+(t451); `publicMirrorDestinations`, `privatePaths` and `privatePatterns` with
+route level 27 (t433, `src/route-level.ts`). `atelier land` and the runner
+refuse a server below the CLI's level, since an older server would not
+record or return these fields.
 
 Where the identity is enforced:
 
