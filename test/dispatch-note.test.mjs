@@ -68,7 +68,13 @@ test("the limit is 2000 code units for a dispatch note and unchanged for other o
   // Code units, not characters: 1000 emoji are 2000 units, 1001 are 2002.
   assert.equal(note("😀".repeat(1000)).length, 2000);
   assert.throws(() => note("😀".repeat(1001)), /too_long|limit is 2000/);
-  assert.equal(note("é\nline two\r\n\tindented\n"), "é\nline two\r\n\tindented\n");
+  // Every line break is stored as LF and counted as one, as the page's
+  // textarea counts it, though a browser posts CRLF (t480).
+  assert.equal(note("é\nline two\r\n\tindented\rlast\n"), "é\nline two\n\tindented\nlast\n");
+  const lines = Array.from({ length: 11 }, (_, i) => "a".repeat(i < 10 ? 181 : 180));
+  assert.equal(note(lines.join("\r\n")), lines.join("\n"));
+  assert.equal(note(lines.join("\n")).length, 2000);
+  assert.throws(() => note(lines.join("\r\n") + "a"), /too_long|limit is 2000/);
   // Other owner text keeps its 500.
   assert.doesNotThrow(() => assertLength("a".repeat(500), OWNER_TEXT_MAX, "the approval"));
   assert.throws(() => assertLength("a".repeat(501), OWNER_TEXT_MAX, "the approval"), /limit is 500/);

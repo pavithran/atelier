@@ -155,6 +155,17 @@ it('the dispatch and withdraw forms carry the revision, as every other form does
   expect(withdraw.slice(0, 200)).toContain(`name="head" value="${head}"`);
 });
 
+it('the task page shows a waiting dispatch note whole, line breaks kept and escaped (t480)', () => {
+  const d = detail();
+  d.item.state = 'open'; d.item.owner = null;
+  d.item.dispatch = { to: 'home', agent: null, model: null, by: 'pavi', at: time, note: 'Findings:\n1. <b>first</b>\n2. second' };
+  const html = renderItem(project, d, 'PAVI', null);
+  expect(html).toContain('<p class="dispatch-note">Findings:\n1. &lt;b&gt;first&lt;/b&gt;\n2. second</p>');
+  expect(html).not.toContain('<b>first</b>');
+  // The page's own stylesheet keeps those breaks on screen.
+  expect(html).toMatch(/\.dispatch-note \{ white-space: pre-wrap;/);
+});
+
 // ── flow ──
 import {env} from 'cloudflare:workers';
 import {signIn} from './signin.ts';
@@ -932,7 +943,7 @@ async function standingFixture(over:Partial<{approval:string}>={}){
  const items=[
   {...base,id:'t1',title:'Held <b>task</b>',state:'claimed',owner:'claude-code/opus-5.5'},
   {...base,id:'t2',title:'Ready task',state:'submitted',owner:'codex/gpt-6',head},
-  {...base,id:'t3',title:'Queued task',state:'open',owner:null,dispatch:{to:'home',agent:'codex',model:'gpt-6',by:'pavi',at:at(5),note:'<i>small</i>'}},
+  {...base,id:'t3',title:'Queued task',state:'open',owner:null,dispatch:{to:'home',agent:'codex',model:'gpt-6',by:'pavi',at:at(5),note:'<i>small</i>\nSecond line of the findings'}},
   ...[4,5,6,7,8,9,10].map((n)=>({...base,id:`t${n}`,title:`Merged ${n}`,state:'merged',owner:null,acceptedHead:head,updatedAt:at(n+6)})),
  ] as never[];
  const evs=[
@@ -960,6 +971,8 @@ it('the Overview tab leads with where the project stands: waiting with a brief, 
  expect(sec).toContain('Waiting on the owner');expect(sec).toContain('all checks observed passing · brief, accept: 1 of 1 required checks passed at this revision and nothing blocks it.');
  expect(sec).not.toContain('bad');expect(sec).toContain('Ready to accept');
  expect(sec).toContain('Queued for a runner');expect(sec).toContain('for home codex/gpt-6 · sent by pavi');
+ // A queued row shows the note's first-line preview; the whole note is the task page's (t480).
+ expect(sec).toContain(' · &lt;i&gt;small&lt;/i&gt;…</span>');expect(sec).not.toContain('Second line of the findings');
  expect(sec).toContain('Last merges');
  expect((sec.match(/href="\/p\/example\/t(?:4|5|6|7|8|9|10)"/g)||[]).length).toBe(5);
  expect(sec).toContain('Merged 10');expect(sec).toContain('Merged &lt;u&gt;summary&lt;/u&gt;');
