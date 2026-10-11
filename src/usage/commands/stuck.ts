@@ -16,7 +16,7 @@ const spec: CommandSpec = {
       "--conflict-wait-minutes N": "positive limit for Workflows paused at conflict; default 30 minutes; resolve and commit conflicts, then rerun land ID --workflow",
       "--core-hold-minutes N": "positive limit for core blockers since their current claim/handoff or later push; default 30 minutes; land the blocker (merge if already accepted) or dispatch the held task with --overlap-ok if harmless",
       "--runner-poll-minutes N": "positive idle-poll limit; default 5 minutes, plus one minute of offer timestamp coarsening; active jobs are excluded",
-      "--review-answer-hours N": "positive limit for current claimed reviews; default 2 hours; renewed claims reset the clock",
+      "--review-answer-hours N": "positive limit for current claimed reviews; default 2 hours; a claim ages from when it began, not its last renewal; a re-claim after expiry starts a new claim",
     },
     example: "atelier stuck --project demo",
   },

@@ -55,7 +55,7 @@ test('idle runner includes timestamp coarsening and active jobs; unavailable job
   assert.deepEqual(kinds(report(snapshot(), offers, [], ['home:studio'])), []);
   assert.deepEqual(kinds(report(snapshot(), offers, [], null)), []);
 });
-test('current claimed reviews use renewed claims; old heads, closed and blocked tasks excluded', () => {
+test('current claimed reviews; old heads, closed and blocked tasks excluded', () => {
   const r = { id: 1, item: 't1', head: item().head, claimedBy: 'reviewer/model', claimedAt: at(7200000), runner: 'home:review' };
   const s = snapshot({ reviews: [r] });
   assert.deepEqual(kinds(report(s)), []);
@@ -65,6 +65,46 @@ test('current claimed reviews use renewed claims; old heads, closed and blocked 
   assert.deepEqual(kinds(report(s)), []);
   r.head = item().head;
   for (const state of ['blocked','merged','abandoned']) assert.deepEqual(kinds(report({ ...s, items: [item({ state })] })), []);
+});
+const LIMIT = 7200000;
+// A claimed review as the ledger keeps it: claimedAt is rewritten on each
+// renewal, and the review.claimed event naming request id marks its start.
+const claimedReview = (id, startMs, renewedMs) => ({
+  review: { id, item: 't1', head: item().head, claimedBy: 'reviewer/model', claimedAt: at(renewedMs), runner: 'home:review' },
+  event: event(id, 'review.claimed', startMs, { head: item().head, runner: 'home:review', request: id }),
+});
+test('a claim renewed every 30 s for 3 h is listed, aged from its claim', () => {
+  const start = 3 * 3600000;
+  const c = claimedReview(1, start, start);
+  // Renew every 30 s, as the runner does, up to the observation time.
+  for (let ms = start - 30000; ms >= 0; ms -= 30000) c.review.claimedAt = at(ms);
+  assert.equal(c.review.claimedAt, at(0));
+  const r = report(snapshot({ reviews: [c.review], events: [c.event] }));
+  assert.deepEqual(kinds(r), ['review']);
+  assert.equal(r.entries[0].since, at(start));
+  assert.equal(r.entries[0].ageMs, start);
+});
+test('a fresh review claim is not listed', () => {
+  const c = claimedReview(1, 60000, 30000);
+  assert.deepEqual(kinds(report(snapshot({ reviews: [c.review], events: [c.event] }))), []);
+});
+test('a renewed review claim is listed only beyond the answer limit, from its claim', () => {
+  const exact = claimedReview(1, LIMIT, 0);
+  assert.deepEqual(kinds(report(snapshot({ reviews: [exact.review], events: [exact.event] }))), []);
+  const over = claimedReview(1, LIMIT + 1, 0);
+  assert.deepEqual(kinds(report(snapshot({ reviews: [over.review], events: [over.event] }))), ['review']);
+});
+test('a re-claim after expiry ages from the new claim, not the expired one', () => {
+  // Request 1 was claimed 4 h ago and expired; its replacement, request 2,
+  // was claimed 10 minutes ago and is renewed.
+  const old = claimedReview(1, 4 * 3600000, 3 * 3600000);
+  const fresh = claimedReview(2, 600000, 0);
+  const events = [fresh.event, event(5, 'review.expired', 3 * 3600000 - 300000, { request: 1 }), old.event];
+  assert.deepEqual(kinds(report(snapshot({ reviews: [fresh.review], events }))), []);
+  const later = claimedReview(2, LIMIT + 1, 0);
+  const r = report(snapshot({ reviews: [later.review], events: [later.event, old.event] }));
+  assert.deepEqual(kinds(r), ['review']);
+  assert.equal(r.entries[0].since, at(LIMIT + 1));
 });
 test('core hold ages from current handoff or later push, not dispatch creation', () => {
   const waiting = item({ id: 't2', state: 'open', owner: null, dispatch: { to: 'home', agent: null, model: null, by: 'owner', at: at(99999999), note: '' } });

@@ -85,10 +85,16 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
       if (item?.state !== "blocked" && (closed || terminal))
         add("orphan-lease", lease.item, "unexpired lease with positively absent or terminal holder", lease.renewedAt ?? lease.at, command(`land ${lease.item} --release-lease`));
     }
+    // A claim ages from when it began. Renewals rewrite claimedAt every 30 s,
+    // so the start is the review.claimed event naming this request: the id is
+    // the claim generation, and a re-claim after expiry is a new request.
+    // Without that event, the last renewal is the only bound known.
+    const claimStart = (r: ReviewObservation) => events.find((e) => e.kind === "review.claimed" && e.itemId === r.item && e.data.request === r.id)?.at ?? r.claimedAt;
     for (const r of reviews) {
       const item = live.find((i) => i.id === r.item && i.head === r.head && !["merged", "abandoned"].includes(i.state));
-      if (item && age(r.claimedAt) > limits.reviewAnswerHours * 3_600_000)
-        add("review", r.item, `review request ${r.id} claimed by ${r.claimedBy}`, r.claimedAt, `${command(`review-release ${r.item} --note "Release stalled review claim"`)} --as ${r.claimedBy}`);
+      const since = claimStart(r);
+      if (item && age(since) > limits.reviewAnswerHours * 3_600_000)
+        add("review", r.item, `review request ${r.id} claimed by ${r.claimedBy}`, since, `${command(`review-release ${r.item} --note "Release stalled review claim"`)} --as ${r.claimedBy}`);
     }
     for (const item of live.filter((i) => i.state === "open" && i.dispatch)) {
       const held = coreHold(item, live, snapshot.coreFiles);
