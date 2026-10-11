@@ -1,10 +1,10 @@
 # Design pass (t499)
 
 - [brief.md](brief.md): routes, aliases, page states, audiences, constraints.
-- [critique.md](critique.md): findings F1–F22, page by page, and the separate
+- [critique.md](critique.md): findings F1–F23, page by page, and the separate
   contrast, keyboard, reflow and public-data checks.
 - [plan.md](plan.md): one navigation, proposals P1–P17, the map to t367,
-  t456, t474 and t496–t498, and the order to land them.
+  t456, t474, t496 (refiled as t504), t497 and t498, and the order to land them.
 - [mockups/](mockups/index.html): every page, desktop and phone, annotated.
 - [contrast.md](contrast.md): the palette's ratios, generated from the tokens.
 - `screens/` and `audit.json`: written by the capture.

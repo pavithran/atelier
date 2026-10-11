@@ -18,7 +18,7 @@
 <div class="mock-head">
   <p class="mock-back"><a href="index.html">All mockups</a></p>
   <p class="mock-title">Account: Models and Usage</p>
-  <p class="mock-routes">Covers <code>/models</code> (desktop frame, account menu shown open) and <code>/usage</code> (phone frame). Both are reached from the owner's name, "Owner ▾", in row 1.</p>
+  <p class="mock-routes">Covers <code>/models</code> and <code>/usage</code>, each at desktop and phone width (desktop <code>/models</code> with the account menu shown open). Both are reached from the owner's name, "Owner ▾", in row 1, or from "Menu ▾" on a phone.</p>
 </div>
 
 <div class="frames">
@@ -59,6 +59,92 @@
     <li><span class="who f-qwen">opencode/qwen-4</span><span class="tag fault">Checks failing</span><span class="muted">17 merged · 3 of its last 5 failed checks</span><span class="meta">idle</span></li>
   </ul>
   <details style="margin-top:16px" id="add"><summary class="btn">Add a model to the pool…</summary></details>
+</main>
+</div>
+</figure>
+
+<figure class="frame phone">
+<figcaption>Phone · 390 · /models</figcaption>
+<div class="screen">
+<header class="ob phone">
+  <a class="skip" href="#pm-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <a href="/decisions">Decisions <span class="count">(14)</span></a>
+    <span class="spacer"></span>
+    <details><summary>Menu ▾</summary><div class="menu-panel"><a href="/home">Projects</a><a href="/studio">Activity</a><hr><a href="/models" aria-current="page">Models</a><a href="/usage">Usage</a><a href="/logout">Sign out</a></div></details>
+  </nav>
+</header>
+<main id="pm-main" class="app-main">
+  <h1>Models</h1>
+  <ul class="counts" aria-label="Pool state">
+    <li><span class="n">0</span><span class="w">in the pool</span></li>
+    <li><span class="n">Off</span><span class="w">AI Gateway</span></li>
+    <li><span class="n">5</span><span class="w">agents seen</span></li>
+  </ul>
+  <div class="card alert">
+    <p style="margin:0"><span class="tag caution">Pool empty</span> Only agents with their own keys can work.</p>
+    <p style="margin:8px 0 0"><a class="btn small" href="/models#add">Add a model</a> <a href="/how#models">What the pool is</a></p>
+  </div>
+  <h2>Track record · 2,293 events <a class="mk" href="#n5">5</a></h2>
+  <ul class="rows state-rows">
+    <li><span class="who f-anthropic">claude-code/opus-5.5</span><span class="tag go">Healthy</span><span class="muted" style="grid-column:1/-1;font-size:13px">61 merged · 4 sent back · 1 h ago</span></li>
+    <li><span class="who f-openai">codex/gpt-6-astra</span><span class="tag caution">Near limit</span><span class="muted" style="grid-column:1/-1;font-size:13px">48 merged · 7 sent back · 92% of week</span></li>
+    <li><span class="who f-zai">zcode/glm-5.3</span><span class="tag caution">Stale work</span><span class="muted" style="grid-column:1/-1;font-size:13px">22 merged · holds t163, no push 2 d</span></li>
+    <li><span class="who f-google">antigravity/gemini-3.1-pro</span><span class="tag go">Healthy</span><span class="muted" style="grid-column:1/-1;font-size:13px">31 merged · 2 sent back · 12 min ago</span></li>
+    <li><span class="who f-qwen">opencode/qwen-4</span><span class="tag fault">Checks failing</span><span class="muted" style="grid-column:1/-1;font-size:13px">17 merged · 3 of last 5 failed</span></li>
+  </ul>
+  <details style="margin-top:12px"><summary class="btn">Add a model to the pool…</summary></details>
+</main>
+</div>
+</figure>
+</div>
+
+<div class="frames">
+<figure class="frame desktop">
+<figcaption>Desktop · 1440 · /usage</figcaption>
+<div class="screen">
+<header class="ob">
+  <a class="skip" href="#du-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <ul>
+      <li><a href="/decisions">Decisions <span class="count">(14)</span></a></li>
+      <li><a href="/home">Projects</a></li>
+      <li><a href="/studio">Activity</a></li>
+    </ul>
+    <span class="spacer"></span>
+    <details><summary>Project ▾</summary><div class="menu-panel"><a href="/p/ledger-core">Ledger Core <span>9</span></a></div></details>
+    <details><summary class="on">Owner ▾</summary><div class="menu-panel"><a href="/models">Models</a><a href="/usage" aria-current="page">Usage</a><hr><a href="/logout">Sign out</a></div></details>
+  </nav>
+</header>
+<main id="du-main" class="app-main">
+  <h1>Usage</h1>
+  <p class="lede">2 alerts · 2 runners, 1 stale</p>
+  <div class="cols">
+    <section aria-labelledby="du-alerts">
+      <h2 id="du-alerts" style="margin-top:8px">Alerts</h2>
+      <ul class="plain" style="display:grid;gap:8px">
+        <li class="card alert over"><span class="tag fault">Over limit</span> <strong>codex</strong> 5-hour window at 100%; resets 14:20 UTC</li>
+        <li class="card alert"><span class="tag caution">Near limit</span> <strong>claude-code</strong> 92% of the week</li>
+      </ul>
+      <h2>Runners</h2>
+      <ul class="rows state-rows">
+        <li><span>mac-mini-2</span><span class="tag go">Reporting</span><span class="muted">claude-code, codex</span><span class="meta">4 min ago</span></li>
+        <li><span>hetzner-ax41</span><span class="tag caution">Stale report</span><span class="muted">zcode</span><span class="meta">3 d ago</span></li>
+      </ul>
+    </section>
+    <section aria-labelledby="du-limits">
+      <h2 id="du-limits" style="margin-top:8px">Limits <a class="mk" href="#n6">6</a></h2>
+      <div class="meter-row"><span>claude-code · week</span><span class="muted">92% / alert 85%</span></div>
+      <div class="meter warn" role="img" aria-label="92 percent, alert at 85 percent"><span style="width:92%"></span><i class="th" style="left:85%"></i></div>
+      <div class="meter-row" style="margin-top:10px"><span>codex · 5 h</span><span class="muted">100% / alert 85%</span></div>
+      <div class="meter over" role="img" aria-label="100 percent, alert at 85 percent"><span style="width:100%"></span><i class="th" style="left:85%"></i></div>
+      <div class="meter-row" style="margin-top:10px"><span>zcode · week</span><span class="muted">41% / alert 85%</span></div>
+      <div class="meter" role="img" aria-label="41 percent, alert at 85 percent"><span style="width:41%"></span><i class="th" style="left:85%"></i></div>
+      <p class="dim" style="font-size:14px"><a href="/how#usage">How limits and alerts work</a></p>
+    </section>
+  </div>
 </main>
 </div>
 </figure>
@@ -107,6 +193,8 @@
     <li id="n2"><span class="num">2</span><div>State first: pool size and Gateway as a counts strip, the empty pool as one caution row with its action; the old record of 1,100 words no longer precedes it. <span class="cite">F8 → P11</span></div></li>
     <li id="n3"><span class="num">3</span><div>One row per agent with a status word and the facts behind it; family colour is the swatch only, never the name's colour. <span class="cite">F8, F17 → P11, P14</span></div></li>
     <li id="n4"><span class="num">4</span><div>Usage: alerts first, each threshold drawn beside its meter instead of a lead naming four environment settings; explanations link to <code>/how</code>. <span class="cite">F8 → P11</span></div></li>
+    <li id="n5"><span class="num">5</span><div>Models on a phone: the counts strip wraps, the empty-pool action moves under its sentence, and each agent's facts drop under its name and status so no row is wider than 390 px; Models and Usage sit in "Menu ▾". <span class="cite">F8, F1 → P11, P1</span></div></li>
+    <li id="n6"><span class="num">6</span><div>Usage on a desktop: alerts and runners on the left, the limits with their thresholds on the right, so the whole page is one screen at 1440 × 900. <span class="cite">F8 → P11</span></div></li>
   </ol>
 </section>
 </body>

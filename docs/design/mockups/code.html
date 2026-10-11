@@ -12,18 +12,21 @@
   .log > li { grid-template-columns: 6px 90px 1fr auto auto; }
   .phone .tree > li { grid-template-columns: 6px 1fr auto; }
   .phone .tree .msg { display: none; }
+  .phone .log > li { grid-template-columns: 6px 1fr auto; }
+  .phone .tree .meta { grid-column: 3; }
+  .phone .log a.commit { display: inline-flex; align-items: center; min-height: 24px; padding: 0 2px; }
 </style>
 </head>
 <body>
 <div class="mock-head">
   <p class="mock-back"><a href="index.html">All mockups</a></p>
   <p class="mock-title">Project: Code</p>
-  <p class="mock-routes">Covers <code>/p/NAME/code/PATH</code>, <code>/p/NAME/log</code>, <code>/p/NAME/commit/HASH</code>, <code>/p/NAME/history/PATH</code>, and a task's workspace under <code>/p/NAME/tN/code</code>. Drawn: <code>/p/ledger-core/code</code> (Files) and <code>/p/ledger-core/log</code> (Log).</p>
+  <p class="mock-routes">Covers <code>/p/NAME/code/PATH</code>, <code>/p/NAME/log</code>, <code>/p/NAME/commit/HASH</code>, <code>/p/NAME/history/PATH</code>, and a task's workspace under <code>/p/NAME/tN/code</code>. Drawn, each at desktop and phone width: <code>/p/ledger-core/code</code> (Files) and <code>/p/ledger-core/log</code> (Log).</p>
 </div>
 
 <div class="frames">
 <figure class="frame desktop">
-<figcaption>Desktop · 1440 · Files</figcaption>
+<figcaption>Desktop · 1440 · /p/ledger-core/code (Files)</figcaption>
 <div class="screen">
 <header class="ob">
   <a class="skip" href="#d-main">Skip to content</a>
@@ -73,7 +76,7 @@ npm test   runs the suite (418 tests)</div><a class="mk" href="#n4">4</a>
 </figure>
 
 <figure class="frame phone">
-<figcaption>Phone · 390 · Files</figcaption>
+<figcaption>Phone · 390 · /p/ledger-core/code (Files)</figcaption>
 <div class="screen">
 <header class="ob phone">
   <a class="skip" href="#p-main">Skip to content</a>
@@ -104,7 +107,7 @@ npm test   runs the suite (418 tests)</div><a class="mk" href="#n4">4</a>
 </figure>
 
 <figure class="frame desktop small">
-<figcaption>Desktop · 1440 · Log (page 1 of 4)</figcaption>
+<figcaption>Desktop · 1440 · /p/ledger-core/log (Log, page 1 of 4)</figcaption>
 <div class="screen">
 <header class="ob">
   <nav class="r1" aria-label="Atelier"><a class="brand" href="/decisions">Atelier</a><ul><li><a href="/decisions">Decisions <span class="count">(14)</span></a></li><li><a href="/home" aria-current="true">Projects</a></li><li><a href="/studio">Activity</a></li></ul><span class="spacer"></span><details><summary>Ledger Core ▾</summary></details><details><summary>Owner ▾</summary></details></nav>
@@ -123,6 +126,35 @@ npm test   runs the suite (418 tests)</div><a class="mk" href="#n4">4</a>
 </main>
 </div>
 </figure>
+<figure class="frame phone">
+<figcaption>Phone · 390 · /p/ledger-core/log (Log, page 1 of 4)</figcaption>
+<div class="screen">
+<header class="ob phone">
+  <a class="skip" href="#pl-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <a href="/decisions">Decisions <span class="count">(14)</span></a>
+    <span class="spacer"></span>
+    <details><summary>Menu ▾</summary><div class="menu-panel"><a href="/home">Projects</a><a href="/studio">Activity</a><hr><a href="/models">Models</a><a href="/usage">Usage</a><a href="/logout">Sign out</a></div></details>
+  </nav>
+  <nav class="r2" aria-label="Project">
+    <p class="loc"><a href="/p/ledger-core">Ledger Core</a><span class="sep">›</span><span>Code</span></p>
+    <ul class="tabs"><li><a href="/p/ledger-core">Overview</a></li><li><a href="/p/ledger-core/tasks">Tasks (200)</a></li><li><a href="/p/ledger-core/code" aria-current="page">Code</a></li><li><a href="/p/ledger-core/flow">Activity</a></li><li><a href="/p/ledger-core/settings">Settings</a></li></ul>
+  </nav>
+</header>
+<main id="pl-main" class="app-main">
+  <h1>Log · 157 commits</h1>
+  <nav aria-label="Code views" class="switch"><a href="/p/ledger-core/code">Files</a><a href="/p/ledger-core/log" aria-current="page">Log</a></nav>
+  <ul class="rows tree log" style="margin-top:12px">
+    <li class="f-openai"><span class="stripe"></span><span><a href="/p/ledger-core/commit/7e21b04" class="commit">7e21b04</a> Validate ISO 4217 codes on import <span class="muted">(t156)</span></span><span class="meta">2 h</span></li>
+    <li class="f-anthropic"><span class="stripe"></span><span><a href="/p/ledger-core/commit/c09d1e2" class="commit">c09d1e2</a> Show closing balance per period <span class="muted">(t155)</span></span><span class="meta">5 h</span></li>
+    <li class="f-zai"><span class="stripe"></span><span><a href="/p/ledger-core/commit/41aa8f0" class="commit">41aa8f0</a> Fix off-by-one in statement ranges <span class="muted">(t153)</span></span><span class="meta">9 h</span></li>
+    <li class="f-google"><span class="stripe"></span><span><a href="/p/ledger-core/commit/9b3c771" class="commit">9b3c771</a> Seed chart of accounts for tests <span class="muted">(t151)</span></span><span class="meta">1 d</span></li>
+  </ul>
+  <nav class="pager" aria-label="Pages"><span>1–50 of 157 <a class="mk" href="#n6">6</a></span><span class="row-flex"><span class="btn small" aria-disabled="true">← Newer</span><a class="btn small" href="?page=1">Older →</a></span></nav>
+</main>
+</div>
+</figure>
 </div>
 
 <section class="notes" aria-labelledby="notes-h">
@@ -133,6 +165,7 @@ npm test   runs the suite (418 tests)</div><a class="mk" href="#n4">4</a>
     <li id="n3"><span class="num">3</span><div>The family stripe is kept (a strength) and the last change is also written in words, so colour never carries it alone. <span class="cite">F20, F17 → P14</span></div></li>
     <li id="n4"><span class="num">4</span><div>File views and code lines (<code>tabindex="0"</code>) get the same 2 px focus ring as links. <span class="cite">F16 → P13</span></div></li>
     <li id="n5"><span class="num">5</span><div>The Log keeps its 50-a-page paging with Newer/Older; "no commits yet" and "no workspace" become in-shell messages that keep this row. <span class="cite">F6, F14 → P2</span></div></li>
+    <li id="n6"><span class="num">6</span><div>The Log on a phone: the author moves into the family stripe, the hash leads the message on one line that wraps, and each commit link is at least 24 px high (the live Log's are 21 px at 390). Commit and path-history pages use this same phone frame. <span class="cite">F6, F17 → P1, P16</span></div></li>
   </ol>
 </section>
 </body>

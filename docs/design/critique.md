@@ -1,7 +1,7 @@
 # Design critique: every owner and public page
 
 Task t499, 2026-10-11, against [brief.md](brief.md). Findings are numbered
-**F1–F22** and ranked by severity: **Blocker** (wrong or unsafe: the page
+**F1–F23** and ranked by severity: **Blocker** (wrong or unsafe: the page
 says something false, or crosses the public boundary), **High** (the
 five-second question cannot be answered), **Medium** (slows the answer or
 fails a WCAG criterion in part), **Low** (polish). Each finding names the
@@ -14,7 +14,7 @@ proposals in [plan.md](plan.md) (**P1–P17**) that answer it.
 | Every page's HTML, drawn by the production renderers from the seeded fixture | `test/fixtures/design/render.design.ts` (`npm run design:capture`, render step) | **Measured** in this run: statuses, text, word counts, list sizes, link and form counts quoted below |
 | Fixture and page assertions | `test/fixtures/design/fixture.spec.ts` (in `npm test`) | **Passing**: 310 tasks, every state at its status and text, no secret on a public page |
 | Palette contrast | [contrast.md](contrast.md), from the tokens | **Measured** |
-| Full-page screenshots at 1440 and 390 px, rendered contrast, focus order, target size, reflow at 320 px | `npm run design:capture` → `screens/`, `screens/manifest.json`, `audit.json` | **Measured**: 96 screenshots of 48 states, source e9dbe08 (clean), Chromium 149.0.7827.55 (playwright-core 1.61.1), fixed time 2026-10-10 12:00 UTC. Every finding below was checked against them; corrections are marked *Capture:* |
+| Full-page screenshots at 1440 and 390 px, rendered contrast, focus order, target size, reflow at 320 px | `npm run design:capture` → `screens/`, `screens/manifest.json`, `audit.json` | **Measured**: 96 screenshots of 48 states, first at e9dbe08 and recaptured at c2915e3 (clean; `screens/manifest.json` and `audit.json` name it), Chromium 149.0.7827.55 (playwright-core 1.61.1), fixed time 2026-10-10 12:00 UTC. Every finding below was checked against them; corrections are marked *Capture:* |
 | The earlier sketch's 20 screenshots (d6db01d, older fixture) | `screens/sketch-d6db01d/` | **Measured heights** quoted where they bear on a finding |
 | Live atelier.zone | The owner's note on t499 | `/p/atelier` is 27,968 px tall at 1440; t435's page said Ready after a send-back |
 
@@ -118,7 +118,7 @@ again). Home counts distinct tasks whose entry is the owner's own call
 entry but a failing check, overlaps and scope changes included
 (`standingSection`, src/ui.ts); Decisions counts its own-call group across
 every project, with the orchestrator's entries in a second list.
-The owner cannot trust any number. → **P6** (t496).
+The owner cannot trust any number. → **P6** (t504, which replaced t496).
 
 ### F8. Sentences in place of state — Medium
 Sentences of 30 words or more in `<main>`: Decisions 14, Home 7, Models 7,
@@ -183,7 +183,9 @@ Measured ([contrast.md](contrast.md)): `--m-anthropic` 4.15, `--m-openai`
 4.03, `--m-google` 4.49 and `--m-qwen` 3.88 on `--inset`; `--m-openai`
 4.46 and `--m-qwen` 4.29 on the sheet. These colour text in `.lane .who
 strong`, `.journey .n` and the legends. Every role token passes in both
-schemes. → **P14** (palette changes wait for t367).
+schemes. → **P14**. Palette B (brief §1.1, t367 at 7d64b297) sets new
+light family colours that measure 5.30 or more on every light surface, so
+P14 is met by t367 for these five families once it merges.
 
 ### F18. The live state is hidden — Low
 The "Live" note sits in the rail's foot; when it refreshes is shown only on
@@ -210,6 +212,16 @@ no skip link, and on `public-showcase` 8 of its 13 stops are graph beads
 with no indicator, so a visitor's focus disappears into the story threads.
 → **P13**, **P2**.
 
+### F23. Task pages and Decisions scroll sideways at 320 px — Medium (WCAG 1.4.10)
+*Capture:* `audit.json` records ten states whose page is wider than the
+320 px viewport: every task page with a submission round (`task-failed`,
+`task-unreadable`, `task-ready`, `task-protected`, `task-sent-back`,
+`task-accepted`, `task-scope`, `task-merged`, 345–364 px) and Decisions
+with such a task selected (`decisions` 358 px, `decisions-sent-back`
+357 px). The cause is the round summary's full 40-character head hash,
+which cannot wrap; on `task-open-long` the closed "Send to an agent" form
+overflows too once opened. Details in Reflow below. → **P3**, **P16**.
+
 ### F20. What is strong — keep
 - The public showcase's redaction is complete for every secret in the
   fixture (Public data below), and it reads well as a portfolio.
@@ -233,8 +245,8 @@ state id (written by `npm run design:capture`; see the status table above).
 | Visitor on owner URL `public-owner-route` | [1440](screens/public-owner-route-1440.png) · [390](screens/public-owner-route-390.png) | Same answer for any name: no enumeration | Owner rail (F2); "Let's resolve this." | Blocker | P2 |
 | Sign in `signin` | [1440](screens/signin-1440.png) · [390](screens/signin-390.png) | Clear single form; backdrop is decorative and `aria-hidden` | Backdrop draws 12 threads behind the form: the audit reads CSS backgrounds, not the drawn threads, so contrast over them is still unmeasured; no skip link (F22) | Low | P13 |
 | Home `home` | [1440](screens/home-1440.png) · [390](screens/home-390.png) | Cards put waiting work first; family bars | 32-word lead (F8); the unreadable project's card shows four zeros (F21); counts disagree with Overview and Decisions (F7); Flow and History only as a sentence (F1); the showcase select on every card mixes a setting into a status page | High | P1, P6, P10, P17 |
-| Decisions `decisions` | [1440](screens/decisions-1440.png) · [390](screens/decisions-390.png) | Next decision beside its evidence; phone shows list and detail as two views | 14 long sentences; orchestrator list unbounded (F6); overlap reasons repeated (F9) | High | P6 |
-| Decisions, sent back `decisions-sent-back` | [1440](screens/decisions-sent-back-1440.png) · [390](screens/decisions-sent-back-390.png) | The note is shown | Badge "In review", line "Changes requested", button Approve (F3) | Blocker | P3 |
+| Decisions `decisions` | [1440](screens/decisions-1440.png) · [390](screens/decisions-390.png) | Next decision beside its evidence; phone shows list and detail as two views | 14 long sentences; orchestrator list unbounded (F6); overlap reasons repeated (F9); page scrolls sideways at 320 (F23) | High | P6, P16 |
+| Decisions, sent back `decisions-sent-back` | [1440](screens/decisions-sent-back-1440.png) · [390](screens/decisions-sent-back-390.png) | The note is shown | Badge "In review", line "Changes requested", button Approve (F3); page scrolls sideways at 320 (F23) | Blocker | P3, P16 |
 | Decisions, blocked `decisions-blocked` | [1440](screens/decisions-blocked-1440.png) · [390](screens/decisions-blocked-390.png) | Reason and who blocked | Recommendation "decide" names no decision | Medium | P3 |
 | Studio `studio` | [1440](screens/studio-1440.png) · [390](screens/studio-390.png) | Lanes show who holds what | Meta refresh (F15); 6,000 px at 1440, 9,807 at 390; the three stale lanes (t163–t165, last push 1 d ago) are tagged "Working" like the rest, and only their long tinted bars hint at age (F3) | Medium | P12, P7 |
 | Flow `flow` | [1440](screens/flow-1440.png) · [390](screens/flow-390.png) | The whole portfolio's threads | 1.5 MB, 1,681 links (F10); no rail entry (F1) | Medium | P8, P1 |
@@ -255,26 +267,27 @@ state id (written by `npm run design:capture`; see the status table above).
 | No commits `code-no-commits` | [1440](screens/code-no-commits-1440.png) · [390](screens/code-no-commits-390.png) | Says why | Error shell: tabs and project lost (F2) | Low | P2 |
 | Log `log`, `log-page-2` | [1440](screens/log-1440.png) · [390](screens/log-390.png), [p2](screens/log-page-2-1440.png) | The only paged list (50) | "Log" and "History" mean different things in the tabs and the rail | Low | P1 |
 | Commit `commit`, path history `path-history` | [1440](screens/commit-1440.png) · [390](screens/commit-390.png), [path](screens/path-history-1440.png) | Diff per file | — | Low | P1 |
-| Task, open long `task-open-long` | [1440](screens/task-open-long-1440.png) · [390](screens/task-open-long-390.png) | Brief and criteria in full on the one page that shows them | Brief unfolded before state (F19): at 390 the brief fills about 520 px before "Ready to start" | Medium | P3 |
+| Task, open long `task-open-long` | [1440](screens/task-open-long-1440.png) · [390](screens/task-open-long-390.png) | Brief and criteria in full on the one page that shows them | Brief unfolded before state (F19): at 390 the brief fills about 520 px before "Ready to start"; opening "Send to an agent" makes the page scroll sideways at 320 (F23) | Medium | P3, P16 |
 | Task, working `task-working` | [1440](screens/task-working-1440.png) · [390](screens/task-working-390.png) | Revision and holder | Actions before evidence (F5) | High | P3 |
 | Task, stale `task-stale` | [1440](screens/task-stale-1440.png) · [390](screens/task-stale-390.png) | — | Not called stale; "wait" recommendation (F3) | High | P3, P7 |
 | Task, blocked `task-blocked` | [1440](screens/task-blocked-1440.png) · [390](screens/task-blocked-390.png) | Who, when, why, and Unblock | "decide" verdict without a decision | Medium | P3 |
-| Task, failed `task-failed` | [1440](screens/task-failed-1440.png) · [390](screens/task-failed-390.png) | Failed check opens with its output tail | Badge "In review" (F3) | High | P3 |
-| Task, ready, diff unreadable `task-unreadable` | [1440](screens/task-unreadable-1440.png) · [390](screens/task-unreadable-390.png) | Refuses to accept unseen changes | Says Ready and unavailable at once (F4) | Blocker | P3 |
-| Task, ready `task-ready` | [1440](screens/task-ready-1440.png) · [390](screens/task-ready-390.png) | One primary action; summary marked "not verified" | Badge "In review" beside "Ready to accept" (F3) | High | P3 |
-| Task, protected `task-protected` | [1440](screens/task-protected-1440.png) · [390](screens/task-protected-390.png) | Override needs the owner's own sign-in | 9 forms; 676 words before the diff | High | P3 |
-| Task, sent back `task-sent-back` | [1440](screens/task-sent-back-1440.png) · [390](screens/task-sent-back-390.png) | The reviewer's note is kept | Three answers (F3); Approve is primary | Blocker | P3 |
-| Task, accepted `task-accepted` | [1440](screens/task-accepted-1440.png) · [390](screens/task-accepted-390.png) | The exact merge command | — (*Capture:* the 40-hex command scrolls inside its `pre`; no page overflow at 320) | Low | P3 |
-| Task, scope `task-scope` | [1440](screens/task-scope-1440.png) · [390](screens/task-scope-390.png) | Out-of-scope files are listed | Accept offered before the warning (F4) | Blocker | P3 |
-| Task, merged `task-merged` | [1440](screens/task-merged-1440.png) · [390](screens/task-merged-390.png) | Diff as it landed; says deploy is separate | — | Low | — |
+| Task, failed `task-failed` | [1440](screens/task-failed-1440.png) · [390](screens/task-failed-390.png) | Failed check opens with its output tail | Badge "In review" (F3); page scrolls sideways at 320 (F23) | High | P3, P16 |
+| Task, ready, diff unreadable `task-unreadable` | [1440](screens/task-unreadable-1440.png) · [390](screens/task-unreadable-390.png) | Refuses to accept unseen changes | Says Ready and unavailable at once (F4); page scrolls sideways at 320 (F23) | Blocker | P3, P16 |
+| Task, ready `task-ready` | [1440](screens/task-ready-1440.png) · [390](screens/task-ready-390.png) | One primary action; summary marked "not verified" | Badge "In review" beside "Ready to accept" (F3); page scrolls sideways at 320 (F23) | High | P3, P16 |
+| Task, protected `task-protected` | [1440](screens/task-protected-1440.png) · [390](screens/task-protected-390.png) | Override needs the owner's own sign-in | 9 forms; 676 words before the diff; page scrolls sideways at 320 (F23) | High | P3, P16 |
+| Task, sent back `task-sent-back` | [1440](screens/task-sent-back-1440.png) · [390](screens/task-sent-back-390.png) | The reviewer's note is kept | Three answers (F3); Approve is primary; page scrolls sideways at 320 (F23) | Blocker | P3, P16 |
+| Task, accepted `task-accepted` | [1440](screens/task-accepted-1440.png) · [390](screens/task-accepted-390.png) | The exact merge command | The 40-hex command scrolls inside its `pre`, but the page still scrolls sideways at 320 (350 px): the submission round's unbreakable head hash (F23) | Medium | P3, P16 |
+| Task, scope `task-scope` | [1440](screens/task-scope-1440.png) · [390](screens/task-scope-390.png) | Out-of-scope files are listed | Accept offered before the warning (F4); page scrolls sideways at 320 (F23) | Blocker | P3, P16 |
+| Task, merged `task-merged` | [1440](screens/task-merged-1440.png) · [390](screens/task-merged-390.png) | Diff as it landed; says deploy is separate | Page scrolls sideways at 320 (F23) | Medium | P3, P16 |
 | Task, closed `task-abandoned` | [1440](screens/task-abandoned-1440.png) · [390](screens/task-abandoned-390.png) | t498's single headline, "Task closed", says the history remains | Still shows a merge preview ("Up to date… merges as it is") and two "Waiting" required checks ("The task owner must run this required check") for work that will never merge; "Submission history is unavailable" twice | Low | P3 |
 | Task not found `task-not-found` | [1440](screens/task-not-found-1440.png) · [390](screens/task-not-found-390.png) | 404 | "refresh the evidence" advice (F2) | Medium | P2 |
 | Fork browsed `fork-code`; no fork `fork-none` | [1440](screens/fork-code-1440.png) · [390](screens/fork-code-390.png), [none](screens/fork-none-1440.png) | Same browser for fork and baseline | Error shell loses the task (F2) | Low | P2 |
 
 ## Separate checks
 
-All "measured" numbers below are from `audit.json` (source e9dbe08,
-Chromium 149.0.7827.55), checked at 1440 in light and dark and at 390 and
+All "measured" numbers below are from `audit.json` (source c2915e3,
+clean, Chromium 149.0.7827.55; re-read for this section on 2026-10-11),
+checked at 1440 in light and dark and at 390 and
 320 px. An automated pass is not a conformance claim: it misses meaning,
 order that is logical but wrong, and text over drawn backgrounds.
 
@@ -286,17 +299,20 @@ order that is logical but wrong, and text over drawn backgrounds.
   normal text in light on the sheet and inset (F17). The focus ring
   (`--signal-hot`) is at least 6.05:1 against every surface (1.4.11 met for
   the ring's own colour).
-- **Rendered, measured**: 13,402 text elements checked across the 48 states
-  in both schemes. **Dark: no failure. Light: 33 failures, all small text**:
+- **Rendered, measured**: 15,080 text elements checked across the 48 states
+  in both schemes. **Dark: no failure. Light: 21 failures, all small text**:
   - family colours as graph labels, as F17 predicted: GPT `#0b7a5c` on
     `#e4e0d5` 4.03 (every task page's thread, 11 states) and on `#eeebe2`
-    4.46 (`decisions*`, `public-showcase`); Qwen `#4d7a12` on `#eeebe2` 4.29;
+    4.46 (`decisions*`, `public-showcase`); Qwen `#4d7a12` on `#eeebe2` 4.29
+    (the same four states);
     Claude `#b4461c` 4.15 as a filter link on `flow-filtered`;
   - the selected Decisions row's "Ready to accept" tag, `#1d6b3c` on the
     selection tint `#ccd2c3`, 4.21 (`decisions`): new, a role colour on a
     tinted surface the token table does not cover. → **P14**, **P16**.
-- **Not measured**: 3,728 elements sit over a background image or gradient
-  (the task sheet, mostly; 60–103 per task page in each scheme) and are counted as unknown,
+- **Not measured**: 3,854 elements sit over a background image or gradient
+  (the flow graphs and the task sheet, mostly: 714 on `flow` and 428 on
+  `project-flow`, both schemes together; up to 107 per task page in one
+  scheme) and are counted as unknown,
   not passing. Text over the sign-in backdrop's drawn threads is read
   against the CSS background only. Non-text contrast (1.4.11) of tag
   borders, bead strokes and chart bars is not measured.
@@ -312,9 +328,9 @@ order that is logical but wrong, and text over drawn backgrounds.
 - **Measured, indicators**: no stop without an indicator except graph beads
   (F16, F22); `select` and the code lines use the browser's default ring.
 - **Measured, length**: the walk stops at 200 stops; `flow`, `project-flow`,
-  `history` and `tasks` reach it, so the main content of each is more than
+  `history`, `tasks` and `project` reach it, so the main content of each is more than
   200 stops long and has no skip-the-list or skip-the-graph link (F6, F10).
-  `decisions*` take 126–129 stops.
+  `decisions*` take 126–130 stops.
 - **Measured, obscured**: no stop was off screen when focused (2.4.11).
 - **Measured, target size at 390** (2.5.8, links in running text excepted):
   graph beads at 11–19 px are the bulk (975 on `flow`, 711 on
@@ -327,15 +343,50 @@ order that is logical but wrong, and text over drawn backgrounds.
   label text recorded, and focus behaviour inside the opened forms.
 
 ### Reflow (WCAG 1.4.10, 1.4.4)
-- **Measured at 320 px**: no state scrolls the page sideways; graphs and
-  `pre` blocks scroll inside their frames (permitted).
-- **Measured, one exception**: on `task-open-long` ten elements of a form
-  (labels, a select, inputs, the primary button) reach 370 px with no
-  scrolling ancestor. The audit does not check visibility, so this is
-  probably the closed "Send to an agent" form; whether it overflows when
-  opened is not verified. → **P16**.
+- **Measured at 320 px** (`audit.json`, each state's `1440.reflow320`: the
+  page drawn at 1440, then the viewport narrowed to 320 × 640): **ten of
+  the 48 states scroll the page sideways** (`overflows: true`, document
+  `scrollWidth` over 320). This fails 1.4.10 on every task page with a
+  submission and on Decisions with a task selected (F23):
+
+  | State | Address | Page width at 320 | Past the edge |
+  |---|---|---|---|
+  | `decisions` | `/decisions` | 358 px | 38 px |
+  | `decisions-sent-back` | `/decisions?project=ledger-core&task=t197` | 357 px | 37 px |
+  | `task-failed` | `/p/ledger-core/t188` | 351 px | 31 px |
+  | `task-unreadable` | `/p/ledger-core/t191` | 364 px | 44 px |
+  | `task-ready` | `/p/ledger-core/t192` | 348 px | 28 px |
+  | `task-protected` | `/p/ledger-core/t195` | 345 px | 25 px |
+  | `task-sent-back` | `/p/ledger-core/t197` | 357 px | 37 px |
+  | `task-accepted` | `/p/ledger-core/t198` | 350 px | 30 px |
+  | `task-scope` | `/p/ledger-core/t200` | 355 px | 35 px |
+  | `task-merged` | `/p/ledger-core/t1` | 351 px | 31 px |
+
+  The other 38 states fit at 320; their graphs and `pre` blocks scroll
+  inside their own frames (permitted).
+- **Cause**, which the audit does not name: its offender list is empty for
+  all ten, because it reports only elements whose box passes the edge, and
+  here it is text overflowing its box. Re-reading the same rendered pages
+  at 320 px for this fix (a scratch probe with Playwright over the render
+  step's HTML; web fonts blocked, so widths run 5–14 px wider than the
+  audit's; no screenshot taken) finds one text run past the edge in each:
+  the submission round's summary, "Submission · event N · Head" followed by
+  the full 40-character head hash, which cannot wrap
+  (`src/ui.ts:1670`, the rounds by submission that t498 added). States with
+  no submission round (`task-working`, `task-stale`, `task-blocked`,
+  `task-abandoned`, `decisions-blocked`) do not overflow, which agrees.
+  → **P3** (the round summary shows a short hash and wraps), **P16**.
+- **Measured, closed form**: on `task-open-long` the page fits
+  (`scrollWidth` 320), but ten elements of a form (labels, two selects,
+  inputs, the primary button) reach 370 px with no scrolling ancestor. They
+  are the closed "Send to an agent" form (`/ui/ledger-core/t168/dispatch`):
+  the same probe found them invisible with the `<details>` closed, and with
+  it opened the page widens to about 385 px (fonts blocked). So an owner who
+  opens it on a phone gets sideways scrolling: an eleventh failing state,
+  reachable by one click. → **P16**.
 - **Captured at 390**: titles of 79 characters wrap to four lines; the
-  project tabs wrap to two rows (F1).
+  project tabs wrap to two rows (F1). The 390 px audit records structure and
+  target sizes only, not overflow.
 - **Not measured**: 200% text zoom (1.4.4) and text-spacing overrides
   (1.4.12).
 
