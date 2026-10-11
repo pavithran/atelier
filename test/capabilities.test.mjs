@@ -231,11 +231,13 @@ test("main's identity and reviewer admission guarantees keep their legacy bounda
 // (t353): a server at 20, which has the review routes but refuses the skip,
 // and one at 21, which refuses a runner token's skip, are both short.
 test("the review job requires the skip routes, and a legacy server from before them is refused", () => {
-  assert.deepEqual(JOB_CAPABILITIES.review, ["projects.commit-identity.v1", "reviews.criteria-binding.v1", "reviews.unparsable.v1", "reviews.skip.v1", "reviews.skip-as-runner.v1", "runners.scoped-token.v1"]);
-  assert.deepEqual(checkCapabilities({ routeLevel: 20 }, requiredForJobs(["review"])).missing, ["projects.commit-identity.v1", "reviews.skip.v1", "reviews.skip-as-runner.v1"]);
-  assert.deepEqual(checkCapabilities({ routeLevel: 21 }, requiredForJobs(["review"])).missing, ["projects.commit-identity.v1", "reviews.skip-as-runner.v1"]);
-  assert.equal(checkCapabilities({ routeLevel: 24 }, requiredForJobs(["review"])).ok, true);
-  assert.equal(checkCapabilities({ routeLevel: 24 }, requiredForJobs([...DEFAULT_JOBS, "review", "integrate", "refresh"])).ok, true, "no job asks for the areas");
+  assert.deepEqual(JOB_CAPABILITIES.review, ["projects.commit-identity.v1", "reviews.criteria-binding.v1", "reviews.lease.v1", "reviews.unparsable.v1", "reviews.skip.v1", "reviews.skip-as-runner.v1", "runners.scoped-token.v1"]);
+  assert.deepEqual(checkCapabilities({ routeLevel: 20 }, requiredForJobs(["review"])).missing, ["projects.commit-identity.v1", "reviews.lease.v1", "reviews.skip.v1", "reviews.skip-as-runner.v1"]);
+  assert.deepEqual(checkCapabilities({ routeLevel: 21 }, requiredForJobs(["review"])).missing, ["projects.commit-identity.v1", "reviews.lease.v1", "reviews.skip-as-runner.v1"]);
+  // A server before t351's claim leases (level 25) would accept the claim and then refuse every renewal.
+  assert.deepEqual(checkCapabilities({ routeLevel: 25 }, requiredForJobs(["review"])).missing, ["reviews.lease.v1"]);
+  assert.equal(checkCapabilities({ routeLevel: 26 }, requiredForJobs(["review"])).ok, true);
+  assert.equal(checkCapabilities({ routeLevel: 26 }, requiredForJobs([...DEFAULT_JOBS, "review", "integrate", "refresh"])).ok, true, "no job asks for the areas");
   const short = checkCapabilities({ capabilities: SERVER_CAPABILITIES.filter((n) => n !== "reviews.skip-as-runner.v1") }, requiredForJobs(["review"]));
   assert.deepEqual(short.missing, ["reviews.skip-as-runner.v1"]);
   assert.equal(checkCapabilities({ capabilities: SERVER_CAPABILITIES.filter((n) => n !== "reviews.skip-as-runner.v1") }, requiredForJobs(["build"])).ok, true);

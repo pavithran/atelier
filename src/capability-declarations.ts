@@ -14,5 +14,6 @@ export const CAPABILITY_DECLARATIONS = [
   { name: "projects.commit-identity.v1", level: 24, summary: "project policy carries commitIdentity; init records commitName, commitEmail, agentEmails, privateEmails and publicMirrors" },
   { name: "runners.scoped-token.v1", level: 20, summary: "runner-scoped API credentials and the revocable Git gateway" },
   { name: "areas.manage.v1", level: 23, summary: "the area routes (list, create, rename, remove) and a task's assignment to an area by new and edit --area" },
+  { name: "reviews.lease.v1", level: 26, summary: "five-minute review claim leases: review-renew, and release, unparsable and verdicts naming the claim generation (--request)" },
   { name: "areas.board.v1", level: 23, summary: "the board snapshot, every task grouped by function area, which atelier board and the project page read" },
 ] as const;
