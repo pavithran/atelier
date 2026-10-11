@@ -204,3 +204,22 @@ it("aliases cannot be reassigned across project admissions and alias claims can 
   expect((await L.reviewRequests("t1")).at(-1)?.state).toBe("withdrawn");
   await refusal(L.claimReview("t1", ALIAS, runner), "reviewer_withdrawn");
 });
+
+it("admitted aliases renew and release only their current claim generation", async () => {
+  const L = await setup("admission-lease-generation");
+  await admit(L);
+  await L.requestReview("t1", "owner", ALIAS, POOL, false, false, undefined, offers());
+  const first = await L.claimReview("t1", ALIAS, runner) as unknown as ReviewClaim;
+  await L.renewReview("t1", ALIAS, first.request);
+  await L.releaseReview("t1", ALIAS, "Restart", true, first.request);
+  const next = await L.claimReview("t1", ALIAS, runner) as unknown as ReviewClaim;
+  expect(next.request).not.toBe(first.request);
+  await refusal(L.renewReview("t1", ALIAS, first.request), "stale_request");
+  await refusal(L.releaseReview("t1", ALIAS, "Late cleanup", true, first.request), "stale_request");
+  expect(await L.unparsableReview("t1", ALIAS, HEAD, "Late reply", "unusable", true, first.request)).toEqual({ released: false });
+  await refusal(L.addReview({ ...await review(L, ALIAS), request: first.request }, undefined, true), "stale_request");
+  await L.addReview({ ...await review(L, ALIAS), request: next.request }, undefined, true);
+  expect((await detail(L)).reviews.at(-1)).toMatchObject({ by: REVIEWER, recordedBy: ALIAS, claimed: true, request: next.request });
+  expect((await detail(L)).gate.ready).toBe(true);
+  await refusal(L.addReview({ ...await review(L, ALIAS), request: next.request }, undefined, true), "stale_request");
+});
