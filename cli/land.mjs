@@ -767,49 +767,55 @@ const isRunnerRoute = (url) => typeof url === "string" && RUNNER_ROUTE.test(url.
 const shownRemote = (url) => String(url).replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/@]*@/i, "$1");
 
 // Where origin fetches from and pushes to, as the workspace's Git config
-// records them: the fetch URL, and the push URL where one is set apart.
+// records them, every value of each key: Git fetches from the first URL
+// and pushes to every URL, or to every push URL where any is set apart, so
+// a route that is one of several is read where `--get` would answer only
+// the last. Each URL is trimmed; blank values are left out.
 function originUrls(io, dir) {
-  const read = (key) => {
-    const r = io.git(["config", "--local", key], { cwd: dir, allowFail: true });
-    return r && r.status === 0 ? String(r.stdout ?? "").trim() || null : null;
+  const readAll = (key) => {
+    const r = io.git(["config", "--local", "--get-all", key], { cwd: dir, allowFail: true });
+    return r && r.status === 0 ? String(r.stdout ?? "").split("\n").map((u) => u.trim()).filter(Boolean) : [];
   };
-  return { url: read("remote.origin.url"), pushUrl: read("remote.origin.pushurl") };
+  const urls = readAll("remote.origin.url"), pushUrls = readAll("remote.origin.pushurl");
+  return { urls, pushUrls, url: urls[0] ?? null, destinations: [...urls, ...pushUrls] };
 }
 
-// The runner route origin still fetches from or pushes to, or null for a
-// workspace on its fork.
+// The runner route origin still fetches from or pushes to, among every URL
+// it is configured with, or null for a workspace on its fork.
 function runnerRouteOf(io, dir) {
-  const { url, pushUrl } = originUrls(io, dir);
-  return [url, pushUrl].find(isRunnerRoute) ?? null;
+  return originUrls(io, dir).destinations.find(isRunnerRoute) ?? null;
 }
 
 // How the workspace uses the route, for a message: as its fetch and push
-// URL, or as a push URL set apart from a fetch URL that is not the route.
+// URL, as a fetch URL alone where push URLs set apart name no route, or as
+// a push URL (one of several, or set apart from a fetch URL that is not
+// the route).
 function routeUse(io, dir, route) {
-  const { url, pushUrl } = originUrls(io, dir);
-  return isRunnerRoute(url) ? (pushUrl && !isRunnerRoute(pushUrl) ? "fetches from" : "fetches from and pushes to") : "pushes to";
+  const { url, pushUrls } = originUrls(io, dir);
+  return isRunnerRoute(url) ? (pushUrls.length && !pushUrls.some(isRunnerRoute) ? "fetches from" : "fetches from and pushes to") : "pushes to";
 }
 
 // The remote a re-claim answered, taken as origin's one destination (t488).
-// A fork workspace whose origin is that remote, with no push URL apart, is
-// left as it is. Otherwise origin's fetch URL becomes the remote, a push URL
-// set apart is dropped (the fork serves both), and any header .git/config
-// holds for a URL origin no longer uses is removed, so no request carries
-// the runner's credential to the fork or the fork's to the route (the
-// credentials file is rewritten whole by the token's adoption that follows).
-// A claim that answers no remote, or another runner route — the landing's
-// own credential is a runner's, which cannot land — stops here. Answers
-// whether origin moved.
+// A fork workspace whose origin is that remote alone, with no push URL
+// apart, is left as it is. Otherwise every fetch URL of origin is replaced
+// by the remote, every push URL set apart is dropped (the fork serves
+// both), and any header .git/config holds for a URL origin no longer uses
+// is removed, so no request carries the runner's credential to the fork or
+// the fork's to the route (the credentials file is rewritten whole by the
+// token's adoption that follows). A claim that answers no remote, or
+// another runner route — the landing's own credential is a runner's, which
+// cannot land — stops here. Answers whether origin moved.
 function adoptWorkspaceRemote(io, { dir, id, holder }, remote) {
   if (typeof remote !== "string" || !remote.trim()) throw new StepError(`the re-claim of ${id} as ${holder} returned no workspace remote`);
   if (isRunnerRoute(remote)) throw new StepError(`the re-claim of ${id} as ${holder} answered another runner route (${shownRemote(remote)}) rather than ${id}'s fork, so this landing's own credential is a runner token's; land with the owner's credential`);
-  const { url, pushUrl } = originUrls(io, dir);
-  if (url === remote && !pushUrl) return false;
-  const stale = [url, pushUrl].filter((u) => u && u !== remote);
-  io.git(url ? ["remote", "set-url", "origin", remote] : ["remote", "add", "origin", remote], { cwd: dir });
-  if (pushUrl) {
+  const { urls, pushUrls, destinations } = originUrls(io, dir);
+  if (urls.length === 1 && urls[0] === remote && !pushUrls.length) return false;
+  const stale = [...new Set(destinations.filter((u) => u !== remote))];
+  // --replace-all leaves origin one fetch URL where it held several.
+  io.git(urls.length ? ["config", "--local", "--replace-all", "remote.origin.url", remote] : ["remote", "add", "origin", remote], { cwd: dir });
+  if (pushUrls.length) {
     const dropped = io.git(["config", "--local", "--unset-all", "remote.origin.pushurl"], { cwd: dir, allowFail: true });
-    if (dropped.status !== 0 && dropped.status !== 5) throw new StepError(`origin's push URL could not be dropped from ${id}'s workspace:\n${String(dropped.stderr ?? "").trim()}`);
+    if (dropped.status !== 0 && dropped.status !== 5) throw new StepError(`origin's push URLs could not be dropped from ${id}'s workspace:\n${String(dropped.stderr ?? "").trim()}`);
   }
   for (const old of stale) {
     // Exit status 5 means .git/config held no such header.
