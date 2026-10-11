@@ -1666,7 +1666,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       let suggestion;
       // atelier dispatch with no --agent asks for the suggestion; a dispatch
       // that names no agent without asking stays open to any runner's agent.
-      if (body.suggest === true && !body.agent && body.job !== "merge-main") {
+      // An overlap override of an existing dispatch keeps its builder
+      // restrictions unless named, so it asks for no suggestion.
+      if (body.suggest === true && !body.agent && body.job !== "merge-main" && !(body.overlapOk === true && (await L.item(id)).dispatch)) {
         requireOwner(env, actor);
         const [pool, track, item, p] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project()]);
         suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env) }, body);
