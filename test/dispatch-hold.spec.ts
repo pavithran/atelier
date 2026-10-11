@@ -211,3 +211,17 @@ it("an expired lease followed by a new blocker between polls starts a fresh hold
     } finally { Date.now = clock; }
   });
 });
+
+it("releasing a core hold retains its builder and queue position and clears its persisted age", async () => {
+  const L = await setup("dispatch-hold-retained");
+  await L.dispatch("t2", "owner", { to: "home", agent: "codex", model: "gpt-6-astra", note: "Keep this builder" });
+  const original = (await L.item("t2")).dispatch!;
+  expect((await L.waiting())[0].held).toBeDefined();
+  const released = await L.releaseHold("t2", "owner", { retainAt: original.at });
+  expect(released.dispatch).toEqual({ ...original, overlapOk: true });
+  expect((await L.waiting())[0].held).toBeUndefined();
+  await runInDurableObject(L, (_instance, state) => {
+    expect(JSON.parse(state.storage.sql.exec("SELECT value FROM meta WHERE key = 'core-holds'").one().value as string)).toEqual({});
+  });
+  expect((await L.item("t1")).state).toBe("claimed");
+});

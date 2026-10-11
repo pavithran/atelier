@@ -87,6 +87,11 @@ function fixture(t, { conflict, harness, kind = "part", findings = null, rescueR
     // The real runner's reset (resetTo in cli/runner.mjs): the uncommitted
     // work — a conflicted merge a landing left, say — is saved under
     // refs/atelier/rescue, then the workspace is reset hard and cleaned.
+    async prepare(cwd) {
+      calls.push({ prepare: true });
+      assert.ok(calls.some((c) => c.reset), "reset precedes preparation");
+      return { key: "prepared" };
+    },
     async reset(cwd) {
       calls.push({ reset: true });
       if (rescueReset) {
@@ -104,6 +109,7 @@ function fixture(t, { conflict, harness, kind = "part", findings = null, rescueR
     async jobBrief() { calls.push({ jobBrief: true }); return { job: findings ? "rework" : "build", text: kind === "part" ? "SERVER BRIEF" : findings ?? "", hash: "h" }; },
     async brief(workspace, text) { calls.push({ brief: text }); return { file: join(r.root, "brief.txt") }; },
     async harness(argv, cwd) { calls.push({ harness: argv }); return harness(cwd); },
+    async identityRefusals() { return []; },
     async removeBrief() {},
   };
   return { r, job, io, calls, logs };
@@ -398,4 +404,15 @@ test("a merge-main task whose harness leaves the conflicted merge uncommitted is
   assert.ok(!calls.some((c) => c.argv?.[0] === "finish"), "nothing is submitted");
   assert.ok(logs.includes("nothing to submit: a merge is in progress, and the harness changed nothing"), logs.join("\n"));
   assert.equal(git(r.workspace, "rev-parse", "HEAD"), before);
+});
+
+ test("a clean merge prepares its resulting tree before the harness-free finish", async (t) => {
+  const { io, job, calls, r } = fixture(t, { conflict: false, harness: () => assert.fail("no harness") });
+  io.prepare = async (cwd) => {
+    assert.ok(existsSync(join(cwd, "b.txt")), "preparation sees the merged input");
+    calls.push({ prepare: true });
+    return { key: "ready" };
+  };
+  assert.equal((await runTask(job, config, "home:studio", io)).phase, "submitted");
+  assert.ok(calls.findIndex((c) => c.prepare) < calls.findIndex((c) => c.argv?.[0] === "finish"));
 });

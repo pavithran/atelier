@@ -58,6 +58,18 @@ workspace to the task's head, where the builder cannot reach main.
 
 ## Build and plan runners without an owner token
 
+Projects can declare a workspace preparation command with `init --prepare`
+and its input and output paths. The runner runs it after workspace reset and
+automatic merges, before build or plan harnesses and harness-free merge
+finishes. Reviews, integrate and refresh jobs do not run preparation. Manual
+claims print the command and workspace directory for the caller to run.
+
+`ATELIER_PREPARE_TIMEOUT` sets the preparation deadline in positive integer
+milliseconds, from `1` through `2147483647`; it defaults to `600000` (ten
+minutes). Invalid values stop runner startup. Timeout or cancellation
+terminates and cleans up the preparation process group before claim handling.
+Failed preparation is an infrastructure failure and is never cached.
+
 Issue a runner credential **on the owner's machine**:
 
 ```sh
@@ -153,7 +165,7 @@ machine with no owner token:
 
 Do not promote the deployment if this smoke check fails. Local validation:
 `npm test`, `npm run typecheck`, `node --test cli/runner-token.test.mjs cli/runner-git.test.mjs` and
-`npx vitest run --config cli/runner-vitest.config.mjs`. The task-specific
+`npx vitest run src/runner-token.spec.mjs` (it runs under `npm test` too). The task-specific
 tests live in `src/` and `cli/` to stay within this task's scope.
 
 ## Setting up a runner
