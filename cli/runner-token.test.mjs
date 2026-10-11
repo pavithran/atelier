@@ -71,7 +71,9 @@ for (const job of ["build", "plan"]) test(`the real runner completes ${job} with
     queue: async () => [assignment],
     jobBrief: async () => ({ text: "Build the scoped change" }),
     postPlan: async (_project, _id, who, text) => { assert.equal(who, actor); assert.equal(JSON.parse(text).goal, "Change"); posted = true; return { valid: true, hash: "plan-hash" }; },
-    taskIO: { log: (line) => logs.push(line), reset: async () => {}, head: async () => ++headReads === 1 ? "before" : "after", dataHome: async () => null },
+    // The workspace is a bare folder no claim set up, so the builder
+    // identity check (t451) is stubbed to allow it.
+    taskIO: { log: (line) => logs.push(line), reset: async () => {}, head: async () => ++headReads === 1 ? "before" : "after", dataHome: async () => null, identityRefusals: async () => [] },
     executeChild: async (argv, options) => {
       if (argv[1]?.endsWith("atelier.mjs")) {
         assert.equal(options.env.ATELIER_RUNNER_TOKEN, token);
