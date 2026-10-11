@@ -1,7 +1,7 @@
 // atelier init. Its forms, flags and help are declared in src/usage/commands/init.ts.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { checkFiles } from "../../src/rules.ts";
+import { checkFiles, preparationPaths } from "../../src/rules.ts";
 import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../../src/checks.ts";
 import { buildHistory, loadPairs, savePairs } from "../fresh.mjs";
 import { pushHistory } from "../push-steps.mjs";
@@ -67,6 +67,27 @@ export default async function initCommand() {
     onServer = Array.isArray(list) && list.some((p) => p.name === name);
     registered = (Array.isArray(list) ? list.find((p) => p.name === name)?.policy : null) ?? { checks: [] };
   }
+  if (args["prepare-input"] !== undefined || args["prepare-output"] !== undefined) {
+    if (!args.prepare) die("--prepare-input and --prepare-output require --prepare CMD");
+  }
+  if (args.prepare !== undefined) {
+    if (typeof args.prepare !== "string") die("--prepare needs a command");
+    if (args.prepare === "") policy.prepare = null;
+    else {
+      const command = args.prepare.trim();
+      if (!command) die("--prepare needs a nonempty command, or an empty value to clear it");
+      const why = refusalOf(command);
+      const adapter = cp?.adapter ? adapterClasses(cp.adapter, [command]) : { declarations: [], refusals: [] };
+      if (why || adapter.refusals.length) die(`${why ? refusalText(command, why) : adapter.refusals[0].text}.\nNothing was sent.`);
+      let inputs, outputs;
+      try {
+        inputs = preparationPaths(listArg("prepare-input", "init"));
+        outputs = preparationPaths(listArg("prepare-output", "init"));
+      } catch (error) { die(error.message); }
+      const declaration = adapter.declarations[0] ?? (!knownReadOnly(command) && declaring !== undefined ? { command, by: "owner", note: declaring.trim() } : undefined);
+      policy.prepare = { command, inputs, outputs, ...(declaration ? { declaration } : {}) };
+    }
+  }
   const classed = policy.checks ?? registered?.checks ?? [];
   const fromAdapter = cp?.adapter ? adapterClasses(cp.adapter, classed) : { declarations: [], refusals: [] };
   const byWords = classed.flatMap((cmd) => { const why = refusalOf(cmd); return why ? [refusalText(cmd, why)] : []; });
@@ -78,7 +99,7 @@ export default async function initCommand() {
   const settled = new Set([...fromAdapter.refusals, ...fromAdapter.declarations, ...(registered?.checkClasses ?? [])].map((d) => d.command));
   const needing = classed.filter((cmd) => !refusalOf(cmd) && !knownReadOnly(cmd) && !settled.has(cmd));
   const owned = declaring === undefined ? [] : needing.map((command) => ({ command, by: "owner", note: declaring.trim() }));
-  if (declaring !== undefined && !owned.length) console.log("--declare-read-only declared nothing: every check is already known to be read-only.");
+  if (declaring !== undefined && !owned.length && !policy.prepare?.declaration) console.log("--declare-read-only declared nothing: every check is already known to be read-only.");
   if (fromAdapter.declarations.length || owned.length) policy.checkClasses = [...fromAdapter.declarations, ...owned];
   // The adapter's change_rules say which checks apply to which paths. A
   // first init, or one that names the checks with --check or starts over
@@ -124,7 +145,16 @@ export default async function initCommand() {
   // ones; --core "" alone clears them, and --reset without it does too.
   const core = coreArg();
   if (core || reset) policy.coreFiles = core ?? [];
-  const r = await call("PUT", P(name), {
+  // The commit identity (t451): each flag given replaces what is recorded,
+  // and the server checks the whole and refuses an invalid one. A list
+  // flag given once as "" clears its list.
+  if (args["commit-name"] !== undefined) policy.commitName = args["commit-name"];
+  if (args["commit-email"] !== undefined) policy.commitEmail = args["commit-email"];
+  for (const [flag, field] of [["agent-email", "agentEmails"], ["private-email", "privateEmails"], ["public-mirror", "publicMirrors"]]) {
+    const values = args.multi[flag];
+    if (values) policy[field] = values.length === 1 && values[0] === "" ? [] : values;
+  }
+  const r =await call("PUT", P(name), {
     ...policy,
     ...(reset ? { reset: true } : {}),
     // The command that regenerates the project's fixtures after a task
@@ -191,6 +221,7 @@ export default async function initCommand() {
   for (const v of checkClasses(pol)) console.log(`  ${v.command}: ${classText(v)}${pol.checkPaths?.some((c) => c.command === v.command) ? `; ${appliesText(pol, v.command)}` : ""}`);
   if (fromRules?.unrun.length) console.log(`ControlPlane change rules also require ${fromRules.unrun.map((u) => `${u.name} (\`${u.command}\`)`).join(", ")}, which no registered check runs; add one with --check to require it.`);
   console.log(`Ship:       ${pol.shipKinds?.length ? `needs ${pol.shipKinds.join(", ")}; ` : ""}${pol.shipRuns?.length ?? 0} protected command${(pol.shipRuns?.length ?? 0) === 1 ? "" : "s"}`);
+  if (pol.prepare) console.log(`Prepare:    ${pol.prepare.command} (inputs: ${pol.prepare.inputs.join(", ")}; outputs: ${pol.prepare.outputs.join(", ")})`);
   if (pol.regenerate) console.log(`Regenerate: ${pol.regenerate}`);
   console.log(`Review bar: ${pol.reviewBar ?? "the default, which blocks for a correctness, security or data-loss defect, a behaviour change without a test that covers it, docs or help that now contradict the code, a breaking change to a command, route or API field without a migration, or a visible regression on a user-facing page; anything else is a follow-up"}`);
   // A server older than the review bar ignores it and answers without one.
@@ -210,6 +241,9 @@ export default async function initCommand() {
   console.log(`Core files: ${pol.coreFiles?.length ? `${pol.coreFiles.join(", ")}; the queue holds a dispatch whose scope overlaps a live item's in one` : "none; the queue holds no dispatch for its scope"}`);
   // A server older than core files ignores them and answers without any.
   if (core?.length && !pol.coreFiles?.length) console.log("Warning: the server did not record the core files; deploy the server, then run atelier init --core again.");
+  const ci = pol.commitIdentity;
+  console.log(`Commits:    ${ci ? `${ci.name} <${ci.email}>${ci.agentEmails.length ? `; agents may also commit as ${ci.agentEmails.join(", ")}` : ""}${ci.privateEmails?.length ? `; declared private: ${ci.privateEmails.join(", ")}` : ""}${ci.publicMirrors?.length ? `; public mirrors: ${ci.publicMirrors.join(", ")}` : ""}` :"no identity named; claims fall back to the checkout's, and runners refuse to start a builder: set one with --commit-name NAME --commit-email EMAIL"}`);
+  if ((args["commit-email"] !== undefined || args["commit-name"] !== undefined) && !ci) console.log("Warning: the server did not record the commit identity; deploy the server, then run atelier init --commit-name NAME --commit-email EMAIL again.");
   if (pol.approval) console.log(`Approval:   ${pol.approval}`);
   let agentsMd = null;
   try { agentsMd = readFileSync(join(top, "AGENTS.md"), "utf8"); } catch {}

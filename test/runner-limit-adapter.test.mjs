@@ -61,7 +61,7 @@ test("parseReset reads an unzoned time in the runner's zone and a time alone as 
 test("parseReset gives null for a missing, invalid or past reset, which the runner gives the 60-minute fallback", () => {
   const p = (text, timeZone = NY) => parseReset(text, { now: NOW, timeZone });
   for (const text of [
-    "usage limit reached", "", "resets soon", "resets Feb 31 at 3pm", "resets Oct 14, 2026 at 25:00", "resets Oct 14 at 13pm",
+    "usage limit reached", "", "resets soon", "resets 2026-13-10T15:00:00Z", "resets 2026-10-14T15:00:00+25:00", "resets 2026-10-14T15:00:00+02:99", "resets Feb 31 at 3pm", "resets Oct 14, 2026 at 25:00", "resets Oct 14 at 13pm",
     "resets 2026-13-40 10:00", "resets Oct 14, 2026", // a date with no time
     "resets Oct 1, 2026 3pm", "resets at 2026-10-01T00:00:00Z", "Claude AI usage limit reached|1700000000", "resets in 0 seconds",
     "resets Oct 14, 2026 at 3pm (Not/AZone)",
@@ -74,28 +74,28 @@ const claudeStderr = "5-hour limit reached ∙ resets 3pm\n";
 // [harness, name, run, expected resetAt (null: a limit with no reset) or "none" (not a limit)]
 const FIXTURES = [
   // claude-code
-  ["claude-code", "stdout, exit 1, epoch", { status: 1, stdout: "Claude AI usage limit reached|1791644400\n" }, at(1791644400 * 1000)],
-  ["claude-code", "stdout, exit 0, one message", { status: 0, stdout: "Claude usage limit reached. Your limit will reset at 3pm (UTC).\n" }, at("2026-10-10T15:00:00Z")],
+  ["claude-code", "stdout, exit 1, epoch", { status: 1, stdout: JSON.stringify({ error: { message: "Claude AI usage limit reached|1791644400\n" } }) }, at(1791644400 * 1000)],
+  ["claude-code", "stdout, exit 0, one message", { status: 0, stdout: JSON.stringify({ error: { message: "Claude usage limit reached. Your limit will reset at 3pm (UTC).\n" } }) }, at("2026-10-10T15:00:00Z")],
   ["claude-code", "stderr, exit 1, time alone", { status: 1, stdout: "", stderr: claudeStderr }, at("2026-10-10T19:00:00Z")],
   ["claude-code", "stderr, exit 1, zone named", { status: 1, stderr: "You've hit your limit · resets 3pm (Europe/Paris)\n" }, at("2026-10-10T13:00:00Z")],
-  ["claude-code", "stdout, exit 0, weekly, dated", { status: 0, stdout: "Weekly limit reached ∙ resets Oct 14 at 9am\n" }, at("2026-10-14T13:00:00Z")],
+  ["claude-code", "stdout, exit 0, weekly, dated", { status: 0, stdout: JSON.stringify({ error: { message: "Weekly limit reached ∙ resets Oct 14 at 9am\n" } }) }, at("2026-10-14T13:00:00Z")],
   ["claude-code", "stderr, exit 1, no reset", { status: 1, stderr: "Claude usage limit reached.\n" }, null],
   ["claude-code", "stderr after a long build's output", { status: 1, stdout: "I changed 12 files.\n".repeat(200), stderr: `warn: slow\n${claudeStderr}` }, at("2026-10-10T19:00:00Z")],
   // codex
   ["codex", "stderr, exit 1, relative", { status: 1, stderr: "ERROR: You've hit your usage limit. Upgrade to Pro, or try again in 2 hours 13 minutes.\n" }, plus(2 * HOUR + 13 * MIN)],
-  ["codex", "stdout, exit 1, dated", { status: 1, stdout: "You've hit your usage limit. Try again at Oct 14th, 2026 3:05 PM.\n" }, at("2026-10-14T19:05:00Z")],
+  ["codex", "stdout, exit 1, dated", { status: 1, stdout: JSON.stringify({ error: { message: "You've hit your usage limit. Try again at Oct 14th, 2026 3:05 PM.\n" } }) }, at("2026-10-14T19:05:00Z")],
   ["codex", "stderr json, exit 1, resets_in_seconds", { status: 1, stderr: '{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":5400}}\n' }, plus(90 * MIN)],
   ["codex", "stdout json, exit 0", { status: 0, stdout: '{"error":{"type":"usage_limit_reached","resets_at":1791644400}}\n' }, at(1791644400 * 1000)],
   ["codex", "stderr, exit 1, no reset", { status: 1, stderr: "stream error: usage limit reached\n" }, null],
   // opencode
   ["opencode", "stderr, exit 1, 429 with Retry-After", { status: 1, stderr: "Error: 429 Too Many Requests\nRetry-After: 120\n" }, plus(2 * MIN)],
   ["opencode", "stderr, exit 1, rate limit with a time", { status: 1, stderr: "Error: rate limit exceeded. Limit resets at 2026-10-12T09:30:00+02:00\n" }, at("2026-10-12T07:30:00Z")],
-  ["opencode", "stdout, exit 1, quota", { status: 1, stdout: "You exceeded your current quota, please check your plan and billing details.\n" }, null],
+  ["opencode", "stdout, exit 1, quota", { status: 1, stdout: JSON.stringify({ error: { message: "You exceeded your current quota, please check your plan and billing details.\n" } }) }, null],
   ["opencode", "stderr, exit 1, insufficient_quota json", { status: 1, stderr: '{"error":{"code":"insufficient_quota","message":"You exceeded your current quota"}}\n' }, null],
-  ["opencode", "stdout, exit 0, one message", { status: 0, stdout: "Error: rate limit exceeded, retry after 30s\n" }, plus(30_000)],
+  ["opencode", "stdout, exit 0, one message", { status: 0, stdout: JSON.stringify({ error: { message: "Error: rate limit exceeded, retry after 30s\n" } }) }, plus(30_000)],
   // antigravity
   ["antigravity", "stdout json, exit 1", { status: 1, stdout: '{"error":{"code":429,"message":"You have exhausted your capacity on this model. Your quota will reset after 3h12m5s.","status":"RESOURCE_EXHAUSTED"}}' }, plus(3 * HOUR + 12 * MIN + 5000)],
-  ["antigravity", "stdout json response, exit 0", { status: 0, stdout: '{"response":"Quota exceeded for this model. Please retry in 34.2s"}' }, plus(34_200)],
+  ["antigravity", "stdout json error, exit 0", { status: 0, stdout: '{"error":{"message":"Quota exceeded for this model. Please retry in 34.2s"}}' }, plus(34_200)],
   ["antigravity", "stderr, exit 1", { status: 1, stderr: "RESOURCE_EXHAUSTED: quota exceeded\n" }, null],
   ["antigravity", "stderr, exit 1, retryDelay", { status: 1, stderr: 'Error 429: RESOURCE_EXHAUSTED {"retryDelay": "34s"}\n' }, plus(34_000)],
 
@@ -138,7 +138,7 @@ test("a zone Intl does not know reads no zoned time: the reset is null, the fall
   assert.equal(p("limit reached, resets 2026-10-14 15:00", "bogus"), null);
   // An explicit offset or a duration needs no zone.
   assert.equal(p("limit reached, retry after 120", "Not/AZone"), NOW + 2 * MIN);
-  const found = detectLimit({ status: 1, stdout: "", stderr: "usage limit reached, resets 3pm\n" }, { now: NOW, timeZone: "Not/AZone", harness: "codex" });
+  const found = detectLimit({ status: 1, stdout: "", stderr: "stream error: usage limit reached, resets 3pm\n" }, { now: NOW, timeZone: "Not/AZone", harness: "codex" });
   assert.equal(found.resetAt, null);
 });
 
@@ -218,7 +218,7 @@ function runBin(h, name, extraEnv, { review = false } = {}) {
 for (const name of Object.keys(ADAPTERS)) {
   test(`the ${name} adapter, run for real, ends a build in a provider limit with exit 75 and the marker`, (t) => {
     const h = harness(t);
-    const r = runBin(h, name, { FAKE_EXIT: "1", FAKE_STDERR: "usage limit reached, try again in 90 minutes\n" });
+    const r = runBin(h, name, { FAKE_EXIT: "1", FAKE_STDERR: JSON.stringify({ error: { message: "usage limit reached, try again in 90 minutes" } }) });
     assert.equal(r.status, 75, r.stderr);
     const last = r.stderr.trimEnd().split("\n").at(-1);
     assert.ok(last.startsWith(`${LIMIT_MARKER} `));
@@ -229,7 +229,7 @@ for (const name of Object.keys(ADAPTERS)) {
 
   test(`the ${name} adapter writes no verdict when a review's harness hit a limit, even on exit 0`, (t) => {
     const h = harness(t);
-    const stdout = name === "antigravity" ? JSON.stringify({ response: "Usage limit reached. Resets in 2 hours." }) : "Usage limit reached. Resets in 2 hours.\n";
+    const stdout = JSON.stringify({ error: { message: "Usage limit reached. Resets in 2 hours." } });
     const r = runBin(h, name, { FAKE_EXIT: "0", FAKE_STDOUT: stdout }, { review: true });
     assert.equal(r.status, 75, r.stderr);
     assert.equal(existsSync(h.verdict), false, "the limit message is not taken for a verdict");
@@ -261,3 +261,75 @@ test("runWithLimits reports a limit through the adapter's own io", (t) => {
   assert.equal(status, 75);
   assert.match(err.join(""), /"resetAt":"2026-10-10T19:00:00.000Z"/);
 });
+
+for (const harness of ["claude-code", "codex", "opencode", "antigravity"]) {
+  for (const status of [0, 1]) {
+    for (const stream of ["stdout", "stderr"]) {
+      test(`${harness}: error envelope on ${stream}, exit ${status}`, () => {
+        const run = { status, stdout: "Completed work.\n".repeat(100), [stream]: JSON.stringify({ error: { code: 429, message: "Too many requests", resets_in_seconds: 120 } }) };
+        assert.equal(detectLimit(run, { harness, now: NOW }).resetAt, plus(2 * MIN));
+      });
+    }
+    test(`${harness}: ordinary answers never become limits, exit ${status}`, () => {
+      for (const answer of ["Quota exceeded errors are now logged.", "Too many requests are now retried.",
+        "Usage limit reached", "Error: rate limit exceeded", "You've hit your usage limit.",
+        JSON.stringify({ message: "usage limit reached" }),
+        JSON.stringify({ type: "assistant", content: [{ text: "usage limit reached" }] }),
+        JSON.stringify({ response: "Quota exceeded errors are now logged." }),
+        JSON.stringify({ response: JSON.stringify({ error: { code: 429 } }) })]) {
+        assert.equal(detectLimit({ status, stdout: answer }, { harness, now: NOW }), null, answer);
+      }
+    });
+  }
+}
+
+const DIAGNOSTICS = {
+  "claude-code": "5-hour limit reached ∙ resets in 2 hours",
+  codex: "ERROR: You've hit your usage limit. Try again in 2 hours.",
+  opencode: "Error: 429 Too Many Requests. Retry after 2 hours",
+  antigravity: "RESOURCE_EXHAUSTED: quota exceeded. Retry after 2 hours",
+};
+for (const [harness, stderr] of Object.entries(DIAGNOSTICS)) {
+  for (const status of [0, 1]) {
+    test(`${harness}: stderr diagnostic survives a long answer, exit ${status}`, () => {
+      assert.equal(detectLimit({ status, stderr, stdout: "Work completed.\n".repeat(100) }, { harness, now: NOW }).resetAt, plus(2 * HOUR));
+    });
+    test(`${harness}: auth and timeout error envelopes are not limits, exit ${status}`, () => {
+      for (const message of ["401 Unauthorized: usage limit reached", "request timed out: usage limit reached"]) {
+        for (const stream of ["stdout", "stderr"]) {
+          assert.equal(detectLimit({ status, [stream]: JSON.stringify({ error: { message } }) }, { harness, now: NOW }), null);
+        }
+      }
+    });
+  }
+}
+
+for (const name of Object.keys(DIAGNOSTICS)) {
+  for (const status of [0, 1]) {
+    for (const stream of ["stdout", "stderr"]) {
+      test(`${name}: adapter emits the structured limit from ${stream}, exit ${status}`, (t) => {
+        const h = harness(t);
+        const providers = join(h.dir, "providers");
+        mkdirSync(providers);
+        writeFileSync(join(providers, "models.json"), JSON.stringify({ models: {
+          "test-model": { provider: "fixture", providerModel: "fixture", config: "fixture.json" },
+        } }));
+        const err = [];
+        const result = runWithLimits(name, ["--providers", providers, "test-model", h.brief, h.ws, "undefined", "undefined", "undefined"], {
+          env: { PATH: process.env.PATH, HOME: h.dir }, now: () => NOW, timeZone: NY,
+          stdout() {}, stderr: (text) => err.push(text),
+          spawn(exe, argv, options) {
+            if (options.input === undefined) return { status: 0, stdout: "[]" }; // codex MCP discovery
+            return { status, [stream]: JSON.stringify({ error: { code: 429, message: "Too many requests", resets_in_seconds: 120 } }) };
+          },
+        });
+        assert.equal(result, PROVIDER_LIMIT_EXIT);
+        const last = err.join("").trimEnd().split("\n").at(-1);
+        assert.ok(last.startsWith(`${LIMIT_MARKER} `));
+        const limit = JSON.parse(last.slice(LIMIT_MARKER.length + 1));
+        assert.equal(limit.harness, name);
+        assert.equal(limit.resetAt, plus(2 * MIN));
+      });
+    }
+  }
+}

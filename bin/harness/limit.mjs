@@ -9,16 +9,10 @@
 // resetAt instead of counting a failure. Only these adapters emit it: a runner
 // config's own command is judged by its exit status alone.
 //
-// What counts as a limit: a harness that exited (a timeout or a kill leaves no
-// status, and is no limit) whose output says one in the words a provider
-// uses — and says it as a message, not as quoted text. A limit phrase must
-// open its line (after a short prefix such as "Error:" or a log level, and no
-// quotation mark or markdown), so an answer that quotes "usage limit reached"
-// is no limit. A zero exit is a limit only when the harness's whole answer is
-// that one short message and it is in a provider's own wording (STRONG; some
-// harnesses print the limit and exit 0), never short prose that merely
-// mentions a rate limit; any other zero exit is an answer. A line that is an authentication error or a
-// timeout is none of them.
+// Only provider error envelopes and harness-specific stderr diagnostics count.
+// Plain stdout is answer text, even when short or the process exits nonzero;
+// response/result/content fields never supply evidence of a provider limit.
+// Exit zero does not suppress a diagnostic on stderr.
 //
 // The reset instant, read from the message (parseReset), is one of:
 //   - an epoch after a bar or under resets_at ("usage limit reached|1760000000");
@@ -119,9 +113,10 @@ export function parseReset(text, { now = Date.now(), timeZone } = {}) {
   if (iso) {
     const [, y, mo, d, h, mi, s, off] = iso;
     const wall = Date.UTC(+y, +mo - 1, +d, +h, +mi, +(s ?? 0));
-    if (+h > 23 || +mi > 59 || +(s ?? 0) > 59 || new Date(wall).getUTCDate() !== +d) return null;
+    if (+h > 23 || +mi > 59 || +(s ?? 0) > 59 || new Date(wall).getUTCMonth() !== +mo - 1 || new Date(wall).getUTCDate() !== +d) return null;
     const sign = off === "Z" ? 0 : off.startsWith("-") ? -1 : 1;
     const digits = off.replace(/[^\d]/g, "");
+    if (+digits.slice(0, 2) > 23 || +(digits.slice(2, 4) || 0) > 59) return null;
     return future(wall - sign * ((+digits.slice(0, 2)) * 60 + +(digits.slice(2, 4) || 0)) * 60_000);
   }
 
@@ -177,100 +172,61 @@ const LIMIT = [
 ];
 const AUTH = /\b(?:401|403)\b|unauthori[sz]ed|forbidden|invalid[_ ](?:x-)?api[_ -]?key|incorrect api key|authentication[_ ](?:failed|error|required)|not (?:logged|signed) in|please (?:run )?\/?log ?in|(?:token|credentials?|session) (?:has )?expired|invalid (?:token|credentials?)/i;
 const TIMEOUT = /timed? ?out|ETIMEDOUT|deadline exceeded|request aborted/i;
-// What may come before a limit phrase on its line: a log level, a label such
-// as "stream error:", a bracketed time, the harness's name, a status code.
-const PREFIX = /^(?:(?:\[[^\]]{0,40}\]|[A-Za-z][\w .-]{0,24}:|\d{4}-\d\d-\d\d[T\d:.Z+-]*|(?:ERROR|WARN(?:ING)?|FATAL|Error|Claude(?: AI)?|Codex|opencode|agy)(?![\w])|\d{3})\s*)*$/;
-
-// What a provider says on a zero exit, where the line stands for an answer:
-// the phrase names a limit that was reached, not a topic ("rate limit headers").
-const STRONG = [
-  /usage limit (?:reached|exceeded|hit)/i,
-  /(?:\d+-hour|weekly|daily|monthly|session|opus|sonnet)\s+limit (?:reached|exceeded|hit)/i,
-  /(?:you(?:'|’)ve|you have) (?:hit|reached|exceeded) (?:your|the) (?:\w+ )?(?:usage |rate |request )?limit/i,
-  /usage_limit_reached|insufficient_quota|rate_limit_exceeded|resource[_ ]exhausted/i,
-  /rate[ _-]?limit(?:ed)? (?:exceeded|reached|hit)/i,
-  /(?:you(?:'|’)ve |you have )?(?:exceeded|exhausted) your (?:current )?(?:capacity|quota|usage|credits?)/i,
-  /quota (?:exceeded|has been exhausted)/i,
-];
-
-// The strings a JSON line carries, and the reset hints in its numbers.
-function jsonLines(text) {
+// Extract only error fields, never recursively search an answer's strings.
+function errorMessage(line) {
   let value;
-  try { value = JSON.parse(text); } catch { return null; }
-  const strings = [], hints = [];
-  const walk = (v, depth) => {
-    if (depth > 4 || v === null) return;
-    if (typeof v === "string") strings.push(v);
-    else if (Array.isArray(v)) v.forEach((x) => walk(x, depth + 1));
-    else if (typeof v === "object") {
-      for (const [k, x] of Object.entries(v)) {
-        if (typeof x === "number" && /^resets?_?at$/i.test(k)) hints.push(`resets_at: ${x}`);
-        else if (typeof x === "number" && /^resets?_in_seconds$/i.test(k)) hints.push(`resets_in_seconds: ${x}`);
-        else walk(x, depth + 1);
-      }
-    }
-  };
-  walk(value, 0);
-  return { strings, hints };
+  try { value = JSON.parse(line); } catch { return null; }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (value.response !== undefined || value.result !== undefined || value.content !== undefined) return null;
+  const error = value.error ?? (value.type === "error" ? value : null);
+  if (!error) return null;
+  if (typeof error === "string") return error;
+  if (typeof error !== "object" || Array.isArray(error)) return null;
+  const detail = error.data && typeof error.data === "object" ? error.data : error;
+  return [error.type, error.code, error.status, error.message, detail === error ? "" : detail.message,
+    detail.statusCode, detail.resets_at == null ? "" : `resets_at: ${detail.resets_at}`,
+    detail.resets_in_seconds == null ? "" : `resets_in_seconds: ${detail.resets_in_seconds}`,
+    detail.retryDelay == null ? "" : `retry after ${detail.retryDelay}`,
+  ].filter((x) => typeof x === "string" || typeof x === "number").join(" ");
 }
 
-// The messages a stream holds, as { text, source, rest } with `rest` the text
-// of the lines after it for a reset on the next line.
-function messages(text, source) {
-  // Lines in a code fence quote something; they are no message of the harness's.
-  let fenced = false;
-  const lines = String(text ?? "").replace(/\r/g, "").split("\n").map((l) => l.trim()).filter((l) => {
-    if (l.startsWith("```")) { fenced = !fenced; return false; }
-    return l && !fenced;
-  }).slice(-40);
-  return lines.flatMap((line, i) => {
-    const rest = lines.slice(i + 1, i + 3).join(" ");
-    const json = line.startsWith("{") || line.startsWith("[") ? jsonLines(line) : null;
-    if (json) return json.strings.map((text) => ({ text, source, rest: [...json.hints, rest].join(" "), json: true }));
-    return [{ text: line, source, rest }];
-  });
-}
+// Text diagnostics are accepted only on stderr and in the harness's own
+// error forms. Plain stdout (including agy's JSON response) is always prose.
+const STDERR_SIGNATURE = {
+  "claude-code": /^(?:(?:Error: )?Claude(?: AI)? usage limit (?:reached|exceeded)|(?:Error: )?(?:5-hour|weekly|daily|session) limit reached\b|You've hit your limit\b|Error: usage limit reached\b)/i,
+  codex: /^(?:(?:ERROR: |stream error: )(?:You've hit your usage limit\b|usage limit reached\b)|You've hit your usage limit\b)/i,
+  opencode: /^Error: (?:429\b|rate limit exceeded\b|insufficient_quota\b|You exceeded your current quota\b)/i,
+  antigravity: /^(?:RESOURCE_EXHAUSTED:|Error 429: RESOURCE_EXHAUSTED\b)/,
+};
 
-// Whether `message` opens with a limit phrase: { reason } or null.
-function limitIn(message) {
-  if (message.text.length > 600) return null;
-  for (const pattern of message.strong ? STRONG : LIMIT) {
-    const m = pattern.exec(message.text);
-    if (!m) continue;
-    const prefix = message.text.slice(0, m.index);
-    if (!message.json && !PREFIX.test(prefix)) continue;
-    return { reason: message.text.replace(/\s+/g, " ").slice(0, 300) };
-  }
-  return null;
-}
-
-// The provider limit a harness run ended in, or null: { reason, resetAt, resetText }
-// with resetAt an ISO instant or null. `run` is { status, stdout, stderr, error }
-// as spawnSync gives it; `answer` is the text a zero exit's stdout holds (for
-// agy, the response inside its JSON).
 export function detectLimit(run, { now = Date.now(), timeZone, harness } = {}) {
   if (run.error || run.status === null || run.status === undefined || run.signal) return null;
-  const stderr = messages(run.stderr, "stderr");
-  let answer = String(run.stdout ?? "");
-  if (harness === "antigravity") { try { const r = JSON.parse(answer.trim()).response; if (typeof r === "string") answer = r; } catch { /* raw text */ } }
-  let stdout;
-  if (run.status === 0) {
-    // The whole answer is one short message, or it is an answer.
-    const whole = answer.trim();
-    if (!whole || whole.length > 400 || whole.split("\n").filter((l) => l.trim()).length > 3) return null;
-    // Short prose such as "Rate limit headers added" is the model's. Only a
-    // provider's own wording counts here (STRONG), or a JSON error object.
-    stdout = messages(whole, "stdout").map((m) => ({ ...m, strong: true }));
-  } else stdout = messages(answer, "stdout").slice(-10);
-  const all = run.status === 0 ? stdout : [...stderr, ...stdout];
-  const found = all.map((message) => ({ message, limit: limitIn(message) })).find((x) => x.limit);
-  if (!found) return null;
-  // An authentication error or a timeout that names no provider limit of its own.
-  if (all.some((m) => (AUTH.test(m.text) || TIMEOUT.test(m.text)) && !LIMIT.slice(0, 5).some((p) => p.test(m.text)))) return null;
-  if (TIMEOUT.test(found.message.text) || AUTH.test(found.message.text)) return null;
-  const source = `${found.message.text} ${found.message.rest}`;
-  const at = parseReset(source, { now, timeZone });
-  return { reason: found.limit.reason, resetAt: at === null ? null : new Date(at).toISOString(), resetText: source.replace(/\s+/g, " ").trim().slice(0, 300) };
+  const signature = STDERR_SIGNATURE[harness];
+  if (!signature) return null;
+  for (const stream of ["stderr", "stdout"]) {
+    let fenced = false;
+    const lines = String(run[stream] ?? "").replace(/\r/g, "").split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (line.startsWith("```")) { fenced = !fenced; continue; }
+      if (fenced) continue;
+      const structured = errorMessage(line);
+      const diagnostic = stream === "stderr" && signature.test(line);
+      if (!structured && !diagnostic) continue;
+      const message = structured ?? line;
+      if (AUTH.test(message) || TIMEOUT.test(message)) continue;
+      if (!LIMIT.some((pattern) => pattern.test(message))) continue;
+      // Only adjacent reset diagnostics can extend a plain error message.
+      const hints = structured ? "" : lines.slice(i + 1, i + 3)
+        .filter((text) => /^\s*(?:Retry-After:|resets?\b|try again (?:in|at)\b)/i.test(text)).join(" ");
+      const source = `${message} ${hints}`.trim();
+      const at = parseReset(source, { now, timeZone });
+      return { reason: message.replace(/\s+/g, " ").slice(0, 300),
+        resetAt: at === null ? null : new Date(at).toISOString(),
+        resetText: source.replace(/\s+/g, " ").slice(0, 300) };
+    }
+  }
+  return null;
 }
 
 // ── the adapter's spawn ─────────────────────────────────────────────────────
