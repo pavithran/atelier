@@ -115,7 +115,14 @@ async function main() {
         return route.abort();
       });
       page.on("requestfailed", (r) => { if (!FONT_HOSTS.some((h) => r.url().startsWith(h))) failed.push(`failed ${r.url()}: ${r.failure()?.errorText}`); });
-      page.on("console", (m) => { if (m.type() === "error") failed.push(`console: ${m.text()}`); });
+      // Chromium logs the page's own non-200 status (a 404 or 503 state the brief asks for) as a
+      // console error; that one is expected. Any other resource answering 400 or more fails the run.
+      page.on("response", (r) => { if (r.status() >= 400 && r.url() !== p.url) failed.push(`${r.status()} ${r.url()}`); });
+      page.on("console", (m) => {
+        if (m.type() !== "error") return;
+        if (p.status >= 400 && m.location().url === p.url && m.text().includes(`status of ${p.status}`)) return;
+        failed.push(`console: ${m.text()}`);
+      });
       page.on("pageerror", (e) => failed.push(`script error: ${e.message}`));
       await page.goto(p.url, { waitUntil: "load" });
       await page.evaluate(() => document.fonts.ready.then(() => undefined));
