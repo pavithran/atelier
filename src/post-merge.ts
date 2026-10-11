@@ -3,7 +3,6 @@ import { refusalOf } from "./checks.ts";
 
 // This policy and run are independent of leases, tasks' terminal state and
 // executor type. Ledger writes every transition synchronously before replying.
-export const POST_MERGE_VERSION = 1;
 export interface PrivacyPolicy {
   authors: { name: string; email: string }[];
   committers: { name: string; email: string }[];

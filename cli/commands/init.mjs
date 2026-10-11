@@ -55,8 +55,8 @@ export default async function initCommand() {
   const policy = {};
   const postMerge = postMergeArgs(args);
   if (postMerge !== undefined && args.multi?.["post-merge"]) {
-    const version = await call("GET", "/version", undefined, OWNER);
-    if (version.postMergeVersion !== 1) die("this server does not support durable post-merge steps; deploy it before configuring them");
+    // The server's support is land.post-merge.v1, which init declares and
+    // the CLI checked before this handler ran (t458).
     policy.postMerge = postMerge;
   }
   if (args.multi.check || reset) policy.checks = checks;

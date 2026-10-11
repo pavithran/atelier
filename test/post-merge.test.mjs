@@ -8,7 +8,7 @@ import { parsePostMerge, reservePostMerge, preparePostMerge, startAttempt, finis
 import { changeClass } from "../src/rules.ts";
 import { postMergeArgs } from "../cli/post-merge-policy.mjs";
 import { runLand } from "../cli/land.mjs";
-import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { publishPinned, executePostMerge } from "../cli/post-merge.mjs";
 const at = "2026-10-10T12:00:00Z", a = "a".repeat(40), b = "b".repeat(40);
 const step = (name, more = {}) => ({ name, command: "npm test", class: "check", when: "always", protect: ["package.json", "scripts/**"], timeoutMs: 1000, ...more });
@@ -93,6 +93,8 @@ test("CLI can waive an unprepared step without attempting the unavailable diff a
   const r = run([step("first"), step("second")]);
   const calls = [];
   await runLand({ args: { "post-merge": "skip", reason: "history unavailable" }, name: "p", id: "t1", print() {}, request: async (method, path, body) => {
+    // The recovery asks for land.post-merge.v1 before its first post-merge request (t458).
+    if (path === "/version") return { routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES };
     calls.push(body?.action ?? method);
     if (body) recoverPostMerge(r, body.action, body.reason, "owner", at);
     return { run: structuredClone(r) };
@@ -188,7 +190,7 @@ test("CLI landing recovery and dry-run consult the same durable run without repe
   const calls = [], lines = [];
   const io = { args: { "dry-run": true }, name: "p", id: "t1", p: {}, workspacePath: () => "/not-used", print: line => lines.push(line), die: message => { throw new Error(message); }, request: async (method, path, body) => {
     calls.push([method, path, body]);
-    if (path === "/version") return { routeLevel: ROUTE_LEVEL, postMergeVersion: 1 };
+    if (path === "/version") return { routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES };
     if (path.endsWith("/items/t1")) return { item: { state: "merged" }, postMerge: r };
     if (path.includes("post-merge")) return { run: r };
     throw new Error("unexpected route");
@@ -198,7 +200,8 @@ test("CLI landing recovery and dry-run consult the same durable run without repe
   assert.equal(calls.some(c => c[0] === "POST"), false);
   io.args = { "post-merge": "status" }; calls.length = 0;
   await runLand(io);
-  assert.equal(calls.length, 1); assert.match(calls[0][1], /post-merge/);
+  // The version, for land.post-merge.v1 (t458), then the run itself.
+  assert.equal(calls.length, 2); assert.equal(calls[0][1], "/version"); assert.match(calls[1][1], /post-merge/);
   io.args = { "post-merge": "retry", "dry-run": true };
   await assert.rejects(runLand(io), /separate action/);
 });
@@ -251,4 +254,15 @@ test("first publication scans each distinct blob once across long history and re
   r.g(["mv", "file", "private-file"]); r.g(["commit", "-qm", "rename"]);
   r.g(["mv", "private-file", "file"]); r.g(["commit", "-qm", "restore"]);
   await assert.rejects(publishPinned({ git: r.git, run: { after: r.g(["rev-parse", "HEAD"]).trim() }, step: { ...r.s, privacy: { ...r.s.privacy, forbiddenPaths: ["private-file"] } }, cwd: r.dir }), /privacy path/);
+});
+
+test("CLI post-merge recovery refuses a server without land.post-merge.v1 before touching the run (t458)", async () => {
+  const calls = [];
+  const io = { args: { "post-merge": "status" }, name: "p", id: "t1", print() {}, die: message => { throw new Error(message); }, request: async (method, path) => {
+    calls.push(path);
+    if (path === "/version") return { routeLevel: 26, commit: "0123456789abcdef" };
+    throw new Error("unexpected route");
+  } };
+  await assert.rejects(runLand(io), /lacks capabilities land\.post-merge\.v1.*then run atelier land t1 --post-merge status again/);
+  assert.deepEqual(calls, ["/version"]);
 });
