@@ -8,6 +8,8 @@
 // --allow-failing is given. Wrap commits and updates the baseline; checkout
 // remote pushes are opt-in.
 
+import { areaField } from "../src/area-commands.ts";
+
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { accessSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -633,7 +635,8 @@ export function coreArg() {
 // empty value clears the field (the title cannot be cleared); for new, an
 // empty value is refused as a bare flag is, with the flag table's wording.
 export function fieldsArg(cmd) {
-  const out = {};
+  let out;
+  try { out = areaField(args, cmd); } catch (error) { die(error.message); }
   if (args.title !== undefined) {
     if (typeof args.title !== "string" || !args.title.trim()) die(FLAGS[cmd].title);
     out.title = args.title.trim();
@@ -1281,6 +1284,7 @@ export function formatFields(fields) {
     fields.nonGoals?.length ? `Non-goals: ${fields.nonGoals.map(flat).join("; ")}` : null,
     fields.stopWhen?.length ? `Stop when: ${fields.stopWhen.map(flat).join("; ")}` : null,
     fields.nextGate ? `Next gate: ${flat(fields.nextGate)}` : null,
+    fields.area ? `Area: ${flat(fields.area)}` : null,
   ].filter(Boolean);
 }
 
