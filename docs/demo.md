@@ -333,7 +333,10 @@ part, the brief's inputs and a read token for the fork. It cloned the head
 read-only into a folder of its own, wrote the diff to the diff file, built
 the reviewer's brief (the goal, the part's spec and acceptance criteria,
 the scope and any paths outside it, the builder's summary, the observed
-checks and where each ran, earlier findings, and the diff), and ran the
+checks and where each ran, every run recorded at the head with its latest
+result and the end of its output, ad-hoc `atelier check -- CMD` runs apart
+from the required checks and reports labelled Reported, earlier findings,
+and the diff), and ran the
 harness. The harness wrote a verdict: approve or reject, a summary, and
 findings, each with a path, a severity (blocker, should or nit) and a note.
 The runner posted it as `atelier review t11 --approve --head SHA --note

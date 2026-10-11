@@ -849,3 +849,20 @@ test("runReview names the claim's criteria binding and request with the verdict,
   const unbound = older.calls.find((c) => c.argv && c.argv[0] === "review").argv;
   assert.ok(!unbound.includes("--criteria") && !unbound.includes("--request"));
 });
+
+// t490: the claim's evidence at the head reaches the brief the reviewer
+// reads, ad-hoc runs apart from the required checks; a claim from an older
+// server that sends none says so.
+test("runReview shows the claim's observed evidence, ad-hoc runs among it, in the brief", async () => {
+  const run = (claim, passed, outputTail) => ({ itemId: "t21", claim, grade: "observed", head: H1, passed, by: "zcode/glm-5.3", at: "2026-10-10T12:00:00.000Z", where: "runner", outputTail });
+  const evidence = { required: ["npm test"], runs: [run("npm test", true, "ok 3"), run("npm run verify:visual", true, "visual: 12 of 12 match")] };
+  const { io, calls } = fixture({ claim: { ...claimed, evidence } });
+  assert.equal((await runReview(assignment, config, "home:studio", io)).phase, "reviewed");
+  const brief = calls.find((c) => c.brief).brief;
+  const supplemental = brief.slice(brief.indexOf("### Supplemental runs"), brief.indexOf("## The builder's summary"));
+  assert.ok(supplemental.includes("- `npm run verify:visual`: passed. Observed, on aaaaaaaa itself"), brief);
+  assert.ok(supplemental.includes("visual: 12 of 12 match"), brief);
+  const old = fixture();
+  await runReview(assignment, config, "home:studio", old.io);
+  assert.ok(old.calls.find((c) => c.brief).brief.includes("Atelier sent no evidence with this review"));
+});
