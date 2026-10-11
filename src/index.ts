@@ -966,7 +966,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // `judgement` is each acting model's verdicts on findings, decisions and
     // overrides over its window, with the window's totals.
     const { sources, reliability, speed, events, unread } = await trackRecords(env);
-    const judgement = buildJudgement(sources, judgementWindow(new Date()), ownerActor(env));
+    const judgement = buildJudgement(sources, judgementWindow(new Date()), ownerActor(env), await index(env).models());
     const res = json({ events, models: reliabilityJson(reliability), speed, judgement: { ...judgement, totals: judgementTotals(judgement) } });
     if (unread.length) res.headers.set("x-atelier-incomplete", unread.map((p) => p.name).sort().join(","));
     return res;
@@ -2243,7 +2243,7 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
   const precision = buildPrecision(track.sources, precisionWindow(new Date()), ownerActor(env));
   // The orchestrator's judgements over the last JUDGEMENT_WINDOW_DAYS, by the
   // harness/model that acted for the owner (src/models/judgement.ts).
-  const judgement = buildJudgement(track.sources, judgementWindow(new Date()), ownerActor(env));
+  const judgement = buildJudgement(track.sources, judgementWindow(new Date()), ownerActor(env), entries as unknown as ModelEntry[]);
   return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway, precision, track.speed, judgement), error ? 400 : 200);
 }
 
