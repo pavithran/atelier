@@ -287,28 +287,43 @@ test("independent capability additions merge cleanly, including the same and new
   const base = readFileSync(resolve(file), "utf8");
   writeFileSync(join(dir, file), base);
   writeFileSync(join(dir, ".gitattributes"), readFileSync(resolve(".gitattributes")));
-  writeFileSync(join(dir, "src/route-level.ts"), `export const ROUTE_LEVEL = ${ROUTE_LEVEL};\n`);
+  const supportSource = readFileSync(resolve("src/route-level.ts"), "utf8")
+    .replaceAll('from "./usage/', `from "${resolve("src/usage")}/`);
+  writeFileSync(join(dir, "src/route-level.ts"), supportSource);
   git("add", "."); git("commit", "-qm", "base");
   const baseline = git("rev-parse", "HEAD").trim();
-  const add = (name, summary) => base.replace("] as const;", `  { name: "${name}", summary: "${summary}" },\n] as const;`);
-  for (const [i, names] of [["reviews.first.v1", "reviews.second.v1"], ["one.new.v1", "two.new.v1"], ["reviews.same.v1", "reviews.same.v1"]].entries()) {
+  const add = (name, summary, level) => base.replace("] as const;", `  { name: "${name}", ${level === undefined ? "" : `level: ${level}, `}summary: "${summary}" },\n] as const;`);
+  const cases = [
+    { names: ["reviews.first.v1", "reviews.second.v1"] },
+    { names: ["one.new.v1", "two.new.v1"] },
+    { names: ["reviews.same.v1", "reviews.same.v1"] },
+    // Queued tasks keep their metadata, even with gaps or overlapping levels.
+    { names: ["queued.first.v1", "queued.second.v1"], levels: [28, 33] },
+    { names: ["queued.first.v1", "queued.second.v1"], levels: [28, 28] },
+  ];
+  for (const [i, { names, levels = [] }] of cases.entries()) {
     git("checkout", "-qB", `ours-${i}`, baseline);
-    writeFileSync(join(dir, file), add(names[0], "ours"));
-    git("add", "."); git("commit", "-qm", "ours");
+    writeFileSync(join(dir, file), add(names[0], "ours", levels[0]));
+    git("add", file); git("commit", "-qm", "ours");
     git("checkout", "-qB", `theirs-${i}`, baseline);
-    writeFileSync(join(dir, file), add(names[1], "theirs"));
-    git("add", "."); git("commit", "-qm", "theirs");
+    writeFileSync(join(dir, file), add(names[1], "theirs", levels[1]));
+    git("add", file); git("commit", "-qm", "theirs");
     for (const [first, second] of [[`ours-${i}`, `theirs-${i}`], [`theirs-${i}`, `ours-${i}`]]) {
       git("checkout", "-qB", `merge-${first}`, first);
       git("merge", "--no-edit", second);
       const merged = readFileSync(join(dir, file), "utf8");
       assert.doesNotMatch(merged, /^[<>=]{7}/m);
       assert.ok(merged.includes('summary: "ours"') && merged.includes('summary: "theirs"'));
-      assert.equal(readFileSync(join(dir, "src/route-level.ts"), "utf8"), `export const ROUTE_LEVEL = ${ROUTE_LEVEL};\n`);
-      const { CAPABILITY_DECLARATIONS } = await import(`${join(dir, file)}?case=${first}`);
-      if (names[0] === names[1]) assert.throws(() => buildCapabilities(CAPABILITY_DECLARATIONS), /declared twice/);
+      assert.equal(readFileSync(join(dir, "src/route-level.ts"), "utf8"), supportSource);
+      // Give each merged module its own declaration import to avoid Node's cache.
+      const declarationsFile = `declarations-${first}.ts`;
+      writeFileSync(join(dir, "src", declarationsFile), merged);
+      const supportFile = join(dir, "src", `support-${first}.ts`);
+      writeFileSync(supportFile, supportSource.replace("./capability-declarations.ts", `./${declarationsFile}`));
+      if (names[0] === names[1]) await assert.rejects(import(supportFile), /declared twice/);
       else {
-        const published = buildCapabilities(CAPABILITY_DECLARATIONS).map((c) => c.name);
+        const { SERVER_CAPABILITIES: published, checkCapabilities, ROUTE_LEVEL: mergedLevel } = await import(supportFile);
+        assert.equal(mergedLevel, ROUTE_LEVEL);
         assert.deepEqual(published.filter((n) => names.includes(n)).sort(), [...names].sort());
         for (const name of names) {
           for (const version of [{ routeLevel: ROUTE_LEVEL + 100 }, { routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES }]) {
