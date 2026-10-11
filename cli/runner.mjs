@@ -18,6 +18,7 @@ import { MERGE_MAIN } from "../src/plans/state.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { rolePrompt, ROLE_PROMPT_MAX } from "../src/usage.ts";
 import { mergeMainAndRegenerate } from "./land.mjs";
+import { describeFinding } from "../src/moved-code.ts";
 
 export function offerFrom(config, name) {
   if (typeof name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(name)) throw new Error("use --name home:NAME");
@@ -573,8 +574,26 @@ export function conflictsSection(...merges) {
 // already states — resolve the merge of main the runner left in the
 // workspace, keeping both sides' behaviour and claims, and commit it as it
 // stands (t243).
+//
+// A build's merge before its submission (t435, prepareBuildSubmission) adds
+// the edits the moved-code comparison found in code main moved to another
+// file (`merge.findings`, src/moved-code.ts): with the merge in conflict,
+// after the conflict's instructions; with a clean merge the runner already
+// committed (`state: "moved"`), as the whole job. Git merges a file line by
+// line, so such an edit stays in its old place, where main took the code
+// out, and the moved copy never gets it: the builder ports it there.
 export function mergeMainSection(merge) {
   const short = merge.mainHead.slice(0, 8);
+  const findings = Array.isArray(merge.findings) ? merge.findings : [];
+  if (merge.state === "moved") {
+    return [
+      "## Port this task's edits to the code main moved",
+      "",
+      `The runner has merged main at ${short} into this workspace before you start, and committed the merge: Git made it cleanly, so no conflict is left to resolve. But main moved code this task edited into another file, and Git merges a file line by line: each edit below stayed in its old place, in code main took out of that file, and the moved copy never got it.`,
+      "",
+      ...movedCodeLines(findings),
+    ].join("\n");
+  }
   return [
     "## Resolve the merge of main",
     "",
@@ -583,7 +602,30 @@ export function mergeMainSection(merge) {
     "- Resolve each conflict keeping both sides' behaviour: what the task does and what main does must both still hold. Where the conflict is prose, keep both sides' claims and merge their meaning; do not pick one side.",
     "- Remove every conflict marker, stage each resolved file with git add, and fix what the merge broke so the checks pass.",
     "- Commit the merge with git commit, keeping the merge message as it stands; it already ends with your Agent line. Do not start the merge again, abort it, rebase or reset it.",
+    ...(findings.length ? [
+      "",
+      "### Port this task's edits to the code main moved",
+      "",
+      "Besides the conflicts, main moved code this task edited into another file. Git merges a file line by line, so each edit below is in its old place, in code main took out of that file (a conflict there, or merged where it no longer runs), and the moved copy never got it.",
+      "",
+      ...movedCodeLines(findings),
+    ] : []),
   ].join("\n");
+}
+
+// The findings of the moved-code comparison as the brief lists them, with
+// how to port each: source lines are the merge base's, the task's own lines
+// its head's before the merge, and destination lines main's.
+function movedCodeLines(findings) {
+  return [
+    ...findings.map((f) => `- ${oneLine(describeFinding(f))}`),
+    "",
+    "Line numbers name the files before the merge: the source's lines are the merge base's, \"its lines\" the task's head's, and the destination's main's.",
+    "",
+    "- Make each edit again at its destination, in the moved code, so the task's behaviour holds there where that code now runs.",
+    "- Where the merge left the edit in the source file, in code main took out, remove it there: the source should hold what main has, plus whatever of the task's work belongs there still.",
+    "- Fix what else the move broke so the checks pass, stage with git add, and commit with the final Agent line the rules above ask for. Do not rebase or reset.",
+  ];
 }
 
 // A build job merges main as it is then into the workspace before it
@@ -612,6 +654,19 @@ export function mergeMainSection(merge) {
 // infrastructure failure, the network's or the server's, not the model's
 // (the error carries `infrastructure`; runTask reads it). Answers main's
 // head as merged and the workspace's head.
+//
+// The merge runs the landing's moved-code comparison first (t471,
+// compareMoved in cli/land.mjs): the build's head and main's from their
+// merge base, for an edit of the build's lying in code main moved to
+// another file, which Git's merge would leave in its old place. Where the
+// landing stops, the runner's merge goes on (`moved.port` takes the
+// findings), clean or in conflict, and the findings go back to the same
+// harness in the same run, as a conflict does, with a brief naming each
+// source and destination (mergeMainSection): the builder ports the edits
+// and commits, and a finding is never counted as the model's failure. The
+// port is verified as a resolution is — no merge left in progress, main and
+// the build's head both held — and main is read once more, which finds it
+// merged and compares nothing: what the port did is the builder's work.
 export async function prepareBuildSubmission(assignment, workspace, io, resolve) {
   const { project, item, actor } = assignment;
   const guard = () => { if (io.stopped()) throw new Error("interrupted"); };
@@ -620,6 +675,7 @@ export async function prepareBuildSubmission(assignment, workspace, io, resolve)
     if (!await io.isAncestor(workspace, mainHead, "HEAD")) throw new Error(`the build does not hold main at ${mainHead.slice(0, 8)}`);
     if (!await io.isAncestor(workspace, workHead, "HEAD")) throw new Error("the merge of main discarded the build's committed work");
   };
+  const count = (findings) => `${findings.length} of the build's edits ${findings.length === 1 ? "lies" : "lie"} in code main moved to another file`;
   for (;;) {
     guard();
     const base = JSON.parse(await io.cli(["baseline-token", "--project", project, "--as", actor]));
@@ -627,18 +683,28 @@ export async function prepareBuildSubmission(assignment, workspace, io, resolve)
     const regenerate = typeof base.regenerate === "string" && base.regenerate.trim() ? base.regenerate : null;
     const workHead = (await io.head(workspace)).trim();
     const landing = { git: io.git, print: io.log, redact: (text) => redactSecrets(text, [base.token]), secrets: () => [base.token] };
+    // The comparison's findings, taken instead of a stop; the merge goes on.
+    let findings = [];
+    const moved = { ok: false, approved: null, again: `atelier land ${item.id}`, resolver: actor, port: async (found) => { findings = found; } };
     let merged;
     try {
-      merged = await mergeMainAndRegenerate(landing, { dir: workspace, id: item.id, name: project, regenerate, record: async () => {}, guard, d0: null, base,
+      merged = await mergeMainAndRegenerate(landing, { dir: workspace, id: item.id, name: project, regenerate, record: async () => {}, guard, d0: null, base, moved,
         message: (mainHead) => `Merge main at ${mainHead.slice(0, 8)} into ${item.id}\n\nAgent: ${actor}` });
     } catch (error) {
       const files = error.data?.conflicts ?? [];
       if (!files.length) throw error;
       guard();
       const { mainHead } = error.data;
-      io.log(`main at ${mainHead.slice(0, 8)} merged with conflicts in ${files.join(", ")}; ${actor} resolves them in this run`);
-      await resolve({ mainHead, state: "conflicts", files });
+      io.log(`main at ${mainHead.slice(0, 8)} merged with conflicts in ${files.join(", ")}${findings.length ? `, and ${count(findings)}` : ""}; ${actor} resolves them in this run`);
+      await resolve({ mainHead, state: "conflicts", files, findings });
       await verify(mainHead, workHead);
+      continue;
+    }
+    if (findings.length) {
+      guard();
+      io.log(`main at ${merged.mainHead.slice(0, 8)} merged cleanly as ${merged.head.slice(0, 8)}, but ${count(findings)}; ${actor} ports them in this run`);
+      await resolve({ mainHead: merged.mainHead, state: "moved", files: [], findings });
+      await verify(merged.mainHead, workHead);
       continue;
     }
     await verify(merged.mainHead, workHead);
@@ -755,12 +821,12 @@ export async function runTask(assignment, config, name, io) {
     const merged = io.prepareSubmission ? await io.prepareSubmission(assignment, workspace, async (merge) => {
       const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
       const context = io.jobBrief ? await io.jobBrief(project, item.id, actor) : null;
-      const resolution = await io.brief(workspace, `${roleText("build", workspace)}\n\n${briefFor({ ...item, owner: actor }, project)}\n${context?.text ?? ""}\n${mergeMainSection(merge)}\n\n${conflictsSection(merge)}\n`);
+      const resolution = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${briefFor({ ...item, owner: actor }, project)}\n${context?.text ?? ""}\n${mergeMainSection(merge)}\n\n${conflictsSection(merge)}\n`);
       let dataHome;
       try {
         const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
         dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
-        const result = await io.harness(commandFor(entry, { model, briefFile: resolution.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name), { capture: true, stream: true });
+        const result = await io.harness(commandFor(entry, { model, briefFile: resolution.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name, project, actor), { capture: true, stream: true });
         await checkValidationReport(result);
         if (result.timedOut) throw new Error("harness timed out resolving main");
         if (result.code !== 0) throw new Error(`harness exited ${result.code} resolving main`);
@@ -1709,11 +1775,14 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // Git as the landing's merge of main calls it (mergeMainAndRegenerate in
     // cli/land.mjs, run by prepareBuildSubmission): each command a runner
     // child in `cwd`; `token` reaches git through its environment (gitAuth),
-    // never an argument; with `allowFail` the answer is git's own status and
-    // output, as the landing's git answers, and otherwise a failure throws
-    // with the arguments redacted.
-    git: async (args, { cwd, token, allowFail = false, raw = false } = {}) => {
-      const result = await executeChild(["git", ...args], { cwd, capture: true, captureError: true, signal: controller.signal, step: args[0], ...(token ? { env: gitAuth(token) } : {}) });
+    // never an argument; `env` adds variables over the runner's own (the
+    // moved-code detector's DETECTOR_ENV, which pins git's diff output);
+    // with `allowFail` the answer is git's own status and output, as the
+    // landing's git answers, and otherwise a failure throws with the
+    // arguments redacted.
+    git: async (args, { cwd, token, allowFail = false, raw = false, env = null } = {}) => {
+      const childEnv = token || env ? { ...(token ? gitAuth(token) : process.env), ...(env ?? {}) } : null;
+      const result = await executeChild(["git", ...args], { cwd, capture: true, captureError: true, signal: controller.signal, step: args[0], ...(childEnv ? { env: childEnv } : {}) });
       if (result.timedOut) throw new Error(`git ${args[0]} timed out`);
       if (controller.signal.aborted) throw new Error("interrupted");
       const output = result.output ?? "", stderr = result.stderr ?? "";
