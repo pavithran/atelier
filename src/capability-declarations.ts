@@ -1,4 +1,5 @@
-// One capability per line. Git unions independent additions; buildCapabilities validates names.
+// One capability per line, without level for new entries. Existing levels are legacy metadata.
+// Git unions independent additions; buildCapabilities validates names.
 export const CAPABILITY_DECLARATIONS = [
   { name: "plans.integration.v1", level: 6, summary: "the integrated, integration-failed, refreshed and refresh-failed routes a plan's integrator posts" },
   { name: "plans.refresh.v1", level: 6, summary: "the plan refresh route, which atelier plan refresh and atelier merge post to take main into a plan's branch" },
