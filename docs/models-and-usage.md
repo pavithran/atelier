@@ -275,3 +275,46 @@ bucket, so close medians count as the same pace and a few runs' noise does
 not reorder models. No caller passes it yet: the plan routing in the Ledger reads one
 project's events, and the speed record needs every project's, as the
 reliability tie-breaker does.
+
+## Admitting an outside reviewer
+
+The project owner can admit a registered model as a reviewer in one project:
+
+```text
+atelier models add Qwen3-Coder-Next --harness opencode --where home --endpoint http://ai-server:8000/v1 --alias studio-review
+atelier models admit Qwen3-Coder-Next --project weblog --reason "Qualified against the full diff"
+atelier models reviewers --project weblog
+atelier land t21 --project weblog --reviewer opencode/studio-review
+atelier models withdraw Qwen3-Coder-Next --project weblog --reason "Retiring this reviewer"
+```
+
+Admissions use the registered canonical id and its aliases, irrespective of
+harness. They grant the assessor role only in that project; they grant no
+builder role. Admit and withdraw both record the owner, reason and server time
+in the project event history. Repeat `models admit` to readmit a model.
+An unknown family or an alias that disguises another family is refused.
+
+Each new admitted review must be from another family than **every** contributor
+and must name the current head and acceptance-criteria binding. Admission does
+not turn an owner-token assertion into a proved review: the model must use its
+own actor token or answer a review request it claimed, as before. A recorded
+review retains its admission snapshot. Withdrawal cancels outstanding requests
+and refuses new verdicts; it preserves past approvals at their original head
+and criteria. Readmission never revives a withdrawn claim.
+
+Named reviewers must be registered or admitted, and eligible under project
+policy. An admitted review dispatch uses the registered harness, canonical id
+and home/cloud location. A live runner must offer that model and the `review`
+job. For a home endpoint, configure the runner on a machine that can reach
+ai-server (`atelier runner setup` reads the registered endpoint and checks its
+model list). With no matching offer, landing names the unavailable model and
+fails before creating a request.
+
+Local tests mock dispatch and endpoint access. Network reachability from the
+actual runner to ai-server cannot be established by those tests. Before and
+after deploying this change, run a remote smoke check on a disposable project:
+register the endpoint, set up a home runner that can reach it, admit the model,
+request and claim a review of a passing cross-family task, and verify the
+approval's head, criteria and admission snapshot. Withdraw during a second
+claimed review and verify that its late verdict is refused while the first
+approval remains valid. A failed smoke check blocks promotion.

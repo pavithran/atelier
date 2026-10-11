@@ -195,7 +195,7 @@ test("reviewNeeded: a rejection whose every blocking finding the owner refuted i
   assert.equal(round3.reason.endsWith("round 3, after codex/gpt-6-astra rejected bbbbbbbb"), true);
 });
 
-test("reviewNeeded: a live request holds the item until its claim lapses", () => {
+test("reviewNeeded: lease recovery does not exclude the reviewer actor", () => {
   const claimedAt = (ms: number) => new Date(NOW.getTime() - ms).toISOString();
   assert.equal(need({ requests: [{ head: H2, state: "open" }] }).reason, "a review request for bbbbbbbb is open");
   assert.equal(need({ requests: [{ head: H2, state: "claimed", claimedBy: "codex/gpt-6-astra", claimedAt: claimedAt(60_000) }] }).reason,
@@ -205,13 +205,13 @@ test("reviewNeeded: a live request holds the item until its claim lapses", () =>
   // A claim time that cannot be read is taken as recent.
   assert.equal(need({ requests: [{ head: H2, state: "claimed", claimedBy: "codex/gpt-6-astra", claimedAt: "yesterday" }] }).needed, false);
   const lapsed = required({ requests: [
-    { head: H2, state: "claimed", claimedBy: "codex/gpt-6-astra", claimedAt: claimedAt(REVIEW_CLAIM_TIMEOUT_MS) },
+    { head: H2, state: "withdrawn", claimedBy: "codex/gpt-6-astra", claimedAt: claimedAt(REVIEW_CLAIM_TIMEOUT_MS) },
     { head: H1, state: "open" },
     { head: H2, state: "answered", claimedBy: "claude-code/opus-5.5", claimedAt: claimedAt(60_000) },
     { head: H2, state: "withdrawn" },
   ] });
-  assert.deepEqual(lapsed.lapsed, ["codex/gpt-6-astra"]);
-  assert.equal(REVIEW_CLAIM_TIMEOUT_MS, 2 * 60 * 60 * 1000);
+  assert.deepEqual(lapsed.lapsed, []);
+  assert.equal(REVIEW_CLAIM_TIMEOUT_MS, 5 * 60 * 1000);
 });
 
 test("reviewNeeded: a re-review counts the earlier heads a model rejected and names the last reviewer", () => {
