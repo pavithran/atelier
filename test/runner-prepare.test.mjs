@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { prepareWorkspace, preparationMarker, prepareTimeout, execute, runRunner } from '../cli/runner.mjs';
+import { prepareWorkspace, preparationMarker, prepareTimeout, execute, runRunner, IDENTITY_FILE } from '../cli/runner.mjs';
 
 function fixture(t) {
   const cwd = mkdtempSync(join(process.cwd(), '.prepare-test-'));
@@ -85,6 +85,8 @@ test('the real runner reads preparation from its claimed Git directory before st
   git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.test');
   git('add', 'input'); git('commit', '-qm', 'initial');
   git('config', 'atelier.prepare', JSON.stringify(f.spec));
+  // A real claim records both preparation and the project's commit identity.
+  writeFileSync(join(f.options.gitDir, IDENTITY_FILE), JSON.stringify({ name: 'Test', email: 'test@example.test', agentEmails: [] }));
   const config = join(f.options.gitDir, 'runner.json');
   writeFileSync(config, JSON.stringify({ agents: [{ agent: 'opencode', models: ['model'], command: ['test-harness', '{model}', '{brief_file}', '{workspace}'] }] }));
   const previousCache = process.env.ATELIER_CACHE, previousCode = process.exitCode;

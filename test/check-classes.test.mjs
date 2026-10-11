@@ -194,13 +194,16 @@ test("check runs nothing, and clones nothing, when a registered check or the com
 });
 
 const PREPARE = "npm ci --prefer-offline --no-audit --no-fund && npm run types";
-test("init sends preparation with explicit inputs and outputs, omits it on re-init and clears it only when named", (t) => {
+test("init sends preparation alongside commit identity, omits it on re-init and clears it only when named", (t) => {
   const f = initFixture(t);
-  const r = f.run("init", "--prepare", PREPARE, "--prepare-input", "package.json", "--prepare-input", "package-lock.json", "--prepare-output", "node_modules", "--prepare-output", "worker-configuration.d.ts");
+  const r = f.run("init", "--prepare", PREPARE, "--prepare-input", "package.json", "--prepare-input", "package-lock.json", "--prepare-output", "node_modules", "--prepare-output", "worker-configuration.d.ts", "--commit-name", "Test Owner", "--commit-email", "owner@example.test");
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(f.requests().find((q) => q.method === "PUT").body.prepare, {
     command: PREPARE, inputs: ["package.json", "package-lock.json"], outputs: ["node_modules", "worker-configuration.d.ts"],
   });
+  const policy = f.requests().find((q) => q.method === "PUT").body;
+  assert.equal(policy.commitName, "Test Owner");
+  assert.equal(policy.commitEmail, "owner@example.test");
   f.clear();
   assert.equal(f.run("init").status, 0);
   assert.equal(f.requests().find((q) => q.method === "PUT").body.prepare, undefined);
