@@ -1,20 +1,20 @@
 # Design critique: every owner and public page
 
 Task t499, 2026-10-11, against [brief.md](brief.md). Findings are numbered
-**F1–F20** and ranked by severity: **Blocker** (wrong or unsafe: the page
+**F1–F22** and ranked by severity: **Blocker** (wrong or unsafe: the page
 says something false, or crosses the public boundary), **High** (the
 five-second question cannot be answered), **Medium** (slows the answer or
 fails a WCAG criterion in part), **Low** (polish). Each finding names the
-proposals in [plan.md](plan.md) (**P1–P16**) that answer it.
+proposals in [plan.md](plan.md) (**P1–P17**) that answer it.
 
-## How this was measured, and what is still pending
+## How this was measured
 
 | Evidence | Where it comes from | Status |
 |---|---|---|
 | Every page's HTML, drawn by the production renderers from the seeded fixture | `test/fixtures/design/render.design.ts` (`npm run design:capture`, render step) | **Measured** in this run: statuses, text, word counts, list sizes, link and form counts quoted below |
 | Fixture and page assertions | `test/fixtures/design/fixture.spec.ts` (in `npm test`) | **Passing**: 310 tasks, every state at its status and text, no secret on a public page |
 | Palette contrast | [contrast.md](contrast.md), from the tokens | **Measured** |
-| Full-page screenshots at 1440 and 390 px, rendered contrast, focus order, target size, reflow at 320 px | `npm run design:capture` → `screens/`, `screens/manifest.json`, `audit.json` | **Not yet run**: no Chromium build for playwright-core 1.61.1 is cached on the machine this was written on, and the command never downloads one. The screenshot links below resolve once it runs; `screens.test.ts` fails until they do |
+| Full-page screenshots at 1440 and 390 px, rendered contrast, focus order, target size, reflow at 320 px | `npm run design:capture` → `screens/`, `screens/manifest.json`, `audit.json` | **Measured**: 96 screenshots of 48 states, source e9dbe08 (clean), Chromium 149.0.7827.55 (playwright-core 1.61.1), fixed time 2026-10-10 12:00 UTC. Every finding below was checked against them; corrections are marked *Capture:* |
 | The earlier sketch's 20 screenshots (d6db01d, older fixture) | `screens/sketch-d6db01d/` | **Measured heights** quoted where they bear on a finding |
 | Live atelier.zone | The owner's note on t499 | `/p/atelier` is 27,968 px tall at 1440; t435's page said Ready after a send-back |
 
@@ -35,7 +35,8 @@ projects: the whole flow · the timeline of merges"). "Settings" means the
 account (Models, Usage) in the rail and the project policy in the tabs. On a
 phone the rail becomes a top bar with a Settings disclosure, and the tabs
 wrap below it (sketch `home-390.png`: 164 px of navigation before the
-heading). → **P1**.
+heading). *Capture:* `task-open-long-390.png` puts the title about 380 px down,
+under the rail's top bar, the breadcrumb and two rows of eight tabs. → **P1**.
 
 ### F2. Visitors see the owner's navigation on every error — Blocker
 `renderError` always draws the owner's shell. A visitor without Access's
@@ -85,12 +86,14 @@ state line must be computed from everything the page knows, not from the
 gate alone. → **P3**.
 
 ### F5. Actions before evidence on every live task — High
-On every live task page the first things under the title are the forms
-"Request changes / What needs to change? / Send review" and "Block this task
-/ What is it waiting on?" with a 25-word explanation, before the revision,
-the thread, the evidence and the recommendation. The owner is offered
-actions before being told what is true. `task-protected` carries 9 forms.
-→ **P3**.
+On every live task page the actions come directly under the decision line,
+before the revision, the thread, the evidence and the recommendation. The
+owner is offered actions before being told what is true. `task-protected`
+carries 9 forms. *Capture:* the forms are folded: what shows is a row of
+three buttons (`task-sent-back-1440.png`: Approve revision, Request changes,
+Block this task) whose forms open on demand. The bulk is smaller than the
+HTML suggested; the order, and a primary button that contradicts the
+evidence below it (F3), remain. → **P3**.
 
 ### F6. Unbounded pages — High
 Nothing is paged or filtered except the Log:
@@ -144,7 +147,9 @@ stale task looks like a working one at a glance (sketch
 
 ### F12. The rail ends at the first screen — Low
 On a page taller than the viewport the rail's background stops at 900 px
-(every sketch capture at 1440). → **P1** removes the rail.
+(every sketch capture at 1440). *Capture:* confirmed on every tall page at
+1440, e.g. `home-1440.png` (rail ends at 900 of 1,905 px) and
+`task-sent-back-1440.png`. → **P1** removes the rail.
 
 ### F13. Raw internals on an empty project — Low
 `project-empty` shows "Ledger events · project set owner" with the policy as
@@ -164,10 +169,14 @@ way to pause. Decisions, Flow and the task page use `/live.js`, which swaps
 
 ### F16. Focus indicator gaps — Medium (WCAG 2.4.7, 2.4.13)
 `layout.css:64` draws the focus ring for `a, button, summary, input,
-textarea, pre` only. Not covered: `select` (Home's showcase setting,
-Ship's duration), `ol.code-lines[tabindex=0]` (`code-file`), and graph beads,
-whose `outline: none` (`layout.css:546`) is replaced by a scale-up and a
-stroke that have not been measured against 3:1. → **P13**.
+textarea, pre` only. *Capture:* `select` (Home's showcase setting, Ship's
+duration) and `ol.code-lines[tabindex=0]` (`code-file`) fall back to
+Chromium's own `outline: auto` ring: visible, but unthemed and not measured
+against 3:1. The measured gap is the graph beads, whose `outline: none`
+(`layout.css:546`) leaves a scale-up and a stroke that the audit does not
+count as an indicator: 73 of 200 stops on `flow`, 61 on `project-flow`, 10
+on each `decisions*`, 2 on `flow-filtered`, 1–2 on each live task page.
+→ **P13**.
 
 ### F17. Family colours as text in light mode — Medium (WCAG 1.4.3)
 Measured ([contrast.md](contrast.md)): `--m-anthropic` 4.15, `--m-openai`
@@ -187,6 +196,20 @@ page in full before any state or action; the brief has no fold. On cards
 and list rows titles wrap to three lines at 390 (sketch `decisions-390`).
 → **P3, P4**.
 
+### F21. An unreadable project reads as an idle one — Medium
+*Capture:* on Home (`home-1440.png`) the cold-storage card shows "0 waiting
+on you, 0 running, 0 ready to start, 0 merged" in the same large numerals
+as the healthy cards, with "Temporarily unavailable. Open to retry." in
+small text beneath. The zeros are not known; they are drawn as if they
+were. → **P17**.
+
+### F22. The public showcase is the least keyboard-ready page — Medium (WCAG 2.4.1, 2.4.7)
+*Capture:* every owner page's first Tab stop is "Skip to content";
+`public-showcase`, `public-how` and `signin` start at the brand link with
+no skip link, and on `public-showcase` 8 of its 13 stops are graph beads
+with no indicator, so a visitor's focus disappears into the story threads.
+→ **P13**, **P2**.
+
 ### F20. What is strong — keep
 - The public showcase's redaction is complete for every secret in the
   fixture (Public data below), and it reads well as a portfolio.
@@ -204,16 +227,16 @@ state id (written by `npm run design:capture`; see the status table above).
 
 | Page / state | Screens | Strengths | Failures | Severity | Proposed |
 |---|---|---|---|---|---|
-| Showcase `public-showcase` | [1440](screens/public-showcase-1440.png) · [390](screens/public-showcase-390.png) | Redaction complete; tallies; story threads | 775 words before the cards end; lead is 35 words (F8) | Low | P11 |
+| Showcase `public-showcase` | [1440](screens/public-showcase-1440.png) · [390](screens/public-showcase-390.png) | Redaction complete; tallies; story threads | 775 words before the cards end; lead is 35 words (F8); no skip link, 8 of 13 focus stops without indicator (F22) | Medium | P11, P13 |
 | No showcase `public-showcase-none` | [1440](screens/public-showcase-none-1440.png) · [390](screens/public-showcase-none-390.png) | Says why | Owner rail and Sign out to a visitor (F2) | Blocker | P2 |
 | Explainer `public-how` | [1440](screens/public-how-1440.png) · [390](screens/public-how-390.png) | Complete reference | 13,073 words; 111 sentences of 30+ words; no way back to `/` but the brand | Medium | P11 |
 | Visitor on owner URL `public-owner-route` | [1440](screens/public-owner-route-1440.png) · [390](screens/public-owner-route-390.png) | Same answer for any name: no enumeration | Owner rail (F2); "Let's resolve this." | Blocker | P2 |
-| Sign in `signin` | [1440](screens/signin-1440.png) · [390](screens/signin-390.png) | Clear single form; backdrop is decorative and `aria-hidden` | Backdrop draws 12 threads behind the form: contrast of the form text over it is unmeasured | Low | — |
-| Home `home` | [1440](screens/home-1440.png) · [390](screens/home-390.png) | Cards put waiting work first; family bars | 32-word lead (F8); counts disagree with Overview and Decisions (F7); Flow and History only as a sentence (F1); the showcase select on every card mixes a setting into a status page | High | P1, P6, P10 |
+| Sign in `signin` | [1440](screens/signin-1440.png) · [390](screens/signin-390.png) | Clear single form; backdrop is decorative and `aria-hidden` | Backdrop draws 12 threads behind the form: the audit reads CSS backgrounds, not the drawn threads, so contrast over them is still unmeasured; no skip link (F22) | Low | P13 |
+| Home `home` | [1440](screens/home-1440.png) · [390](screens/home-390.png) | Cards put waiting work first; family bars | 32-word lead (F8); the unreadable project's card shows four zeros (F21); counts disagree with Overview and Decisions (F7); Flow and History only as a sentence (F1); the showcase select on every card mixes a setting into a status page | High | P1, P6, P10, P17 |
 | Decisions `decisions` | [1440](screens/decisions-1440.png) · [390](screens/decisions-390.png) | Next decision beside its evidence; phone shows list and detail as two views | 14 long sentences; orchestrator list unbounded (F6); overlap reasons repeated (F9) | High | P6 |
 | Decisions, sent back `decisions-sent-back` | [1440](screens/decisions-sent-back-1440.png) · [390](screens/decisions-sent-back-390.png) | The note is shown | Badge "In review", line "Changes requested", button Approve (F3) | Blocker | P3 |
 | Decisions, blocked `decisions-blocked` | [1440](screens/decisions-blocked-1440.png) · [390](screens/decisions-blocked-390.png) | Reason and who blocked | Recommendation "decide" names no decision | Medium | P3 |
-| Studio `studio` | [1440](screens/studio-1440.png) · [390](screens/studio-390.png) | Lanes show who holds what | Meta refresh (F15); sketch 8,585 px at 390; whether a stale lane is marked is unmeasured until the capture | Medium | P12, P7 |
+| Studio `studio` | [1440](screens/studio-1440.png) · [390](screens/studio-390.png) | Lanes show who holds what | Meta refresh (F15); 6,000 px at 1440, 9,807 at 390; the three stale lanes (t163–t165, last push 1 d ago) are tagged "Working" like the rest, and only their long tinted bars hint at age (F3) | Medium | P12, P7 |
 | Flow `flow` | [1440](screens/flow-1440.png) · [390](screens/flow-390.png) | The whole portfolio's threads | 1.5 MB, 1,681 links (F10); no rail entry (F1) | Medium | P8, P1 |
 | Flow filtered `flow-filtered` | [1440](screens/flow-filtered-1440.png) · [390](screens/flow-filtered-390.png) | Filters are links, work without script | Filter state not reflected in the heading | Low | P8 |
 | History `history` | [1440](screens/history-1440.png) · [390](screens/history-390.png) | By day, family mark | 241 rows, no paging (F6); unreadable-project notice lacks `role=status` | Medium | P9 |
@@ -232,7 +255,7 @@ state id (written by `npm run design:capture`; see the status table above).
 | No commits `code-no-commits` | [1440](screens/code-no-commits-1440.png) · [390](screens/code-no-commits-390.png) | Says why | Error shell: tabs and project lost (F2) | Low | P2 |
 | Log `log`, `log-page-2` | [1440](screens/log-1440.png) · [390](screens/log-390.png), [p2](screens/log-page-2-1440.png) | The only paged list (50) | "Log" and "History" mean different things in the tabs and the rail | Low | P1 |
 | Commit `commit`, path history `path-history` | [1440](screens/commit-1440.png) · [390](screens/commit-390.png), [path](screens/path-history-1440.png) | Diff per file | — | Low | P1 |
-| Task, open long `task-open-long` | [1440](screens/task-open-long-1440.png) · [390](screens/task-open-long-390.png) | Brief and criteria in full on the one page that shows them | Brief unfolded before state (F19) | Medium | P3 |
+| Task, open long `task-open-long` | [1440](screens/task-open-long-1440.png) · [390](screens/task-open-long-390.png) | Brief and criteria in full on the one page that shows them | Brief unfolded before state (F19): at 390 the brief fills about 520 px before "Ready to start" | Medium | P3 |
 | Task, working `task-working` | [1440](screens/task-working-1440.png) · [390](screens/task-working-390.png) | Revision and holder | Actions before evidence (F5) | High | P3 |
 | Task, stale `task-stale` | [1440](screens/task-stale-1440.png) · [390](screens/task-stale-390.png) | — | Not called stale; "wait" recommendation (F3) | High | P3, P7 |
 | Task, blocked `task-blocked` | [1440](screens/task-blocked-1440.png) · [390](screens/task-blocked-390.png) | Who, when, why, and Unblock | "decide" verdict without a decision | Medium | P3 |
@@ -241,7 +264,7 @@ state id (written by `npm run design:capture`; see the status table above).
 | Task, ready `task-ready` | [1440](screens/task-ready-1440.png) · [390](screens/task-ready-390.png) | One primary action; summary marked "not verified" | Badge "In review" beside "Ready to accept" (F3) | High | P3 |
 | Task, protected `task-protected` | [1440](screens/task-protected-1440.png) · [390](screens/task-protected-390.png) | Override needs the owner's own sign-in | 9 forms; 676 words before the diff | High | P3 |
 | Task, sent back `task-sent-back` | [1440](screens/task-sent-back-1440.png) · [390](screens/task-sent-back-390.png) | The reviewer's note is kept | Three answers (F3); Approve is primary | Blocker | P3 |
-| Task, accepted `task-accepted` | [1440](screens/task-accepted-1440.png) · [390](screens/task-accepted-390.png) | The exact merge command | 40-hex command in a `pre` at 390 (reflow unmeasured) | Medium | P3 |
+| Task, accepted `task-accepted` | [1440](screens/task-accepted-1440.png) · [390](screens/task-accepted-390.png) | The exact merge command | — (*Capture:* the 40-hex command scrolls inside its `pre`; no page overflow at 320) | Low | P3 |
 | Task, scope `task-scope` | [1440](screens/task-scope-1440.png) · [390](screens/task-scope-390.png) | Out-of-scope files are listed | Accept offered before the warning (F4) | Blocker | P3 |
 | Task, merged `task-merged` | [1440](screens/task-merged-1440.png) · [390](screens/task-merged-390.png) | Diff as it landed; says deploy is separate | — | Low | — |
 | Task, closed `task-abandoned` | [1440](screens/task-abandoned-1440.png) · [390](screens/task-abandoned-390.png) | History kept | Shows a merge preview ("Up to date… merges as it is") for work that will never merge | Low | P3 |
@@ -249,6 +272,11 @@ state id (written by `npm run design:capture`; see the status table above).
 | Fork browsed `fork-code`; no fork `fork-none` | [1440](screens/fork-code-1440.png) · [390](screens/fork-code-390.png), [none](screens/fork-none-1440.png) | Same browser for fork and baseline | Error shell loses the task (F2) | Low | P2 |
 
 ## Separate checks
+
+All "measured" numbers below are from `audit.json` (source e9dbe08,
+Chromium 149.0.7827.55), checked at 1440 in light and dark and at 390 and
+320 px. An automated pass is not a conformance claim: it misses meaning,
+order that is logical but wrong, and text over drawn backgrounds.
 
 ### Contrast (WCAG 1.4.3, 1.4.11)
 - **Palette, measured** ([contrast.md](contrast.md)): every role token
@@ -258,46 +286,73 @@ state id (written by `npm run design:capture`; see the status table above).
   normal text in light on the sheet and inset (F17). The focus ring
   (`--signal-hot`) is at least 6.05:1 against every surface (1.4.11 met for
   the ring's own colour).
-- **Rendered, not yet measured**: tinted tag backgrounds
-  (`rgba(var(--observed-rgb), …)`), text over the sign-in backdrop and over
-  the task sheet's gradient, and opacity-dimmed graph labels.
-  `scripts/design/audit.ts` measures every text element in both schemes and
-  writes `audit.json`; elements over a gradient are counted as unknown, not
-  as passing.
+- **Rendered, measured**: 13,402 text elements checked across the 48 states
+  in both schemes. **Dark: no failure. Light: 33 failures, all small text**:
+  - family colours as graph labels, as F17 predicted: GPT `#0b7a5c` on
+    `#e4e0d5` 4.03 (every task page's thread, 11 states) and on `#eeebe2`
+    4.46 (`decisions*`, `public-showcase`); Qwen `#4d7a12` on `#eeebe2` 4.29;
+    Claude `#b4461c` 4.15 as a filter link on `flow-filtered`;
+  - the selected Decisions row's "Ready to accept" tag, `#1d6b3c` on the
+    selection tint `#ccd2c3`, 4.21 (`decisions`): new, a role colour on a
+    tinted surface the token table does not cover. → **P14**, **P16**.
+- **Not measured**: 3,728 elements sit over a background image or gradient
+  (the task sheet, mostly; 60–103 per task page in each scheme) and are counted as unknown,
+  not passing. Text over the sign-in backdrop's drawn threads is read
+  against the CSS background only. Non-text contrast (1.4.11) of tag
+  borders, bead strokes and chart bars is not measured.
+- *Method note:* the first run reported dark primary buttons at 3.00:1; the
+  buttons' background transition had not finished after the scheme switch.
+  The capture now turns transitions off before the contrast pass (after the
+  screenshot), and the dark failures are gone.
 
 ### Keyboard and focus (WCAG 2.1.1, 2.4.1, 2.4.3, 2.4.7, 2.4.11, 2.5.8)
-- **Measured statically**: a skip link is the first element on owner pages;
-  the focus ring rule covers `a, button, summary, input, textarea, pre`
-  only (F16). Graph beads and lane links are focusable: `/flow` has 1,681
-  links in `<main>`, so after the skip link a keyboard user tabs through the
-  graph to reach anything below it; no "skip the graph" link exists. A live
-  task page puts 3–9 forms (each 2–3 stops) before the evidence (F5).
-- **Not yet measured**: the actual tab order, whether each stop draws a
-  visible indicator, whether the focused element is scrolled into view and
-  not obscured, and targets under 24 px — `audit.ts` walks up to 200 Tab
-  stops at 1440 and records each into `audit.json`.
+- **Measured, skip link**: the first Tab stop is "Skip to content" on all
+  45 owner and error states; the three public pages (`public-showcase`,
+  `public-how`, `signin`) have none (F22).
+- **Measured, indicators**: no stop without an indicator except graph beads
+  (F16, F22); `select` and the code lines use the browser's default ring.
+- **Measured, length**: the walk stops at 200 stops; `flow`, `project-flow`,
+  `history` and `tasks` reach it, so the main content of each is more than
+  200 stops long and has no skip-the-list or skip-the-graph link (F6, F10).
+  `decisions*` take 126–129 stops.
+- **Measured, obscured**: no stop was off screen when focused (2.4.11).
+- **Measured, target size at 390** (2.5.8, links in running text excepted):
+  graph beads at 11–19 px are the bulk (975 on `flow`, 711 on
+  `project-flow`); task-id links at 15 px high in the Overview's waiting
+  list (69); commit links at 21 px in the Log (50 a page) and path history;
+  the tag-row links "Changes"/"Checks" at 22 px on each task page; Home's
+  card task links at 22 px (22). → **P16**.
+- **Not measured**: whether the order is meaningful (it follows the DOM,
+  which puts actions before evidence, F5), screen-reader names beyond the
+  label text recorded, and focus behaviour inside the opened forms.
 
 ### Reflow (WCAG 1.4.10, 1.4.4)
-- **Measured statically**: the graphs keep a minimum width inside frames
-  that scroll sideways (permitted); the rail turns into a top bar under
-  720 px; the Decisions desk splits into two views under 700 px.
-- **Sketch screenshots at 390**: no horizontal page overflow in the 10 pages
-  captured, but the long-content risks (40-hex commands in `pre`, long
-  unbroken paths, 79-character titles) were not in that fixture.
-- **Not yet measured**: `audit.ts` sets each page to 320 px and records the
-  document's scroll width and the outermost elements that overflow outside
-  a scrolling frame.
+- **Measured at 320 px**: no state scrolls the page sideways; graphs and
+  `pre` blocks scroll inside their frames (permitted).
+- **Measured, one exception**: on `task-open-long` ten elements of a form
+  (labels, a select, inputs, the primary button) reach 370 px with no
+  scrolling ancestor. The audit does not check visibility, so this is
+  probably the closed "Send to an agent" form; whether it overflows when
+  opened is not verified. → **P16**.
+- **Captured at 390**: titles of 79 characters wrap to four lines; the
+  project tabs wrap to two rows (F1).
+- **Not measured**: 200% text zoom (1.4.4) and text-spacing overrides
+  (1.4.12).
 
 ### Public-data exposure (brief §1.5)
 - **Measured** by `fixture.spec.ts` on every page a visitor or a signed-out
   owner can reach (`public-*`, `signin`): none of `field-notes`, `Field
   Notes`, `Keychain.swift`, `jo@private.example`, the check command or the
   review note appears. The anonymised project is "An iOS app"; its stories
-  are kinds of work.
+  are kinds of work. The screenshots of those states agree.
 - **Crossing found**: the owner's navigation and Sign out on public error
-  pages (F2). It holds no record, but it is owner chrome on a public
-  answer, and it tells a visitor which areas exist.
+  pages (F2), confirmed in `public-owner-route-1440.png` ("Project owner",
+  Sign out) and `public-showcase-none-1440.png`. It holds no record, but it
+  is owner chrome on a public answer, and it tells a visitor which areas
+  exist.
 - **By design, recorded**: the owner's name appears on the public showcase
   ("Pavi made 79 decisions") and a named project's task titles appear.
+  Owner pages show the private project's names in full (`home-1440.png`:
+  "Fix the Keychain.swift crash for jo@private.example"), as they should.
 - **Not covered**: the 60-second showcase cache after a project is removed
   (tested elsewhere, test/showcase.spec.ts).

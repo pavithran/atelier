@@ -1,7 +1,7 @@
 # Design plan: what Atelier's pages should be
 
 Task t499, 2026-10-11. Designs to [brief.md](brief.md) and answers
-[critique.md](critique.md) (findings F1–F20). Mockups for every page are in
+[critique.md](critique.md) (findings F1–F22). Mockups for every page are in
 [mockups/](mockups/index.html), each with its desktop (1440) and phone (390)
 frames side by side and numbered notes that cite the findings and
 proposals below.
@@ -116,7 +116,7 @@ names the findings it answers.
 **P2. Error pages by audience and cause**
 - Scope: `src/ui.ts` (`renderError`, `publicPage`), `src/index.ts` (the error path and bare `Not found.` answers), tests.
 - Depends on: none (can land first).
-- Traces: F2, F14.
+- Traces: F2, F14, F22.
 - Criteria: A request without a verified owner session gets the public bar on every error. Owner errors keep the project row. Not found, unavailable and no-access each have their own heading and next step. No bare "Not found." text remains.
 
 **P3. The task page leads with one decision**
@@ -182,8 +182,8 @@ names the findings it answers.
 **P13. Every focusable thing shows focus**
 - Scope: `src/layout.css`, `src/graph.ts`, `src/browse/view.ts`, tests.
 - Depends on: none.
-- Traces: F16, keyboard check.
-- Criteria: select, code lines and graph beads draw a focus indicator of at least 2 px with 3:1 contrast against adjacent colours; each graph is preceded by a Skip the graph link; audit.json records no focus stop without an indicator.
+- Traces: F16, F22, keyboard check.
+- Criteria: select, code lines and graph beads draw a focus indicator of at least 2 px with 3:1 contrast against adjacent colours; each graph is preceded by a Skip the graph link; public pages have a skip link; audit.json records no focus stop without an indicator.
 
 **P14. Family colours readable as text in light mode**
 - Scope: `src/layout.css` (`--m-*` light values) or the pages that use them as text.
@@ -193,15 +193,21 @@ names the findings it answers.
 
 **P15. Captures with plans, refreshed after each landing**
 - Scope: `test/fixtures/design/**`, `scripts/design/**`, `docs/design/**`.
-- Depends on: a machine with playwright-core 1.61.1's Chromium cached.
+- Depends on: none; the first full capture is done (e9dbe08, Chromium 149.0.7827.55).
 - Traces: capture status in the critique.
 - Criteria: The fixture adds a plan proposed, building and blocked; npm run design:capture writes every brief state at 1440 and 390 with audit.json; it is rerun after each task in section 6 lands and the critique's status table updated.
 
 **P16. Clear the measured accessibility failures**
 - Scope: whatever `docs/design/audit.json` names; tests.
-- Depends on: P15's first full capture.
+- Depends on: P15's first full capture (done); best run after P13 and P14, which clear most of it.
 - Traces: contrast, keyboard and reflow checks.
 - Criteria: Every contrast failure, focus stop without an indicator, target under 24 px outside running text, and 320 px overflow outside a scrolling frame in audit.json is fixed or recorded in the critique as an accepted exception with its reason.
+
+**P17. An unreadable project shows no numbers**
+- Scope: `src/ui.ts` (Home's project card, the nav's project switcher), tests.
+- Depends on: P6 (the count it would otherwise show).
+- Traces: F21.
+- Criteria: A project whose records cannot be read shows "Unavailable" in place of its four counts on Home and in the switcher, with a Retry link; it shows no zero it did not count, and its showcase setting stays editable.
 
 ## 5. Existing tasks: what they cover and what is new
 
@@ -220,19 +226,19 @@ P15 is to read each with `atelier show` and correct this table.**
 | **t498** | A task's state shown consistently | F3, F4 in part | P3 header and overrides; P7 stale | `task-*`, `decisions-sent-back`, `decisions-blocked`, `studio` |
 
 Not covered by any existing task, as far as the brief says: F2 (public
-boundary on errors), F10 (page weight), F12–F16, F18 — P2, P8, P12, P13 and
+boundary on errors), F10 (page weight), F12–F16, F18, F21, F22 — P2, P8, P12, P13, P17 and
 P16 are new.
 
 ## 6. Dependency order
 
-1. **P15, first capture** — on a machine with Chromium cached; the baseline
-   every later capture is compared with.
+1. **P15, first capture** — done: 96 screenshots, source e9dbe08, the
+   baseline every later capture is compared with.
 2. **P2** and **P13** — no dependencies; P2 closes a Blocker.
 3. **t367** — the vocabulary and palette everything else names.
 4. **t456** then **P1** then **P10** — the navigation needs the areas, the
    tab merge needs the navigation.
 5. **t498**, **t474**, then **P3**, then **P7**.
-6. **t496**, then **P6**, then **P5**.
+6. **t496**, then **P6**, then **P5** and **P17**.
 7. **t497**, then **P4**, **P8**, **P9**.
 8. **P11**, **P12**, **P14**.
 9. **P15 again** after each of steps 3–8 (refresh the captures the table in
