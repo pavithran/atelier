@@ -29,6 +29,7 @@ const entry = (id: string, harness: ModelEntry["harness"]): ModelEntry => ({
   id, harness, where: "cloud", provider: "subscription", aliases: [], family: familyOf(id), note: "", addedBy: "owner", addedAt: AT,
 });
 const POOL = [entry("opus-5.5", "claude-code"), entry("gpt-6-astra", "codex")];
+const NAMED_POOL = [...POOL, entry("gemini-3.1-pro", "antigravity")];
 
 function ledger(project: string) {
   return env.LEDGER.get(env.LEDGER.idFromName(`project:${project}`));
@@ -287,7 +288,7 @@ it("a submitted task with a protected change gets a review request, named or pic
   const again = await L.requestReview(id, "owner", null, POOL);
   expect(again).toMatchObject({ needed: true, requested: false, reviewer: GPT, head, request: asked.request });
   // Naming another reviewer while that request stands is refused, not ignored.
-  await refusal(L.requestReview(id, "owner", "antigravity/gemini-3.1-pro", POOL), "review_requested", /already requested from codex\/gpt-6-astra/);
+  await refusal(L.requestReview(id, "owner", "antigravity/gemini-3.1-pro", NAMED_POOL), "review_requested", /already requested from codex\/gpt-6-astra/);
   expect(await L.requestReview(id, "owner", GPT, POOL)).toMatchObject({ requested: false, reviewer: GPT });
   expect(await L.reviewWaiting()).toEqual([]);
   expect((await L.reviewRequests(id)).at(-1)).toMatchObject({ head, state: "claimed", claimedBy: GPT });
@@ -310,6 +311,7 @@ it("asking again for a review every runner that offers the reviewer has skipped 
   const L = await setup(name);
   const index = env.LEDGER.get(env.LEDGER.idFromName("__index"));
   await index.registerProject({ name, repo: `${name}--baseline`, policy, createdAt: new Date().toISOString() });
+  await index.putModel(POOL[1]);
   const id = (await L.newItem("Landing", [], "owner")).id;
   const head = "a".repeat(40);
   await submittedTask(L, id, head);
@@ -405,6 +407,7 @@ it("a wanted review is requested for the named reviewer though the gate needs no
 });
 
 it("a standalone expired claim is reoffered within one queue poll with its routing intact", async () => {
+  const GEMINI = "antigravity/gemini-3.1-pro";
   const L = await setup("land-lapse");
   const id = (await L.newItem("Landing", [], "owner")).id;
   const head = "c".repeat(40);
@@ -423,6 +426,14 @@ it("a standalone expired claim is reoffered within one queue poll with its routi
   const successor = await L.claimReview(id, GPT, { runner: "home:replacement", kind: "home" }) as unknown as ReviewClaim;
   expect(successor.request).toBe(offered.request);
   expect(successor.criteria).toBe(reviewClaim2.criteria);
+  // Once that replacement also expires, an explicit request may name a
+  // different eligible reviewer, retaining main's named-reviewer behavior.
+  await runInDurableObject(L, async (_instance: Ledger, state: DurableObjectState) => {
+    state.storage.sql.exec(`UPDATE review_requests SET claimedAt = ? WHERE id = ?`, new Date(Date.now() - 2 * 86_400_000).toISOString(), successor.request);
+  });
+  expect(await L.requestReview(id, "owner", GEMINI, NAMED_POOL)).toMatchObject({ requested: true, reviewer: GEMINI });
+  expect(await L.requestReview(id, "owner", GEMINI, NAMED_POOL)).toMatchObject({ requested: false, reviewer: GEMINI, head });
+  await refusal(L.requestReview(id, "owner", GPT, POOL), "review_requested", /already requested from antigravity\/gemini-3.1-pro/);
 });
 
 it("the landing's steps are recorded as land.* events with their duration, and anything else is refused", async () => {
@@ -498,7 +509,7 @@ it("a landing's review request with an explicit --reviewer outside the tier asks
   const solo = await setup("land-tier-none", { ...policy, reviewTier: [OPUS, GEMINI] });
   const t = (await solo.newItem("Solo", [], "owner")).id;
   await submittedTask(solo, t, head);
-  await solo.requestReview(t, "owner", GEMINI, POOL);
+  await solo.requestReview(t, "owner", GEMINI, NAMED_POOL);
   expect((await solo.reviewRequests(t)).filter((r) => r.tier)).toEqual([]);
 });
 

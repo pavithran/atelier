@@ -599,6 +599,9 @@ function branchArg(value: unknown): string {
   return value;
 }
 
+// The commit identity's fields as init sends them (src/commit-identity.ts).
+const IDENTITY_FIELDS = ["commitName", "commitEmail", "agentEmails", "privateEmails", "publicMirrors"];
+
 // The approval a policy records, as init sends it: the owner's own text,
 // stored with the policy, so one over its limit is refused, never cut.
 function approvalArg(value: unknown): string | null {
@@ -1037,6 +1040,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   const project = ref.name;
   const L = ledger(env, ref.key);
 
+  if (parts[2] === "reviewers") {
+    requireOwner(env, actor);
+    if (parts.length === 3 && m === "GET") return json(await L.reviewerAdmissions());
+    if (parts.length === 4 && (m === "PUT" || m === "DELETE")) {
+      return json(await L.admitReviewer(parts[3], m === "PUT", body.reason, actor, await index(env).models()));
+    }
+    throw new RuleError("not_found", "no such reviewer admission route", 404);
+  }
+
   if (parts.length === 2 && m === "PUT") {
     requireOwner(env, actor);
     // A name is new when no project is registered under it and no Ledger,
@@ -1087,6 +1099,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // Overrides of the independent review refused in this project (t371).
       ...(has("noOverride") ? { noOverride: Boolean(body.noOverride) } : {}),
       ...(has("approval") ? { approval: approvalArg(body.approval) } : {}),
+      // The project's commit identity (t451): each field given replaces the
+      // recorded one, and the whole is checked as the policy is merged
+      // (settleCommitIdentity), so an invalid one is refused before anything is made.
+      ...(IDENTITY_FIELDS.some(has) ? { commitIdentity: Object.fromEntries(IDENTITY_FIELDS.filter(has).map((k) => [k, body[k]])) } : {}),
     };
     // A check that is not read-only is refused before the baseline is made;
     // the Ledger decides the same again when it records the init.
@@ -1207,6 +1223,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "actions") {
     const r = await actionsApi(L, m, parts.slice(3), body, actor, ownerActor(env), async (commit) => onMainLine(env, (await L.project()).repo, commit));
     return json(r.data, r.status);
+  }
+  if (parts[2] === "board" && parts.length === 3 && m === "GET") return json(await L.board());
+  if (parts[2] === "areas") {
+    if (parts.length === 3 && m === "GET") return json(await L.areas());
+    requireOwner(env, actor);
+    if (parts.length === 3 && m === "POST") return json(await L.saveArea(actor, body.name, body.purpose), 201);
+    if (parts.length === 4 && m === "POST") return json(await L.saveArea(actor, body.name, body.purpose, parts[3]));
+    if (parts.length === 4 && m === "DELETE") { await L.removeArea(parts[3], actor); return json({ removed: parts[3] }); }
+    throw new RuleError("not_found", "no such route", 404);
   }
   if (parts[2] !== "items") throw new RuleError("not_found", "no such route", 404);
   // A plan is an item too: { kind: "plan", goal, scope?, planner? } starts
@@ -1376,7 +1401,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         return json({ item: await L.item(id), workspace: {
           remote: `${c.url.origin}/git/runner/${encodeURIComponent(ref.key)}/${id}.git`, token: secret,
           expiresAt: c.token.expiresAt, defaultBranch: branch,
-        }, baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch } });
+        }, baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
+        // A runner's claim sets the same identity as any other (t451).
+        commitIdentity: p.policy.commitIdentity ?? null });
       }
       const w = await mint(env, fork!, "write", branch);
       // The Ledger records the token only if this claim still stands (see
@@ -1391,6 +1418,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         item: await L.item(id),
         workspace: { remote: w.remote, token: w.token, expiresAt: w.expiresAt, defaultBranch: w.defaultBranch },
         baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
+        // What the claim writes into the workspace's Git config, on whatever
+        // machine it runs (t451); null when the project names none yet.
+        commitIdentity: p.policy.commitIdentity ?? null,
       });
     }
     case "read-token": {
@@ -1540,6 +1570,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json({ runId, state }, 202);
     }
     case "dispatch": {
+      // --overlap-ok alone on a waiting dispatch releases its hold and keeps
+      // everything else. An explicit snapshot is checked atomically even if
+      // a runner has since claimed it; an already-owned task is redispatched.
+      if (body.retain === true) {
+        requireOwner(env, actor);
+        const waiting = await L.item(id);
+        if (body.retainAt !== undefined || (waiting.state === "open" && !waiting.owner && waiting.dispatch)) {
+          return json(await L.releaseHold(id, actor, { ...body, retainAt: body.retainAt !== undefined ? body.retainAt : waiting.dispatch!.at }));
+        }
+      }
       let suggestion;
       // atelier dispatch with no --agent asks for the suggestion; a dispatch
       // that names no agent without asking stays open to any runner's agent.
@@ -2625,10 +2665,13 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
     switch (parts.length === 2 ? "overview" : parts[2]) {
       case "overview": {
         const standing = await standingOf(env, ref.key);
-        return html(renderProject(p, await L.items(), await L.events(undefined, 40) as unknown as LedgerEvent[], ownerName(env), standing));
+        const board = await L.board();
+        return html(renderProject(p, board.items, await L.events(undefined, 40) as unknown as LedgerEvent[], ownerName(env), standing, board));
       }
-      case "tasks":
-        return html(renderProjectTasks(p, await L.items(), ownerName(env)));
+      case "tasks": {
+        const board = await L.board();
+        return html(renderProjectTasks(p, board.items, ownerName(env), board));
+      }
       case "flow": {
         const items = await L.items();
         const events = (await L.events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];

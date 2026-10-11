@@ -16,7 +16,7 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import {
-  bindingOf, changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, hasRole, independentApproval, matchesAny,
+  bindingOf, changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, reviewAuthorized, independentApproval, matchesAny,
   type ChangeClass, type Evidence, type EvidenceView, type Item, type ProjectPolicy, type Review,
 } from "../rules.ts";
 import { contributorsOf } from "./independence.ts";
@@ -214,7 +214,7 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   // not rounds of automatic review. The limit on rounds is fixed when a plan
   // is approved and reaching it blocks the plan, so it is the plan tick's to
   // enforce; this reports the round.
-  const counts = (r: Review) => r.by === owner || hasRole(r.by, policy, "assessor");
+  const counts = (r: Review) => reviewAuthorized(r, policy, owner);
   const latest = new Map<string, ReviewRecord>();
   for (const r of reviews.filter(counts).sort((a, b) => a.at.localeCompare(b.at))) {
     latest.set(`${r.head}\n${r.by}`, r);
