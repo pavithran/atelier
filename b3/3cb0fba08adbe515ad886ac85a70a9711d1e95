@@ -1,0 +1,31 @@
+atelier atelier/t485 "Every spec file runs in the checks, wherever it lives"
+accepted head 0e00896b42f7ff1c5d72e25892d22fe568084ff5
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — codex/gpt-6-astra 2026-10-11T01:22:03.411Z
+OBSERVED pass npm run types && npm run typecheck — codex/gpt-6-astra 2026-10-11T01:22:07.804Z
+REVIEW approve by antigravity/gemini-3.1-pro at 0e00896b42f7ff1c5d72e25892d22fe568084ff5, recorded by antigravity/gemini-3.1-pro
+2026-10-11T00:35:49.183Z pavi item.created
+2026-10-11T00:38:23.750Z pavi item.edited
+2026-10-11T00:38:23.750Z pavi item.criteria_changed
+2026-10-11T00:38:34.463Z pavi item.dispatched
+2026-10-11T00:45:39.130Z codex/gpt-6-astra item.claimed
+2026-10-11T00:46:09.008Z codex/gpt-6-astra fork.created
+2026-10-11T00:54:22.719Z codex/gpt-6-astra push.observed
+2026-10-11T01:00:53.500Z codex/gpt-6-astra evidence.observed
+2026-10-11T01:00:57.185Z codex/gpt-6-astra evidence.observed
+2026-10-11T01:00:57.707Z codex/gpt-6-astra item.submitted
+2026-10-11T01:16:27.013Z pavi land.lease
+2026-10-11T01:16:33.735Z pavi land.merge
+2026-10-11T01:16:44.377Z pavi land.regenerate
+2026-10-11T01:16:46.330Z codex/gpt-6-astra push.observed
+2026-10-11T01:16:47.086Z pavi land.push
+2026-10-11T01:22:04.813Z codex/gpt-6-astra evidence.observed
+2026-10-11T01:22:08.089Z codex/gpt-6-astra evidence.observed
+2026-10-11T01:22:08.534Z pavi land.check
+2026-10-11T01:22:10.932Z pavi review.requested
+2026-10-11T01:22:22.085Z antigravity/gemini-3.1-pro review.claimed
+2026-10-11T02:13:12.150Z antigravity/gemini-3.1-pro review.released
+2026-10-11T02:13:36.998Z antigravity/gemini-3.1-pro review.claimed
+2026-10-11T02:17:18.853Z antigravity/gemini-3.1-pro review.approved
+2026-10-11T02:17:32.372Z pavi land.review
+2026-10-11T02:17:33.382Z pavi item.accepted
+2026-10-11T02:17:33.416Z pavi land.accept
