@@ -28,7 +28,11 @@ points at it and states the review path (it does not edit the file).
 - Never override a review, a check or a block, except on the owner's own
   confirmation. Ask, and cite the owner's words; never infer them.
 - Judge each review finding against the code before acting, and record every
-  verdict with `atelier finding`.
+  verdict with `atelier finding ... --as H/M`, naming yourself, as you name
+  yourself on `atelier decide`, `atelier decisions withdraw` and on an
+  override: the Models page measures your verdicts as it measures a
+  reviewer's. Without `--as` the record cannot tell you from the owner, and
+  the page counts the judgement as unknown.
 - File every task with its acceptance criteria, written before the build. A
   review judges the change against them, so a task without them gives the
   review nothing to bind to. Write with each criterion the edge cases it
@@ -94,10 +98,11 @@ the project's core files: the queue does not start two pieces of work whose
 scopes overlap in one. Name them with `atelier init --core GLOB`, once per
 glob (for Atelier: `cli/runner.mjs`, `src/ledger.ts`,
 `src/dispatch/rules.ts`, the files where a dozen tasks built at once left
-half the landings on merge conflicts). A dispatch whose scope overlaps a
-live item's (claimed, submitted or accepted) within a core file waits in the
-queue until that item merges or is abandoned; `atelier status` names the item
-it waits on, and `atelier dispatch ID --overlap-ok` lets it through when the
+half the landings on merge conflicts). A dispatch whose scope overlaps,
+within a core file, a claimed item's or that of the item a live landing
+lease names waits in the queue until each claimed blocker submits or is
+released and each landing ends; a submitted or accepted item that is not
+landing holds nothing. `atelier status` names every item it waits on, and `atelier dispatch ID --overlap-ok` lets it through when the
 overlap is known to be harmless. Parts of one plan never hold each other,
 since the plan orders overlapping parts already. Landing is the part that
 must not run in parallel.
@@ -517,8 +522,8 @@ round; t435 has the runner merge main before submitting.
 ### Held dispatches
 
 Scope each task as narrowly as the change allows. A scope of `src/**`
-reaches every core file, so the task is held behind any live task in any of
-them: on 10 October twelve tasks filed with broad scopes all waited on one
+reaches every core file, so the task is held behind any claimed or landing task in
+any of them: on 10 October twelve tasks filed with broad scopes all waited on one
 task, while a second machine's runners sat idle.
 
 When runners sit idle, read `atelier queue` first: held dispatches are work
@@ -526,7 +531,8 @@ waiting on scope overlaps, not an empty backlog. If none are held, use
 `atelier status` to check runner eligibility and health.
 
 `atelier status` shows `Held: waits on tX … both scopes reach core file F`
-for a dispatch whose scope overlaps a live task's in a core file. Check that
+for a dispatch whose scope overlaps, in a core file, a claimed task's or the
+landing task's. Check that
 tX is really moving (its workspace's last commit, an agent process in it). If
 tX is stuck, fix tX first. If many tasks wait on one, release the few that
 matter most with `atelier dispatch tN --overlap-ok`, not all of them: tasks
@@ -667,6 +673,13 @@ owner it read as a defect. The other half were real, and some were serious.
   reviewers are right, and how often, is the most useful thing Atelier can
   measure about them. The next review brief shows each verdict and its note,
   so put the file and line that answer a refuted finding in the note.
+- Pass `--as H/M` with every verdict, naming the harness/model you are; it
+  must be a model in the pool. Your verdicts are measured too (task t440):
+  the Models page counts each upheld when another named model later agrees,
+  contradicted when a later verdict corrects it or a defect names it, and
+  unresolved otherwise. `atelier finding` prints the verdict's event number;
+  a defect that shows a refuted or fixed verdict wrong names it with
+  `atelier defect ID --note "…" --contradicts SEQ#N`.
 
 ## Keeping the record honest
 
