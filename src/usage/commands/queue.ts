@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Models", line: 2, slot: 30,
       form: "queue",
-      about: "Lists everything waiting for a runner, across projects, oldest first, and for each dispatch the project's core files hold, the live item it waits on.",
+      about: "Lists everything waiting for a runner, across projects, oldest first, and for each dispatch the project's core files hold, every claimed or landing item it waits on and when each stops holding.",
     },
   ],
   flags: {},
