@@ -1,0 +1,52 @@
+atelier atelier/t522 "A new route needs only a named capability, not the next route level"
+accepted head 6b5666f7c1951db5e2a7048b7437dc845c5e139c
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6-astra (openai)
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — codex/gpt-6-astra 2026-10-11T23:17:25.737Z
+OBSERVED pass npm run types && npm run typecheck — codex/gpt-6-astra 2026-10-11T23:17:29.561Z
+REVIEW approve by antigravity/gemini-3.1-pro at 6b5666f7c1951db5e2a7048b7437dc845c5e139c, recorded by antigravity/gemini-3.1-pro
+2026-10-11T18:15:21.988Z pavi item.created
+2026-10-11T18:19:21.118Z pavi item.dispatched
+2026-10-11T18:19:31.711Z codex/gpt-6-astra item.claimed
+2026-10-11T18:20:00.303Z codex/gpt-6-astra fork.created
+2026-10-11T18:20:32.377Z codex/gpt-6-astra item.released
+2026-10-11T18:20:44.743Z codex/gpt-6-astra item.claimed
+2026-10-11T18:21:17.967Z codex/gpt-6-astra item.released
+2026-10-11T18:21:24.996Z codex/gpt-6-astra item.claimed
+2026-10-11T18:21:53.330Z codex/gpt-6-astra item.released
+2026-10-11T18:22:19.240Z codex/gpt-6-astra item.claimed
+2026-10-11T18:22:50.072Z codex/gpt-6-astra item.released
+2026-10-11T18:23:12.695Z codex/gpt-6-astra item.claimed
+2026-10-11T18:23:41.556Z codex/gpt-6-astra item.released
+2026-10-11T18:24:07.780Z codex/gpt-6-astra item.claimed
+2026-10-11T18:24:35.417Z codex/gpt-6-astra item.released
+2026-10-11T18:25:02.694Z codex/gpt-6-astra item.claimed
+2026-10-11T18:25:36.132Z codex/gpt-6-astra item.released
+2026-10-11T18:26:04.485Z codex/gpt-6-astra item.claimed
+2026-10-11T18:26:33.457Z codex/gpt-6-astra item.released
+2026-10-11T18:27:04.355Z codex/gpt-6-astra item.claimed
+2026-10-11T18:27:33.407Z codex/gpt-6-astra item.released
+2026-10-11T18:28:04.290Z codex/gpt-6-astra item.claimed
+2026-10-11T18:28:33.601Z codex/gpt-6-astra item.released
+2026-10-11T21:26:05.415Z codex/gpt-6-astra item.claimed
+2026-10-11T21:34:51.832Z codex/gpt-6-astra push.observed
+2026-10-11T21:40:43.401Z codex/gpt-6-astra evidence.observed
+2026-10-11T21:40:46.603Z codex/gpt-6-astra evidence.observed
+2026-10-11T21:54:23.067Z codex/gpt-6-astra push.observed
+2026-10-11T22:00:43.169Z codex/gpt-6-astra evidence.observed
+2026-10-11T22:00:45.678Z codex/gpt-6-astra evidence.observed
+2026-10-11T22:00:46.474Z codex/gpt-6-astra item.submitted
+2026-10-11T23:10:59.324Z pavi land.lease
+2026-10-11T23:11:05.660Z pavi land.merge
+2026-10-11T23:11:16.984Z pavi land.regenerate
+2026-10-11T23:11:21.218Z codex/gpt-6-astra push.observed
+2026-10-11T23:11:22.034Z pavi land.push
+2026-10-11T23:17:26.565Z codex/gpt-6-astra evidence.observed
+2026-10-11T23:17:29.843Z codex/gpt-6-astra evidence.observed
+2026-10-11T23:17:30.407Z pavi land.check
+2026-10-11T23:17:33.289Z pavi review.requested
+2026-10-11T23:17:42.912Z antigravity/gemini-3.1-pro review.claimed
+2026-10-11T23:21:19.725Z antigravity/gemini-3.1-pro review.approved
+2026-10-11T23:21:21.218Z pavi land.review
+2026-10-11T23:21:22.006Z pavi item.accepted
+2026-10-11T23:21:22.016Z pavi land.accept
