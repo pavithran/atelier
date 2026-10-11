@@ -127,7 +127,8 @@ accepted, finishes it after the other landing ends.
 
 The steps in between:
 
-1. The server must be at this CLI's route level or newer. `GET /api/version`
+1. Clients from before capabilities require the server to be at their route
+   level or newer. `GET /api/version`
    reports the commit the server was deployed from (`npm run deploy` records
    it) and its route level, and a landing whose server is older refuses
    before it starts, naming both levels and saying to deploy, since the
@@ -138,6 +139,81 @@ The steps in between:
    a route the CLI already calls; the waiting queue the landing's `--wait`
    asks about (`{ item, queued: true }` on the landing-lease route) raised
    it to 10 (main had already reached 9 with another route change).
+
+   The landing now checks named capabilities rather than that number (t458):
+   `GET /api/version` also lists `capabilities`, names like
+   `land.workflow.v1` that each stand for one behaviour of the API, and
+   `atelier land` refuses, before the lease or any workspace changes, when
+   the list lacks one of the capabilities its module declares
+   (`src/usage/commands/land.ts`, read back as `COMMAND_CAPABILITIES.land`),
+   naming the missing set, the revision the server runs and the deploy to
+   run. Extra capabilities are accepted; a reply with no usable version,
+   and one whose `capabilities` or `routeLevel` is the wrong shape, are
+   refused with their own messages. A capability is never changed
+   incompatibly: the change takes a new name (`…v2`), and a client that
+   needs `v1` is not satisfied by a server that publishes only `v2`.
+
+   Every command checks the same way: a command that relies on an API
+   behaviour names it in `capabilities` in its module,
+   `src/usage/commands/NAME.ts` (a subcommand's own go under
+   `subcommands`, so `atelier models` lists the pool on any server while
+   `models note` needs `models.note.v1`), and the CLI asks the server once,
+   after the flags are checked and before the handler's first request
+   (`requireCapabilities`, `cli/atelier.mjs`); `land` alone makes the same
+   check itself, after `--release-lease`, which touches only the lease
+   route so a stuck lease can be freed while the server is behind, and
+   before the lease is read. `claim`, `start`, `wrap`, `new`, `edit`, `init`, `merge`, `plan refresh`,
+   `review`, `review-claim`, `review-unparsable`, `token issue`, `token
+   store`, `area`, `board` and the integrator's `integrated`,
+   `integration-failed`, `refreshed` and `refresh-failed` declare theirs
+   (`new` and `edit` declare the area assignment their `--area` posts, as
+   `edit` declares the binding a change of criteria withdraws: a command
+   declares what any of its flags may ask); a command with none, and
+   `help`, `--help` and `--version` of any command, asks nothing, so the
+   offline commands work with no server at all, including `init --rename-local`.
+   The identity consumers (`adopt`, `revert`, `claim`, `start`, `wrap`, `init`, `merge`,
+   `land` and runner jobs) require `projects.commit-identity.v1`;
+   `models admit`, `withdraw` and `reviewers` require `reviews.admission.v1`;
+   `init` and `land` require the durable post-merge runs, `land.post-merge.v1`
+   (t477), and `land --post-merge` asks for that one alone; `stuck` requires
+   the stuck report, `projects.stuck.v1` (t441). The home runner checks the
+   union of its jobs' (`JOB_CAPABILITIES`, `src/route-level.ts`) before its
+   first poll, the integrator's `integrate` and `refresh` jobs included;
+   the review job's include the review claim leases (`reviews.lease.v1`) and the review skip (`reviews.skip.v1`,
+   `reviews.skip-as-runner.v1`), so a reviewer against a server from before
+   t353 refuses to start instead of losing its skips.
+
+   **Migration.** The server publishes `routeLevel` beside `capabilities`
+   and the merge arithmetic on `ROUTE_LEVEL` stays, so a server that
+   predates capabilities still works: a reply with only `routeLevel` N
+   guarantees the capabilities declared with level N or lower
+   (`src/route-level.ts`: 6 `plans.integration.v1`, the integrate and
+   refresh job routes the commits named there added, and `plans.refresh.v1`,
+   the owner's plan refresh route from the same raise; 14 `land.workflow.v1`,
+   15 `items.brief-criteria.v1`, 16 `reviews.criteria-binding.v1`, 17
+   `reviews.unparsable.v1`, 18 `models.note.v1`, 19
+   `projects.require-criteria.v1`, 20 `runners.scoped-token.v1`, 21
+   `reviews.skip.v1`, 22 `reviews.skip-as-runner.v1`, 23 `areas.manage.v1`
+   and `areas.board.v1`, 24 `projects.commit-identity.v1`, 25
+   `reviews.admission.v1`, 26 `reviews.lease.v1`, 27 `land.post-merge.v1`,
+   30 `projects.stuck.v1`)
+   and nothing else; a capability added later has no
+   level, so a legacy server is refused for it. While the migration lasts
+   the number still rises by one with each such change and gates legacy
+   clients: the change declares the capability it stands for with the
+   level it raised the number to, one declaration per line in
+   `src/capability-declarations.ts`. Its `merge=union` attribute in
+   `.gitattributes` retains independent additions, including two in the same
+   family or two new families. `buildCapabilities` refuses duplicate names
+   after merging; validate legacy levels as well. Landing refuses automatic
+   numeric raises
+   when named declarations are present: move the task's new declaration
+   levels above main's level along with ROUTE_LEVEL, keeping main's
+   published mappings unchanged, then commit and rerun; `test/capabilities.test.mjs` fails a
+   raise that declares nothing, and merges the file three ways to keep that
+   shape. The route level, its raise by a change, and atelier land's merge
+   arithmetic may be removed once no server this CLI supports answers with
+   a route level alone, and the owner has said so.
 2. Main is fetched into the task's workspace and merged with `--no-ff`. On
    conflicts the landing stops, leaves the merge in the workspace for the
    owner to resolve, and names the files. After resolving and committing,

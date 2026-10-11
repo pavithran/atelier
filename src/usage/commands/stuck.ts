@@ -2,6 +2,8 @@ import type { CommandSpec } from "../command.ts";
 
 const spec: CommandSpec = {
   name: "stuck",
+  // The stuck report route (t441), which an older server answers 404.
+  capabilities: ["projects.stuck.v1"],
   forms: [
     { group: "Owner", line: 2, slot: 5, form: "stuck [--project P] [--json] [--no-push-hours N] [--unanswered-hours N] [--lease-wait-minutes N] [--conflict-wait-minutes N] [--core-hold-minutes N] [--runner-poll-minutes N] [--review-answer-hours N]", about: "One read-only owner report of stuck tasks, lease waits, conflict pauses, confirmed orphan leases, runner give-ups, idle polls, claimed reviews and stale core holds; prints evidence and recovery commands without running them, and separately lists failed observed check commands in the preceding rolling day." },
   ],
