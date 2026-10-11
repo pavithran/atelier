@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 // t339: the concurrency proof drives N simulated agents against a throwaway
 // project over the CLI's request protocol. These tests stand in for the live
@@ -31,8 +32,10 @@ async function fakeServer(t, { bareRoot = null, fault = null } = {}) {
       for await (const c of req) chunks.push(c);
       try { body = JSON.parse(Buffer.concat(chunks).toString() || "{}"); } catch { body = {}; }
     }
-    requests.push({ method, path: url.pathname, actor, body });
     let send = (status, data) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(data)); };
+    // The CLI checks the server's capabilities before new (t458); the version is not a request the proof measures.
+    if (url.pathname === "/api/version") return send(200, { capabilities: SERVER_CAPABILITIES });
+    requests.push({ method, path: url.pathname, actor, body });
     if (url.pathname === "/api/config") return send(200, { ownerActor: "owner", ownerName: "Pavi" });
     const m = /^\/api\/projects\/([^/]+)\/items(?:\/([^/]+))?(?:\/([^/]+))?$/.exec(url.pathname);
     if (!m) return send(404, { error: "not_found", detail: "no such route" });
