@@ -995,6 +995,38 @@ it('the standing section and the Settings tab escape everything a person or agen
  for(const esc of ['ControlPlane policy, approved: &lt;b&gt;PAVI&lt;/b&gt;','Protected areas: src/**. Eligible agents: claude. Overlapping claims: refused.'])expect(settings).toContain(esc);
  expect(settings).not.toContain('<b>PAVI</b>');
 });
+// t394: a project on one company's models says so under its title on every
+// tab, on the Settings tab under Models, and in the standing data; the
+// default names the mode on Settings alone, with a recorded return.
+it('single-family mode is named under the project title on every tab, on Settings, and in the standing data',async()=>{
+ const f=await standingFixture();
+ const mode={single:'anthropic' as const,by:'<b>pavi</b>',at:'2026-10-09T10:00:00.000Z'};
+ const single:ProjectRecord={...f.p,policy:{...f.p.policy,familyMode:mode}};
+ const banner='Single-family mode, anthropic: building and reviewing use anthropic models only, and a review counts from a different anthropic model than every contributor, not from another company (set by &lt;b&gt;pavi&lt;/b&gt; on 2026-10-09).';
+ for(const page of [f.renderProject(single,f.items as never,f.evs as never,'PAVI'),f.renderProjectTasks(single,f.items as never),f.renderProjectSettings(single)]){
+  expect(page).toContain(`<p class="meta family-mode" role="note">${banner}</p>`);
+  expect(page).not.toContain('<b>pavi</b>');
+ }
+ expect(f.renderProjectSettings(single)).toContain('<dt>Models</dt><dd>Single-family mode, anthropic:');
+ expect(f.buildStanding(single,f.items,f.tasks,300,f.inbox,f.details,f.now).familyMode).toEqual(mode);
+ // The default: no banner, Settings says cross-family, and a recorded return names who and when.
+ const plain=f.renderProjectSettings(f.p);
+ expect(plain).not.toContain('family-mode');
+ expect(plain).toContain('<dt>Models</dt><dd>Cross-family, the default: a protected change needs approval from a model of another company than every contributor</dd>');
+ expect(f.buildStanding(f.p,f.items,f.tasks,300,f.inbox,f.details,f.now).familyMode).toBeNull();
+ const returned:ProjectRecord={...f.p,policy:{...f.p.policy,familyMode:{single:null,by:'pavi',at:'2026-10-10T10:00:00.000Z'}}};
+ expect(f.renderProject(returned,f.items as never,f.evs as never,'PAVI')).not.toContain('family-mode');
+ expect(f.renderProjectSettings(returned)).toContain('<dt>Models</dt><dd>Cross-family, the default: a protected change needs approval from a model of another company than every contributor (set by pavi on 2026-10-10)</dd>');
+ // The task page's ask for a review names the mode too.
+ const d=detail();
+ const task=renderItem(single,{...d,policy:single.policy},'PAVI',null);
+ expect(task).toContain('a different anthropic model than every contributor (single-family mode)');
+ expect(renderItem(f.p,d,'PAVI',null)).not.toContain('single-family');
+ const strict={...single,policy:{...single.policy,noOverride:true}};
+ const strictPage=renderItem(strict,{...d,policy:strict.policy},'PAVI',{head,base:'b'.repeat(40),files:[],truncated:false});
+ expect(strictPage).toContain('the revision lands only with an approval from a different anthropic model from every contributor (single-family mode).');
+ expect(strictPage).not.toContain('the revision lands only with an approval from a model of another family');
+});
 it('the standing data lists the last five merges newest first, with the agent\'s summary, and empty parts are left out',async()=>{
  const f=await standingFixture();
  const s=f.buildStanding(f.p,f.items,f.tasks,300,f.inbox,f.details,f.now);
@@ -1452,6 +1484,11 @@ it('Plans draws each plan as one unit with its parts, their state and why each w
  expect(html).toContain('Ship &lt;the&gt; thing');
  expect(html).toContain('built by claude-code/opus-5.5: Rank 1 of 3 eligible for feature work, score 0.72');
  expect(html).toContain('reviewer zcode/glm-5.3, of another family');
+ const single={...project,policy:{...project.policy,familyMode:{single:'anthropic' as const,by:'pavi',at:when}}};
+ const singleView={...view,parts:view.parts.map(part=>({...part,route:{...part.route,reviewer:{actor:'claude-code/sonnet-5.5',reasons:[]}}}))};
+ const singleHtml=renderProjectPlans(single,[singleView as never],'PAVI');
+ expect(singleHtml).toContain('reviewer claude-code/sonnet-5.5, a different anthropic model from every contributor (single-family mode)');
+ expect(singleHtml).not.toContain('of another family');
  expect(html).toContain('attempts: codex/gpt-6-astra released with no commit');
  expect(html).toContain('queued for zcode/glm-5.3');
  expect(html).toContain('depends on a (t6)');

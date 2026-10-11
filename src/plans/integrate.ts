@@ -18,7 +18,7 @@
 
 import { criteriaOf } from "../criteria.ts";
 import {
-  contributorsOf, countingReviews, DEFAULT_OWNER, evidenceAt, gate, independentApproval, unprovedBlocker, unprovedReview,
+  contributorsOf, countingReviews, DEFAULT_OWNER, evidenceAt, gate, independentApproval, independentReviewerText, singleFamily, unprovedBlocker, unprovedReview,
   type Evidence, type Gate, type Item, type ItemState, type ProjectPolicy, type Review,
 } from "../rules.ts";
 
@@ -108,10 +108,11 @@ function reviewBlockers(part: Part, head: string, criteria: string | null, revie
     ? countingReviews(own.filter((r) => !r.withdrawn).map((r) => ({ ...r, criteria: "" })), { head, criteria: "" }, policy, owner)
     : countingReviews(own, { head, criteria }, policy, owner);
   const contributors = contributorsOf(part);
-  const approved = counting.some((r) => independentApproval(r, "protected", contributors, owner));
-  const blockers = approved ? [] : [`${named(part)} has no approval from another model family at ${short(head)}`];
+  const single = singleFamily(policy);
+  const approved = counting.some((r) => independentApproval(r, "protected", contributors, owner, single));
+  const blockers = approved ? [] : [`${named(part)} has no approval from ${single ? independentReviewerText(single) : "another model family"} at ${short(head)}`];
   // An owner-recorded approval no claimed request backs is named, as gate() names it.
-  if (!approved) for (const r of counting) if (unprovedReview(r) && independentApproval({ ...r, proved: true }, "protected", contributors, owner)) blockers.push(`${named(part)}: ${unprovedBlocker(r)}`);
+  if (!approved) for (const r of counting) if (unprovedReview(r) && independentApproval({ ...r, proved: true }, "protected", contributors, owner, single)) blockers.push(`${named(part)}: ${unprovedBlocker(r)}`);
   for (const r of counting) if (!r.approve) blockers.push(`${named(part)} was rejected at ${short(head)} by ${r.by}: ${r.note || "no note"}`);
   return blockers;
 }

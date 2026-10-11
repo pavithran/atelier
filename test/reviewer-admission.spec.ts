@@ -5,7 +5,7 @@ import type { LedgerEvent, ReviewClaim } from "../src/ledger.ts";
 import { criteriaOf } from "../src/criteria.ts";
 import { assign, type SeenOffer } from "../src/dispatch/rules.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
-import { hasRole, parseRuleError, type Gate, type Review, type ProjectPolicy } from "../src/rules.ts";
+import { hasRole, independentApproval, parseRuleError, type Gate, type Review, type ProjectPolicy } from "../src/rules.ts";
 
 const BUILDER = "codex/gpt-6-astra", REVIEWER = "opencode/Qwen3-Coder-Next", ALIAS = "opencode/studio-review";
 const HEAD = "a".repeat(40), BASE = "0".repeat(40);
@@ -222,4 +222,52 @@ it("admitted aliases renew and release only their current claim generation", asy
   expect((await detail(L)).reviews.at(-1)).toMatchObject({ by: REVIEWER, recordedBy: ALIAS, claimed: true, request: next.request });
   expect((await detail(L)).gate.ready).toBe(true);
   await refusal(L.addReview({ ...await review(L, ALIAS), request: next.request }, undefined, true), "stale_request");
+});
+
+
+it("single-family admits a different model of the selected company on every review path, including aliases", async () => {
+  for (const path of ["direct", "claimed"]) {
+    const name = `admission-single-${path}`, L = await setup(name);
+    const model = entry("gpt-6-reviewer", ["outside"]), actor = "opencode/outside";
+    const admission = await L.admitReviewer(model.id, true, "Qualified", "owner", [model]);
+    await L.initProject({ name, repo: `${name}--baseline`, reset: false, familyMode: { single: "openai", by: "owner" } }, "owner");
+    for (const kind of ["protected", "coordinated"] as const) {
+      expect(independentApproval({ ...await review(L, actor), reviewerAdmission: admission }, kind, [BUILDER], "owner", "openai")).toBe(true);
+      expect(independentApproval({ ...await review(L, actor), reviewerAdmission: admission }, kind, [actor], "owner", "openai")).toBe(false);
+      expect(independentApproval({ ...await review(L, actor), reviewerAdmission: admission }, kind, [BUILDER], "owner", "anthropic")).toBe(false);
+    }
+    let request: number | undefined;
+    if (path === "claimed") {
+      const live = [{ ...offers()[0], agents: [{ agent: "opencode", models: [model.id] }] }];
+      await L.requestReview("t1", "owner", actor, [model], false, false, undefined, live);
+      request = (await L.claimReview("t1", actor, runner) as unknown as ReviewClaim).request;
+    }
+    await L.addReview({ ...await review(L, actor), ...(request ? { request } : {}) }, undefined, path === "direct");
+    expect((await detail(L)).gate.ready).toBe(true);
+  }
+});
+
+it("a family switch withdraws admitted foreign requests and refuses foreign aliases on all new paths", async () => {
+  for (const claimed of [false, true]) {
+    const name = `admission-switch-${claimed}`, L = await setup(name);
+    await admit(L);
+    await L.requestReview("t1", "owner", ALIAS, POOL, false, false, undefined, offers());
+    if (claimed) await L.claimReview("t1", ALIAS, runner);
+    await L.initProject({ name, repo: `${name}--baseline`, reset: false, familyMode: { single: "openai", by: "owner" } }, "owner");
+    expect((await L.reviewRequests("t1")).at(-1)?.state).toBe("withdrawn");
+    await refusal(L.addReview(await review(L, ALIAS), undefined, true), "single_family");
+    await refusal(L.requestReview("t1", "owner", ALIAS, POOL, false, false, undefined, offers()), "single_family");
+    await refusal(L.claimReview("t1", ALIAS, runner), "not_independent");
+    expect((await detail(L)).gate.ready).toBe(false);
+  }
+});
+
+it("binding an admitted request enforces a changed company even before request withdrawal", async () => {
+  const L = await setup("admission-bind-family");
+  await admit(L);
+  await L.requestReview("t1", "owner", ALIAS, POOL, false, false, undefined, offers());
+  const project = await L.project();
+  await L.setProject({ ...project, policy: { ...project.policy, familyMode: { single: "openai", by: "owner", at: new Date().toISOString() } } }, "owner");
+  await refusal(L.claimReview("t1", ALIAS, runner), "not_independent");
+  expect((await L.reviewRequests("t1")).at(-1)?.state).toBe("open");
 });
