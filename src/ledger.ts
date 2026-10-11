@@ -2730,19 +2730,59 @@ export class Ledger extends DurableObject<Env> {
   // review's findings. Nothing about the review changes: the event is the
   // record, and the reliability record counts the reviewer's findings
   // confirmed and refuted (src/models/reliability.ts).
-  addFinding(id: string, actor: string, head: string, index: number, verdict: string, note: string): void {
+  // The review is this task's review event at the head: the one whose
+  // sequence `select.reviewSeq` names, the one review there of
+  // `select.reviewer`, or, with neither, the newest review there while at
+  // most one review at the head has findings. Any other case is refused with
+  // the reviews at the head listed, so the owner names one (t486). The
+  // verdict records the review's sequence, so two reviews with identical
+  // findings by one reviewer at one head are judged apart.
+  addFinding(id: string, actor: string, head: string, index: number, verdict: string, note: string, select: { reviewSeq?: unknown; reviewer?: unknown } = {}): { review: number; by: string } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner records a verdict on a finding", 403);
     if (!["confirmed", "refuted", "fixed"].includes(verdict)) throw new RuleError("bad_finding", "a finding's verdict is confirmed, refuted or fixed", 400);
+    if (typeof head !== "string" || !/^[a-f0-9]{40,64}$/.test(head)) throw new RuleError("bad_finding", "--head must be the full revision the review was made at", 400);
+    if (!Number.isInteger(index) || index < 1) throw new RuleError("bad_finding", "--index must be the finding's position in the review, one based", 400);
+    const { reviewSeq, reviewer } = select;
+    if (reviewSeq !== undefined && reviewer !== undefined) throw new RuleError("bad_finding", "name the review by --review-seq or by --reviewer, not both", 400);
+    if (reviewSeq !== undefined && (typeof reviewSeq !== "number" || !Number.isInteger(reviewSeq) || reviewSeq < 1)) throw new RuleError("bad_finding", "--review-seq must be a review's sequence, a positive integer", 400);
+    if (reviewer !== undefined && (typeof reviewer !== "string" || !validActor(reviewer))) throw new RuleError("bad_finding", "--reviewer must be the reviewer as harness/model", 400);
     this.item(id);
     const at = head;
-    const review = this.reviewsFor(id).filter((r) => r.head === at).at(-1);
-    if (!review) throw new RuleError("no_review", `${id} has no review at ${at.slice(0, 8)}; a finding is indexed within one`, 409);
-    const findings = review.findings ?? [];
-    if (index < 1 || index > findings.length) {
-      throw new RuleError("no_finding", `${id}'s review at ${at.slice(0, 8)} has ${findings.length} ${findings.length === 1 ? "finding" : "findings"}; --index ${index} is outside it`, 409);
+    const reviews = this.reviewEventsAt(id, at);
+    if (!reviews.length) throw new RuleError("no_review", `${id} has no review at ${at.slice(0, 8)}; a finding is indexed within one`, 409);
+    const listed = (rs: typeof reviews) => rs.map((r) => `${r.seq} by ${r.by} (${r.findings.length} ${r.findings.length === 1 ? "finding" : "findings"})`).join("; ");
+    const all = `the reviews of ${id} at ${at.slice(0, 8)} are ${listed(reviews)}`;
+    let review: (typeof reviews)[number];
+    if (reviewSeq !== undefined) {
+      const found = reviews.find((r) => r.seq === reviewSeq);
+      if (!found) throw new RuleError("no_review", `${id} has no review ${reviewSeq} at ${at.slice(0, 8)}; ${all}`, 409);
+      review = found;
+    } else if (reviewer !== undefined) {
+      const theirs = reviews.filter((r) => sameActor(r.by, reviewer as string));
+      if (!theirs.length) throw new RuleError("no_review", `${reviewer} has no review of ${id} at ${at.slice(0, 8)}; ${all}`, 409);
+      if (theirs.length > 1) throw new RuleError("ambiguous_review", `${reviewer} reviewed ${id} at ${at.slice(0, 8)} more than once: ${listed(theirs)}; name one with --review-seq`, 409);
+      review = theirs[0];
+    } else {
+      const withFindings = reviews.filter((r) => r.findings.length);
+      if (withFindings.length > 1) throw new RuleError("ambiguous_review", `more than one review of ${id} at ${at.slice(0, 8)} has findings: ${listed(withFindings)}; name one with --review-seq or --reviewer`, 409);
+      review = reviews[reviews.length - 1];
+    }
+    const findings = review.findings;
+    if (index > findings.length) {
+      const others = reviews.length > 1 ? `; ${all}, and --review-seq names one` : "";
+      throw new RuleError("no_finding", `${id}'s review ${review.seq} by ${review.by} at ${at.slice(0, 8)} has ${findings.length} ${findings.length === 1 ? "finding" : "findings"}; --index ${index} is outside it${others}`, 409);
     }
     const finding = findings[index - 1];
-    this.log(id, actor, "review.finding", { head: at, index, verdict, note, by: review.by, finding: { file: finding.file, line: finding.line, severity: finding.severity, text: finding.text } }, new Date().toISOString());
+    this.log(id, actor, "review.finding", { head: at, index, verdict, note, by: review.by, review: review.seq, finding: { file: finding.file, line: finding.line, severity: finding.severity, text: finding.text } }, new Date().toISOString());
+    return { review: review.seq, by: review.by };
+  }
+
+  // This task's review events at a head, oldest first: each one's sequence,
+  // reviewer and findings, as `atelier finding` selects among them.
+  private reviewEventsAt(id: string, head: string): { seq: number; by: string; findings: Finding[] }[] {
+    return this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind IN ('review.approved', 'review.rejected') ORDER BY seq`, id).toArray().map(eventOf)
+      .filter((e) => e.data.head === head)
+      .map((e) => ({ seq: e.seq, by: e.actor, findings: Array.isArray(e.data.findings) ? e.data.findings as Finding[] : [] }));
   }
 
   // The owner records which model served events recorded under another
@@ -2770,8 +2810,22 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`SELECT json FROM evidence WHERE item_id = ? ORDER BY id`, id).toArray().map((r) => JSON.parse(r.json as string));
   }
 
-  reviewsFor(id: string): Review[] {
-    return this.sql.exec(`SELECT json FROM reviews WHERE item_id = ? ORDER BY id`, id).toArray().map((r) => JSON.parse(r.json as string));
+  // Each review carries `seq`, the sequence of the review event that
+  // recorded it, matched as backfillReviewProvenance matches one: the first
+  // unused event of its reviewer, verdict and head, in recording order. A
+  // verdict on a finding names its review by that sequence (t486).
+  reviewsFor(id: string): (Review & { seq?: number })[] {
+    const events = this.sql.exec(`SELECT seq, actor, kind, data FROM events WHERE item_id = ? AND kind IN ('review.approved', 'review.rejected') ORDER BY seq`, id).toArray()
+      .map((e) => ({ seq: e.seq as number, actor: e.actor as string, kind: e.kind as string, head: String((JSON.parse(e.data as string) as { head?: unknown }).head ?? "") }));
+    const used = new Set<number>();
+    return this.sql.exec(`SELECT json FROM reviews WHERE item_id = ? ORDER BY id`, id).toArray().map((row) => {
+      const r = JSON.parse(row.json as string) as Review;
+      const kind = r.approve ? "review.approved" : "review.rejected";
+      const ev = events.find((e) => !used.has(e.seq) && e.kind === kind && e.actor === r.by && e.head === r.head);
+      if (!ev) return r;
+      used.add(ev.seq);
+      return { ...r, seq: ev.seq };
+    });
   }
 
   // The unparsable replies kept on a task (t407), oldest first, as the detail
@@ -4076,7 +4130,8 @@ export class Ledger extends DurableObject<Env> {
   // verdicts; the Models page reads every project's.
   private reviewPrecision(at: string): PrecisionRecord {
     const window = precisionWindow(new Date(at));
-    const events = this.sql.exec(`SELECT * FROM events WHERE kind = 'review.finding' ORDER BY seq`).toArray().map(eventOf);
+    // The review events too, so a legacy verdict is placed on its review.
+    const events = this.sql.exec(`SELECT * FROM events WHERE kind IN ('review.finding', 'review.approved', 'review.rejected') ORDER BY seq`).toArray().map(eventOf);
     return buildPrecision([{ project: "this", events }], window, this.owner);
   }
 
