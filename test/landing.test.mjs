@@ -104,8 +104,9 @@ async function mergeFixture(t){
   else if(req.url.endsWith('/landing')&&body.cancel!==true&&box.failLanding){box.failLanding=false;return failOnce();}
   else if(req.url.endsWith('/merged')){
    if(box.failMerge){box.failMerge=false;return failOnce();}
-   box.state='merged';answer={...item,state:box.state};
-  }else if(req.url.endsWith('/push'))answer={...item,head};
+   box.state='merged';answer={...item,state:box.state,...(box.postMerge?{postMerge:box.postMerge}:{})};
+  }else if(req.url.endsWith('/post-merge/t1'))answer={run:box.postMerge??null};
+  else if(req.url.endsWith('/push'))answer={...item,head};
   else if(req.url.endsWith('/submit')){box.state='submitted';answer={...item,state:box.state};}
   res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(answer));
  });
@@ -249,6 +250,21 @@ test('merge refuses when the merge, not the accepted tree, would hold two names 
  const r=await caseFixture(t,{files:['CLAUDE.md'],advance:'Notes.md',paths:['notes.md']});
  assert.match(r.output,/Notes\.md and notes\.md/);
  assertUntouched(r,{'Notes.md':'Merged earlier.\n','CLAUDE.md':OWNER_TEXT});
+});
+
+
+test('a privacy publication reservation prevents the legacy notes push from publishing an unscanned ref',async t=>{
+ for(const protectedPublication of [false,true]){
+  const {p,checkout,head,box,run}=await mergeFixture(t);
+  const remote=join(p,'public.git');git(p,'init','--bare',remote);
+  const configPath=join(p,'config','config.json'),config=JSON.parse(readFileSync(configPath,'utf8'));
+  config.projects.proj.notesRemote=remote;writeFileSync(configPath,JSON.stringify(config));
+  if(protectedPublication)box.postMerge={state:'complete',policy:{steps:[{class:'publish'}]}};
+  const result=await run(checkout,'merge','t1','--head',head,'--approve');
+  assert.equal(result.status,0,result.output);
+  const notes=git(p,'--git-dir',remote,'for-each-ref','--format=%(refname)','refs/notes/atelier');
+  assert.equal(notes,protectedPublication?'':'refs/notes/atelier');
+ }
 });
 
 test('provenance notes carry the project identity, and notes commits that do not are never pushed (t451)',async t=>{
