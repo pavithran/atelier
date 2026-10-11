@@ -117,3 +117,19 @@ test("precision places a legacy verdict on the newest review at its head before 
   const legacy = of([reviewed(10), verdict(20, "refuted"), reviewed(12), verdict(21, "confirmed")]);
   assert.deepEqual([legacy?.judged, legacy?.upheld], [1, 1]);
 });
+
+test("precision places a legacy verdict on its review whatever order the events come in", () => {
+  const window = precisionWindow(new Date("2026-10-06T00:00:00.000Z"));
+  const of = (events: LedgerEvent[]) => buildPrecision([{ project: "p", events }], window, OWNER).models.get("gpt-6-astra");
+  const reviewed = (seq: number): LedgerEvent => ({ seq, itemId: "t21", at: T, actor: GPT, kind: "review.rejected", data: { head: H1, findings: [blocker] } });
+  const events = [reviewed(10), reviewed(12), verdict(20, "refuted"), verdict(21, "confirmed", { review: 12 })];
+  // Newest first, as Ledger.events lists them, and shuffled: the legacy verdict
+  // at 20 is on review 12, so the verdict naming review 12 replaces it.
+  for (const order of [[...events].reverse(), [events[2], events[0], events[3], events[1]], [events[1], events[3], events[0], events[2]]]) {
+    const r = of(order);
+    assert.deepEqual([r?.judged, r?.refuted, r?.upheld], [1, 0, 1], order.map((e) => e.seq).join(","));
+  }
+  // Newest first, a later verdict naming review 10 is still on another review.
+  const apart = of([verdict(21, "confirmed", { review: 10 }), verdict(20, "refuted"), reviewed(12), reviewed(10)]);
+  assert.deepEqual([apart?.judged, apart?.refuted, apart?.upheld], [2, 1, 1]);
+});

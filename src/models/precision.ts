@@ -59,8 +59,9 @@ export function buildPrecision(projects: readonly { project: string; events: rea
   const newest = new Map<string, { seq: number; at: string; by: string; verdict: string; review?: number }>();
   const named: { legacy: string; seq: number; review: number }[] = [];
   for (const { project, events } of projects) {
-    // The review events at each item and head, oldest first, where the
-    // events given include them, to place a legacy verdict on its review.
+    // The review events at each item and head, where the events given
+    // include them, to place a legacy verdict on its review. The events may
+    // come in any order (the ledger lists them newest first).
     const reviews = new Map<string, number[]>();
     for (const ev of events) {
       if ((ev.kind !== "review.approved" && ev.kind !== "review.rejected") || ev.itemId === null) continue;
@@ -81,7 +82,7 @@ export function buildPrecision(projects: readonly { project: string; events: rea
       // review at its head when recorded, as `atelier finding` chose then.
       const position = `${project} ${ev.itemId} ${str(d.head)} ${by.toLowerCase()} ${String(d.index)}`;
       const key = typeof d.review === "number" ? `${position} ${d.review}` : position;
-      const review = typeof d.review === "number" ? undefined : (reviews.get(`${ev.itemId} ${str(d.head)}`) ?? []).filter((s) => s < ev.seq).at(-1);
+      const review = typeof d.review === "number" ? undefined : (reviews.get(`${ev.itemId} ${str(d.head)}`) ?? []).reduce<number | undefined>((m, s) => (s < ev.seq && (m === undefined || s > m) ? s : m), undefined);
       const seen = newest.get(key);
       if (!seen || ev.seq > seen.seq) newest.set(key, { seq: ev.seq, at: ev.at, by, verdict, ...(review === undefined ? {} : { review }) });
       if (typeof d.review === "number") named.push({ legacy: position, seq: ev.seq, review: d.review });
