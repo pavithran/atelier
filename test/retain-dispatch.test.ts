@@ -49,6 +49,15 @@ test("merged validation checks retained fields even when clearing another restri
   assert.throws(() => retainDispatch({ overlapOk: true, model: "" }, { ...prior, agent: "invalid agent" }, "owner", "now"), /valid agent/);
 });
 
+test("override replaces target and clears note without changing omitted restrictions or job payload", () => {
+  const previous: Dispatch = { ...prior, job: "merge-main", head: "a".repeat(40), task: true };
+  const updated = retainDispatch({ overlapOk: true, to: "cloud", note: "" }, previous, "owner", "now");
+  assert.deepEqual(updated, { ...previous, to: "cloud", note: "", overlapOk: true, at: "now" });
+  const offer = { runner: "home:test", kind: "home" as const, agents: [{ agent: "codex", models: ["shared"] }], jobs: ["merge-main-task"] };
+  assert.equal(assign(updated, offer), null);
+  assert.equal(assign(updated, { ...offer, runner: "cloud:test", kind: "cloud" })?.actor, "codex/shared");
+});
+
 // Exercise the command handler with its HTTP and terminal boundaries injected;
 // no CLI process or live service is needed.
 const source = readFileSync(new URL("../cli/commands/dispatch.mjs", import.meta.url), "utf8")
