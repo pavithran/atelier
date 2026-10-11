@@ -1,5 +1,5 @@
 import { runnerGitRequest } from "./runner-git.ts";
-import { assertCriteriaAllowed, assertReviewAllowed } from "./rules.ts";
+import { assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed } from "./rules.ts";
 import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
 import { scanCommit } from "./secret-scan.ts";
@@ -1344,6 +1344,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // predicted conflict sends the part back to its builder without a runner
       // trip (docs/orchestrator.md, section 5).
       const before = await L.item(id);
+      assertNotTerminal(before);
       if (before.kind === "plan" && before.dispatch?.job === "integrate" && before.dispatch.part && actor === INTEGRATOR) {
         const conflict = await predictConflict(env, L, before);
         if (conflict) {
@@ -1377,7 +1378,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // A give-up that fails is logged, and the claim's own failure is
           // answered: the claimer still holds an item with no fork, which its
           // retry forks (t349).
-          await L.unclaim(id, actor, codeOf(err).trim(), !!c.token).catch((e) => console.error(errorLine(`give up ${id} after a failed fork`, e)));
+          await L.unclaim(id, actor, codeOf(err).trim(), !!c.token, generation).catch((e) => console.error(errorLine(`give up ${id} after a failed fork`, e)));
           throw err;
         }
       } else {
@@ -1387,7 +1388,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         try {
           moved = await movePartFork(env, L, item, p, actor, !!c.token);
         } catch (err) {
-          if (before.owner !== actor) await L.unclaim(id, actor, codeOf(err).trim(), !!c.token);
+          if (before.owner !== actor) await L.unclaim(id, actor, codeOf(err).trim(), !!c.token, generation);
           throw err;
         }
       }
@@ -1582,6 +1583,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json({ runId, state }, 202);
     }
     case "dispatch": {
+      assertNotTerminal(await L.item(id));
       // --overlap-ok alone on a waiting dispatch releases its hold and keeps
       // everything else. An explicit snapshot is checked atomically even if
       // a runner has since claimed it; an already-owned task is redispatched.
