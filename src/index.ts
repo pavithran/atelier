@@ -2281,7 +2281,9 @@ async function queueWhy(env: Env, queued: { project: string; item: Item & { held
   return queued.map(({ project, item }) => {
     if (item.dispatch?.job === "review") return { project, item };
     const why = unclaimed(item, { held: item.held ?? null, overlap: item.overlap ?? null, refusals: item.refusals ?? null, offers, runs: reports, project, offer });
-    return why.length ? { project, item: { ...item, why } } : { project, item };
+    // Always carried, empty when nothing holds it, so the CLI can tell this
+    // listing from an older server's, which carries `held` alone.
+    return { project, item: { ...item, why } };
   });
 }
 

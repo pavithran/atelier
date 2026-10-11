@@ -1,5 +1,6 @@
 // atelier show. Its forms, flags and help are declared in src/usage/commands/show.ts.
 import { I, OWNER, RequestError, actor, args, call, die, formatBrief, formatReviews, itemArg, newestReviews, project, request, server } from "../atelier.mjs";
+import { queueReasons } from "../status.mjs";
 
 export default async function showCommand() {
   const name = project(), id = itemArg(), as = await actor(OWNER);
@@ -30,8 +31,9 @@ export default async function showCommand() {
   // queue's entry for it, so `show` and `status` say the same thing.
   let why = [];
   try {
-    why = ((await request("GET", "/queue", undefined, as)) ?? [])
-      .find((q) => q.project === name && q.item?.id === id)?.item?.why ?? [];
+    const entry = ((await request("GET", "/queue", undefined, as)) ?? [])
+      .find((q) => q.project === name && q.item?.id === id && q.item.dispatch?.job !== "review");
+    why = entry ? queueReasons(entry.item) : [];
   } catch { /* the brief still prints; the queue's reason is a bonus */ }
   if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(why.length ? { why } : {}) }, null, 2));
   const text = formatBrief(name, id, brief, server());

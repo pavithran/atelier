@@ -78,3 +78,15 @@ for (const [status, error, detail, exitCode] of [
     assert.equal(r.stdout, "");
   }
 });
+
+// t420: against a server from before t420, whose queue carries `held` and no
+// `why`, show still says the core-file hold.
+test("show says the hold from an older server's queue", (t) => {
+  const held = { id: "t9", owner: "codex/gpt-6", state: "claimed", title: "Live", core: "src/ledger.ts" };
+  const run = fixture(t, 404, "not_found", "no such route", [
+    { project: "proj", item: { id: "t1", dispatch: { to: "home", agent: null, model: null }, held } },
+  ]);
+  const r = run();
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(r.stdout.includes("\nHeld: waits on t9 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t9 merges or is abandoned, or at once with atelier dispatch t1 --overlap-ok."), r.stdout);
+});

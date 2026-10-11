@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
+import { runInDurableObject } from "cloudflare:test";
 import worker from "../src/index.ts";
 import { coreHold, OFFER_LIVE_MS, OFFER_REFRESH_MS, type RunnerOffer } from "../src/dispatch/rules.ts";
 
@@ -152,7 +153,7 @@ it("the queue attaches, in words, why a dispatch is held, refused an overlap or 
   const line = (id: string, kind: string) => (all.find((q) => q.project === name && q.item.id === id)?.item.why ?? []).find((r) => r.kind === kind)?.line ?? "";
   expect(line(free.id, "skipped")).toBe(`Skipped by home:why after 2 failed runs under this dispatch (the last timed-out); that runner passes it by until it is dispatched again or the runner restarts: fix the cause, then atelier dispatch ${free.id} --to home --agent opencode.`);
   expect(line(nobody.id, "unoffered")).toMatch(new RegExp(`^No live runner can take it: .*atelier dispatch ${nobody.id} --agent H --model M`));
-  expect(line(refused.id, "overlap")).toMatch(new RegExp(`^Overlap refused: ${live.id} \\(${A}\\) holds a scope`));
+  expect(line(refused.id, "overlap")).toMatch(new RegExp(`^Overlap refused: ${live.id} \\(claimed by ${A}\\) holds a scope`));
   const heldLine = (all.find((q) => q.project === name && q.item.id === held.id)?.item.why ?? []).find((r) => r.kind === "held")?.line ?? "";
   expect(heldLine).toMatch(/^Held: waits on .*; offered once .* merges or is abandoned, or at once with atelier dispatch .* --overlap-ok\.$/);
 
@@ -167,4 +168,33 @@ it("the queue attaches, in words, why a dispatch is held, refused an overlap or 
   const after = await (await call("GET", "/queue")).json() as typeof all;
   const refusedLine = (after.find((q) => q.project === name && q.item.id === refused.id)?.item.why ?? []).find((r) => r.kind === "refused")?.line ?? "";
   expect(refusedLine).toBe(`Claim refused: home:why claimed it as opencode/glm-5.3 and was refused (${error}: ${detail.slice(0, 300)}); that runner passes it by until it changes, so once that is fixed, dispatch it again with atelier dispatch ${refused.id} --to home --agent opencode.`);
+});
+
+// The queue's overlap reason is the claim's own test (overlappingLive): an
+// accepted item still holds its scope, so the queue names it where the claim
+// refuses, and an item the dispatch's claimant already holds refuses neither.
+it("the queue's overlap reason refuses exactly where the claim does, accepted items and the claimant's own included", async () => {
+  const name = "queue-why-accepted";
+  const record = { name, repo: name, policy: { checks: ["npm test"], protected: [], refuseOverlap: true }, createdAt: new Date().toISOString() };
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.setProject(record, "owner");
+  await index().registerProject(record);
+  const live = await L.newItem("Accepted work", ["src/**"], "owner");
+  const other = await L.newItem("Also src", ["src/index.ts"], "owner");
+  const own = await L.newItem("Same claimant", ["src/rules.ts"], "owner");
+  await L.dispatch(other.id, "owner", { to: "home", agent: "opencode" });
+  await L.dispatch(own.id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
+  await L.claim(live.id, A);
+  await runInDurableObject(L, async (_instance, state) => {
+    state.storage.sql.exec("UPDATE items SET state = 'accepted' WHERE id = ?", live.id);
+  });
+  const { waiting } = await L.queued();
+  const byId = new Map(waiting.map((i) => [i.id, i]));
+  expect(byId.get(other.id)?.overlap).toMatchObject({ id: live.id, state: "accepted" });
+  // The claim refuses it as the queue said.
+  const refusal = await L.claim(other.id, "opencode/glm-5.3", { runner: "home:why", kind: "home" }).then(() => null, (e: unknown) => String((e as Error).message));
+  expect(refusal).toMatch(/overlap\|.*overlaps live/);
+  // The claimant that holds the accepted item is not refused against it.
+  expect(byId.get(own.id)?.overlap).toBeUndefined();
+  await expect(L.claim(own.id, A, { runner: "home:why", kind: "home" })).resolves.toMatchObject({ item: { id: own.id, owner: A } });
 });

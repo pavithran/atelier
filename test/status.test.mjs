@@ -497,7 +497,7 @@ test("each reason a queued task is not taken prints with the command that releas
   const d = { to: "home", agent: "codex", model: "gpt-6" };
   const why = (id) => [
     { kind: "held", line: `Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned, or at once with atelier dispatch ${id} --overlap-ok.` },
-    { kind: "overlap", line: `Overlap refused: t1 (codex/gpt-6) holds a scope that overlaps this one, and the project refuses overlapping claims; a runner can take it once t1 merges or is abandoned, or the owner allows overlaps with atelier init --refuse-overlap=false.` },
+    { kind: "overlap", line: `Overlap refused: t1 (claimed by codex/gpt-6) holds a scope that overlaps this one, and the project refuses overlapping claims; a runner can take it once t1 merges or is abandoned, or the owner narrows a scope with atelier edit t2 --scope GLOB (or atelier edit t1 --scope GLOB), or allows overlaps with atelier init --refuse-overlap=false.` },
     { kind: "refused", line: `Claim refused: home:studio claimed it as codex/gpt-6 and was refused (runner_forbidden: its offer does not cover this dispatch); that runner passes it by until it changes, so once that is fixed, dispatch it again with atelier dispatch ${id} --to home --agent codex --model gpt-6.` },
     { kind: "skipped", line: `Skipped by home:studio after 2 failed runs under this dispatch (the last stalled); that runner passes it by until it is dispatched again or the runner restarts: fix the cause, then atelier dispatch ${id} --to home --agent codex --model gpt-6.` },
     { kind: "unoffered", line: "No live runner can take it: home:studio offers build as opencode/glm-5.3." },
@@ -513,4 +513,28 @@ test("each reason a queued task is not taken prints with the command that releas
   const bare = formatStatus([{ name: "demo", items: [item("t3", "open", { dispatch: d })], inbox: [] }], { queue: [{ project: "demo", item: item("t3", "open", { dispatch: d }) }] }).split("\n");
   assert.ok(bare.includes("    t3  for home codex/gpt-6  Task t3"));
   assert.equal(bare.filter((l) => l.includes("  t3") || l.includes("for home")).length, 1, "no reason line for a task the queue does not hold");
+});
+
+// t420: a server from before t420 sends `held` and no `why`; status still
+// says the hold, and works out a model no live runner offers from the
+// offers, as it did before. A newer server's `why`, even empty, is taken as
+// it stands.
+test("against an older server's queue, status falls back to the hold and the offers", () => {
+  const now = new Date("2026-10-09T12:00:00.000Z");
+  const d = { to: "home", agent: "codex", model: "gpt-6", by: "owner", at: now.toISOString(), note: "" };
+  const held = { id: "t1", owner: "codex/gpt-6", state: "claimed", title: "Task t1", core: "src/ledger.ts" };
+  const offers = [{ runner: "home:studio", kind: "home", jobs: ["build"], agents: [{ agent: "opencode", models: ["glm-5.3"] }], at: now.toISOString() }];
+  const views = [{ name: "demo", items: [item("t1", "claimed", { owner: "codex/gpt-6" }), item("t2", "open", { dispatch: d }), item("t3", "open", { dispatch: d })], inbox: [] }];
+  const old = formatStatus(views, { queue: [
+    { project: "demo", item: { ...item("t2", "open", { dispatch: d }), held } },
+    { project: "demo", item: item("t3", "open", { dispatch: d }) },
+  ], offers, now }).split("\n");
+  assert.ok(old.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned, or at once with atelier dispatch t2 --overlap-ok."), old.join("\n"));
+  assert.equal(old.filter((l) => l.startsWith("      No live runner can take it:")).length, 2, old.join("\n"));
+  // A newer server's empty `why` means nothing holds it: no fallback.
+  const fresh = formatStatus(views, { queue: [
+    { project: "demo", item: { ...item("t2", "open", { dispatch: d }), held, why: [] } },
+    { project: "demo", item: { ...item("t3", "open", { dispatch: d }), why: [] } },
+  ], offers, now }).split("\n");
+  assert.ok(!fresh.some((l) => l.includes("Held:") || l.includes("No live runner")), fresh.join("\n"));
 });
