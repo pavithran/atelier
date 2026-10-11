@@ -23,11 +23,16 @@ read error as evidence that the instance ended.
 3. Release the blocker and let the disposable landings finish through their
    normal executor reports. Verify all fourteen finish in queue order, with
    no unaccounted instance or leftover queue entry.
-4. In the smoke project, remove a disposable queued instance using the
-   platform's instance deletion operation, preserving its Ledger record.
-   Confirm that `get()` reports `instance.not_found`, then POST the task's
-   `landing-workflow` route again. Verify a fresh readable instance is
-   recorded and its queue position is preserved. Finish the disposable
+4. In the smoke project, let a disposable instance fail and verify that its
+   Ledger stage is `failed`, without reading its status through the API
+   (leave `lastStatus` absent or nonterminal). Queue the task for a retry,
+   then remove the ended instance using the platform's instance deletion
+   operation, preserving its Ledger record. Confirm that `get()` reports
+   `instance.not_found`, then POST the task's `landing-workflow` route again.
+   Verify a fresh readable instance is recorded and its queue position is
+   preserved. A missing instance whose record still has a nonterminal stage
+   and no ended status must instead return 503 without changing the record,
+   since it may be a successor claimed before create. Finish the disposable
    landing and clean up the smoke project.
 
 A local passing suite is not a receipt for this remote check. Do not deploy
