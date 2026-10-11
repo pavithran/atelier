@@ -1,8 +1,9 @@
 import { env } from "cloudflare:workers";
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { expect, it, onTestFinished } from "vitest";
 import type { Ledger, LedgerEvent, ReviewClaim } from "../src/ledger.ts";
 import type { SeenOffer } from "../src/dispatch/rules.ts";
+import { allSkipped } from "../src/landing-verdict.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import { planText, type PlanView } from "../src/plans/show.ts";
@@ -138,6 +139,44 @@ it("an approval answers the request and moves the part on", async () => {
   expect(await L.reviewRequests(partId)).toEqual([expect.objectContaining({ head, state: "answered" })]);
   await L.accept(partId, "owner");
   expect((await L.item(partId)).state).toBe("accepted");
+});
+
+// t407: a reviewer's reply with no verdict is kept on the task, its last
+// 100 KB with the reviewer and the head it judged, as the claimed request is
+// released for another reviewer. Before this the reply was discarded and the
+// only evidence was the runner's log.
+it("keeps an unparsable reply on the task and releases the request for another reviewer", async () => {
+  const L = await setup("review-unparsable");
+  const { partId } = await approved(L);
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  await L.claimReview(partId, GPT, RUNNER);
+  const reply = "I read the change.\nIt works as far as I can tell; nothing to add.";
+  const reason = "the reply states no verdict: it has no VERDICT line and no JSON verdict";
+  expect(await L.unparsableReview(partId, GPT, head, reason, reply, true)).toEqual({ released: true });
+  // The request is open again, so another reviewer may take it, and the kept
+  // reply is no review: the gate still waits for one.
+  expect(await reviewWaiting(L)).toEqual([{ id: partId, job: "review", agent: "codex", model: "gpt-6-astra" }]);
+  expect(await L.reviewsFor(partId)).toEqual([]);
+  // The reply, the reviewer and the head are on the task, whole.
+  expect((await L.unparsableFor(partId)).map((r) => ({ by: r.by, head: r.head, note: r.note, reply: r.reply }))).toEqual([{ by: GPT, head, note: reason, reply }]);
+  // The event says what was kept, and carries no reply text: the reliability
+  // record replays every event of every project.
+  const logged = (await events(L, partId)).find((e) => e.kind === "review.unparsable")!;
+  expect(logged).toMatchObject({ actor: GPT, data: { head, note: reason } });
+  expect(JSON.stringify(logged.data)).not.toContain(reply);
+  expect((await events(L, partId)).some((e) => e.kind === "review.released")).toBe(true);
+  // A reply of the next round is kept beside the first: the request is
+  // claimed and released again. A claim no longer held releases nothing,
+  // and the reply is kept anyway.
+  await L.claimReview(partId, GPT, RUNNER);
+  expect(await L.unparsableReview(partId, GPT, head, "again", "Still no verdict.", true)).toEqual({ released: true });
+  expect(await L.unparsableReview(partId, GPT, head, "late", "A late reply with no verdict.", true)).toEqual({ released: false });
+  expect(await L.unparsableFor(partId)).toHaveLength(3);
+  // A reply over the limit is refused, never silently cut: the caller keeps
+  // the last 100 KB, as the runner's review-unparsable does.
+  await refusal(L.unparsableReview(partId, GPT, head, "note", "x".repeat(100_001), true), "too_long", /keep its last 100000/);
+  await refusal(L.unparsableReview(partId, "not a model", head, "note", "", true), "bad_actor", /is not harness\/model/);
 });
 
 // The reviewer the queue routed for the part's current round, and the actor
@@ -800,6 +839,173 @@ it("a part's review claim binds the task's criteria and the plan's acceptance it
   await L.addReview({ itemId: partId, by: GPT, head, criteria: claim.criteria, request: claim.request, approve: true, note: "ok", at: new Date().toISOString() }, undefined, true);
   expect((await L.reviewRequests(partId)).at(-1)).toMatchObject({ state: "answered" });
   expect((await L.reviewsFor(partId)).at(-1)).toMatchObject({ criteria: claim.criteria, request: claim.request, claimed: true });
+});
+
+// t353: a runner's skip of a review is recorded by runner name under the
+// review request it skipped, and read back by that request, so the landing
+// waiting on the verdict can say when every runner that offers the reviewer
+// has skipped — and an older request's skip never counts against a newer
+// request at the same head. The queue's review carries the request's own
+// number, so a runner can tell one request from the next at the same head.
+it("a review skip is recorded under its request and read back by it, so an older request's skip never counts against a newer one at the same head", async () => {
+  const L = await setup("review-skip");
+  const { partId } = await approved(L);
+  const { reviewer } = await routing(L, partId);
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  // The queue's review task carries the request's own number beside its head.
+  const [first] = await L.reviewWaiting();
+  expect(first.request).toBe(1);
+  expect(first.head).toBe(head);
+
+  await L.recordReviewSkip(partId, first.request, head, "home:studio", "owner", "no agent token");
+  await L.recordReviewSkip(partId, first.request, head, "home:desk", "owner", "wrong agent");
+  expect(await L.reviewSkips(partId, first.request)).toEqual([
+    { runner: "home:studio", at: expect.any(String), note: "no agent token" },
+    { runner: "home:desk", at: expect.any(String), note: "wrong agent" },
+  ]);
+  const offers = [
+    { runner: "home:studio", kind: "home" as const, jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() },
+    { runner: "home:desk", kind: "home" as const, jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() },
+  ];
+  expect(allSkipped("codex/gpt-6-astra", offers, await L.reviewSkips(partId, first.request))).toEqual(["home:studio", "home:desk"]);
+
+  // A second request at the same head: the first's claim lapsed, and the
+  // refused retry asks the review again under a new request number.
+  await L.claimReview(partId, reviewer, RUNNER);
+  await ageClaim(L, partId);
+  await refusal(L.claimReview(partId, reviewer, RUNNER), "no_review", /no open review request/);
+  const [second] = await L.reviewWaiting();
+  expect(second.head).toBe(head);
+  expect(second.request).toBeGreaterThan(first.request);
+  // The skips of the earlier request, at this very head, do not count against
+  // the new one: no runner is stuck on it yet.
+  expect(await L.reviewSkips(partId, second.request)).toEqual([]);
+  expect(allSkipped("codex/gpt-6-astra", offers, await L.reviewSkips(partId, second.request))).toBeNull();
+  // A report that arrives late, under the earlier request, stays with it.
+  await L.recordReviewSkip(partId, first.request, head, "home:desk", "owner", "wrong agent, again");
+  expect(await L.reviewSkips(partId, second.request)).toEqual([]);
+  // A skip of the new request counts for it alone.
+  await L.recordReviewSkip(partId, second.request, head, "home:studio", "owner", "no agent token");
+  expect(await L.reviewSkips(partId, second.request)).toEqual([{ runner: "home:studio", at: expect.any(String), note: "no agent token" }]);
+  expect((await L.reviewSkips(partId, first.request)).map((s) => s.runner)).toEqual(["home:studio", "home:desk", "home:desk"]);
+
+  // A skip naming a request the item does not have, or another head than the
+  // request's, is refused rather than recorded against nothing.
+  await refusal(L.recordReviewSkip(partId, 99, head, "home:studio", "owner", ""), "no_request", /no review request 99/);
+  await refusal(L.recordReviewSkip(partId, second.request, "b".repeat(40), "home:studio", "owner", ""), "bad_head", /is at aaaaaaaa, not bbbbbbbb/);
+});
+
+// t353: the review-skip route awaits the write before it acknowledges, so a
+// skip that cannot persist (a missing item, a request the item does not have)
+// reaches the runner as a refusal rather than an unacknowledged success that
+// loses the report; and it names the request it skipped, or is refused.
+it("the review-skip route persists the skip under its request before acknowledging, and refuses one for a missing item or request", async () => {
+  const { default: worker } = await import("../src/index.ts");
+  const name = "review-skip-route";
+  const L = await setup(name);
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject({ name, repo: `${name}--baseline`, policy, createdAt: new Date().toISOString() });
+  const { partId } = await approved(L);
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  const [{ request }] = await L.reviewWaiting();
+  const TOKEN = "rsk";
+  const token = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
+  const skip = (item: string, runner: string, body: Record<string, unknown>) => worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${item}/review-skip`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-runner": runner, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }), token);
+  // A skip for a missing item is refused: the awaited write's failure reaches
+  // the runner instead of a success that never persisted.
+  const missing = await skip("t999", "home:studio", { head, request, note: "no agent token" });
+  expect(missing.status).toBe(404);
+  expect(await missing.json()).toMatchObject({ error: "no_item" });
+  // A skip that names no request, or a request the item does not have, is refused.
+  const unnumbered = await skip(partId, "home:studio", { head, note: "no agent token" });
+  expect(unnumbered.status).toBe(400);
+  expect(await unnumbered.json()).toMatchObject({ error: "bad_request" });
+  const unknown = await skip(partId, "home:studio", { head, request: 99, note: "no agent token" });
+  expect(unknown.status).toBe(404);
+  expect(await unknown.json()).toMatchObject({ error: "no_request" });
+  expect(await L.reviewSkips(partId, request)).toEqual([]);
+  // A skip for a real request is persisted under it before the response acknowledges it.
+  const ok = await skip(partId, "home:studio", { head, request, note: "no agent token" });
+  expect(ok.status).toBe(200);
+  expect(await ok.json()).toEqual({ skipped: true });
+  expect(await L.reviewSkips(partId, request)).toEqual([{ runner: "home:studio", at: expect.any(String), note: "no agent token" }]);
+});
+
+// t353: since runner tokens (t444) the home runner holds no owner token, so
+// its skip must be taken from a runner token: for a review job the runner's
+// poll was offered, under that job's actor, as a run report for the review
+// is taken; never as the owner, never for a review the runner was not
+// offered, and never under another runner's name.
+it("a runner token posts a review skip for a review job it was offered, as the job's actor, and is refused otherwise", async () => {
+  const { default: worker } = await import("../src/index.ts");
+  const name = "review-skip-runner-token";
+  const L = await setup(name);
+  const index = env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  await index.registerProject({ name, repo: `${name}--baseline`, policy, createdAt: new Date().toISOString() });
+  // The polls below record live offers on the index, which plan routing
+  // reads; the tests after this one route over the pool alone, so the
+  // offers are forgotten when this one ends.
+  onTestFinished(() => runInDurableObject(index, async (_instance, state) => { state.storage.sql.exec("DELETE FROM runner_offers"); }));
+  const { partId } = await approved(L);
+  const head = "a".repeat(40);
+  await submitPart(L, partId, head);
+  const [{ request }] = await L.reviewWaiting();
+  const OWNER_TOKEN = "rskr";
+  const bindings = { ...env, ATELIER_TOKEN: OWNER_TOKEN } as typeof env;
+  const call = (method: string, path: string, bearer: string, actor: string, runner: string | null, body?: Record<string, unknown>) => worker.fetch(new Request(`https://atelier.test/api${path}`, {
+    method,
+    headers: { authorization: `Bearer ${bearer}`, "x-atelier-actor": actor, ...(runner ? { "x-atelier-runner": runner } : {}), "content-type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  }), bindings);
+  const issue = async (runner: string) => {
+    const res = await call("POST", "/tokens", OWNER_TOKEN, "owner", null, { runner, projects: [name] });
+    expect(res.status).toBe(201);
+    return (await res.json() as { token: string }).token;
+  };
+  const studio = await issue("home:studio");
+  const offer = (runner: string) => ({ runner, agents: [{ agent: "codex", models: ["gpt-6-astra"] }], jobs: ["review"] });
+  const skip = (bearer: string, actor: string, runner: string | null, body: Record<string, unknown> = { head, request, note: "no agent token" }) =>
+    call("POST", `/projects/${name}/items/${partId}/review-skip`, bearer, actor, runner, body);
+  const denied = async (res: Response) => {
+    expect(res.status).toBe(403);
+    const text = await res.text();
+    expect(text).toContain("home:");
+    expect(text).not.toContain(studio);
+  };
+  // Before the runner's poll was offered the review, its skip is refused.
+  await denied(await skip(studio, GPT, null));
+  // The poll offers the review to the runner, under the review's request number.
+  const polled = await call("POST", "/queue", studio, GPT, null, offer("home:studio"));
+  expect(polled.status).toBe(200);
+  expect(await polled.json()).toEqual([expect.objectContaining({ project: name, item: expect.objectContaining({ id: partId, head, request }) })]);
+  // The runner token cannot act as the owner, nor under another runner's
+  // name, nor for an actor the review was not offered to.
+  await denied(await skip(studio, "owner", null));
+  await denied(await skip(studio, GPT, "home:impostor"));
+  await denied(await skip(studio, GLM, null));
+  expect(await L.reviewSkips(partId, request)).toEqual([]);
+  // As the job's actor, the skip is taken and recorded under the runner's
+  // name, which the token binds, whether or not the header names it.
+  const taken = await skip(studio, GPT, null);
+  expect(taken.status).toBe(200);
+  expect(await taken.json()).toEqual({ skipped: true });
+  expect(await L.reviewSkips(partId, request)).toEqual([{ runner: "home:studio", at: expect.any(String), note: "no agent token" }]);
+  expect((await events(L, partId)).find((e) => e.kind === "review.skipped")).toMatchObject({ actor: GPT, data: { head, request, runner: "home:studio" } });
+  // A second runner's token is refused until its own poll is offered the
+  // review; then its skip counts under its own name, so the landing can
+  // name both.
+  const desk = await issue("home:desk");
+  await denied(await skip(desk, GPT, "home:desk"));
+  expect((await call("POST", "/queue", desk, GPT, null, offer("home:desk"))).status).toBe(200);
+  expect((await skip(desk, GPT, "home:desk")).status).toBe(200);
+  expect((await L.reviewSkips(partId, request)).map((s) => s.runner)).toEqual(["home:studio", "home:desk"]);
+  // A request the item does not have is still refused, as it is for the owner.
+  expect((await skip(studio, GPT, null, { head, request: 99 })).status).toBe(404);
 });
 
 // t377: a review claim carries the owner's standing decisions, so the brief

@@ -64,9 +64,9 @@ import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
 import { refusalOf, refusalText } from "./checks";
 import { baseRepoOf } from "./plans/integrate";
 import { evidenceAt, parseRuleError } from "./rules";
-import type { LandingLease } from "./landing-lease.ts";
+import { landingLeasePollMs, type LandingLease } from "./landing-lease.ts";
 import type { LandingWorkflowStage } from "./ledger.ts";
-import { landingVerdict, type LandingReview } from "./landing-verdict.ts";
+import { landingVerdict, allSkipped, type LandingReview } from "./landing-verdict.ts";
 import type { RunRequest } from "./sandbox/runner";
 
 // What the landing-workflow route passes when it creates the instance.
@@ -290,7 +290,10 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
 
   private async stage(step: WorkflowStep, L: LedgerStub, p: Landing, stage: LandingWorkflowStage, round: number, detail?: string, files?: string[]): Promise<void> {
     await step.do(`stage ${stage} r${round}`, RETRIES, async () => {
-      await L.setLandingWorkflowStage(p.item, p.instance, stage, round, detail, files);
+      const record = await L.setLandingWorkflowStage(p.item, p.instance, stage, round, detail, files);
+      if (!record && stage === "lease" && round === 0) {
+        throw new Error("the landing instance is waiting for its record after creation");
+      }
       return {};
     });
   }
@@ -302,7 +305,11 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
   // the queue and ends. `record` writes the land.lease event for the first
   // take alone; a retake in a later round is a resume, not a second lease.
   private async takeLease(step: WorkflowStep, L: LedgerStub, p: Landing, label: string, record: boolean): Promise<void> {
-    const maxAsks = Math.max(1, Math.floor(p.wait / p.poll));
+    // Bound replay/step pressure during a long lease queue without letting
+    // its heartbeat approach the Ledger's fifteen-minute queue expiry.
+    // Small test/short-wait polls retain their requested cadence.
+    const poll = landingLeasePollMs(p.wait, p.poll);
+    const maxAsks = Math.max(1, Math.ceil(p.wait / poll));
     for (let i = 0; ; i++) {
       const ask = await step.do(`ask for the landing lease ${label} #${i}`, RETRIES, async () => {
         const t0 = Date.now();
@@ -330,7 +337,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         await step.do(`leave the landing queue ${label}`, RETRIES, async () => { await L.queueProjectLanding(p.item, p.actor, true); return {}; });
         throw new NonRetryableError(`the landing lease was not ${p.item}'s within ${span(p.wait)}: ${ask.why}. Nothing was changed; run atelier land ${p.item} --workflow again to queue once more`);
       }
-      await step.sleep(`wait for the landing lease ${label} #${i}`, p.poll);
+      await step.sleep(`wait for the landing lease ${label} #${i}`, poll);
     }
   }
 
@@ -519,14 +526,19 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
     const ask = await step.do("request the review", RETRIES, async () => {
       const index = this.env.LEDGER.get(this.env.LEDGER.idFromName("__index"));
       const pool = await index.models();
-      const records = p.reviewer === null ? await suggestionRecords(index, (project) => this.env.LEDGER.get(this.env.LEDGER.idFromName(`project:${project.key ?? project.name}`))) : undefined;
+      const records = p.reviewer === null ? { ...await suggestionRecords(index, (project) => this.env.LEDGER.get(this.env.LEDGER.idFromName(`project:${project.key ?? project.name}`))), project: (await index.resolveProject(p.project)).key } : undefined;
       try {
         // A named reviewer is wanted even where the gate needs none; with
         // none named the gate decides, and the Ledger suggests the reviewer
         // from the records when it needs one.
-        const r = await L.requestReview(p.item, p.actor, p.reviewer, pool, p.reviewer !== null, false, records);
+        // The live offers go with the ask (t353): a request at this head
+        // every runner offering its reviewer has skipped, left by an earlier
+        // landing, is withdrawn and asked anew, so the runners serve it again.
+        const r = await L.requestReview(p.item, p.actor, p.reviewer, pool, p.reviewer !== null, false, records, await index.runnerOffers());
         if (r.needed && r.reviewer) await L.setLandingWorkflowStage(p.item, p.instance, "review", round, `Reviewer: ${r.reviewer}. ${r.reason}`);
-        return { needed: r.needed, reason: r.reason, at: r.at ?? new Date().toISOString(), reviewer: r.reviewer ?? null };
+        // The request's number travels with the ask (t353): the skips the
+        // wait counts are that request's alone.
+        return { needed: r.needed, reason: r.reason, at: r.at ?? new Date().toISOString(), reviewer: r.reviewer ?? null, request: r.request ?? null };
       } catch (error) {
         throw new NonRetryableError(this.refusal(error));
       }
@@ -553,6 +565,22 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         }
         await step.do("record the approved review", RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "approve", reviewer: poll.by, resolvedBy: poll.by }); return {}; });
         return;
+      }
+      // t353: a review request every runner that offers the reviewer has
+      // skipped will never be claimed, however long the wait runs. Asked once
+      // a poll, so the landing says so by runner name instead of waiting out
+      // the hour. The skips counted are this request's alone, by its number:
+      // an earlier request's at the same head are that request's.
+      if (ask.reviewer && ask.request !== null) {
+        const stuck = await step.do(`see whether every reviewer skipped #${i}`, RETRIES, async () => {
+          const offers = await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers();
+          const runners = allSkipped(ask.reviewer!, offers, await L.reviewSkips(p.item, ask.request!));
+          return runners ? { runners } : null;
+        });
+        if (stuck) {
+          await step.do("record the skipped review", RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "skipped", reviewer: ask.reviewer, runners: stuck.runners }); return {}; });
+          throw new NonRetryableError(`every runner that offers ${ask.reviewer} for the review of ${p.item} at ${short(head)} has skipped it: ${stuck.runners.join(", ")}. The review request stays open and ${p.item} stays submitted. Review by hand (atelier review ${p.item} --approve --as ${ask.reviewer} --note "…"), then atelier accept ${p.item} and atelier merge ${p.item}, or run atelier land ${p.item} --workflow again, which asks the review anew for the runners to serve`);
+        }
       }
       if (i + 1 >= maxPolls) {
         await step.do("record the review timeout", RETRIES, async () => { await this.note(L, p, "review", 0, { verdict: "timeout", ...(ask.reviewer ? { reviewer: ask.reviewer } : {}) }); return {}; });

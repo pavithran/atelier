@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { liveDuplicates, titlesMatch } from "../cli/atelier.mjs";
+import { liveDuplicates, titlesMatch } from "../cli/commands/new.mjs";
 
 // atelier new refuses to file a task that a live task already covers: one
 // whose scope overlaps and whose title closely matches. --duplicate-ok files
@@ -139,6 +139,17 @@ test("--duplicate-ok files the task it names, the title still the words given", 
   const f = fixture(t);
   const r = f.run(["new", "Fix the parser", "--duplicate-ok", "--scope", "src/parser/**", "--project", "demo"]);
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(r.stdout, "t9  Fix the parser  [src/parser/**]\n");
+  assert.equal(r.stdout, "t9  Fix the parser  [src/parser/**]\n\nReview path for demo: atelier guide --role orchestrate --project demo prints how to run, review and land work here, including atelier land --reviewer.\n");
   assert.deepEqual(f.requests().map((q) => [q.method, q.path, q.body]), [["POST", "/api/projects/demo/items", { title: "Fix the parser", scope: ["src/parser/**"] }]]);
+});
+
+
+test("a title over 80 characters with --brief reports bad_title without a stack or filing", (t) => {
+  const f = fixture(t);
+  for (const override of [[], ["--duplicate-ok"]]) {
+    const r = f.run(["new", "x".repeat(81), "--brief", "The whole task.", "--project", "demo", ...override]);
+    assert.equal(r.status, 1, r.stderr);
+    assert.equal(r.stderr, "atelier: bad_title: a title is at most 80 characters; put the rest in the brief\n");
+  }
+  assert.deepEqual(f.requests(), []);
 });
