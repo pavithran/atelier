@@ -239,6 +239,14 @@ export function holdText(h: CoreHold): string {
   return `${h.warning ? "WARNING: core-file hold; " : ""}waits on ${blockers}${age}${chains}${h.claimRefusal ? `; separate claim refusal: ${h.claimRefusal}` : ""}`;
 }
 
+// When the hold lifts: once every blocker stops holding. A claimed item stops
+// when it submits or is released; the item named by the landing lease stops
+// when that landing ends (it merges, is cancelled, or its lease expires).
+export function holdRelease(h: CoreHold): string {
+  const ends = (h.blockers ?? [h]).map((b) => b.state === "claimed" ? `${b.id} submits or is released` : `the landing of ${b.id} ends`);
+  return `offered once ${ends.length > 1 ? `${ends.slice(0, -1).join(", ")} and ${ends[ends.length - 1]}` : ends[0]}`;
+}
+
 export function assertDispatchable(item: Item): void {
   if (item.state !== "open" || item.owner) {
     throw new RuleError("not_open", `${item.id} is ${item.owner ? `owned by ${item.owner}` : item.state}; only an open task can be sent to a runner`);
