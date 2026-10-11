@@ -68,6 +68,11 @@ function fixture(t, { conflict, harness, dispatch = {}, setup }) {
     },
     async head(cwd, { ref = "HEAD" } = {}) { return git(cwd, "rev-parse", ref); },
     async isAncestor(cwd, base, head) { calls.push({ isAncestor: [base, head] }); return run(cwd, ["git", "merge-base", "--is-ancestor", base, head]).code === 0; },
+    async prepare(cwd) {
+      calls.push({ prepare: true });
+      assert.ok(calls.some((c) => c.reset), "reset precedes preparation");
+      return { key: "prepared" };
+    },
     async reset(cwd) { calls.push({ reset: true }); git(cwd, "reset", "-q", "--hard", "HEAD"); git(cwd, "clean", "-ffdq"); },
     async fetch(cwd, remote, token, head) { calls.push({ fetch: [remote, token, head] }); git(cwd, "fetch", "-q", remote, head); },
     async mergeMain(cwd, head, message) { calls.push({ mergeMain: [head, message] }); return run(cwd, mergeMainArgs(head, message)); },
@@ -198,4 +203,15 @@ test("a merge-main part whose merge of main conflicts fetches the plan's branch 
   assert.deepEqual(calls.filter((c) => c.mergeMain).map((c) => c.mergeMain[0]), [mainHead]);
   assert.deepEqual(calls.filter((c) => c.fetch).map((c) => c.fetch[2]), ["refs/heads/main", r.planHead]);
   assert.ok(calls.find((c) => c.brief).brief.includes(`The plan's branch at ${r.planHead.slice(0, 8)} is fetched but not merged, since the merge of main is in progress`));
+});
+
+ test("a clean merge prepares its resulting tree before the harness-free finish", async (t) => {
+  const { io, job, calls, r } = fixture(t, { conflict: false, harness: () => assert.fail("no harness") });
+  io.prepare = async (cwd) => {
+    assert.ok(existsSync(join(cwd, "b.txt")), "preparation sees the merged input");
+    calls.push({ prepare: true });
+    return { key: "ready" };
+  };
+  assert.equal((await runTask(job, config, "home:studio", io)).phase, "submitted");
+  assert.ok(calls.findIndex((c) => c.prepare) < calls.findIndex((c) => c.argv?.[0] === "finish"));
 });
