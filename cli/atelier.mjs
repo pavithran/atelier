@@ -28,6 +28,7 @@ import { controlPlaneChanges, mergePolicyDecision, shipChanges } from "../src/co
 import { cleanSummary } from "../src/brief.ts";
 import { recordedText } from "../src/rules.ts";
 import { ROUTE_LEVEL, checkCapabilities, requiredForCommand } from "../src/route-level.ts";
+import { terminalTaskExit } from "../src/tokens.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
 import { hooksOff, landingDir, landingJournalFile, oldLandingJournalFile, RECEIPT_TEMPLATE, RECEIPTS_DIR } from "./landing.mjs";
@@ -773,9 +774,13 @@ export async function request(method, path, body, as, extra = {}, signal) {
   try { data = JSON.parse(text); } catch { data = { error: "bad_response", detail: text.slice(0, 300) }; }
   if (!res.ok) {
     // 4 for a server that cannot answer, 3 for a refused claim (the runner
-    // reads it), 1 otherwise, whatever the message says.
-    const code = res.status >= 500 || res.status === 408 || res.status === 429 ? 4 :
-      method === "POST" && path.endsWith("/claim") && res.status >= 400 && res.status < 500 ? 3 : 1;
+    // reads it), 1 otherwise, whatever the message says. A task_terminal
+    // answer, which a runner's task merged or abandoned under it gets
+    // (assertRunnerJob in src/ledger.ts), ends with the state's own exit
+    // (TERMINAL_TASK_EXITS), a claim's included: the runner reads the state
+    // from it and stops the job, where a refusal would be retried.
+    const code = terminalTaskExit(data) ?? (res.status >= 500 || res.status === 408 || res.status === 429 ? 4 :
+      method === "POST" && path.endsWith("/claim") && res.status >= 400 && res.status < 500 ? 3 : 1);
     // A project the server does not know, asked for by name: the answer
     // names what this Mac knows instead of the server's "run atelier init",
     // which an agent would obey in whatever folder it stands in.
@@ -1030,12 +1035,12 @@ export function mergeWithMain(dir, id) {
 // test-slot wrapper (cli/load.mjs), so the check holds one host-wide slot
 // for as long as its tree runs.
 export async function runCheck(cmd, dir, secrets, metadata, graceMs = 5000) {
-  process.stderr.write(`atelier: running \`${cmd}\` in a clean clone…\n`);
+  process.stderr.write(`atelier: running \`${redact(cmd, secrets)}\` in a clean clone…\n`);
   const record = JSON.parse(readFileSync(markerPath(dir), "utf8"));
   const r = await runGroupedCheck(cmd, { cwd: dir, metadata, graceMs, onSpawn: (pid) => writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: pid })) });
   writeFileSync(markerPath(dir), JSON.stringify(record));
   const output = redact(`${r.stdout}${r.stderr}${r.error ? `\n[atelier] check ${r.error.message}` : ""}`, secrets);
-  return { passed: r.status === 0 && !r.error, output, sha: createHash("sha256").update(output).digest("hex") };
+  return { passed: r.status === 0 && !r.error, status: r.status, signal: r.signal, timedOut: r.timedOut, output, sha: createHash("sha256").update(output).digest("hex") };
 }
 
 // One registered check through runGroup, bounded by CHECK_TIMEOUT_MS, under
