@@ -96,6 +96,7 @@ it("criterion 2: the state matrix covers blockers, unavailable diffs and the ter
     ["accepted", (d) => { d.item.state = "accepted"; d.item.acceptedHead = head; }, true, { acceptance: "Accepted at aaaaaaaa; not yet merged" }, "next", /^Run the merge command/],
     ["merged", (d) => { d.item.state = "merged"; d.item.acceptedHead = head; }, true, { acceptance: "Merged at aaaaaaaa" }, "complete", /^Complete: the revision is merged/],
     ["closed", (d) => { d.item.state = "abandoned"; }, true, { acceptance: "Closed without merging" }, "complete", /^Complete: the task was closed/],
+    ["integrated part", (d) => { d.item.state = "integrated"; d.item.plan = "t9"; d.reviews = [review({ by: "claude-code/opus-5.5" })]; d.gate = { ready: false, needsAssessor: false, blockers: ["state is integrated, not submitted"], outOfScope: [] }; }, true, { independent: "Approved by claude-code/opus-5.5", acceptance: "Integrated into t9 at aaaaaaaa; lands with the plan" }, "waiting", /^Waiting for t9 to land: this part is submitted and integrated into the plan's branch/],
     ["working", (d) => { d.item.state = "claimed"; d.gate = { ready: false, needsAssessor: false, blockers: ["state is claimed, not submitted"], outOfScope: [] }; }, true, { acceptance: "Not submitted yet" }, "waiting", /^Waiting: The task owner is preparing the work/],
   ];
   for (const [what, set, visible, expected, kind, next] of rows) {
@@ -201,4 +202,34 @@ it("criterion 6 (drawing): a refused submission is said beside its form, keeps t
   expect(renderItem(project, reject, "PAVI", diff)).toContain(">tighten the copy</textarea>");
   // Without a refusal no error is drawn.
   expect(renderItem(project, detail(), "PAVI", diff)).not.toContain('role="alert"');
+});
+
+it("criterion 2: the independent review row credits the approval the gate counts, never an earlier same-family one", () => {
+  // The contributor is codex/gpt-6 (openai). An earlier approval from the
+  // same family does not qualify; a later one from another family does.
+  const d = detail();
+  d.reviews = [
+    review({ by: "codex/gpt-6-astra", at: "2026-10-10T17:00:00Z" }),
+    review({ by: "claude-code/opus-5.5", at: "2026-10-10T17:30:00Z" }),
+  ];
+  d.gate = { ready: true, needsAssessor: false, blockers: [], outOfScope: [] };
+  expect(ownerState(d, true, NOW).independent.text).toBe("Approved by claude-code/opus-5.5");
+  // Order does not decide it: the qualifying approval is named when it came first too.
+  d.reviews = [
+    review({ by: "claude-code/opus-5.5", at: "2026-10-10T17:00:00Z" }),
+    review({ by: "codex/gpt-6-astra", at: "2026-10-10T17:30:00Z" }),
+  ];
+  expect(ownerState(d, true, NOW).independent.text).toBe("Approved by claude-code/opus-5.5");
+  // A same-family approval alone, an unproved one, a tier one or one of
+  // another head is never credited as the independent review.
+  for (const r of [
+    review({ by: "codex/gpt-6-astra" }),
+    review({ by: "claude-code/opus-5.5", proved: false }),
+    review({ by: "claude-code/opus-5.5", tier: true }),
+    review({ by: "claude-code/opus-5.5", head: other }),
+  ]) {
+    const e = detail(); e.reviews = [r];
+    e.gate = { ready: false, needsAssessor: false, blockers: [], outOfScope: [] };
+    expect(ownerState(e, true, NOW).independent.text, JSON.stringify(r)).not.toMatch(/^Approved by/);
+  }
 });
