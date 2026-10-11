@@ -107,8 +107,13 @@ test("an entry records its state, roles and tier, and defaults mean nothing is h
   assert.equal(offThePool(bare), false);
   assert.equal(modelState(bare), "available");
   assert.equal(hasModelRole(bare, "plan"), true);
-  // An available state is not stored, since it is the default.
-  assert.equal(cleanEntry({ id: "x", harness: "codex", where: "cloud", state: "available" }, "pavi", AT).state, undefined);
+  // An explicit available state is stored with its date, as models set stores
+  // it, so an entry put again with --state available turns a paused one back on;
+  // one put with no state keeps the state it has (putModel).
+  const back = cleanEntry({ id: "x", harness: "codex", where: "cloud", state: "available" }, "pavi", AT);
+  assert.equal(back.state, "available");
+  assert.equal(back.stateAt, AT);
+  assert.equal(offThePool(back), false);
   for (const [body, why] of [
     [{ id: "x", harness: "codex", where: "cloud", state: "off" }, /state must be one of available, paused, reserved/],
     [{ id: "x", harness: "codex", where: "cloud", roles: "sing" }, /roles must be some of build, review, plan/],

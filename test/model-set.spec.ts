@@ -58,6 +58,19 @@ it("a state records its date when it changes, and a change of any other field ke
   await refusal(I.setModel("no-such-model", { state: "paused" }, AT), "no_model", /no-such-model is not in the model pool/);
 });
 
+it("an entry put again keeps the state, roles and tier it does not name, and an explicit available state is stored with its date", async () => {
+  const I = index();
+  await I.putModel(entry("put-again", "codex", { tier: "frontier", roles: ["build", "review"] }));
+  await I.setModel("put-again", { state: "reserved", note: "credits" }, "2026-10-06T10:00:00.000Z");
+  // atelier models add ID again with no --state, --roles or --tier: the owner's standing stands.
+  const kept = await I.putModel(entry("put-again", "codex", { note: "credits" }));
+  expect(kept).toMatchObject({ state: "reserved", stateAt: "2026-10-06T10:00:00.000Z", roles: ["build", "review"], tier: "frontier" });
+  // --state available turns it back on, dated; roles and a tier named replace the kept ones.
+  const back = await I.putModel(entry("put-again", "codex", { state: "available", stateAt: "2026-10-09T10:00:00.000Z", roles: ["review"], tier: "budget" }));
+  expect(back).toMatchObject({ state: "available", stateAt: "2026-10-09T10:00:00.000Z", roles: ["review"], tier: "budget" });
+  expect((await I.models()).find((m) => m.id === "put-again")).toMatchObject({ state: "available", stateAt: "2026-10-09T10:00:00.000Z", roles: ["review"], tier: "budget" });
+});
+
 it("the owner's set reaches every project's ledger, which then refuses the model for the jobs it is held from", async () => {
   const name = "model-set-reach";
   const L = ledger(name);

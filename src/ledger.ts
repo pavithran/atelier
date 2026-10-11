@@ -1357,8 +1357,8 @@ export class Ledger extends DurableObject<Env> {
       // A build or plan job dispatched before the owner paused, reserved or
       // kept this model from the job is not claimable: a dispatch naming it
       // is withdrawn, and the claim refused with the reason. A holder
-      // refreshing its claim keeps it.
-      const role = claimRole(item);
+      // refreshing its claim keeps it: a pool change leaves held claims alone.
+      const role = item.owner === actor ? null : claimRole(item);
       const held = role ? actorStanding(this.poolStanding(), actor, role) : null;
       if (held) {
         const d = item.dispatch;
