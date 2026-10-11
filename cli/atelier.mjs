@@ -841,7 +841,8 @@ export const identityEnv = (identity) => ({ GIT_AUTHOR_NAME: identity.name, GIT_
 // field checked against the policy (t451): `from` is the history already
 // published there, which the check leaves alone.
 export function identityRangeRefusals(gitIn, cwd, identity, from, to) {
-  const log = gitIn(["log", `--format=${IDENTITY_LOG_FORMAT}`, `${from}..${to}`], { cwd, raw: true });
+  // With no FROM (nothing published there yet), every commit TO holds is new.
+  const log = gitIn(["log", `--format=${IDENTITY_LOG_FORMAT}`, from ? `${from}..${to}` : to], { cwd, raw: true });
   return commitRefusals(identity, parseIdentityLog(log));
 }
 

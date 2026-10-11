@@ -247,3 +247,26 @@ test('merge refuses when the merge, not the accepted tree, would hold two names 
  assert.match(r.output,/Notes\.md and notes\.md/);
  assertUntouched(r,{'Notes.md':'Merged earlier.\n','CLAUDE.md':OWNER_TEXT});
 });
+
+test('provenance notes carry the project identity, and notes commits that do not are never pushed (t451)',async t=>{
+ // The checkout's own Git identity is a private address; the landing's notes must not carry it.
+ const {p,baseline,checkout,box,run}=await mergeFixture(t);
+ git(checkout,'config','user.email','owner@personal.example');git(checkout,'config','user.name','Private Owner');
+ box.state='accepted';
+ const landed=await run(checkout,'merge','t1');assert.equal(landed.status,0,landed.output);
+ const ids=git(p,'--git-dir',baseline,'log','refs/notes/atelier','--format=%an <%ae> %cn <%ce>').split('\n');
+ assert.ok(ids.length>0&&ids.every(l=>l==='Fixture <fixture@example.invalid> Fixture <fixture@example.invalid>'),ids.join('\n'));
+});
+
+test('a landing refuses to push a local notes commit whose identity the policy refuses (t451)',async t=>{
+ const {p,baseline,checkout,box,run}=await mergeFixture(t);
+ // An earlier notes commit made by hand with a private address, never published.
+ execFileSync('git',['-c','user.name=Private Owner','-c','user.email=owner@personal.example','notes','--ref=atelier','add','-m','hand note','HEAD'],{cwd:checkout});
+ box.state='accepted';
+ const refused=await run(checkout,'merge','t1');
+ assert.notEqual(refused.status,0,refused.output);
+ assert.match(refused.output,/provenance notes whose identity the project's policy refuses/);
+ assert.match(refused.output,/owner@personal\.example/);
+ assert.equal(execFileSync('git',['--git-dir',baseline,'for-each-ref','refs/notes/atelier'],{encoding:'utf8'}).trim(),'');
+ assert.ok(!box.requests.some(r=>r.path.endsWith('/merged')));
+});

@@ -256,12 +256,18 @@ export default async function mergeCommand() {
     await call('POST',`${I(name,id)}/landing`,{head:item.acceptedHead},OWNER);
     // The note goes to the public remote too, so it names reviewers and verdicts but never their text (cli/provenance.mjs).
     const note=provenanceNote({name,id,item,view,reviews,events:d.events});
+    // The notes commits refs/notes/atelier holds that FROM (a remote's notes
+    // tip, or nothing) does not, checked against the policy's identity.
+    const notesRangeRefusals=(from)=>{
+      const known=from&&git(['cat-file','-e',`${from}^{commit}`],{cwd,allowFail:true}).status===0;
+      return identityRangeRefusals(git,cwd,identity,known?from:null,'refs/notes/atelier');
+    };
     // Reconcile provenance independently: a previous push can publish only one ref.
     const remoteNotes=git(['ls-remote',base.remote,'refs/notes/atelier'],{cwd,token:base.token});
     if(remoteNotes){
       git(['fetch','--quiet',base.remote,'refs/notes/atelier'],{cwd,token:base.token});
       if(git(['rev-parse','--verify','refs/notes/atelier'],{cwd,allowFail:true}).status===0)
-        git(['notes','--ref=atelier','merge','FETCH_HEAD'],{cwd});
+        git(['notes','--ref=atelier','merge','FETCH_HEAD'],{cwd,...(identity?{env:identityEnv(identity)}:{})});
       else git(['update-ref','refs/notes/atelier','FETCH_HEAD'],{cwd});
     }
     // The baseline gets the merge commit itself, or, for a baseline holding
@@ -276,14 +282,27 @@ export default async function mergeCommand() {
     if(landingRefusals.length)die(`the landing would put commits on the baseline whose identity the project's policy refuses:\n  ${landingRefusals.join('\n  ')}\nNothing was pushed. Remove the merge with atelier merge ${id} --cancel --discard-local, then merge again.`);
     for(const c of new Set([mergeCommit,published])){
       const priorNote=git(['notes','--ref=atelier','show',c],{cwd,allowFail:true});
-      if(priorNote.status!==0||priorNote.stdout.trim()!==note.trim())git(['notes','--ref=atelier','add','-f','-m',note,c],{cwd});
+      if(priorNote.status!==0||priorNote.stdout.trim()!==note.trim())git(['notes','--ref=atelier','add','-f','-m',note,c],{cwd,...(identity?{env:identityEnv(identity)}:{})});
     }
+    // The notes ref is history too: every notes commit the push adds, the ones
+    // merge and add just made included, carries the project's identity (t451).
+    const notesRefusals=identity?notesRangeRefusals(remoteNotes.split(/\s/)[0]||null):[];
+    if(notesRefusals.length)die(`the landing would push provenance notes whose identity the project's policy refuses:\n  ${notesRefusals.join('\n  ')}\nNothing was pushed. Remove the merge with atelier merge ${id} --cancel --discard-local, fix refs/notes/atelier, then merge again.`);
     const alreadyPublished=git(['merge-base','--is-ancestor',published,baselineHead],{cwd,allowFail:true}).status===0;
     git(['push','--quiet',base.remote,...(alreadyPublished?[]:[`${published}:refs/heads/${p.branch}`]),'refs/notes/atelier:refs/notes/atelier'],{cwd,token:base.token});
     journal.save({phase:'published'});
     await call('POST',`${I(name,id)}/merged`,{mergeCommit:published},OWNER);
     journal.clear();
-    const notesPush=p.notesRemote?git(['push','--quiet',p.notesRemote,'refs/notes/atelier:refs/notes/atelier'],{cwd,allowFail:true}):null;
+    // A public notes remote gets only notes history whose identities pass; one
+    // whose tip cannot be read is not pushed to (fail closed).
+    let notesHeld=null;
+    if(p.notesRemote&&identity){
+      const listed=git(['ls-remote',p.notesRemote,'refs/notes/atelier'],{cwd,allowFail:true});
+      const refused=listed.status!==0?[`${p.notesRemote}: its refs/notes/atelier could not be read`]:notesRangeRefusals(listed.stdout.split(/\s/)[0]||null);
+      if(refused.length)notesHeld=refused;
+    }
+    const notesPush=p.notesRemote&&!notesHeld?git(['push','--quiet',p.notesRemote,'refs/notes/atelier:refs/notes/atelier'],{cwd,allowFail:true}):null;
+    if(notesHeld)console.log(`Provenance notes were not pushed to ${p.notesRemote}:\n  ${notesHeld.join('\n  ')}`);
     console.log(`${id} merged as ${short(mergeCommit)} in ${cwd}${published!==mergeCommit?` (on the baseline as ${short(published)})`:""}; baseline and ledger agree.`);
     console.log(`Provenance: git notes --ref=atelier show ${short(mergeCommit)}`);
     if(notesPush?.status===0)console.log(`Provenance notes pushed to ${p.notesRemote}.`);
