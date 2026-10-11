@@ -217,6 +217,8 @@ export function checkCapabilities(version: unknown, required: readonly string[])
 
 // 26: review-renew and five-minute leases; release and verdicts name the
 // exact request generation, and expired requests are reoffered (t351).
-// 27: a runner reports a build or plan job it gives up to run-skip, and its
+// 27: durable owner-approved post-merge steps and recovery (t477,
+// land.post-merge.v1).
+// 29: a runner reports a build or plan job it gives up to run-skip, and its
 // poll asks the queue `why` dispatches wait (t420, runners.run-skip.v1).
-export const ROUTE_LEVEL = 27;
+export const ROUTE_LEVEL = 29;
