@@ -79,6 +79,9 @@ test("the policy declares which remotes are public mirrors, kept on a later init
 test("an address is refused when missing, guessed, declared private or outside the policy", () => {
   assert.equal(emailProblem(null), "is not set");
   assert.match(emailProblem("me@macbook"), /guesses/);
+  // A control character cannot reach Git as an argument (gpt-6-astra at d479f052).
+  assert.equal(emailProblem("owner\u0000x@example.org"), "is not an email address");
+  assert.throws(() => settleCommitIdentity({ commitName: "Owner", commitEmail: "owner\u0000x@example.org" }, undefined), /commitEmail|email/);
   assert.equal(addressRefusal(POLICY, OWNER.email), null);
   assert.equal(addressRefusal(POLICY, AGENT.toUpperCase()), null, "addresses compare without regard to case");
   assert.match(addressRefusal(POLICY, "owner@personal.example"), /declared private in the project's policy \(privateEmails\)/);

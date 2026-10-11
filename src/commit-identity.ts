@@ -54,7 +54,8 @@ export const sameEmail = (a: string, b: string) => a.toLowerCase() === b.toLower
 // Why an address cannot stand for anyone, or null when it can.
 export function emailProblem(email: string | null | undefined): string | null {
   if (!email) return "is not set";
-  if (email.length > EMAIL_MAX || !/^[^\s<>@]+@[^\s<>@]+$/.test(email)) return "is not an email address";
+  // A control character (NUL, say) is not \s and cannot reach Git as an argument.
+  if (email.length > EMAIL_MAX || /[\x00-\x1f\x7f]/.test(email) || !/^[^\s<>@]+@[^\s<>@]+$/.test(email)) return "is not an email address";
   // A bare host name (user@macbook) is a guess as surely as user@host.local.
   const domain = email.slice(email.lastIndexOf("@") + 1);
   if (GUESSED_DOMAIN.test(domain) || !domain.includes(".")) return "is one Git guesses from the machine's user and host names";
