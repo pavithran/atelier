@@ -378,12 +378,16 @@ answered `task_terminal` with its state, and the CLI ends with exit 5 (merged)
 or 6 (abandoned, shown as closed) from claim, push and every step of finish:
 the runner logs the state, keeps the workspace and its commits, releases
 nothing, never offers the task to a harness again in that process, and charges
-neither counter. The state is told only to the runner that held the job, or
-to one a poll offered it to while no claim ever took it; a runner that was
+neither counter. The state is told only to the runner whose claim still held
+the job when it closed, or to one a poll offered it to while no claim ever
+took it; a runner that was
 offered a job someone then claimed, under a runner token or an owner's or
 agent's credential with or without a runner name, stays `runner_forbidden`
-once that task closes. Interruptions stop the runner without updating either
-counter. An infrastructure failure moves on to the next offered task in the
+once that task closes. Release, handoff, re-dispatch that releases a claim,
+and every successful replacement claim (including an owner-credential claim)
+retire the previous runner hold. A former holder stays `runner_forbidden`
+unless a new assignment authorizes it. Interruptions stop the runner without
+updating either counter. An infrastructure failure moves on to the next offered task in the
 same poll; `--once` still handles at most one task.
 Reaching either cap logs that the task needs the owner's attention; the
 infrastructure message includes the reason. Project names rejected by runner

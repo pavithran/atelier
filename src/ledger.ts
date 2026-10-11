@@ -1269,7 +1269,7 @@ export class Ledger extends DurableObject<Env> {
   // The token's validity, its project scope and the route were checked before
   // this (src/index.ts, src/runner-git.ts); this checks the job: that the
   // runner holds it, or that a live poll offered it to this actor for a claim.
-  // A job this runner demonstrably held, whose task has since been merged or
+  // A job this runner still holds, whose task has since been merged or
   // abandoned, is answered with that state (task_terminal, t476), not with
   // runner_forbidden: the runner reads the state and stops the job for good,
   // where a refusal would be retried. So is a job a poll offered this actor on
@@ -1310,6 +1310,12 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`SELECT 1 FROM events WHERE item_id = ? AND at >= ? AND kind IN ('item.claimed', 'item.runner_adopted') LIMIT 1`, id, since).toArray().length > 0;
   }
 
+  // Holds authorize only the current assignment. Remove every token's hold
+  // when ownership moves or a new claim replaces it, including owner claims.
+  private dropRunnerJobs(id: string): void {
+    this.sql.exec(`DELETE FROM meta WHERE key GLOB ?`, `runner-job:*:${id}`);
+  }
+
   recordRunnerGit(id: string, actor: string, generation: number, replaces: string | null, hash: string, token: AgentToken): boolean {
     if (!this.recordToken(id, actor, generation, replaces, `runner:${hash}`)) return false;
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-git:${hash}`, JSON.stringify({ parent: token.hash, actor, id, generation }));
@@ -1348,9 +1354,6 @@ export class Ledger extends DurableObject<Env> {
       // A plan's planner claims its item to write the plan, under the planner role.
       assertClaimAllowed(item, this.items(), this.project().policy, actor, this.owner, item.kind === "plan" ? "planner" : "executor");
     }
-    if (runnerToken) {
-      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-job:${runnerToken.id}:${id}`, JSON.stringify({ actor, runner: runnerToken.runner }));
-    }
     if (item.owner === actor) {
       // Re-claiming refreshes the write token, so it is allowed only from where
       // the claim is held: two runners offering the same agent and model share
@@ -1361,6 +1364,13 @@ export class Ledger extends DurableObject<Env> {
       if (held && held.toLowerCase() !== (asking ?? "").toLowerCase()) {
         throw new RuleError("owned", `${id} is held by ${actor} on ${held}, not ${asking ?? "a claim made without a runner"}`);
       }
+    }
+    this.dropRunnerJobs(id);
+    if (runnerToken) {
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-job:${runnerToken.id}:${id}`, JSON.stringify({ actor, runner: runnerToken.runner }));
+    }
+    if (item.owner === actor) {
+      const held = item.runner ?? null, asking = runner?.runner ?? null;
       // After a handoff the new owner holds no runner yet; the first runner to
       // claim as that owner takes the claim, and any other is refused above.
       if (!held && asking) {
@@ -1430,6 +1440,7 @@ export class Ledger extends DurableObject<Env> {
     const held = this.holds(item);
     if (held) {
       this.dropToken(id, token);
+      this.dropRunnerJobs(id);
       this.update(id, { owner: null, state: "open", accepted_head: null }, d.at);
       this.log(id, actor, "item.released", { from: item.owner, note: "dispatched again by the project owner" }, d.at);
     }
@@ -2061,6 +2072,7 @@ export class Ledger extends DurableObject<Env> {
   handoff(id: string, from: string, to: string, note: string, proved = false, token?: string | null): Item {
     const item = this.handoffAllowed(id, from, to, note);
     this.dropToken(id, token);
+    this.dropRunnerJobs(id);
     const at = new Date().toISOString();
     this.update(id, { owner: to, state: "claimed", accepted_head: null }, at);
     this.log(id, from, "item.handoff", { from: item.owner, to, note }, at, proved);
@@ -2070,6 +2082,7 @@ export class Ledger extends DurableObject<Env> {
   release(id: string, actor: string, note: string, proved = false, token?: string | null): Item {
     const item = this.releaseAllowed(id, actor, note);
     this.dropToken(id, token);
+    this.dropRunnerJobs(id);
     const at = new Date().toISOString();
     this.update(id, { owner: null, state: "open" }, at);
     this.log(id, actor, "item.released", { from: item.owner, note }, at, proved);
