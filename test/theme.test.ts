@@ -42,12 +42,24 @@ const NEUTRAL = 0.08;
 
 // The tokens of one block: `--name: #hex`.
 const tokens = (block: string) => new Map([...block.matchAll(/--([a-z-]+):\s*(#[0-9a-fA-F]{3,6})\b/g)].map((m) => [m[1], m[2].toLowerCase()]));
-const dark = tokens(theme.slice(theme.indexOf(":root {"), theme.indexOf("@media")));
-const lightStart = theme.indexOf("@media (prefers-color-scheme: light)");
-const light = tokens(theme.slice(lightStart, theme.indexOf("\n}\n", lightStart)));
+// theme.css is bin/sync-theme's copy of the portfolio's themes and is never
+// edited here. Night is its unattributed :root and light block; the other
+// named themes apply only under their data-theme, which no page sets. The
+// light stops layout.css deepens for AA lie over theme.css's.
+const night = theme.slice(0, theme.indexOf(":root[data-theme="));
+const dark = tokens(night.slice(night.indexOf(":root {"), night.indexOf("@media")));
+const lightStart = night.indexOf("@media (prefers-color-scheme: light)");
+const layoutLightStart = layout.indexOf("@media (prefers-color-scheme: light)");
+const light = new Map([
+  ...tokens(night.slice(lightStart, night.indexOf("\n}\n", lightStart))),
+  ...[...tokens(layout.slice(layoutLightStart, layout.indexOf("\n}\n", layoutLightStart)))].filter(([k]) => !k.startsWith("m-") && k !== "main-line"),
+]);
 
-test("the theme is Night and nothing else: one dark set and its light counterpart", () => {
-  assert.doesNotMatch(theme, /data-theme=/, "a second named theme is left in theme.css");
+test("the theme is Night: one dark set and its light counterpart, and theme.css is the sync's copy", () => {
+  assert.match(theme, /^\/\* Copied from ai-projects-design\/rendered\/themes\.css by bin\/sync-theme\. Do not edit\. \*\//, "theme.css is not bin/sync-theme's copy");
+  for (const page of readdirSync("src").filter((f) => f.endsWith(".ts"))) {
+    for (const m of readFileSync(`src/${page}`, "utf8").matchAll(/data-theme="([a-z]+)"/g)) assert.equal(m[1], "night", `src/${page} names theme ${m[1]}`);
+  }
   assert.equal(dark.get("surface"), "#07090c");
   assert.equal(dark.get("signal"), "#ffd166");
   assert.equal(dark.get("music-accent"), "#ffd166");
@@ -56,7 +68,7 @@ test("the theme is Night and nothing else: one dark set and its light counterpar
   assert.ok(luminance(rgb(dark.get("surface")!)) < 0.01, "the ground is not near-black");
   for (const t of ["surface-raised", "inset"]) assert.ok(luminance(rgb(dark.get(t)!)) > luminance(rgb(dark.get("surface")!)), `${t} is not raised`);
   // Palette B's blue is gone.
-  assert.doesNotMatch(theme, /#4d8bff|#7aa8ff|#1d59c9/i);
+  assert.doesNotMatch(night, /#4d8bff|#7aa8ff|#1d59c9/i);
   assert.ok(light.size > 20, "the light theme is missing");
 });
 
@@ -156,7 +168,8 @@ type Theme = { set: Map<string, string>; own: Map<string, string>; grounds: stri
 const at = (ink: string, alpha: number, ground: string): Pair => [`${ink} at ${alpha}`, over(ink, alpha, ground), ground];
 // A translucent fill names its colour by the `--name-rgb` triple.
 const triple = (t: Theme, token: string) => {
-  const block = t.set === dark ? theme.slice(theme.indexOf(":root {"), lightStart) : theme.slice(lightStart, theme.indexOf("\n}\n", lightStart));
+  const block = t.set === dark ? night.slice(night.indexOf(":root {"), lightStart)
+    : layout.slice(layoutLightStart, layout.indexOf("\n}\n", layoutLightStart)) + night.slice(lightStart, night.indexOf("\n}\n", lightStart));
   const m = new RegExp(`--${token}-rgb:\\s*(\\d+),\\s*(\\d+),\\s*(\\d+)`).exec(block);
   assert.ok(m, `--${token}-rgb is not in the theme`);
   return "#" + m.slice(1).map((c) => Number(c).toString(16).padStart(2, "0")).join("");
@@ -282,6 +295,8 @@ test("the page styles set no colour of their own; only the agents' colours carry
     for (const line of css.split("\n")) {
       // One colour per family of agent, drawn in charts, lane threads and graph marks.
       if (/^\s*--m-[a-z]+:/.test(line)) continue;
+      // Night's own light stops, deepened for AA; the role tests above hold their hue.
+      if (file === "src/layout.css" && /^\s*--(signal|music-accent|observed|fault):/.test(line)) continue;
       for (const [hex] of line.matchAll(/#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b/g))
         assert.ok(chroma(hex) < NEUTRAL, `${file}: ${hex} sets a colour outside the theme: ${line.trim()}`);
     }

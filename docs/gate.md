@@ -24,7 +24,7 @@ five verbs. They are labels: the commands keep their own names.
 | Claim | One holder per task. | `atelier start`, `atelier claim`, `atelier handoff`, `atelier release` |
 | Fork | Every task its own fork. | `atelier push`, `atelier update` |
 | Prove | Atelier runs the tests. | `atelier check`, `atelier submit` |
-| Review | Another company reviews. | `atelier review` |
+| Review | Another company reviews, or in single-family mode another model. | `atelier review` |
 | Land | One landing at a time, with a receipt. | `atelier land`, `atelier accept`, `atelier merge` |
 
 A task's page shows the five as its progress, the current one marked, read

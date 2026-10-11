@@ -45,6 +45,18 @@
     --m-cohere: #9d2968;
     --main-line: var(--text);
     --glow: 0;
+    /* Night's light stops for gold, green and red, a shade deeper than
+       theme.css so each meets AA on every panel (test/theme.test.ts).
+       theme.css is bin/sync-theme's copy and never edited here; these
+       belong upstream in ai-projects-design. */
+    --signal: #735200;
+    --signal-rgb: 115,82,0;
+    --music-accent: #735200;
+    --music-accent-rgb: 115,82,0;
+    --observed: #185a33;
+    --observed-rgb: 24,90,51;
+    --fault: #9e1539;
+    --fault-rgb: 158,21,57;
   }
 }
 :root {
