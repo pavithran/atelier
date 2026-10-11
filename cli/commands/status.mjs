@@ -53,7 +53,9 @@ export default async function statusCommand() {
   ]);
   const views = await Promise.all(chosen.map(async (p) => {
     const { items } = await call("GET", P(p.name), undefined, OWNER);
-    return { name: p.name, title: p.title, items, inbox };
+    // The policy comes along so the listing can say a project runs in
+    // single-family mode (formatStatus).
+    return { name: p.name, title: p.title, items, inbox, policy: p.policy ?? null };
   }));
   if (args.json) return console.log(JSON.stringify(statusJson(views, server()), null, 2));
   const strays = formatStrays(localStrays());
