@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { ROLES, ROLE_PROMPTS, ROLE_PROMPT_MAX, rolePrompt, guideText } from "../src/usage.ts";
-import { roleText } from "../cli/runner.mjs";
+import { roleText, reviewRoleText } from "../cli/runner.mjs";
 
 // The role prompts behind `atelier guide --role ROLE`: each role has default
 // text in src/usage.ts, a project may override it with `.atelier/prompts/ROLE.md`,
@@ -156,4 +156,19 @@ test("atelier guide --role --project for a project not registered on this Mac di
     rmSync(cfgDir, { recursive: true, force: true });
     rmSync(projectDir, { recursive: true, force: true });
   }
+});
+
+test("under single-family mode the runner's default review role never asks for another family (t394)", async () => {
+  const none = { show: async () => { throw new Error("no override"); } };
+  for (const compare of [null, { target: "abc123" }]) {
+    const single = await reviewRoleText(none, "/ws", compare, "anthropic");
+    assert.doesNotMatch(single, /another family/, single);
+    assert.match(single, /single-family mode/);
+    assert.match(single, /a different anthropic model from every agent that worked on the task/);
+    // Cross-family projects keep the default text unchanged.
+    assert.equal(await reviewRoleText(none, "/ws", compare, null), rolePrompt("review").replace(/\s+$/, ""));
+  }
+  // A project's own review prompt is the owner's text, used as written in either mode.
+  const own = { show: async () => "## Reviewing\n\nThe project's own review instructions.\n" };
+  assert.equal(await reviewRoleText(own, "/ws", { target: "abc123" }, "anthropic"), "## Reviewing\n\nThe project's own review instructions.");
 });
