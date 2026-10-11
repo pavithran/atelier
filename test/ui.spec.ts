@@ -1158,7 +1158,7 @@ it('Home counts only the owner\'s calls as waiting, one per task, with the pipel
   const titled={...project,name:'cloudflare-git',title:'Atelier'};
   const items=[{...detail().item,id:'t1',title:'Assess me',state:'submitted' as const},{...detail().item,id:'t2',title:'Merge me',state:'accepted' as const},{...detail().item,id:'t3',title:'Accept me',state:'submitted' as const}];
   const waiting=place(items,[
-    {itemId:'t1',kind:'assess'},{itemId:'t2',kind:'merge'},{itemId:'t3',kind:'accept'},{itemId:'t3',kind:'scope'},
+    {itemId:'t1',kind:'assess',reviewer:'codex/gpt-6-astra'},{itemId:'t2',kind:'merge'},{itemId:'t3',kind:'accept'},{itemId:'t3',kind:'scope'},
     {itemId:'t1',kind:'overlap',reason:'scope overlaps t3 (codex/gpt-6)'},
   ],'cloudflare-git');
   const html=renderHome([{project:titled,items,waiting}],'PAVI',new Date('2026-10-06T14:30:00Z'),'pavi');

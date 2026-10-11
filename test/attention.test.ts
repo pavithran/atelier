@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { attentionFor, isOwnerTask, OWNER_CALLS, placeTask, type Attention } from "../src/attention.ts";
+import { attentionFor, isOwnerTask, legacyFields, OWNER_CALLS, placeTask, type Attention } from "../src/attention.ts";
 import type { InboxEntry, Item } from "../src/rules.ts";
 import { ALPHA_ENTRIES, ALPHA_ITEMS, ALL_ENTRIES, BETA_ITEMS, EXPECTED, NOW, OFFERS, entry, item } from "./fixtures/attention.ts";
 
@@ -56,6 +56,8 @@ test("each owner item says in one sentence what to do and links where it is done
   assert.equal(by.unblock.command, "atelier unblock a4 --project alpha");
   assert.equal(by["approve-plan"].command, "atelier plan show a5 --project alpha");
   assert.equal(by.ship.command, "atelier ship --dry-run --project alpha");
+  assert.equal(by.override.command, "atelier accept a14 --override-review REASON --project alpha");
+  assert.match(by.override.sentence, /^No reviewer in the pool qualifies for this protected change: start a runner offering one, or allow an override/);
   assert.match(by["clear-secret"].sentence, /src\/key\.ts/);
   assert.match(by["start-runner"].sentence, /codex\/gpt-9 on a home runner/);
   assert.match(by["start-runner"].why, /no live runner can take it/);
@@ -90,6 +92,40 @@ test("transitions: one task moves between the owner and the pipeline as its fact
   assert.equal(at(item("t2", "claimed", { kind: "plan", owner: "atelier/orchestrator" }), ["plan-blocked"]), "owner:decide-plan");
   // A secret flag at an older head no longer stands.
   assert.equal(at(item("t3", "submitted", { head: "new", secret: [{ file: "k", line: 1, fingerprint: "f", head: "old", by: "s", at: "" }] }), ["accept"]), "owner:accept");
+});
+
+test("a protected change no reviewer in the pool qualifies for waits on the owner; one a reviewer can take stays in review", () => {
+  const t = item("t1", "submitted", { owner: "codex/gpt-6", head: "h" });
+  const assess = (over: Partial<InboxEntry>) => [entry("p", "t1", "assess", "a protected change needs an independent review", over)];
+  // The pool offers a reviewer: the reviewers handle it.
+  assert.deepEqual(pipeline(attentionFor("p", [t], assess({ reviewer: "claude-code/opus-5.5" }), [], NOW)), [["t1", "submitted"]]);
+  // None qualifies: only the owner moves it.
+  const none = attentionFor("p", [t], assess({ reviewer: null }), [], NOW);
+  assert.deepEqual(owner(none), [["t1", "override"]]);
+  assert.deepEqual(none.unknown, []);
+  // A project that forbids overrides asks for a reviewer, never an override.
+  const forbids = attentionFor("p", [t], [entry("p", "t1", "assess", "needs a review; this project forbids overrides", { reviewer: null })], [], NOW);
+  assert.match(forbids.owner[0].sentence, /forbids overrides: start a runner offering a reviewer of another family\.$/);
+  // The pool not read: it stays in review, and the doubt is said.
+  const unread = attentionFor("p", [t], assess({}), [], NOW);
+  assert.deepEqual(pipeline(unread), [["t1", "submitted"]]);
+  assert.deepEqual(unread.unknown, ["The reviewer pool was not read, so whether t1 needs your override is unknown."]);
+  // Transitions: a reviewer starts, the task goes back to review; an acceptance outranks the override.
+  assert.equal(attentionFor("p", [t], [...assess({ reviewer: null }), entry("p", "t1", "accept")], [], NOW).owner[0].call, "accept");
+  const secret = item("t1", "submitted", { head: "h", secret: [{ file: "k", line: 1, fingerprint: "f", head: "h", by: "s", at: "" }] });
+  assert.equal(attentionFor("p", [secret], assess({ reviewer: null }), [], NOW).owner[0].call, "clear-secret");
+});
+
+test("each owner task keeps the kind, kinds and reason older clients read", () => {
+  const a = attentionFor("alpha", ALPHA_ITEMS, ALL_ENTRIES, OFFERS, NOW);
+  const by = Object.fromEntries(a.owner.map((t) => [t.call, legacyFields(t)]));
+  assert.deepEqual(by.accept, { kind: "accept", kinds: ["accept"], reason: "all checks observed passing at this head" });
+  assert.equal(by.override.kind, "assess");
+  assert.equal(by["approve-plan"].kind, "approve-plan");
+  assert.equal(by["decide-plan"].kind, "plan-blocked");
+  assert.equal(by.ship.kind, "ship");
+  assert.deepEqual(by["clear-secret"], { kind: "blocked", kinds: ["failing"], reason: a.owner[0].why });
+  assert.deepEqual(by["start-runner"].kinds, ["blocked"], "a task with no notice names its call's kind");
 });
 
 test("precedence: a task that qualifies for several calls is placed under the first", () => {

@@ -19,8 +19,11 @@ import type { InboxEntry, Item } from "./rules.ts";
 // nothing else may proceed past it; a block before the plan's and the
 // revision's decisions, since it stops them; a merged task's protected
 // actions and a dispatch no runner can take come last, as the work is done
-// or the fix is outside the task.
-export const OWNER_CALLS = ["clear-secret", "unblock", "decide-plan", "approve-plan", "accept", "ship", "start-runner"] as const;
+// or the fix is outside the task. A protected change no qualifying reviewer
+// can review (its assess notice names no reviewer from the pool) waits on the
+// owner's override, or on the owner starting a reviewer that qualifies, so it
+// comes after the acceptance it stands in for.
+export const OWNER_CALLS = ["clear-secret", "unblock", "decide-plan", "approve-plan", "accept", "override", "ship", "start-runner"] as const;
 export type OwnerCall = typeof OWNER_CALLS[number];
 
 export const OWNER_CALL_LABEL: Record<OwnerCall, string> = {
@@ -29,6 +32,7 @@ export const OWNER_CALL_LABEL: Record<OwnerCall, string> = {
   "decide-plan": "Decide plan",
   "approve-plan": "Approve plan",
   accept: "Accept",
+  override: "No reviewer",
   ship: "Ship",
   "start-runner": "No runner",
 };
@@ -45,6 +49,23 @@ export interface OwnerTask {
   command: string | null;
   // The notice behind the call, in the server's own words.
   why: string;
+  // The kinds of the notices the task carries, each once, sorted.
+  notices: InboxEntry["kind"][];
+}
+
+// The fields an owner task carried before t504, which older clients of
+// /standing and of `atelier inbox --json` read: the notice kind the call
+// answers (the call's own kind where the task carries that notice), every
+// notice kind on the task, and the notice's words. Kept beside the call as
+// aliases, not as a second rule.
+const LEGACY_KIND: Record<OwnerCall, InboxEntry["kind"]> = {
+  "clear-secret": "blocked", unblock: "blocked", "decide-plan": "plan-blocked", "approve-plan": "approve-plan",
+  accept: "accept", override: "assess", ship: "ship", "start-runner": "blocked",
+};
+export interface LegacyFields { kind: InboxEntry["kind"]; kinds: InboxEntry["kind"][]; reason: string }
+export function legacyFields(t: OwnerTask): LegacyFields {
+  const kind = LEGACY_KIND[t.call];
+  return { kind, kinds: t.notices.length ? t.notices : [kind], reason: t.why };
 }
 
 export interface PipelineTask {
@@ -91,8 +112,9 @@ export function placeTask(project: string, item: Item, notices: readonly InboxEn
   const has = (kind: InboxEntry["kind"]) => notices.find((x) => x.kind === kind);
   const page = path("p", project, item.id);
   const flag = ` --project ${project}`;
+  const kinds = [...new Set(notices.map((x) => x.kind))].sort();
   const own = (call: OwnerCall, sentence: string, command: string | null, why: string, href = page): OwnerTask =>
-    ({ id: item.id, title: item.title, call, sentence, href, command, why });
+    ({ id: item.id, title: item.title, call, sentence, href, command, why, notices: kinds });
   if (TERMINAL.has(item.state)) {
     const ship = has("ship");
     return ship ? own("ship", "Run the protected actions its merge declared: a dry run first, then approve and ship.", `atelier ship --dry-run${flag}`, ship.reason, path("p", project, "ship")) : null;
@@ -111,11 +133,21 @@ export function placeTask(project: string, item: Item, notices: readonly InboxEn
   if (proposed) return own("approve-plan", "Read the planner's split, then approve it by its hash or send it back with a note.", `atelier plan show ${item.id}${flag}`, proposed.reason);
   const ready = has("accept");
   if (ready) return own("accept", "Accept the revision, whose required checks all passed at its head.", `atelier accept ${item.id}${flag}`, ready.reason);
+  // An assess notice whose reviewer is null: the pool was read and offers no
+  // reviewer that qualifies, so only the owner moves it. Undefined: the pool
+  // was not read, and the task stays at its stage (attentionFor says so).
+  const unreviewable = notices.find((x) => x.kind === "assess" && x.reviewer === null);
+  if (unreviewable) {
+    return own("override", /forbids overrides/.test(unreviewable.reason)
+      ? "No reviewer in the pool qualifies for this protected change, and the project forbids overrides: start a runner offering a reviewer of another family."
+      : "No reviewer in the pool qualifies for this protected change: start a runner offering one, or allow an override on the task page and accept with a reason.",
+    `atelier accept ${item.id} --override-review REASON${flag}`, unreviewable.reason);
+  }
   const stage = taskStage(item, { ready: !!ready });
   if (stage === "queued" && typeof noRunner === "string") {
     return own("start-runner", `Start a runner that offers ${runnerFor(item)}, or send the task elsewhere.`, null, noRunner);
   }
-  return { id: item.id, title: item.title, stage, notices: [...new Set(notices.map((x) => x.kind))].sort() };
+  return { id: item.id, title: item.title, stage, notices: kinds };
 }
 
 export const isOwnerTask = (p: OwnerTask | PipelineTask): p is OwnerTask => "call" in p;
@@ -166,6 +198,8 @@ export function attentionFor(
     if (isOwnerTask(placed)) owner.push(placed);
     else pipeline.push(placed);
   }
+  const unpooled = new Set(mine.filter((x) => x.kind === "assess" && x.reviewer === undefined).map((x) => x.itemId));
+  if (unpooled.size) unknown.push(`The reviewer pool was not read, so whether ${[...unpooled].sort().join(", ")} ${unpooled.size === 1 ? "needs" : "need"} your override is unknown.`);
   if (unread) unknown.push(`The runner offers could not be read, so whether a runner can take the ${unread === 1 ? "queued task" : `${unread} queued tasks`} is unknown.`);
   const known = new Set(items.map((i) => i.id));
   const strays = [...new Set(mine.filter((x) => !known.has(x.itemId)).map((x) => x.itemId))];

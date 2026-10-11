@@ -1,7 +1,7 @@
 import { taskPage } from "./task-page.ts";
 import { renderBoard } from "./board-html.ts";
 import type { BoardSnapshot, Stage } from "./board.ts";
-import { OWNER_CALL_LABEL, STAGE_LABEL, stageCounts, type Attention, type OwnerTask } from "./attention.ts";
+import { OWNER_CALL_LABEL, STAGE_LABEL, legacyFields, stageCounts, type Attention, type LegacyFields, type OwnerTask } from "./attention.ts";
 import { layersFigure } from "./diagrams.ts";
 import { sessionNoteText, type SessionNote } from "./sessions.ts";
 // Server-rendered pages. Every action is a plain form post and every page
@@ -201,7 +201,7 @@ const KIND: Record<InboxEntry["kind"], [string, string]> = {
 // The owner's calls and the pipeline's stages as the waiting lists tag them
 // (attentionFor in src/attention.ts places each task once).
 const CALL_TONE: Record<OwnerTask["call"], string> = {
-  "clear-secret": "bad", unblock: "ask", "decide-plan": "bad", "approve-plan": "ask", accept: "go", ship: "ask", "start-runner": "bad",
+  "clear-secret": "bad", unblock: "ask", "decide-plan": "bad", "approve-plan": "ask", accept: "go", override: "bad", ship: "ask", "start-runner": "bad",
 };
 const callTag = (t: OwnerTask) => tag(OWNER_CALL_LABEL[t.call], CALL_TONE[t.call]);
 
@@ -1264,8 +1264,9 @@ export interface Standing {
   live: { id: string; title: string; state: string; owner: string | null; since: string | null }[];
   // What waits on the owner, one entry per task, as attentionFor places it
   // (src/attention.ts): the call, the sentence saying what to do and the link
-  // to where it is done, with the brief's verdict after it.
-  waiting: (OwnerTask & { brief: { verdict: string; line: string } | null })[];
+  // to where it is done, with the brief's verdict after it; `kind`, `kinds`
+  // and `reason` are the fields older clients read (legacyFields).
+  waiting: (OwnerTask & LegacyFields & { brief: { verdict: string; line: string } | null })[];
   // The rest of the live tasks, counted by their pipeline stage, and the pairs
   // whose scopes overlap: the orchestrator's and the reviewers', not the owner's.
   pipeline: { stage: Stage; count: number }[];
@@ -1334,7 +1335,7 @@ export function buildStanding(
   const waiting = attention.owner.map((t, n) => {
     const d = n < STANDING_BRIEFS ? details.get(t.id) : undefined;
     const b = d ? briefFor(d, d.events) : null;
-    return { ...t, brief: b ? { verdict: b.recommendation.verdict, line: b.recommendation.reason } : null };
+    return { ...t, ...legacyFields(t), brief: b ? { verdict: b.recommendation.verdict, line: b.recommendation.reason } : null };
   });
 
   const merged = lastMerged(items).map((i) => {

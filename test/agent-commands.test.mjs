@@ -217,7 +217,7 @@ test("show prints the owner brief and preserves JSON output", async (t) => {
   assert.deepEqual(JSON.parse(json.stdout), { ...brief, reviews: [], unparsable: [] });
 });
 
-test("inbox prints each task waiting on the owner with what to do and its link, and --json the placement (t504)", async (t) => {
+test("inbox prints each task waiting on the owner with what to do and its link, and --json one entry per task in the older shape (t504)", async (t) => {
   const f = await fixture(t);
   const r = await f.run(["inbox"]);
   assert.equal(r.status, 0, r.output);
@@ -231,10 +231,12 @@ test("inbox prints each task waiting on the owner with what to do and its link, 
   ]);
   const json = await f.run(["inbox", "--json"]);
   assert.equal(json.status, 0, json.output);
-  const [proj] = JSON.parse(json.stdout);
-  assert.equal(proj.project, "proj");
-  assert.deepEqual(proj.owner.map((x) => [x.id, x.call, x.url]), [["t1", "accept", `${f.origin}/p/proj/t1`]]);
-  assert.deepEqual([proj.pipeline, proj.overlaps, proj.unknown], [[], [], []]);
+  // The entry list older clients read, one entry per task, with the call beside it.
+  const entries = JSON.parse(json.stdout);
+  assert.deepEqual(entries.map((x) => [x.project, x.itemId, x.kind, x.reason, x.call, x.url]),
+    [["proj", "t1", "accept", "all checks observed passing at this head", "accept", `${f.origin}/p/proj/t1`]]);
+  assert.deepEqual(entries[0].unknown, []);
+  assert.equal(json.output, json.stdout, "nothing goes to standard error when everything was read");
 });
 
 test("show displays both ledger revert links without claiming the undo has merged", async (t) => {

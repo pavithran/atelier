@@ -119,8 +119,9 @@ under the first.
 | 3 | Plan blocked | Owner: decide plan | Read the blocked plan and decide how it goes on | Task page, `atelier plan show` |
 | 4 | Plan approval (a proposal waits) | Owner: approve plan | Read the split, approve it by its hash or send it back | Task page, `atelier plan show` |
 | 5 | Acceptance (every required check passed at the head) | Owner: accept | Accept the revision | Task page, `atelier accept` |
-| 6 | Merged with declared protected actions not yet run | Owner: ship | Dry run, then approve and ship | Ship tab, `atelier ship --dry-run` |
-| 7 | Unavailable runner: queued, and no live runner can take it | Owner: no runner | Start a runner that offers it, or send the task elsewhere | Task page |
+| 6 | Protected change needing an independent review that no reviewer in the pool qualifies for | Owner: no reviewer | Start a runner offering a reviewer that qualifies, or allow an override and accept with a reason (where overrides are allowed) | Task page, `atelier accept --override-review` |
+| 7 | Merged with declared protected actions not yet run | Owner: ship | Dry run, then approve and ship | Ship tab, `atelier ship --dry-run` |
+| 8 | Unavailable runner: queued, and no live runner can take it | Owner: no runner | Start a runner that offers it, or send the task elsewhere | Task page |
 
 What stays with the pipeline, at its stage, for the orchestrator, runners
 and reviewers:
@@ -130,14 +131,27 @@ and reviewers:
 | Undispatched open work | Pipeline: open (not yet dispatched); the orchestrator dispatches it |
 | Queued, and a live runner can take it | Pipeline: queued |
 | Claimed, stale or not | Pipeline: building |
-| Submitted, needing an independent review, failing checks or out of scope | Pipeline: submitted (in review) |
+| Submitted, needing an independent review a reviewer in the pool can give, failing checks or out of scope | Pipeline: submitted (in review) |
 | Accepted, waiting to merge | Pipeline: accepted |
 | Overlapping scopes | A note on both tasks, counted in a disclosure, never inline |
 
 What a view could not read is said, never counted as nothing: a project
 whose tasks were not read shows its count as unknown, notices not read
 leave acceptance and plan decisions unshown and say so, and runner offers
-not read leave queued tasks at their stage with the doubt stated.
+not read leave queued tasks at their stage with the doubt stated; a model
+pool not read leaves a protected change in review, saying that whether it
+needs the owner's override is unknown.
+
+`GET /api/projects/NAME/standing` keeps, on each waiting task, the fields
+older clients read beside the call: `kind` (the notice kind the call
+answers), `kinds` (the task's notice kinds) and `reason` (the notice's
+words, the same as `why`). `atelier inbox --json` prints, as before, a list
+of entries with `project`, `itemId`, `title`, `kind`, `kinds`, `reason`
+and `weight`, now one per task that waits on the owner, each with its
+`call`, `sentence`, `url`, `command` and `why`; what could not be read is
+said on standard error and in each of that project's entries as `unknown`.
+`atelier status --json` carries the whole placement, pipeline and
+overlaps included.
 
 ## Decisions, projects, and history
 
