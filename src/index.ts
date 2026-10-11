@@ -15,7 +15,7 @@ import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, 
 import { briefFor, cleanSummary } from "./brief.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
-import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
+import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderStudio, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanNote, cleanStatus, type ModelEntry } from "./models/pool";
@@ -33,6 +33,7 @@ import { buildPulse } from "./pulse";
 import { projectKind } from "./kind";
 import { assign, parseRunner, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
 import { attentionFor } from "./attention.ts";
+import { readStanding, type StandingSource } from "./standing-read.ts";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
 import { readGatewayFigures, type GatewayView } from "./usage/gateway.ts";
@@ -290,22 +291,10 @@ const TASK_EVENTS = 300;
 // Where a project stands, from its Ledger: the page and the JSON route share it.
 // Each section reads its own source: items for holders and merges, and the
 // events of the tasks it names, never a window over the whole project's record.
+// What cannot be read is labelled, not fatal (readStanding).
 async function standingOf(env: Env, key: string): Promise<Standing> {
-  const L = ledger(env, key);
-  const now = new Date();
-  const [project, items, offers, pool] = await Promise.all([L.project(), L.items(), offersOf(env), poolOf(env)]);
-  const inbox = await L.inbox(now.toISOString(), pool);
-  const attention = attentionFor(project.name, items, inbox, offers, now);
-  const taskEvents = new Map<string, LedgerEvent[]>();
-  await Promise.all(standingTasks(items).map(async (id) => {
-    try { taskEvents.set(id, (await L.events(id, TASK_EVENTS)) as unknown as LedgerEvent[]); } catch { /* reported as not read */ }
-  }));
-  const ids = attention.owner.map((t) => t.id).slice(0, STANDING_BRIEFS);
-  const details = new Map<string, Detail>();
-  await Promise.all(ids.map(async (id) => {
-    try { details.set(id, (await L.detail(id)) as unknown as Detail); } catch { /* the line keeps the inbox's own reason */ }
-  }));
-  return { ...buildStanding(project, items, taskEvents, TASK_EVENTS, attention, details, now), session: (await L.sessions(1))[0] };
+  const [offers, pool] = await Promise.all([offersOf(env), poolOf(env)]);
+  return readStanding(ledger(env, key) as unknown as StandingSource, offers, pool, TASK_EVENTS, new Date());
 }
 
 // The runner offers as the index recorded them, or null when they could not
@@ -2696,12 +2685,15 @@ async function homePage(c: Ctx): Promise<Response> {
   const [offers, pool] = await Promise.all([offersOf(env), poolOf(env)]);
   const home: HomeView[] = await Promise.all(views.map(async (v) => {
     if (v.unavailable) return v;
-    try {
-      const L = ledgerOf(env, v.project);
-      const events = (await L.events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
-      const inbox = await L.inbox(now.toISOString(), pool).catch(() => null);
-      return { ...v, events, cut: events.length >= STORY_EVENTS, waiting: attentionFor(v.project.name, v.items, inbox, offers, now) };
-    } catch { return { ...v, unavailable: true }; }
+    // Each read on its own: the moves or the notices not read are said on
+    // the card, and what waits on the owner from the tasks read still shows.
+    const L = ledgerOf(env, v.project);
+    const [events, inbox] = await Promise.all([
+      (L.events(undefined, STORY_EVENTS) as Promise<unknown>).catch(() => null) as Promise<LedgerEvent[] | null>,
+      L.inbox(now.toISOString(), pool).catch(() => null),
+    ]);
+    const waiting = attentionFor(v.project.name, v.items, inbox, offers, now);
+    return events ? { ...v, events, cut: events.length >= STORY_EVENTS, waiting } : { ...v, eventsUnread: true, waiting };
   }));
   // The showcase setting as the cards read it: a mode per project, under
   // whichever of its names the setting's row holds.
@@ -2849,9 +2841,13 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
     const p = await L.project();
     switch (parts.length === 2 ? "overview" : parts[2]) {
       case "overview": {
+        // What the Overview cannot read is said on it, not fatal to it: the
+        // standing labels its own gaps, and the board and the events table say
+        // they were not read.
         const standing = await standingOf(env, ref.key);
-        const board = await L.board();
-        return html(renderProject(p, board.items, await L.events(undefined, 40) as unknown as LedgerEvent[], ownerName(env), standing, board));
+        const board = await L.board().catch(() => null);
+        const events = await (L.events(undefined, 40) as Promise<unknown>).catch(() => null) as LedgerEvent[] | null;
+        return html(renderProject(p, board?.items ?? [], events, ownerName(env), standing, board));
       }
       case "tasks": {
         const board = await L.board();

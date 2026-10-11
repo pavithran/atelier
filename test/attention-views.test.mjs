@@ -138,3 +138,64 @@ test("atelier inbox shows the projects it read and labels one whose notices coul
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// A stand-in server whose GET for beta's tasks fails, as a project whose
+// Ledger cannot be read answers; everything else answers from the fixture.
+async function withBetaDown(run) {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-items-unread-"));
+  const server = createServer((req, res) => {
+    const send = (code, body) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
+    if (req.url === "/api/projects") return send(200, [{ name: "alpha", title: "Alpha" }, { name: "beta", title: "Beta" }]);
+    if (req.url === "/api/projects/alpha") return send(200, { items: ALPHA_ITEMS });
+    if (req.url === "/api/projects/beta") return send(503, { error: "unavailable", detail: "beta's ledger could not be read" });
+    if (req.url === "/api/inbox?unread=1") return send(200, { entries: ALPHA_ENTRIES, unread: ["beta"] });
+    if (req.url === "/api/runners" || req.url === "/api/queue") return send(200, []);
+    send(404, { error: "not_found", detail: "unexpected" });
+  });
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  const cli = fileURLToPath(new URL("../cli/atelier.mjs", import.meta.url));
+  const runCli = (argv) => new Promise((resolve) => {
+    const child = spawn(process.execPath, [cli, ...argv], { env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_TOKEN: "test-token", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}` } });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", (x) => stdout += x);
+    child.stderr.on("data", (x) => stderr += x);
+    child.on("close", (code) => resolve({ code, stdout, output: stdout + stderr }));
+  });
+  try { await run(runCli); } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("atelier status shows the projects it read and labels one whose tasks could not be read, in text and JSON", async () => {
+  await withBetaDown(async (runCli) => {
+    const text = await runCli(["status"]);
+    assert.equal(text.code, 0, text.output);
+    const lines = text.stdout.split("\n");
+    const beta = lines.indexOf("Beta (beta)");
+    assert.ok(lines.indexOf("Alpha (alpha)") >= 0 && beta > 0, text.output);
+    assert.ok(listedUnder(lines, 0, "  Waiting for you").includes("a10"), text.output);
+    assert.equal(lines[beta + 1], "  Nothing known to wait on you.", text.output);
+    assert.ok(lines.slice(beta).some((l) => /^ {4}The project's tasks could not be read/.test(l)), text.output);
+
+    const json = await runCli(["status", "--json"]);
+    assert.equal(json.code, 0, json.output);
+    const [alpha, b] = JSON.parse(json.stdout);
+    assert.ok(alpha.attention.owner.some((t) => t.id === "a10"));
+    assert.equal(b.items, null);
+    assert.equal(b.inbox, null);
+    assert.deepEqual(b.attention.owner, []);
+    assert.match(b.attention.unknown[0], /^The project's tasks could not be read/);
+  });
+});
+
+test("atelier inbox shows the projects it read and labels one whose tasks could not be read", async () => {
+  await withBetaDown(async (runCli) => {
+    const r = await runCli(["inbox"]);
+    assert.equal(r.code, 0, r.output);
+    const lines = r.stdout.split("\n");
+    assert.ok(lines.some((l) => l.startsWith("    a10  ")), r.output);
+    assert.ok(lines.includes("Beta (beta): 0 waiting on you, and more may be"), r.output);
+    assert.ok(lines.some((l) => /^ {4}Not read: The project's tasks could not be read/.test(l)), r.output);
+  });
+});

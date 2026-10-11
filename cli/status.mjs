@@ -52,13 +52,15 @@ export function statusJson(views, server = "", offers = null, now = new Date()) 
     return {
       name: v.name,
       ...(v.title ? { title: v.title } : {}),
-      inbox: mine,
-      items: v.items.map(itemJson),
+      // Each null when not read, which attention.unknown words; never an
+      // empty list standing for nothing.
+      inbox: v.inbox ? mine : null,
+      items: v.items ? v.items.map(itemJson) : null,
       overlaps: a.overlaps,
       attention: { owner: a.owner.map((t) => ({ ...t, url: absolute(server, t.href) })), pipeline: a.pipeline, unknown: a.unknown },
       // The merges that went in on the owner's override, each with the link
       // to its page (t371).
-      mergedByOverride: mergedByOverride(v.items).map((i) => ({ id: i.id, url: taskLink(server, v.name, i.id) })),
+      mergedByOverride: mergedByOverride(v.items ?? []).map((i) => ({ id: i.id, url: taskLink(server, v.name, i.id) })),
     };
   });
 }
@@ -225,8 +227,10 @@ export function formatStatus(views, waiting = {}) {
     // Each task is said once: a task waiting on the owner is not listed again
     // as in progress or waiting for a runner.
     const theirs = new Set(a.owner.map((t) => t.id));
-    const working = v.items.filter((i) => (i.state === "claimed" || i.state === "submitted") && !theirs.has(i.id));
-    const queued = v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch && !theirs.has(i.id));
+    // Tasks not read: the project's line and what attentionFor says of it.
+    const items = v.items ?? [];
+    const working = items.filter((i) => (i.state === "claimed" || i.state === "submitted") && !theirs.has(i.id));
+    const queued = items.filter((i) => i.state === "open" && !i.owner && i.dispatch && !theirs.has(i.id));
     const reviews = reviewQueue(waiting, v.name, offers);
     const held = heldIn(waiting, v.name);
     const deadBuilds = new Map(queued
@@ -238,7 +242,7 @@ export function formatStatus(views, waiting = {}) {
       // With nothing else following, the bare line; otherwise it is worded
       // for the owner, so it does not read against what is listed under it.
       const quiet = !a.pipeline.length && !a.overlaps.length && !reviews.length && !a.unknown.length;
-      lines.push(quiet ? "  Nothing waiting." : "  Nothing waiting on you.");
+      lines.push(quiet ? "  Nothing waiting." : a.unknown.length ? "  Nothing known to wait on you." : "  Nothing waiting on you.");
     } else lines.push("  Waiting for you", ...ownerLines(a.owner, waiting.server));
     if (a.unknown.length) lines.push("  Not read", ...a.unknown.map((x) => `    ${x}`));
     if (a.pipeline.length) lines.push(`  In the pipeline: ${pipelineLine(a)}; none waits on you.`);
@@ -251,7 +255,7 @@ export function formatStatus(views, waiting = {}) {
     // How many merges went in on the owner's override of the independent
     // review, wherever the project has merged anything, then each under it
     // with the link to its page on the server in use (t371).
-    const merged = v.items.filter((i) => i.state === "merged"), byOverride = mergedByOverride(merged);
+    const merged = items.filter((i) => i.state === "merged"), byOverride = mergedByOverride(merged);
     if (merged.length) {
       lines.push(`  Merged by override: ${byOverride.length} of ${merged.length} ${merged.length === 1 ? "merge" : "merges"}`);
       for (const i of byOverride) lines.push(`    ${i.id}  ${taskLink(waiting.server, v.name, i.id)}  ${i.title}`);
