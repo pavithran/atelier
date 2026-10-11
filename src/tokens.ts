@@ -202,6 +202,11 @@ export const RUNNER_CALLS: readonly RunnerCall[] = [
   { name: "push", method: "POST", path: `${ITEM}/push`, credential: "runner", body: ["head", "rebasedFrom"], via: "cli", command: "push", jobs: ["build", "integrate", "refresh"], integrator: true },
   { name: "read-token", method: "POST", path: `${ITEM}/read-token`, credential: "runner", body: [], via: "cli", command: "read-token", jobs: ["build", "integrate"], integrator: true },
   { name: "base-token", method: "POST", path: `${ITEM}/base-token`, credential: "runner", body: ["scope"], via: "cli", command: "base-token", jobs: ["build", "refresh"], integrator: true },
+  // The build job's merge of main before it submits (t435) reads the project's
+  // baseline: a read token and the regenerate command, never a write scope.
+  { name: "baseline-token", method: "POST", path: "/projects/{project}/baseline-token", credential: "runner", body: ["scope"], via: "cli", command: "baseline-token", jobs: ["build"] },
+  // The same command reads the project's regenerate command from its record.
+  { name: "baseline-project", method: "GET", path: "/projects/{project}", credential: "runner", body: [], via: "cli", command: "baseline-token", jobs: ["build"] },
   { name: "evidence", method: "POST", path: `${ITEM}/evidence`, credential: "runner", body: ["kind", "claim", "head", "passed", "changedPaths", "outputTail", "merged", "mainHead", "notApplicable", "load"], via: "cli", command: "check", jobs: ["build", "integrate", "refresh"], integrator: true },
   { name: "sandbox", method: "POST", path: `${ITEM}/sandbox`, credential: "runner", body: ["merged"], via: "cli", command: "check", jobs: ["build", "integrate", "refresh"], integrator: true },
   { name: "sandbox-run", method: "GET", path: `${ITEM}/sandbox/{run}`, credential: "runner", body: [], via: "cli", command: "check", jobs: ["build", "integrate", "refresh"], integrator: true },

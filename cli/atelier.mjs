@@ -747,6 +747,15 @@ export async function resolveTokenActor() {
   if (tokenActor && args._[0] !== "token" && declared !== undefined && declared !== tokenActor) die("--as and ATELIER_ACTOR must match the agent token actor");
 }
 
+// The harness/model acting for the owner on a judgement the owner's token
+// records (src/models/judgement.ts): a finding's verdict, a decision, an
+// override. It is --as, or ATELIER_ACTOR, sent beside the owner's actor; the
+// server refuses a name that is not a harness/model, and with none the event
+// records no acting model.
+export function actingHeaders(as = args.as ?? process.env.ATELIER_ACTOR) {
+  return typeof as === "string" && as.trim() ? { "x-atelier-acting": as.trim() } : {};
+}
+
 export async function call(method, path, body, as, extra = {}) {
   try { return await request(method, path, body, as, extra); } catch (error) { if (error instanceof RequestError) die(error.message, error.code); throw error; }
 }

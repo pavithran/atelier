@@ -1,0 +1,3731 @@
+{
+  "generatedBy": "scripts/design/capture.ts",
+  "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+  "sourceDirty": false,
+  "browser": {
+    "name": "chromium",
+    "version": "149.0.7827.55",
+    "playwrightCore": "1.61.1"
+  },
+  "fixture": {
+    "file": "test/fixtures/design/seed.ts",
+    "now": "2026-10-10T12:00:00.000Z",
+    "tasks": 310,
+    "projects": [
+      {
+        "name": "ledger-core",
+        "shapes": {
+          "merged": 156,
+          "abandoned": 6,
+          "open": 14,
+          "working": 4,
+          "overlap": 2,
+          "stale": 3,
+          "blocked": 2,
+          "failed": 3,
+          "ready": 4,
+          "protected": 2,
+          "sentBack": 1,
+          "accepted": 2,
+          "scope": 1
+        },
+        "mode": null
+      },
+      {
+        "name": "field-notes",
+        "shapes": {
+          "merged": 50,
+          "abandoned": 4,
+          "open": 8,
+          "working": 4,
+          "ready": 2,
+          "failed": 1,
+          "blocked": 1
+        },
+        "mode": "anonymous"
+      },
+      {
+        "name": "open-tool",
+        "shapes": {
+          "merged": 25,
+          "open": 10,
+          "working": 3,
+          "ready": 2
+        },
+        "mode": "named"
+      }
+    ]
+  },
+  "screens": [
+    {
+      "id": "public-showcase",
+      "state": "Showcase with one project named and one anonymised",
+      "path": "/",
+      "url": "https://atelier.test/",
+      "audience": "public",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 4009,
+      "filename": "public-showcase-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "public-showcase",
+      "state": "Showcase with one project named and one anonymised",
+      "path": "/",
+      "url": "https://atelier.test/",
+      "audience": "public",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 5170,
+      "filename": "public-showcase-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "public-how",
+      "state": "The explainer",
+      "path": "/how",
+      "url": "https://atelier.test/how",
+      "audience": "public",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 16009,
+      "filename": "public-how-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/how"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 6
+      }
+    },
+    {
+      "id": "public-how",
+      "state": "The explainer",
+      "path": "/how",
+      "url": "https://atelier.test/how",
+      "audience": "public",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 25156,
+      "filename": "public-how-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/how"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 6
+      }
+    },
+    {
+      "id": "public-owner-route",
+      "state": "A visitor on an owner URL without Access's sign-in",
+      "path": "/p/ledger-core",
+      "url": "https://atelier.test/p/ledger-core",
+      "audience": "public",
+      "status": 401,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 900,
+      "filename": "public-owner-route-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Sans"
+        ],
+        "external": 3
+      }
+    },
+    {
+      "id": "public-owner-route",
+      "state": "A visitor on an owner URL without Access's sign-in",
+      "path": "/p/ledger-core",
+      "url": "https://atelier.test/p/ledger-core",
+      "audience": "public",
+      "status": 401,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 1009,
+      "filename": "public-owner-route-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Sans"
+        ],
+        "external": 3
+      }
+    },
+    {
+      "id": "signin",
+      "state": "Sign-in over the anonymised backdrop",
+      "path": "/login",
+      "url": "https://atelier.test/login",
+      "audience": "access",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 954,
+      "filename": "signin-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/login"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "signin",
+      "state": "Sign-in over the anonymised backdrop",
+      "path": "/login",
+      "url": "https://atelier.test/login",
+      "audience": "access",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 963,
+      "filename": "signin-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/login"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "home",
+      "state": "Portfolio: dense, empty and unavailable projects",
+      "path": "/home",
+      "url": "https://atelier.test/home",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 1905,
+      "filename": "home-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/home"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "home",
+      "state": "Portfolio: dense, empty and unavailable projects",
+      "path": "/home",
+      "url": "https://atelier.test/home",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 4281,
+      "filename": "home-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/home"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "decisions",
+      "state": "Inbox with the first decision selected",
+      "path": "/decisions",
+      "url": "https://atelier.test/decisions",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 10291,
+      "filename": "decisions-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/decisions",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "decisions",
+      "state": "Inbox with the first decision selected",
+      "path": "/decisions",
+      "url": "https://atelier.test/decisions",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 2436,
+      "filename": "decisions-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/decisions",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "decisions-sent-back",
+      "state": "A sent-back task selected",
+      "path": "/decisions?project=ledger-core&task=t197",
+      "url": "https://atelier.test/decisions?project=ledger-core&task=t197",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 10291,
+      "filename": "decisions-sent-back-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/decisions?project=ledger-core&task=t197",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "decisions-sent-back",
+      "state": "A sent-back task selected",
+      "path": "/decisions?project=ledger-core&task=t197",
+      "url": "https://atelier.test/decisions?project=ledger-core&task=t197",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 2724,
+      "filename": "decisions-sent-back-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/decisions?project=ledger-core&task=t197",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "decisions-blocked",
+      "state": "A blocked task selected",
+      "path": "/decisions?project=ledger-core&task=t166",
+      "url": "https://atelier.test/decisions?project=ledger-core&task=t166",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 10291,
+      "filename": "decisions-blocked-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/decisions?project=ledger-core&task=t166",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "decisions-blocked",
+      "state": "A blocked task selected",
+      "path": "/decisions?project=ledger-core&task=t166",
+      "url": "https://atelier.test/decisions?project=ledger-core&task=t166",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 2420,
+      "filename": "decisions-blocked-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/decisions?project=ledger-core&task=t166",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "studio",
+      "state": "The floor with live, stale and overlapping work",
+      "path": "/studio",
+      "url": "https://atelier.test/studio",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 6000,
+      "filename": "studio-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/studio"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "studio",
+      "state": "The floor with live, stale and overlapping work",
+      "path": "/studio",
+      "url": "https://atelier.test/studio",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 9807,
+      "filename": "studio-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/studio"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "flow",
+      "state": "Every project's flow, all time",
+      "path": "/flow",
+      "url": "https://atelier.test/flow",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 10136,
+      "filename": "flow-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/flow",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "flow",
+      "state": "Every project's flow, all time",
+      "path": "/flow",
+      "url": "https://atelier.test/flow",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 9961,
+      "filename": "flow-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/flow",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "flow-filtered",
+      "state": "Flow filtered to the last day and one family",
+      "path": "/flow?since=1d&family=anthropic",
+      "url": "https://atelier.test/flow?since=1d&family=anthropic",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 1929,
+      "filename": "flow-filtered-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/flow?since=1d&family=anthropic",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "flow-filtered",
+      "state": "Flow filtered to the last day and one family",
+      "path": "/flow?since=1d&family=anthropic",
+      "url": "https://atelier.test/flow?since=1d&family=anthropic",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 3026,
+      "filename": "flow-filtered-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/flow?since=1d&family=anthropic",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "history",
+      "state": "Timeline of 231 merges and 10 closures",
+      "path": "/history",
+      "url": "https://atelier.test/history",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 18829,
+      "filename": "history-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/history"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "history",
+      "state": "Timeline of 231 merges and 10 closures",
+      "path": "/history",
+      "url": "https://atelier.test/history",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 33125,
+      "filename": "history-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/history"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "models",
+      "state": "Empty pool, track record from the seeded events, Gateway off",
+      "path": "/models",
+      "url": "https://atelier.test/models",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 2886,
+      "filename": "models-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/models"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "models",
+      "state": "Empty pool, track record from the seeded events, Gateway off",
+      "path": "/models",
+      "url": "https://atelier.test/models",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 4970,
+      "filename": "models-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/models"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "usage",
+      "state": "Two runners' reports, one stale, one alert",
+      "path": "/usage",
+      "url": "https://atelier.test/usage",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 2336,
+      "filename": "usage-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/usage"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "usage",
+      "state": "Two runners' reports, one stale, one alert",
+      "path": "/usage",
+      "url": "https://atelier.test/usage",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 4316,
+      "filename": "usage-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/usage"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "project",
+      "state": "Dense project overview (200 tasks)",
+      "path": "/p/ledger-core",
+      "url": "https://atelier.test/p/ledger-core",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 22708,
+      "filename": "project-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "project",
+      "state": "Dense project overview (200 tasks)",
+      "path": "/p/ledger-core",
+      "url": "https://atelier.test/p/ledger-core",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 118613,
+      "filename": "project-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "project-empty",
+      "state": "Project with no tasks",
+      "path": "/p/blank-slate",
+      "url": "https://atelier.test/p/blank-slate",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 900,
+      "filename": "project-empty-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/blank-slate"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "project-empty",
+      "state": "Project with no tasks",
+      "path": "/p/blank-slate",
+      "url": "https://atelier.test/p/blank-slate",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 1009,
+      "filename": "project-empty-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/blank-slate"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "project-unavailable",
+      "state": "Project whose Ledger cannot be read",
+      "path": "/p/cold-storage",
+      "url": "https://atelier.test/p/cold-storage",
+      "audience": "owner",
+      "status": 503,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 900,
+      "filename": "project-unavailable-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/cold-storage"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Sans"
+        ],
+        "external": 3
+      }
+    },
+    {
+      "id": "project-unavailable",
+      "state": "Project whose Ledger cannot be read",
+      "path": "/p/cold-storage",
+      "url": "https://atelier.test/p/cold-storage",
+      "audience": "owner",
+      "status": 503,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 1009,
+      "filename": "project-unavailable-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/cold-storage"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Sans"
+        ],
+        "external": 3
+      }
+    },
+    {
+      "id": "tasks",
+      "state": "All 200 tasks in one list",
+      "path": "/p/ledger-core/tasks",
+      "url": "https://atelier.test/p/ledger-core/tasks",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 19476,
+      "filename": "tasks-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/tasks"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Sans"
+        ],
+        "external": 3
+      }
+    },
+    {
+      "id": "tasks",
+      "state": "All 200 tasks in one list",
+      "path": "/p/ledger-core/tasks",
+      "url": "https://atelier.test/p/ledger-core/tasks",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 111277,
+      "filename": "tasks-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/tasks"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Sans"
+        ],
+        "external": 3
+      }
+    },
+    {
+      "id": "tasks-empty",
+      "state": "Task board with no tasks: one empty Unsorted area",
+      "path": "/p/blank-slate/tasks",
+      "url": "https://atelier.test/p/blank-slate/tasks",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 900,
+      "filename": "tasks-empty-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/blank-slate/tasks"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Sans"
+        ],
+        "external": 3
+      }
+    },
+    {
+      "id": "tasks-empty",
+      "state": "Task board with no tasks: one empty Unsorted area",
+      "path": "/p/blank-slate/tasks",
+      "url": "https://atelier.test/p/blank-slate/tasks",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 1009,
+      "filename": "tasks-empty-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/blank-slate/tasks"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Sans"
+        ],
+        "external": 3
+      }
+    },
+    {
+      "id": "project-flow",
+      "state": "One project's flow",
+      "path": "/p/ledger-core/flow",
+      "url": "https://atelier.test/p/ledger-core/flow",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 6359,
+      "filename": "project-flow-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/flow",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "project-flow",
+      "state": "One project's flow",
+      "path": "/p/ledger-core/flow",
+      "url": "https://atelier.test/p/ledger-core/flow",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 5879,
+      "filename": "project-flow-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/flow",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "plans",
+      "state": "No plans",
+      "path": "/p/ledger-core/plans",
+      "url": "https://atelier.test/p/ledger-core/plans",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 900,
+      "filename": "plans-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/plans"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "plans",
+      "state": "No plans",
+      "path": "/p/ledger-core/plans",
+      "url": "https://atelier.test/p/ledger-core/plans",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 1009,
+      "filename": "plans-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/plans"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "ship",
+      "state": "No protected action approved",
+      "path": "/p/ledger-core/ship",
+      "url": "https://atelier.test/p/ledger-core/ship",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 900,
+      "filename": "ship-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/ship"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "ship",
+      "state": "No protected action approved",
+      "path": "/p/ledger-core/ship",
+      "url": "https://atelier.test/p/ledger-core/ship",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 1009,
+      "filename": "ship-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/ship"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "settings",
+      "state": "Checks and protected paths",
+      "path": "/p/ledger-core/settings",
+      "url": "https://atelier.test/p/ledger-core/settings",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 900,
+      "filename": "settings-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/settings"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "settings",
+      "state": "Checks and protected paths",
+      "path": "/p/ledger-core/settings",
+      "url": "https://atelier.test/p/ledger-core/settings",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 1039,
+      "filename": "settings-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/settings"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "code",
+      "state": "Baseline root directory",
+      "path": "/p/ledger-core/code",
+      "url": "https://atelier.test/p/ledger-core/code",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 900,
+      "filename": "code-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/code"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "code",
+      "state": "Baseline root directory",
+      "path": "/p/ledger-core/code",
+      "url": "https://atelier.test/p/ledger-core/code",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 1009,
+      "filename": "code-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/code"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "code-dir",
+      "state": "A directory",
+      "path": "/p/ledger-core/code/src",
+      "url": "https://atelier.test/p/ledger-core/code/src",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 900,
+      "filename": "code-dir-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/code/src"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "code-dir",
+      "state": "A directory",
+      "path": "/p/ledger-core/code/src",
+      "url": "https://atelier.test/p/ledger-core/code/src",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 1009,
+      "filename": "code-dir-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/code/src"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "code-file",
+      "state": "A file",
+      "path": "/p/ledger-core/code/src/ui.ts",
+      "url": "https://atelier.test/p/ledger-core/code/src/ui.ts",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 981,
+      "filename": "code-file-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/code/src/ui.ts"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "code-file",
+      "state": "A file",
+      "path": "/p/ledger-core/code/src/ui.ts",
+      "url": "https://atelier.test/p/ledger-core/code/src/ui.ts",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 1151,
+      "filename": "code-file-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/code/src/ui.ts"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "code-no-commits",
+      "state": "A baseline with no commits",
+      "path": "/p/blank-slate/code",
+      "url": "https://atelier.test/p/blank-slate/code",
+      "audience": "owner",
+      "status": 404,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 900,
+      "filename": "code-no-commits-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/blank-slate/code"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Sans"
+        ],
+        "external": 3
+      }
+    },
+    {
+      "id": "code-no-commits",
+      "state": "A baseline with no commits",
+      "path": "/p/blank-slate/code",
+      "url": "https://atelier.test/p/blank-slate/code",
+      "audience": "owner",
+      "status": 404,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 1009,
+      "filename": "code-no-commits-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/blank-slate/code"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Sans"
+        ],
+        "external": 3
+      }
+    },
+    {
+      "id": "log",
+      "state": "Log, first page of 157 commits",
+      "path": "/p/ledger-core/log",
+      "url": "https://atelier.test/p/ledger-core/log",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 2495,
+      "filename": "log-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/log"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "log",
+      "state": "Log, first page of 157 commits",
+      "path": "/p/ledger-core/log",
+      "url": "https://atelier.test/p/ledger-core/log",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 4976,
+      "filename": "log-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/log"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "log-page-2",
+      "state": "Log, second page",
+      "path": "/p/ledger-core/log?page=1",
+      "url": "https://atelier.test/p/ledger-core/log?page=1",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 2495,
+      "filename": "log-page-2-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/log?page=1"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "log-page-2",
+      "state": "Log, second page",
+      "path": "/p/ledger-core/log?page=1",
+      "url": "https://atelier.test/p/ledger-core/log?page=1",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 4976,
+      "filename": "log-page-2-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/log?page=1"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "commit",
+      "state": "One commit (the first)",
+      "path": "/p/ledger-core/commit/71586c3e757671732446049c71a699f9e0e99e62",
+      "url": "https://atelier.test/p/ledger-core/commit/71586c3e757671732446049c71a699f9e0e99e62",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 1497,
+      "filename": "commit-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/commit/71586c3e757671732446049c71a699f9e0e99e62"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "commit",
+      "state": "One commit (the first)",
+      "path": "/p/ledger-core/commit/71586c3e757671732446049c71a699f9e0e99e62",
+      "url": "https://atelier.test/p/ledger-core/commit/71586c3e757671732446049c71a699f9e0e99e62",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 1687,
+      "filename": "commit-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/commit/71586c3e757671732446049c71a699f9e0e99e62"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "path-history",
+      "state": "The commits that changed one path",
+      "path": "/p/ledger-core/history/src/ui.ts",
+      "url": "https://atelier.test/p/ledger-core/history/src/ui.ts",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 1068,
+      "filename": "path-history-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/history/src/ui.ts"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "path-history",
+      "state": "The commits that changed one path",
+      "path": "/p/ledger-core/history/src/ui.ts",
+      "url": "https://atelier.test/p/ledger-core/history/src/ui.ts",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 1985,
+      "filename": "path-history-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/history/src/ui.ts"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "task-open-long",
+      "state": "Unclaimed task with a long title and brief",
+      "path": "/p/ledger-core/t168",
+      "url": "https://atelier.test/p/ledger-core/t168",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 1246,
+      "filename": "task-open-long-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t168",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-open-long",
+      "state": "Unclaimed task with a long title and brief",
+      "path": "/p/ledger-core/t168",
+      "url": "https://atelier.test/p/ledger-core/t168",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 1728,
+      "filename": "task-open-long-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t168",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-working",
+      "state": "Claimed, pushed, no checks yet",
+      "path": "/p/ledger-core/t182",
+      "url": "https://atelier.test/p/ledger-core/t182",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 2038,
+      "filename": "task-working-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t182",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-working",
+      "state": "Claimed, pushed, no checks yet",
+      "path": "/p/ledger-core/t182",
+      "url": "https://atelier.test/p/ledger-core/t182",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 2448,
+      "filename": "task-working-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t182",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-stale",
+      "state": "Claimed, nothing pushed for two days",
+      "path": "/p/ledger-core/t163",
+      "url": "https://atelier.test/p/ledger-core/t163",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 2038,
+      "filename": "task-stale-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t163",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-stale",
+      "state": "Claimed, nothing pushed for two days",
+      "path": "/p/ledger-core/t163",
+      "url": "https://atelier.test/p/ledger-core/t163",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 2448,
+      "filename": "task-stale-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t163",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-blocked",
+      "state": "Blocked by its holder",
+      "path": "/p/ledger-core/t166",
+      "url": "https://atelier.test/p/ledger-core/t166",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 2213,
+      "filename": "task-blocked-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t166",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-blocked",
+      "state": "Blocked by its holder",
+      "path": "/p/ledger-core/t166",
+      "url": "https://atelier.test/p/ledger-core/t166",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 2837,
+      "filename": "task-blocked-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t166",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-failed",
+      "state": "Submitted with a failing check",
+      "path": "/p/ledger-core/t188",
+      "url": "https://atelier.test/p/ledger-core/t188",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 2297,
+      "filename": "task-failed-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t188",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-failed",
+      "state": "Submitted with a failing check",
+      "path": "/p/ledger-core/t188",
+      "url": "https://atelier.test/p/ledger-core/t188",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 2808,
+      "filename": "task-failed-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t188",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-unreadable",
+      "state": "Ready to accept; the diff cannot be read",
+      "path": "/p/ledger-core/t191",
+      "url": "https://atelier.test/p/ledger-core/t191",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 2141,
+      "filename": "task-unreadable-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t191",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-unreadable",
+      "state": "Ready to accept; the diff cannot be read",
+      "path": "/p/ledger-core/t191",
+      "url": "https://atelier.test/p/ledger-core/t191",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 2749,
+      "filename": "task-unreadable-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t191",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-ready",
+      "state": "Ready to accept, diff shown",
+      "path": "/p/ledger-core/t192",
+      "url": "https://atelier.test/p/ledger-core/t192",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 2196,
+      "filename": "task-ready-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t192",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-ready",
+      "state": "Ready to accept, diff shown",
+      "path": "/p/ledger-core/t192",
+      "url": "https://atelier.test/p/ledger-core/t192",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 2794,
+      "filename": "task-ready-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t192",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-protected",
+      "state": "Protected path: review required",
+      "path": "/p/ledger-core/t195",
+      "url": "https://atelier.test/p/ledger-core/t195",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 2495,
+      "filename": "task-protected-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t195",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-protected",
+      "state": "Protected path: review required",
+      "path": "/p/ledger-core/t195",
+      "url": "https://atelier.test/p/ledger-core/t195",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 3475,
+      "filename": "task-protected-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t195",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-sent-back",
+      "state": "Checks passed, then sent back (the t435 shape)",
+      "path": "/p/ledger-core/t197",
+      "url": "https://atelier.test/p/ledger-core/t197",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 2397,
+      "filename": "task-sent-back-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t197",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-sent-back",
+      "state": "Checks passed, then sent back (the t435 shape)",
+      "path": "/p/ledger-core/t197",
+      "url": "https://atelier.test/p/ledger-core/t197",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 3141,
+      "filename": "task-sent-back-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t197",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-accepted",
+      "state": "Accepted, waiting for the merge",
+      "path": "/p/ledger-core/t198",
+      "url": "https://atelier.test/p/ledger-core/t198",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 2220,
+      "filename": "task-accepted-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t198",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-accepted",
+      "state": "Accepted, waiting for the merge",
+      "path": "/p/ledger-core/t198",
+      "url": "https://atelier.test/p/ledger-core/t198",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 2822,
+      "filename": "task-accepted-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t198",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-scope",
+      "state": "Changes outside its declared scope",
+      "path": "/p/ledger-core/t200",
+      "url": "https://atelier.test/p/ledger-core/t200",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 2185,
+      "filename": "task-scope-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t200",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-scope",
+      "state": "Changes outside its declared scope",
+      "path": "/p/ledger-core/t200",
+      "url": "https://atelier.test/p/ledger-core/t200",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 2759,
+      "filename": "task-scope-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t200",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-merged",
+      "state": "Merged, diff as it landed",
+      "path": "/p/ledger-core/t1",
+      "url": "https://atelier.test/p/ledger-core/t1",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 1730,
+      "filename": "task-merged-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t1",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-merged",
+      "state": "Merged, diff as it landed",
+      "path": "/p/ledger-core/t1",
+      "url": "https://atelier.test/p/ledger-core/t1",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 2122,
+      "filename": "task-merged-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t1",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-abandoned",
+      "state": "Closed without merging",
+      "path": "/p/ledger-core/t157",
+      "url": "https://atelier.test/p/ledger-core/t157",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 1681,
+      "filename": "task-abandoned-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t157",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-abandoned",
+      "state": "Closed without merging",
+      "path": "/p/ledger-core/t157",
+      "url": "https://atelier.test/p/ledger-core/t157",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 1991,
+      "filename": "task-abandoned-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t157",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 4
+      }
+    },
+    {
+      "id": "task-not-found",
+      "state": "A task id that does not exist",
+      "path": "/p/ledger-core/t9999",
+      "url": "https://atelier.test/p/ledger-core/t9999",
+      "audience": "owner",
+      "status": 404,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 900,
+      "filename": "task-not-found-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t9999"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Sans"
+        ],
+        "external": 3
+      }
+    },
+    {
+      "id": "task-not-found",
+      "state": "A task id that does not exist",
+      "path": "/p/ledger-core/t9999",
+      "url": "https://atelier.test/p/ledger-core/t9999",
+      "audience": "owner",
+      "status": 404,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 1009,
+      "filename": "task-not-found-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t9999"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Sans"
+        ],
+        "external": 3
+      }
+    },
+    {
+      "id": "fork-code",
+      "state": "A task's workspace, browsed",
+      "path": "/p/ledger-core/t182/code",
+      "url": "https://atelier.test/p/ledger-core/t182/code",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 900,
+      "filename": "fork-code-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t182/code"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "fork-code",
+      "state": "A task's workspace, browsed",
+      "path": "/p/ledger-core/t182/code",
+      "url": "https://atelier.test/p/ledger-core/t182/code",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 1009,
+      "filename": "fork-code-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t182/code"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "fork-none",
+      "state": "Browsing a task with no workspace",
+      "path": "/p/ledger-core/t168/code",
+      "url": "https://atelier.test/p/ledger-core/t168/code",
+      "audience": "owner",
+      "status": 404,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 900,
+      "filename": "fork-none-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t168/code"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Sans"
+        ],
+        "external": 3
+      }
+    },
+    {
+      "id": "fork-none",
+      "state": "Browsing a task with no workspace",
+      "path": "/p/ledger-core/t168/code",
+      "url": "https://atelier.test/p/ledger-core/t168/code",
+      "audience": "owner",
+      "status": 404,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 1009,
+      "filename": "fork-none-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t168/code"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Sans"
+        ],
+        "external": 3
+      }
+    },
+    {
+      "id": "public-showcase-none",
+      "state": "No project shown publicly",
+      "path": "/",
+      "url": "https://atelier.test/",
+      "audience": "public",
+      "status": 404,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 900,
+      "filename": "public-showcase-none-1440.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Sans"
+        ],
+        "external": 3
+      }
+    },
+    {
+      "id": "public-showcase-none",
+      "state": "No project shown publicly",
+      "path": "/",
+      "url": "https://atelier.test/",
+      "audience": "public",
+      "status": 404,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 1009,
+      "filename": "public-showcase-none-390.png",
+      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Sans"
+        ],
+        "external": 3
+      }
+    }
+  ]
+}
