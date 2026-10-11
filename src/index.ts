@@ -1,5 +1,5 @@
 import { runnerGitRequest } from "./runner-git.ts";
-import { assertCriteriaAllowed, assertReviewAllowed } from "./rules.ts";
+import { assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed } from "./rules.ts";
 import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
 import { scanCommit } from "./secret-scan.ts";
@@ -1348,6 +1348,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // predicted conflict sends the part back to its builder without a runner
       // trip (docs/orchestrator.md, section 5).
       const before = await L.item(id);
+      assertNotTerminal(before);
       if (before.kind === "plan" && before.dispatch?.job === "integrate" && before.dispatch.part && actor === INTEGRATOR) {
         const conflict = await predictConflict(env, L, before);
         if (conflict) {
@@ -1381,7 +1382,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // A give-up that fails is logged, and the claim's own failure is
           // answered: the claimer still holds an item with no fork, which its
           // retry forks (t349).
-          await L.unclaim(id, actor, codeOf(err).trim(), !!c.token).catch((e) => console.error(errorLine(`give up ${id} after a failed fork`, e)));
+          await L.unclaim(id, actor, codeOf(err).trim(), !!c.token, generation).catch((e) => console.error(errorLine(`give up ${id} after a failed fork`, e)));
           throw err;
         }
       } else {
@@ -1391,7 +1392,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         try {
           moved = await movePartFork(env, L, item, p, actor, !!c.token);
         } catch (err) {
-          if (before.owner !== actor) await L.unclaim(id, actor, codeOf(err).trim(), !!c.token);
+          if (before.owner !== actor) await L.unclaim(id, actor, codeOf(err).trim(), !!c.token, generation);
           throw err;
         }
       }
@@ -1569,7 +1570,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (!item.fork || !item.head) throw new RuleError("nothing_pushed", `${id} has nothing pushed to check`);
       const p = await L.project();
       if (!p.policy.checks.length) throw new RuleError("no_checks", `${project} has no required checks`);
-      const refused = p.policy.checks.flatMap((claim) => { const why = refusalOf(claim); return why ? [refusalText(claim, why)] : []; });
+      const refused = [...(p.policy.prepare ? [p.policy.prepare.command] : []), ...p.policy.checks].flatMap((claim) => { const why = refusalOf(claim); return why ? [refusalText(claim, why)] : []; });
       if (refused.length) throw new RuleError("not_read_only", `${refused.join(". ")}. The project owner replaces it with atelier init --check; until then the container runs nothing.`, 409);
       // The run is named and the runner records to the Ledger by the key, so a
       // run started under one of the project's names is read under any other.
@@ -1577,6 +1578,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const request: RunRequest = {
         runId, project: ref.key, itemId: id, baselineRepo: await baseRepo(env, L, item, p.repo), fork: item.fork, head: item.head,
         checks: p.policy.checks, requestedBy: actor,
+        ...(p.policy.prepare ? { prepare: p.policy.prepare } : {}),
         ...(body.merged === true ? { merged: true } : {}),
       };
       if (p.policy.checkPaths?.length) request.checkPaths = p.policy.checkPaths;
@@ -1586,6 +1588,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json({ runId, state }, 202);
     }
     case "dispatch": {
+      assertNotTerminal(await L.item(id));
       // --overlap-ok alone on a waiting dispatch releases its hold and keeps
       // everything else. An explicit snapshot is checked atomically even if
       // a runner has since claimed it; an already-owned task is redispatched.
@@ -2112,8 +2115,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "finding": {
       requireOwner(env, actor);
       const { head, index, verdict, note } = cleanFinding(body);
-      await L.addFinding(id, actor, head, index, verdict, note);
-      return json({ id, head, index, verdict }, 201);
+      const { review, by } = await L.addFinding(id, actor, head, index, verdict, note, { reviewSeq: body.reviewSeq, reviewer: body.reviewer });
+      return json({ id, head, index, verdict, review, by }, 201);
     }
     // Criteria review (t438, src/review/criteria.ts): the owner asks for a
     // review of the task's acceptance criteria, naming the reviewer or
