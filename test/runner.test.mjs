@@ -775,12 +775,16 @@ test("versionRefusal names the missing capabilities and says to deploy, and clea
   assert.match(versionRefusal(null), /did not answer GET \/api\/version/);
   assert.match(versionRefusal({ commit: "abcdef0123456789" }), /neither capabilities nor a route level/);
   assert.equal(versionRefusal({ capabilities: [...SERVER_CAPABILITIES, "future.thing.v1"] }), null);
-  assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL }, ["merge-main"]), null);
+  assert.equal(versionRefusal({ capabilities: SERVER_CAPABILITIES }, ["merge-main"]), null);
+  // The run skip (t420) is named, with no legacy level: a server that reports
+  // only a route level is refused for every job but the review.
+  assert.match(versionRefusal({ routeLevel: ROUTE_LEVEL }, ["merge-main"]), /lacks capabilities runners\.run-skip\.v1/);
+  assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL }, ["review"]), null);
   assert.match(versionRefusal({ capabilities: ["items.brief-criteria.v1"] }, ["review"]), /reviews\.unparsable\.v1/);
   // A legacy server at 19 has the routes but not the runner credential;
   // one at 21 refuses a runner token's review skip (t353), which the review
   // job needs; a server at 25 lacks the review claim leases (t351), which
-  // the review job needs; the build jobs need the run skip (t420, 29).
+  // the review job needs; the build jobs need the run skip by name (t420).
   const behind = versionRefusal({ routeLevel: 19, commit: "abcdef0123456789" });
   assert.match(behind, /lacks capabilities .*runners\.scoped-token\.v1/);
   assert.match(behind, /main at abcdef01/);
@@ -789,9 +793,9 @@ test("versionRefusal names the missing capabilities and says to deploy, and clea
   assert.match(versionRefusal({ routeLevel: 21 }, ["build"]), /projects\.commit-identity\.v1/);
   assert.match(versionRefusal({ routeLevel: 25, commit: "abcdef0123456789" }), /reviews\.lease\.v1/);
   assert.match(versionRefusal({ routeLevel: 28, commit: "abcdef0123456789" }, ["build"]), /lacks capabilities runners\.run-skip\.v1: it reports only route level 28/);
-  assert.equal(versionRefusal({ routeLevel: 29, commit: "abcdef0123456789" }, ["build"]), null);
-  assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL, commit: "abcdef0123456789" }), null);
-  assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL + 1, commit: "abcdef0123456789" }), null);
+  assert.equal(versionRefusal({ capabilities: SERVER_CAPABILITIES, routeLevel: ROUTE_LEVEL, commit: "abcdef0123456789" }, ["build"]), null);
+  assert.equal(versionRefusal({ capabilities: SERVER_CAPABILITIES, routeLevel: ROUTE_LEVEL, commit: "abcdef0123456789" }), null);
+  assert.match(versionRefusal({ routeLevel: ROUTE_LEVEL + 1, commit: "abcdef0123456789" }), /lacks capabilities runners\.run-skip\.v1/);
 });
 
 test("the runner refuses at start on a lower route level and polls nothing", async (t) => {
@@ -819,7 +823,7 @@ test("the runner refuses at start on a lower route level and polls nothing", asy
   }
 });
 
-test("the runner starts on a current route level and polls the queue", async (t) => {
+test("the runner starts on a current server and polls the queue", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "atelier-runner-version-ok-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "runner.json");
@@ -828,7 +832,7 @@ test("the runner starts on a current route level and polls the queue", async (t)
   let polls = 0;
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
     workspacePath: () => { throw new Error("no task should be claimed"); },
-    version: async () => ({ routeLevel: ROUTE_LEVEL, commit: "abcdef0123456789" }),
+    version: async () => ({ capabilities: SERVER_CAPABILITIES, routeLevel: ROUTE_LEVEL, commit: "abcdef0123456789" }),
     async queue() { polls++; return []; },
   });
   assert.equal(polls, 1);
@@ -845,6 +849,7 @@ test("the integrator refuses a server lacking its jobs' capabilities and polls n
     [{ capabilities: [] }, /lacks capabilities projects\.commit-identity\.v1, plans\.integration\.v1, runners\.scoped-token\.v1, runners\.run-skip\.v1/],
     [{ routeLevel: 0 }, /lacks capabilities projects\.commit-identity\.v1, plans\.integration\.v1, runners\.scoped-token\.v1, runners\.run-skip\.v1: it reports only route level 0/],
     [{ routeLevel: 26 }, /lacks capabilities runners\.run-skip\.v1: it reports only route level 26/],
+    [{ routeLevel: ROUTE_LEVEL }, new RegExp(`lacks capabilities runners\\.run-skip\\.v1: it reports only route level ${ROUTE_LEVEL}`)],
     [{ routeLevel: 19 }, /lacks capabilities .*runners\.scoped-token\.v1/],
     [{ capabilities: ["runners.scoped-token.v1"] }, /lacks capabilities projects\.commit-identity\.v1, plans\.integration\.v1/],
   ]) {
@@ -856,7 +861,7 @@ test("the integrator refuses a server lacking its jobs' capabilities and polls n
     }), expected, JSON.stringify(version));
     assert.equal(polls, 0, `${JSON.stringify(version)}: a runner that refuses at start never polls`);
   }
-  for (const version of [{ routeLevel: ROUTE_LEVEL }, { capabilities: ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1", "runners.run-skip.v1"] }, { capabilities: [...SERVER_CAPABILITIES, "future.thing.v1"] }]) {
+  for (const version of [{ capabilities: ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1", "runners.run-skip.v1"] }, { capabilities: [...SERVER_CAPABILITIES, "future.thing.v1"] }]) {
     let polls = 0;
     await runRunner(integrator, {
       workspacePath: () => { throw new Error("no task should be claimed"); },
@@ -866,7 +871,8 @@ test("the integrator refuses a server lacking its jobs' capabilities and polls n
     assert.equal(polls, 1, JSON.stringify(version));
   }
   assert.match(versionRefusal({ routeLevel: 5 }, ["integrate"]), /plans\.integration\.v1/);
-  assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL }, ["integrate", "refresh"]), null);
+  assert.match(versionRefusal({ routeLevel: ROUTE_LEVEL }, ["integrate", "refresh"]), /runners\.run-skip\.v1/);
+  assert.equal(versionRefusal({ capabilities: SERVER_CAPABILITIES }, ["integrate", "refresh"]), null);
 });
 
 test("config validates task timeouts and honours ATELIER_CONFIG_DIR", (t) => {
