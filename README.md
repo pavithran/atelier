@@ -305,7 +305,9 @@ and names that step. The individual steps remain available: `claim`,
 `report` (a Reported claim), `submit`, `handoff`, `release`, and `block`
 with `unblock` for a task waiting on something outside it.
 
-`atelier inbox` and `atelier show ID` print the owner's decision briefs with
+`atelier inbox` prints each task that waits on the owner, one per task with
+what to do and the link to do it (docs/owner.md, "What waits on the owner").
+`atelier show ID` prints a task's decision brief with
 the recorded evidence, a recommendation and the task's address; an agent
 can relay that text unchanged. Both accept `--json`; the same brief is
 `GET /api/projects/NAME/items/ID/brief`, which requires sign-in. The owner
