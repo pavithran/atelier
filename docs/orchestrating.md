@@ -108,6 +108,31 @@ says it does.
 The scripts this handbook refers to are in `bin/orchestrate/`, with their
 setup in its README.
 
+## Registering workspace preparation
+
+After deploying the Worker and updating the runner's CLI, the owner registers
+Atelier's preparation policy once, from the project checkout:
+
+```sh
+atelier init --prepare "npm ci --prefer-offline --no-audit --no-fund && npm run types" \
+  --prepare-input package.json --prepare-input package-lock.json \
+  --prepare-input wrangler.jsonc \
+  --prepare-output node_modules --prepare-output worker-configuration.d.ts
+```
+
+This is an owner rollout step; a task build does not register the project.
+The runner prepares build and plan workspaces after reset and automatic
+merges, before starting the harness or finishing resumed work. Manual claims
+print the command and directory for the caller to run. Reviews, integration
+and refresh jobs do not prepare.
+
+The declared inputs are the manifest, lockfile and Wrangler configuration;
+`src` is not an input. A cached success also depends on the command and runtime,
+and both declared outputs must still exist. Once preparation succeeds, an old
+validation blocker written before successful preparation no longer holds the
+build back. Omit `--prepare` on later init calls to preserve the policy, or
+pass `--prepare ""` to clear it.
+
 ## Reading the server's logs
 
 The Worker writes Workers Logs (`observability` in wrangler.jsonc): every
