@@ -97,7 +97,7 @@ test("atelier status warns for a recorded token, naming it and its date", async 
   const server = createServer((req, res) => {
     let body;
     if (req.url === "/api/projects") body = [];
-    else if (req.url === "/api/inbox") body = [];
+    else if (req.url.split("?")[0] === "/api/inbox") body = [];
     else if (req.url === "/api/queue") body = [];
     else if (req.url === "/api/runners") body = [];
     else { res.writeHead(404, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "not_found", detail: "unexpected" })); return; }

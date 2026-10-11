@@ -1,5 +1,5 @@
 // atelier status. Its forms, flags and help are declared in src/usage/commands/status.ts.
-import { formatLocal, formatStatus, formatStatusBrief, statusJson } from "../status.mjs";
+import { formatLocal, formatStatus, formatStatusBrief, projectInbox, statusJson } from "../status.mjs";
 import { formatStrays } from "../strays.mjs";
 import { formatSlots, slotStatus } from "../load.mjs";
 import { OWNER, OWNER_NAME, P, actor, args, call, checkoutStatus, die, formatStanding, landingLease, localStanding, localStrays, liveHere, liveText, pointToGuide, project, registeredHere, request, server, tokenExpiryWarningsText, wsConfig } from "../atelier.mjs";
@@ -41,7 +41,9 @@ export default async function statusCommand() {
   }
   const known = await call("GET", "/projects", undefined, OWNER);
   const chosen = known;
-  const inbox = await call("GET", "/inbox", undefined, OWNER);
+  // A project whose notices the server could not read is passed as not read
+  // (projectInbox), so the listing says so instead of the read failing.
+  const notices = await request("GET", "/inbox?unread=1", undefined, OWNER).catch(() => null);
   // The runner queue and the offers each runner last asked with, so the
   // waiting section can say when a queued job — a review routed to a model
   // no live runner offers, say — can never be claimed, not merely waits
@@ -51,13 +53,15 @@ export default async function statusCommand() {
     request("GET", "/queue", undefined, OWNER).catch(() => null),
     request("GET", "/runners", undefined, OWNER).catch(() => null),
   ]);
+  // A project whose tasks cannot be read is listed as not read (null items),
+  // as `atelier inbox` lists it, and the others are still shown.
   const views = await Promise.all(chosen.map(async (p) => {
-    const { items } = await call("GET", P(p.name), undefined, OWNER);
+    const read = await request("GET", P(p.name), undefined, OWNER).catch(() => null);
     // The policy comes along so the listing can say a project runs in
     // single-family mode (formatStatus).
-    return { name: p.name, title: p.title, items, inbox, policy: p.policy ?? null };
+    return { name: p.name, title: p.title, items: Array.isArray(read?.items) ? read.items : null, inbox: projectInbox(notices, p.name), policy: p.policy ?? null };
   }));
-  if (args.json) return console.log(JSON.stringify(statusJson(views, server()), null, 2));
+  if (args.json) return console.log(JSON.stringify(statusJson(views, server(), Array.isArray(offers) ? offers : null), null, 2));
   const strays = formatStrays(localStrays());
   console.log(tokenExpiryWarningsText(formatStatus(views, { queue, offers, server: server() }) + (strays ? "\n\n" + strays : "")));
   console.log(liveText(liveHere()));

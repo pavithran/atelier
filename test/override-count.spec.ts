@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import { buildStanding, renderProject } from "../src/ui.ts";
+import { attentionFor } from "../src/attention.ts";
 import type { Item } from "../src/rules.ts";
 import type { ProjectRecord } from "../src/ledger.ts";
 
@@ -23,7 +24,7 @@ const items = [
 ];
 
 it("t371: the standing lists every merge by override, newest first, and the project page counts and links them", () => {
-  const s = buildStanding(project, items, new Map(), 50, [], new Map(), new Date("2026-10-06T12:00:00.000Z"));
+  const s = buildStanding(project, items, new Map(), 50, attentionFor("demo", items, [], [], new Date("2026-10-06T12:00:00.000Z")), new Map(), new Date("2026-10-06T12:00:00.000Z"));
   expect(s.overrides).toEqual([
     { id: "t4", title: "Task t4", at: T, reason: override.reason },
     { id: "t2", title: "Task t2", at: T, reason: override.reason },
@@ -35,7 +36,7 @@ it("t371: the standing lists every merge by override, newest first, and the proj
   expect(html).toMatch(/<a href="\/p\/demo\/t2">t2<\/a>/);
   expect(html).toMatch(/the owner(&#39;|'|&#x27;)s override, not a review: No model of another family was available/);
   // None: the lead says so, and no group is drawn.
-  const none = buildStanding(project, [item("t3", "merged")], new Map(), 50, [], new Map(), new Date());
+  const none = buildStanding(project, [item("t3", "merged")], new Map(), 50, attentionFor("demo", [item("t3", "merged")], [], [], new Date()), new Map(), new Date());
   expect(none.overrides).toEqual([]);
   const quiet = renderProject(project, [item("t3", "merged")], [], null, none);
   expect(quiet).toMatch(/0 merges by override/);

@@ -3336,15 +3336,17 @@ export class Ledger extends DurableObject<Env> {
     return { item, postMerge: this.postMergeRun(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, acceptanceFamily, evidence, reviews, unparsable: this.unparsableFor(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
   }
 
-  inbox(now: string, pool: readonly ModelEntry[] = []): InboxEntry[] {
+  inbox(now: string, pool?: readonly ModelEntry[] | null): InboxEntry[] {
     const p = this.project();
     const all = this.sql.exec(`SELECT json FROM evidence`).toArray().map((r) => JSON.parse(r.json as string));
     const rv = this.sql.exec(`SELECT json FROM reviews`).toArray().map((r) => JSON.parse(r.json as string));
     // An assess entry carries the reviewer the pool offers, so the owner sees
     // the runnable `atelier land ID --reviewer H/M` command that replaces an
-    // override, not the placeholder alone (t395).
+    // override, not the placeholder alone (t395), or null when none in the pool
+    // qualifies, which attentionFor places under the owner's override. With no
+    // pool given the reviewer is left unset: not read, never "none qualifies".
     return [...inboxFor(p.name, this.items(), p.policy, all, rv, new Date(now), this.owner), ...this.planEntries(p.name, now), ...this.shipEntries(p)]
-      .map((e) => (e.kind === "assess" ? { ...e, reviewer: this.availableReviewer(e.itemId, pool) } : e))
+      .map((e) => (e.kind === "assess" && pool ? { ...e, reviewer: this.availableReviewer(e.itemId, pool) } : e))
       .sort((a, b) => b.weight - a.weight);
   }
 
