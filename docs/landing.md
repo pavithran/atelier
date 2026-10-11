@@ -264,6 +264,14 @@ be in the pool, not refused, and not paid per token. It runs on the owner's
 Mac through its harness's adapter (`bin/harness`), read-only, for at most 30
 minutes (`ATELIER_LAND_TRIAGE_TIMEOUT` milliseconds).
 
+The triage runs after the push and before the required checks. A
+submission asks for the review, and so does the checks' passing evidence for
+a task already submitted at an older head: the push withdraws its open
+review request, and that evidence asks it again at the pushed head. Since
+the triage runs first, one that stops has asked nothing of a reviewer. If the task was
+submitted before the landing, the stop says it stays submitted, with any
+request already open at the pushed head left open.
+
 The triage reads the pushed head — after the merge of main and the
 regeneration — as a diff against its merge base with main, with the task's
 acceptance criteria (and a part's, numbered after them) as they are now.
@@ -352,9 +360,10 @@ Ledger (`lease`, `workspace`, `conflict`, `checks`, `review`, `merge`,
 two of them:
 
 - At `workspace` the Workflow holds the lease, and the command merges main,
-  regenerates and pushes with the same code as the plain landing, in the
-  `local` checks mode runs the required checks in a clean clone (the plain
-  landing's `atelier check` step), renewing the lease meanwhile, then
+  regenerates and pushes with the same code as the plain landing, triages
+  when the landing triages, in the `local` checks mode then runs the
+  required checks in a clean clone (the plain landing's `atelier check`
+  step), renewing the lease meanwhile, and
   reports the pushed head as a `workspace` event. A check that fails is
   reported as a failed workspace step instead, which ends the Workflow with
   the check's output.
@@ -371,7 +380,8 @@ required checks run; `local` is the default. The mode is a flag only: the
 project's policy holds no default for it (adding an `atelier init` field
 was more than this change needed, t305).
 
-- `local`: after the push, the command runs the required checks on the
+- `local`: after the push (and the triage, when the landing triages), the
+  command runs the required checks on the
   owner's machine in a clean clone of the pushed head, exactly as the plain
   landing does, and the server records each result as observed evidence at
   the head it reads from Artifacts (only the task's holder can record a
