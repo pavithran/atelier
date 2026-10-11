@@ -269,8 +269,50 @@ it("a pool change leaves a queued build or plan job for a model still free to ta
   await L.claim(id, GPT, RUNNER);
   await L.poolChanged(holding({ state: "paused", stateAt: AT }));
   expect(await L.item(id)).toMatchObject({ state: "claimed", owner: GPT });
-  expect((await L.claim(id, GPT, RUNNER)).item).toMatchObject({ state: "claimed", owner: GPT });
   expect(await undispatched(L, id)).toEqual([]);
+});
+
+// Criterion 4 holds on the paths that keep an owner too: a holder renewing
+// its claim (atelier claim again, for a fresh write token) is judged by the
+// owner's current standing. A model now held from the job keeps the claim it
+// has, with the record untouched, but is given no new claim generation; the
+// refusal names the standing and how the owner recovers the task.
+it("a holder paused, reserved or kept from the job since it claimed may not renew its claim, and keeps the claim it has", async () => {
+  const plannerOnlyBuilds: readonly [string, Partial<ModelEntry>, RegExp] = ["build-only", { roles: ["build"] }, /codex\/gpt-6-astra is not a planner; its roles are build/];
+  for (const [name, change, reason] of [...HELD, ["review-only", { roles: ["review"] }, /codex\/gpt-6-astra is not a builder; its roles are review/], plannerOnlyBuilds] as const) {
+    const L = await project(`renew-held-${name}`);
+    const plan = name === "build-only";
+    const id = plan
+      ? (await L.newPlan("Ship the feature", ["src/**"], "owner", GPT, POOL)).item.id
+      : (await L.newItem("Small task", ["src/**"], "owner")).id;
+    if (!plan) await L.dispatch(id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
+    const first = await L.claim(id, GPT, RUNNER);
+    const before = await L.item(id);
+    const events = ((await L.events(id)) as unknown as Event[]).length;
+    await L.poolChanged(holding(change));
+    await refusal(L.claim(id, GPT, RUNNER), "model_held", new RegExp(`${reason.source}.*; it keeps its claim of ${id} but may not renew it: hand it off with atelier handoff ${id} --to HARNESS/MODEL, release it with atelier release ${id}, or change its standing with atelier models set$`));
+    // Nothing is released, withdrawn or rewritten.
+    expect(await L.item(id), name).toEqual(before);
+    expect(((await L.events(id)) as unknown as Event[]).length, name).toBe(events);
+    // Given its standing back, the holder renews, and the generation it is
+    // given is the next after its first claim: the refusal reserved none.
+    await L.poolChanged(POOL);
+    const renewed = await L.claim(id, GPT, RUNNER);
+    expect(renewed.item, name).toMatchObject({ state: "claimed", owner: GPT });
+    expect(renewed.generation, name).toBe(first.generation + 1);
+  }
+});
+
+it("a holder whose standing still allows the job renews its claim when the pool changes", async () => {
+  const L = await project("renew-free");
+  const { id } = await L.newItem("Small task", ["src/**"], "owner");
+  await L.dispatch(id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
+  const first = await L.claim(id, GPT, RUNNER);
+  // Another model paused, and this one given only the build role among others.
+  await L.poolChanged(POOL.map((e) => e.id === "glm-5.3" ? { ...e, state: "paused" as const, stateAt: AT } : e.id === "gpt-6-astra" ? { ...e, roles: ["build" as const], tier: "budget" as const } : e));
+  const renewed = await L.claim(id, GPT, RUNNER);
+  expect(renewed.item).toMatchObject({ state: "claimed", owner: GPT });
+  expect(renewed.generation).toBe(first.generation + 1);
 });
 
 // The owner's standing reaches a ledger three more ways than the pool change
