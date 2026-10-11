@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 // Every local user can read a process's arguments with ps, so no Artifacts
 // token may appear in the arguments of any git the CLI runs. These tests put
@@ -95,6 +96,7 @@ process.exit(r.status ?? 1);
     for await (const chunk of req) void chunk;
     const origin = `http://127.0.0.1:${server.address().port}`;
     let data = { item: { ...item, head: forkHead() }, gate: { ready: true, blockers: [] }, policy: { checks: ["true"], sandboxOnly: false } };
+    if (req.url === "/api/version") data = { capabilities: SERVER_CAPABILITIES };
     if (req.url.endsWith("/claim")) data = { item, workspace: { token: claim.token, remote: `${origin}/fork.git`, defaultBranch: "main", expiresAt: "tomorrow" } };
     if (req.url.endsWith("/push")) data = { ...item, head: forkHead() };
     if (req.url.endsWith("/read-token")) data = { remote: `${origin}/fork.git`, token: READ, head: forkHead(), defaultBranch: "main" };
