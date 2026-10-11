@@ -28,12 +28,17 @@ import { builderRefusals } from "../src/commit-identity.ts";
 // and no body field it does not name. A public call (the version) carries
 // no credential; every other carries the runner's token, the actor the
 // caller names and the runner's own name, so a runner token is checked
-// against the name it was issued for on every call. The answer is the
-// status, the parsed JSON (null when the body is not JSON) and the
-// X-Atelier-Incomplete header; a server that cannot be reached throws, and
-// the caller decides what either means. `identity` reads GET /config once:
-// a runner token answers with its runner, an agent token with its actor,
-// the owner's token with neither. cli/commands/runner.mjs wires it.
+// against the name it was issued for on every call. A call declared with
+// no actor (the config read) carries the token and no X-Atelier-Actor, and
+// refuses one: the gateway answers an agent token 403 when the header
+// names anyone but its own actor, so a runner polling under an agent token
+// (docs/runners.md) would die on its first poll if the read named the
+// owner. The answer is the status, the parsed JSON (null when the body is
+// not JSON) and the X-Atelier-Incomplete header; a server that cannot be
+// reached throws, and the caller decides what either means. `identity`
+// reads GET /config once: a runner token answers with its runner, an agent
+// token with its actor, the owner's token with neither.
+// cli/commands/runner.mjs wires it.
 export function runnerTransport({ server, credential, runner, fetch = globalThis.fetch }) {
   const base = String(server).replace(/\/$/, "");
   let identity;
@@ -49,9 +54,10 @@ export function runnerTransport({ server, credential, runner, fetch = globalThis
         if (undeclared.length) throw new Error(`${name} does not send ${undeclared.join(", ")}`);
       }
     }
-    if (call.credential !== "public" && (typeof actor !== "string" || !actor)) throw new Error(`${name} needs the actor it is sent as`);
+    if (call.actor === "none") { if (actor !== undefined) throw new Error(`${name} names no actor: the token answers for itself`); }
+    else if (call.credential !== "public" && (typeof actor !== "string" || !actor)) throw new Error(`${name} needs the actor it is sent as`);
     const headers = call.credential === "public" ? {}
-      : { authorization: `Bearer ${credential}`, "x-atelier-actor": actor, ...(runner ? { "x-atelier-runner": runner } : {}), "content-type": "application/json" };
+      : { authorization: `Bearer ${credential}`, ...(call.actor === "none" ? {} : { "x-atelier-actor": actor }), ...(runner ? { "x-atelier-runner": runner } : {}), "content-type": "application/json" };
     const timeout = AbortSignal.timeout(timeoutMs);
     const res = await fetch(`${base}/api${callPath(call, params)}`, {
       method: call.method, headers, signal: signal ? AbortSignal.any([signal, timeout]) : timeout, ...(redirect ? { redirect } : {}),
@@ -65,7 +71,7 @@ export function runnerTransport({ server, credential, runner, fetch = globalThis
     send,
     async identity(signal) {
       if (identity) return identity;
-      const res = await send("config", {}, { actor: "owner", signal });
+      const res = await send("config", {}, { signal });
       // A refused credential throws with its status, so the caller can tell
       // a token the server refuses from a server it cannot reach.
       if (!res.ok) throw Object.assign(new Error(`config: ${res.status}${res.data?.detail ? ` ${res.data.detail}` : ""}`), { status: res.status });

@@ -152,6 +152,13 @@ export interface RunnerCall {
   // encoded path parameters (callPath).
   path: string;
   credential: CallCredential;
+  // "none" for a call that sends no X-Atelier-Actor: the config read, which
+  // asks the token who it is. The gateway refuses an agent token whose
+  // declared actor is not its own (actor_mismatch, 403), so a runner under
+  // an agent token (docs/runners.md) must name none; a runner token answers
+  // with its runner whatever actor is named, and the owner's token with
+  // neither. Every other call names the actor it is sent as.
+  actor?: "none";
   // The body fields a POST may carry; "document" when the body is a whole
   // plan document rather than fields; [] for no body, as every GET.
   body: readonly string[] | "document";
@@ -171,7 +178,10 @@ export const RUNNER_CALLS: readonly RunnerCall[] = [
   { name: "version", method: "GET", path: "/version", credential: "public", body: [], via: "runner", jobs: [] },
   // The capability check every spawned command makes first (t458).
   { name: "capabilities", method: "GET", path: "/version", credential: "public", body: [], via: "preflight", jobs: ["build", "plan", "review", "integrate", "refresh"], integrator: true },
-  { name: "config", method: "GET", path: "/config", credential: "runner", body: [], via: "runner", jobs: [] },
+  // The runner's identity, read once before its first poll: a runner
+  // token's runner, an agent token's actor, neither for the owner's. It
+  // names no actor, as the CLI's own resolveTokenActor names none.
+  { name: "config", method: "GET", path: "/config", credential: "runner", actor: "none", body: [], via: "runner", jobs: [] },
   { name: "queue", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents"], via: "runner", jobs: [] },
   { name: "runs", method: "POST", path: "/runs", credential: "runner", body: ["actor", "role", "outcome", "project", "item", "detail"], via: "runner", jobs: ["build", "plan", "review"] },
   { name: "review-skip", method: "POST", path: `${ITEM}/review-skip`, credential: "runner", body: ["head", "request", "note"], via: "runner", jobs: REVIEW },
