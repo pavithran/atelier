@@ -1,5 +1,14 @@
 # Landing and merging
 
+The cross-company rules below describe the default policy. With
+`atelier init --single-family COMPANY`, building and reviewing use only that
+company's models: a reviewer must be a different model from every contributor,
+never a contributor under another harness. This exception also applies to
+criteria review, handoffs and conflict contributors. Only that company's tier
+models qualify; if none qualifies, no separate tier review is requested.
+`atelier init --cross-family` restores the default; both switches record who
+made them and when. See [Single-family mode](gate.md#single-family-mode).
+
 How accepted work reaches the project: `atelier finish`, `atelier merge`
 with its journal and cancel, and `atelier land`, which runs the whole second
 half of a task in one command. The README's "Landing" section gives the

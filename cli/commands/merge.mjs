@@ -257,7 +257,7 @@ export default async function mergeCommand() {
     // merge commit is kept for reconciliation.
     await call('POST',`${I(name,id)}/landing`,{head:item.acceptedHead},OWNER);
     // The note goes to the public remote too, so it names reviewers and verdicts but never their text (cli/provenance.mjs).
-    const note=provenanceNote({name,id,item,view,reviews,events:d.events});
+    const note=provenanceNote({name,id,item,view,reviews,events:d.events,policy:d.policy,acceptanceFamily:d.acceptanceFamily});
     // The notes commits refs/notes/atelier holds that FROM (a remote's notes
     // tip, or nothing) does not, checked against the policy's identity.
     // A remote the policy declares a public mirror takes only the project's own

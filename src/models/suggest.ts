@@ -1,5 +1,5 @@
 import type { Item, ProjectPolicy } from "../rules.ts";
-import { assertEligible, DEFAULT_OWNER, modelKey, RuleError } from "../rules.ts";
+import { actorFamily, assertEligible, DEFAULT_OWNER, modelKey, RuleError, singleFamily } from "../rules.ts";
 import { entryRuns, latestNote, noteLine, standingRefusal, type ModelEntry } from "./pool.ts";
 import { buildReliability, outcomesOf, reliabilityLine, tiebreak, type ProjectEvents, type RunReport } from "./reliability.ts";
 import { paidPerToken, type Choice } from "../plans/route.ts";
@@ -62,7 +62,12 @@ export function suggestBuilder(input: SuggestionInput, constraints: { to?: unkno
   const rejections = input.sources.filter((s) => s.project === input.project).flatMap((s) => s.events)
     .filter((e) => e.itemId === input.item.id && e.kind === "review.rejected").length;
   const strict = sensitive(input.item) || rejections >= 2;
-  const why = rejections >= 2 ? "Two rejections require a frontier builder." : strict ? "Security, concurrency or gate work requires a frontier builder." : "Eligible pool models ranked by recorded successful and failed outcomes.";
+  // Under single-family mode (t394) only the company's models build, so the
+  // pick stays within the company: a dispatch naming another company's model
+  // is refused by the ledger, and the suggestion never proposes one.
+  const single = singleFamily(input.policy);
+  const why = (rejections >= 2 ? "Two rejections require a frontier builder." : strict ? "Security, concurrency or gate work requires a frontier builder." : "Eligible pool models ranked by recorded successful and failed outcomes.")
+    + (single ? ` This project runs in single-family mode (${single}), so only ${single}'s models are considered.` : "");
   const excluded: string[] = [];
   for (const { entry, score, reason } of ranked(input)) {
     const actor = actorOf(entry);
@@ -71,6 +76,7 @@ export function suggestBuilder(input: SuggestionInput, constraints: { to?: unkno
     let refusal = "";
     const held = standingRefusal(entry, "build");
     if (held) refusal = held;
+    else if (single && actorFamily(actor) !== single) refusal = `not one of ${single}'s models (single-family mode)`;
     else if (strict && !frontier(entry)) refusal = "not frontier";
     else if (stalledBuilder(entry, input)) refusal = "two consecutive stalled builds; no successful build since";
     else if (entry.status?.state === "refused") refusal = "provider refused";

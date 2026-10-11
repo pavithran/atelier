@@ -48,8 +48,9 @@ test("standingDispatch and planDispatch check the owner's standing", () => {
 });
 
 // Helpers that write a dispatch their caller made; each of their calls is a
-// site in its own right, checked in the caller.
-const PASS_THROUGH = ["writeDispatch", "askPlanner"];
+// site in its own right, checked in the caller. setDispatch (t394) is the one
+// statement that stores a dispatch, so its callers are the sites.
+const PASS_THROUGH = ["writeDispatch", "askPlanner", "setDispatch"];
 
 test("every review request and every dispatch written is built by the standing check", () => {
   const writers = [
