@@ -68,6 +68,15 @@ it("fresh overrides, absent holds and ordinary redispatch keep their defaults", 
   expect(ordinary.dispatch).toMatchObject({ to: "any", agent: null, model: null, note: "" });
   expect(ordinary.dispatch.overlapOk).toBeUndefined();
 });
+it("does not report a released hold for a first dispatch even with overlapping core scope", async () => {
+  const { path } = await setup("retain-fresh-core");
+  const res = await call("POST", path, { overlapOk: true });
+  expect(res.status).toBe(200);
+  const answer = await res.json() as Answer;
+  expect(answer.releasedCoreHold).toBeUndefined();
+  expect(answer.retainedDispatch).not.toBe(true);
+  expect(answer.dispatch).toMatchObject({ to: "any", agent: null, model: null, note: "", overlapOk: true });
+});
 it("retains a merge-main payload and permits explicit field replacements", async () => {
   const { L, item, path } = await setup("retain-job");
   await L.claim(item.id, "codex/shared");

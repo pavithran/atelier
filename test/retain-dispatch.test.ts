@@ -59,3 +59,11 @@ test("CLI names only an actual released core hold", async () => {
   assert.equal(fresh.body.suggest, true);
   assert.equal(fresh.lines[0], "Builder: codex/shared. Available.");
 });
+
+test("CLI reports no released hold when refuseOverlap rejects the dispatch", async () => {
+  const lines: string[] = [];
+  await assert.rejects(command({ "overlap-ok": true }, () => "demo", () => "t2",
+    async () => { throw Error("t2 overlaps live t1"); }, () => "/item", "owner",
+    (s: string) => { throw Error(s); }, { log: (s: string) => lines.push(s) })(), /overlaps live t1/);
+  assert.deepEqual(lines, []);
+});
