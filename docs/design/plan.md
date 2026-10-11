@@ -219,7 +219,7 @@ P15 is to read each with `atelier show` and correct this table.**
 | Task | Understood scope | Findings it covers | Left as new work | Captures to refresh after it lands |
 |---|---|---|---|---|
 | **t367** | One vocabulary for states; palette B | F3 (names), F17 (palette), F8 in part | P3 applies the vocabulary to the task page's header logic; P11 the copy; P14 family colours if B does not | all 48 states (palette), `task-*`, `decisions*`, `tasks` (words) |
-| **t456** | Project areas: tasks grouped by function area with shared stages (its workspace's commits: "Group project tasks by function area with shared stages", "Register board and area commands") | F6 in part (grouping), F1 in part | P1 navigation, P4 filters and paging, P10 tab merge | `project`, `tasks`, `tasks-empty`, `project-empty` |
+| **t456** | Project areas: tasks grouped by function area with shared stages (its workspace's commits: "Group project tasks by function area with shared stages", "Register board and area commands") | F6 in part (grouping), F1 in part. Its board already draws on main's Tasks page (captured at f32c997: `tasks`, `tasks-empty`) while the task is still open | P1 navigation, P4 filters and paging, P10 tab merge | `project`, `tasks`, `tasks-empty`, `project-empty` |
 | **t474** | The owner's actions on a task | F5 in part | P3 orders state → evidence → actions and picks one primary | `task-*`, `decisions-*` |
 | **t496** | "Waiting on you" | F7 in part | P6 one count everywhere, overlap dedupe; P5 overview | `home`, `decisions`, `project` |
 | **t497** | Scannable pages: length, paging, filters | F6 in part, F11 | P4, P5, P8, P9 where t497 stops short of them | `tasks`, `project`, `history`, `flow`, `project-flow`, `decisions` |
@@ -233,6 +233,9 @@ P16 are new.
 
 1. **P15, first capture** — done: 96 screenshots, source e9dbe08, the
    baseline every later capture is compared with.
+   Recaptured at f32c997 (main with t498's task headline and t456's board
+   on the Tasks page); `tasks`, `tasks-empty` and `task-abandoned` changed
+   and their critique rows were rewritten.
 2. **P2** and **P13** — no dependencies; P2 closes a Blocker.
 3. **t367** — the vocabulary and palette everything else names.
 4. **t456** then **P1** then **P10** — the navigation needs the areas, the
