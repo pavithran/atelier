@@ -2929,7 +2929,7 @@ export default {
     // Pages show times in the owner's zone (src/time.ts).
     setTimeZone((env as unknown as Settings).TIMEZONE);
     try {
-      if (pathname.startsWith("/git/runner/")) return await runnerGitRequest(req, url, { ledger: (key) => ledger(env, key), token: (hash) => index(env).agentToken(hash), artifacts: env.ARTIFACTS });
+      if (pathname.startsWith("/git/runner/")) return await runnerGitRequest(req, url, { ledger: (key) => ledger(env, key), token: (hash) => index(env).agentToken(hash), artifacts: env.ARTIFACTS, waitUntil: ctx ? (promise) => ctx.waitUntil(promise) : undefined });
       // The front door: atelier.zone itself is the public showcase, for a
       // visitor or a judge who types the domain, answered before the sign-in
       // check as every public page is. /showcase serves the same page, so the
