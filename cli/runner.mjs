@@ -1645,7 +1645,9 @@ export function runOutcome(state) {
 
 // `reportRun(body, runner, signal)` sends a run report; a report that fails
 // is logged and the loop goes on.
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, version, idleWhy }) {
+// `reportRunSkip(body, runner, signal)` says a build or plan job is given up
+// under its dispatch, kept and tried again as a review skip is (reportSkip).
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, version, idleWhy }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
@@ -1686,20 +1688,24 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // Sends one skip report. Taken, or refused for good (skipRefusedForGood),
   // the report is done with; failed any other way (the server down, busy or
   // slow, a timeout) it is kept, due again skipRetryPolls on.
-  const reportSkip = async (key, body, misses = 0) => {
+  // A build or plan job given up goes the same way, to run-skip (t420), so
+  // status and show name this runner as what passes it by, the
+  // infrastructure failures that send no run report among them.
+  const reportSkip = async (key, body, misses = 0, what = "review") => {
+    const send = what === "review" ? reportReviewSkip : reportRunSkip;
     try {
-      await reportReviewSkip(body, offer.runner, controller.signal);
+      await send(body, offer.runner, controller.signal);
       pendingSkips.delete(key);
-      io.log(`reported the review skip for ${body.project}/${body.item}`);
+      io.log(`reported the ${what} skip for ${body.project}/${body.item}`);
     } catch (error) {
       if (controller.signal.aborted) return;
       if (skipRefusedForGood(error)) {
         pendingSkips.delete(key);
-        io.log(`could not report the review skip for ${body.project}/${body.item}: ${error.message}`);
+        io.log(`could not report the ${what} skip for ${body.project}/${body.item}: ${error.message}`);
       } else {
         const after = skipRetryPolls(misses + 1);
-        pendingSkips.set(key, { body, misses: misses + 1, due: polls + after });
-        io.log(`could not report the review skip for ${body.project}/${body.item}: ${error.message}; trying again ${after === 1 ? "next poll" : `in ${after} polls`}`);
+        pendingSkips.set(key, { body, misses: misses + 1, due: polls + after, what });
+        io.log(`could not report the ${what} skip for ${body.project}/${body.item}: ${error.message}; trying again ${after === 1 ? "next poll" : `in ${after} polls`}`);
       }
     }
   };
@@ -1872,7 +1878,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         // send them.
         for (const [key, pending] of [...pendingSkips]) {
           if (pending.due > polls) continue;
-          await reportSkip(key, pending.body, pending.misses);
+          await reportSkip(key, pending.body, pending.misses, pending.what);
           if (controller.signal.aborted) break;
         }
         if (controller.signal.aborted) break;
@@ -1926,6 +1932,14 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // (reportSkip), since this review is not run again in this process.
           if (task.item.dispatch?.job === "review" && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && reportReviewSkip) {
             await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note: state.reason });
+          }
+          // A build or plan job given up under this dispatch, after its
+          // failed runs or infrastructure failures in a row, is reported as
+          // such (t420): the second sends no run report at all (runOutcome).
+          const gaveUp = count === 2 ? "failures" : infrastructureCount === 3 ? "infrastructure" : null;
+          if (task.item.dispatch?.job !== "review" && gaveUp && reportRunSkip) {
+            const role = task.item.dispatch?.job === "plan" ? "plan" : "build";
+            await reportSkip(`run-skip:${key}`, { project: task.project, item: task.item.id, actor: task.actor, role, kind: gaveUp, failures: gaveUp === "failures" ? count : infrastructureCount, note: state.reason ?? "" }, 0, "run");
           }
           if (state.claimRefused || state.skipped) refused.add(refusedKey(task));
           else if (args.once || state.phase !== "failed" || state.taskFailure) break;

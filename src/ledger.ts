@@ -19,9 +19,9 @@ import { cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, sameCriteria } from "./criteria.ts";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
-import { assertLength, NOTE_MAX } from "./text.ts";
+import { assertLength, NOTE_MAX, TEXT_CONTROLS } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
-import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, describe, holdText, makeDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
+import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, describe, holdText, makeDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type RunnerKind, type RunnerOffer, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
@@ -902,6 +902,16 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`SELECT json FROM runs ORDER BY id DESC LIMIT ?`, limit).toArray().map((r) => JSON.parse(r.json as string));
   }
 
+  // The build runs of each waiting dispatch since it was dispatched (t420),
+  // read task by task, so a task's failures count however many reports other
+  // tasks have sent since (runs keeps only the newest RUN_REPORTS overall).
+  buildRunsSince(asks: { project: string; item: string; since: string }[]): RunReport[] {
+    return asks.flatMap(({ project, item, since }) => this.sql.exec(
+      `SELECT json FROM runs WHERE json_extract(json, '$.project') = ? AND json_extract(json, '$.item') = ? AND json_extract(json, '$.role') = 'build' AND json_extract(json, '$.at') >= ? ORDER BY id DESC LIMIT ?`,
+      project, item, since, RUN_REPORTS,
+    ).toArray().map((r) => JSON.parse(r.json as string) as RunReport));
+  }
+
   runsForItem(project: string, item: string): RunReport[] {
     return this.sql.exec(`SELECT json FROM runs WHERE json_extract(json, '$.project') = ? AND json_extract(json, '$.item') = ? ORDER BY id DESC LIMIT 20`, project, item).toArray().map((r) => JSON.parse(r.json as string));
   }
@@ -1541,15 +1551,17 @@ export class Ledger extends DurableObject<Env> {
   // accepted, the only states coreHold counts), in id order as items() lists
   // them, so the first holder found is the same. The event log is read only
   // for the waiting items' push actors.
-  waiting(): (Item & { held?: CoreHold; overlap?: OverlapRefusal; refusals?: ClaimRefusal[] })[] {
+  waiting(): (Item & { held?: CoreHold; overlap?: OverlapRefusal; refusals?: ClaimRefusal[]; skips?: RunSkip[] })[] {
     const rows = this.sql.exec(`SELECT * FROM items WHERE state = 'open' AND (owner IS NULL OR owner = '') AND dispatch IS NOT NULL AND dispatch != '' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
     if (!rows.length) return [];
-    const refused = this.claimRefusals();
+    const refused = this.runnerNotes<ClaimRefusal>("claim-refused");
+    const skipped = this.runnerNotes<RunSkip>("run-skip");
     const open = this.withPushActors(rows)
       .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at))
       .map((i) => {
-        const refusals = (refused.get(i.id) ?? []).filter((r) => r.dispatchAt === i.dispatch!.at);
-        return refusals.length ? { ...i, refusals } : i;
+        const refusals = (refused.get(i.id) ?? []).filter((r) => sameRevision(r, i));
+        const skips = (skipped.get(i.id) ?? []).filter((r) => r.dispatchAt === i.dispatch!.at);
+        return refusals.length || skips.length ? { ...i, ...(refusals.length ? { refusals } : {}), ...(skips.length ? { skips } : {}) } : i;
       });
     const policy = this.project().policy;
     const coreFiles = policy.coreFiles;
@@ -1566,22 +1578,45 @@ export class Ledger extends DurableObject<Env> {
   // Both halves of the queue in one call, as a runner's poll reads them:
   // the open tasks waiting (waiting) and the open review requests
   // (reviewWaiting).
-  queued(): { waiting: (Item & { held?: CoreHold; overlap?: OverlapRefusal; refusals?: ClaimRefusal[] })[]; reviews: (Item & { request: number })[] } {
+  queued(): { waiting: (Item & { held?: CoreHold; overlap?: OverlapRefusal; refusals?: ClaimRefusal[]; skips?: RunSkip[] })[]; reviews: (Item & { request: number })[] } {
     return { waiting: this.waiting(), reviews: this.reviewWaiting() };
   }
 
-  // The claims refused runners for dispatched tasks, by item id (t420): the
-  // runner passes a refused task by until it changes, so the refusal is
-  // kept here for status and show to name. One row per item and runner,
-  // under the dispatch it was refused for; waiting() keeps those of the
-  // task's current dispatch.
-  private claimRefusals(): Map<string, ClaimRefusal[]> {
-    const out = new Map<string, ClaimRefusal[]>();
-    for (const row of this.sql.exec(`SELECT key, value FROM meta WHERE key LIKE 'claim-refused:%'`).toArray()) {
+  // What runners said of dispatched tasks they pass by, by item id (t420):
+  // the claims they were refused (claim-refused, noteClaimRefusal) and the
+  // tasks they gave up after failures (run-skip, recordRunSkip). Each is one
+  // row per item and runner; waiting() keeps those of the task as it stands.
+  private runnerNotes<T>(prefix: "claim-refused" | "run-skip"): Map<string, T[]> {
+    const out = new Map<string, T[]>();
+    for (const row of this.sql.exec(`SELECT key, value FROM meta WHERE key LIKE ?`, `${prefix}:%`).toArray()) {
       const id = (row.key as string).split(":")[1];
-      out.set(id, [...out.get(id) ?? [], JSON.parse(row.value as string) as ClaimRefusal]);
+      out.set(id, [...out.get(id) ?? [], JSON.parse(row.value as string) as T]);
     }
     return out;
+  }
+
+  // Keeps one runner's note of a task, and drops the task's
+  // notes of that kind made under an earlier dispatch.
+  private putRunnerNote(prefix: "claim-refused" | "run-skip", id: string, runner: string, dispatchAt: string, note: object): void {
+    for (const row of this.sql.exec(`SELECT key, value FROM meta WHERE key LIKE ?`, `${prefix}:${id}:%`).toArray()) {
+      if ((JSON.parse(row.value as string) as { dispatchAt: string }).dispatchAt !== dispatchAt) this.sql.exec(`DELETE FROM meta WHERE key = ?`, row.key);
+    }
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `${prefix}:${id}:${runner}`, JSON.stringify(note));
+  }
+
+  // Records a runner's word that it gives up a dispatched build or plan job
+  // (the run-skip route): after its failed runs, or after infrastructure
+  // failures in a row, which reach no run report (runOutcome in
+  // cli/runner.mjs). Kept on the task under its current dispatch, so status
+  // and show name it however many run reports follow; a report for a task
+  // no longer open and dispatched is not kept, since nothing waits on it.
+  recordRunSkip(id: string, runner: string, actor: string, kind: RunSkipKind, failures: number, note: string): boolean {
+    const item = this.item(id);
+    const d = item.dispatch;
+    if (item.state !== "open" || item.owner || !d || d.job === "review") return false;
+    const skip: RunSkip = { runner, actor, kind, failures, note: note.replace(TEXT_CONTROLS, " ").slice(-300), dispatchAt: d.at, at: new Date().toISOString() };
+    this.putRunnerNote("run-skip", id, runner, d.at, skip);
+    return true;
   }
 
   // Records a claim refused a runner (the router calls it as the refusal
@@ -1595,11 +1630,10 @@ export class Ledger extends DurableObject<Env> {
     const d = item.dispatch;
     if (item.state !== "open" || item.owner || !d) return;
     const why = error === "runner_forbidden" && token ? this.runnerClaimWhy(token, item, actor) ?? detail : detail;
-    for (const row of this.sql.exec(`SELECT key, value FROM meta WHERE key LIKE ?`, `claim-refused:${id}:%`).toArray()) {
-      if ((JSON.parse(row.value as string) as ClaimRefusal).dispatchAt !== d.at) this.sql.exec(`DELETE FROM meta WHERE key = ?`, row.key);
-    }
-    const refusal: ClaimRefusal = { runner, actor, error, detail: why.slice(0, 300), dispatchAt: d.at, at: new Date().toISOString() };
-    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `claim-refused:${id}:${runner}`, JSON.stringify(refusal));
+    // Kept with the task's head and last change, the runner's refusedKey, so
+    // a change that lets the runner claim afresh ends it (sameRevision).
+    const refusal: ClaimRefusal = { runner, actor, error, detail: why.slice(0, 300), dispatchAt: d.at, head: item.head ?? null, updatedAt: item.updatedAt, at: new Date().toISOString() };
+    this.putRunnerNote("claim-refused", id, runner, d.at, refusal);
   }
 
   // Why assertRunnerJob refused a runner token's claim of an open dispatched
