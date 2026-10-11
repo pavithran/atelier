@@ -5,9 +5,12 @@ import { createServer } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 // atelier models note and models show, against a stub server that answers as
-// the pool does: entries carry their notes, oldest first (t406).
+// the pool does: entries carry their notes, oldest first (t406). The stub
+// publishes every capability, so the CLI's check before each command
+// (t458) passes and is not among the requests the tests read.
 
 const cli = resolve("cli/atelier.mjs");
 const NOTE = { at: "2026-10-09T10:00:00.000Z", by: "owner", text: "Commits without the full suite.", item: "t406", project: "atelier" };
@@ -23,6 +26,7 @@ async function stub(t, answer) {
   const server = createServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
+    if (req.url === "/api/version") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ capabilities: SERVER_CAPABILITIES })); }
     requests.push({ method: req.method, path: req.url, body: raw ? JSON.parse(raw) : undefined });
     const { status = 200, data } = answer(req.method, req.url);
     res.writeHead(status, { "content-type": "application/json" });
