@@ -2,6 +2,8 @@ import type { CommandSpec } from "../command.ts";
 
 const spec: CommandSpec = {
   name: "review",
+  // Posts the verdict with the criteria binding and the request it claimed.
+  capabilities: ["reviews.criteria-binding.v1"],
   forms: [
     {
       group: "Agents", line: 3, slot: 60,

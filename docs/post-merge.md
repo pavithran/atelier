@@ -10,7 +10,10 @@ batching grace period; later batching must reuse this reservation contract.
 ## Configure
 
 Bootstrap by deploying the new server manually, then use its matching CLI.
-`/api/version` must advertise `postMergeVersion: 1`; init refuses older servers.
+`/api/version` must publish the capability `land.post-merge.v1` (t458; a
+server that reports only a route level has it from level 27); `atelier init`
+and `atelier land`, which declare it, refuse older servers, and
+`land --post-merge` asks for it alone before its first request.
 The owner runs init in the registered checkout, not a task workspace:
 
 ```sh

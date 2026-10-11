@@ -1,4 +1,4 @@
-import { parsePostMerge, currentStep, POST_MERGE_VERSION } from "./post-merge.ts";
+import { parsePostMerge, currentStep } from "./post-merge.ts";
 import { runnerGitRequest } from "./runner-git.ts";
 import { assertCriteriaAllowed, assertReviewAllowed } from "./rules.ts";
 import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
@@ -8,7 +8,7 @@ import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
 import { accessSettings, accessVouches } from "./access.ts";
-import { ROUTE_LEVEL } from "./route-level.ts";
+import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, type Evidence, type Item, type OwnerFactor } from "./rules";
@@ -2959,14 +2959,16 @@ export default {
       }
       const how = await authorised(req, env);
       if (parts[0] === "api") {
-        // The server's version: the deployed main commit and its route
-        // level (src/route-level.ts). It answers without a token: the
-        // commit of a public repository and a route level are not secret,
-        // and a session checks them before it signs in. atelier land
-        // refuses on the level, saying to deploy, when the server's is
-        // lower than the CLI's.
+        // The server's version: the deployed main commit, its route level
+        // and the capabilities it supports (src/route-level.ts). It answers
+        // without a token: the commit of a public repository, a route level
+        // and capability names are not secret, and a session checks them
+        // before it signs in. Each CLI command and runner job checks the
+        // capabilities it declares against this list before its first
+        // dependent request, refusing with the missing names and saying to
+        // deploy; a CLI from before capabilities reads routeLevel alone.
         if (parts.length === 2 && parts[1] === "version" && (req.method === "GET" || req.method === "HEAD")) {
-          return json({ commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, routeLevel: ROUTE_LEVEL, postMergeVersion: POST_MERGE_VERSION });
+          return json({ commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES });
         }
         if (how !== "api" && (typeof how !== "object" || !how)) {
           // A path that names no part of the API answers 404 whoever asks:
