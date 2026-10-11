@@ -5,6 +5,7 @@ import { OBSERVED_UNDER, type ModelEntry, type ModelNote, type ModelStatus } fro
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
+  reviewerAdmission, admissionActor, actorFamily, familyRefusal, modelKey, type ReviewerAdmission,
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
   assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, RuleError, sameActor, validActor,
   type OverrideConfirmation, type OwnerFactor,
@@ -950,7 +951,58 @@ export class Ledger extends DurableObject<Env> {
   project(): ProjectRecord {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'project'`).toArray()[0];
     if (!row) throw new RuleError("no_project", "project not initialised; run `atelier init`", 404);
-    return JSON.parse(row.value as string);
+    const record = JSON.parse(row.value as string) as ProjectRecord;
+    const admissions = this.reviewerAdmissions();
+    record.policy = { ...record.policy, reviewerAdmissions: admissions.length ? admissions : undefined };
+    return record;
+  }
+
+  reviewerAdmissions(): ReviewerAdmission[] {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'reviewer-admissions'`).toArray()[0];
+    return row ? JSON.parse(row.value as string) : [];
+  }
+
+  admitReviewer(name: string, active: boolean, reason: string, actor: string, pool: ModelEntry[]): ReviewerAdmission {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner admits or withdraws reviewers", 403);
+    this.project();
+    if (typeof reason !== "string" || !reason.trim()) throw new RuleError("bad_reason", "say why this reviewer is admitted or withdrawn", 400);
+    assertLength(reason, REASON_MAX, "the admission reason");
+    const admissions = this.reviewerAdmissions();
+    const matches = (id: string, aliases: string[]) => [id, ...aliases].some((n) => modelKey(`model/${n}`) === modelKey(`model/${name}`));
+    const prior = admissions.find((a) => matches(a.id, a.aliases));
+    const entries = pool.filter((m) => matches(m.id, m.aliases));
+    if (entries.length > 1) throw new RuleError("ambiguous_model", `${name} names multiple registered models`, 409);
+    const entry = entries[0];
+    if (active && !entry) throw new RuleError("no_model", `${name} is not registered; use atelier models add before atelier models admit`, 404);
+    if (!active && !prior) throw new RuleError("no_admission", `${name} has no reviewer admission in this project`, 404);
+    const id = active ? entry!.id : prior!.id;
+    const aliases = active ? entry!.aliases : prior!.aliases;
+    if (active && actorFamily(`model/${id}`) === "other") throw new RuleError("unknown_family", `${id}'s family is not recognised from its name`, 403);
+    // An alias must not disguise a different known family or registered model.
+    if (active && aliases.some((alias) => {
+      const family = actorFamily(`model/${alias}`);
+      return family !== "other" && family !== actorFamily(`model/${id}`) || pool.some((m) => m.id !== id && [m.id, ...m.aliases].some((n) => modelKey(`model/${n}`) === modelKey(`model/${alias}`)));
+    })) throw new RuleError("ambiguous_model", `${id} has an alias of another model family`, 409);
+    if (active && admissions.some((a) => modelKey(`model/${a.id}`) !== modelKey(`model/${id}`)
+      && [a.id, ...a.aliases].some((n) => [id, ...aliases].some((alias) => modelKey(`model/${n}`) === modelKey(`model/${alias}`))))) {
+      throw new RuleError("ambiguous_model", `${id} shares a name with another reviewer admission in this project`, 409);
+    }
+    const record: ReviewerAdmission = { id, aliases: [...aliases], by: actor, reason: reason.trim(), at: new Date().toISOString(), active };
+    const next = admissions.filter((a) => a !== prior && a.id !== id);
+    next.push(record);
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('reviewer-admissions', ?)`, JSON.stringify(next));
+      this.log(null, actor, active ? "reviewer.admitted" : "reviewer.withdrawn", { ...record }, record.at);
+      if (!active) {
+        for (const row of this.sql.exec(`SELECT id, item, dispatch FROM review_requests WHERE state IN ('open', 'claimed')`).toArray()) {
+          const d = JSON.parse(row.dispatch as string) as Dispatch;
+          if (!d.model || ![record.id, ...record.aliases].some((n) => modelKey(`model/${n}`) === modelKey(`model/${d.model}`))) continue;
+          this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, row.id);
+          this.log(row.item as string, actor, "review.withdrawn", { reviewer: `${d.agent}/${d.model}`, reason: `reviewer admission withdrawn: ${record.reason}`, request: row.id }, record.at);
+        }
+      }
+    });
+    return record;
   }
 
   // The record's name follows a rename decided at the index: links and
@@ -1665,8 +1717,17 @@ export class Ledger extends DurableObject<Env> {
     // Under a role policy any agent may record a review, and the gate counts
     // only an assessor's; the executor role is for taking work, not reviewing.
     const policy = this.project().policy;
-    if (!policy.agents) assertEligible(r.by, policy, this.owner);
+    const recordedActor = r.by;
+    const admission = reviewerAdmission(r.by, policy);
+    if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn; use atelier models admit`, 403);
+    if (!policy.agents && !admission?.active) assertEligible(r.by, policy, this.owner);
+    // Never trust a client-supplied admission snapshot.
+    r = { ...r, by: admission?.active ? admissionActor(r.by, admission) : r.by, reviewerAdmission: admission?.active ? admission : undefined };
     const item = this.item(r.itemId);
+    if (admission?.active) {
+      const refusal = familyRefusal(admissionActor(r.by, admission), contributorsOf(item).map((a) => admissionActor(a, admission)));
+      if (refusal) throw new RuleError("not_independent", `${r.by}: ${refusal}`, 403);
+    }
     assertReviewAllowed(item, proved);
     if (item.state !== "accepted") assertLive(item);
     else if (this.landing(item.id)) throw new RuleError("landing", "cancel the interrupted landing before reviewing again");
@@ -1708,11 +1769,11 @@ export class Ledger extends DurableObject<Env> {
     // A review answering a gate's request asked of a tier model gives the
     // tier review too (gateServesTier): the gate's review, top tier.
     const topTier = !tierClaim && claims.some((c) => c.tier !== 1 && c.topTier === 1);
-    r = { ...r, recordedBy: proved ? r.by : this.owner, proved, claimed, ...(tierClaim ? { tier: true } : {}), ...(topTier ? { topTier: true } : {}) };
+    r = { ...r, recordedBy: proved ? recordedActor : this.owner, proved, claimed, ...(tierClaim ? { tier: true } : {}), ...(topTier ? { topTier: true } : {}) };
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
     // A new review of accepted work requires another acceptance.
     if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null }, at);
-    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, criteria: r.criteria, ...(r.request !== undefined ? { request: r.request } : {}), recordedBy: r.recordedBy, ...(claimed ? { claimed } : {}), ...(r.tier ? { tier: true } : {}), ...(r.topTier ? { topTier: true } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
+    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, criteria: r.criteria, ...(r.reviewerAdmission ? { reviewerAdmission: r.reviewerAdmission } : {}), ...(r.request !== undefined ? { request: r.request } : {}), recordedBy: r.recordedBy, ...(claimed ? { claimed } : {}), ...(r.tier ? { tier: true } : {}), ...(r.topTier ? { topTier: true } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
     // A tier review answers its own request; any other answers the gate's
     // requests at the head and leaves a tier request beside them standing.
     if (tierClaim) this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE id = ?`, tierClaim.id);
@@ -3650,6 +3711,13 @@ export class Ledger extends DurableObject<Env> {
 
   private async bindReview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved: boolean): Promise<ReviewClaim> {
     const item = this.item(itemId);
+    const admission = reviewerAdmission(actor, this.project().policy);
+    if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn`, 403);
+    if (admission?.active) {
+      actor = admissionActor(actor, admission);
+      const refusal = familyRefusal(admissionActor(actor, admission), contributorsOf(item).map((a) => admissionActor(a, admission)));
+      if (refusal) throw new RuleError("not_independent", `${actor}: ${refusal}`, 403);
+    }
     // A request at a head the item has left is closed before anything else,
     // whoever claims, and carried to the current head where the gate needs
     // it, so a stale request is never offered again and the claim below
@@ -3772,16 +3840,33 @@ export class Ledger extends DurableObject<Env> {
   requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }, offers?: readonly SeenOffer[]): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean; request?: number } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner asks for a review", 403);
     const item = this.item(id);
-    // A named reviewer is judged even when a request already stands, so a
-    // retry with a different name never silently keeps the wrong reviewer.
+    const policy = this.project().policy;
+    // Validate even when another request already stands.
     if (wanted && reviewer === null) throw new RuleError("bad_request", "a wanted review names its reviewer", 400);
     if (reviewer !== null) {
       if (!validActor(reviewer)) throw new RuleError("bad_actor", `"${reviewer}" is not harness/model`, 400);
-      if (contributorsOf(item).some((c) => sameActor(c, reviewer))) {
+      if (contributorsOf(item).some((c) => sameActor(c, reviewer!))) {
         throw new RuleError("self_review", `${reviewer} contributed to ${id} and cannot review it`, 403);
       }
+      const admission = reviewerAdmission(reviewer, policy);
+      const entries = pool.filter((m) => [m.id, ...m.aliases].some((n) => modelKey(`model/${n}`) === modelKey(reviewer!)));
+      if (entries.length > 1) throw new RuleError("ambiguous_model", `${reviewer} names multiple registered models`, 409);
+      if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn; use atelier models admit`, 403);
+      if ((!admission && !entries.length) || !mayAssess(reviewer, policy, this.owner)) {
+        throw new RuleError("ineligible", `${reviewer} is not a registered, eligible reviewer; the owner can use atelier models admit ID --project ${this.project().name} --reason TEXT (register it first with atelier models add)`, 403);
+      }
+      if (admission?.active) {
+        const entry = pool.find((m) => m.id === admission.id);
+        if (!entry) throw new RuleError("no_model", `${admission.id} is no longer registered; use atelier models add`, 409);
+        reviewer = `${entry.harness}/${entry.id}`;
+        const refusal = familyRefusal(reviewer, contributorsOf(item).map((a) => admissionActor(a, admission)));
+        if (refusal) throw new RuleError("not_independent", `${reviewer}: ${refusal}`, 403);
+        const dispatch = { ...makeDispatch({ to: entry.where, agent: entry.harness, model: entry.id }, ORCHESTRATOR, new Date().toISOString()), job: "review" as const };
+        if (!liveOffers(offers ?? []).some((offer) => assign(dispatch, offer))) {
+          throw new RuleError("no_runner", `no live ${entry.where} runner offers the review job for ${reviewer}; start a runner with its registered harness and endpoint`, 409);
+        }
+      }
     }
-    const policy = this.project().policy;
     const at = new Date().toISOString();
     // A request carried to this head when the head moved (reaskReview) asks
     // the reviewer of the earlier request. While no runner has claimed it,
@@ -3864,8 +3949,11 @@ export class Ledger extends DurableObject<Env> {
       chosen = pick.reviewer.actor;
     }
     const slash = chosen.indexOf("/");
-    const where = records ? pool.find((m) => sameActor(`${m.harness}/${m.id}`, chosen))?.where ?? "home" : "home";
+    const where = records || reviewerAdmission(chosen, policy)?.active ? pool.find((m) => sameActor(`${m.harness}/${m.id}`, chosen))?.where ?? "home" : "home";
     const dispatch = { ...makeDispatch({ to: where, agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
+    if (reviewerAdmission(chosen, policy)?.active && !liveOffers(offers ?? []).some((offer) => assign(dispatch, offer))) {
+      throw new RuleError("no_runner", `no live ${where} runner offers the review job for ${chosen}; start a runner with its registered harness and endpoint`, 409);
+    }
     const topTier = this.gateIsTier(item, need, chosen);
     const made = this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?) RETURNING id`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item)).one();
     this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: "land", ...(choiceReason ? { reason: choiceReason } : {}), ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
@@ -4013,6 +4101,8 @@ export class Ledger extends DurableObject<Env> {
   // A reviewer whose harness wrote no valid verdict lets the request go, so
   // another reviewer may take it. The request returns to the queue, open.
   releaseReview(itemId: string, actor: string, note: string, proved = false): void {
+    const admission = reviewerAdmission(actor, this.project().policy);
+    if (admission) actor = admissionActor(actor, admission);
     this.item(itemId);
     const at = new Date().toISOString();
     const row = this.sql.exec(`SELECT id FROM review_requests WHERE item = ? AND state = 'claimed' AND claimedBy = ? ORDER BY id LIMIT 1`, itemId, actor).toArray()[0];
@@ -4030,6 +4120,8 @@ export class Ledger extends DurableObject<Env> {
   // or was withdrawn while the harness ran, releases nothing, and the reply is
   // kept anyway. Returns whether a request was released.
   unparsableReview(itemId: string, actor: string, head: string, note: string, reply: string, proved = false): { released: boolean } {
+    const admission = reviewerAdmission(actor, this.project().policy);
+    if (admission) actor = admissionActor(actor, admission);
     if (!validActor(actor)) throw new RuleError("bad_actor", `"${actor}" is not harness/model`, 400);
     assertLength(note, NOTE_MAX, "the review note");
     if (reply.length > VERDICT_LIMITS.reply) {
