@@ -121,7 +121,7 @@ export function pageStates(s: Seeded): PageState[] {
     task(lc("stale"), "stale", 200, "Working", "Claimed, nothing pushed for two days"),
     task(lc("blocked"), "blocked", 200, "Blocked", "Blocked by its holder"),
     task(lc("failed"), "failed", 200, "Failed", "Submitted with a failing check"),
-    task(lc("ready"), "ready-unavailable", 200, "could not be read from Artifacts", "Ready to accept; the diff cannot be read"),
+    task(lc("ready"), "unreadable", 200, "could not be read from Artifacts", "Ready to accept; the diff cannot be read"),
     task(s.byShape["ledger-core"].ready![1], "ready", 200, "Ready to accept", "Ready to accept, diff shown"),
     task(lc("protected"), "protected", 200, "independent review", "Protected path: review required"),
     task(lc("sentBack"), "sent-back", 200, "Changes requested", "Checks passed, then sent back (the t435 shape)"),

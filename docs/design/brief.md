@@ -151,7 +151,7 @@ field-notes 70, open-tool 40), plus `blank-slate` (no tasks) and
 | `task-stale` | `/p/ledger-core/t163` | owner | Claimed, nothing pushed for two days |
 | `task-blocked` | `/p/ledger-core/t166` | owner | Blocked by its holder |
 | `task-failed` | `/p/ledger-core/t188` | owner | Submitted with a failing check |
-| `task-ready-unavailable` | `/p/ledger-core/t191` | owner | Ready to accept; the diff cannot be read from Artifacts |
+| `task-unreadable` | `/p/ledger-core/t191` | owner | Ready to accept; the diff cannot be read from Artifacts |
 | `task-ready` | `/p/ledger-core/t192` | owner | Ready to accept, diff shown |
 | `task-protected` | `/p/ledger-core/t195` | owner | Protected path: independent review required |
 | `task-sent-back` | `/p/ledger-core/t197` | owner | Checks passed, then sent back (the t435 shape) |

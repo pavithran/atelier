@@ -77,7 +77,7 @@ the page does not say that a rejection stands on an older revision.) → **P3**
 (after t367 and t498).
 
 ### F4. The decision says Ready while the page refuses — Blocker
-`task-ready-unavailable` (t191): "Checks passed on a runner, in a clean
+`task-unreadable` (t191): "Checks passed on a runner, in a clean
 clone · Ready to accept", then "Changes are unavailable. Approval and
 acceptance are unavailable until the displayed changes match…". 
 `task-scope` (t200): "Ready to accept" with the **Accept revision** button
@@ -260,7 +260,7 @@ state id (written by `npm run design:capture`; see the status table above).
 | Task, stale `task-stale` | [1440](screens/task-stale-1440.png) · [390](screens/task-stale-390.png) | — | Not called stale; "wait" recommendation (F3) | High | P3, P7 |
 | Task, blocked `task-blocked` | [1440](screens/task-blocked-1440.png) · [390](screens/task-blocked-390.png) | Who, when, why, and Unblock | "decide" verdict without a decision | Medium | P3 |
 | Task, failed `task-failed` | [1440](screens/task-failed-1440.png) · [390](screens/task-failed-390.png) | Failed check opens with its output tail | Badge "In review" (F3) | High | P3 |
-| Task, ready, diff unreadable `task-ready-unavailable` | [1440](screens/task-ready-unavailable-1440.png) · [390](screens/task-ready-unavailable-390.png) | Refuses to accept unseen changes | Says Ready and unavailable at once (F4) | Blocker | P3 |
+| Task, ready, diff unreadable `task-unreadable` | [1440](screens/task-unreadable-1440.png) · [390](screens/task-unreadable-390.png) | Refuses to accept unseen changes | Says Ready and unavailable at once (F4) | Blocker | P3 |
 | Task, ready `task-ready` | [1440](screens/task-ready-1440.png) · [390](screens/task-ready-390.png) | One primary action; summary marked "not verified" | Badge "In review" beside "Ready to accept" (F3) | High | P3 |
 | Task, protected `task-protected` | [1440](screens/task-protected-1440.png) · [390](screens/task-protected-390.png) | Override needs the owner's own sign-in | 9 forms; 676 words before the diff | High | P3 |
 | Task, sent back `task-sent-back` | [1440](screens/task-sent-back-1440.png) · [390](screens/task-sent-back-390.png) | The reviewer's note is kept | Three answers (F3); Approve is primary | Blocker | P3 |
@@ -351,7 +351,7 @@ order that is logical but wrong, and text over drawn backgrounds.
   is owner chrome on a public answer, and it tells a visitor which areas
   exist.
 - **By design, recorded**: the owner's name appears on the public showcase
-  ("Pavi made 79 decisions") and a named project's task titles appear.
+  ("Owner made 79 decisions") and a named project's task titles appear.
   Owner pages show the private project's names in full (`home-1440.png`:
   "Fix the Keychain.swift crash for jo@private.example"), as they should.
 - **Not covered**: the 60-second showcase cache after a project is removed

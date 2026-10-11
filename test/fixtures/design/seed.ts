@@ -15,7 +15,7 @@ import { FakeGit } from "./git.ts";
 export const FIXED_NOW = "2026-10-10T12:00:00.000Z";
 export const START = "2026-09-12T09:00:00.000Z";
 export const OWNER = "owner";
-export const OWNER_NAME = "Pavi";
+export const OWNER_NAME = "Owner";
 
 // The agents, one per family, so every family colour is drawn.
 export const AGENTS = ["claude-code/opus-5.5", "codex/gpt-6-astra", "zcode/glm-5.3", "antigravity/gemini-3.1-pro", "opencode/qwen-4"] as const;
