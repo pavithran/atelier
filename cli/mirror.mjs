@@ -220,9 +220,13 @@ export function lfsPointer(text) {
     if (space < 0 || index >= keys.length) return null;
     const key = line.slice(0, space), value = line.slice(space + 1);
     if (key === keys[index]) { values[key] = value; index++; continue; }
-    if (!/^ext-\d-\w/.test(key) || !/^sha256:[0-9a-f]{64}$/.test(value)) return null;
+    if (!/^ext-\d-\w/.test(key)) return null;
     extensions.set(key, value);
   }
+  // git-lfs collects extensions by key before validating their values:
+  // a later occurrence replaces even an invalid earlier value. Rejecting
+  // that earlier value here would mistake an uploadable pointer for text.
+  if ([...extensions.values()].some((value) => !/^sha256:[0-9a-f]{64}$/.test(value))) return null;
   const priorities = [...extensions.keys()].map((key) => key.split("-")[1]);
   if (new Set(priorities).size !== priorities.length || !LFS_VERSIONS.includes(values.version)) return null;
   const oid = values.oid?.match(/^sha256:([0-9a-f]{64})$/)?.[1];
