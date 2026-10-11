@@ -1215,6 +1215,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const r = await actionsApi(L, m, parts.slice(3), body, actor, ownerActor(env), async (commit) => onMainLine(env, (await L.project()).repo, commit));
     return json(r.data, r.status);
   }
+  if (parts[2] === "board" && parts.length === 3 && m === "GET") return json(await L.board());
+  if (parts[2] === "areas") {
+    if (parts.length === 3 && m === "GET") return json(await L.areas());
+    requireOwner(env, actor);
+    if (parts.length === 3 && m === "POST") return json(await L.saveArea(actor, body.name, body.purpose), 201);
+    if (parts.length === 4 && m === "POST") return json(await L.saveArea(actor, body.name, body.purpose, parts[3]));
+    if (parts.length === 4 && m === "DELETE") { await L.removeArea(parts[3], actor); return json({ removed: parts[3] }); }
+    throw new RuleError("not_found", "no such route", 404);
+  }
   if (parts[2] !== "items") throw new RuleError("not_found", "no such route", 404);
   // A plan is an item too: { kind: "plan", goal, scope?, planner? } starts
   // one (docs/orchestrator.md, section 2), for the owner alone, with the
@@ -1641,6 +1650,26 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       await L.releaseReview(id, actor, String(body.note ?? ""), !!c.token);
       return json({ released: true });
     }
+    // A runner's word that it will not serve the review of this head (t353):
+    // the owner token the runner holds authorises it, as the run reports are,
+    // or a runner token does, for a review job its poll was offered, under
+    // that job's actor (the gateway checks the offer as it checks a run
+    // report, and sets the runner's name from the token). The runner's name
+    // names it, so the landing waiting on the review can say, by runner,
+    // when every runner that offers the reviewer has skipped.
+    case "review-skip": {
+      if (!c.token?.runner) requireOwner(env, actor);
+      const runner = parseRunner(req.headers.get("x-atelier-runner"));
+      if (!runner) throw new RuleError("bad_runner", "a review skip names its runner in X-Atelier-Runner", 400);
+      const head = String(body.head ?? "");
+      if (!/^[a-f0-9]{40,64}$/.test(head)) throw new RuleError("bad_head", "a review skip names the head it refused as a full commit hash", 400);
+      // The request's number, as the queue gave it: a skip is counted
+      // against that request alone, never against a later one at the same head.
+      const request = body.request;
+      if (typeof request !== "number" || !Number.isInteger(request) || request < 1) throw new RuleError("bad_request", "a review skip names the review request it refused, by number", 400);
+      await L.recordReviewSkip(id, request, head, runner.runner, actor, String(body.note ?? ""), !!c.token);
+      return json({ skipped: true });
+    }
     // t407: a reviewer's reply parseVerdict could not read is kept on the
     // task, its last VERDICT_LIMITS.reply characters with the reviewer and
     // the head, as the request the reviewer claimed is released. The runner
@@ -1661,7 +1690,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       requireOwner(env, actor);
       const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
       const track = reviewer === null ? { ...await suggestionRecords(index(env), (p) => ledgerOf(env, p)), project: ref.key } : undefined;
-      return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true, false, track));
+      // The live offers go with the ask (t353): a request at this head every
+      // runner offering its reviewer has skipped is withdrawn and asked anew.
+      return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true, false, track, await index(env).runnerOffers()));
     }
     // One recorded step of a landing (atelier land): what it was, how long it
     // took and what it settled, for the integration record (t186).
@@ -2606,10 +2637,13 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
     switch (parts.length === 2 ? "overview" : parts[2]) {
       case "overview": {
         const standing = await standingOf(env, ref.key);
-        return html(renderProject(p, await L.items(), await L.events(undefined, 40) as unknown as LedgerEvent[], ownerName(env), standing));
+        const board = await L.board();
+        return html(renderProject(p, board.items, await L.events(undefined, 40) as unknown as LedgerEvent[], ownerName(env), standing, board));
       }
-      case "tasks":
-        return html(renderProjectTasks(p, await L.items(), ownerName(env)));
+      case "tasks": {
+        const board = await L.board();
+        return html(renderProjectTasks(p, board.items, ownerName(env), board));
+      }
       case "flow": {
         const items = await L.items();
         const events = (await L.events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
@@ -2792,7 +2826,12 @@ export default {
           if (parts[1] === "queue" && String(input.runner).toLowerCase() !== token.runner) throw runnerDenied(token);
           if (ref && parts[3] === "items") {
             if (actor === ownerActor(env) || actor === INTEGRATOR) throw runnerDenied(token);
-            await ledger(env, ref.key).assertRunnerJob(token, parts[4], actor, parts[5] === "claim");
+            // A review skip (t353) is a report about a review job the
+            // runner's poll was offered, under that job's actor, checked as
+            // a run report for the review is; the runner never holds a
+            // review as a job of its own, so assertRunnerJob cannot judge it.
+            if (parts[5] === "review-skip") await ledger(env, ref.key).assertRunnerReport(token, parts[4], actor, "review");
+            else await ledger(env, ref.key).assertRunnerJob(token, parts[4], actor, parts[5] === "claim");
             // The authenticated runner, never a caller-selected identity, goes to the atomic claim.
             req = new Request(req.url, { method: req.method, headers: new Headers(req.headers) });
             req.headers.set("x-atelier-runner", token.runner);
