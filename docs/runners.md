@@ -113,8 +113,9 @@ and releases. Neither completion needs an owner token. A restart polls and
 resumes jobs held by the same runner before taking new jobs.
 
 Only polling, configuration/base reads, authorized job reads, claiming,
-Git push, checks/evidence, submission, plan posting, release and job reports
-are permitted. Owner acceptance, merge/land, overrides, criteria edits,
+Git push, checks/evidence, submission, plan posting, release, job reports
+and review skips (a runner's word that it will not serve a review job its
+poll was offered, posted as that job's actor) are permitted. Owner acceptance, merge/land, overrides, criteria edits,
 decisions, token administration, policy changes and browser access return
 403 with the runner name and token ID, never the secret. Invalid, expired or
 revoked API credentials return 401. Reviews still use the model's own agent
@@ -152,7 +153,7 @@ machine with no owner token:
 
 Do not promote the deployment if this smoke check fails. Local validation:
 `npm test`, `npm run typecheck`, `node --test cli/runner-token.test.mjs cli/runner-git.test.mjs` and
-`npx vitest run --config cli/runner-vitest.config.mjs`. The task-specific
+`npx vitest run src/runner-token.spec.mjs` (it runs under `npm test` too). The task-specific
 tests live in `src/` and `cli/` to stay within this task's scope.
 
 ## Setting up a runner
@@ -378,8 +379,9 @@ or 6 (abandoned, shown as closed) from claim, push and every step of finish:
 the runner logs the state, keeps the workspace and its commits, releases
 nothing, never offers the task to a harness again in that process, and charges
 neither counter. The state is told only to the runner that held the job, or
-to one a poll offered it to while no runner's claim ever took it; a runner
-that was offered a job another runner then claimed stays `runner_forbidden`
+to one a poll offered it to while no claim ever took it; a runner that was
+offered a job someone then claimed, under a runner token or an owner's or
+agent's credential with or without a runner name, stays `runner_forbidden`
 once that task closes. Interruptions stop the runner without updating either
 counter. An infrastructure failure moves on to the next offered task in the
 same poll; `--once` still handles at most one task.

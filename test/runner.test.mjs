@@ -7,7 +7,7 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, jobsLine, gatewayMetadata, harnessRunEnv, codexBuildRefusal, validationBlockedReport, alreadyComplete } from "../cli/runner.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, failureKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, skipRefusedForGood, skipRetryPolls, jobsLine, gatewayMetadata, harnessRunEnv, codexBuildRefusal, validationBlockedReport, alreadyComplete } from "../cli/runner.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
 import { helpText, ROLE_PROMPTS } from "../src/usage.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
@@ -642,6 +642,17 @@ test("transientQueueError takes timeouts, 5xx, 429 and marked errors, not a 4xx 
   assert.deepEqual([1, 2, 3, 4, 5, 10].map(queueBackoffMs), [30_000, 60_000, 120_000, 240_000, 300_000, 300_000]);
 });
 
+// t353: a skip report is dropped only on a 4xx no retry would change. A 408
+// (the server timed the request out) and a 429 (it was busy) are as temporary
+// as a 5xx, and the report is kept; the retry waits the queue backoff, in
+// polls, so a busy server is not asked every 30 seconds.
+test("skipRefusedForGood drops a 4xx other than 408 and 429, and skipRetryPolls follows the queue backoff in polls", () => {
+  for (const message of ["400 bad head", "401", "403", "404 no review request 1 of t21", "422 bad request"]) assert.equal(skipRefusedForGood(new Error(message)), true, message);
+  for (const message of ["408", "429 slow down", "500", "503", "fetch failed", "The operation was aborted due to timeout"]) assert.equal(skipRefusedForGood(new Error(message)), false, message);
+  assert.equal(skipRefusedForGood(Object.assign(new Error("x"), { name: "TimeoutError" })), false);
+  assert.deepEqual([1, 2, 3, 4, 5, 10].map(skipRetryPolls), [1, 2, 4, 8, 10, 10]);
+});
+
 test("versionRefusal names both levels and says to deploy, and clears a current server", () => {
   assert.match(versionRefusal(null), /reports no route level/);
   assert.match(versionRefusal(null), /the server does not answer GET \/api\/version/);
@@ -1020,6 +1031,21 @@ test("failure counts use task identity and exclude refusals and skipped tasks", 
   // t273: a failure the job recorded on the item (refresh-failed) is the
   // server's to handle, so it is no task failure for the cap.
   assert.equal(failureCount(1, { phase: "failed", recorded: true }), 1);
+});
+
+test("a review's failure cap is keyed by the review it answered, so a new request or head starts it fresh (t353)", () => {
+  const review = { ...assignment, item: { ...assignment.item, id: "t339", head: "a".repeat(40), request: 1, dispatch: { job: "review" } } };
+  // A build's failures still count against the task alone.
+  assert.equal(failureKey(assignment), taskKey(assignment));
+  assert.equal(failureKey({ ...assignment, item: { ...assignment.item, head: "b".repeat(40) } }), failureKey(assignment));
+  // A review's count on its head and request: a new head or a new request is
+  // a fresh count, so an earlier landing's two failures never strand the next.
+  assert.equal(failureKey(review), failureKey({ ...review, item: { ...review.item, head: "a".repeat(40), request: 1 } }));
+  assert.notEqual(failureKey(review), failureKey({ ...review, item: { ...review.item, head: "b".repeat(40), request: 1 } }));
+  assert.notEqual(failureKey(review), failureKey({ ...review, item: { ...review.item, head: "a".repeat(40), request: 2 } }));
+  // The refusal key ends on a new review request too, at the same head.
+  assert.notEqual(refusedKey(review), refusedKey({ ...review, item: { ...review.item, request: 2 } }));
+  assert.equal(refusedKey(review), refusedKey({ ...review, item: { ...review.item, request: 1 } }));
 });
 
 test("runner remembers unsupported project names and claims the task behind them", async (t) => {

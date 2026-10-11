@@ -135,6 +135,32 @@ for (const state of STATES) it(`a job two runners were offered and one claimed, 
   await forbidden(await t.api("GET", t.base, undefined, "codex/other"), t.token.id);
 });
 
+// The pre-review probe at eda5dab: a claim made without a runner token — the
+// owner's credential naming the runner home:desk — supersedes the offer as a
+// runner token's claim does. The runner the poll offered the job to never
+// held it, so it stays forbidden once the task closes, before and after a
+// fresh offer, while the holder's actor reads the state through the owner.
+for (const state of STATES) it(`a job offered to the runner and claimed without a runner token, then ${state}, is forbidden to the runner`, async () => {
+  const t = await setup();
+  await t.poll();
+  const claimed = await t.request("POST", `${t.base}/claim`, OWNER, ACTOR, {}, "home:desk");
+  expect(claimed.status).toBe(200);
+  await t.close(state);
+  await forbidden(await t.api("GET", t.base), t.token.id);
+  await forbidden(await t.api("POST", `${t.base}/claim`, {}), t.token.id);
+  await forbidden(await t.api("POST", `${t.base}/push`, { head: PUSHED }), t.token.id);
+  await t.poll();
+  await forbidden(await t.api("POST", `${t.base}/claim`, {}), t.token.id);
+  // The runner that held the claim, had it polled under a token of its own, is likewise told nothing: it never claimed under that token.
+  const desk = await t.issue("home:desk");
+  expect((await t.request("POST", "/queue", desk.token, ACTOR, { ...t.offer, runner: "home:desk" })).status).toBe(200);
+  await forbidden(await t.request("POST", `${t.base}/claim`, desk.token, ACTOR, {}), desk.id);
+  // The owner still reads the item as before.
+  const res = await t.request("GET", t.base);
+  expect(res.status).toBe(200);
+  expect(((await res.json()) as { item: { state: string } }).item.state).toBe(state);
+});
+
 for (const state of STATES) it(`a job two runners were offered and neither claimed, then ${state}, tells both its state`, async () => {
   const t = await setup();
   const b = await t.issue("home:other");

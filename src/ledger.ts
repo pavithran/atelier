@@ -1,3 +1,4 @@
+import type { Area, BoardSnapshot, StageFacts } from "./board.ts";
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
 import { runnerDenied, runnerTaskTerminal, sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
@@ -18,6 +19,7 @@ import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./c
 import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
 import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, makeDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
+import { allSkipped } from "./landing-verdict";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
 import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
@@ -216,6 +218,7 @@ const LAND_DATA: Record<string, "string" | "boolean" | "strings"> = {
   head: "string", mergeCommit: "string", fromMain: "strings", conflicts: "strings",
   resolvedBy: "string", reviewer: "string", verdict: "string", command: "string",
   reason: "string", changed: "boolean", failed: "boolean", skipped: "boolean", requested: "boolean",
+  runners: "strings",
 };
 export const LAND_JSON_MAX = 4000;
 
@@ -427,6 +430,7 @@ export class Ledger extends DurableObject<Env> {
     // and each routing, and a reply of up to 100 KB there would bloat them
     // all; the event says the rest.
     this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS areas (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, purpose TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS projects (name TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS names (name TEXT PRIMARY KEY, key TEXT NOT NULL);
@@ -469,6 +473,7 @@ export class Ledger extends DurableObject<Env> {
     if (!eventColumns.includes("proved")) this.sql.exec(`ALTER TABLE events ADD COLUMN proved INTEGER`);
     // Added after the first deploy; existing ledgers gain the column once.
     const columns = this.sql.exec(`PRAGMA table_info(items)`).toArray().map((c) => c.name);
+    if (!columns.includes("area")) this.sql.exec(`ALTER TABLE items ADD COLUMN area TEXT`);
     if (!columns.includes("dispatch")) this.sql.exec(`ALTER TABLE items ADD COLUMN dispatch TEXT`);
     if (!columns.includes("runner")) this.sql.exec(`ALTER TABLE items ADD COLUMN runner TEXT`);
     if (!columns.includes("review_override")) this.sql.exec(`ALTER TABLE items ADD COLUMN review_override TEXT`);
@@ -962,6 +967,76 @@ export class Ledger extends DurableObject<Env> {
     return record;
   }
 
+  areas(): Area[] {
+    return this.sql.exec(`SELECT id, name, purpose FROM areas ORDER BY name, id`).toArray().map((r) => ({ id: r.id as string, name: r.name as string, purpose: r.purpose as string }));
+  }
+
+  private assertArea(id: string | null | undefined): void {
+    if (id != null && !this.areas().some((a) => a.id === id)) throw new RuleError("bad_area", `unknown area ID: ${id}`, 400);
+  }
+
+  saveArea(actor: string, name: unknown, purpose: unknown, id?: string): Area {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner changes areas", 403);
+    const clean = (v: unknown, max: number) => {
+      if (typeof v !== "string" || !v.trim() || v.trim().length > max || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(v)) throw new RuleError("bad_area", `area name and purpose must be single lines of at most ${max} characters`, 400);
+      return v.trim();
+    };
+    const label = clean(name, 80), why = clean(purpose, 300);
+    if (label.toLowerCase() === "unsorted" || this.areas().some((a) => a.id !== id && a.name.toLowerCase() === label.toLowerCase())) throw new RuleError("duplicate_area", "area names must be unique; Unsorted is reserved", 409);
+    if (id !== undefined) this.assertArea(id);
+    return this.ctx.storage.transactionSync(() => {
+      if (id === undefined) {
+        const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'area-sequence'`).toArray()[0];
+        const next = Number(row?.value ?? 0) + 1;
+        this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('area-sequence', ?)`, String(next));
+        id = `a${next}`;
+      }
+      this.sql.exec(`INSERT INTO areas (id, name, purpose) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, purpose = excluded.purpose`, id, label, why);
+      this.log(null, actor, "area.saved", { id, name: label, purpose: why }, new Date().toISOString());
+      return { id, name: label, purpose: why };
+    });
+  }
+
+  removeArea(id: string, actor: string): void {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner removes areas", 403);
+    this.assertArea(id);
+    this.ctx.storage.transactionSync(() => {
+      const at = new Date().toISOString();
+      this.sql.exec(`UPDATE items SET area = NULL, updated_at = ? WHERE area = ?`, at, id);
+      this.sql.exec(`DELETE FROM areas WHERE id = ?`, id);
+      this.log(null, actor, "area.removed", { id }, at);
+    });
+  }
+
+  board(): BoardSnapshot {
+    const items = this.items(), policy = this.project().policy;
+    const held = this.readProjectLanding();
+    const lease = held && !landingLeaseLapsed(held, Date.now()) ? held : null;
+    const facts: Record<string, StageFacts> = {};
+    for (const item of items) {
+      const record = item.kind === "plan" ? this.planRecord(item.id) : null;
+      const fact: StageFacts = {
+        ready: false, landing: !!this.landing(item.id) || lease?.item === item.id,
+        planBlocked: !!record?.blocked,
+      };
+      facts[item.id] = fact;
+      // Only a submission or acceptance can be ready. Historical rows need
+      // no evidence/review scans just to show their terminal state.
+      if (item.state !== "submitted" && item.state !== "accepted") continue;
+      const current: Item = item.state === "accepted" ? { ...item, state: "submitted" } : item;
+      const parts = record ? this.planParts(item.id) : [];
+      const evidence = this.evidenceFor(item.id), reviews = this.reviewsFor(item.id);
+      const g = record ? planGate({
+        plan: current, parts: this.integrationViews(parts), integrationHead: record.integrationHead ?? null,
+        policy, evidence, reviews: [...reviews, ...parts.flatMap((p) => this.reviewsFor(p.id))], owner: this.owner,
+      }) : gate(current, policy, evidence, reviews, this.owner);
+      const siblings = item.kind === "part" && item.plan ? this.integrationViews(this.planParts(item.plan)) : [];
+      const part = siblings.find((p) => p.id === item.id);
+      fact.ready = g.ready && (!part || integrationBlockers(part, siblings, reviews, policy, this.owner).length === 0);
+    }
+    return { areas: this.areas(), items, facts };
+  }
+
   // `title` is what the creator sent as the title, and `fields.brief` the
   // long text if sent apart (itemText): a title too long with no brief, as
   // an older CLI sends, becomes the brief with a short title derived from
@@ -985,6 +1060,7 @@ export class Ledger extends DurableObject<Env> {
         return { ...item, revert };
       });
     }
+    this.assertArea(fields.area);
     const text = itemText(title, fields.brief);
     const n = this.sql.exec(`SELECT COUNT(*) AS n FROM items`).one().n as number;
     const id = `t${n + 1}`;
@@ -1014,7 +1090,9 @@ export class Ledger extends DurableObject<Env> {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner edits a task's fields", 403);
     if (fields.revertOf !== undefined) throw new RuleError("bad_field", "revertOf is set only when creating a task", 400);
     const item = this.item(id);
-    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; its fields stay as they were`);
+    const areaOnly = fields.area !== undefined && Object.keys(fields).every((key) => key === "area") && scope === undefined;
+    if ((item.state === "merged" || item.state === "abandoned") && !areaOnly) throw new RuleError("closed", `${id} is ${item.state}; its fields stay as they were`);
+    this.assertArea(fields.area);
     const set = fieldColumns(fields);
     if (fields.title !== undefined) {
       const title = titleLine(fields.title);
@@ -1195,14 +1273,14 @@ export class Ledger extends DurableObject<Env> {
   // abandoned, is answered with that state (task_terminal, t476), not with
   // runner_forbidden: the runner reads the state and stops the job for good,
   // where a refusal would be retried. So is a job a poll offered this actor on
-  // this runner, when no runner's claim ever took it (runnerJobClaimed): the
-  // offer was never superseded, so the state is this runner's to read. Once
-  // any runner claimed it, the state is the holder's alone: a runner the poll
-  // offered the job to but that never held it is refused, as its offer record
-  // is never cleared and would otherwise tell it what became of another
-  // runner's task. Nothing else changes: another actor or runner, a task never
-  // offered to this one, and a blocked task are refused as before; accepted
-  // and integrated are not closed.
+  // this runner, when no claim took it after the dispatch the offer answered
+  // (claimedSince): the offer was never superseded, so the state is this
+  // runner's to read. Once anyone claimed it, under a runner token or not, the
+  // state is the holder's alone: a runner the poll offered the job to but that
+  // never held it is refused, as its offer record is never cleared and would
+  // otherwise tell it what became of another's task. Nothing else changes:
+  // another actor or runner, a task never offered to this one, and a blocked
+  // task are refused as before; accepted and integrated are not closed.
   assertRunnerJob(token: AgentToken, id: string, actor: string, claim = false): void {
     let item: Item;
     try { item = this.item(id); } catch { throw runnerDenied(token); }
@@ -1211,8 +1289,8 @@ export class Ledger extends DurableObject<Env> {
     if (holds && item.owner === actor && item.runner === token.runner && !["merged", "abandoned", "blocked"].includes(item.state)) return;
     if (item.state === "merged" || item.state === "abandoned") {
       if (holds) throw runnerTaskTerminal(id, item.state);
-      const offered = ["build", "plan"].some((role) => this.runnerMeta(`runner-report:${token.id}:${id}:${actor}:${role}`) !== null);
-      if (offered && !this.runnerJobClaimed(id)) throw runnerTaskTerminal(id, item.state);
+      const offeredAt = ["build", "plan"].map((role) => this.runnerMeta<string>(`runner-report:${token.id}:${id}:${actor}:${role}`)).find((at) => at !== null);
+      if (offeredAt && !this.claimedSince(id, offeredAt)) throw runnerTaskTerminal(id, item.state);
       throw runnerDenied(token);
     }
     if (claim && (item.state === "open" && !item.owner || item.state === "claimed" && item.owner === actor && item.runner === token.runner) && item.dispatch && !["review", "integrate", "refresh"].includes(item.dispatch.job ?? "")) {
@@ -1222,11 +1300,14 @@ export class Ledger extends DurableObject<Env> {
     throw runnerDenied(token);
   }
 
-  // Whether any runner's claim ever took this job: the claim records the hold
-  // under the runner token's id (claim, below), and the record outlives the
-  // claim. Item ids are a letter and digits, so the suffix match is exact.
-  private runnerJobClaimed(id: string): boolean {
-    return this.sql.exec(`SELECT 1 FROM meta WHERE key LIKE 'runner-job:%' AND key LIKE ? LIMIT 1`, `%:${id}`).toArray().length > 0;
+  // Whether any claim took this job since `since`, the time of the dispatch
+  // the runner's offer answered (runnerPoll records it): every claim, under a
+  // runner token or under an owner's or agent's credential with or without a
+  // runner name, logs the item as claimed or its runner as adopted (claim,
+  // below), and the log outlives the claim. A claim from before the dispatch,
+  // such as the one that seeded the fork, did not supersede the offer.
+  private claimedSince(id: string, since: string): boolean {
+    return this.sql.exec(`SELECT 1 FROM events WHERE item_id = ? AND at >= ? AND kind IN ('item.claimed', 'item.runner_adopted') LIMIT 1`, id, since).toArray().length > 0;
   }
 
   recordRunnerGit(id: string, actor: string, generation: number, replaces: string | null, hash: string, token: AgentToken): boolean {
@@ -1435,7 +1516,7 @@ export class Ledger extends DurableObject<Env> {
   // Both halves of the queue in one call, as a runner's poll reads them:
   // the open tasks waiting (waiting) and the open review requests
   // (reviewWaiting).
-  queued(): { waiting: (Item & { held?: CoreHold })[]; reviews: Item[] } {
+  queued(): { waiting: (Item & { held?: CoreHold })[]; reviews: (Item & { request: number })[] } {
     return { waiting: this.waiting(), reviews: this.reviewWaiting() };
   }
 
@@ -3552,10 +3633,13 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // Open review requests, as the queue offers them: the part item with its
-  // dispatch overlaid by the review dispatch, whose job names "review".
-  // Each part is read once, however many requests name it.
-  reviewWaiting(): Item[] {
-    const requests = this.sql.exec(`SELECT item, head, dispatch FROM review_requests WHERE state = 'open' ORDER BY id`).toArray();
+  // dispatch overlaid by the review dispatch, whose job names "review", and
+  // the request's own number in `request`, so a runner can tell one review
+  // request from the next at the same head and end its skip of the earlier
+  // one when a new request is made (t353). Each part is read once, however
+  // many requests name it.
+  reviewWaiting(): (Item & { request: number })[] {
+    const requests = this.sql.exec(`SELECT id, item, head, dispatch FROM review_requests WHERE state = 'open' ORDER BY id`).toArray();
     if (!requests.length) return [];
     const ids = [...new Set(requests.map((r) => r.item as string))];
     const rows = this.sql.exec(`SELECT * FROM items WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(ids)).toArray();
@@ -3563,8 +3647,60 @@ export class Ledger extends DurableObject<Env> {
     return requests.map((r) => {
       const item = items.get(r.item as string);
       if (!item) throw new RuleError("no_item", `no item ${r.item as string}`, 404);
-      return { ...item, head: r.head as string, dispatch: JSON.parse(r.dispatch as string) as Dispatch };
+      return { ...item, head: r.head as string, request: r.id as number, dispatch: JSON.parse(r.dispatch as string) as Dispatch };
     });
+  }
+
+  // A runner's word that it will not serve review request `request` of this
+  // item, recorded as a `review.skipped` event under the runner's name and
+  // the request's number (t353). The landing waiting on the review reads
+  // these to say, by runner, when every runner that offers the reviewer has
+  // skipped, instead of waiting out the hour. The request must be the item's
+  // and at `head`, so a report never lands against nothing; a request no
+  // longer open is still recorded, since a report may arrive late.
+  recordReviewSkip(itemId: string, request: number, head: string, runner: string, actor: string, note: string, proved = false): void {
+    this.item(itemId);
+    const row = this.sql.exec(`SELECT head FROM review_requests WHERE id = ? AND item = ?`, request, itemId).toArray()[0];
+    if (!row) throw new RuleError("no_request", `no review request ${request} of ${itemId}`, 404);
+    if (row.head !== head) throw new RuleError("bad_head", `review request ${request} of ${itemId} is at ${(row.head as string).slice(0, 8)}, not ${head.slice(0, 8)}`, 409);
+    const at = new Date().toISOString();
+    this.log(itemId, actor, "review.skipped", { head, request, runner, ...(note ? { note: note.slice(0, REASON_MAX) } : {}) }, at, proved);
+  }
+
+  // The runners that have skipped review request `request`, as the landing's
+  // wait reads them. Matched by the request's number alone: a skip of an
+  // earlier request at the same head (an earlier landing's, or one whose
+  // claim lapsed) is that request's and counts for nothing against this one,
+  // however late it was reported.
+  reviewSkips(itemId: string, request: number): { runner: string; at: string; note?: string }[] {
+    const rows = this.sql.exec(`SELECT at, data FROM events WHERE item_id = ? AND kind = 'review.skipped' ORDER BY seq`, itemId).toArray();
+    return rows.flatMap((r) => {
+      const data = JSON.parse(r.data as string) as { request?: unknown; runner?: unknown; note?: unknown };
+      if (data.request !== request) return [];
+      return [{ runner: String(data.runner ?? ""), at: r.at as string, ...(typeof data.note === "string" && data.note ? { note: data.note } : {}) }];
+    });
+  }
+
+  // Withdraws the open gate request at `head` when every live runner that
+  // offers its reviewer for the review job has skipped it (t353), recording
+  // a `review.withdrawn` event that names the request and the runners, and
+  // says so for the new request's reason; null when no open request stands
+  // there, or a runner is left that may still serve it. A claimed request is
+  // being served and is never judged here; without live offers nothing is
+  // known to have skipped, as the landing's own wait reads it (allSkipped).
+  private renewSkippedRequest(id: string, head: string, offers: readonly SeenOffer[], actor: string, at: string, proved: boolean): string | null {
+    const open = this.sql.exec(`SELECT id, dispatch FROM review_requests WHERE item = ? AND head = ? AND state = 'open' AND tier IS NULL ORDER BY id DESC LIMIT 1`, id, head).toArray()[0];
+    if (!open) return null;
+    const d = JSON.parse(open.dispatch as string) as Dispatch;
+    const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
+    if (!asked) return null;
+    const request = open.id as number;
+    const runners = allSkipped(asked, offers, this.reviewSkips(id, request));
+    if (!runners) return null;
+    const names = runners.join(", ");
+    this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, request);
+    this.log(id, actor, "review.withdrawn", { head, reviewer: asked, request, runners, reason: `every runner that offers ${asked} skipped review request ${request} (${names}); the owner asked again` }, at, proved);
+    return `The earlier request at this head (${request}) was withdrawn: every runner that offers ${asked} had skipped it (${names}), so the review is asked anew for them to serve.`;
   }
 
   // The live review request for a part, as planView shows it: the reviewer
@@ -3735,7 +3871,13 @@ export class Ledger extends DurableObject<Env> {
   // where the gate needs none; only a gate that cannot proceed (checks not
   // passing, a rejection at this head whose blocking findings the owner has
   // not refuted, no push) refuses, with its reason.
-  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean } {
+  // The answer names the request's number (`request`, t353), the one the
+  // queue gives runners in each review task, so the landing waiting on the
+  // verdict and the runner skipping the review name the same request. With
+  // the live runner offers (`offers`), an open request at this head that
+  // every runner offering its reviewer has skipped is withdrawn and asked
+  // anew (renewSkippedRequest), so the runners serve the new request.
+  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }, offers?: readonly SeenOffer[]): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean; request?: number } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner asks for a review", 403);
     const item = this.item(id);
     // A named reviewer is judged even when a request already stands, so a
@@ -3763,6 +3905,14 @@ export class Ledger extends DurableObject<Env> {
         this.log(id, actor, "review.withdrawn", { head: item.head, reviewer: asked, reason: `the project owner named ${reviewer} to review it` }, at, proved);
       }
     }
+    // An open request at this head that every runner offering its reviewer
+    // has skipped (t353) will never be claimed: each runner keeps its skip
+    // until the request changes, and the landing that waited on it said so
+    // by runner name. The owner asking again is the attention the skip asked
+    // for, so the request is withdrawn here and asked anew below, under a
+    // fresh number the runners serve again. Judged only when the caller has
+    // the live offers; a claimed request is being served and stays.
+    const renewed = item.head && offers ? this.renewSkippedRequest(id, item.head, offers, actor, at, proved) : null;
     const need = reviewNeeded({
       item, part: item.kind === "part", policy,
       evidence: this.evidenceFor(id), reviews: this.reviewsFor(id),
@@ -3770,7 +3920,7 @@ export class Ledger extends DurableObject<Env> {
     });
     // The newest live request: an older one at this head is one whose claim
     // lapsed, since a new request is made only when every earlier one has.
-    const live = this.sql.exec(`SELECT dispatch FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL ORDER BY id DESC LIMIT 1`, id, item.head).toArray()[0];
+    const live = this.sql.exec(`SELECT id, dispatch FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL ORDER BY id DESC LIMIT 1`, id, item.head).toArray()[0];
     if (!need.needed) {
       if (live) {
         const dispatch = JSON.parse(live.dispatch as string) as Dispatch;
@@ -3788,7 +3938,7 @@ export class Ledger extends DurableObject<Env> {
           throw new RuleError("review_requested", `a review of ${id} at ${item.head!.slice(0, 8)} is already requested from ${standing}; wait for its verdict, or let its claim lapse before naming ${reviewer}`, 409);
         }
         const recordedReason = records ? this.events(id, Number.MAX_SAFE_INTEGER).find((e) => e.kind === "review.requested" && e.data.head === item.head && e.data.reviewer === standing)?.data.reason : null;
-        return { needed: true, requested: false, reason: [need.reason, typeof recordedReason === "string" ? recordedReason : ""].filter(Boolean).join(" "), at: this.requestedAt(id, item.head!) ?? at, head: item.head!, reviewer: dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : undefined };
+        return { needed: true, requested: false, reason: [need.reason, typeof recordedReason === "string" ? recordedReason : ""].filter(Boolean).join(" "), at: this.requestedAt(id, item.head!) ?? at, head: item.head!, reviewer: dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : undefined, request: live.id as number };
       }
       if (wanted) throw new RuleError("review_blocked", `${id} cannot be reviewed now: ${need.reason}`, 409);
       return { needed: false, reason: need.reason };
@@ -3825,10 +3975,10 @@ export class Ledger extends DurableObject<Env> {
     const where = records ? pool.find((m) => sameActor(`${m.harness}/${m.id}`, chosen))?.where ?? "home" : "home";
     const dispatch = { ...makeDispatch({ to: where, agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
     const topTier = this.gateIsTier(item, need, chosen);
-    this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?)`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item));
+    const made = this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?) RETURNING id`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item)).one();
     this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: "land", ...(choiceReason ? { reason: choiceReason } : {}), ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
     this.askTierReview(item, need, chosen, actor, at, proved);
-    return { needed: true, requested: true, reason: [need.reason, choiceReason].filter(Boolean).join(" "), at, head: need.head, reviewer: chosen };
+    return { needed: true, requested: true, reason: [need.reason, choiceReason, renewed ?? ""].filter(Boolean).join(" "), at, head: need.head, reviewer: chosen, request: made.id as number };
   }
 
   // When the newest review.requested event for a head was recorded, so a
@@ -4481,6 +4631,7 @@ function briefFingerprint(text: string): string {
 function toItem(r: Row): Item {
   return {
     id: r.id as string,
+    area: (r.area as string | null) ?? null,
     title: r.title as string,
     scope: JSON.parse(r.scope as string),
     state: r.state as ItemState,
@@ -4526,6 +4677,7 @@ function toItem(r: Row): Item {
 // empty list or null gate becomes NULL, and a field left out sets nothing.
 function fieldColumns(fields: ItemFields): Record<string, string | null> {
   const set: Record<string, string | null> = {};
+  if (fields.area !== undefined) set.area = fields.area;
   if (fields.nonGoals !== undefined) set.non_goals = fields.nonGoals.length ? JSON.stringify(fields.nonGoals) : null;
   if (fields.stopWhen !== undefined) set.stop_when = fields.stopWhen.length ? JSON.stringify(fields.stopWhen) : null;
   if (fields.nextGate !== undefined) set.next_gate = fields.nextGate;

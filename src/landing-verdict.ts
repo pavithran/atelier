@@ -8,6 +8,8 @@
 // landing (cli/land.mjs) and the landing Workflow (src/landing-workflow.ts)
 // share this judgment, so both count the same verdicts the same way.
 
+import { offering, type SeenOffer } from "./dispatch/rules.ts";
+
 export interface LandingReview {
   by: string;
   head: string;
@@ -35,4 +37,18 @@ export function landingVerdict(reviews: LandingReview[], head: string, since: st
   const counted = fresh.filter((v) => !(v.tier && v.approve));
   const verdict = counted.find((v) => !v.approve) ?? counted.at(-1) ?? null;
   return { verdict, tierApprovals };
+}
+
+// Whether a review request will ever be claimed, by which runners have
+// skipped it (t353). A runner that will not serve a review reports its skip
+// (recordReviewSkip in src/ledger.ts, review-skip in src/index.ts); a
+// landing waiting on the verdict asks here, once a poll, whether every
+// runner that offers the reviewer for the review job has skipped, so it can
+// say so by runner name instead of waiting out the hour.
+export function allSkipped(reviewer: string, offers: readonly SeenOffer[], skips: readonly { runner: string }[]): string[] | null {
+  const names = offering({ to: "home", job: "review" } as const, offers)?.actors.get(reviewer.toLowerCase()) ?? [];
+  if (!names.length) return null;
+  const skipped = new Set(skips.map((s) => s.runner));
+  const left = names.filter((name) => !skipped.has(name));
+  return left.length ? null : names;
 }
