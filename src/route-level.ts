@@ -164,4 +164,4 @@ export function checkCapabilities(version: unknown, required: readonly string[])
 // Frozen at main's level when capability-only additions began (t522).
 // Published only for old clients; new routes declare a capability without
 // raising this number. Keep historical declaration levels for old servers.
-export const ROUTE_LEVEL = 27;
+export const ROUTE_LEVEL = 28;

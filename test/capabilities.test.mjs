@@ -149,13 +149,13 @@ test("each command that relies on a named capability declares it in its module",
   assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["adopt", "area", "board", "claim", "edit", "init", "integrated", "integration-failed", "land", "merge", "models", "new", "plan", "refresh-failed", "refreshed", "revert", "review", "review-claim", "review-unparsable", "start", "token", "wrap"]);
   for (const command of ["integrated", "integration-failed", "refreshed", "refresh-failed"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["plans.integration.v1"], command);
   // land counts the runners that skipped its review request by the request number the answer carries (t353).
-  assert.deepEqual(COMMAND_CAPABILITIES.land, ["projects.commit-identity.v1", "land.workflow.v1", "items.brief-criteria.v1", "reviews.criteria-binding.v1", "projects.require-criteria.v1", "reviews.skip.v1", "land.post-merge.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.land, ["projects.commit-identity.v1", "land.workflow.v1", "items.brief-criteria.v1", "reviews.criteria-binding.v1", "projects.require-criteria.v1", "reviews.skip.v1", "land.post-merge.v1", "land.triage.v1"]);
   // new and edit assign a task to a function area (--area, t456); area manages them and board reads the snapshot.
   assert.deepEqual(COMMAND_CAPABILITIES.new, ["items.brief-criteria.v1", "areas.manage.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.edit, ["items.brief-criteria.v1", "reviews.criteria-binding.v1", "areas.manage.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.area, ["areas.manage.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.board, ["areas.board.v1"]);
-  assert.deepEqual(COMMAND_CAPABILITIES.init, ["projects.commit-identity.v1", "projects.require-criteria.v1", "land.post-merge.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.init, ["projects.commit-identity.v1", "projects.require-criteria.v1", "land.post-merge.v1", "land.triage.v1"]);
   for (const command of ["review", "review-claim"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["reviews.criteria-binding.v1"], command);
   // merge posts the owner's review and, for an accepted plan that conflicts with main, the plan refresh route.
   assert.deepEqual(COMMAND_CAPABILITIES.merge, ["projects.commit-identity.v1", "reviews.criteria-binding.v1", "plans.refresh.v1"]);
@@ -222,7 +222,7 @@ test("the integration routes are guaranteed from legacy level 6, as the commits 
 });
 
 test("the legacy route level is frozen; additions need no numeric allocation", () => {
-  assert.equal(ROUTE_LEVEL, 27, "declare a named capability instead of raising ROUTE_LEVEL");
+  assert.equal(ROUTE_LEVEL, 28, "declare a named capability instead of raising ROUTE_LEVEL");
   // main's raises while t458 was built: the review skip (t353, 21 and 22) and the function areas (t456, 23).
   assert.deepEqual(CAPABILITIES.filter((c) => c.level === 21).map((c) => c.name), ["reviews.skip.v1"]);
   assert.deepEqual(CAPABILITIES.filter((c) => c.level === 22).map((c) => c.name), ["reviews.skip-as-runner.v1"]);
@@ -234,8 +234,17 @@ test("the legacy route level is frozen; additions need no numeric allocation", (
 test("post-merge runs are guaranteed from legacy level 27 alone, and init and land require them (t477)", () => {
   assert.deepEqual(CAPABILITIES.filter((c) => c.level === 27).map((c) => c.name), ["land.post-merge.v1"]);
   for (const command of ["init", "land"]) {
-    assert.deepEqual(checkCapabilities({ routeLevel: 26 }, COMMAND_CAPABILITIES[command]).missing, ["land.post-merge.v1"], command);
-    assert.equal(checkCapabilities({ routeLevel: 27 }, COMMAND_CAPABILITIES[command]).ok, true, command);
+    const upTo27 = COMMAND_CAPABILITIES[command].filter((n) => n !== "land.triage.v1");
+    assert.deepEqual(checkCapabilities({ routeLevel: 26 }, upTo27).missing, ["land.post-merge.v1"], command);
+    assert.equal(checkCapabilities({ routeLevel: 27 }, upTo27).ok, true, command);
+  }
+});
+
+test("the landing's triage is guaranteed from legacy level 28 alone, and init and land require it (t475)", () => {
+  assert.deepEqual(CAPABILITIES.filter((c) => c.level === 28).map((c) => c.name), ["land.triage.v1"]);
+  for (const command of ["init", "land"]) {
+    assert.deepEqual(checkCapabilities({ routeLevel: 27 }, COMMAND_CAPABILITIES[command]).missing, ["land.triage.v1"], command);
+    assert.equal(checkCapabilities({ routeLevel: 28 }, COMMAND_CAPABILITIES[command]).ok, true, command);
   }
 });
 
@@ -244,8 +253,8 @@ test("main's identity and reviewer admission guarantees keep their legacy bounda
   assert.deepEqual(CAPABILITIES.filter((c) => c.level === 25).map((c) => c.name), ["reviews.admission.v1"]);
   for (const command of ["adopt", "revert", "claim", "start", "wrap", "init", "land", "merge"]) {
     assert.ok(COMMAND_CAPABILITIES[command].includes("projects.commit-identity.v1"), command);
-    // Only what levels up to 24 guarantee: init and land also require the post-merge runs (27, t477).
-    const upTo24 = COMMAND_CAPABILITIES[command].filter((n) => n !== "land.post-merge.v1");
+    // Only what levels up to 24 guarantee: init and land also require the post-merge runs (27, t477) and the triage step (28, t475).
+    const upTo24 = COMMAND_CAPABILITIES[command].filter((n) => n !== "land.post-merge.v1" && n !== "land.triage.v1");
     assert.deepEqual(checkCapabilities({ routeLevel: 23 }, upTo24).missing, ["projects.commit-identity.v1"]);
     assert.equal(checkCapabilities({ routeLevel: 24 }, upTo24).ok, true);
   }
@@ -298,8 +307,8 @@ test("independent capability additions merge cleanly, including the same and new
     { names: ["one.new.v1", "two.new.v1"] },
     { names: ["reviews.same.v1", "reviews.same.v1"] },
     // Queued tasks keep their metadata, even with gaps or overlapping levels.
-    { names: ["queued.first.v1", "queued.second.v1"], levels: [28, 33] },
-    { names: ["queued.first.v1", "queued.second.v1"], levels: [28, 28] },
+    { names: ["queued.first.v1", "queued.second.v1"], levels: [ROUTE_LEVEL + 1, ROUTE_LEVEL + 6] },
+    { names: ["queued.first.v1", "queued.second.v1"], levels: [ROUTE_LEVEL + 1, ROUTE_LEVEL + 1] },
   ];
   for (const [i, { names, levels = [] }] of cases.entries()) {
     git("checkout", "-qB", `ours-${i}`, baseline);
