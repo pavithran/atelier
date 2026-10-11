@@ -17,6 +17,7 @@ import { submission } from "../src/brief.ts";
 import { parseVerdict, VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { checkCapabilities, requiredForJobs } from "../src/route-level.ts";
+import { TERMINAL_TASK_EXITS } from "../src/tokens.ts";
 import { rolePrompt, ROLE_PROMPT_MAX } from "../src/usage.ts";
 import { builderRefusals } from "../src/commit-identity.ts";
 
@@ -589,6 +590,7 @@ export async function checked(argv, options, executeChild = execute) {
     if (result.output) error.output = result.output;
     error.claimRefused = options?.claim && result.code === 3;
     error.infrastructure = result.code === 4;
+    if (argv[1] === cli) error.terminalState = Object.keys(TERMINAL_TASK_EXITS).find((state) => TERMINAL_TASK_EXITS[state] === result.code);
     throw error;
   }
   return result.output;
@@ -973,6 +975,11 @@ export async function runTask(assignment, config, name, io) {
     await io.cli(finishArgs(), workspace);
     advance({ type: "finish" });
   } catch (error) {
+    if (error.terminalState) {
+      state = { ...state, phase: "terminal", terminalState: error.terminalState, reason: error.message, taskFailure: false };
+      io.log(`task ${project}/${item.id} is ${error.terminalState === "abandoned" ? "closed" : error.terminalState} (state: ${error.terminalState}); workspace and commits preserved`);
+      return state;
+    }
     if (state.phase !== "failed") advance({ error: error.message });
     state = { ...state, taskFailure: taskFailure && !error.infrastructure && !io.stopped() };
     // The stall's report to the server (runOutcome, reportRun) says why the
@@ -1570,6 +1577,7 @@ export function failureCount(count, state) {
 }
 
 export function infrastructureFailureCount(count, state) {
+  if (state.terminalState) return count;
   return state.phase === "failed" && !state.taskFailure && !state.claimRefused && !state.skipped && !state.recorded ? count + 1 : 0;
 }
 
@@ -1666,6 +1674,11 @@ export async function runPlanTask(assignment, config, name, io) {
       io.log(`failed: ${state.reason}`);
     }
   } catch (error) {
+    if (error.terminalState) {
+      state = { phase: "terminal", terminalState: error.terminalState, reason: error.message, taskFailure: false };
+      io.log(`task ${project}/${item.id} is ${error.terminalState === "abandoned" ? "closed" : error.terminalState} (state: ${error.terminalState}); workspace preserved`);
+      return state;
+    }
     state = { phase: "failed", reason: error.message };
     state.taskFailure = taskFailure && !error.infrastructure && !io.stopped();
     if (error.claimRefused) state.claimRefused = true;
@@ -1679,7 +1692,7 @@ export async function runPlanTask(assignment, config, name, io) {
     // itself, and a refused or missing one counts an attempt only once the
     // claim is given back. A claim whose fate is unknown (the claim step
     // failed without a refusal) is released too, as runTask releases it.
-    if (claimed || (claimAttempted && !state.claimRefused && !state.skipped)) {
+    if (!state.terminalState && (claimed || (claimAttempted && !state.claimRefused && !state.skipped))) {
       const note = state.phase === "failed" ? state.reason : "plan job done";
       try {
         await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", note], workspace);
@@ -1736,7 +1749,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   for (const signal of signals) process.on(signal, stop);
   // However this process exits, no group it started outlives it.
   process.on("exit", killGroups);
-  const refused = new Set(), failures = new Map(), infrastructureFailures = new Map();
+  // Tasks closed under this runner (t476), by taskKey: their exact state,
+  // kept for this process so no later poll takes them again.
+  const refused = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map();
   // Review skip reports the server has not taken yet (t353), by the review's
   // refusal key: the report's body, how many tries in a row have failed, and
   // the poll (`polls`, counting the answered ones) on which it is next due.
@@ -1942,8 +1957,11 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         // before t252's fix still lists, and they stay in the queue for a
         // runner that takes them.
         const ordered = [...tasks.filter((task) => task.item.dispatch?.job === "review"), ...tasks.filter((task) => task.item.dispatch?.job !== "review")];
-        for (const task of ordered.filter((task) => offer.jobs.includes(jobOf(task)) && !refused.has(refusedKey(task)) && (failures.get(failureKey(task)) ?? 0) < 2 &&
+        for (const task of ordered.filter((task) => offer.jobs.includes(jobOf(task)) && !terminalTasks.has(taskKey(task)) && !refused.has(refusedKey(task)) && (failures.get(failureKey(task)) ?? 0) < 2 &&
           (infrastructureFailures.get(failureKey(task)) ?? 0) < 3)) {
+          // A poll can contain the same task more than once. Recheck after
+          // each job, since filtering the batch preceded its terminal result.
+          if (terminalTasks.has(taskKey(task))) continue;
           // A dispatch carrying job: "plan" asks for the plan job, one
           // carrying "review" for the review job, "integrate" for the
           // integrate job and "refresh" for the refresh job
@@ -1983,7 +2001,12 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           if (task.item.dispatch?.job === "review" && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && reportReviewSkip) {
             await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note: state.reason });
           }
-          if (state.claimRefused || state.skipped) refused.add(refusedKey(task));
+          // Closure survives changes to the head or updatedAt in later polls
+          // (t476). Remember its exact state for this process, by the task
+          // itself, independently of the revision-specific refusals that a
+          // new dispatch can supersede and of a review's per-request failures.
+          if (state.terminalState) terminalTasks.set(taskKey(task), state.terminalState);
+          else if (state.claimRefused || state.skipped) refused.add(refusedKey(task));
           else if (args.once || state.phase !== "failed" || state.taskFailure) break;
         }
         state ??= { phase: "idle" };
