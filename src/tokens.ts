@@ -82,7 +82,7 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
     // agent may mint already exposes; status and unwrap read it.
     // decisions are the owner's standing decisions, which every agent of
     // the project is to know (src/decisions.ts); only the owner writes them.
-    if (method === "GET") return ["owners", "standing", "items", "baseline-head", "decisions"].includes(section);
+    if (method === "GET") return ["owners", "standing", "items", "baseline-head", "decisions", "board", "areas"].includes(section);
     return section === "baseline-token" && method === "POST" && body.scope !== "write";
   }
   if (section !== "items" || !id) return false;
