@@ -25,6 +25,10 @@
 // LOCAL_OUTPUT_TAIL characters; a container's the last SANDBOX_OUTPUT_TAIL),
 // a stored log cut to its last LARGE_MAX characters, or unavailable, when the
 // stored log can no longer be read and the inline tail stands in for it.
+// Whether an inline tail is the whole output is measured on the tail as
+// recorded, less only the lines the recorder appended after cutting it; the
+// `[atelier]` lines written before the cut (a check that ran out of time)
+// are output and count.
 //
 // Which tests: failingTests reads the names of the failing tests from the
 // reporter formats below, and from no other. Output no format fits, or that
@@ -155,10 +159,21 @@ export interface CheckLog {
   label: string;                 // what `text` is, in words: whole, a tail only, cut, or unavailable
 }
 
-// The lines the recorders append after the output itself: the sha256 line
-// `atelier check` posts and the `[atelier] …` lines the container adds.
-const RECORDER_LINE = /^\[(?:atelier\]|sha256 of full output:)/;
-const outputBody = (tail: string): string => tail.split("\n").filter((line) => !RECORDER_LINE.test(line)).join("\n");
+// The lines a recorder appends after it has cut the tail, which are no part
+// of the output measured against what it keeps: the sha256 line `atelier
+// check` posts after its cut, and the `[atelier] ran in a Cloudflare
+// container…` line the container adds after its own. Every other recorder
+// line is written before the cut and is counted as output: the `[atelier]
+// check exceeded its time limit…` line of a local check that timed out
+// (runCheck in cli/atelier.mjs), a container's `[atelier] stopped after…`
+// and its `[atelier] this container has no git…` note. Dropping those too
+// measured a cut tail short of what the recorder keeps, and called it whole.
+const APPENDED_LINE = /^(?:\[sha256 of full output: [0-9a-f]*\]|\[atelier\] ran in a Cloudflare container\b.*)$/;
+const recordedOutput = (tail: string): string => {
+  const lines = tail.split("\n");
+  while (lines.length > 1 && APPENDED_LINE.test(lines.at(-1)!)) lines.pop();
+  return lines.join("\n");
+};
 
 const thousands = (n: number) => n.toLocaleString("en-US");
 
@@ -169,7 +184,9 @@ export async function readCheckLog(e: Pick<Evidence, "outputTail" | "log" | "whe
   const tail = String(e.outputTail ?? "");
   const kept = e.where === "sandbox" ? SANDBOX_OUTPUT_TAIL : LOCAL_OUTPUT_TAIL;
   const runOn = e.where === "sandbox" ? "a container" : "a check run on a machine";
-  const inlineCut = outputBody(tail).length >= kept;
+  // Measured on the tail as recorded, less only the lines appended after the
+  // cut: a tail of the kept length or more was cut from a longer output.
+  const inlineCut = recordedOutput(tail).length >= kept;
   const inline = (why: string | null): CheckLog => inlineCut
     ? { text: tail, source: "inline", whole: false, label: `${why ? `${why}; ` : ""}inline tail only (${runOn} keeps its last ${thousands(kept)} characters inline, and this output was longer)` }
     : { text: tail, source: "inline", whole: true, label: `${why ? `${why}; ` : ""}whole output, inline` };
