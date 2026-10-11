@@ -76,7 +76,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
   // the project's items and the runner queue, which the wait explains from.
   const box = {
     states: {}, reviews: { t1: [], t2: [] }, lease: null, waiting: [], version: null, routeLevel: ROUTE_LEVEL,
-    review: { needed: true, reviewer: "codex/gpt-6-astra", approve: true, pending: false, at: null, approveAfter: 0, claimed: false },
+    review: { needed: true, reviewer: "codex/gpt-6-astra", approve: true, pending: false, at: null, approveAfter: 0, claimed: false, skips: [] },
     requests: [], regen: "echo generated > gen-fixtures.txt", checks: ["exit 0"], items: [], queue: [], runners: null, renewFails: false, kinds: {},
     wf: { instance: null, stage: null, round: 0, checks: null, status: null, files: null, error: null, output: null, events: [], started: [], reads: 0, baseTokenAt: [], tick: null, onEvent: null },
   };
@@ -107,7 +107,12 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     const due = id === "t1" && box.review.pending && box.review.approveAfter !== null && box.review.approveAfter-- <= 0;
     const reviews = due ? (box.reviews.t1.push({ by: box.review.reviewer, approve: box.review.approve, head, note: box.review.approve ? "Land fixture approves." : "Land fixture rejects.", at: new Date().toISOString() }), box.review.pending = false, box.reviews.t1) : box.reviews[id];
     const state = box.states[id];
-    const events = id === "t1" && box.review.claimed && box.review.at ? [{ seq: 1, itemId: id, at: box.review.at, actor: box.review.reviewer, kind: "review.claimed", data: { head, runner: "home:mbp" } }] : [];
+    const events = [
+      ...(id === "t1" && box.review.claimed && box.review.at ? [{ seq: 1, itemId: id, at: box.review.at, actor: box.review.reviewer, kind: "review.claimed", data: { head, runner: "home:mbp" } }] : []),
+      // A skip names the request it refused (t353); the fixture's open
+      // request is number 1 unless a test asks for another.
+      ...(box.review.skips ?? []).map((s, i) => ({ seq: 100 + i, itemId: id, at: new Date().toISOString(), actor: s.runner, kind: "review.skipped", data: { head, runner: s.runner, request: s.request ?? 1 } })),
+    ];
     return {
       item: { id, title: `Fixture ${id}`, state, owner: "codex/test", ...(box.pushActors ? { pushActors: box.pushActors } : {}), head, ...(box.kinds[id] ? { kind: box.kinds[id] } : {}), acceptedHead: state === "accepted" || state === "merged" ? head : null },
       policy: { checks: box.checks, protected: ["work.txt"], regenerate: box.regen, ...(box.agents ? { agents: box.agents } : {}), ...(box.eligible ? { eligible: box.eligible } : {}) },
@@ -206,7 +211,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     else if (url.endsWith("/submit")) { box.states[item] = "submitted"; answer = detail(item); }
     else if (url.endsWith("/review-request")) {
       if (!box.review.needed && !(body.wanted === true && body.reviewer)) answer = { needed: false, reason: box.review.reason ?? "the gate counts an independent approval already" };
-      else { box.review.reviewer = body.reviewer ?? box.review.reviewer; box.review.pending = true; box.review.at = new Date().toISOString(); answer = { needed: true, requested: true, reason: `a protected change needs an independent review${!body.reviewer && box.review.why ? ` ${box.review.why}` : ""}`, at: box.review.at, head, reviewer: body.reviewer ?? box.review.reviewer }; }
+      else { box.review.reviewer = body.reviewer ?? box.review.reviewer; box.review.pending = true; box.review.at = new Date().toISOString(); answer = { needed: true, requested: true, reason: `a protected change needs an independent review${!body.reviewer && box.review.why ? ` ${box.review.why}` : ""}`, at: box.review.at, head, reviewer: body.reviewer ?? box.review.reviewer, request: box.review.request ?? 1 }; }
     }     else if (url.endsWith("/accept")) {
       assert.equal(body.head, head);
       box.states[item] = "accepted"; answer = detail(item).item;
@@ -228,6 +233,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
   writeFileSync(join(config, "config.json"), JSON.stringify({ server: url, owner: "owner", projects: { proj: { path: checkout, branch: "main" } } }));
   const run = async (cwd, ...args) => {
     const child = spawn(process.execPath, [resolve("cli/atelier.mjs"), ...args, "--project", "proj"], { cwd, env: { ...process.env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: "fixture", ATELIER_CACHE: cache, ATELIER_SERVER: url, ATELIER_LAND_POLL_MS: "50", ...fx.env } });
+    t.after(() => child.kill("SIGKILL"));
     let output = ""; child.stdout.on("data", (s) => { output += s; fx.onOutput?.(output); }); child.stderr.on("data", (s) => output += s);
     const status = await new Promise((ok) => child.on("close", ok));
     return { status, output };
@@ -687,7 +693,7 @@ test("a signal ends a queued landing, leaving the queue and taking no lease", as
   t.after(() => child.kill("SIGKILL"));
   let output = ""; child.stdout.on("data", (s) => { output += s; }); child.stderr.on("data", (s) => { output += s; });
   const done = new Promise((ok) => child.on("close", (status, signal) => ok({ status, signal })));
-  await until(() => f.posts("/landing-lease").some((x) => x.body.queued === true && x.body.item === "t1"), 15_000, "the queued ask");
+  await until(() => f.posts("/landing-lease").some((x) => x.body.queued === true && x.body.item === "t1"), CEILING_MS, "the queued ask");
   child.kill("SIGTERM");
   const ended = await done;
   assert.equal(ended.status, 143, output);
@@ -1114,7 +1120,13 @@ test("a server that reports no route level refuses, saying to deploy", async (t)
 });
 
 // Waits until `ready()` holds, polling, or fails after `ms`.
-async function until(ready, ms = 15_000, what = "the condition") {
+// The deadline is only a ceiling for a machine under load (a landing spawns
+// node and runs git, which took over 15 s at load ~20); the wait ends as soon
+// as the event happens, so a quiet machine never waits for it.
+// The expiry landing exceeded the runner's 180 s default under load (t389).
+// These two tests override that default as well as their event-wait deadlines.
+const CEILING_MS = 300_000;
+async function until(ready, ms = CEILING_MS, what = "the condition") {
   for (const t0 = Date.now(); !ready();) {
     if (Date.now() - t0 > ms) throw new Error(`${what} did not come within ${ms}ms`);
     await new Promise((ok) => setTimeout(ok, 25));
@@ -1125,7 +1137,7 @@ async function until(ready, ms = 15_000, what = "the condition") {
 // of the heartbeat's beats — and returns what it settled on. A stream that
 // keeps coming never settles, so this waits on the renewal calls themselves
 // rather than proving they stopped with a fixed sleep on the clock.
-async function settled(count, quiet, ms = 15_000, what = "the count") {
+async function settled(count, quiet, ms = CEILING_MS, what = "the count") {
   let last = count(), at = Date.now();
   for (const t0 = Date.now();;) {
     if (Date.now() - t0 > ms) throw new Error(`${what} did not settle within ${ms}ms`);
@@ -1156,7 +1168,7 @@ test("SIGINT and SIGTERM release the lease before the landing ends, with the sig
   for (const [signal, status] of [["SIGTERM", 143], ["SIGINT", 130]]) {
     const f = await landFixture(t);
     const landing = waitingLanding(f);
-    await until(() => f.box.review.pending, 15_000, "the review request");
+    await until(() => f.box.review.pending, CEILING_MS, "the review request");
     assert.equal(f.box.lease?.item, "t1");
     landing.child.kill(signal);
     const ended = await landing.done;
@@ -1191,7 +1203,7 @@ test("the landing renews the lease while it waits, and the renewal moves renewed
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: "40" });
-  await until(() => f.posts("/landing-lease").filter((x) => x.body.renew === true).length >= 3, 15_000, "three renewals");
+  await until(() => f.posts("/landing-lease").filter((x) => x.body.renew === true).length >= 3, CEILING_MS, "three renewals");
   assert.ok(f.posts("/landing-lease").some((x) => x.body.item === "t1" && x.body.renew !== true), "the lease was taken before it was renewed");
   for (const renew of f.posts("/landing-lease").filter((x) => x.body.renew === true)) assert.equal(renew.body.item, "t1");
   assert.equal(f.box.lease.item, "t1");
@@ -1203,15 +1215,18 @@ test("the landing renews the lease while it waits, and the renewal moves renewed
   assert.equal(f.box.lease, null);
 });
 
-test("a lease not renewed for the expiry is taken over, and the landing says whose lapsed", async (t) => {
+test("a lease not renewed for the expiry is taken over, and the landing says whose lapsed", { timeout: CEILING_MS }, async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
+  // Seed an already expired lease; do not wait for fifteen minutes to elapse.
+  // run() resolves on CLI close, after the observed takeover and merge.
   const at = new Date(Date.now() - LANDING_LEASE_EXPIRY_MS - 5 * 60_000).toISOString();
   f.box.lease = { item: "t2", holder: "owner", at, renewedAt: at };
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /Took over the landing lease of proj from owner, which had been landing t2 since .* and stopped renewing it 20 minutes ago; that landing is treated as ended/);
   assert.equal(f.box.states.t1, "merged");
+  assert.ok(f.posts("/landing-lease").some((r) => r.body.item === "t1" && !r.body.cancel && !r.body.renew));
   assert.equal(f.box.lease, null);
 });
 
@@ -1334,44 +1349,85 @@ test("while the review request is unclaimed and no live runner offers the review
   assert.equal(h.box.states.t1, "merged");
 });
 
+test("a landing whose sole review runner has skipped says so by runner name and stops, instead of waiting out the hour", async (t) => {
+  const f = await landFixture(t);
+  // No verdict will ever arrive: the landing must say the skip, not time out.
+  f.box.review.approveAfter = null;
+  f.box.runners = [{ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() }];
+  f.box.review.skips = [{ runner: "home:studio" }];
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /every runner that offers codex\/gpt-6-astra for the review of t1 at \w+ has skipped it: home:studio\./);
+  assert.equal(f.posts("/land").find((x) => x.body.step === "review")?.body.verdict, "skipped");
+  assert.equal(f.posts("/land").find((x) => x.body.step === "review")?.body.reviewer, "codex/gpt-6-astra");
+  assert.equal(f.posts("/accept").length, 0);
+  assert.equal(f.posts("/merged").length, 0);
+  assert.equal(f.box.states.t1, "submitted");
+  // A second runner offering the reviewer, still live, leaves one that has not
+  // skipped: the landing keeps waiting instead of naming a partial skip.
+  const g = await landFixture(t);
+  g.box.review.approveAfter = 3;
+  g.box.runners = [
+    { runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() },
+    { runner: "home:desk", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() },
+  ];
+  g.box.review.skips = [{ runner: "home:studio" }];
+  const offered = await g.run(g.checkout, "land", "t1");
+  assert.equal(offered.status, 0, offered.output);
+  assert.doesNotMatch(offered.output, /has skipped it/);
+  assert.equal(g.box.states.t1, "merged");
+  // A skip of an earlier review request at the same head — an earlier
+  // landing's — does not count against the request this landing made: the
+  // landing waits for the verdict as before.
+  const h = await landFixture(t);
+  h.box.review.approveAfter = 3;
+  h.box.review.request = 2;
+  h.box.runners = [{ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() }];
+  h.box.review.skips = [{ runner: "home:studio", request: 1 }];
+  const earlier = await h.run(h.checkout, "land", "t1");
+  assert.equal(earlier.status, 0, earlier.output);
+  assert.doesNotMatch(earlier.output, /has skipped it/);
+  assert.equal(h.box.states.t1, "merged");
+});
+
 test("a refused renewal stops the heartbeat and is said once, and the lost lease is left alone; a failed one is retried and warned of once", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   const beatMs = 40;
   const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: String(beatMs) });
   const renewals = () => f.posts("/landing-lease").filter((x) => x.body.renew === true).length;
-  await until(() => renewals() >= 2, 15_000, "two renewals");
+  await until(() => renewals() >= 2, CEILING_MS, "two renewals");
   // The server cannot be reached for a while: one warning, renewals go on.
   f.box.renewFails = true;
-  await until(() => landing.output().includes("could not be renewed"), 15_000, "the warning");
+  await until(() => landing.output().includes("could not be renewed"), CEILING_MS, "the warning");
   const failed = renewals();
-  await until(() => renewals() >= failed + 3, 15_000, "three more renewals");
+  await until(() => renewals() >= failed + 3, CEILING_MS, "three more renewals");
   assert.equal(landing.output().split("could not be renewed").length - 1, 1);
   f.box.renewFails = false;
-  await until(() => landing.output().includes("renewed again"), 15_000, "the recovery");
+  await until(() => landing.output().includes("renewed again"), CEILING_MS, "the recovery");
   // Another landing took the lease over: the renewal is refused, said once,
   // and no renewal follows — the renewal calls themselves must settle, quiet
   // for several beats, at the count the refusal left them at.
   f.box.lease = { item: "t2", holder: "owner", at: new Date().toISOString(), renewedAt: new Date().toISOString() };
-  await until(() => landing.output().includes("no longer t1's"), 15_000, "the loss");
+  await until(() => landing.output().includes("no longer t1's"), CEILING_MS, "the loss");
   const after = renewals();
   // The landing stops on its own — every step, and each poll of the review
   // wait, asks the guard — so its end is waited for, not raced with a sleep.
   const ended = await landing.done;
   assert.equal(ended.status, 1, landing.output());
   assert.match(landing.output(), /run atelier land t1 again once the other landing ends/);
-  assert.equal(await settled(renewals, beatMs * 5, 15_000, "the renewals"), after, "renewals continued after the refusal");
+  assert.equal(await settled(renewals, beatMs * 5, CEILING_MS, "the renewals"), after, "renewals continued after the refusal");
   assert.equal(landing.output().split("no longer t1's").length - 1, 1);
   // The landing's end leaves t2's lease where it is.
   assert.equal(f.box.lease?.item, "t2");
   assert.ok(!f.posts("/landing-lease").some((x) => x.body.cancel === true));
 });
 
-test("a landing that learns from its heartbeat that it lost the lease stops without accepting or merging", async (t) => {
+test("a landing that learns from its heartbeat that it lost the lease stops without accepting or merging", { timeout: CEILING_MS }, async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: "40" });
-  await until(() => f.box.review.pending, 15_000, "the review request");
+  await until(() => f.box.review.pending, CEILING_MS, "the review request");
   const before = { checkout: git(f.checkout, "rev-parse", "HEAD"), baseline: git(f.p, "--git-dir", f.baseline, "rev-parse", "main") };
   // The Mac sleeps (t232): the renewals pause, the lease lapses, and t2's
   // landing, queued with --wait, takes it over.
@@ -1426,7 +1482,7 @@ test("a landing whose lease lapsed and was taken over releases nothing of the la
   // t1's landing waits for a review while its lease is renewed; then its
   // renewals stop reaching the server and t2's landing takes the lease over.
   const landing = waitingLanding(f, { ATELIER_LAND_RENEW_MS: "40" });
-  await until(() => f.box.review.pending, 15_000, "the review request");
+  await until(() => f.box.review.pending, CEILING_MS, "the review request");
   f.box.renewFails = true;
   const taken = new Date().toISOString();
   f.box.lease = { item: "t2", holder: "owner", at: taken, renewedAt: taken };

@@ -245,8 +245,14 @@ export function redactGitArgs(args) {
     (/extraheader$/i.test(args[i - 1] ?? "")) ? "[redacted]" : arg);
 }
 
+// A task the runner refuses once and for all, keyed so the refusal ends when
+// the work it refused for changes: a new head, a new push (updatedAt) or, for
+// a review, a new review request (t353). The queue's review task carries the
+// review request's number in `item.request`, so a refusal of one review
+// request never strands the next landing's, which asks again under its own
+// request and head.
 export function refusedKey(task) {
-  return JSON.stringify([task.project, task.item.id, task.item.head, task.item.updatedAt]);
+  return JSON.stringify([task.project, task.item.id, task.item.head, task.item.updatedAt, task.item.request]);
 }
 
 export function writeBrief(workspace, text) {
@@ -860,6 +866,17 @@ export async function runTask(assignment, config, name, io) {
 
 export const taskKey = (task) => JSON.stringify([task.project, task.item.id]);
 
+// The key a runner's per-process failure cap uses. A build's failures count
+// against the task itself; a review's against the review it answered — its
+// head and its request number — so a new review request or a new head (a
+// later landing) starts the count fresh instead of an earlier landing's
+// failures stranding it (t353).
+export function failureKey(task) {
+  return task.item.dispatch?.job === "review"
+    ? JSON.stringify([task.project, task.item.id, task.item.head, task.item.request])
+    : taskKey(task);
+}
+
 // The job an assignment is, as the offer names jobs: the dispatch's own, the
 // merge jobs a build carries (a task's merge-main under "merge-main-task",
 // a part returned after an integration conflict under "merge-plan"), or a
@@ -1356,6 +1373,23 @@ export function queueBackoffMs(misses) {
   return misses <= 1 ? 30_000 : Math.min(30_000 * 2 ** (misses - 1), 5 * 60_000);
 }
 
+// Whether a failed review skip report (t353) is refused for good: a 4xx no
+// retry would change (a request the server does not have, a malformed head).
+// A 408 (the server timed the request out) and a 429 (it was busy) are as
+// temporary as a 5xx, a dropped connection or a timeout, and the report is
+// kept for another try.
+export function skipRefusedForGood(error) {
+  const status = /^(4\d\d)\b/.exec(String(error?.message ?? ""))?.[1];
+  return status !== undefined && status !== "408" && status !== "429";
+}
+
+// How many polls a kept skip report waits after `misses` failed attempts in a
+// row: the queue backoff (queueBackoffMs) in polls of 30 seconds — the next
+// poll, then two, four and eight on, at most ten (five minutes).
+export function skipRetryPolls(misses) {
+  return Math.ceil(queueBackoffMs(misses) / 30_000);
+}
+
 // A failure the job recorded on the item (`recorded`: runRefresh posted
 // refresh-failed, and the server handles it) counts toward neither cap
 // (t273): it is no task failure and no infrastructure failure, so the loop
@@ -1505,7 +1539,7 @@ export function runOutcome(state) {
 
 // `reportRun(body, runner, signal)` sends a run report; a report that fails
 // is logged and the loop goes on.
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun, version }) {
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, version }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
@@ -1530,6 +1564,35 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // However this process exits, no group it started outlives it.
   process.on("exit", killGroups);
   const refused = new Set(), failures = new Map(), infrastructureFailures = new Map();
+  // Review skip reports the server has not taken yet (t353), by the review's
+  // refusal key: the report's body, how many tries in a row have failed, and
+  // the poll (`polls`, counting the answered ones) on which it is next due.
+  // A review this runner has refused or capped is left out of every later
+  // poll, so its report cannot ride on a later run: it is tried again on its
+  // own, with the queue backoff in polls, until the server has it or refuses
+  // it for good.
+  const pendingSkips = new Map();
+  let polls = 0;
+  // Sends one skip report. Taken, or refused for good (skipRefusedForGood),
+  // the report is done with; failed any other way (the server down, busy or
+  // slow, a timeout) it is kept, due again skipRetryPolls on.
+  const reportSkip = async (key, body, misses = 0) => {
+    try {
+      await reportReviewSkip(body, offer.runner, controller.signal);
+      pendingSkips.delete(key);
+      io.log(`reported the review skip for ${body.project}/${body.item}`);
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      if (skipRefusedForGood(error)) {
+        pendingSkips.delete(key);
+        io.log(`could not report the review skip for ${body.project}/${body.item}: ${error.message}`);
+      } else {
+        const after = skipRetryPolls(misses + 1);
+        pendingSkips.set(key, { body, misses: misses + 1, due: polls + after });
+        io.log(`could not report the review skip for ${body.project}/${body.item}: ${error.message}; trying again ${after === 1 ? "next poll" : `in ${after} polls`}`);
+      }
+    }
+  };
   const cleanupOptions = () => ({ timeoutMs: 5000, step: "cleanup" });
   // Resets a workspace to a commit and removes untracked files, saving any
   // uncommitted work first (rescueWork).
@@ -1650,6 +1713,17 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         misses = 0;
         if (!Array.isArray(tasks)) throw new Error("queue did not return an array");
         if (controller.signal.aborted) break;
+        polls++;
+        // Skip reports the server did not take are tried again first, once
+        // their backoff has passed, until it has them (t353): the reviews
+        // they name are left out of the loop below, so nothing else would
+        // send them.
+        for (const [key, pending] of [...pendingSkips]) {
+          if (pending.due > polls) continue;
+          await reportSkip(key, pending.body, pending.misses);
+          if (controller.signal.aborted) break;
+        }
+        if (controller.signal.aborted) break;
         // Review jobs come first, in the queue's order, then the rest in
         // theirs, so a review atelier land waits on is not held behind builds
         // (t213). A job the offer does not name the runner never takes
@@ -1657,8 +1731,8 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         // before t252's fix still lists, and they stay in the queue for a
         // runner that takes them.
         const ordered = [...tasks.filter((task) => task.item.dispatch?.job === "review"), ...tasks.filter((task) => task.item.dispatch?.job !== "review")];
-        for (const task of ordered.filter((task) => offer.jobs.includes(jobOf(task)) && !refused.has(refusedKey(task)) && (failures.get(taskKey(task)) ?? 0) < 2 &&
-          (infrastructureFailures.get(taskKey(task)) ?? 0) < 3)) {
+        for (const task of ordered.filter((task) => offer.jobs.includes(jobOf(task)) && !refused.has(refusedKey(task)) && (failures.get(failureKey(task)) ?? 0) < 2 &&
+          (infrastructureFailures.get(failureKey(task)) ?? 0) < 3)) {
           // A dispatch carrying job: "plan" asks for the plan job, one
           // carrying "review" for the review job, "integrate" for the
           // integrate job and "refresh" for the refresh job
@@ -1682,12 +1756,22 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
               io.log(`reported ${task.project}/${task.item.id} as ${outcome}`);
             } catch (error) { io.log(`could not report ${task.project}/${task.item.id} as ${outcome}: ${error.message}`); }
           }
-          const key = taskKey(task), count = failureCount(failures.get(key) ?? 0, state);
+          const key = failureKey(task), count = failureCount(failures.get(key) ?? 0, state);
           failures.set(key, count);
           if (count === 2) io.log(`${task.project}/${task.item.id} needs the owner's attention after 2 failures; skipped for this process`);
           const infrastructureCount = infrastructureFailureCount(infrastructureFailures.get(key) ?? 0, state);
           infrastructureFailures.set(key, infrastructureCount);
           if (infrastructureCount === 3) io.log(`${task.project}/${task.item.id} needs the owner's attention after 3 consecutive infrastructure failures: ${state.reason}; skipped for this process`);
+          // A review this runner will not serve again in this process — a
+          // refused claim, a skip, or the failure cap — is reported to the
+          // server, under the request's number, so the landing waiting on it
+          // can say, by runner name, when every runner that offers the
+          // reviewer has skipped, instead of waiting out the hour (t353). A
+          // report the server did not take is kept and tried again each poll
+          // (reportSkip), since this review is not run again in this process.
+          if (task.item.dispatch?.job === "review" && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && reportReviewSkip) {
+            await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note: state.reason });
+          }
           if (state.claimRefused || state.skipped) refused.add(refusedKey(task));
           else if (args.once || state.phase !== "failed" || state.taskFailure) break;
         }
