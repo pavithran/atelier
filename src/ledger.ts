@@ -23,7 +23,7 @@ import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./c
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX, TEXT_CONTROLS } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
-import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, describe, holdText, makeDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type RunnerKind, type RunnerOffer, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
+import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, describe, holdText, makeDispatch, overrideDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type RunnerKind, type RunnerOffer, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
@@ -1544,11 +1544,18 @@ export class Ledger extends DurableObject<Env> {
   // runner merges main at the dispatch's head into the workspace and leaves
   // the conflicts for it to resolve, where a plain rework would reset the
   // workspace to a head that cannot reach main.
-  dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null): Item {
+  //
+  // With overlapOk, a task already dispatched keeps its offer: omitted fields
+  // stay as they were (overrideDispatch in src/dispatch/rules.ts), and the
+  // answer names the core-file hold the override released, if one held it.
+  dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null): Item & { retainedDispatch?: true; releasedCoreHold?: CoreHold } {
     const item = this.checkDispatch(id, actor);
-    const d = makeDispatch(input, actor, new Date().toISOString());
+    const d = overrideDispatch(input, item.dispatch, actor, new Date().toISOString());
     this.assertMergeMainWorkspace(item, d);
-    assertDispatchClaimable(item, this.items(), this.project().policy, d, this.owner);
+    const items = this.items();
+    assertDispatchClaimable(item, items, this.project().policy, d, this.owner);
+    const retained = input.overlapOk === true && !!item.dispatch;
+    const released = retained && item.state === "open" && !item.owner ? coreHold(item, items, this.project().policy.coreFiles) : null;
     const held = this.holds(item);
     if (held) {
       this.dropToken(id, token);
@@ -1558,24 +1565,28 @@ export class Ledger extends DurableObject<Env> {
     }
     this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), d.at, id);
     this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job, head: d.head } : {}), ...(d.overlapOk ? { overlapOk: true } : {}) }, d.at);
-    return this.item(id);
+    return { ...this.item(id), ...(retained ? { retainedDispatch: true as const } : {}), ...(released ? { releasedCoreHold: released } : {}) };
   }
 
   // The owner's release of an overlap-held dispatch: only the overlap
   // override (and a given agent or model) changes; see retainDispatch. A task
-  // a runner has claimed since is refused, never redispatched.
-  releaseHold(id: string, actor: string, input: Record<string, unknown>): Item {
+  // a runner has claimed since is refused, never redispatched. As for an
+  // override sent as a dispatch (t491), the answer names the core-file hold
+  // released, if one held it.
+  releaseHold(id: string, actor: string, input: Record<string, unknown>): Item & { retainedDispatch: true; releasedCoreHold?: CoreHold } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner dispatches", 403);
     const item = this.item(id);
     this.assertNotPlanned(item);
     assertNotTerminal(item);
-    const d = retainDispatch(item, input, this.items(), this.project().policy, this.owner);
+    const items = this.items(), policy = this.project().policy;
+    const d = retainDispatch(item, input, items, policy, this.owner);
+    const released = coreHold(item, items, policy.coreFiles);
     if (JSON.stringify(d) !== JSON.stringify(item.dispatch)) {
       const at = new Date().toISOString();
       this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), at, id);
       this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, overlapOk: true, retained: true, ...(d.job ? { job: d.job, head: d.head } : {}) }, at);
     }
-    return this.item(id);
+    return { ...this.item(id), retainedDispatch: true as const, ...(released ? { releasedCoreHold: released } : {}) };
   }
 
   // A merge-main job merges main into the task's workspace, so a task with
@@ -1598,7 +1609,7 @@ export class Ledger extends DurableObject<Env> {
     if (item.state === "accepted") this.acceptedReworkAllowed(item, actor);
     if (!this.holds(item)) assertDispatchable(item);
     if (input) {
-      const d = makeDispatch(input, actor, new Date().toISOString());
+      const d = overrideDispatch(input, item.dispatch, actor, new Date().toISOString());
       this.assertMergeMainWorkspace(item, d);
       assertDispatchClaimable(item, this.items(), this.project().policy, d, this.owner);
     }
