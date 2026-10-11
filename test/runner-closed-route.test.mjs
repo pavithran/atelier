@@ -70,7 +70,7 @@ function serve(fork, { state = null, closeAt = null, refuseClaim = false, blockF
       if (closed()) return terminal();
       Object.assign(item, { state: "claimed", owner: ACTOR, runner: RUNNER });
       const expiresAt = new Date(Date.now() + 3600_000).toISOString();
-      return [200, { item, workspace: { remote: fork.remote, token: "workspace-secret", expiresAt, defaultBranch: "main" }, baseline: { remote: fork.remote, token: "baseline-secret", defaultBranch: "main" } }];
+      return [200, { item, commitIdentity: { name: "Builder", email: "builder@example.com", agentEmails: [] }, workspace: { remote: fork.remote, token: "workspace-secret", expiresAt, defaultBranch: "main" }, baseline: { remote: fork.remote, token: "baseline-secret", defaultBranch: "main" } }];
     }
     if (closed()) return terminal();
     if (verb === undefined && method === "GET") {
@@ -96,6 +96,7 @@ function serve(fork, { state = null, closeAt = null, refuseClaim = false, blockF
       let status, json;
       if (parts[1] === "version") [status, json] = [200, { commit: "0".repeat(40), routeLevel: ROUTE_LEVEL }];
       else if (parts[1] === "config") [status, json] = [200, { ownerActor: "owner", ownerName: "Owner", runner: RUNNER, tokenId: "runner-token-id" }];
+      else if (req.method === "GET" && parts[1] === "projects" && parts[2] === PROJECT && parts.length === 3) [status, json] = [200, { project: { name: PROJECT, policy: {} } }];
       else if (parts[1] === "projects" && parts[2] === PROJECT && parts[3] === "items" && parts[4] === "t1") {
         requests.push(`${req.method} ${parts[5] ?? "item"}`);
         [status, json] = answer(req.method, parts[5], body);
