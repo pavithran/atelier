@@ -45,10 +45,11 @@ function exported(name) {
 
 // The path a call site names, as the table writes it: I(name, id) is the
 // item, a template on it is the item's verb, a run id under sandbox is
-// {run}, and a plain string is itself.
+// {run}, P(name) is the project, and a plain string is itself.
 function declaredPath(expr) {
   const text = expr.trim();
   if (/^I\(\s*name\s*,\s*id\s*\)$/.test(text)) return ITEM;
+  if (/^P\(\s*name\s*\)$/.test(text)) return "/projects/{project}";
   const template = /^`\$\{I\(\s*name\s*,\s*id\s*\)\}((?:\/[a-z-]+)*)(\/\$\{encodeURIComponent\(runId\)\})?`$/.exec(text);
   if (template) return `${ITEM}${template[1]}${template[2] ? "/{run}" : ""}`;
   const literal = /^"(\/[a-z/-]+)"$/.exec(text);
@@ -154,6 +155,7 @@ test("the source check reads call sites as the commands write them", () => {
   assert.equal(declaredPath("`${I(name, id)}/review-skip`"), `${ITEM}/review-skip`);
   assert.equal(declaredPath("`${I(name, id)}/sandbox/${encodeURIComponent(runId)}`"), `${ITEM}/sandbox/{run}`);
   assert.equal(declaredPath('"/runs"'), "/runs");
+  assert.equal(declaredPath("P(name)"), "/projects/{project}");
   assert.equal(declaredPath("`${P(name)}/items`"), null, "a path on another helper is not read, and fails the check");
   assert.deepEqual(bodyKeys('{ head, ...(rebasedFrom ? { rebasedFrom } : {}) }'), ["head", "rebasedFrom"]);
   assert.deepEqual(bodyKeys('{ kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed, outputTail: `${r.output.slice(-3500)}`, ...(mainHead ? { merged: true, mainHead } : {}) }'),

@@ -51,7 +51,7 @@ const PLAN_DOCUMENT = { schema: "atelier.plan.v1", goal: "Ship", parts: [{ key: 
 // The reads runnerRoute allows that no runner call makes: configuration and
 // base reads a runner may make by hand (docs/runners.md), each exercised below.
 const SPARE_READS = [
-  ["GET", "/projects/p"], ["GET", "/projects/p/decisions"], ["GET", "/projects/p/baseline-head"], ["POST", "/projects/p/baseline-token"],
+  ["GET", "/projects/p/decisions"], ["GET", "/projects/p/baseline-head"], ["POST", "/projects/p/baseline-token"],
   ["GET", "/projects/p/items/t1/brief"], ["GET", "/projects/p/items/t1/diff"], ["GET", `/projects/p/items/t1/logs/${"a".repeat(64)}`], ["GET", `/projects/p/items/t1/diffs/${"a".repeat(64)}`],
 ];
 
@@ -66,7 +66,7 @@ const API_ROUTES = [
     "GET /projects/p/decisions", "POST /projects/p/decisions", "POST /projects/p/decisions/d1/withdraw", "GET /projects/p/actions", "GET /projects/p/items", "POST /projects/p/items"],
   ...["GET", "GET brief", "GET job-brief", "GET sandbox/p:t1:abc:1", "GET diff", `GET logs/${"a".repeat(64)}`, `GET diffs/${"a".repeat(64)}`, "GET plan", "GET landing-workflow",
     ...["claim", "read-token", "read-token (write)", "base-token", "base-token (write)", "push", "evidence", "sandbox", "dispatch", "undispatch", "edit", "block", "unblock", "clear-secret",
-      "review", "review-claim", "review-release", "review-skip", "review-unparsable", "review-request", "land", "landing-workflow", "submit", "handoff", "release", "abandon", "accept",
+      "review", "review-claim", "review-renew", "review-release", "review-skip", "review-unparsable", "review-request", "land", "landing-workflow", "submit", "handoff", "release", "abandon", "accept",
       "merge", "override", "criteria", "decide", "integrated", "integration-failed", "refreshed", "refresh-failed", "plan", "plan/approve"].map((v) => `POST ${v}`),
   ].map((entry) => { const [method, rest = ""] = entry.split(" ", 2); const write = entry.endsWith(" (write)"); const verb = rest.replace(" (write)", ""); return `${method} /projects/p/items/t1${verb ? `/${verb}` : ""}${write ? " (write)" : ""}`; }),
 ];
@@ -162,10 +162,13 @@ test("the runner reaches the server only through the transport, and every call a
   assert.deepEqual([...sent].sort(), [...own].sort());
   // Every atelier command the runner spawns is declared, and every declared command is spawned.
   const spawned = new Set([...runner.matchAll(/\["([a-z-]+)", (?:item\.(?:plan \?\? )?id|partId)/g)].map((m) => m[1]));
+  // A lease call (leaseCall, t351) is the runner's own, sent through the
+  // transport, never spawned: review-renew names no atelier command.
   for (const m of runner.matchAll(/\bcli\(\[\s*"([a-z-]+)"/g)) spawned.add(m[1]);
+  for (const name of own) spawned.delete(name);
   assert.deepEqual([...spawned].sort(), [...RUNNER_COMMANDS].sort());
   // The spawn refuses an undeclared command at run time, before anything runs.
-  assert.match(runner, /cli: \(argv, cwd, options = \{\}\) => checked\(\[process\.execPath, cli, \.\.\.argv\][^\n]*helperCommand\(argv\)/);
+  assert.match(runner, /cli: \(argv, cwd, options = \{\}\) => leaseCall\(argv, options, api\) \?\? checked\(\[process\.execPath, cli, \.\.\.argv\][^\n]*helperCommand\(argv\)/);
 });
 
 // ── 3. the gateway ─────────────────────────────────────────────────────────
@@ -380,7 +383,7 @@ test("a build job: claim, reads, tokens, push, evidence, sandbox, submit and rel
   assert.equal((await expect(api("POST", `${p.base(id)}/submit`, { body: { summary: "Built" } }), 200, "submit")).state, "submitted");
   assert.equal((await expect(api("POST", `${p.base(id)}/release`, { body: { note: "done" } }), 200, "release")).state, "open");
   await denied(api("GET", p.base(id)), token, "item after release");
-  cover("claim", "item", "job-brief", "read-token", "base-token", "push", "evidence", "sandbox", "sandbox-run", "submit", "release");
+  cover("project", "claim-project", "claim", "item", "job-brief", "read-token", "base-token", "push", "evidence", "sandbox", "sandbox-run", "submit", "release");
 });
 
 test("a plan job: claim, the brief, a valid document, a refused one, and the release", async () => {
@@ -453,7 +456,7 @@ test("the review job's calls are the reviewer's agent token's, never the runner 
   const api = under(token);
   await expect(api("POST", "/queue", { body: OFFER }), 200, "poll");
   const parts = (verb) => ["projects", p.name, "items", job.id, verb];
-  for (const verb of ["review-claim", "review-release", "review-unparsable", "review"]) {
+  for (const verb of ["review-claim", "review-renew", "review-release", "review-unparsable", "review"]) {
     await denied(api("POST", `${p.base(job.id)}/${verb}`, { actor: REVIEWER, runner: RUNNER, body: { head: H1, note: "", reply: "", approve: true } }), token, verb);
     assert.deepEqual([runnerRoute("POST", parts(verb)), agentRoute("POST", parts(verb))], [false, true], verb);
   }
@@ -461,10 +464,13 @@ test("the review job's calls are the reviewer's agent token's, never the runner 
   const asReviewer = (verb, body) => call("POST", `${p.base(job.id)}/${verb}`, { token: agent.token, actor: REVIEWER, runner: RUNNER, body });
   const claim = await expect(asReviewer("review-claim", {}), 200, "review-claim");
   assert.deepEqual([claim.head, claim.request, claim.readToken.token], [H1, job.request, "git-read-secret"]);
-  await expect(asReviewer("review-release", { note: "the harness could not start" }), 200, "review-release");
+  // The lease forms the runner sends itself (leaseCall): a renewal and a
+  // release that carry the claim's request number.
+  assert.deepEqual(await expect(asReviewer("review-renew", { request: claim.request, note: "" }), 200, "review-renew"), { renewed: true });
+  await expect(asReviewer("review-release", { request: claim.request, note: "the harness could not start" }), 200, "review-release");
   const integrator = ["integrated", "integration-failed", "refreshed", "refresh-failed"];
   for (const verb of integrator) assert.deepEqual([runnerRoute("POST", parts(verb)), agentRoute("POST", parts(verb))], [false, true], verb);
-  cover("review-claim", "review-release", "review-unparsable", "review", ...integrator);
+  cover("review-claim", "review-renew", "review-release", "review-release-lease", "review-unparsable", "review-unparsable-lease", "review", ...integrator);
 });
 
 test("wrong project: a token scoped to one project reaches nothing of another", async () => {

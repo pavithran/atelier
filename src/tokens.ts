@@ -87,7 +87,7 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
   }
   if (section !== "items" || !id) return false;
   if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "diff", "job-brief"].includes(verb) || parts.length === 6 && ["sandbox", "logs", "diffs"].includes(verb);
-  return method === "POST" && parts.length === 5 && ["claim", "read-token", "base-token", "push", "evidence", "sandbox", "review", "review-claim", "review-release", "review-unparsable", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "block", "unblock"].includes(verb);
+  return method === "POST" && parts.length === 5 && ["claim", "read-token", "base-token", "push", "evidence", "sandbox", "review", "review-claim", "review-renew", "review-release", "review-unparsable", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "block", "unblock"].includes(verb);
 }
 
 // A separate allowlist: runner credentials never inherit an agent's review,
@@ -165,12 +165,18 @@ export const RUNNER_CALLS: readonly RunnerCall[] = [
   { name: "queue", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents"], via: "runner", jobs: [] },
   { name: "runs", method: "POST", path: "/runs", credential: "runner", body: ["actor", "role", "outcome", "project", "item", "detail"], via: "runner", jobs: ["build", "plan", "review"] },
   { name: "review-skip", method: "POST", path: `${ITEM}/review-skip`, credential: "runner", body: ["head", "request", "note"], via: "runner", jobs: REVIEW },
+  // The project's record, read for its preparation policy (t378) before a
+  // build whose last run left a validation marker.
+  { name: "project", method: "GET", path: "/projects/{project}", credential: "runner", body: [], via: "runner", jobs: ["build"] },
   // The plan job's own calls: the brief it reads, the document it posts. A
   // part reads its brief the same way, as a build.
   { name: "job-brief", method: "GET", path: `${ITEM}/job-brief`, credential: "runner", body: [], via: "runner", jobs: ["build", "plan"] },
   { name: "plan", method: "POST", path: `${ITEM}/plan`, credential: "runner", body: "document", via: "runner", jobs: PLAN },
   // The build and plan jobs' helpers: the atelier commands the runner spawns.
   { name: "claim", method: "POST", path: `${ITEM}/claim`, credential: "runner", body: [], via: "cli", command: "claim", jobs: ["build", "plan", "integrate", "refresh"], integrator: true },
+  // The claim reads the project's preparation policy (t378) into the
+  // workspace's Git config.
+  { name: "claim-project", method: "GET", path: "/projects/{project}", credential: "runner", body: [], via: "cli", command: "claim", jobs: ["build", "plan", "integrate", "refresh"], integrator: true },
   { name: "release", method: "POST", path: `${ITEM}/release`, credential: "runner", body: ["note"], via: "cli", command: "release", jobs: ["build", "plan", "integrate", "refresh"], integrator: true },
   { name: "item", method: "GET", path: ITEM, credential: "runner", body: [], via: "cli", command: "finish", jobs: ["build", "integrate", "refresh"], integrator: true },
   { name: "push", method: "POST", path: `${ITEM}/push`, credential: "runner", body: ["head", "rebasedFrom"], via: "cli", command: "push", jobs: ["build", "integrate", "refresh"], integrator: true },
@@ -182,8 +188,15 @@ export const RUNNER_CALLS: readonly RunnerCall[] = [
   { name: "submit", method: "POST", path: `${ITEM}/submit`, credential: "runner", body: ["summary"], via: "cli", command: "submit", jobs: ["build", "integrate", "refresh"], integrator: true },
   // The review job's helpers, under the reviewer's own agent token.
   { name: "review-claim", method: "POST", path: `${ITEM}/review-claim`, credential: "agent", body: [], via: "cli", command: "review-claim", jobs: REVIEW },
-  { name: "review-release", method: "POST", path: `${ITEM}/review-release`, credential: "agent", body: ["note"], via: "cli", command: "review-release", jobs: REVIEW },
+  { name: "review-release", method: "POST", path: `${ITEM}/review-release`, credential: "agent", body: ["note", "request"], via: "cli", command: "review-release", jobs: REVIEW },
   { name: "review-unparsable", method: "POST", path: `${ITEM}/review-unparsable`, credential: "agent", body: ["head", "note", "reply"], via: "cli", command: "review-unparsable", jobs: REVIEW },
+  // The review lease (t351): a claim with a request number is renewed, and
+  // released or kept as unparsable, by the runner itself (leaseCall in
+  // cli/runner.mjs), under the reviewer's agent token, so shutdown can give
+  // each its own deadline.
+  { name: "review-renew", method: "POST", path: `${ITEM}/review-renew`, credential: "agent", body: ["request", "note"], via: "runner", jobs: REVIEW },
+  { name: "review-release-lease", method: "POST", path: `${ITEM}/review-release`, credential: "agent", body: ["request", "note"], via: "runner", jobs: REVIEW },
+  { name: "review-unparsable-lease", method: "POST", path: `${ITEM}/review-unparsable`, credential: "agent", body: ["request", "note", "head", "reply"], via: "runner", jobs: REVIEW },
   { name: "review", method: "POST", path: `${ITEM}/review`, credential: "agent", body: ["head", "criteria", "request", "approve", "note", "findings"], via: "cli", command: "review", jobs: REVIEW },
   // The integrate and refresh jobs' own helpers, under the integrator's token.
   { name: "integrated", method: "POST", path: `${ITEM}/integrated`, credential: "agent", body: ["part", "mergeCommit"], via: "cli", command: "integrated", jobs: ["integrate"] },
