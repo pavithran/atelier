@@ -115,7 +115,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     ];
     return {
       item: { id, title: `Fixture ${id}`, state, owner: "codex/test", ...(box.pushActors ? { pushActors: box.pushActors } : {}), head, ...(box.kinds[id] ? { kind: box.kinds[id] } : {}), acceptedHead: state === "accepted" || state === "merged" ? head : null },
-      policy: { reviewerAdmissions: box.reviewerAdmissions, checks: box.checks, protected: ["work.txt"], regenerate: box.regen, ...(box.agents ? { agents: box.agents } : {}), ...(box.eligible ? { eligible: box.eligible } : {}) },
+      policy: { reviewerAdmissions: box.reviewerAdmissions, checks: box.checks, protected: ["work.txt"], regenerate: box.regen, commitIdentity: { name: "Fixture", email: "fixture@example.invalid", agentEmails: [] }, ...(box.agents ? { agents: box.agents } : {}), ...(box.eligible ? { eligible: box.eligible } : {}) },
       gate: { ready: true, outOfScope: [], blockers: [] }, evidence: [], reviews, events,
     };
   };

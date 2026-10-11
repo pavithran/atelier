@@ -5,8 +5,10 @@ import command_accept from "./accept.ts";
 import command_adopt from "./adopt.ts";
 import command_approvals from "./approvals.ts";
 import command_approve from "./approve.ts";
+import command_area from "./area.ts";
 import command_base_token from "./base-token.ts";
 import command_block from "./block.ts";
+import command_board from "./board.ts";
 import command_check from "./check.ts";
 import command_claim from "./claim.ts";
 import command_decide from "./decide.ts";
@@ -75,8 +77,10 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/adopt.ts", spec: command_adopt },
   { path: "src/usage/commands/approvals.ts", spec: command_approvals },
   { path: "src/usage/commands/approve.ts", spec: command_approve },
+  { path: "src/usage/commands/area.ts", spec: command_area },
   { path: "src/usage/commands/base-token.ts", spec: command_base_token },
   { path: "src/usage/commands/block.ts", spec: command_block },
+  { path: "src/usage/commands/board.ts", spec: command_board },
   { path: "src/usage/commands/check.ts", spec: command_check },
   { path: "src/usage/commands/claim.ts", spec: command_claim },
   { path: "src/usage/commands/decide.ts", spec: command_decide },
