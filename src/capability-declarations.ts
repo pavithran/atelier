@@ -16,5 +16,6 @@ export const CAPABILITY_DECLARATIONS = [
   { name: "areas.manage.v1", level: 23, summary: "the area routes (list, create, rename, remove) and a task's assignment to an area by new and edit --area" },
   { name: "reviews.lease.v1", level: 26, summary: "five-minute review claim leases: review-renew, and release, unparsable and verdicts naming the claim generation (--request)" },
   { name: "areas.board.v1", level: 23, summary: "the board snapshot, every task grouped by function area, which atelier board and the project page read" },
-  { name: "models.standing.v1", level: 27, summary: "the pool's standing: atelier models set (POST /models/ID/set), and PUT /models takes state, roles and tier" },
+  { name: "models.standing.v1", level: 31, summary: "the pool's standing: atelier models set (POST /models/ID/set), and PUT /models takes state, roles and tier" },
+  { name: "land.post-merge.v1", level: 27, summary: "durable post-merge runs: the project policy's owner-approved postMerge steps, the post-merge run routes (status, prepare, start, command, finish, retry, skip, reconcile) and the merge and landing reservations that block later merges until a run completes" },
 ] as const;
