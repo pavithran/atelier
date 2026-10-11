@@ -136,12 +136,32 @@ export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unk
   return { to: to as Dispatch["to"], agent, model, by, at, note, ...(job ? { job, head: head!, task: true as const } : {}), ...(input.overlapOk === true ? { overlapOk: true as const } : {}) };
 }
 
+// An overlap override sent as an ordinary dispatch (with a destination, note
+// or job, or for a task a runner holds) edits the existing offer (t491).
+// Undefined means omitted; empty strings deliberately remove the
+// corresponding builder restriction. Ordinary redispatch still starts with
+// makeDispatch's fresh defaults. The hold-only release keeps the offer's
+// place in the queue as well: retainDispatch below.
+export function overrideDispatch(input: Record<string, unknown>, previous: Dispatch | null | undefined, by: string, at: string): Dispatch {
+  if (input.overlapOk !== true || !previous) return makeDispatch(input, by, at);
+  const merged = { ...previous, ...Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)) };
+  const keepJob = input.job === undefined && input.head === undefined;
+  const validated = makeDispatch(keepJob ? { ...merged, job: undefined, head: undefined } : merged, by, at);
+  if (keepJob) {
+    // Validate the retained merge target too, before any holder is released.
+    if (previous.job === "merge-main") makeDispatch(merged, by, at);
+    return { ...previous, ...validated };
+  }
+  return validated;
+}
+
 // The owner's release of an overlap-held dispatch (atelier dispatch ID
 // --overlap-ok on a task already waiting): the dispatch stays as it is, with
 // its builder, destination, job, head, note and queue position (`at`), and
 // gains only the overlap override. An agent or model given replaces just that
-// field; the pair that results is validated as a dispatch's own is, before
-// anything is written. Releasing a dispatch already released changes nothing.
+// field, and one given as "" clears that restriction alone (t491); the pair
+// that results is validated as a dispatch's own is, before anything is
+// written. Releasing a dispatch already released changes nothing.
 export function retainDispatch(item: Item, input: { agent?: unknown; model?: unknown; retainAt?: unknown }, items: readonly Item[], policy: ProjectPolicy, owner = DEFAULT_OWNER): Dispatch {
   if (item.owner || item.state !== "open") {
     throw new RuleError("not_open", `${item.id} is ${item.owner ? `owned by ${item.owner}` : item.state}, so it has no waiting dispatch to release; dispatch it again instead`, 409);
@@ -151,13 +171,16 @@ export function retainDispatch(item: Item, input: { agent?: unknown; model?: unk
   if (input.retainAt !== undefined && input.retainAt !== d.at) {
     throw new RuleError("stale_dispatch", `${item.id}'s dispatch has changed; read it again before releasing its hold`, 409);
   }
-  const given = (v: unknown, what: string) => {
-    if (v === undefined || v === null || v === "") return undefined;
+  // undefined: keep the dispatch's own; null: clear it; else the name given.
+  const given = (v: unknown, what: string): string | null | undefined => {
+    if (v === undefined || v === null) return undefined;
+    if (v === "") return null;
     const s = String(v);
     if (!NAME.test(s)) throw new RuleError("bad_dispatch", `"${s}" is not a valid ${what}`, 400);
     return s;
   };
-  const agent = given(input.agent, "agent") ?? d.agent, model = given(input.model, "model") ?? d.model;
+  const a = given(input.agent, "agent"), m = given(input.model, "model");
+  const agent = a === undefined ? d.agent : a, model = m === undefined ? d.model : m;
   if (agent && !AGENT.test(agent)) throw new RuleError("bad_dispatch", `"${agent}" is not a valid agent`, 400);
   if (model && !claimable(agent ?? "agent", model)) throw new RuleError("bad_dispatch", `no runner could claim as "${agent ?? "agent"}/${model}"`, 400);
   const next: Dispatch = { ...d, agent, model, overlapOk: true };
