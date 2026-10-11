@@ -3803,7 +3803,8 @@ export class Ledger extends DurableObject<Env> {
   // verdicts; the Models page reads every project's.
   private reviewPrecision(at: string): PrecisionRecord {
     const window = precisionWindow(new Date(at));
-    const events = this.sql.exec(`SELECT * FROM events WHERE kind = 'review.finding' ORDER BY seq`).toArray().map(eventOf);
+    // The review events too, so a legacy verdict is placed on its review.
+    const events = this.sql.exec(`SELECT * FROM events WHERE kind IN ('review.finding', 'review.approved', 'review.rejected') ORDER BY seq`).toArray().map(eventOf);
     return buildPrecision([{ project: "this", events }], window, this.owner);
   }
 
