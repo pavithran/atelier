@@ -67,10 +67,15 @@ export async function poolTransaction(options = {}, update = () => {}) {
     db.exec("PRAGMA busy_timeout=30000; CREATE TABLE IF NOT EXISTS pool (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL)");
     db.exec("BEGIN IMMEDIATE");
     try {
-      const capacity = slotCapacity(options.env);
       const stored = db.prepare("SELECT data FROM pool WHERE id=1").get();
-      const state = stored ? JSON.parse(stored.data) : { capacity, host: hostname(), sequence: 0, entries: [] };
-      if (state.capacity !== capacity) throw new Error(`test slot capacity conflict on ${state.host}: pool has ${state.capacity}, caller requested ${capacity}`);
+      const env = options.env ?? process.env;
+      let requested;
+      try { requested = slotCapacity(env); }
+      catch { /* Invalid environment is advisory, including first creation. */ }
+      const state = stored ? JSON.parse(stored.data) : { capacity: requested ?? slotCapacity({}), host: hostname(), sequence: 0, entries: [] };
+      if (env.ATELIER_TEST_SLOTS !== undefined && requested !== state.capacity) {
+        (options.warn ?? console.warn)(`test slots: warning: ATELIER_TEST_SLOTS ${requested === undefined ? "is invalid" : `requests ${requested}`}; using stored capacity ${state.capacity}`);
+      }
       const processes = options.skipEmpty && !state.entries.length ? [] : (options.processes ?? slotProcesses)();
       state.entries = state.entries.filter((entry) => processes.some((p) => p.lease === entry.lease));
       const result = update(state, processes);
@@ -84,11 +89,22 @@ export async function poolTransaction(options = {}, update = () => {}) {
   } finally { db.close(); }
 }
 
+// Use the admission lock; never rebuild the pool or renumber its queue.
+export async function setSlotCapacity(value, options = {}) {
+  const capacity = slotCapacity({ ATELIER_TEST_SLOTS: String(value) });
+  return poolTransaction({ ...options, skipEmpty: true }, (state) => {
+    state.capacity = capacity;
+    return capacity;
+  });
+}
+
 export const orderedWaiters = (state) => state.entries.filter((e) => !e.started).sort((a, b) => a.priority - b.priority || a.sequence - b.sequence);
 
 export async function slotStatus(options = {}) {
   return poolTransaction({ ...options, skipEmpty: true }, (state, processes) => ({
     capacity: state.capacity, host: state.host,
+    usage: state.entries.filter((e) => e.started).length,
+    draining: Math.max(0, state.entries.filter((e) => e.started).length - state.capacity),
     active: state.entries.filter((e) => e.started).map((e) => ({ ...e, processes: processes.filter((p) => p.lease === e.lease) })),
     waiters: orderedWaiters(state),
   }));
@@ -96,7 +112,7 @@ export async function slotStatus(options = {}) {
 
 export function formatSlots(status) {
   const row = (e) => `  ${e.class} #${e.sequence} ${e.project ?? "?"}/${e.task ?? "?"} ${e.actor ?? "?"} pid=${e.pid} identity=${e.lease} ${e.started ? "started=" + e.started : "queued=" + e.queued}`;
-  return [`Test slots: ${status.active.length}/${status.capacity} on ${status.host}`, ...status.active.map(row), "Waiting (priority, FIFO):", ...status.waiters.map(row)].join("\n");
+  return [`Test slots: ${status.active.length}/${status.capacity} on ${status.host}${status.draining ? ` (draining excess: ${status.draining})` : ""}`, ...status.active.map(row), "Waiting (priority, FIFO):", ...status.waiters.map(row)].join("\n");
 }
 
 export async function acquireSlot(metadata = {}, options = {}) {
@@ -123,7 +139,7 @@ export async function acquireSlot(metadata = {}, options = {}) {
             sequence: ++state.sequence, queued: new Date().toISOString() };
           state.entries.push(entry);
         }
-        const free = state.capacity - state.entries.filter((e) => e.started).length;
+        const free = Math.max(0, state.capacity - state.entries.filter((e) => e.started).length);
         // Reserve every eligible waiter in enqueue order in this transaction;
         // polling speed cannot reverse FIFO when multiple slots become free.
         for (const next of orderedWaiters(state).slice(0, free)) next.started = new Date().toISOString();
@@ -162,13 +178,16 @@ export function slotInvocation(argv, metadata = {}, base = process.env) {
 export const SLOT_HELP = `Host-wide test slots (Node 24+, macOS/Linux):
   node cli/load.mjs [--priority release|landing|review|ordinary] [--project NAME] [--task ID] [--actor H/M] -- COMMAND [ARG ...]
   node cli/load.mjs --status [--json]
+  node cli/load.mjs --set N
 
 One slot covers one command and its descendants; nested wrappers reuse it.
 Local Atelier checks use this same pool. Direct shell commands are outside
 its enforcement. Containers have independent /tmp and process namespaces.
-ATELIER_TEST_SLOTS defaults to max(1, floor(coreCount()/4)); a configured value
-must be a positive integer. All callers must agree; conflicts are refused,
-even when the pool is idle. The database is /tmp/atelier-test-slots-v1.sqlite.
+On first creation, valid ATELIER_TEST_SLOTS sets capacity, otherwise it defaults
+to max(1, floor(coreCount()/4)). Stored capacity then wins; invalid or differing
+environment values warn. --set N atomically changes capacity (positive safe
+integer). Lowering drains running work without preemption or a restart.
+The database is /tmp/atelier-test-slots-v1.sqlite.
 Release/landing precedes review, then ordinary, FIFO within each class by an
 atomic enqueue sequence. Admission never preempts active commands. Lower
 classes may starve. Select a class with --priority or ATELIER_TEST_PRIORITY.
@@ -183,6 +202,11 @@ ATELIER_LOAD, ATELIER_LOAD_LIMIT and runner loadLimit are retired and ignored.
 `;
 
 async function main(argv) {
+  if (argv[0] === "--set") {
+    if (argv.length !== 2) throw new Error("usage: node cli/load.mjs --set N");
+    const capacity = await setSlotCapacity(argv[1]);
+    return console.log(`Test slot capacity: ${capacity}`);
+  }
   const split = argv.indexOf("--");
   const flags = split < 0 ? argv : argv.slice(0, split);
   const command = split < 0 ? [] : argv.slice(split + 1);
@@ -203,7 +227,6 @@ async function main(argv) {
     return console.log(json ? JSON.stringify(result, null, 2) : formatSlots(result));
   }
   if (!command.length) throw new Error(SLOT_HELP);
-  slotCapacity();
   slotPriority(metadata.class ?? process.env.ATELIER_TEST_PRIORITY);
   // Start with the nonce in the exec environment (setting process.env later
   // is not reliably visible to ps). Never put it in argv or persisted scripts.

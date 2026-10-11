@@ -4,14 +4,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { acquireSlot, releaseSlot, slotStatus, slotCapacity, slotPriority, parseSlotProcesses, formatSlots, poolTransaction, orderedWaiters, slotInvocation, SLOT_WRAPPER } from "../cli/load.mjs";
+import { acquireSlot, setSlotCapacity, releaseSlot, slotStatus, slotCapacity, slotPriority, parseSlotProcesses, formatSlots, poolTransaction, orderedWaiters, slotInvocation, SLOT_WRAPPER } from "../cli/load.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
 
 function fixture(t, capacity = 1) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-slots-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const processes = [];
-  const options = { path: join(dir, "slots.sqlite"), env: { ATELIER_TEST_SLOTS: String(capacity) }, processes: () => processes };
+  const options = { path: join(dir, "slots.sqlite"), env: { ATELIER_TEST_SLOTS: String(capacity) }, processes: () => processes, warn: () => {} };
   const owner = (cls = "ordinary", project = "one") => {
     const p = { pid: processes.length + 100, lease: randomUUID(), birth: "launch" };
     processes.push(p);
@@ -45,17 +45,17 @@ test("local checks retain only slot coordination across their scrubbed environme
   }
 });
 
-test("one transactional pool shares capacity across projects; conflicting capacities are refused even idle", async (t) => {
+test("one transactional pool shares stored capacity across projects even with environment disagreement", async (t) => {
   const f = fixture(t, 2), one = f.owner(), two = f.owner("review", "two");
   await Promise.all([acquireSlot(one, f.options), acquireSlot(two, f.options)]);
   const status = await slotStatus(f.options);
   assert.equal(status.active.length, 2);
   assert.deepEqual(status.active.map((e) => e.sequence).sort(), [1, 2]);
   assert.deepEqual(new Set(status.active.map((e) => e.project)), new Set(["one", "two"]));
-  await assert.rejects(slotStatus({ ...f.options, env: { ATELIER_TEST_SLOTS: "1" } }), /capacity conflict/);
+  assert.equal((await slotStatus({ ...f.options, env: { ATELIER_TEST_SLOTS: "1" } })).capacity, 2);
   f.processes.length = 0;
   assert.equal((await slotStatus(f.options)).active.length, 0);
-  await assert.rejects(slotStatus({ ...f.options, env: { ATELIER_TEST_SLOTS: "1" } }), /capacity conflict/);
+  assert.equal((await slotStatus({ ...f.options, env: { ATELIER_TEST_SLOTS: "1" } })).capacity, 2);
 });
 
 test("nested wrappers reuse their live lease without another enqueue or release", async (t) => {
@@ -193,4 +193,94 @@ test("SIGKILL of a SQLite writer rolls back without stranding the pool lock", { 
   const status = await slotStatus(f.options);
   assert.equal(status.active[0].lease, one.lease);
   assert.equal(status.active[0].sequence, 1);
+});
+
+
+test("environment is advisory after creation and invalid initial values use the core default", async (t) => {
+  const f = fixture(t), warnings = [];
+  const options = { ...f.options, warn: (message) => warnings.push(message) };
+  assert.equal((await slotStatus({ ...options, env: { ATELIER_TEST_SLOTS: "bad" } })).capacity, slotCapacity({}));
+  assert.match(warnings.pop(), /warning:.*invalid/);
+  await setSlotCapacity(3, options);
+  for (const value of ["1", "bad", "0", "9007199254740992"]) {
+    const owner = f.owner();
+    await acquireSlot(owner, { ...options, env: { ATELIER_TEST_SLOTS: value } });
+    assert.equal((await slotStatus({ ...options, env: {} })).capacity, 3);
+    assert.match(warnings.pop(), /warning:.*using stored capacity 3/);
+    await releaseSlot(owner.lease, options, owner.pid);
+  }
+});
+
+test("invalid setters leave capacity and leases intact", async (t) => {
+  const f = fixture(t), owner = f.owner();
+  await acquireSlot(owner, f.options);
+  const before = await slotStatus(f.options);
+  for (const value of [undefined, null, "", "0", -1, 1.5, Infinity, "3x", " 2", "1e2", 9007199254740992]) {
+    await assert.rejects(setSlotCapacity(value, f.options), /positive integer/);
+    assert.deepEqual(await slotStatus(f.options), before);
+  }
+  assert.equal(await setSlotCapacity(Number.MAX_SAFE_INTEGER, f.options), Number.MAX_SAFE_INTEGER);
+});
+
+test("occupied capacity changes preserve leases and priority/FIFO; lowering drains and raising admits next poll", async (t) => {
+  const f = fixture(t, 3), held = [f.owner(), f.owner(), f.owner()];
+  for (const owner of held) await acquireSlot(owner, f.options);
+  const waiting = [f.owner(), f.owner("review"), f.owner("release"), f.owner("landing")];
+  const gates = new Map(), pending = new Map();
+  for (const owner of waiting) {
+    let ready;
+    const queued = new Promise((resolve) => ready = resolve);
+    pending.set(owner, acquireSlot(owner, { ...f.options, wait: () => {
+      ready(); return new Promise((resolve) => gates.set(owner, resolve));
+    } }));
+    await queued;
+  }
+  const before = await slotStatus(f.options);
+  await setSlotCapacity(1, f.options);
+  const lowered = await slotStatus(f.options);
+  assert.deepEqual(lowered.active, before.active);
+  assert.deepEqual(lowered.waiters, before.waiters);
+  assert.equal(lowered.usage, 3);
+  assert.equal(lowered.draining, 2);
+  assert.match(formatSlots(lowered), /3\/1.*draining excess: 2/);
+  assert.equal((await acquireSlot(held[0], f.options)).reused, true);
+  // A fresh polling attempt must admit nothing both above and at capacity.
+  for (let usage = 3; usage >= 1; usage--) {
+    await poolTransaction(f.options, () => {});
+    const controller = new AbortController(), extra = f.owner();
+    await assert.rejects(acquireSlot(extra, { ...f.options, signal: controller.signal, wait: async () => controller.abort() }), /cancelled/);
+    assert.equal((await slotStatus(f.options)).active.length, usage);
+    if (usage > 1) await releaseSlot(held[usage - 1].lease, f.options, held[usage - 1].pid);
+  }
+  await setSlotCapacity(3, f.options);
+  assert.equal((await slotStatus(f.options)).waiters.length, 4);
+  // Even an ordinary waiter's poll reserves the release/landing pair first.
+  const controller = new AbortController(), extra = f.owner();
+  await assert.rejects(acquireSlot(extra, { ...f.options, signal: controller.signal, wait: async () => controller.abort() }), /cancelled/);
+  assert.deepEqual((await slotStatus(f.options)).active.map((e) => e.lease), [held[0], waiting[2], waiting[3]].map((e) => e.lease));
+  for (const owner of [waiting[2], waiting[3]]) { gates.get(owner)(); await pending.get(owner); }
+  await releaseSlot(held[0].lease, f.options, held[0].pid);
+  for (const owner of [waiting[1], waiting[0]]) { gates.get(owner)(); await pending.get(owner); await releaseSlot(owner.lease, f.options, owner.pid); }
+});
+
+test("concurrent setters and admissions retain every lease and enqueue sequence", { timeout: 30000 }, async (t) => {
+  const { spawn } = await import("node:child_process");
+  const f = fixture(t, 20);
+  const owners = Array.from({ length: 12 }, () => f.owner());
+  await slotStatus(f.options);
+  await Promise.all(owners.map((owner, i) => {
+    const script = `import { setSlotCapacity, acquireSlot } from ${JSON.stringify(new URL("../cli/load.mjs", import.meta.url).href)};
+      const options = { path: ${JSON.stringify(f.options.path)}, env: {}, processes: () => ${JSON.stringify(owners)} };
+      await setSlotCapacity(${20 + i}, options);
+      await acquireSlot(${JSON.stringify(owner)}, options);`;
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "ignore", "pipe"] });
+    let error = "";
+    child.stderr.on("data", (s) => error += s);
+    t.after(() => child.kill("SIGKILL"));
+    return new Promise((resolve, reject) => child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(error))));
+  }));
+  const status = await slotStatus(f.options);
+  assert.ok(status.capacity >= 20 && status.capacity <= 31);
+  assert.deepEqual(new Set(status.active.map((e) => e.lease)), new Set(owners.map((e) => e.lease)));
+  assert.deepEqual(status.active.map((e) => e.sequence), Array.from({ length: 12 }, (_, i) => i + 1));
 });
