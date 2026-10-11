@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
-import type { Ledger, LedgerEvent } from "../src/ledger.ts";
+import type { ReviewClaim, Ledger, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { baseRepoOf } from "../src/plans/integrate.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
@@ -81,8 +81,8 @@ async function readyPart(L: L, plan = doc(part("a"))) {
   await L.submit(partId, builder);
   const waiting = await L.reviewWaiting();
   const reviewer = `${waiting[0].dispatch!.agent}/${waiting[0].dispatch!.model}`;
-  await L.claimReview(partId, reviewer, RUNNER);
-  await L.addReview({ itemId: partId, criteria: await L.criteria(partId), by: reviewer, head, approve: true, note: "Good", at: new Date().toISOString() });
+  const reviewClaim1 = await L.claimReview(partId, reviewer, RUNNER) as unknown as ReviewClaim;
+  await L.addReview({ request: reviewClaim1.request, itemId: partId, criteria: await L.criteria(partId), by: reviewer, head, approve: true, note: "Good", at: new Date().toISOString() });
   return { id: item.id, partId, head, builder };
 }
 
