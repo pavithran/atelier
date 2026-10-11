@@ -85,6 +85,8 @@ function serve(fork, { state = null, closeAt = null, refuseClaim = false, blockF
     "POST release": unlessClosed(() => { Object.assign(item, { state: "open", owner: null, runner: null }); return { item }; }),
   };
   for (const verb of ["read-token", "base-token", "evidence", "submit"]) answers[`POST ${verb}`] = unlessClosed(read);
+  // A build merges current main before it submits (t435): main is the fork's own.
+  answers["POST projects/:project/baseline-token"] = () => ({ remote: fork.remote, token: "read-secret", defaultBranch: "main" });
   return serveRunner({ answers }).then((server) => Object.assign(server, { item }));
 }
 

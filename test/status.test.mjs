@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { formatRunners, formatStatus, isLive, runnerLine, statusJson } from "../cli/status.mjs";
+import { familyModeText, formatRunners, formatStatus, isLive, runnerLine, singleFamilyLine, statusJson } from "../cli/status.mjs";
 import { OFFER_LIVE_MS } from "../src/dispatch/rules.ts";
 
 const item = (id, state, over = {}) => ({ id, title: `Task ${id}`, state, owner: null, dispatch: null, ...over });
@@ -31,6 +31,29 @@ test("lists decisions with the next command, work in progress and tasks waiting 
   assert.ok(out.includes("    t3  for home codex/gpt-6  Task t3"));
   assert.equal(out.filter((l) => l.includes("next:")).length, 2, "overlap has no command");
   assert.ok(!out.some((l) => l.includes("t4")), "merged work is not listed");
+});
+
+// t394: a project on one company's models says so under its name, in the
+// text and in --json, so its reviews are never read as cross-company ones;
+// the default, and a recorded return to it, add nothing.
+test("single-family mode is named under the project, in text and in --json", () => {
+  const mode = { single: "anthropic", by: "pavi", at: "2026-10-09T10:00:00.000Z" };
+  const view = (familyMode) => ({ name: "demo", title: "Demo", items: [item("t1", "claimed", { owner: "claude-code/opus-5.5" })], inbox: [], policy: { checks: [], protected: [], ...(familyMode ? { familyMode } : {}) } });
+  const out = formatStatus([view(mode)]).split("\n");
+  assert.equal(out[0], "Demo (demo)");
+  assert.equal(out[1], "  Single-family mode (anthropic): building and reviewing use anthropic models only; a review counts from a different anthropic model than every contributor, not from another company.");
+  assert.equal(out[2], "  In progress");
+  assert.equal(singleFamilyLine("openai"), "Single-family mode (openai): building and reviewing use openai models only; a review counts from a different openai model than every contributor, not from another company.");
+  assert.equal(statusJson([view(mode)])[0].singleFamily, "anthropic");
+  for (const v of [view(null), view({ single: null, by: "pavi", at: mode.at }), { ...view(null), policy: undefined }]) {
+    assert.ok(!formatStatus([v]).includes("Single-family"), formatStatus([v]));
+    assert.equal(statusJson([v])[0].singleFamily, undefined);
+  }
+  // atelier init prints the mode after the policy it sent, with who switched and when.
+  assert.equal(familyModeText({ familyMode: mode }), "single-family, anthropic: building and reviewing use anthropic models only, and a review counts from a different anthropic model than every contributor (set by pavi at 2026-10-09T10:00:00.000Z)");
+  assert.equal(familyModeText({ familyMode: { single: null, by: "pavi", at: mode.at } }), "cross-family, the default: a protected change needs approval from a model of another company than every contributor (set by pavi at 2026-10-09T10:00:00.000Z)");
+  assert.equal(familyModeText({}), "cross-family, the default: a protected change needs approval from a model of another company than every contributor");
+  assert.equal(familyModeText(null), familyModeText({}));
 });
 
 test("a project with nothing to do says so, and other projects' decisions are ignored", () => {
@@ -482,7 +505,24 @@ test("a queued task the core files hold says what it waits on and how to let it 
     { project: "demo", item: item("t4", "open", { dispatch: d }) },
     { project: "other", item: { ...item("t4", "open", { dispatch: d }), held } },
   ] }).split("\n");
-  assert.ok(out.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned, or at once with atelier dispatch t2 --overlap-ok."), out.join("\n"));
-  assert.ok(out.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned."));
+  assert.ok(out.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 submits or is released, or at once with atelier dispatch t2 --overlap-ok."), out.join("\n"));
+  assert.ok(out.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 submits or is released."));
   assert.equal(out.filter((l) => l.includes("Held:")).length, 2, "t4 is not held here, only in another project");
+});
+
+// A hold lifts when every blocker stops holding: a claimed one when it submits
+// or is released, the landing one when that landing ends. Each is named.
+test("a held task names every blocker and when each stops holding, claimed or landing", () => {
+  const d = { to: "home", agent: "codex", model: "gpt-6" };
+  const claimed = (id) => ({ id, owner: "codex/gpt-6", state: "claimed", title: `Task ${id}`, core: "src/ledger.ts" });
+  const landing = (id) => ({ id, owner: "claude-code/opus-5.5", state: "accepted", title: `Task ${id}`, core: "src/ledger.ts" });
+  const line = (blockers) => formatStatus([{ name: "demo", items: [item("t2", "open", { dispatch: d })], inbox: [] }],
+    { queue: [{ project: "demo", item: { ...item("t2", "open", { dispatch: d }), held: { ...blockers[0], blockers } } }] })
+    .split("\n").find((l) => l.includes("Held:"));
+  const reach = "both scopes reach core file src/ledger.ts";
+  const override = ", or at once with atelier dispatch t2 --overlap-ok.";
+  assert.equal(line([claimed("t1")]), `      Held: waits on t1 (claimed by codex/gpt-6): ${reach}; offered once t1 submits or is released${override}`);
+  assert.equal(line([landing("t5")]), `      Held: waits on t5 (accepted by claude-code/opus-5.5): ${reach}; offered once the landing of t5 ends${override}`);
+  assert.equal(line([claimed("t1"), claimed("t3")]), `      Held: waits on t1 (claimed by codex/gpt-6): ${reach}; t3 (claimed by codex/gpt-6): ${reach}; offered once t1 submits or is released and t3 submits or is released${override}`);
+  assert.equal(line([claimed("t1"), claimed("t3"), landing("t5")]), `      Held: waits on t1 (claimed by codex/gpt-6): ${reach}; t3 (claimed by codex/gpt-6): ${reach}; t5 (accepted by claude-code/opus-5.5): ${reach}; offered once t1 submits or is released, t3 submits or is released and the landing of t5 ends${override}`);
 });

@@ -85,6 +85,8 @@ test('the real runner reads preparation from its claimed Git directory before st
   git('init', '-q');
   git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.test');
   git('add', 'input'); git('commit', '-qm', 'initial');
+  // The build merges current main before it submits (t435): main is this commit.
+  git('branch', 'test-main');
   git('config', 'atelier.prepare', JSON.stringify(f.spec));
   // A real claim records both preparation and the project's commit identity.
   writeFileSync(join(f.options.gitDir, IDENTITY_FILE), JSON.stringify({ name: 'Test', email: 'test@example.test', agentEmails: [] }));
@@ -94,20 +96,24 @@ test('the real runner reads preparation from its claimed Git directory before st
   process.env.ATELIER_CACHE = f.options.cache;
   t.after(() => { if (previousCache === undefined) delete process.env.ATELIER_CACHE; else process.env.ATELIER_CACHE = previousCache; process.exitCode = previousCode; });
   const calls = [];
-  let heads = 0;
   await runRunner({ _: ['runner'], multi: {}, name: 'home:test', config, once: true }, {
     workspacePath: () => f.cwd, load: () => 0, cores: () => 4,
     queue: async () => [{ project: 'demo', item: { id: 't1', title: 'Build', scope: ['input'] }, agent: 'opencode', model: 'model', actor: 'opencode/model' }],
-    taskIO: { log: () => {}, head: async () => ++heads === 1 ? 'before' : 'after', dataHome: async () => null },
+    taskIO: { log: () => {}, head: async () => git('rev-parse', 'HEAD'), dataHome: async () => null },
     executeChild: async (argv, options) => {
-      if (argv[1]?.endsWith('atelier.mjs')) { calls.push(argv[2]); return { code: 0 }; }
+      if (argv[1]?.endsWith('atelier.mjs')) {
+        calls.push(argv[2]);
+        if (argv[2] === 'baseline-token') return { code: 0, output: JSON.stringify({ remote: f.cwd, token: 'test', defaultBranch: 'test-main' }) };
+        return { code: 0 };
+      }
       if (argv[0] === 'test-harness') {
         assert.ok(existsSync(join(f.cwd, 'output')));
+        git('commit', '-q', '--allow-empty', '-m', 'built');
         calls.push('harness'); return { code: 0 };
       }
       return execute(argv, options);
     },
   });
-  assert.ok(subsequence(calls, ['claim', 'harness', 'finish']), calls.join(', '));
+  assert.ok(subsequence(calls, ['claim', 'harness', 'baseline-token', 'finish']), calls.join(', '));
   assert.ok(existsSync(f.marker));
 });
