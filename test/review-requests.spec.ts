@@ -1145,4 +1145,15 @@ it("authenticated renewal and release require the current generation and the cla
   expect((await call(`${base}/review-renew`, token, GPT, { request: claim.request })).status).toBe(409);
   expect((await call(`${base}/review-release`, token, GPT, { request: claim.request })).status).toBe(409);
   expect((await call(`${base}/review-renew`, token, GPT, { request: next.request })).status).toBe(200);
+  // The owner's existing CLI sends no request number. It may release by
+  // actor, but a supplied stale generation must never release its successor.
+  expect((await call(`${base}/review-release`, ownerToken, GPT, { request: claim.request })).status).toBe(409);
+  expect((await call(`${base}/review-release`, ownerToken, OPUS, {})).status).toBe(409);
+  expect((await call(`${base}/review-renew`, token, GPT, { request: next.request })).status).toBe(200);
+  expect((await call(`${base}/review-release`, ownerToken, GPT, { note: "recover stopped runner" })).status).toBe(200);
+  expect((await call(`${base}/review-renew`, token, GPT, { request: next.request })).status).toBe(409);
+  const recovered = await L.claimReview(partId, GPT, RUNNER, true) as unknown as ReviewClaim;
+  expect(recovered.request).not.toBe(next.request);
+  expect((await call(`${base}/review-release`, token, GPT, { request: next.request })).status).toBe(409);
+  expect((await call(`${base}/review-renew`, token, GPT, { request: recovered.request })).status).toBe(200);
 });

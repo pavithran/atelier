@@ -6,7 +6,7 @@ const spec: CommandSpec = {
     {
       group: "Agents", line: 3, slot: 80,
       form: "review-release ID [--note T]",
-      about: "A reviewer whose harness wrote no valid verdict lets the review request go, so another reviewer may take it.",
+      about: "Using the owner's credentials, release the current review claim for the actor named by --as, so another reviewer may take it. This also recovers a claim left by a stopped runner. Agent and runner API clients must send the current request number when releasing a claim.",
     },
   ],
   flags: { note: false },
