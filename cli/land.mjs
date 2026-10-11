@@ -290,8 +290,10 @@ export async function runLand(io) {
   }
   const regenerate = typeof d0.policy?.regenerate === "string" ? d0.policy.regenerate : null;
   // A review the change will need is said now, before the lease, the merge
-  // and the checks, with the policy that requires it (t422).
-  if (!noReview) {
+  // and the checks, with the policy that requires it (t422). A dry run skips
+  // it: measuring needs a baseline fetch into the workspace, and a dry run
+  // changes nothing.
+  if (!noReview && !dryRun) {
     const baseline = await request("POST", `/projects/${encodeURIComponent(name)}/items/${encodeURIComponent(id)}/base-token`, { scope: "read" }).catch(() => undefined);
     const notice = workspaceNotice((argv, o) => git(argv, { allowFail: true, ...o }), dir, d0.policy, { baseline, part: d0.item?.kind === "part" });
     if (notice) for (const line of notice) print(line);
