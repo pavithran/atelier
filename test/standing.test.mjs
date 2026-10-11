@@ -124,6 +124,7 @@ async function run(t, setup, argv, env = {}) {
     if (agent && !agentRoute(req.method, parts)) { status = 403; body = { error: "owner_token_required", detail: `${req.method} ${req.url} needs the owner token` }; }
     else if (req.url === "/api/config") body = { actor: "codex/gpt-6-astra", ownerActor: "owner" };
     else if (req.url.endsWith("/standing")) body = standing();
+    else if (req.url === "/api/projects/demo" && state.policy) body = { project: { policy: state.policy } };
     else if (req.url.endsWith("/baseline-head")) body = { head: git(dir, "--git-dir", bare, "rev-parse", "refs/heads/main") };
     else { status = 404; body = { error: "unexpected", detail: `${req.method} ${req.url}` }; }
     res.writeHead(status, { "content-type": "application/json" });
@@ -149,6 +150,21 @@ test("status --project --json prints the standing record and the checkout line f
   assert.deepEqual(read.project.live.map((i) => [i.id, i.since]), [["t1", "2026-10-05T09:00:00.000Z"]]);
   assert.match(read.checkout, /^Checkout: /);
   assert.equal(read.checkout.split("\n").length, 1);
+});
+
+for (const json of [false, true]) test(`status --project reports instruction disagreements${json ? " in JSON" : " in text"} for an agent`, async (t) => {
+  const r = await run(t, ({ checkout }) => {
+    writeFileSync(join(checkout, "AGENTS.md"), "# Rules\nReview is optional for non-authority changes.\n");
+    return { policy: { checks: [], protected: [], execution: {
+      allowed_classes: ["coordinated"], direct: { enabled: false, allowed_path_patterns: [] }, protected_path_patterns: [],
+    } } };
+  }, ["status", "--project", "demo", ...(json ? ["--json"] : [])], { ATELIER_TOKEN: "atl_agent-token", ATELIER_ACTOR: "codex/gpt-6-astra" });
+  assert.equal(r.status, 0, r.output);
+  const text = json ? JSON.parse(r.output).mismatches.join("\n") : r.output;
+  assert.match(text, /AGENTS\.md:2 calls review optional/);
+  assert.match(text, /a coordinated change needs another agent's review/);
+  assert.ok(r.seen.includes("GET /api/projects/demo"));
+  assert.ok(r.seen.every((request) => request.startsWith("GET ")));
 });
 
 test("status --project prints where it stands and says the checkout is in step, reading only", async (t) => {

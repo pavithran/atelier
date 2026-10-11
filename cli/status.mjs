@@ -20,6 +20,12 @@ import { holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
 import { isOwnCall } from "../src/rules.ts";
 import { jobsLine } from "./runner.mjs";
 
+export function formatPolicyDisagreements(mismatches = []) {
+  if (!mismatches.length) return "";
+  return ["  Policy and instructions disagree", ...mismatches.map((m) => `    ${m}`),
+    "    Settle which is right; agents are held to the recorded policy."].join("\n");
+}
+
 // An item as `ls --json` and `status --json` print it: what the text listings
 // show, with the times a machine reader such as Observatory draws on.
 export function itemJson(i) {
@@ -248,9 +254,7 @@ export function formatStatus(views, waiting = {}) {
     if (own.length) lines.push("  Waiting for you", ...decisionLines(own, v.name));
     if (handled.length) lines.push("  Handled by the orchestrator", ...decisionLines(handled, v.name));
     if (v.mismatches?.length) {
-      lines.push("  Policy and instructions disagree");
-      for (const m of v.mismatches) lines.push(`    ${m}`);
-      lines.push("    Settle which is right; agents are held to the recorded policy.");
+      lines.push(formatPolicyDisagreements(v.mismatches));
     }
     if (overlaps.length) {
       lines.push("  Overlapping scopes");
