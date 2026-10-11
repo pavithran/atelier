@@ -30,7 +30,8 @@ import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderB
 import { addTally, buildStory, emptyTally, VENDOR_NAMES, type Story } from "./graph";
 import { buildPulse } from "./pulse";
 import { projectKind } from "./kind";
-import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
+import { assign, parseRunner, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
+import { attentionFor } from "./attention.ts";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
 import { readGatewayFigures, type GatewayView } from "./usage/gateway.ts";
@@ -291,17 +292,24 @@ const TASK_EVENTS = 300;
 async function standingOf(env: Env, key: string): Promise<Standing> {
   const L = ledger(env, key);
   const now = new Date();
-  const [project, items, inbox] = await Promise.all([L.project(), L.items(), L.inbox(now.toISOString())]);
+  const [project, items, inbox, offers] = await Promise.all([L.project(), L.items(), L.inbox(now.toISOString()), offersOf(env)]);
+  const attention = attentionFor(project.name, items, inbox, offers, now);
   const taskEvents = new Map<string, LedgerEvent[]>();
   await Promise.all(standingTasks(items).map(async (id) => {
     try { taskEvents.set(id, (await L.events(id, TASK_EVENTS)) as unknown as LedgerEvent[]); } catch { /* reported as not read */ }
   }));
-  const ids = [...new Set(inbox.filter((x) => x.kind !== "failing").map((x) => x.itemId))].slice(0, STANDING_BRIEFS);
+  const ids = attention.owner.map((t) => t.id).slice(0, STANDING_BRIEFS);
   const details = new Map<string, Detail>();
   await Promise.all(ids.map(async (id) => {
     try { details.set(id, (await L.detail(id)) as unknown as Detail); } catch { /* the line keeps the inbox's own reason */ }
   }));
-  return { ...buildStanding(project, items, taskEvents, TASK_EVENTS, inbox, details, now), session: (await L.sessions(1))[0] };
+  return { ...buildStanding(project, items, taskEvents, TASK_EVENTS, attention, details, now), session: (await L.sessions(1))[0] };
+}
+
+// The runner offers as the index recorded them, or null when they could not
+// be read, which the waiting lists say rather than read as no runner.
+async function offersOf(env: Env): Promise<SeenOffer[] | null> {
+  try { return await index(env).runnerOffers(); } catch { return null; }
 }
 // Waiting decisions drawn as cards; the rest of the list stays as plain rows.
 const CARD_LIMIT = 12;
@@ -2609,12 +2617,14 @@ async function homePage(c: Ctx): Promise<Response> {
   const { env } = c;
   const { projects, views } = await projectViews(env);
   const now = new Date();
+  const offers = await offersOf(env);
   const home: HomeView[] = await Promise.all(views.map(async (v) => {
     if (v.unavailable) return v;
     try {
       const L = ledgerOf(env, v.project);
       const events = (await L.events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
-      return { ...v, events, cut: events.length >= STORY_EVENTS, waiting: await L.inbox(now.toISOString()) };
+      const inbox = await L.inbox(now.toISOString()).catch(() => null);
+      return { ...v, events, cut: events.length >= STORY_EVENTS, waiting: attentionFor(v.project.name, v.items, inbox, offers, now) };
     } catch { return { ...v, unavailable: true }; }
   }));
   // The showcase setting as the cards read it: a mode per project, under
@@ -2713,15 +2723,16 @@ async function decisionsPage(c: Ctx, live: { nonce: string; refresh: number }): 
       return buildStory(v.project.name, v.items, events, owner, events.length >= STORY_EVENTS, titleOf(v.project));
     } catch { return null; }
   };
-  const lists = await Promise.all(views.map(async v => {
-    if (v.unavailable) return [];
-    try { return await ledgerOf(env, v.project).inbox(new Date().toISOString()); }
-    catch { v.unavailable = true; return []; }
+  const offers = await offersOf(env);
+  const attention = await Promise.all(views.map(async (v) => {
+    if (v.unavailable) return attentionFor(v.project.name, null, null, offers, now);
+    const inbox = await ledgerOf(env, v.project).inbox(now.toISOString()).catch(() => null);
+    return attentionFor(v.project.name, v.items, inbox, offers, now);
   }));
-  const entries = lists.flat().sort((a,b)=>b.weight-a.weight);
+  const first = attention.flatMap((a) => a.owner.map((t) => ({ project: a.project, itemId: t.id })));
   const queued = views.flatMap((v) => v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch).map((item) => ({ project: v.project, item })));
-  const projectName = c.url.searchParams.get("project") ?? entries[0]?.project;
-  const task = c.url.searchParams.get("task") ?? entries[0]?.itemId;
+  const projectName = c.url.searchParams.get("project") ?? first[0]?.project;
+  const task = c.url.searchParams.get("task") ?? first[0]?.itemId;
   const project = projectName === undefined ? undefined : projectNamed(projects, projectName);
   let selected: ReviewContext | undefined;
   if (project && task) {
@@ -2734,7 +2745,7 @@ async function decisionsPage(c: Ctx, live: { nonce: string; refresh: number }): 
   // need the task's own record; a dozen cards is enough for one screen of work.
   const details = new Map<string, Detail>();
   const seen = new Set<string>();
-  await Promise.all(entries.filter((x) => !seen.has(`${x.project}/${x.itemId}`) && seen.add(`${x.project}/${x.itemId}`)).slice(0, CARD_LIMIT).map(async (x) => {
+  await Promise.all(first.filter((x) => !seen.has(`${x.project}/${x.itemId}`) && seen.add(`${x.project}/${x.itemId}`)).slice(0, CARD_LIMIT).map(async (x) => {
     // An entry names its project as the Ledger's record does; the listed record says where that Ledger is.
     const p = projectNamed(projects, x.project);
     if (!p) return;
@@ -2743,7 +2754,7 @@ async function decisionsPage(c: Ctx, live: { nonce: string; refresh: number }): 
   const recent = (v: FloorView) => v.events[0]?.at ?? "";
   const busiest = [...floorViews].sort((a, b) => recent(b).localeCompare(recent(a)))[0];
   const latest = busiest && !selected ? await story(busiest) : null;
-  return html(renderInbox(entries, projects, ownerName(env), selected, views, floor, now, queued, latest ? { story: latest, owner } : undefined, details, live), 200, live.nonce);
+  return html(renderInbox(attention, projects, ownerName(env), selected, views, floor, now, queued, latest ? { story: latest, owner } : undefined, details, live), 200, live.nonce);
 }
 
 // ── a project's area ───────────────────────────────────────────────────────

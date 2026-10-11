@@ -13,7 +13,7 @@ const standing = (over = {}) => ({
   project: { name: "demo", title: "Demo project", repo: "demo" },
   generatedAt: "2026-10-05T10:46:12.000Z",
   live: [{ id: "t1", title: "Held task", state: "claimed", owner: "claude-code/opus-5.5", since: "2026-10-05T09:00:00.000Z" }],
-  waiting: [{ id: "t2", title: "Ready one", kind: "accept", reason: "all checks observed passing at this head", brief: { verdict: "accept", line: "1 of 1 required checks passed at this revision and nothing blocks it." } }],
+  waiting: [{ id: "t2", title: "Ready one", call: "accept", sentence: "Accept the revision, whose required checks all passed at its head.", href: "/p/demo/t2", command: "atelier accept t2 --project demo", why: "all checks observed passing at this head", brief: { verdict: "accept", line: "1 of 1 required checks passed at this revision and nothing blocks it." } }],
   queued: [{ id: "t3", title: "Queued one", to: "home", agent: "codex", model: "gpt-6", by: "pavi", at: "2026-10-05T08:00:00.000Z", note: "Keep it small" }],
   merged: [{ id: "t0", title: "Earlier", at: "2026-10-04T11:00:00.000Z", commit: "abcdef0123456789", line: "Fixed the thing" }],
   handoffs: [{ id: "t1", title: "Held task", from: "codex/gpt-6", to: "claude-code/opus-5.5", note: "Tests are in test/x", at: "2026-10-05T09:00:00.000Z" }],
@@ -22,24 +22,27 @@ const standing = (over = {}) => ({
 });
 
 test("the text is one line per item under plain headings, and says what each part is", () => {
-  const out = formatStanding(standing(), "PAVI").split("\n");
+  const out = formatStanding(standing(), "PAVI", "https://a.test").split("\n");
   assert.equal(out[0], "Demo project (demo) as of 2026-10-05 10:46 UTC, from Atelier's record");
   assert.ok(out.includes("  t1  claimed  held by claude-code/opus-5.5 since 2026-10-05 09:00 UTC  Held task"));
   assert.ok(out.includes("Waiting on PAVI:"));
-  assert.ok(out.includes("  t2  accept  Ready one  all checks observed passing at this head  brief, accept: 1 of 1 required checks passed at this revision and nothing blocks it."));
+  assert.ok(out.includes("  t2  accept  Ready one  Accept the revision, whose required checks all passed at its head.  https://a.test/p/demo/t2  why: all checks observed passing at this head  brief, accept: 1 of 1 required checks passed at this revision and nothing blocks it."));
   assert.ok(out.includes("  t3  for home codex/gpt-6  Queued one  note: Keep it small"));
   assert.ok(out.includes("  t0  2026-10-04 11:00 UTC  abcdef01  Earlier  summary: Fixed the thing"));
   assert.ok(out.includes("  t1  codex/gpt-6 to claude-code/opus-5.5, 2026-10-05 09:00 UTC  Tests are in test/x"));
   assert.equal(out.filter((l) => /^\s+t\d/.test(l)).length, 5);
 });
 
-test("a waiting line keeps the inbox's reason, so a stale task and an overlap say what to do", () => {
-  const out = formatStanding(standing({ waiting: [
-    { id: "t4", title: "Stale", kind: "stale", kinds: ["stale"], reason: "claude-code/opus-5.5 has not pushed for 14h; hand it off or release it", brief: { verdict: "wait", line: "The task is in progress and has not been submitted for a decision." } },
-    { id: "t5", title: "Overlap", kind: "overlap", kinds: ["accept", "overlap"], reason: "all checks observed passing; scope overlaps t9 (codex/gpt-6)", brief: null },
-  ] })).split("\n");
-  assert.ok(out.includes("  t4  stale  Stale  claude-code/opus-5.5 has not pushed for 14h; hand it off or release it  brief, wait: The task is in progress and has not been submitted for a decision."));
-  assert.ok(out.includes("  t5  overlap  Overlap  all checks observed passing; scope overlaps t9 (codex/gpt-6)"));
+test("a waiting line says what to do and links it; the pipeline and overlapping scopes are counted, not listed", () => {
+  const out = formatStanding(standing({
+    waiting: [{ id: "t4", title: "Blocked", call: "unblock", sentence: "Settle what blocks it, then unblock it so it goes on.", href: "/p/demo/t4", command: "atelier unblock t4 --project demo", why: "blocked by a/b: keys", brief: null }],
+    pipeline: [{ stage: "submitted", count: 3 }, { stage: "building", count: 2 }],
+    overlaps: [["t5", "t6"], ["t5", "t7"]],
+  }), "PAVI").split("\n");
+  assert.ok(out.includes("  t4  unblock  Blocked  Settle what blocks it, then unblock it so it goes on.  /p/demo/t4  why: blocked by a/b: keys"));
+  assert.ok(out.includes("In the pipeline: 5 tasks: 3 in review, 2 building; none waits on PAVI."));
+  assert.ok(out.includes("Overlapping scopes: 2 pairs; nothing waits on PAVI. The JSON lists them."));
+  assert.ok(!out.some((l) => l.includes("t5")), "no overlapping pair is listed inline");
 });
 
 test("what the record could not show is said, and a held task with no known start is not given one", () => {

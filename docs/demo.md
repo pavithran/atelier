@@ -96,7 +96,8 @@ atelier runner --name home:integrator --integrate
 
 **Open the places to watch.** Three views show the whole walk:
 
-- `atelier inbox` prints what waits on the owner, most urgent first. The
+- `atelier inbox` prints what waits on the owner, one line of what to do
+  and a link per task, in the order of docs/owner.md's table. The
   Decisions page at `/decisions` shows the same.
 - The Studio at `/studio` draws one lane per live task, banded by holder,
   with a mark for every claim, push, check, submission and review. Each
