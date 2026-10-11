@@ -1,0 +1,51 @@
+atelier atelier/t534 "Signing in through Access needs no owner token"
+accepted head d552c62f9c99b55226e1fab5199a9bd8343fa361
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR claude-code/opus-5.5 (anthropic)
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-11T23:36:35.932Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-11T23:36:40.342Z
+REVIEW approve by codex/gpt-6-astra at d552c62f9c99b55226e1fab5199a9bd8343fa361, recorded by codex/gpt-6-astra
+2026-10-11T20:26:39.734Z pavi item.created
+2026-10-11T20:26:41.485Z pavi item.dispatched
+2026-10-11T20:26:47.661Z claude-code/opus-5.5 item.claimed
+2026-10-11T20:27:29.233Z claude-code/opus-5.5 fork.created
+2026-10-11T20:27:47.750Z claude-code/opus-5.5 item.released
+2026-10-11T20:27:56.886Z claude-code/opus-5.5 item.claimed
+2026-10-11T20:28:15.390Z claude-code/opus-5.5 item.released
+2026-10-11T20:28:18.655Z claude-code/opus-5.5 item.claimed
+2026-10-11T20:28:37.873Z claude-code/opus-5.5 item.released
+2026-10-11T20:28:46.381Z claude-code/opus-5.5 item.claimed
+2026-10-11T20:29:07.316Z claude-code/opus-5.5 item.released
+2026-10-11T20:29:08.948Z claude-code/opus-5.5 item.claimed
+2026-10-11T20:29:30.199Z claude-code/opus-5.5 item.released
+2026-10-11T20:29:38.503Z claude-code/opus-5.5 item.claimed
+2026-10-11T20:29:59.117Z claude-code/opus-5.5 item.released
+2026-10-11T20:30:01.084Z claude-code/opus-5.5 item.claimed
+2026-10-11T20:30:25.726Z claude-code/opus-5.5 item.released
+2026-10-11T20:30:40.927Z claude-code/opus-5.5 item.claimed
+2026-10-11T20:31:02.441Z claude-code/opus-5.5 item.released
+2026-10-11T20:31:26.997Z claude-code/opus-5.5 item.claimed
+2026-10-11T20:31:49.713Z claude-code/opus-5.5 item.released
+2026-10-11T20:32:03.785Z claude-code/opus-5.5 item.claimed
+2026-10-11T20:32:25.070Z claude-code/opus-5.5 item.released
+2026-10-11T20:32:56.065Z claude-code/opus-5.5 item.claimed
+2026-10-11T20:33:18.227Z claude-code/opus-5.5 item.released
+2026-10-11T22:01:18.316Z claude-code/opus-5.5 item.claimed
+2026-10-11T22:23:08.711Z claude-code/opus-5.5 push.observed
+2026-10-11T22:27:48.121Z claude-code/opus-5.5 evidence.observed
+2026-10-11T22:27:50.729Z claude-code/opus-5.5 evidence.observed
+2026-10-11T22:27:51.517Z claude-code/opus-5.5 item.submitted
+2026-10-11T23:29:10.983Z pavi land.lease
+2026-10-11T23:29:18.108Z pavi land.merge
+2026-10-11T23:29:31.602Z pavi land.regenerate
+2026-10-11T23:29:35.148Z claude-code/opus-5.5 push.observed
+2026-10-11T23:29:36.480Z pavi land.push
+2026-10-11T23:36:37.259Z claude-code/opus-5.5 evidence.observed
+2026-10-11T23:36:40.710Z claude-code/opus-5.5 evidence.observed
+2026-10-11T23:36:41.223Z pavi land.check
+2026-10-11T23:36:44.479Z pavi review.requested
+2026-10-11T23:37:08.332Z codex/gpt-6-astra review.claimed
+2026-10-11T23:38:36.450Z codex/gpt-6-astra review.approved
+2026-10-11T23:38:46.596Z pavi land.review
+2026-10-11T23:38:47.734Z pavi item.accepted
+2026-10-11T23:38:47.760Z pavi land.accept
