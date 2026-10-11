@@ -17,6 +17,19 @@ export default async function modelsCommand() {
   };
   const taskOf = (n) => (n.project ? `${n.projectName ?? n.project}/${n.item}` : n.item);
   const noteLines = (m) => (m.notes ?? []).map((n) => `  ${n.at.slice(0, 10)} by ${n.by}${n.item ? ` on ${taskOf(n)}` : ""}: ${n.text}`);
+  if (sub === "admit" || sub === "withdraw") {
+    if (!id || !args.reason) die(`atelier models ${sub} ID --project NAME --reason TEXT`);
+    const name = project();
+    const record = await call(sub === "admit" ? "PUT" : "DELETE", `/projects/${encodeURIComponent(name)}/reviewers/${encodeURIComponent(id)}`, { reason: args.reason }, OWNER);
+    return console.log(`${record.id}: reviewer ${record.active ? "admitted" : "withdrawn"} in ${name} by ${record.by} at ${record.at}: ${record.reason}`);
+  }
+  if (sub === "reviewers") {
+    const name = project();
+    const records = await call("GET", `/projects/${encodeURIComponent(name)}/reviewers`, undefined, OWNER);
+    for (const record of records) console.log(`${record.id}: ${record.active ? "admitted" : "withdrawn"} by ${record.by} at ${record.at}: ${record.reason}`);
+    if (!records.length) console.log(`No reviewer admissions in ${name}.`);
+    return;
+  }
   if (sub === "add") {
     if (!id) die("atelier models add ID --harness H --where home|cloud");
     for (const k of ["key", "api-key", "token"]) if (args[k] !== undefined) die("Atelier never stores keys; put the key in your Keychain and give its entry's name with --keychain");
@@ -47,7 +60,7 @@ export default async function modelsCommand() {
     for (const line of lines) console.log(line);
     return;
   }
-  if (sub) die(`${COMMAND_USAGE.models}\nunknown models command "${sub}"; use add, remove, note, show, or nothing to list`);
+  if (sub) die(`${COMMAND_USAGE.models}\nunknown models command "${sub}"; use add, remove, note, show, admit, withdraw, reviewers, or nothing to list`);
   const pool = await call("GET", "/models", undefined, OWNER);
   if (!pool.length) return console.log("The pool is empty. Add a model: atelier models add ID --harness H --where home|cloud");
   for (const m of pool) console.log([modelLine(m), ...noteLines(m)].join("\n"));

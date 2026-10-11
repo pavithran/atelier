@@ -1355,7 +1355,7 @@ it("a verdict on criteria that changed while its reviewer ran is refused with ho
   const owner = api("owner"), reviewer = api(GPT);
   type Detail = { criteria: string; gate: { ready: boolean }; reviews: unknown[] };
   const one = (await (await owner("GET", "/items/t1")).json() as Detail).criteria;
-  await L.requestReview("t1", "owner", GPT, []);
+  await L.requestReview("t1", "owner", GPT, [{ id: "gpt-6-astra", harness: "codex", where: "home", provider: "subscription", aliases: [], family: "openai", note: "", addedBy: "owner", addedAt: new Date().toISOString() }]);
   const claim = await L.claimReview("t1", GPT, { runner: "home:studio", kind: "home" }) as unknown as { criteria: string; request: number };
   expect(claim.criteria).toBe(one);
 
