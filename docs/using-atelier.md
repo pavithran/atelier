@@ -149,7 +149,8 @@ that is how Atelier improves.
 ## Habits that save trouble
 
 - Run one home runner per machine (`atelier runner --name home:NAME`), and
-  check for one before starting another: `pgrep -f "atelier.mjs runner"`.
+  check for one before starting another: `atelier status` lists the runners
+  live on this Mac by name, and to wait on a task use `atelier wait ID`.
 - Deploy a project between landings, after its full test suite passes, not
   while another task's checks run.
 - `atelier gc --project NAME` previews the workspaces of finished tasks that

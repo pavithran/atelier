@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
-import type { LedgerEvent } from "../src/ledger.ts";
+import type { ReviewClaim, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import type { Evidence, ProjectPolicy } from "../src/rules.ts";
@@ -57,8 +57,8 @@ async function submitApproved(L: L, partId: string, head: string, path: string, 
   await L.submit(partId, builder);
   const waiting = (await L.reviewWaiting()).filter((w) => w.id === partId);
   const reviewer = `${waiting[0].dispatch!.agent}/${waiting[0].dispatch!.model}`;
-  await L.claimReview(partId, reviewer, RUNNER);
-  await L.addReview({ itemId: partId, criteria: await L.criteria(partId), by: reviewer, head, approve: true, note: "Good", at: new Date().toISOString() });
+  const reviewClaim1 = await L.claimReview(partId, reviewer, RUNNER) as unknown as ReviewClaim;
+  await L.addReview({ request: reviewClaim1.request, itemId: partId, criteria: await L.criteria(partId), by: reviewer, head, approve: true, note: "Good", at: new Date().toISOString() });
   return builder;
 }
 
@@ -109,8 +109,8 @@ it("a part whose integration conflicted is dispatched again with the plan branch
   await L.submit(b, builder);
   const waiting = (await L.reviewWaiting()).filter((w) => w.id === b);
   const reviewer = `${waiting[0].dispatch!.agent}/${waiting[0].dispatch!.model}`;
-  await L.claimReview(b, reviewer, RUNNER);
-  await L.addReview({ itemId: b, criteria: await L.criteria(b), by: reviewer, head: PART_B2, approve: true, note: "Good", at: new Date().toISOString() });
+  const reviewClaim2 = await L.claimReview(b, reviewer, RUNNER) as unknown as ReviewClaim;
+  await L.addReview({ request: reviewClaim2.request, itemId: b, criteria: await L.criteria(b), by: reviewer, head: PART_B2, approve: true, note: "Good", at: new Date().toISOString() });
   await failIntegration(L, id, "b", "checks");
   const again = (await L.item(b)).dispatch;
   expect(again).not.toBeNull();
@@ -205,8 +205,8 @@ async function reworked(name: string) {
   await L.submit(b, builder);
   const waiting = (await L.reviewWaiting()).filter((w) => w.id === b);
   const reviewer = `${waiting[0].dispatch!.agent}/${waiting[0].dispatch!.model}`;
-  await L.claimReview(b, reviewer, RUNNER);
-  await L.addReview({ itemId: b, criteria: await L.criteria(b), by: reviewer, head: PART_B2, approve: true, note: "Good", at: new Date().toISOString() });
+  const reviewClaim3 = await L.claimReview(b, reviewer, RUNNER) as unknown as ReviewClaim;
+  await L.addReview({ request: reviewClaim3.request, itemId: b, criteria: await L.criteria(b), by: reviewer, head: PART_B2, approve: true, note: "Good", at: new Date().toISOString() });
   expect((await L.item(id)).dispatch).toMatchObject({ job: "integrate", part: "b", head: PART_B2 });
   return { id, b };
 }

@@ -6,18 +6,14 @@
 // but the one branch, and it names where a finding is (commit, path, line, the
 // rule) and never the matched text.
 //
-// The policy is `.atelier/publication.json` in the registered checkout:
-//   { "mirrors": { "REMOTE": { "destination": "URL", "email": "ADDRESS" } },
-//     "privatePaths": ["GLOB", ...], "privatePatterns": ["REGEX", ...] }
-// REMOTE is a remote of the checkout; its URL must equal `destination` when
-// the push is made. `email` is the one address every new commit's author and
-// committer must carry. `privatePaths` are globs a published path may not
-// match (a glob without `/` matches a name at any depth; `*` stays inside a
-// folder, `**` crosses folders). `privatePatterns` are extra regular
-// expressions no published line may match. The built-in rules are the secret
-// rules of the push scan (src/secret-scan.ts: provider keys, private key
-// blocks, bearer tokens, `.env`-style secret assignments) and the private
-// addresses in PRIVATE_ADDRESS below.
+// Policy comes from the registered project's commitIdentity (t451):
+// publicMirrors declares remote names; publicMirrorDestinations pins URLs;
+// email is the project's GitHub no-reply address. privateEmails are matched
+// case-insensitively in content too. privatePaths are globs (* within a
+// folder, ** across folders); privatePatterns are extra regular expressions.
+// Built-in secret rules are src/secret-scan.ts (provider keys, private key
+// blocks, bearer tokens and secret assignments), plus PRIVATE_ADDRESS below.
+// Both publish REMOTE and wrap --push use this check.
 //
 // Git LFS: the push to a mirror uploads the project's LFS objects (gitEnv's
 // ownerRemote), so a pointer file a commit adds or changes publishes the
@@ -29,9 +25,9 @@
 import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
+import { settleCommitIdentity, sameEmail } from "../src/commit-identity.ts";
 import { scanLine } from "../src/secret-scan.ts";
 
-export const POLICY_PATH = ".atelier/publication.json";
 const SCAN_BYTES = 8 * 1024 * 1024;
 const LFS_POINTER_BYTES = 1024; // the spec's upper bound on a pointer file
 
@@ -50,33 +46,25 @@ export const PRIVATE_ADDRESS = [
 
 const fail = (why) => ({ ok: false, why });
 
-// The policy, or why it cannot be used. Strict: anything unexpected is invalid.
-export function readPolicy(dir) {
-  let text;
-  try { text = readFileSync(join(dir, POLICY_PATH), "utf8"); }
-  catch (error) { return fail(`no publication policy: ${POLICY_PATH} cannot be read in ${dir} (${error.code ?? error.message})`); }
-  let policy;
-  try { policy = JSON.parse(text); } catch { return fail(`${POLICY_PATH} is not valid JSON`); }
-  const bad = (m) => fail(`${POLICY_PATH} is invalid: ${m}`);
-  const obj = (v) => v && typeof v === "object" && !Array.isArray(v);
-  if (!obj(policy)) return bad("it must be an object");
-  for (const key of Object.keys(policy)) if (!["mirrors", "privatePaths", "privatePatterns"].includes(key)) return bad(`unknown field ${JSON.stringify(key)}`);
-  if (!obj(policy.mirrors) || !Object.keys(policy.mirrors).length) return bad("mirrors must name at least one remote");
-  for (const [name, m] of Object.entries(policy.mirrors)) {
-    if (!obj(m)) return bad(`mirror ${name} must be an object`);
-    for (const key of Object.keys(m)) if (!["destination", "email"].includes(key)) return bad(`mirror ${name} has unknown field ${JSON.stringify(key)}`);
-    if (typeof m.destination !== "string" || !m.destination.trim()) return bad(`mirror ${name} needs a destination URL`);
-    if (typeof m.email !== "string" || !/^[^\s@<>]+@[^\s@<>]+$/.test(m.email)) return bad(`mirror ${name} needs the public email address commits carry`);
+// Validate the registered policy again before contacting any destination.
+export function readPolicy(policy) {
+  const bad = (why) => fail(`publication policy is invalid: ${why}`);
+  if (!policy || typeof policy !== "object") return bad("missing commitIdentity");
+  try {
+    policy = settleCommitIdentity({ commitName: policy.name, commitEmail: policy.email,
+      agentEmails: policy.agentEmails, privateEmails: policy.privateEmails,
+      publicMirrors: policy.publicMirrors, publicMirrorDestinations: policy.publicMirrorDestinations,
+      privatePaths: policy.privatePaths, privatePatterns: policy.privatePatterns }, undefined);
+  } catch { return bad("check commitIdentity, publicMirrors, publicMirrorDestinations and privacy rules"); }
+  if (!policy || !Array.isArray(policy.publicMirrors) || !policy.publicMirrors.length) return bad("publicMirrors must name a remote");
+  const mirrors = Object.create(null);
+  for (const name of policy.publicMirrors) {
+    const destination = policy.publicMirrorDestinations?.[name];
+    if (!destination) return bad(`publicMirrorDestinations needs a destination for ${name}`);
+    mirrors[name] = { destination, email: policy.email };
   }
-  const list = (key) => policy[key] === undefined ? [] : Array.isArray(policy[key]) && policy[key].every((s) => typeof s === "string" && s) ? policy[key] : null;
-  const paths = list("privatePaths"), patterns = list("privatePatterns");
-  if (!paths) return bad("privatePaths must be a list of globs");
-  if (!patterns) return bad("privatePatterns must be a list of regular expressions");
-  const regexes = [];
-  for (const [i, source] of patterns.entries()) {
-    try { regexes.push(new RegExp(source)); } catch { return bad(`privatePatterns entry ${i + 1} is not a valid regular expression`); }
-  }
-  return { ok: true, mirrors: policy.mirrors, paths: paths.map(globMatcher), patterns: regexes };
+  return { ok: true, mirrors, paths: (policy.privatePaths ?? []).map(globMatcher),
+    patterns: (policy.privatePatterns ?? []).map((s) => new RegExp(s)), privateEmails: policy.privateEmails ?? [] };
 }
 
 // A path glob as a test: `**` crosses folders, `*` and `?` stay in one; a glob
@@ -107,6 +95,8 @@ const firstLine = (text) => (text || "").trim().split("\n")[0];
 // differs from every parent, as its patch does. `raw` is a git runner that
 // returns the result (cwd set, failure allowed).
 export function changedFiles(raw, commit) {
+  const names = raw(["log", "-1", "--format=", "--name-only", "-z", "--root", "-c", "--no-renames", commit]);
+  if (names.status !== 0) return fail("git log --name-only failed");
   const tree = raw(["diff-tree", "-r", "-z", "--no-renames", "--root", "--no-commit-id", "-c", commit]);
   if (tree.status !== 0) return { ok: false, why: firstLine(tree.stderr) || "git diff-tree failed" };
   const parts = tree.stdout.split("\0"), list = [];
@@ -119,6 +109,8 @@ export function changedFiles(raw, commit) {
     if (!mode || !sha) return { ok: false, why: "unexpected diff-tree output" };
     list.push({ path, mode, sha, size: null });
   }
+  const named = new Set(names.stdout.split("\0").filter(Boolean));
+  if (named.size !== list.length || list.some((file) => !named.has(file.path))) return fail("git log --name-only and diff-tree disagree about the paths");
   const blobs = list.filter((f) => !/^0+$/.test(f.mode) && f.mode !== "160000");
   if (blobs.length) {
     const sizes = raw(["cat-file", "--batch-check=%(objectname) %(objectsize)"], { input: blobs.map((f) => `${f.sha}\n`).join("") });
@@ -182,8 +174,8 @@ export function headerPath(line) {
 // alone holds is.
 export function commitPatch(raw, commit) {
   const shown = raw(["-c", "core.quotepath=true", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false", "-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/", "-c", "diff.suppressBlankEmpty=false",
-    "diff-tree", "-p", "-c", "-r", "--root", "--no-commit-id", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "-U0", commit]);
-  if (shown.status !== 0) return { ok: false, why: firstLine(shown.stderr) || "git diff-tree failed" };
+    "log", "-1", "--format=", "-p", "-c", "-r", "--root", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "-U0", commit]);
+  if (shown.status !== 0) return { ok: false, why: firstLine(shown.stderr) || "git log -p failed" };
   const files = new Map();
   let file = null, columns = 0, line = 0, inHunk = false;
   for (const text of shown.stdout.split("\n")) {
@@ -215,21 +207,28 @@ export function commitPatch(raw, commit) {
 
 // A Git LFS pointer, or null when the text is not one: the spec's `version`
 // line first, then `oid sha256:HEX` and `size N`, one key per line.
-const LFS_VERSIONS = ["https://git-lfs.github.com/spec/v1", "https://hawser.github.com/spec/v1"];
+const LFS_VERSIONS = ["https://git-lfs.github.com/spec/v1", "https://hawser.github.com/spec/v1", "http://git-media.io/v/2"];
 export function lfsPointer(text) {
   if (typeof text !== "string" || Buffer.byteLength(text) > LFS_POINTER_BYTES) return null;
-  const lines = text.split("\n");
-  if (lines.at(-1) === "") lines.pop();
-  const version = lines[0]?.match(/^version (\S+)$/);
-  if (!version || !LFS_VERSIONS.includes(version[1])) return null;
-  let oid = null, size = null;
-  for (const line of lines.slice(1)) {
-    const kv = line.match(/^([a-z0-9.-]+) (.+)$/i);
-    if (!kv) return null;
-    if (kv[1] === "oid") { const m = kv[2].match(/^sha256:([0-9a-f]{64})$/); if (!m) return null; oid = m[1]; }
-    if (kv[1] === "size") { if (!/^\d+$/.test(kv[2])) return null; size = Number(kv[2]); }
+  // Go's bytes.TrimSpace, ScanLines (including CRLF) and ignored empty
+  // lines, matching git-lfs/lfs/pointer.go. Extensions can precede version.
+  const lines = text.replace(/^[\s\u0085]+|[\s\u0085]+$/g, "").split(/\r?\n/).filter((line) => line !== "");
+  const keys = ["version", "oid", "size"], values = {}, extensions = new Map();
+  let index = 0;
+  for (const line of lines) {
+    const space = line.indexOf(" ");
+    if (space < 0 || index >= keys.length) return null;
+    const key = line.slice(0, space), value = line.slice(space + 1);
+    if (key === keys[index]) { values[key] = value; index++; continue; }
+    if (!/^ext-\d-\w/.test(key) || !/^sha256:[0-9a-f]{64}$/.test(value)) return null;
+    extensions.set(key, value);
   }
-  return oid !== null && size !== null ? { oid, size } : null;
+  const priorities = [...extensions.keys()].map((key) => key.split("-")[1]);
+  if (new Set(priorities).size !== priorities.length || !LFS_VERSIONS.includes(values.version)) return null;
+  const oid = values.oid?.match(/^sha256:([0-9a-f]{64})$/)?.[1];
+  if (!oid || !/^[+-]?\d+$/.test(values.size ?? "") || Number(values.size) < 0) return null;
+  // Oversized integers are still treated as pointers: lfsObject refuses them.
+  return { oid, size: Number(values.size) };
 }
 
 // Where the checkout keeps its LFS objects: lfs.storage when set (relative to
@@ -259,24 +258,27 @@ export function lfsObject(storage, { oid, size }) {
   try { bytes = readFileSync(file); } catch (error) { return fail(`LFS object ${oid.slice(0, 12)} cannot be read (${error.code ?? error.message})`); }
   if (createHash("sha256").update(bytes).digest("hex") !== oid) return fail(`LFS object ${oid.slice(0, 12)} does not match its pointer's oid`);
   if (bytes.subarray(0, 8000).includes(0)) return fail(`LFS object ${oid.slice(0, 12)} is binary content`);
-  const lines = bytes.toString("utf8").split("\n");
+  let decoded;
+  try { decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+  catch { return fail(`LFS object ${oid.slice(0, 12)} is not UTF-8 text`); }
+  const lines = decoded.split("\n");
   if (lines.at(-1) === "") lines.pop();
   return { ok: true, lines };
 }
 
 // Publishes. `git(args, opts)` is atelier's runner; `say` prints. It returns
 // { ok } and never exits itself, so the caller chooses the status.
-export function publishMirror({ git, dir, branch, remote, say }) {
+export function publishMirror({ git, dir, branch, remote, say, identity }) {
   const refuse = (...lines) => { for (const l of lines) say(l); return { ok: false }; };
   const raw = (args, opts = {}) => git(args, { cwd: dir, allowFail: true, ...opts });
   const out = (args) => { const r = raw(args); return r.status === 0 ? r.stdout.trim() : null; };
 
   // 1. The policy, before anything else.
-  const policy = readPolicy(dir);
+  const policy = readPolicy(identity);
   if (!policy.ok) return refuse(`Not published: ${policy.why}.`);
   const mirror = policy.mirrors[remote];
-  if (!mirror) return refuse(`Not published: ${remote} is not a mirror ${POLICY_PATH} declares (it declares ${Object.keys(policy.mirrors).join(", ")}).`);
-  const urlNow = () => out(["remote", "get-url", remote]);
+  if (!mirror) return refuse(`Not published: ${remote} is not a mirror commitIdentity.publicMirrors declares (it declares ${Object.keys(policy.mirrors).join(", ")}).`);
+  const urlNow = () => out(["remote", "get-url", "--push", "--all", remote]);
   const url = urlNow();
   if (!url) return refuse(`Not published: ${dir} has no remote called ${remote}.`);
   if (!sameUrl(url, mirror.destination)) return refuse(`Not published: remote ${remote} points at a different place than the policy's destination for it; it was not pushed to. Point the remote at the declared destination, or change the policy.`);
@@ -317,7 +319,7 @@ export function publishMirror({ git, dir, branch, remote, say }) {
   for (const c of commits) {
     const who = raw(["log", "-1", "--format=%ae%x00%ce", c]);
     const [ae, ce] = who.stdout.replace(/\n$/, "").split("\0");
-    const wrong = [ae !== mirror.email ? "author" : null, ce !== mirror.email ? "committer" : null].filter(Boolean);
+    const wrong = [!sameEmail(ae ?? "", mirror.email) ? "author" : null, !sameEmail(ce ?? "", mirror.email) ? "committer" : null].filter(Boolean);
     if (wrong.length) findings.push(`${c.slice(0, 12)}: ${wrong.join(" and ")} email is not ${mirror.email}`);
   }
 
@@ -334,6 +336,7 @@ export function publishMirror({ git, dir, branch, remote, say }) {
   const rulesFor = (text) => {
     const rules = [];
     if (scanLine(text)) rules.push("secret");
+    if (policy.privateEmails.some((email) => text.toLowerCase().includes(email.toLowerCase()))) rules.push("private-email");
     for (const [name, rx] of PRIVATE_ADDRESS) if (rx.test(text)) rules.push(name);
     if (policy.patterns.some((rx) => rx.test(text))) rules.push("private-pattern");
     return rules;
@@ -360,6 +363,7 @@ export function publishMirror({ git, dir, branch, remote, say }) {
       const blob = scan.get(file.path);
       scan.delete(file.path);
       const at = `${c.slice(0, 12)} ${file.path}`;
+      if (file.added.some(({ text }) => text.includes("\ufffd"))) { refusals.push(`${at}: content cannot be decoded reliably as UTF-8`); continue; }
       if (file.binary) { refusals.push(`${at}: binary content`); continue; }
       for (const { line, text } of file.added) {
         const rules = rulesFor(text);
@@ -404,7 +408,7 @@ export function publishMirror({ git, dir, branch, remote, say }) {
   // refused here; a mirror that moved since the fetch is refused by git, which
   // rejects a push that is not a fast-forward.
   if (urlNow() !== url) return refuse("Not published: the remote's URL changed during the check; it was not pushed to.");
-  const pushed = raw(["-c", "push.followTags=false", "push", "--quiet", "--no-follow-tags", "--recurse-submodules=no", mirror.destination, `${tip}:${ref}`], { ownerRemote: true });
+  const pushed = raw(["-c", `remote.${remote}.mirror=false`, "-c", "push.followTags=false", "push", "--no-force", "--quiet", "--no-follow-tags", "--recurse-submodules=no", mirror.destination, `${tip}:${ref}`], { ownerRemote: true });
   if (pushed.status !== 0) return refuse(`Not published: the mirror refused the push (it may have moved since it was fetched): ${firstLine(pushed.stderr)}`);
   say(`Mirror ${remote} now at ${tip.slice(0, 8)}: ${commits.length} commit${commits.length === 1 ? "" : "s"} checked and pushed to ${branch}.`);
   return { ok: true };

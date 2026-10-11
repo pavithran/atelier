@@ -12,9 +12,9 @@ import { commitPatch, globMatcher, headerPath, lfsObject, lfsPointer, PRIVATE_AD
 // disk. The keys below are assembled at run time so this file holds none.
 
 const cli = resolve("cli/atelier.mjs");
-const PUBLIC = "pub@example.org";
+const PUBLIC = "123+pub@users.noreply.github.com";
 const KEY = "AKIA" + "ABCDEFGHIJKLMNOP";
-const POLICY = { mirrors: { github: { destination: "", email: PUBLIC } }, privatePaths: ["private/**", "*.pem", "notes/internal.md"], privatePatterns: ["ACME-INTERNAL-\\d+"] };
+const POLICY = { name: "Pub", email: PUBLIC, agentEmails: [], publicMirrors: ["github"], privatePaths: ["private/**", "*.pem", "notes/internal.md"], privatePatterns: ["ACME-INTERNAL-\\d+"] };
 
 // Atelier's own runner, as publishMirror takes it: cwd, input and allowFail.
 const runner = (args, opts = {}) => {
@@ -41,18 +41,18 @@ function fixture(t, { policy = POLICY, emptyMirror = true } = {}) {
     assert.equal(r.status, 0, r.stderr);
     return git(checkout, "rev-parse", "HEAD");
   };
-  put(".atelier/publication.json", JSON.stringify({ ...policy, mirrors: { github: { ...policy.mirrors?.github, destination: mirror } } }));
+  policy = { ...policy, publicMirrorDestinations: { github: mirror } };
   put("README.md", "hello\n");
   const first = commit("First");
   const lines = [];
   const publish = (over = {}) => {
     lines.length = 0;
-    const r = publishMirror({ git: runner, dir: checkout, branch: "main", remote: "github", say: (l) => lines.push(l), ...over });
+    const r = publishMirror({ git: runner, dir: checkout, branch: "main", remote: "github", say: (l) => lines.push(l), identity: policy, ...over });
     return { ...r, text: lines.join("\n") };
   };
   const refs = () => git(mirror, "for-each-ref", "--format=%(refname)").split("\n").filter(Boolean);
   const head = () => runner(["rev-parse", "refs/heads/main"], { cwd: mirror, allowFail: true }).stdout?.trim();
-  return { dir, checkout, mirror, git, put, commit, first, publish, refs, head, lines };
+  return { policy, dir, checkout, mirror, git, put, commit, first, publish, refs, head, lines };
 }
 
 test("a clean history publishes to an empty mirror, every commit, and only the branch", (t) => {
@@ -139,7 +139,7 @@ test("only the lines a commit adds are scanned, numbered as the commit holds the
   assert.equal(f.publish().ok, true);
   // A pattern declared after the mirror holds "two" does not re-report it
   // when a later commit touches another line of the file.
-  f.put(".atelier/publication.json", JSON.stringify({ ...POLICY, privatePatterns: ["^two$", "^four$"], mirrors: { github: { ...POLICY.mirrors.github, destination: f.mirror } } }));
+  f.policy.privatePatterns = ["^two$", "^four$"];
   f.put("docs/net.md", "one\ntwo\nthree\nfour\n");
   const c = f.commit("Append").slice(0, 12);
   const r = f.publish();
@@ -318,14 +318,12 @@ test("a mirror that moves between the fetch and the push is refused without forc
 });
 
 test("a missing or invalid publication policy blocks publication before any push", (t) => {
-  for (const [name, content] of [["missing", null], ["not json", "{"], ["no mirrors", "{}"], ["bad email", JSON.stringify({ mirrors: { github: { destination: "/x", email: "nope" } } })], ["bad pattern", JSON.stringify({ mirrors: { github: { destination: "/x", email: PUBLIC } }, privatePatterns: ["("] })], ["unknown field", JSON.stringify({ mirrors: { github: { destination: "/x", email: PUBLIC } }, extra: 1 })]]) {
+  for (const identity of [undefined, {}, { ...POLICY, email: "nope" }, { ...POLICY, email: "pub@example.org" }, { ...POLICY, privateEmails: [PUBLIC] }, { ...POLICY, privatePatterns: ["("] }, { ...POLICY, publicMirrorDestinations: [] }]) {
     const f = fixture(t);
-    if (content === null) f.git(f.checkout, "rm", "-q", "-f", ".atelier/publication.json");
-    else f.put(".atelier/publication.json", content);
-    const r = f.publish();
-    assert.equal(r.ok, false, name);
-    assert.match(r.text, /Not published: .*(publication policy|publication\.json)/, name);
-    assert.deepEqual(f.refs(), [], name);
+    const r = f.publish({ identity });
+    assert.equal(r.ok, false);
+    assert.match(r.text, /publication policy/);
+    assert.deepEqual(f.refs(), []);
   }
 });
 
@@ -338,15 +336,14 @@ test("globs: a name matches at any depth, ** crosses folders, * does not", () =>
   assert.ok(s("docs/a.md") && !s("docs/x/a.md"));
 });
 
-test("atelier publish REMOTE runs through the CLI and refuses without a policy; a bare publish is the baseline's", (t) => {
+test("publish REMOTE requires the server policy; bare publish still requests a baseline token", (t) => {
   const f = fixture(t);
-  f.git(f.checkout, "rm", "-q", "-f", ".atelier/publication.json");
   writeFileSync(join(f.dir, "config.json"), JSON.stringify({ server: "https://fake.invalid", owner: "owner", projects: { demo: { path: f.checkout, branch: "main" } } }));
   const env = { ...process.env, ATELIER_CONFIG_DIR: f.dir, ATELIER_CACHE: join(f.dir, "cache"), ATELIER_TOKEN: "fake", ATELIER_SERVER: "https://fake.invalid", GIT_CONFIG_NOSYSTEM: "1" };
   const run = (...a) => spawnSync(process.execPath, [cli, ...a, "--project", "demo"], { cwd: f.dir, encoding: "utf8", env });
   const r = run("publish", "github");
-  assert.equal(r.status, 1);
-  assert.match(r.stdout, /Not published: no publication policy/);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /fetch failed|ENOTFOUND|fake.invalid/);
   assert.deepEqual(f.refs(), []);
   // Bare publish still asks the server for a write token, which this one cannot reach.
   const bare = run("publish");
@@ -546,4 +543,65 @@ test("private IPv6 addresses are caught with compressed endings", (t) => {
   assert.ok(r.text.includes(`${c} docs/net.md:2: private-ipv6`), r.text);
   assert.ok(!r.text.includes("docs/net.md:3"), r.text);
   assert.ok(!r.text.includes("fe80"), r.text);
+});
+
+test("git-lfs noncanonical pointers cannot hide an outgoing object's secret", (t) => {
+  for (const variant of ["crlf", "blank", "legacy", "padding", "plus-size", "extension"]) {
+    const f = fixture(t);
+    const payload = `key = ${KEY}\n`;
+    const oid = lfs(f, "data.txt", payload);
+    let pointer = `version https://git-lfs.github.com/spec/v1\noid sha256:${oid}\nsize ${Buffer.byteLength(payload)}\n`;
+    if (variant === "crlf") pointer = pointer.replaceAll("\n", "\r\n");
+    if (variant === "blank") pointer = pointer.replaceAll("\n", "\n\n");
+    if (variant === "legacy") pointer = pointer.replace("https://git-lfs.github.com/spec/v1", "http://git-media.io/v/2");
+    if (variant === "padding") pointer = ` \t\n${pointer}\n\t `;
+    if (variant === "plus-size") pointer = pointer.replace("size ", "size +");
+    if (variant === "extension") pointer = pointer.replace("\noid ", `\next-0-test sha256:${oid}\noid `);
+    assert.deepEqual(lfsPointer(pointer), { oid, size: Buffer.byteLength(payload) }, variant);
+    f.put("data.txt", pointer);
+    const commit = f.commit(variant);
+    f.put("data.txt", "removed\n"); f.commit("Remove pointer");
+    const r = f.publish();
+    assert.equal(r.ok, false, variant);
+    assert.ok(r.text.includes(`${commit.slice(0, 12)} data.txt (LFS object`), r.text);
+    assert.match(r.text, /:1: secret/);
+    assert.ok(!r.text.includes(KEY));
+    assert.deepEqual(f.refs(), []);
+  }
+});
+
+test("public identity matching ignores case and privateEmails also protect file content", (t) => {
+  const f = fixture(t);
+  f.put("case.txt", "safe\n"); f.commit("Case", { GIT_AUTHOR_EMAIL: PUBLIC.toUpperCase(), GIT_COMMITTER_EMAIL: PUBLIC.toUpperCase() });
+  assert.equal(f.publish().ok, true);
+  f.policy.privateEmails = ["person@private.example"];
+  f.put("contact.txt", "PERSON@PRIVATE.EXAMPLE\n"); const c = f.commit("Contact");
+  f.put("contact.txt", "removed\n"); f.commit("Remove");
+  const r = f.publish();
+  assert.equal(r.ok, false);
+  assert.ok(r.text.includes(`${c.slice(0, 12)} contact.txt:1: private-email`), r.text);
+  assert.doesNotMatch(r.text, /person@private.example/i);
+});
+
+test("invalid UTF-8 in Git and LFS content is refused with the path", (t) => {
+  for (const storage of ["git", "lfs"]) {
+    const f = fixture(t);
+    const bytes = Buffer.from([0xff, 0xfe, 0x41]);
+    if (storage === "git") f.put("unreadable.txt", bytes);
+    else lfs(f, "unreadable.txt", bytes);
+    f.commit("Undecodable");
+    const r = f.publish();
+    assert.equal(r.ok, false, storage);
+    assert.match(r.text, /unreadable.txt.*UTF-8/);
+    assert.deepEqual(f.refs(), []);
+  }
+});
+
+test("a mirror push URL must match the pinned destination and cannot fan out", (t) => {
+  const f = fixture(t);
+  f.git(f.checkout, "config", "remote.github.pushurl", f.mirror);
+  assert.equal(f.publish().ok, true);
+  f.put("next.txt", "next\n"); f.commit("Next");
+  f.git(f.checkout, "config", "--add", "remote.github.pushurl", join(f.dir, "other.git"));
+  assert.match(f.publish().text, /points at a different place/);
 });
