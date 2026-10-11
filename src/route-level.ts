@@ -211,4 +211,7 @@ export function checkCapabilities(version: unknown, required: readonly string[])
 // agentEmails, privateEmails and publicMirrors (t451).
 // 25: the owner admits, withdraws and lists outside reviewers (PUT, DELETE
 // and GET /projects/:p/reviewers), which an older server answers 404 (t492).
-export const ROUTE_LEVEL = 25;
+
+// 26: review-renew and five-minute leases; release and verdicts name the
+// exact request generation, and expired requests are reoffered (t351).
+export const ROUTE_LEVEL = 26;
