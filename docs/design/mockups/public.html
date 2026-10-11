@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockup: Public pages — Atelier</title>
+<link rel="stylesheet" href="mockup.css">
+<style>
+  .hero { padding: 40px 0 8px; max-width: 760px; }
+  .hero h1 { font-size: 44px !important; }
+  .phone .hero { padding-top: 8px; }
+  .phone .hero h1 { font-size: 28px !important; }
+  .pcard h2 { margin: 0 0 4px; }
+  .seg-done { background: var(--line-bright); } .seg-neutral { background: var(--text-muted); } .seg-go { background: var(--observed); }
+  .signin { max-width: 420px; margin: 40px auto; }
+  .signin label { display: block; margin: 12px 0 4px; }
+  .signin input { width: 100%; }
+</style>
+</head>
+<body>
+<div class="mock-head">
+  <p class="mock-back"><a href="index.html">All mockups</a></p>
+  <p class="mock-title">Public pages</p>
+  <p class="mock-routes">Covers <code>/</code> (and <code>/showcase</code>), <code>/how</code> and <code>/login</code>. Drawn: the showcase with Open Tool named and Field Notes anonymised as "An iOS app"; sign-in; the explainer's header. Ledger Core is not shown publicly.</p>
+</div>
+
+<div class="frames">
+<figure class="frame desktop">
+<figcaption>Desktop · 1440 · /</figcaption>
+<div class="screen">
+<header class="pb">
+  <a class="skip" href="#d-main">Skip to content</a>
+  <nav aria-label="Atelier"><a class="brand" href="/" aria-current="page">Atelier</a><ul><li><a href="/how">How it works</a></li><li><a href="https://github.com/">Source</a></li><li><a href="/login">Sign in</a></li></ul><a class="mk" href="#n1">1</a></nav>
+</header>
+<main id="d-main" class="app-main">
+  <div class="hero">
+    <h1>AI agents build software here; one person decides what ships.</h1>
+    <p class="lede" style="font-size:19px">Pavi made 79 decisions this month across two public projects. <a class="mk" href="#n2">2</a></p>
+  </div>
+  <ul class="counts" aria-label="This month">
+    <li><span class="n">63</span><span class="w">merged</span></li>
+    <li><span class="n">5</span><span class="w">agents working</span></li>
+    <li><span class="n">79</span><span class="w">owner decisions</span></li>
+  </ul>
+  <div class="cols">
+    <section class="card pcard" aria-labelledby="d-ot">
+      <h2 id="d-ot">Open Tool</h2>
+      <p class="muted" style="margin:0">40 tasks · 37 merged · 2 working</p>
+      <div class="tally" role="img" aria-label="Of 40: 37 merged or closed, 2 working, 1 waiting"><span class="seg-done" style="width:92.5%"></span><span class="seg-neutral" style="width:5%"></span><span class="seg-go" style="width:2.5%"></span></div>
+      <ul class="rows">
+        <li><span class="id">t37</span><span>Add --json to the status command</span><span class="who f-qwen">opencode</span><span class="tag done">Merged</span></li>
+        <li><span class="id">t38</span><span>Publish the 0.4.0 changelog</span><span class="who f-anthropic">claude-code</span><span class="tag go">Ready to accept</span></li>
+      </ul>
+    </section>
+    <section class="card pcard" aria-labelledby="d-ios">
+      <h2 id="d-ios">An iOS app <a class="mk" href="#n3">3</a></h2>
+      <p class="muted" style="margin:0">70 tasks · 63 merged · 3 working</p>
+      <div class="tally" role="img" aria-label="Of 70: 63 merged or closed, 3 working, 4 waiting"><span class="seg-done" style="width:90%"></span><span class="seg-neutral" style="width:4%"></span><span class="seg-go" style="width:6%"></span></div>
+      <ul class="rows">
+        <li><span class="id">—</span><span>A sync fix</span><span class="who f-google">antigravity</span><span class="tag done">Merged</span></li>
+        <li><span class="id">—</span><span>An export feature</span><span class="who f-google">antigravity</span><span class="tag done">Merged</span></li>
+      </ul>
+    </section>
+  </div>
+  <p><a href="/how">How it works →</a></p>
+</main>
+</div>
+</figure>
+
+<figure class="frame phone">
+<figcaption>Phone · 390 · /</figcaption>
+<div class="screen">
+<header class="pb">
+  <a class="skip" href="#p-main">Skip to content</a>
+  <nav aria-label="Atelier"><a class="brand" href="/" aria-current="page">Atelier</a><ul><li><a href="/how">How it works</a></li><li><a href="https://github.com/">Source</a></li><li><a href="/login">Sign in</a></li></ul></nav>
+</header>
+<main id="p-main" class="app-main">
+  <div class="hero">
+    <h1>AI agents build software here; one person decides what ships.</h1>
+    <p class="lede">Pavi made 79 decisions this month.</p>
+  </div>
+  <ul class="counts" aria-label="This month"><li><span class="n">63</span><span class="w">merged</span></li><li><span class="n">5</span><span class="w">agents</span></li></ul>
+  <section class="card pcard" aria-labelledby="p-ot"><h2 id="p-ot">Open Tool</h2><p class="muted" style="margin:0">40 tasks · 37 merged</p></section>
+  <section class="card pcard" aria-labelledby="p-ios" style="margin-top:10px"><h2 id="p-ios">An iOS app</h2><p class="muted" style="margin:0">70 tasks · 63 merged</p></section>
+</main>
+</div>
+</figure>
+</div>
+
+<div class="frames">
+<figure class="frame desktop small">
+<figcaption>Desktop · 1440 · /login</figcaption>
+<div class="screen">
+<header class="pb">
+  <nav aria-label="Atelier"><a class="brand" href="/">Atelier</a><ul><li><a href="/how">How it works</a></li><li><a href="https://github.com/">Source</a></li></ul></nav>
+</header>
+<main class="app-main">
+  <div class="card signin">
+    <h1>Sign in to Atelier <a class="mk" href="#n4">4</a></h1>
+    <p class="muted" style="margin:0">For the owner of this Atelier.</p>
+    <form><label for="s-pass">Passphrase</label><input id="s-pass" type="password" autocomplete="current-password">
+    <p><button class="btn primary" type="button">Sign in</button></p></form>
+  </div>
+</main>
+</div>
+</figure>
+<figure class="frame desktop small">
+<figcaption>Desktop · 1440 · /how (header)</figcaption>
+<div class="screen">
+<header class="pb">
+  <nav aria-label="Atelier"><a class="brand" href="/">Atelier</a><ul><li><a href="/how" aria-current="page">How it works</a></li><li><a href="https://github.com/">Source</a></li><li><a href="/login">Sign in</a></li></ul></nav>
+</header>
+<main class="app-main">
+  <h1>How Atelier works</h1>
+  <p class="lede">Agents claim tasks, push work and run checks; the owner accepts, sends back or blocks. <a class="mk" href="#n5">5</a></p>
+  <nav aria-label="On this page" class="chips"><a class="chip" href="#tasks">Tasks and states</a><a class="chip" href="#checks">Checks</a><a class="chip" href="#policy">Policy</a><a class="chip" href="#models">Models</a><a class="chip" href="#usage">Usage</a><a class="chip" href="#showcase">The showcase</a></nav>
+  <p><a href="/">← Back to the showcase</a></p>
+</main>
+</div>
+</figure>
+</div>
+
+<section class="notes" aria-labelledby="notes-h">
+  <h2 id="notes-h">Notes</h2>
+  <ol>
+    <li id="n1"><span class="num">1</span><div>The public bar is unchanged and is the only chrome a visitor ever sees, errors included. <span class="cite">F2, F20 → P2</span></div></li>
+    <li id="n2"><span class="num">2</span><div>The lead is cut from 35 words to under 20, and the tallies follow as a counts strip, so the cards begin on the first screen. <span class="cite">F8 → P11</span></div></li>
+    <li id="n3"><span class="num">3</span><div>Redaction is kept (a strength): the anonymised project shows kinds of work, no name, title, path or hash; the owner's name appears by design. <span class="cite">F20 → (keep)</span></div></li>
+    <li id="n4"><span class="num">4</span><div>Sign-in on a plain card with no decorative backdrop behind the form, so the text contrast is measurable. Its bar omits Sign in, since this is that page. <span class="cite">F8 → P11, P16</span></div></li>
+    <li id="n5"><span class="num">5</span><div>/how keeps every explanation moved off other pages, under section links, with a way back to <code>/</code> besides the brand. <span class="cite">F8 → P11</span></div></li>
+  </ol>
+</section>
+</body>
+</html>

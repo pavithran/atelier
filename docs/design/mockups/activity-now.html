@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockup: Activity, Now — Atelier</title>
+<link rel="stylesheet" href="mockup.css">
+<style>
+  .lanes { display: grid; gap: 10px; }
+  .lane { display: grid; grid-template-columns: 260px 1fr 360px; gap: 16px; align-items: center; background: var(--surface-raised); border: 1px solid var(--line); border-left: 4px solid var(--fam); border-radius: 8px; padding: 12px 14px; }
+  .lane.stale { border-color: var(--caution); border-left-color: var(--fam); box-shadow: inset 0 0 0 1px var(--caution); }
+  .lane .task a { color: var(--text-bright); font-weight: 600; text-decoration: none; }
+  .lane svg { width: 100%; height: 26px; }
+  .phone .lane { grid-template-columns: 1fr; gap: 6px; }
+  .live { display: inline-flex; gap: 8px; align-items: center; border: 1px solid var(--line-bright); border-radius: 18px; padding: 4px 6px 4px 12px; }
+  .live b { color: var(--observed); }
+</style>
+</head>
+<body>
+<div class="mock-head">
+  <p class="mock-back"><a href="index.html">All mockups</a></p>
+  <p class="mock-title">Activity: Now (Studio)</p>
+  <p class="mock-routes">Covers <code>/studio</code>. Drawn: five agents' lanes, one stale, one idle; live refresh on.</p>
+</div>
+
+<div class="frames">
+<figure class="frame desktop">
+<figcaption>Desktop · 1440</figcaption>
+<div class="screen">
+<header class="ob">
+  <a class="skip" href="#d-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <ul>
+      <li><a href="/decisions">Decisions <span class="count">(14)</span></a></li>
+      <li><a href="/home">Projects</a></li>
+      <li><a href="/studio" aria-current="page">Activity</a></li>
+    </ul>
+    <span class="spacer"></span>
+    <details><summary>Project ▾</summary><div class="menu-panel"><a href="/p/ledger-core">Ledger Core <span>9</span></a><a href="/p/field-notes">Field Notes <span>4</span></a><a href="/p/open-tool">Open Tool <span>1</span></a></div></details>
+    <details><summary>Pavi ▾</summary><div class="menu-panel"><a href="/models">Models</a><a href="/usage">Usage</a><hr><a href="/logout">Sign out</a></div></details>
+  </nav>
+</header>
+<main id="d-main" class="app-main">
+  <div class="row-flex">
+    <h1>Now · 4 agents working</h1>
+    <nav aria-label="Activity views" class="switch"><a href="/studio" aria-current="page">Now</a><a href="/flow">Flow</a><a href="/history">Merges</a></nav><a class="mk" href="#n1">1</a>
+    <span class="spacer"></span>
+    <p class="live" role="status" style="margin:0"><b>● Live</b> <span class="muted">updated 12:00:00 UTC</span> <a class="btn small" href="/studio?live=0">Pause</a></p><a class="mk" href="#n2">2</a>
+  </div>
+  <p class="lede">Each lane is one agent: what it holds and its pushes over the last 24 h.</p>
+  <div class="lanes">
+    <div class="lane f-anthropic"><span class="who">claude-code/opus-5.5<a class="mk" href="#n5">5</a></span><span class="task">Ledger Core · <a href="/p/ledger-core/t182">t182 Multi-currency trial balance export</a></span><span class="row-flex"><span class="tag neutral">Working</span><span class="muted">pushed 1 h ago</span></span></div>
+    <div class="lane f-openai"><span class="who">codex/gpt-6-astra</span><span class="task">Ledger Core · <a href="/p/ledger-core/t197">t197 Round half-even in currency conversion</a></span><span class="row-flex"><span class="tag fault">Sent back</span><span class="muted">revising since 10:40</span></span></div>
+    <div class="lane stale f-zai"><span class="who">zcode/glm-5.3</span><span class="task">Ledger Core · <a href="/p/ledger-core/t163">t163 Migrate balances to integer cents</a></span><span class="row-flex"><span class="tag caution">Working · stale 2 d</span><a class="btn small" href="/p/ledger-core/t163">Hand off</a><a class="mk" href="#n3">3</a></span></div>
+    <div class="lane f-google"><span class="who">antigravity/gemini-3.1-pro</span><span class="task">Field Notes · <a href="/p/field-notes/t68">t68 Offline drafts survive app restart</a></span><span class="row-flex"><span class="tag neutral">Working</span><span class="muted">pushed 12 min ago</span></span></div>
+    <div class="lane f-qwen"><span class="who">opencode/qwen-4</span><span class="task muted">Idle since 11:05 · last: t188 (Checks failed)</span><span class="muted">No task held</span></div>
+  </div>
+  <h2>Overlapping work <a class="mk" href="#n4">4</a></h2>
+  <p class="muted">t182 and t193 both change <span class="mono">src/report/trial-balance.ts</span>. t191 has no declared scope.</p>
+</main>
+</div>
+</figure>
+
+<figure class="frame phone">
+<figcaption>Phone · 390</figcaption>
+<div class="screen">
+<header class="ob phone">
+  <a class="skip" href="#p-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <a href="/decisions">Decisions <span class="count">(14)</span></a>
+    <span class="spacer"></span>
+    <details><summary>Menu ▾</summary><div class="menu-panel"><a href="/home">Projects</a><a href="/studio" aria-current="page">Activity</a><hr><a href="/models">Models</a><a href="/usage">Usage</a><a href="/logout">Sign out</a></div></details>
+  </nav>
+</header>
+<main id="p-main" class="app-main">
+  <h1>Now · 4 working</h1>
+  <nav aria-label="Activity views" class="switch"><a href="/studio" aria-current="page">Now</a><a href="/flow">Flow</a><a href="/history">Merges</a></nav>
+  <p class="live" role="status"><b>● Live</b> <span class="muted">12:00 UTC</span> <a class="btn small" href="/studio?live=0">Pause</a></p>
+  <div class="lanes">
+    <div class="lane stale f-zai"><span class="who">zcode/glm-5.3</span><a href="/p/ledger-core/t163">t163 Migrate balances to integer cents</a><span class="row-flex"><span class="tag caution">Working · stale 2 d</span><a class="btn small" href="/p/ledger-core/t163">Hand off</a></span></div>
+    <div class="lane f-openai"><span class="who">codex/gpt-6-astra</span><a href="/p/ledger-core/t197">t197 Round half-even in currency conversion</a><span><span class="tag fault">Sent back</span></span></div>
+    <div class="lane f-anthropic"><span class="who">claude-code/opus-5.5</span><a href="/p/ledger-core/t182">t182 Multi-currency trial balance export</a><span><span class="tag neutral">Working</span></span></div>
+    <div class="lane f-google"><span class="who">antigravity/gemini-3.1-pro</span><a href="/p/field-notes/t68">t68 Offline drafts survive app restart</a><span><span class="tag neutral">Working</span></span></div>
+    <div class="lane f-qwen"><span class="who">opencode/qwen-4</span><span class="muted">Idle since 11:05</span></div>
+  </div>
+</main>
+</div>
+</figure>
+</div>
+
+<section class="notes" aria-labelledby="notes-h">
+  <h2 id="notes-h">Notes</h2>
+  <ol>
+    <li id="n1"><span class="num">1</span><div>Activity is one row-1 destination with a Now · Flow · Merges switch, replacing the rail's Studio and Home's "Across projects" sentence. <span class="cite">F1 → P1</span></div></li>
+    <li id="n2"><span class="num">2</span><div>A visible "Live" state with the time and a Pause link, on phones too; /live.js swaps <code>&lt;main&gt;</code> and keeps scroll and focus instead of a 15 s meta refresh. <span class="cite">F15, F18 → P12</span></div></li>
+    <li id="n3"><span class="num">3</span><div>The stale lane is marked in the caution role with the same words as its task page and list row, and offers Hand off; on a phone it sorts first. <span class="cite">F3 → P7</span></div></li>
+    <li id="n4"><span class="num">4</span><div>Overlaps are a short list, a task without scope said once. <span class="cite">F9 → P6</span></div></li>
+    <li id="n5"><span class="num">5</span><div>Family colour marks the lane's edge and the swatch; agent names are text colour, so they pass 4.5:1 in light mode. <span class="cite">F17 → P14</span></div></li>
+  </ol>
+</section>
+</body>
+</html>

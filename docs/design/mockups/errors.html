@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockup: Error pages — Atelier</title>
+<link rel="stylesheet" href="mockup.css">
+<style>
+  .err { max-width: 640px; padding-top: 48px; }
+  .phone .err { padding-top: 16px; }
+  .err .code { font: 600 14px/1 var(--mono); color: var(--text-muted); margin: 0 0 8px; }
+  .err ul { padding-left: 20px; }
+</style>
+</head>
+<body>
+<div class="mock-head">
+  <p class="mock-back"><a href="index.html">All mockups</a></p>
+  <p class="mock-title">Error pages</p>
+  <p class="mock-routes">Covers every error answer: a visitor's (401 on an owner URL, 404 with no showcase), the owner's not found (<code>/p/ledger-core/t9999</code>, unknown paths that answered bare "Not found."), and the owner's unavailable (<code>/p/cold-storage</code>, 503). The shell is chosen by who asked.</p>
+</div>
+
+<h2 class="section-label">A. Visitor on an owner URL (401) — public bar only</h2>
+<div class="frames">
+<figure class="frame desktop small">
+<figcaption>Desktop · 1440 · /p/ledger-core, no session</figcaption>
+<div class="screen">
+<header class="pb">
+  <nav aria-label="Atelier"><a class="brand" href="/">Atelier</a><ul><li><a href="/how">How it works</a></li><li><a href="https://github.com/">Source</a></li><li><a href="/login">Sign in</a></li></ul></nav>
+</header>
+<main class="app-main"><div class="err">
+  <p class="code">401</p>
+  <h1>This page is for the project's owner <a class="mk" href="#n1">1</a></h1>
+  <p class="lede">You are not signed in as the owner, so there is nothing to show here.</p>
+  <p class="row-flex"><a class="btn primary" href="/">See the public showcase</a><a href="/login">Owner? Sign in</a><a class="mk" href="#n2">2</a></p>
+</div></main>
+</div>
+</figure>
+<figure class="frame phone">
+<figcaption>Phone · 390</figcaption>
+<div class="screen">
+<header class="pb">
+  <nav aria-label="Atelier"><a class="brand" href="/">Atelier</a><ul><li><a href="/how">How it works</a></li><li><a href="https://github.com/">Source</a></li><li><a href="/login">Sign in</a></li></ul></nav>
+</header>
+<main class="app-main"><div class="err">
+  <p class="code">401</p>
+  <h1>This page is for the project's owner</h1>
+  <p class="lede">You are not signed in as the owner.</p>
+  <a class="btn primary" href="/">See the public showcase</a>
+</div></main>
+</div>
+</figure>
+</div>
+
+<h2 class="section-label">B. Owner: a task that does not exist (404) — project row kept</h2>
+<div class="frames">
+<figure class="frame desktop small">
+<figcaption>Desktop · 1440 · /p/ledger-core/t9999</figcaption>
+<div class="screen">
+<header class="ob">
+  <nav class="r1" aria-label="Atelier"><a class="brand" href="/decisions">Atelier</a><ul><li><a href="/decisions">Decisions <span class="count">(14)</span></a></li><li><a href="/home" aria-current="true">Projects</a></li><li><a href="/studio">Activity</a></li></ul><span class="spacer"></span><details><summary>Ledger Core ▾</summary></details><details><summary>Pavi ▾</summary></details></nav>
+  <nav class="r2" aria-label="Project"><p class="loc"><a href="/p/ledger-core">Ledger Core</a><span class="sep">›</span><span aria-current="page">t9999</span><a class="mk" href="#n3">3</a></p>
+    <ul class="tabs"><li><a href="/p/ledger-core">Overview</a></li><li><a class="on" href="/p/ledger-core/tasks">Tasks <span class="count">(200)</span></a></li><li><a href="/p/ledger-core/code">Code</a></li><li><a href="/p/ledger-core/flow">Activity</a></li><li><a href="/p/ledger-core/settings">Settings</a></li></ul></nav>
+</header>
+<main class="app-main"><div class="err">
+  <p class="code">404</p>
+  <h1>Ledger Core has no task t9999</h1>
+  <p class="lede">Its tasks run from t1 to t200.</p>
+  <p class="row-flex"><a class="btn primary" href="/p/ledger-core/tasks">Find a task</a><a href="/p/ledger-core/t200">Newest: t200</a></p>
+</div></main>
+</div>
+</figure>
+<figure class="frame phone">
+<figcaption>Phone · 390</figcaption>
+<div class="screen">
+<header class="ob phone">
+  <nav class="r1" aria-label="Atelier"><a class="brand" href="/decisions">Atelier</a><a href="/decisions">Decisions <span class="count">(14)</span></a><span class="spacer"></span><details><summary>Menu ▾</summary></details></nav>
+  <nav class="r2" aria-label="Project"><p class="loc"><a href="/p/ledger-core">Ledger Core</a><span class="sep">›</span><span aria-current="page">t9999</span></p>
+    <ul class="tabs"><li><a href="/p/ledger-core">Overview</a></li><li><a class="on" href="/p/ledger-core/tasks">Tasks (200)</a></li><li><a href="/p/ledger-core/code">Code</a></li><li><a href="/p/ledger-core/flow">Activity</a></li><li><a href="/p/ledger-core/settings">Settings</a></li></ul></nav>
+</header>
+<main class="app-main"><div class="err">
+  <p class="code">404</p>
+  <h1>Ledger Core has no task t9999</h1>
+  <p class="lede">Its tasks run from t1 to t200.</p>
+  <a class="btn primary" href="/p/ledger-core/tasks">Find a task</a>
+</div></main>
+</div>
+</figure>
+</div>
+
+<h2 class="section-label">C. Owner: a project that cannot be read (503) — with Retry</h2>
+<div class="frames">
+<figure class="frame desktop small">
+<figcaption>Desktop · 1440 · /p/cold-storage</figcaption>
+<div class="screen">
+<header class="ob">
+  <nav class="r1" aria-label="Atelier"><a class="brand" href="/decisions">Atelier</a><ul><li><a href="/decisions">Decisions <span class="count">(14)</span></a></li><li><a href="/home" aria-current="true">Projects</a></li><li><a href="/studio">Activity</a></li></ul><span class="spacer"></span><details><summary>cold-storage ▾</summary></details><details><summary>Pavi ▾</summary></details></nav>
+  <nav class="r2" aria-label="Project"><p class="loc"><a href="/p/cold-storage">cold-storage</a><span class="sep">›</span><span>Overview</span></p>
+    <ul class="tabs"><li><a href="/p/cold-storage" aria-current="page">Overview</a></li><li><a href="/p/cold-storage/tasks">Tasks</a></li><li><a href="/p/cold-storage/code">Code</a></li><li><a href="/p/cold-storage/flow">Activity</a></li><li><a href="/p/cold-storage/settings">Settings</a></li></ul></nav>
+</header>
+<main class="app-main"><div class="err">
+  <p class="code">503</p>
+  <h1>cold-storage is unavailable <a class="mk" href="#n4">4</a></h1>
+  <p class="lede"><span class="tag caution">Unavailable</span> Its ledger could not be read at 12:00 UTC. Nothing was changed; this is usually temporary.</p>
+  <p class="row-flex"><a class="btn primary" href="/p/cold-storage">Retry</a><a href="/home">Back to Projects</a></p>
+</div></main>
+</div>
+</figure>
+<figure class="frame phone">
+<figcaption>Phone · 390</figcaption>
+<div class="screen">
+<header class="ob phone">
+  <nav class="r1" aria-label="Atelier"><a class="brand" href="/decisions">Atelier</a><a href="/decisions">Decisions <span class="count">(14)</span></a><span class="spacer"></span><details><summary>Menu ▾</summary></details></nav>
+  <nav class="r2" aria-label="Project"><p class="loc"><a href="/p/cold-storage">cold-storage</a><span class="sep">›</span><span>Overview</span></p>
+    <ul class="tabs"><li><a href="/p/cold-storage" aria-current="page">Overview</a></li><li><a href="/p/cold-storage/tasks">Tasks</a></li><li><a href="/p/cold-storage/code">Code</a></li><li><a href="/p/cold-storage/flow">Activity</a></li><li><a href="/p/cold-storage/settings">Settings</a></li></ul></nav>
+</header>
+<main class="app-main"><div class="err">
+  <p class="code">503</p>
+  <h1>cold-storage is unavailable</h1>
+  <p class="lede"><span class="tag caution">Unavailable</span> Its ledger could not be read.</p>
+  <a class="btn primary" href="/p/cold-storage">Retry</a>
+</div></main>
+</div>
+</figure>
+</div>
+
+<section class="notes" aria-labelledby="notes-h">
+  <h2 id="notes-h">Notes</h2>
+  <ol>
+    <li id="n1"><span class="num">1</span><div>A request without a verified owner session gets the public bar on every error: no rail, no "Project owner", no Sign out, nothing from row 1. The same answer for any project name, so nothing is enumerated. <span class="cite">F2 → P2</span></div></li>
+    <li id="n2"><span class="num">2</span><div>The message names the cause and the next step (the showcase, or sign in), replacing "Let's resolve this." and the advice to refresh evidence that does not exist. <span class="cite">F2 → P2</span></div></li>
+    <li id="n3"><span class="num">3</span><div>The owner's not-found keeps the project row and says what does exist; unknown paths and form verbs that answered bare "Not found." get this page too. <span class="cite">F14, F2 → P2, P1</span></div></li>
+    <li id="n4"><span class="num">4</span><div>Unavailable is its own heading, with the caution tag, a Retry and the project's tabs kept, instead of a generic shell that loses them. <span class="cite">F2 → P2</span></div></li>
+  </ol>
+</section>
+</body>
+</html>
