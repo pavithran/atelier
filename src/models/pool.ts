@@ -184,8 +184,8 @@ const plain = (s: string) => s.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
 const KEY_PREFIX = /(?<![A-Za-z0-9])(?:sk-|sk_|hf_|AIza|ghp_|gho_|github_pat_|xox[abpr]-|AKIA|eyJ)[A-Za-z0-9_\-.]{8,}|Bearer [A-Za-z0-9._\-]{8,}/;
 // A long run of letters and digits, mixing both, as random keys are and
 // names are not; some keys join two such runs with a dot (id.secret).
-const KEY_RUN = /[A-Za-z0-9]*(?:[A-Za-z][A-Za-z0-9]*[0-9]|[0-9][A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]*/g;
-const hasKeyRun = (s: string) => (s.match(KEY_RUN) ?? []).some((run) => run.length >= 24);
+// Scan each run once: failure logs can contain very long alphabetic lines.
+const hasKeyRun = (s: string) => (s.match(/[A-Za-z0-9]+/g) ?? []).some((run) => run.length >= 24 && /[A-Za-z]/.test(run) && /[0-9]/.test(run));
 const LOOKS_LIKE_KEY = { test: (s: string) => KEY_PREFIX.test(s) || hasKeyRun(s) };
 // Any part of an endpoint's path that looks like a key.
 const keyInPath = (path: string) => path.split("/").some((seg) => LOOKS_LIKE_KEY.test(seg));

@@ -115,16 +115,30 @@ const ownerWrites = () => files("src").filter((f) => !/\.test\.m?[jt]s$/.test(f)
   return writesIn(text).map((w) => ({ file, line: lineOf(text, w.index), how: w.how }));
 });
 
+// Owner writes that need no standing check, each with the reason. Each must
+// still be found by the scan, so an entry outlives no change that removes it.
+const ALLOWED = {
+  // A failed fork's rollback (t506) puts back the item as it was before the
+  // claim that failed: the rollback record is written only by a fresh claim,
+  // which assertClaimable allows only of an item nobody owns, so the owner it
+  // restores is always empty. It is applied only while the failed claimant
+  // still holds that claim generation, and reserves none, so it never gives
+  // anyone a claim or a write token.
+  "unclaim: update naming owner": "restores the empty owner recorded before a fresh claim whose fork failed",
+};
+
 test("every write that assigns or keeps a task's owner checks the owner's standing", () => {
   const writes = ownerWrites();
   const methodOf = (w) => (w.file === LEDGER ? methodAt(w.line - 1) : null);
+  const allowed = (w) => !!methodOf(w) && Object.hasOwn(ALLOWED, `${methodOf(w).name}: ${w.how}`);
   // The scan sees the paths it must: a claim (and a runner adopting a
   // handed-off one), a renewal's reserved generation, and a handoff.
   const where = writes.filter((w) => w.file === LEDGER).map((w) => `${methodOf(w).name}: ${w.how}`);
   for (const known of ["claim: update naming owner", "claim: claim generation reserved", "handoff: update naming owner"]) {
     assert.ok(where.includes(known), `the scan misses ${known}; it found ${where.join(", ")}`);
   }
-  const unchecked = writes.filter((w) => !methodOf(w) || !CHECKS.test(methodOf(w).body))
+  for (const site of Object.keys(ALLOWED)) assert.ok(where.includes(site), `the allowed owner write ${site} is no longer found; drop it from ALLOWED`);
+  const unchecked = writes.filter((w) => !allowed(w)).filter((w) => !methodOf(w) || !CHECKS.test(methodOf(w).body))
     .map((w) => `${w.file}:${w.line} (${w.how}${methodOf(w) ? ` in ${methodOf(w).name}` : ""})`);
   assert.deepEqual(unchecked, [], "these assign or keep an owner without checking the owner's standing (actorStanding, assertStanding or handoffAllowed)");
 });
@@ -141,4 +155,21 @@ test("the owner-write scan finds an owner assigned however it is written", () =>
   assert.deepEqual(scan(`return { ...this.reserve(id) };`), ["claim generation reserved"]);
   // Clearing an owner, reading one, and the project owner's own field are not writes.
   assert.deepEqual(scan(`this.update(id, { state: "merged", owner: null }, at); if (item.owner === actor) {} this.owner = owner;`), []);
+});
+
+test("a failed fork's rollback restores only what a fresh claim of an unowned item recorded", () => {
+  const claim = methods.find((m) => m.name === "claim").body;
+  const unclaim = methods.find((m) => m.name === "unclaim").body;
+  // The rollback record is written once, by claim, after the holder's own
+  // re-claim has returned, so only a fresh claim records one.
+  assert.equal(ledger.filter((l) => /`claim-rollback:\$\{id\}`, JSON\.stringify\(/.test(l)).length, 1);
+  const reclaimReturns = claim.indexOf("return { item: this.item(id), needsFork: !item.fork, ...this.reserve(id) };");
+  assert.ok(reclaimReturns > 0 && claim.indexOf("`claim-rollback:${id}`, JSON.stringify(") > reclaimReturns, "the rollback record follows the re-claim's return");
+  // A fresh claim is refused of an item another actor owns.
+  assert.match(readFileSync("src/rules.ts", "utf8"), /if \(item\.owner && item\.owner !== actor\) \{\n\s*throw new RuleError\("owned"/);
+  // The restore takes its owner from that record alone, only at the claim's
+  // generation, and reserves no generation of its own.
+  assert.match(unclaim, /owner: prior\.owner/);
+  assert.match(unclaim, /row\.claim_gen !== prior\.generation/);
+  assert.doesNotMatch(unclaim, /this\.reserve\(/);
 });
