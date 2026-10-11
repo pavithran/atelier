@@ -270,3 +270,19 @@ test('a landing refuses to push a local notes commit whose identity the policy r
  assert.equal(execFileSync('git',['--git-dir',baseline,'for-each-ref','refs/notes/atelier'],{encoding:'utf8'}).trim(),'');
  assert.ok(!box.requests.some(r=>r.path.endsWith('/merged')));
 });
+
+test('notes go to a notes remote the policy declares a public mirror only under the public rule: an agent address is held back (t451)',async t=>{
+ const saved={agentEmails:IDENTITY.agentEmails,publicMirrors:IDENTITY.publicMirrors};
+ IDENTITY.agentEmails=['agent@example.invalid'];IDENTITY.publicMirrors=['github'];
+ t.after(()=>{IDENTITY.agentEmails=saved.agentEmails;if(saved.publicMirrors===undefined)delete IDENTITY.publicMirrors;else IDENTITY.publicMirrors=saved.publicMirrors;});
+ const {p,checkout,box,run}=await mergeFixture(t);
+ const pub=join(p,'public.git');git(p,'init','--bare','-q',pub);git(checkout,'remote','add','github',pub);
+ const configFile=join(p,'config','config.json');const cfg=JSON.parse(readFileSync(configFile,'utf8'));cfg.projects.proj.notesRemote='github';writeFileSync(configFile,JSON.stringify(cfg));
+ // A notes commit an agent made: allowed on the baseline, not on a public mirror.
+ execFileSync('git',['-c','user.name=Agent','-c','user.email=agent@example.invalid','notes','--ref=atelier','add','-m','agent note','HEAD'],{cwd:checkout});
+ box.state='accepted';
+ const landed=await run(checkout,'merge','t1');assert.equal(landed.status,0,landed.output);
+ assert.match(landed.output,/Provenance notes were not pushed to github/);
+ assert.match(landed.output,/agent@example\.invalid/);
+ assert.equal(execFileSync('git',['--git-dir',pub,'for-each-ref','refs/notes/atelier'],{encoding:'utf8'}).trim(),'');
+});

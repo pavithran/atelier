@@ -7,7 +7,7 @@ import { adoptOldLanding, executablePaths, landingJournal, landingLeft, landingL
 import { carryTask, loadPairs, rebuild, savePairs } from "../fresh.mjs";
 import { provenanceNote } from "../provenance.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
-import { NO_IDENTITY } from "../../src/commit-identity.ts";
+import { IDENTITY_LOG_FORMAT, isPublicMirror, NO_IDENTITY, parseIdentityLog, publicRefusals } from "../../src/commit-identity.ts";
 import { I, OWNER, P, actor, args, at, call, cfg, die, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, overrideArg, project, refreshControlPlane, request, server, short, writeReceipt } from "../atelier.mjs";
 
 // The project owner merges an exact revision. With --head, a submitted item
@@ -258,9 +258,13 @@ export default async function mergeCommand() {
     const note=provenanceNote({name,id,item,view,reviews,events:d.events});
     // The notes commits refs/notes/atelier holds that FROM (a remote's notes
     // tip, or nothing) does not, checked against the policy's identity.
-    const notesRangeRefusals=(from)=>{
+    // A remote the policy declares a public mirror takes only the project's own
+    // public address (publicRefusals), never an agent's, as wrap's push does.
+    const notesRangeRefusals=(from,remote=null)=>{
       const known=from&&git(['cat-file','-e',`${from}^{commit}`],{cwd,allowFail:true}).status===0;
-      return identityRangeRefusals(git,cwd,identity,known?from:null,'refs/notes/atelier');
+      if(!remote||!isPublicMirror(identity,remote))return identityRangeRefusals(git,cwd,identity,known?from:null,'refs/notes/atelier');
+      const log=git(['log',`--format=${IDENTITY_LOG_FORMAT}`,known?`${from}..refs/notes/atelier`:'refs/notes/atelier'],{cwd,raw:true});
+      return publicRefusals(identity,parseIdentityLog(log));
     };
     // Reconcile provenance independently: a previous push can publish only one ref.
     const remoteNotes=git(['ls-remote',base.remote,'refs/notes/atelier'],{cwd,token:base.token});
@@ -298,7 +302,7 @@ export default async function mergeCommand() {
     let notesHeld=null;
     if(p.notesRemote&&identity){
       const listed=git(['ls-remote',p.notesRemote,'refs/notes/atelier'],{cwd,allowFail:true});
-      const refused=listed.status!==0?[`${p.notesRemote}: its refs/notes/atelier could not be read`]:notesRangeRefusals(listed.stdout.split(/\s/)[0]||null);
+      const refused=listed.status!==0?[`${p.notesRemote}: its refs/notes/atelier could not be read`]:notesRangeRefusals(listed.stdout.split(/\s/)[0]||null,p.notesRemote);
       if(refused.length)notesHeld=refused;
     }
     const notesPush=p.notesRemote&&!notesHeld?git(['push','--quiet',p.notesRemote,'refs/notes/atelier:refs/notes/atelier'],{cwd,allowFail:true}):null;
