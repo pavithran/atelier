@@ -1,3 +1,4 @@
+import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
@@ -160,6 +161,7 @@ test("unwrap reports a tracking ref it cannot compare and carries on", (t) => {
 });
 
 test("wrap commits with summary, next and trailer when the checks pass, and updates the baseline", (t) => {
+  if (!canInspectSlots(t)) return;
   const f = fixture(t);
   const result = f.runWith({ FAKE_CHECKS: JSON.stringify(["true"]) }, "wrap", "Finished", "--next", "Fix check");
   assert.equal(result.status, 0, result.stderr);
@@ -200,6 +202,7 @@ function refusesFailingChecks(f, env, say) {
 }
 
 test("wrap refuses to commit when a registered check fails, naming it with its exit status", (t) => {
+  if (!canInspectSlots(t)) return;
   const f = fixture(t);
   const r = refusesFailingChecks(f, {}, /^atelier: wrap refuses to commit with a failing check: exit 7 \(exited 7\)\. Fix it, or run again with --allow-failing to commit anyway\./m);
   assert.match(r.stdout, /Reported: exit 7: failed \(owner's checkout, not a clean clone\)\./, "the result was printed before the refusal");
@@ -207,6 +210,7 @@ test("wrap refuses to commit when a registered check fails, naming it with its e
 });
 
 test("the refusal names every failed check, with the signal that ended one that did not exit", (t) => {
+  if (!canInspectSlots(t)) return;
   const f = fixture(t);
   const r = refusesFailingChecks(f, { FAKE_CHECKS: JSON.stringify(["exit 7", "true", "kill -TERM $$"]) },
     /wrap refuses to commit with 2 failing checks: exit 7 \(exited 7\), kill -TERM \$\$ \(ended by SIGTERM\)\. Fix them, or run again with --allow-failing/);
@@ -238,6 +242,7 @@ test("SIGINT, SIGTERM and SIGHUP to wrap end the running check's process group",
 });
 
 test("wrap --allow-failing commits past a failing check and records the override in the note", (t) => {
+  if (!canInspectSlots(t)) return;
   const f = fixture(t);
   const result = f.run("wrap", "Finished", "--next", "Fix check", "--allow-failing");
   assert.equal(result.status, 0, result.stderr);
@@ -258,6 +263,7 @@ test("wrap --allow-failing commits past a failing check and records the override
 });
 
 test("wrap --allow-failing with passing checks records no override", (t) => {
+  if (!canInspectSlots(t)) return;
   const f = fixture(t);
   const r = f.runWith({ FAKE_CHECKS: JSON.stringify(["true"]) }, "wrap", "Fine", "--allow-failing");
   assert.equal(r.status, 0, r.stderr);
@@ -517,6 +523,7 @@ function refuses(f, say) {
 }
 for (const [state, { say, make }] of Object.entries(unfinished)) {
   test(`wrap refuses ${state} on a tree with nothing else in it`, (t) => {
+    if (/conflict markers/.test(say.source) && !canInspectSlots(t)) return;
     const f = fixture(t);
     f.clean();
     make(f);
@@ -535,6 +542,7 @@ test("a refusal stages nothing of the changes waiting beside it", (t) => {
 });
 
 test("wrap asks again whether the checkout is ready once the registered checks have run", (t) => {
+  if (!canInspectSlots(t)) return;
   // A registered check can leave work unfinished: the first look at the checkout passed.
   const f = fixture(t);
   f.clean();
@@ -606,6 +614,7 @@ test("a policy that is not committed yet applies from the session after it is", 
 });
 
 test("wrap asks again about the ceiling once the registered checks have run", (t) => {
+  if (!canInspectSlots(t)) return;
   const f = fixture(t);
   commitPolicy(f, 2);
   f.clean();

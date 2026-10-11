@@ -93,6 +93,45 @@ for (const job of ["build", "plan"]) test(`the real runner completes ${job} with
   assert.doesNotMatch(logs.join("\n"), new RegExp(token));
 });
 
+// t353: a runner token cannot act as the owner, so the runner's report of a
+// review it will not serve goes as the review job's actor, which the poll
+// was offered the job for, under the runner's name; a report as the owner is
+// what the server refused, leaving the landing to wait out the hour.
+test("the runner reports a review it will not serve as the review's actor under a runner token, never as the owner", (t) => {
+  const dir = fixture(t), cli = resolve("cli/atelier.mjs"), config = join(dir, "runner.json");
+  // No tokens entry for the model: the review is refused before any claim
+  // (reviewToken), and the refusal is reported as a skip.
+  writeFileSync(config, JSON.stringify({ agents: [{ agent: "codex", models: ["gpt-6-astra"], command: ["unused", "{model}", "{brief_file}", "{workspace}", "{verdict_file}"] }], jobs: ["review"] }));
+  const secret = "atl_runner_review_secret";
+  const env = { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_SECRET_STORE: "file", ATELIER_SERVER: "https://one.test", ATELIER_LOAD: "0", ATELIER_RUNNER_TOKEN: secret };
+  for (const key of ["ATELIER_TOKEN", "ATELIER_RUNNER_NAME", "ATELIER_OWNER"]) delete env[key];
+  const head = "a".repeat(40);
+  const script = `
+    process.argv = [process.execPath, ${JSON.stringify(cli)}, "runner", "--name", "home:studio", "--once", "--config", ${JSON.stringify(config)}];
+    const review = { project: "demo", actor: "codex/gpt-6-astra", agent: "codex", model: "gpt-6-astra", item: { id: "t21", title: "Review", head: ${JSON.stringify(head)}, request: 3, dispatch: { job: "review", to: "home", agent: "codex", model: "gpt-6-astra" } } };
+    globalThis.fetch = async (url, options = {}) => {
+      if (url.endsWith("/version")) return Response.json({ routeLevel: ${ROUTE_LEVEL} });
+      if (options.headers.authorization !== "Bearer ${secret}") throw new Error("wrong credential");
+      if (url.endsWith("/config")) return Response.json({ runner: "home:studio", tokenId: "id" });
+      if (url.endsWith("/queue")) return Response.json([review]);
+      if (url.endsWith("/runs")) return Response.json({}, { status: 201 });
+      if (url === "https://one.test/api/projects/demo/items/t21/review-skip") {
+        const body = JSON.parse(options.body);
+        process.stderr.write("SKIP_REPORTED actor=" + options.headers["x-atelier-actor"] + " runner=" + options.headers["x-atelier-runner"] + " request=" + body.request + " head=" + body.head + "\\n");
+        return Response.json({ skipped: true });
+      }
+      throw new Error("unexpected route " + url);
+    };
+    await import(${JSON.stringify(cli)});
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", env });
+  const out = result.stdout + result.stderr;
+  assert.match(out, /SKIP_REPORTED actor=codex\/gpt-6-astra runner=home:studio request=3 head=a{40}/, out);
+  assert.doesNotMatch(out, /actor=owner/);
+  assert.match(out, /reported the review skip for demo\/t21/);
+  assert.doesNotMatch(out, new RegExp(secret));
+});
+
 test("runner token issue/store have subcommand help and the issue request contains no actor", (t) => {
   const dir = fixture(t), cli = resolve("cli/atelier.mjs");
   for (const action of ["issue", "store"]) {
