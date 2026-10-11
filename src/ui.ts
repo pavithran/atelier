@@ -362,15 +362,16 @@ export function renderInbox(
   const waitsFor = new Map(queued.map(({ project, item }) => [`${project.name}/${item.id}`, describeDispatch(item.dispatch!)]));
   const elsewhere = attention.map((a) => pipelineDisclosure(a, names.get(a.project) ?? a.project, waitsFor) + overlapDisclosure(a)).join("");
   const unknown = attention.map(unknownNotice).join("");
+  const incomplete = attention.some((a) => a.unknown.length) || projectViews.some((p) => p.unavailable);
 
   const lead = own.length
     ? `${own.length} task${own.length === 1 ? " needs" : "s need"} your attention.`
-    : "Nothing is waiting on you.";
+    : incomplete ? "Nothing is known to be waiting on you; more may be waiting." : "Nothing is waiting on you.";
   const queue = `<section class="queue">
   <header><h1>Decisions</h1><p class="lead">${lead}</p></header>
   ${floorStrip(floor, now)}
   <h2 class="section-title">Needs your attention</h2>
-  ${rows ? `<ul class="decision-list">${rows}</ul>` : `<div class="empty"><h3>You’re clear.</h3><p>New reviews and blockers will appear here. <a href="/studio">Watch the studio</a>.</p></div>`}
+  ${rows ? `<ul class="decision-list">${rows}</ul>` : incomplete ? '<div class="empty"><h3>The list may be incomplete.</h3><p>Some records could not be read. Refresh to try again.</p></div>' : `<div class="empty"><h3>You’re clear.</h3><p>New reviews and blockers will appear here. <a href="/studio">Watch the studio</a>.</p></div>`}
   ${unknown}
   ${elsewhere}
   ${projectViews.some((p) => p.unavailable) ? '<p role="status" class="error">Some projects could not be read. Refresh to try again; this list may be incomplete.</p>' : ""}
@@ -1398,7 +1399,7 @@ function standingSection(p: ProjectRecord, s: Standing): string {
   ${lead}
   <p class="meta">Generated from Atelier's record as of ${e(when(s.generatedAt))}. <code>atelier status --project ${e(p.name)}</code> prints the same as text; ${e(`/api/projects/${p.name}/standing`)} returns it as JSON.</p>
   ${s.partial.length ? `<div class="notice" role="status"><h3>Part of this record is not shown</h3><ul>${s.partial.map((x) => `<li>${e(x)}</li>`).join("")}</ul></div>` : ""}
-  ${groups || '<p class="empty">Nothing is waiting, queued or recently merged.</p>'}
+  ${groups || `<p class="empty">${s.partial.length ? "Nothing waiting, queued or recently merged is shown in the part read." : "Nothing is waiting, queued or recently merged."}</p>`}
   ${standingDisclosures(p, s)}
   ${s.session ? `<h3>Newest session</h3>${sessionNoteText(s.session).split("\n").map((line) => `<p class="meta">${e(line)}</p>`).join("")}` : ""}
 </section>`;

@@ -318,6 +318,8 @@ function spendLine(usage) {
 export function formatStatusBrief(b) {
   const s = b.standing;
   const lines = [`${oneLine(s.project.title)} (${oneLine(s.project.name)}) as of ${String(s.generatedAt).slice(0, 16).replace("T", " ")} UTC`];
+  const partial = s.partial ?? [];
+  if (partial.length) lines.push(`Part of this record is not shown; counts cover only what was read: ${partial.map(oneLine).join(" ")}`);
   lines.push("Recent merges:");
   const merged = s.merged.slice(0, BRIEF_MERGES);
   if (!merged.length) lines.push("  none");
@@ -336,7 +338,7 @@ export function formatStatusBrief(b) {
   lines.push(!lease ? "Landing: none running."
     : lease.unreadable ? `Landing: the lease could not be read (${oneLine(lease.unreadable)}).`
       : `Landing: ${lease.item} held by ${lease.holder} since ${lease.since}.`);
-  lines.push(`Waiting on the owner: ${s.waiting.length ? named(s.waiting.map((w) => { const next = waitingCommand(w, s.project.name); return `${w.id} ${w.call ?? w.kind}${next ? `; next: ${oneLine(next)}` : ""}`; })) : "nothing"}.`);
+  lines.push(`Waiting on the owner: ${s.waiting.length ? named(s.waiting.map((w) => { const next = waitingCommand(w, s.project.name); return `${w.id} ${w.call ?? w.kind}${next ? `; next: ${oneLine(next)}` : ""}`; })) : partial.length ? "nothing known" : "nothing"}${partial.length ? "; more may be waiting" : ""}.`);
   lines.push(spendLine(b.usage));
   return lines.join("\n");
 }

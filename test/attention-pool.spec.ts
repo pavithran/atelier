@@ -92,5 +92,7 @@ it("one project whose Ledger cannot be read leaves the inbox answering with the 
   expect(read.entries.some((x) => x.project === ghost)).toBe(false);
   const bare = await api("/inbox");
   expect(bare.status).toBe(200);
+  expect(bare.headers.get("x-atelier-incomplete")).toBe(ghost);
+  expect(res.headers.get("x-atelier-incomplete")).toBe(ghost);
   expect(((await bare.json()) as { project: string }[]).some((x) => x.project === healthy)).toBe(true);
 });

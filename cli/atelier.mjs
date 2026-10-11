@@ -1286,7 +1286,7 @@ export function formatStanding(s, ownerName = "the project owner", origin = "") 
   // it, each with the link to its page on the server in use (t371).
   group(`Merged by override: ${(s.overrides ?? []).length}`, (s.overrides ?? []).map((o) => `${o.id}  ${taskLink(origin, s.project.name, o.id)}  ${at(o.at)}  ${flat(o.title)}  reason: ${flat(o.reason)}`));
   group("Handoff notes", s.handoffs.map((h) => `${h.id}  ${flat(h.from || "?")} to ${flat(h.to || "?")}, ${at(h.at)}  ${flat(h.note)}`));
-  if (lines.length === 1) lines.push("", "Nothing is held, waiting, queued or recently merged.");
+  if (lines.length === 1) lines.push("", s.partial?.length ? "Nothing held, waiting, queued or recently merged is shown in the part read." : "Nothing is held, waiting, queued or recently merged.");
   if (s.partial?.length) lines.push("", "Part of this record is not shown:", ...s.partial.map((x) => `  ${flat(x)}`));
   if (s.controlPlane) {
     lines.push("", `ControlPlane policy, approved: ${flat(s.controlPlane.approval)}. Protected areas: ${s.controlPlane.protected.map(flat).join(", ") || "none"}. Eligible agents: ${s.controlPlane.eligible.map(flat).join(", ") || "any"}. Overlapping claims: ${s.controlPlane.refuseOverlap ? "refused" : "flagged"}.`);

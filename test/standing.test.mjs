@@ -137,7 +137,7 @@ async function run(t, setup, argv, env = {}) {
     let status = 200, body;
     if (agent && !agentRoute(req.method, parts)) { status = 403; body = { error: "owner_token_required", detail: `${req.method} ${req.url} needs the owner token` }; }
     else if (req.url === "/api/config") body = { actor: "codex/gpt-6-astra", ownerActor: "owner" };
-    else if (req.url.endsWith("/standing")) body = standing();
+    else if (req.url.endsWith("/standing")) body = state.standing ?? standing();
     else if (req.url.endsWith("/baseline-head")) body = { head: git(dir, "--git-dir", bare, "rev-parse", "refs/heads/main") };
     else { status = 404; body = { error: "unexpected", detail: `${req.method} ${req.url}` }; }
     res.writeHead(status, { "content-type": "application/json" });
@@ -164,6 +164,32 @@ test("status --project --json prints the standing record and the checkout line f
   assert.match(read.checkout, /^Checkout: /);
   assert.equal(read.checkout.split("\n").length, 1);
 });
+
+for (const failed of ["tasks", "notices"]) {
+  const partial = [`The project's ${failed} could not be read, so what waits on you there is unknown.`];
+  const setup = () => ({ standing: standing({ live: [], waiting: [], queued: [], merged: [], handoffs: [], partial }) });
+  for (const json of [false, true]) {
+    test(`status --brief${json ? " --json" : ""} preserves a failed ${failed} read`, async (t) => {
+      const r = await run(t, setup, ["status", "--project", "demo", "--brief", ...(json ? ["--json"] : [])]);
+      assert.equal(r.status, 0, r.output);
+      const out = json ? JSON.parse(r.output).brief.join("\n") : r.output;
+      assert.ok(out.includes(partial[0]), out);
+      assert.match(out, /counts cover only what was read/);
+      assert.match(out, /Waiting on the owner: nothing known; more may be waiting\./);
+      assert.ok(!out.includes("Waiting on the owner: nothing."));
+    });
+    test(`status --project${json ? " --json" : ""} preserves a failed ${failed} read`, async (t) => {
+      const r = await run(t, setup, ["status", "--project", "demo", ...(json ? ["--json"] : [])]);
+      assert.equal(r.status, 0, r.output);
+      if (json) assert.deepEqual(JSON.parse(r.output).project.partial, partial);
+      else {
+        assert.ok(r.output.includes(partial[0]), r.output);
+        assert.match(r.output, /shown in the part read/);
+        assert.ok(!r.output.includes("Nothing is held, waiting, queued or recently merged."));
+      }
+    });
+  }
+}
 
 test("status --project prints where it stands and says the checkout is in step, reading only", async (t) => {
   const r = await run(t, () => null);
