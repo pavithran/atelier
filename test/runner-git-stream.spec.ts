@@ -12,7 +12,7 @@ afterEach(() => vi.restoreAllMocks());
 
 const CHUNKS = 8, SIZE = 64 * 1024;
 
-function fixture() {
+function fixture(chunks = CHUNKS) {
   const events: string[] = [];
   const runtime: RunnerGitRuntime = {
     ledger: () => ({
@@ -33,7 +33,7 @@ function fixture() {
   let sent = 0;
   const pack = new ReadableStream<Uint8Array>({
     pull(controller) {
-      if (sent === CHUNKS) { events.push("upstream:end"); controller.close(); return; }
+      if (sent === chunks) { events.push("upstream:end"); controller.close(); return; }
       pulled.push(sent);
       controller.enqueue(new Uint8Array(SIZE).fill(sent++));
     },
@@ -66,6 +66,30 @@ it("streams the pack to the caller, and revokes the upstream token only after th
   // The caller never sees the upstream credential.
   expect(new TextDecoder().decode(bytes)).not.toContain("upstream-secret");
 });
+
+// A Worker has 128 MiB. A pack larger than that budget passes through with at
+// most a few chunks read ahead of the caller at any moment, so memory is bounded
+// by the chunk size, not the pack size.
+const BUDGET = 128 * 1024 * 1024;
+it("passes a pack larger than the Worker's memory budget with bounded read-ahead", async () => {
+  const chunks = BUDGET / SIZE + 1;
+  const t = fixture(chunks);
+  const res = await t.request();
+  const reader = res.body!.getReader();
+  let received = 0, consumed = 0, maxAhead = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    received += value.length;
+    consumed += 1;
+    maxAhead = Math.max(maxAhead, t.pulled.length - consumed);
+  }
+  expect(received).toBe(chunks * SIZE);
+  expect(received).toBeGreaterThan(BUDGET);
+  // Never more than two chunks (128 KiB) held ahead of the caller.
+  expect(maxAhead).toBeLessThanOrEqual(2);
+  expect(t.events.slice(-2)).toEqual(["revoke:up", "dispose"]);
+}, 60_000);
 
 it("revokes the upstream token when the caller cancels the stream midway", async () => {
   const t = fixture();
