@@ -11,6 +11,7 @@ import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute,
 import { checkEnv } from "../cli/check-env.mjs";
 import { helpText, ROLE_PROMPTS } from "../src/usage.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { terminalTaskExit } from "../src/tokens.ts";
 
 const entry = { agent: "opencode", models: ["GLM-5.3-Flash-4_8bit", "glm:fast"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{workspace}"] };
 const config = { agents: [entry] };
@@ -955,20 +956,23 @@ test("CLI distinguishes server claim refusals from unknown failures without netw
   const source = readFileSync(new URL("../cli/atelier.mjs", import.meta.url), "utf8");
   // The helpers are exported for the command modules; the slice runs as a script.
   const callSource = source.slice(source.indexOf("async function call("), source.indexOf("const P =")).replace(/^export /gm, "");
-  for (const [status, method, path, expected] of [
+  for (const [status, method, path, expected, answer = { error: "refused", detail: "reason" }] of [
     [403, "POST", "/projects/p/items/t1/claim", 3],
     [409, "POST", "/projects/p/items/t1/claim", 3],
     [500, "POST", "/projects/p/items/t1/claim", 4],
     [409, "POST", "/projects/p/items/t1/release", 1],
+    // A task closed under the runner's job (t476) ends with the state's exit, a claim's included.
+    [409, "POST", "/projects/p/items/t1/claim", 5, { error: "task_terminal", detail: "t1 is merged (state: merged)" }],
+    [409, "GET", "/projects/p/items/t1", 6, { error: "task_terminal", detail: "t1 is closed (state: abandoned)" }],
   ]) {
     const call = runInNewContext(`${callSource}; call`, {
       // No agent token here: the actor is never looked up.
-      tokenActor: undefined, resolveTokenActor: async () => {},
+      tokenActor: undefined, resolveTokenActor: async () => {}, terminalTaskExit,
       server: () => "https://unused", apiToken: () => "unused",
-      fetch: async () => ({ ok: false, status, text: async () => JSON.stringify({ error: "refused", detail: "reason" }) }),
+      fetch: async () => ({ ok: false, status, text: async () => JSON.stringify(answer) }),
       die: (message, code) => { throw Object.assign(new Error(message), { code }); },
     });
-    await assert.rejects(call(method, path, {}, "codex/model"), (error) => error.code === expected && error.message === "refused: reason");
+    await assert.rejects(call(method, path, {}, "codex/model"), (error) => error.code === expected && error.message === `${answer.error}: ${answer.detail}`);
   }
 });
 
@@ -1408,7 +1412,7 @@ test("CLI marks network and server failures distinctly from task errors", async 
   ]) {
     const call = runInNewContext(`${callSource}; call`, {
       // No agent token here: the actor is never looked up.
-      tokenActor: undefined, resolveTokenActor: async () => {},
+      tokenActor: undefined, resolveTokenActor: async () => {}, terminalTaskExit,
       server: () => "https://unused", apiToken: () => "unused", fetch,
       die: (message, code) => { throw Object.assign(new Error(message), { code }); },
     });

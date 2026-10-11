@@ -1,6 +1,6 @@
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
-import { runnerDenied, sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
+import { runnerDenied, runnerTaskTerminal, sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
 import { OBSERVED_UNDER, type ModelEntry, type ModelNote, type ModelStatus } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
@@ -1188,11 +1188,26 @@ export class Ledger extends DurableObject<Env> {
     if (!this.runnerMeta(`runner-report:${token.id}:${id}:${actor}:${role}`)) throw runnerDenied(token);
   }
 
+  // The token's validity, its project scope and the route were checked before
+  // this (src/index.ts, src/runner-git.ts); this checks the job: that the
+  // runner holds it, or that a live poll offered it to this actor for a claim.
+  // A job this runner demonstrably held or was offered, whose task has since
+  // been merged or abandoned, is answered with that state (task_terminal,
+  // t476), not with runner_forbidden: the runner reads the state and stops
+  // the job for good, where a refusal would be retried. Nothing else changes:
+  // another actor or runner, a task never offered to this one, and a blocked
+  // task are refused as before; accepted and integrated are not closed.
   assertRunnerJob(token: AgentToken, id: string, actor: string, claim = false): void {
     let item: Item;
     try { item = this.item(id); } catch { throw runnerDenied(token); }
     const held = this.runnerMeta<{ actor: string; runner: string }>(`runner-job:${token.id}:${id}`);
-    if (held?.actor === actor && held.runner === token.runner && (item.owner === actor && item.runner === token.runner && !["merged", "abandoned", "blocked"].includes(item.state))) return;
+    const holds = held?.actor === actor && held?.runner === token.runner;
+    if (holds && item.owner === actor && item.runner === token.runner && !["merged", "abandoned", "blocked"].includes(item.state)) return;
+    if (item.state === "merged" || item.state === "abandoned") {
+      const offered = ["build", "plan"].some((role) => this.runnerMeta(`runner-report:${token.id}:${id}:${actor}:${role}`) !== null);
+      if (holds || offered) throw runnerTaskTerminal(id, item.state);
+      throw runnerDenied(token);
+    }
     if (claim && (item.state === "open" && !item.owner || item.state === "claimed" && item.owner === actor && item.runner === token.runner) && item.dispatch && !["review", "integrate", "refresh"].includes(item.dispatch.job ?? "")) {
       const offer = this.runnerMeta<SeenOffer>(`runner-offer:${token.id}`);
       if (offer && liveOffers([offer]).length && assign(item.dispatch, offer)?.actor === actor && !coreHold(item, this.items(), this.project().policy.coreFiles)) return;

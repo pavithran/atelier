@@ -2,9 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { checked, runTask, runPlanTask, runRunner, failureCount, infrastructureFailureCount, runOutcome } from "../cli/runner.mjs";
-import { runnerTaskTerminal, TERMINAL_TASK_EXITS } from "../src/tokens.ts";
-import { parseRuleError } from "../src/rules.ts";
+import { runnerDenied, runnerTaskTerminal, terminalTaskExit, TERMINAL_TASK_EXITS } from "../src/tokens.ts";
+import { parseRuleError, RuleError } from "../src/rules.ts";
 
 const assignment = { project: "demo", actor: "claude-code/model", agent: "claude-code", model: "model",
   item: { id: "t1", title: "Build", accept: ["works"], scope: [] } };
@@ -106,4 +107,56 @@ for (const terminalState of ["merged", "abandoned"]) test(`a plan closed as ${te
   assert.deepEqual(calls, ["claim"]);
   assert.equal(failureCount(1, result), 1);
   assert.equal(infrastructureFailureCount(2, result), 2);
+});
+
+// The CLI's side of the contract (t476): a task_terminal answer ends claim,
+// and every call finish makes, with the state's exit, where any other
+// refusal keeps its own: 3 for a refused claim, 1 otherwise.
+test("terminalTaskExit reads the state's exit from the server's answer alone", () => {
+  for (const state of Object.keys(TERMINAL_TASK_EXITS)) {
+    const rule = parseRuleError(runnerTaskTerminal("t1", state));
+    assert.equal(terminalTaskExit({ error: rule.code, detail: rule.detail }), TERMINAL_TASK_EXITS[state]);
+  }
+  const denied = parseRuleError(runnerDenied({ runner: "home:studio", id: "tok" }));
+  assert.equal(terminalTaskExit({ error: denied.code, detail: denied.detail }), null);
+  assert.equal(terminalTaskExit({ error: "closed", detail: "t1 is merged (state: merged)" }), null);
+  assert.equal(terminalTaskExit({ error: "task_terminal", detail: "t1 is blocked (state: blocked)" }), null);
+  assert.equal(terminalTaskExit({ error: "task_terminal" }), null);
+});
+
+function cliExit(t, argv, answer) {
+  const dir = mkdtempSync(join(resolve(".cache/runner-closed"), "cli-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const cli = resolve("cli/atelier.mjs");
+  const script = `
+    process.argv = [process.execPath, ${JSON.stringify(cli)}, ...${JSON.stringify(argv)}];
+    globalThis.fetch = async () => Response.json(${JSON.stringify(answer.body)}, { status: ${answer.status} });
+    await import(${JSON.stringify(cli)});
+  `;
+  return spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", env: {
+    ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_SECRET_STORE: "file", ATELIER_SERVER: "https://one.test",
+    ATELIER_RUNNER_TOKEN: "runner-secret", ATELIER_RUNNER_NAME: "home:studio", ATELIER_TOKEN: "", ATELIER_ACTOR: "",
+  } });
+}
+
+const asAnswer = (error) => { const rule = parseRuleError(error); return { status: rule.status, body: { error: rule.code, detail: rule.detail } }; };
+
+for (const state of Object.keys(TERMINAL_TASK_EXITS)) test(`the CLI ends claim and finish's calls with the ${state} exit on a task_terminal answer`, (t) => {
+  const answer = asAnswer(runnerTaskTerminal("t1", state));
+  for (const argv of [["claim", "t1", "--project", "demo", "--as", "claude-code/model", "--runner", "home:studio"], ["show", "t1", "--project", "demo", "--as", "claude-code/model"]]) {
+    const r = cliExit(t, argv, answer);
+    assert.equal(r.status, TERMINAL_TASK_EXITS[state], r.stderr);
+    assert.match(r.stderr, new RegExp(`task_terminal: t1 is ${state === "abandoned" ? "closed" : "merged"} \\(state: ${state}\\)`));
+  }
+});
+
+test("other refusals keep their exits: 3 for a refused claim, 1 for a nonterminal refusal", (t) => {
+  const claim = ["claim", "t1", "--project", "demo", "--as", "claude-code/model", "--runner", "home:studio"];
+  const forbidden = cliExit(t, claim, asAnswer(runnerDenied({ runner: "home:studio", id: "tok" })));
+  assert.equal(forbidden.status, 3, forbidden.stderr);
+  assert.match(forbidden.stderr, /runner_forbidden/);
+  const blocked = cliExit(t, ["show", "t1", "--project", "demo", "--as", "claude-code/model"], asAnswer(new RuleError("blocked", "t1 is blocked", 409)));
+  assert.equal(blocked.status, 1, blocked.stderr);
+  const closed = cliExit(t, claim, asAnswer(new RuleError("closed", "t1 is merged", 409)));
+  assert.equal(closed.status, 3, closed.stderr);
 });
