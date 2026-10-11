@@ -82,8 +82,10 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
       if (!blocker) continue;
       const hold = holdStart(blocker, events), push = pushObservedAt(blocker, events);
       const since = push && push > hold ? push : hold;
+      // Plain land refuses accepted tasks: their next step is the merge.
+      const landing = command(`${blocker.state === "accepted" ? "merge" : "land"} ${blocker.id}`);
       if (age(since) > limits.coreHoldMinutes * 60_000)
-        add("core-hold", item.id, `dispatch held by ${blocker.id} (${held!.core})`, since, `Land the blocker with ${command(`land ${blocker.id}`)}; or, if the overlap is harmless, ${command(`dispatch ${item.id} --overlap-ok`)}`, `${base}/${blocker.id}`);
+        add("core-hold", item.id, `dispatch held by ${blocker.id} (${held!.core})`, since, `Land the blocker with ${landing}; or, if the overlap is harmless, ${command(`dispatch ${item.id} --overlap-ok`)}`, `${base}/${blocker.id}`);
     }
     const ordered = [...events].sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.seq - b.seq);
     for (const e of ordered) {
