@@ -161,6 +161,47 @@ for (const state of STATES) it(`a job offered to the runner and claimed without 
   expect(((await res.json()) as { item: { state: string } }).item.state).toBe(state);
 });
 
+// A prior holder has no lasting right to read the state after its assignment
+// ends, even when a later owner claim names the very same actor and runner.
+for (const state of STATES) for (const transition of ["release", "other runner", "owner claim", "redispatch", "handoff"] as const) {
+  it(`a former holder after ${transition}, then ${state}, stays forbidden`, async () => {
+    const t = await setup();
+    await t.claim();
+    let current: Awaited<ReturnType<typeof t.issue>> | undefined;
+    if (transition === "release" || transition === "other runner") {
+      expect((await t.api("POST", `${t.base}/release`, { note: "give up" })).status).toBe(200);
+      if (transition === "other runner") {
+        current = await t.issue("home:other");
+        expect((await t.request("POST", "/queue", current.token, ACTOR, { ...t.offer, runner: "home:other" })).status).toBe(200);
+        expect((await t.request("POST", `${t.base}/claim`, current.token, ACTOR, {})).status).toBe(200);
+      }
+    } else if (transition === "owner claim") {
+      expect((await t.request("POST", `${t.base}/claim`, OWNER, ACTOR, {}, "home:studio")).status).toBe(200);
+    } else if (transition === "redispatch") {
+      await t.L.dispatch("t1", "owner", { to: "home", agent: "codex", model: "other" });
+    } else {
+      await t.L.handoff("t1", ACTOR, "codex/other", "pass on the work");
+    }
+    await t.close(state);
+    for (const [method, suffix, body] of [
+      ["GET", "", undefined], ["POST", "/claim", {}],
+      ["POST", "/push", { head: PUSHED }], ["POST", "/read-token", {}],
+      ["POST", "/submit", { summary: "Built" }],
+    ] as const) await forbidden(await t.api(method, `${t.base}${suffix}`, body), t.token.id);
+    await t.poll();
+    await forbidden(await t.api("GET", t.base), t.token.id);
+    if (current) await terminal(await t.request("GET", t.base, current.token, ACTOR), state);
+  });
+}
+
+for (const state of STATES) it(`a runner that reclaims its job still reads ${state}`, async () => {
+  const t = await setup();
+  await t.claim();
+  await t.claim();
+  await t.close(state);
+  await terminal(await t.api("GET", t.base), state);
+});
+
 for (const state of STATES) it(`a job two runners were offered and neither claimed, then ${state}, tells both its state`, async () => {
   const t = await setup();
   const b = await t.issue("home:other");
