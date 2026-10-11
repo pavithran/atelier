@@ -26,6 +26,7 @@ const command = ["opencode", "run", "--model", "{model}", "--file", "{brief_file
 const agents = [{ agent: "opencode", models: [model], command, env: ["ZAI_API_KEY"] }];
 const assignment = { project: "atelier", item: { id: "t21", dispatch: { job: "review" } }, agent: "opencode", model, actor };
 const claimed = {
+  request: 1,
   item: { id: "t21", title: "Review rules", base: H0, scope: ["src/review/**"], fork: "p--t21", head: H1 },
   head: H1,
   need: { needed: true, reason: "every part is reviewed", head: H1, kind: "review", basis: "part", changeClass: "coordinated", changedPaths: ["src/review/needed.ts"], outOfScope: [], checks: [], round: 1, previous: [], previousReviewer: null, lapsed: [] },
