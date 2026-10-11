@@ -20,7 +20,7 @@ const ITEMS = [
   item("t15", "Fix the renderer", ["src/parser/**"], "claimed"),
 ];
 
-function fixture(t) {
+function fixture(t, items = ITEMS) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-dup-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const config = join(dir, "config");
@@ -30,7 +30,7 @@ function fixture(t) {
   const preload = join(dir, "server.mjs");
   writeFileSync(preload, `
 import { appendFileSync } from "node:fs";
-const ITEMS = ${JSON.stringify(ITEMS)};
+const ITEMS = ${JSON.stringify(items)};
 globalThis.fetch = async (url, options = {}) => {
   const path = new URL(url).pathname, method = options.method ?? "GET";
   const body = options.body ? JSON.parse(options.body) : undefined;
@@ -89,6 +89,16 @@ test("a near miss files: another scope, a different title, or only a merged task
     assert.equal(r.status, 0, `${title} ${scope}: ${r.stderr}`);
   }
   assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => [q.body.title, q.body.scope]), cases.map(([title, scope]) => [title, [scope]]));
+});
+
+test("the warning names every matching live task, including an unowned task", (t) => {
+  const f = fixture(t, [...ITEMS, item("t16", "Fix parser", ["src/**"], "open", null)]);
+  const r = f.run(["new", "Fix the parser", "--scope", "src/parser/**", "--project", "demo"]);
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /^ {2}t12 {2}Fix the parser {2}\(claimed, codex\/test\)$/m);
+  assert.match(r.stderr, /^ {2}t16 {2}Fix parser {2}\(open, unowned\)$/m);
+  assert.doesNotMatch(r.stderr, /t14|t15/);
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST"), []);
 });
 
 test("a task sent with only a brief, or as one long text, is checked under the title it is given", (t) => {
