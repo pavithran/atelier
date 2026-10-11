@@ -84,7 +84,7 @@ async function fixture(t, { failed = false, dirtyWorkspace = false, blockers = [
     if (req.method === "POST" && path.endsWith("/submit")) item.state = "submitted";
     let data = { item, gate, policy: { checks: [command], sandboxOnly: sandbox } };
     if (path === "/api/projects/proj") data = { project: { policy: { prepare } } };
-    if (path.endsWith("/claim")) data = { item, workspace: { token: "fake", remote, defaultBranch: branch.claim, expiresAt: "tomorrow" } };
+    if (path.endsWith("/claim")) data = { item, workspace: { token: "fake", remote, defaultBranch: branch.claim, expiresAt: "tomorrow" }, commitIdentity: { name: "Test Owner", email: "owner@example.test", agentEmails: [] } };
     if (path.endsWith("/push")) data = { ...item, head: git(remote, "rev-parse", "HEAD") };
     if (path.endsWith("/read-token") || path.endsWith("/baseline-token") || path.endsWith("/base-token")) data = { remote, token: "fake", head, defaultBranch: "main" };
     if (path.endsWith("/brief")) data = brief;
@@ -362,4 +362,6 @@ test("manual claim prints the preparation command and directory without executin
   assert.ok(result.output.includes(`Preparation (run in ${JSON.stringify(f.workspace)}): ${prepare.command}`));
   assert.equal(git(f.workspace, "status", "--porcelain"), "");
   assert.deepEqual(JSON.parse(git(f.workspace, "config", "atelier.prepare")), prepare);
+  assert.equal(git(f.workspace, "config", "user.name"), "Test Owner");
+  assert.equal(git(f.workspace, "config", "user.email"), "owner@example.test");
 });
