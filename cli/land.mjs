@@ -5,7 +5,7 @@ import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
 import { excludeScratch } from "./scratch.mjs";
 import { runCommand } from "./ship.mjs";
-import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { COMMAND_CAPABILITIES, checkCapabilities } from "../src/route-level.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-lease.ts";
 import { unoffered } from "../src/dispatch/rules.ts";
 import { contributorsOf, roleRefusal, sameActor } from "../src/rules.ts";
@@ -220,20 +220,16 @@ export async function runLand(io) {
     return;
   }
 
-  // The server's route level against this CLI's: a server older than the
-  // routes this command calls would fail them one by one, so the landing
-  // refuses here instead, saying to deploy, before the lease or any
-  // workspace changes. The level (src/route-level.ts) rises only when a CLI
-  // starts calling a route the server did not have; which commit either
-  // side runs says nothing, since every merge moves the CLI past the
-  // deployed one.
+  // The server's capabilities against the ones this command declares
+  // (COMMAND_CAPABILITIES, src/route-level.ts): a server short of them would
+  // fail the routes one by one, so the landing refuses here instead, naming
+  // what is missing and saying to deploy, before the lease or any workspace
+  // changes. Which commit either side runs says nothing, since every merge
+  // moves the CLI past the deployed one.
   let version = null;
   try { version = await request("GET", "/version"); } catch { /* a server with no version route is one that predates it */ }
-  const level = Number.isInteger(version?.routeLevel) ? version.routeLevel : null;
-  const deploy = (why) => `the server ${typeof version?.commit === "string" && version.commit ? `runs main at ${short(version.commit)}, ` : ""}${level === null ? "reports no route level" : `runs route level ${level}`}, this CLI route level ${ROUTE_LEVEL}: ${why}. Deploy the server from a checkout at route level ${ROUTE_LEVEL} or newer (npm run deploy, which records the commit it deploys), then run atelier land ${id} again`;
-  if (!version) die(deploy("the server does not answer GET /api/version"));
-  if (level === null) die(deploy("the server is older than route levels"));
-  if (level < ROUTE_LEVEL) die(deploy("the server's routes are older than the ones this CLI calls"));
+  const check = checkCapabilities(version, COMMAND_CAPABILITIES.land);
+  if (!check.ok) die(`${check.message}, then run atelier land ${id} again`);
 
   // The lease is read, not taken, so the checks that only refuse are asked
   // before anything changes. A lease held for another live task refuses the
@@ -1118,6 +1114,11 @@ async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, g
       const rightLevel = mainLevel + (taskLevel - baseLevel);
       if (mergedLevel < rightLevel) {
         const levelFile = join(dir, "src", "route-level.ts");
+        // A numeric raise alone would falsely map the task's capabilities to
+        // main's old level. Keep the merge for the builder to resolve explicitly.
+        if (/\b(?:declare|buildCapabilities)\s*\(/.test(readFileSync(levelFile, "utf8"))) {
+          throw new StepError(`main and ${id} each raised the route level from ${baseLevel}; named capability legacy mappings need manual resolution. Move the task's new capability declaration levels above main's ${mainLevel}, set ROUTE_LEVEL to ${rightLevel}, and commit before rerunning atelier land ${id}. Keep main's published mappings unchanged.`);
+        }
         writeFileSync(levelFile, readFileSync(levelFile, "utf8").replace(/export const ROUTE_LEVEL = \d+;/, `export const ROUTE_LEVEL = ${rightLevel};`));
         git(["add", "--", "src/route-level.ts"], { cwd: dir });
         git(["commit", "--quiet", "-m", `Raise the route level after merging main into ${id}\n\nAtelier land: main and ${id} each raised it from ${baseLevel}, so the merged level is ${rightLevel}`], { cwd: dir });

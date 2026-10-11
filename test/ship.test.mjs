@@ -1,3 +1,4 @@
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
@@ -186,6 +187,7 @@ const SECRET = "s3cret-value-for-the-deploy";
 // the command: the oldest active one for the kind and revision is used once.
 function standIn(state) {
   return createServer(async (req, res) => {
+    if (req.url === "/api/version") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ capabilities: SERVER_CAPABILITIES })); }
     let raw = "";
     for await (const chunk of req) raw += chunk;
     const body = raw ? JSON.parse(raw) : undefined;
