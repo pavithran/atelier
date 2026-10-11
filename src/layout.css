@@ -198,6 +198,8 @@ button.primary:hover { background: var(--signal-hot); border-color: var(--signal
 .notice p { font-size: 14px; margin: var(--space-sm) 0 0; color: var(--text-muted); }
 .notice h3 { margin: 0; }
 .notice ul { font-size: 13px; overflow-wrap: anywhere; }
+/* The task page shows a dispatch note whole, with the line breaks it was written with (t480). */
+.notice .dispatch-note { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
 .disclosure { border-top: 1px solid var(--line); padding: 18px 0; }
 .disclosure > summary { font-size: 14px; font-weight: 600; cursor: pointer; min-height: 28px; }
 .disclosure[open] > summary { margin-bottom: var(--space-xl); }
