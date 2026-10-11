@@ -135,7 +135,12 @@ test("MCP discovery passes through untouched", () => {
 });
 
 const repo = fileURLToPath(new URL("..", import.meta.url));
-const ADAPTERS = { "claude-code": ["atelier-claude.mjs", "ATELIER_CLAUDE"], antigravity: ["atelier-agy.mjs", "ATELIER_AGY"] };
+const ADAPTERS = {
+  "claude-code": ["atelier-claude.mjs", "ATELIER_CLAUDE"],
+  codex: ["atelier-codex.mjs", "ATELIER_CODEX"],
+  opencode: ["atelier-opencode.mjs", "ATELIER_OPENCODE"],
+  antigravity: ["atelier-agy.mjs", "ATELIER_AGY"],
+};
 
 // A stand-in harness that prints what FAKE_STDOUT / FAKE_STDERR say and exits FAKE_EXIT.
 function harness(t) {
@@ -145,7 +150,15 @@ function harness(t) {
   mkdirSync(ws);
   writeFileSync(brief, "Task: t9\nBuild it.\n");
   writeFileSync(fake, `#!${process.execPath}
+if (process.argv.includes("mcp")) {
+  process.stdout.write("[]");
+  process.exit(0);
+}
 require("node:fs").readFileSync(0);
+const verdictAt = process.argv.indexOf("--output-last-message");
+if (verdictAt !== -1 && Number(process.env.FAKE_EXIT ?? 0) === 0) {
+  require("node:fs").writeFileSync(process.argv[verdictAt + 1], process.env.FAKE_ANSWER ?? "");
+}
 process.stdout.write(process.env.FAKE_STDOUT ?? "");
 process.stderr.write(process.env.FAKE_STDERR ?? "");
 process.exit(Number(process.env.FAKE_EXIT ?? 0));
@@ -158,7 +171,12 @@ function runBin(h, name, extraEnv, { review = false } = {}) {
   const [bin, override] = ADAPTERS[name];
   const diff = join(h.dir, "diff.txt");
   writeFileSync(diff, "diff --git a/x b/x\n+x\n");
-  const args = ["opus-5.5", h.brief, h.ws, "undefined", review ? diff : "undefined", review ? h.verdict : "undefined"];
+  const providers = join(h.dir, "providers");
+  mkdirSync(providers, { recursive: true });
+  writeFileSync(join(providers, "models.json"), JSON.stringify({ models: {
+    "test-model": { provider: "fixture", providerModel: "fixture", config: "fixture.json" },
+  } }));
+  const args = ["--providers", providers, "test-model", h.brief, h.ws, "undefined", review ? diff : "undefined", review ? h.verdict : "undefined"];
   return spawnSync(process.execPath, [join(repo, "bin", "harness", bin), ...args], { encoding: "utf8", env: { PATH: process.env.PATH, HOME: h.dir, TZ: NY, [override]: h.fake, ...extraEnv } });
 }
 
@@ -167,18 +185,32 @@ for (const name of Object.keys(ADAPTERS)) {
   test(`${name}: real adapter retains review verdicts containing JSON error examples`, (t) => {
     const h = harness(t);
     for (const text of ['{"error":"Too many requests"}', 'VERDICT: APPROVE\nSUMMARY: Tests cover {"error":"Too many requests"}.', failure(name)]) {
-      const r = runBin(h, name, { FAKE_EXIT: "0", FAKE_STDOUT: answer(name, text), FAKE_STDERR: failure(name) }, { review: true });
+      const r = runBin(h, name, { FAKE_EXIT: "0", FAKE_STDOUT: answer(name, text), FAKE_STDERR: failure(name), FAKE_ANSWER: text }, { review: true });
       assert.equal(r.status, 0, r.stderr);
       assert.equal(readFileSync(h.verdict, "utf8"), text);
       assert.ok(!r.stderr.includes(LIMIT_MARKER));
     }
   });
-  test(`${name}: real adapter reports a failed review's provider limit without a verdict`, (t) => {
+  for (const stream of ["FAKE_STDOUT", "FAKE_STDERR"]) test(`${name}: real adapter reports a failed review's provider limit on ${stream} without a verdict`, (t) => {
     const h = harness(t);
-    const r = runBin(h, name, { FAKE_EXIT: "1", FAKE_STDOUT: failure(name) }, { review: true });
+    const r = runBin(h, name, { FAKE_EXIT: "1", [stream]: failure(name) }, { review: true });
     assert.equal(r.status, 75, r.stderr);
     assert.equal(existsSync(h.verdict), false);
-    assert.ok(r.stderr.includes(LIMIT_MARKER));
+    const last = r.stderr.trimEnd().split("\n").at(-1);
+    assert.ok(last.startsWith(`${LIMIT_MARKER} `));
+    const limit = JSON.parse(last.slice(LIMIT_MARKER.length + 1));
+    assert.equal(limit.harness, name);
+    assert.ok(Number.isFinite(Date.parse(limit.resetAt)));
+  });
+  test(`${name}: real adapter preserves ordinary failure exits without reporting a limit`, (t) => {
+    const h = harness(t);
+    for (const text of [answer(name, failure(name)), '{"error":"Too many requests"}',
+      failure(name, "401 Unauthorized: usage limit reached"), failure(name, "request timed out: usage limit reached")]) {
+      const r = runBin(h, name, { FAKE_EXIT: "2", FAKE_STDOUT: text, FAKE_STDERR: text }, { review: true });
+      assert.equal(r.status, 2, r.stderr);
+      assert.equal(existsSync(h.verdict), false);
+      assert.ok(!r.stderr.includes(LIMIT_MARKER));
+    }
   });
 }
 
