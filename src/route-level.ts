@@ -39,4 +39,6 @@
 
 // 26: review-renew and five-minute leases; release and verdicts name the
 // exact request generation, and expired requests are reoffered (t351).
-export const ROUTE_LEVEL = 26;
+// 27: init records publicMirrorDestinations, privatePaths and privatePatterns
+// in commitIdentity for publication to public mirrors (t433).
+export const ROUTE_LEVEL = 27;

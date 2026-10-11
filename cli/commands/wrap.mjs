@@ -3,9 +3,8 @@ import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { FILING_RELAY, cleanSession, failingChecksOverridden, failingChecksRefusal, sessionCommitMessage, sessionNoteText, sessionText, staleState, wrapRelay } from "../../src/sessions.ts";
 import { refusalOf, refusalText } from "../../src/checks.ts";
-import { isPublicMirror } from "../../src/commit-identity.ts";
 import { OWNER, P, actor, args, at, call, cfg, die, git, project, runGroupedCheck, sessionCheckout, sessionFiles, sessionTree, wrapReady } from "../atelier.mjs";
-import { publishMirror } from "../mirror.mjs";
+import { publishCheckoutRemote } from "../mirror.mjs";
 import { publishBaseline } from "./publish.mjs";
 import syncCommand from "./sync.mjs";
 
@@ -126,16 +125,9 @@ export default async function wrapCommand() {
   data.pushes = [];
   for (const remote of remotes) {
     const identity = record.policy.commitIdentity;
-    if (isPublicMirror(identity, remote)) {
-      const result = publishMirror({ git, dir: cwd, branch, remote, identity, say: console.log });
-      data.pushes.push({ remote, passed: result.ok });
-      console.log(`Remote ${sessionText(remote, 200)}: ${result.ok ? "pushed" : "failed"}.`);
-      continue;
-    }
-    // The owner's own remotes: a normal push, LFS objects included (see gitEnv).
-    const result = git(["-c", `remote.${remote}.mirror=false`, "push", "--no-force", "--no-follow-tags", remote, `refs/heads/${branch}:refs/heads/${branch}`], { cwd, allowFail: true, ownerRemote: true });
-    data.pushes.push({ remote, passed: result.status === 0 });
-    console.log(`Remote ${sessionText(remote, 200)}: ${result.status === 0 ? "pushed" : "failed"}.`);
+    const result = publishCheckoutRemote({ git, dir: cwd, branch, remote, identity, say: console.log });
+    data.pushes.push({ remote, passed: result.ok });
+    console.log(`Remote ${sessionText(remote, 200)}: ${result.ok ? "pushed" : "failed"}.`);
   }
   if (!args.push) console.log("Checkout remotes not pushed (no --push).");
   data.found = [];
