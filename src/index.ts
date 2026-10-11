@@ -24,6 +24,7 @@ import { suggestBuilder } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { buildPrecision, precisionWindow } from "./models/precision.ts";
+import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, registeredActing } from "./models/judgement.ts";
 import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
@@ -62,7 +63,9 @@ const READ_TTL = 3600;
 // The override forms need the first and, as the owner's confirmation (t371),
 // the second or the confirmation secret (ownerFactorIn): a session alone is
 // not that confirmation, since without Access the owner token buys one.
-type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null; waitUntil?: (p: Promise<unknown>) => void; signedIn?: boolean; access?: boolean };
+// `acting` is the harness/model an owner-token request names as acting for
+// the owner (X-Atelier-Acting, src/models/judgement.ts), or null.
+type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null; acting?: string | null; waitUntil?: (p: Promise<unknown>) => void; signedIn?: boolean; access?: boolean };
 
 // ── auth ───────────────────────────────────────────────────────────────────
 // The owner bearer token may declare any actor for orchestration. Agent tokens
@@ -961,8 +964,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[0] === "reliability" && parts.length === 1 && m === "GET") {
     // `speed` is each model's pace over the window; `atelier runner --usage`
     // prints it, and says so when an older server sends none.
-    const { reliability, speed, events, unread } = await trackRecords(env);
-    const res = json({ events, models: reliabilityJson(reliability), speed });
+    // `judgement` is each acting model's verdicts on findings, decisions and
+    // overrides over its window, with the window's totals.
+    const { sources, reliability, speed, events, unread } = await trackRecords(env);
+    const judgement = buildJudgement(sources, judgementWindow(new Date()), ownerActor(env), await index(env).models());
+    const res = json({ events, models: reliabilityJson(reliability), speed, judgement: { ...judgement, totals: judgementTotals(judgement) } });
     if (unread.length) res.headers.set("x-atelier-incomplete", unread.map((p) => p.name).sort().join(","));
     return res;
   }
@@ -1277,8 +1283,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "decisions") {
     if (parts.length === 3 && m === "GET") return json({ decisions: await L.decisions() });
     requireOwner(env, actor);
-    if (parts.length === 3 && m === "POST") return json(await L.recordDecision(body, actor), 201);
-    if (parts.length === 5 && parts[4] === "withdraw" && m === "POST") return json(await L.withdrawDecision(parts[3], actor, body.note));
+    if (parts.length === 3 && m === "POST") return json(await L.recordDecision(body, actor, c.acting ?? null), 201);
+    if (parts.length === 5 && parts[4] === "withdraw" && m === "POST") return json(await L.withdrawDecision(parts[3], actor, body.note, c.acting ?? null));
     throw new RuleError("not_found", "no such route", 404);
   }
   // Protected actions: the owner's approvals and the steps a ship ran (src/actions-api.ts).
@@ -2115,7 +2121,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const overrideReview = body.overrideReview === undefined ? undefined : typeof body.overrideReview === "string" ? body.overrideReview : "";
       let item: Item;
       try {
-        item = await L.accept(id, actor, String(body.head ?? ""), overrideReview, typeof body.note === "string" ? body.note : undefined);
+        item = await L.accept(id, actor, String(body.head ?? ""), overrideReview, typeof body.note === "string" ? body.note : undefined, undefined, c.acting ?? null);
       } catch (err) {
         const rule = parseRuleError(err);
         if (rule?.code === "override_unconfirmed") {
@@ -2187,13 +2193,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "defect": {
       requireOwner(env, actor);
       const { note, foundIn } = cleanDefect(body);
-      return json(await L.traceDefect(id, actor, note, foundIn), 201);
+      const contradicts = cleanContradicts(body.contradicts, [ref.name, ...ref.names.filter((n) => n !== ref.name)], id);
+      return json(await L.traceDefect(id, actor, note, foundIn, contradicts), 201);
     }
     case "finding": {
       requireOwner(env, actor);
       const { head, index, verdict, note } = cleanFinding(body);
-      const { review, by } = await L.addFinding(id, actor, head, index, verdict, note, { reviewSeq: body.reviewSeq, reviewer: body.reviewer });
-      return json({ id, head, index, verdict, review, by }, 201);
+      const { review, by, event } = await L.addFinding(id, actor, head, index, verdict, note, { reviewSeq: body.reviewSeq, reviewer: body.reviewer }, c.acting ?? null);
+      return json({ id, head, index, verdict, review, by, event, ...(c.acting ? { acting: c.acting } : {}) }, 201);
     }
   }
   throw new RuleError("not_found", "no such route", 404);
@@ -2318,7 +2325,10 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
   // Review precision over the last PRECISION_WINDOW_DAYS, from the same events;
   // each model's speed comes with the track record (trackRecords).
   const precision = buildPrecision(track.sources, precisionWindow(new Date()), ownerActor(env));
-  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway, precision, track.speed), error ? 400 : 200);
+  // The orchestrator's judgements over the last JUDGEMENT_WINDOW_DAYS, by the
+  // harness/model that acted for the owner (src/models/judgement.ts).
+  const judgement = buildJudgement(track.sources, judgementWindow(new Date()), ownerActor(env), entries as unknown as ModelEntry[]);
+  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway, precision, track.speed, judgement), error ? 400 : 200);
 }
 
 // ── AI Gateway ───────────────────────────────────────────────────────────────
@@ -3064,6 +3074,12 @@ export default {
           if (token?.runner) throw runnerDenied(token);
           return json({ error: "bad_actor", detail: "set X-Atelier-Actor to harness/model, or the project owner's actor" }, 400);
         }
+        // The acting harness/model is checked here, for every route, so a
+        // malformed name, or one an agent or runner token sends, is refused
+        // before anything is recorded. A name must be a model in the pool;
+        // it is kept as declared, since the owner token cannot prove it.
+        const declaredActing = cleanActing(req.headers.get(ACTING_HEADER), ownerActor(env), !!token);
+        const acting = declaredActing === null ? null : registeredActing(declaredActing, await index(env).models());
         const body = req.method === "GET" ? {} : await req.json().catch(() => ({}));
         // Routes read fields from the body, so anything but a JSON object is refused here.
         if (typeof body !== "object" || body === null || Array.isArray(body)) {
@@ -3121,7 +3137,7 @@ export default {
         }
         let res: Response;
         try {
-          res = await api({ env, req, url, actor, body, token, ref, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
+          res = await api({ env, req, url, actor, body, token, ref, acting, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
         } catch (error) {
           await noteRefusal(error);
           if (token?.runner && parseRuleError(error)?.status === 403) throw runnerDenied(token);
