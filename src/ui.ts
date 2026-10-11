@@ -40,7 +40,7 @@ import type { PartRoute } from "./plans/route.ts";
 // refreshes itself, in seconds, or nothing for the scrubber alone.
 export interface Live { nonce: string; refresh?: number }
 import {
-  bindingOf, confirmationAt, DEFAULT_OWNER, decisionFor, evidenceAt, isOwnCall, latestReviews, mergedByOverride, mergedChecksAt, NO_OWNER_FACTOR, OVERRIDE_CONFIRMATION_MS, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey,
+  bindingOf, changeClass, confirmationAt, contributorsOf, countingReviews, DEFAULT_OWNER, decisionFor, evidenceAt, independentApproval, isOwnCall, latestReviews, mergedByOverride, mergedChecksAt, NO_OWNER_FACTOR, OVERRIDE_CONFIRMATION_MS, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey,
   type Evidence, type Gate, type InboxEntry, type Item, type MergedCheckView, type OwnerFactor, type ProjectPolicy, type Review, type UnparsableReply,
 } from "./rules";
 
@@ -1778,9 +1778,19 @@ export function ownerState(d: Detail, evidenceVisible: boolean, now = Date.now()
 
   const overridden = overrideAt(item, owner);
   const voided = !!overridden && !!d.policy.noOverride && item.state !== "merged";
-  const independentReview = latest.find((r) => r.by !== owner && r.approve && !r.tier);
-  const independentRejection = latest.find((r) => r.by !== owner && !r.approve);
   const changed = evidenceAt(d.policy, d.evidence, item.head).changedPaths;
+  // The approval credited as the independent review is the one the gate
+  // itself would count: an authorised reviewer's latest at this head and
+  // criteria that passes independentApproval for the change's class, the
+  // latest of them when several do. An earlier approval of a contributor's
+  // own family is never named in its place.
+  const kind = changed === null ? null : changeClass(changed, d.policy);
+  const reviewed = kind === "protected" || (d.policy.execution !== undefined && kind === "coordinated") ? kind : null;
+  const contributors = contributorsOf(item);
+  const independentReview = reviewed
+    ? countingReviews(d.reviews, binding, d.policy, owner).filter((r) => independentApproval(r, reviewed, contributors, owner)).sort((a, b) => b.at.localeCompare(a.at))[0]
+    : undefined;
+  const independentRejection = latest.find((r) => r.by !== owner && !r.approve);
   const independent: StateCell = { label: "Independent review", ...(
     overridden && !voided ? { text: `Overridden by you, ${when(overridden.at)}: not a review`, tone: "ask" as const }
     : independentRejection ? { text: `Changes requested by ${independentRejection.by}`, tone: "bad" as const }
@@ -1798,6 +1808,7 @@ export function ownerState(d: Detail, evidenceVisible: boolean, now = Date.now()
     item.state === "merged" ? { text: `Merged${item.acceptedHead ? ` at ${short(item.acceptedHead)}` : ""}`, tone: "go" as const }
     : item.state === "abandoned" ? { text: "Closed without merging", tone: "" as const }
     : item.state === "accepted" ? { text: `Accepted at ${short(item.acceptedHead)}; not yet merged`, tone: "go" as const }
+    : item.state === "integrated" ? { text: `Integrated into ${item.plan ?? "its plan"}${item.head ? ` at ${short(item.head)}` : ""}; lands with the plan`, tone: "go" as const }
     : item.state === "blocked" ? { text: "Not possible while the task is blocked", tone: "ask" as const }
     : live && item.head && !evidenceVisible ? { text: "Unavailable until the changes shown match the recorded revision", tone: "ask" as const }
     : item.state !== "submitted" ? { text: "Not submitted yet", tone: "" as const }
@@ -1809,6 +1820,7 @@ export function ownerState(d: Detail, evidenceVisible: boolean, now = Date.now()
     : item.state === "abandoned" ? { kind: "complete", text: "Complete: the task was closed without merging." }
     : item.state === "blocked" ? { kind: "next", text: "Unblock the task once what it waits on is settled." }
     : item.state === "accepted" ? { kind: "next", text: "Run the merge command below in the registered checkout." }
+    : item.state === "integrated" ? { kind: "waiting", text: `Waiting for ${item.plan ?? "its plan"} to land: this part is submitted and integrated into the plan's branch, and is accepted and merged with the plan, not on its own.` }
     : live && item.head && !evidenceVisible ? { kind: "next", text: "Reload this task; approval and acceptance wait until the changes shown match the recorded revision." }
     : secretHeld ? { kind: item.secretScan === item.head ? "waiting" : "next", text: item.secretScan === item.head ? "Waiting for the secret scan of this revision to complete." : "Check the flagged line and clear the flag if it is not a secret." }
     : decision.action === "accept" ? { kind: "next", text: "Accept the revision." }

@@ -17,7 +17,11 @@ const A = "claude-code/opus-5.5", H0 = "0".repeat(40), H1 = "a".repeat(40), T0 =
 
 // A submitted protected change waiting for its independent review, on a
 // server that takes the confirmation secret as the owner's factor.
+// `race.during`, when set, runs once as the Worker next reads the task's
+// workspace, which it does while checking the revision a form names: a
+// change the owner's page never showed, made between the route's reads.
 async function setup(name: string) {
+  const race: { during?: () => Promise<unknown> } = {};
   const record = { name, repo: name, policy: { checks: ["npm test"], protected: ["AGENTS.md"] }, createdAt: new Date().toISOString() };
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.setProject(record, "owner");
@@ -34,6 +38,7 @@ async function setup(name: string) {
   };
   const ARTIFACTS = { get: async (repo: string) => {
     const log = logs[repo] ?? [];
+    if (repo === `${name}--t1` && race.during) { const during = race.during; race.during = undefined; await during(); }
     return {
       log: async (o: { limit?: number } = {}) => log.slice(0, o.limit ?? 50), readCommit: async (h: string) => log.find((c) => c.hash === h) ?? null,
       readTree: async () => null, readBlob: async () => null, info: async () => ({ remote: "https://git.test/r.git", defaultBranch: "main" }), [Symbol.dispose]() {},
@@ -48,7 +53,7 @@ async function setup(name: string) {
     method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify(body),
   }), bindings);
   const view = async () => (await worker.fetch(new Request(`https://atelier.test/p/${name}/t1`, { headers: { cookie } }), bindings)).text();
-  return { L, post, api, view };
+  return { L, post, api, view, race };
 }
 
 const alertFor = (html: string, verb: string) => /<p class="error form-error" role="alert" id="error-[a-z-]+">[^<]*/.exec(html.slice(html.indexOf(`id="error-${verb}"`) - 60))?.[0] ?? "";
@@ -91,6 +96,49 @@ it("criterion 6: stale criteria refuse the override and the command-line permiss
   expect((await L.item("t1")).overrideConfirmation).toBeUndefined();
   const events = await L.events("t1") as unknown as { kind: string }[];
   expect(events.filter((v) => v.kind === "review.overridden" || v.kind === "override.allowed" || v.kind === "item.accepted")).toEqual([]);
+});
+
+it("criterion 6: criteria changed while the route checks the revision refuse the override and the permission in the Ledger's own step", async () => {
+  const { L, post, race } = await setup("forms-criteria-race");
+  const reason = "No other family today";
+  // The page showed the task's criteria; they change after the route has
+  // read the task and compared them, while it checks the workspace's head.
+  race.during = () => L.editItem("t1", "owner", { accept: ["Keeps the prompts"] });
+  const override = await post("override", { note: reason, confirmation: SECRET });
+  expect(override.status).toBe(409);
+  const html = await override.text();
+  expect(alertFor(html, "override")).toMatch(/^<p class="error form-error" role="alert" id="error-override">t1(&#39;|&#x27;|')s acceptance criteria changed since you opened this page/);
+  expect(html).toContain(`>${reason}</textarea>`);
+  expect(html).not.toContain(SECRET);
+  // The task stays submitted (a criteria change does not unsubmit it), and nothing was overridden or accepted.
+  expect((await L.item("t1")).state).toBe("submitted");
+  // The page now shows the new criteria; they change again during the permission.
+  const shown = (await L.detail("t1") as unknown as { criteria: string }).criteria;
+  race.during = () => L.editItem("t1", "owner", { accept: ["Keeps the prompts", "And the README"] });
+  const permission = await post("allow-override", { criteria: shown, confirmation: SECRET });
+  expect(permission.status).toBe(409);
+  expect(alertFor(await permission.text(), "allow-override")).toMatch(/acceptance criteria changed since you opened this page/);
+  expect((await L.item("t1")).overrideConfirmation).toBeUndefined();
+  const events = await L.events("t1") as unknown as { kind: string }[];
+  expect(events.filter((v) => v.kind === "review.overridden" || v.kind === "override.allowed" || v.kind === "item.accepted")).toEqual([]);
+});
+
+it("criterion 6: the Ledger refuses an acceptance, an override or a permission bound to criteria the task no longer has", async () => {
+  const { L } = await setup("forms-criteria-ledger");
+  const shown = (await L.detail("t1") as unknown as { criteria: string }).criteria;
+  await L.editItem("t1", "owner", { accept: ["Keeps the prompts"] });
+  const refused = async (p: Promise<unknown>) => {
+    const err = await p.then(() => new Error("expected a stale_criteria refusal"), (e: unknown) => e as Error);
+    expect(err.message).toMatch(/stale_criteria\|t1's acceptance criteria changed since you opened this page/);
+  };
+  await refused(L.accept("t1", "owner", H1, undefined, undefined, undefined, undefined, shown));
+  await refused(L.accept("t1", "owner", H1, "No other family", undefined, "secret", undefined, shown));
+  await refused(L.confirmOverride("t1", "owner", H1, "secret", shown));
+  expect((await L.item("t1")).state).toBe("submitted");
+  expect((await L.item("t1")).overrideConfirmation).toBeUndefined();
+  // Bound to the criteria the task has now, the permission is given.
+  const now = (await L.detail("t1") as unknown as { criteria: string }).criteria;
+  expect((await L.confirmOverride("t1", "owner", H1, "secret", now)).overrideConfirmation).toMatchObject({ head: H1 });
 });
 
 it("criterion 6: an old tab's second override after acceptance is refused on the page and records nothing more", async () => {

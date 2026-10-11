@@ -2469,12 +2469,12 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       }
       if (verb === "dispatch") await L.dispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note }, oldToken);
       else if (verb === "undispatch") await L.undispatch(id, owner);
-      else if (verb === "accept") await L.accept(id, owner, expected);
+      else if (verb === "accept") await L.accept(id, owner, expected, undefined, undefined, undefined, undefined, String(shownCriteria));
       // The page's override form: accept with the owner's override of a missing
       // independent review, its reason in the note.
-      else if (verb === "override") await L.accept(id, owner, expected, note, undefined, factor, await reviewerAvailability(env, L, id));
+      else if (verb === "override") await L.accept(id, owner, expected, note, undefined, factor, await reviewerAvailability(env, L, id), String(shownCriteria));
       // The page's permission for an override from the command line (t371).
-      else if (verb === "allow-override") await L.confirmOverride(id, owner, expected, factor!);
+      else if (verb === "allow-override") await L.confirmOverride(id, owner, expected, factor!, String(shownCriteria));
       else if (verb === "abandon") await L.abandon(id, owner, note, oldToken);
       else if (verb === "block") await L.block(id, owner, note);
       else if (verb === "unblock") await L.unblock(id, owner);
