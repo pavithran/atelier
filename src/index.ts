@@ -1223,6 +1223,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const r = await actionsApi(L, m, parts.slice(3), body, actor, ownerActor(env), async (commit) => onMainLine(env, (await L.project()).repo, commit));
     return json(r.data, r.status);
   }
+  if (parts[2] === "board" && parts.length === 3 && m === "GET") return json(await L.board());
+  if (parts[2] === "areas") {
+    if (parts.length === 3 && m === "GET") return json(await L.areas());
+    requireOwner(env, actor);
+    if (parts.length === 3 && m === "POST") return json(await L.saveArea(actor, body.name, body.purpose), 201);
+    if (parts.length === 4 && m === "POST") return json(await L.saveArea(actor, body.name, body.purpose, parts[3]));
+    if (parts.length === 4 && m === "DELETE") { await L.removeArea(parts[3], actor); return json({ removed: parts[3] }); }
+    throw new RuleError("not_found", "no such route", 404);
+  }
   if (parts[2] !== "items") throw new RuleError("not_found", "no such route", 404);
   // A plan is an item too: { kind: "plan", goal, scope?, planner? } starts
   // one (docs/orchestrator.md, section 2), for the owner alone, with the
@@ -2636,10 +2645,13 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
     switch (parts.length === 2 ? "overview" : parts[2]) {
       case "overview": {
         const standing = await standingOf(env, ref.key);
-        return html(renderProject(p, await L.items(), await L.events(undefined, 40) as unknown as LedgerEvent[], ownerName(env), standing));
+        const board = await L.board();
+        return html(renderProject(p, board.items, await L.events(undefined, 40) as unknown as LedgerEvent[], ownerName(env), standing, board));
       }
-      case "tasks":
-        return html(renderProjectTasks(p, await L.items(), ownerName(env)));
+      case "tasks": {
+        const board = await L.board();
+        return html(renderProjectTasks(p, board.items, ownerName(env), board));
+      }
       case "flow": {
         const items = await L.items();
         const events = (await L.events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
