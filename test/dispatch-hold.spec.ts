@@ -31,6 +31,9 @@ it("traverses every blocker, distinguishing convergent blocked chains from cycle
   expect(blockerChains("a", graph)).toEqual([{ path: ["a", "b", "d"], deadlock: false }, { path: ["a", "c", "d"], deadlock: false }]);
   graph.set("d", ["c"]);
   expect(blockerChains("a", graph)).toEqual([{ path: ["a", "b", "d", "c", "d"], deadlock: true }, { path: ["a", "c", "d", "c"], deadlock: true }]);
+  const self = blockerChains("a", new Map([["a", ["a"]]]));
+  expect(self).toEqual([{ path: ["a", "a"], deadlock: true }]);
+  expect(holdText({ id: "a", owner: null, state: "open", title: "Self dependency", core: "src/**", chains: self })).toContain("deadlock: a -> a");
 });
 
 async function setup(name: string, refuseOverlap = false) {
@@ -104,10 +107,25 @@ it("real authenticated queue routes offer submitted/accepted work unless landing
   const queued = (await L.waiting())[0];
   expect(queued.held).toBeUndefined();
   expect(queued.claimRefusal).toContain("t1");
-  await runInDurableObject(L, (instance) => {
-    expect(() => instance.claim("t2", "opencode/glm-5.3", { runner: "home:hold", kind: "home" })).toThrow(/overlap/);
-  });
+  const queueResponse = await api("/queue");
+  expect(queueResponse.status).toBe(200);
+  const queue = await queueResponse.json() as { project: string; item: Item & { held?: unknown; claimRefusal?: string } }[];
+  const listed = queue.find((q) => q.project === name && q.item.id === "t2")!.item;
+  expect(listed.held).toBeUndefined();
+  expect(listed.claimRefusal).toContain("t1");
+  const otherActor = "opencode/glm-5.3";
+  const issued = await api("/tokens", "POST", { actor: otherActor, projects: [name] });
+  expect(issued.status).toBe(201);
+  const other = await issued.json() as { token: string };
+  const refused = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t2/claim`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${other.token}`, "x-atelier-actor": otherActor, "x-atelier-runner": "home:hold", "content-type": "application/json" },
+    body: JSON.stringify({}),
+  }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
+  expect(refused.status).toBe(409);
+  expect(await refused.json()).toMatchObject({ error: "overlap", detail: expect.stringContaining("t1") });
   expect((await L.item("t1")).state).toBe("accepted");
+  expect((await L.item("t2")).state).toBe("open");
 });
 
 it("real dependency paths through all blockers report blocked chains and only actual cycles", () => {
@@ -144,5 +162,52 @@ it("lease renewal preserves a continuous hold; expiration and policy clearing re
     expect(JSON.parse(state.storage.sql.exec("SELECT value FROM meta WHERE key = 'core-holds'").one().value as string)).toEqual({});
     instance.setProject(record, "owner");
     expect(instance.waiting()[0].held).toBeDefined();
+  });
+});
+
+it("loads queued dependencies even when the core blocker has no dependencies", async () => {
+  const L = await setup("dispatch-hold-queued-deps");
+  await L.newItem("Dependency", ["docs/**"], "owner");
+  await L.newItem("Transitive dependency", ["docs/**"], "owner");
+  await runInDurableObject(L, (instance, state) => {
+    state.storage.sql.exec("UPDATE items SET kind = 'part', plan = 't9', part_key = 'queued', deps = ? WHERE id = 't2'", JSON.stringify(["dependency"]));
+    state.storage.sql.exec("UPDATE items SET kind = 'part', plan = 't9', part_key = 'dependency', deps = ? WHERE id = 't3'", JSON.stringify(["transitive"]));
+    state.storage.sql.exec("UPDATE items SET kind = 'part', plan = 't9', part_key = 'transitive' WHERE id = 't4'");
+    const held = instance.waiting()[0].held!;
+    expect(held.chains).toEqual([
+      { path: ["t2", "t1"], deadlock: false },
+      { path: ["t2", "t3", "t4"], deadlock: false },
+    ]);
+    expect(holdText(held)).toContain("blocked chain: t2 -> t3 -> t4");
+    expect(holdText(held)).not.toContain("deadlock");
+    state.storage.sql.exec("UPDATE items SET deps = ? WHERE id = 't4'", JSON.stringify(["queued"]));
+    const cyclic = instance.waiting()[0].held!;
+    expect(cyclic.chains).toEqual([
+      { path: ["t2", "t1"], deadlock: false },
+      { path: ["t2", "t3", "t4", "t2"], deadlock: true },
+    ]);
+    expect(holdText(cyclic)).toContain("deadlock: t2 -> t3 -> t4 -> t2");
+    expect(instance.item("t1").state).toBe("claimed");
+    expect(instance.item("t2").dispatch).toBeDefined();
+  });
+});
+
+it("an expired lease followed by a new blocker between polls starts a fresh hold", async () => {
+  const L = await setup("dispatch-hold-expiry-gap");
+  await runInDurableObject(L, (instance, state) => {
+    state.storage.sql.exec("UPDATE items SET state = 'submitted' WHERE id = 't1'");
+    instance.waiting();
+    instance.beginProjectLanding("t1", "owner");
+    const original = instance.waiting()[0].held!.since!;
+    const clock = Date.now;
+    try {
+      Date.now = () => Date.parse(original) + LANDING_LEASE_EXPIRY_MS + 1;
+      // No waiting() poll observes the gap before claimed work takes over.
+      state.storage.sql.exec("UPDATE items SET state = 'claimed' WHERE id = 't1'");
+      const held = instance.waiting()[0].held!;
+      expect(Date.parse(held.since!)).toBe(Date.now());
+      expect(held.elapsedMs).toBe(0);
+      expect(held.warning).toBe(false);
+    } finally { Date.now = clock; }
   });
 });
