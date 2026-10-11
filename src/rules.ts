@@ -750,6 +750,12 @@ export function parseRuleError(err: unknown): { status: number; code: string; de
   return m ? { status: Number(m[1]), code: m[2], detail: m[3] } : null;
 }
 
+export function assertNotTerminal(item: Item): void {
+  if (item.state === "merged" || item.state === "abandoned") {
+    throw new RuleError("closed", `${item.id} is ${item.state}`);
+  }
+}
+
 export function assertClaimable(item: Item, actor: string): void {
   if (!validActor(actor)) throw new RuleError("bad_actor", `"${actor}" is not harness/model`, 400);
   assertNotBlocked(item);

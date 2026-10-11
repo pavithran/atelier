@@ -10,7 +10,7 @@ import {
   REVIEW_RENEW_MS, reviewLeaseExpired,
   reviewerAdmission, admissionActor, actorFamily, familyRefusal, modelKey, type ReviewerAdmission,
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
-  overlappingRefusal, assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, RuleError, sameActor, validActor,
+  overlappingRefusal, assertNotTerminal, assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, RuleError, sameActor, validActor,
   type OverrideConfirmation, type OwnerFactor,
   assertBlockable, assertNotBlocked, blockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
@@ -1433,6 +1433,7 @@ export class Ledger extends DurableObject<Env> {
   claim(id: string, actor: string, runner: { runner: string; kind: RunnerKind } | null = null, proved = false, runnerToken?: AgentToken): { item: Item; needsFork: boolean; generation: number; replaces: string | null } {
     const at = new Date().toISOString();
     const item = this.item(id);
+    assertNotTerminal(item);
     if (runnerToken) this.assertRunnerJob(runnerToken, id, actor, true);
     this.assertPlanClaim(item, actor);
     assertDispatchedClaim(item, actor, runner);
@@ -1475,7 +1476,11 @@ export class Ledger extends DurableObject<Env> {
     // The claim records the binding of the criteria the holder takes the
     // task under (src/criteria.ts), so the record shows what it was asked.
     this.log(id, actor, "item.claimed", { ...(runner ? { runner: runner.runner } : {}), criteria: criteriaOf(item) }, at, proved);
-    return { item: this.item(id), needsFork: !item.fork, ...this.reserve(id) };
+    const reserved = this.reserve(id);
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `claim-rollback:${id}`, JSON.stringify({
+      generation: reserved.generation, state: item.state, owner: item.owner, runner: item.runner ?? null,
+    }));
+    return { item: this.item(id), needsFork: !item.fork, ...reserved };
   }
 
   private reserve(id: string): { generation: number; replaces: string | null } {
@@ -1548,6 +1553,7 @@ export class Ledger extends DurableObject<Env> {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner dispatches", 403);
     const item = this.item(id);
     this.assertNotPlanned(item);
+    assertNotTerminal(item);
     const d = retainDispatch(item, input, this.items(), this.project().policy, this.owner);
     if (JSON.stringify(d) !== JSON.stringify(item.dispatch)) {
       const at = new Date().toISOString();
@@ -1572,6 +1578,7 @@ export class Ledger extends DurableObject<Env> {
   checkDispatch(id: string, actor: string, input?: Record<string, unknown>): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner dispatches", 403);
     const item = this.item(id);
+    assertNotTerminal(item);
     this.assertNotPlanned(item);
     if (item.state === "accepted") this.acceptedReworkAllowed(item, actor);
     if (!this.holds(item)) assertDispatchable(item);
@@ -1675,11 +1682,19 @@ export class Ledger extends DurableObject<Env> {
       .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at));
   }
 
-  // A failed fork must not leave an owner holding nothing.
-  unclaim(id: string, actor: string, reason: string, proved = false): void {
+  // Restore only the reservation that changed ownership. A late fork failure
+  // cannot undo closure, a handoff, or another claim (including the same actor).
+  unclaim(id: string, actor: string, reason: string, proved = false, generation?: number): void {
+    const item = this.item(id);
+    const row = this.sql.exec(`SELECT claim_gen FROM items WHERE id = ?`, id).one();
+    const saved = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `claim-rollback:${id}`).toArray()[0];
+    if (!saved || item.state !== "claimed" || item.owner !== actor) return;
+    const prior = JSON.parse(saved.value as string) as { generation: number; state: string; owner: string | null; runner: string | null };
+    if (row.claim_gen !== prior.generation || (generation !== undefined && generation !== prior.generation)) return;
     const at = new Date().toISOString();
     this.dropRunnerJobs(id);
-    this.update(id, { owner: null, state: "open" }, at);
+    this.update(id, { owner: prior.owner, state: prior.state, runner: prior.runner }, at);
+    this.sql.exec(`DELETE FROM meta WHERE key = ?`, `claim-rollback:${id}`);
     this.log(id, actor, "item.claim_failed", { reason }, at, proved);
   }
 
@@ -2685,7 +2700,6 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     this.update(id, { state: "merged", owner: null }, at);
     this.log(id, actor, "item.merged", { mergeCommit, head: item.acceptedHead, observedOnBaseline: observed }, at);
-    this.withdrawTierRequests(id, "the change was merged", at);
     // Main is at the merge now, so the record is made for the plans in
     // flight to compare at their next tick. A plan's own merge closes it
     // first, and nothing refreshes a closed plan, so it never takes its own
@@ -2715,7 +2729,6 @@ export class Ledger extends DurableObject<Env> {
     this.update(id, { state: "abandoned", owner: null, blocked: null }, at);
     this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing-workflow:${id}`);
     this.log(id, actor, "item.abandoned", { note, ...(deliveredBy ? { deliveredBy } : {}) }, at);
-    this.withdrawTierRequests(id, "the task was closed", at);
     this.afterPlanChange(id);
     return this.item(id);
   }
@@ -2741,19 +2754,59 @@ export class Ledger extends DurableObject<Env> {
   // review's findings. Nothing about the review changes: the event is the
   // record, and the reliability record counts the reviewer's findings
   // confirmed and refuted (src/models/reliability.ts).
-  addFinding(id: string, actor: string, head: string, index: number, verdict: string, note: string): void {
+  // The review is this task's review event at the head: the one whose
+  // sequence `select.reviewSeq` names, the one review there of
+  // `select.reviewer`, or, with neither, the newest review there while at
+  // most one review at the head has findings. Any other case is refused with
+  // the reviews at the head listed, so the owner names one (t486). The
+  // verdict records the review's sequence, so two reviews with identical
+  // findings by one reviewer at one head are judged apart.
+  addFinding(id: string, actor: string, head: string, index: number, verdict: string, note: string, select: { reviewSeq?: unknown; reviewer?: unknown } = {}): { review: number; by: string } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner records a verdict on a finding", 403);
     if (!["confirmed", "refuted", "fixed"].includes(verdict)) throw new RuleError("bad_finding", "a finding's verdict is confirmed, refuted or fixed", 400);
+    if (typeof head !== "string" || !/^[a-f0-9]{40,64}$/.test(head)) throw new RuleError("bad_finding", "--head must be the full revision the review was made at", 400);
+    if (!Number.isInteger(index) || index < 1) throw new RuleError("bad_finding", "--index must be the finding's position in the review, one based", 400);
+    const { reviewSeq, reviewer } = select;
+    if (reviewSeq !== undefined && reviewer !== undefined) throw new RuleError("bad_finding", "name the review by --review-seq or by --reviewer, not both", 400);
+    if (reviewSeq !== undefined && (typeof reviewSeq !== "number" || !Number.isInteger(reviewSeq) || reviewSeq < 1)) throw new RuleError("bad_finding", "--review-seq must be a review's sequence, a positive integer", 400);
+    if (reviewer !== undefined && (typeof reviewer !== "string" || !validActor(reviewer))) throw new RuleError("bad_finding", "--reviewer must be the reviewer as harness/model", 400);
     this.item(id);
     const at = head;
-    const review = this.reviewsFor(id).filter((r) => r.head === at).at(-1);
-    if (!review) throw new RuleError("no_review", `${id} has no review at ${at.slice(0, 8)}; a finding is indexed within one`, 409);
-    const findings = review.findings ?? [];
-    if (index < 1 || index > findings.length) {
-      throw new RuleError("no_finding", `${id}'s review at ${at.slice(0, 8)} has ${findings.length} ${findings.length === 1 ? "finding" : "findings"}; --index ${index} is outside it`, 409);
+    const reviews = this.reviewEventsAt(id, at);
+    if (!reviews.length) throw new RuleError("no_review", `${id} has no review at ${at.slice(0, 8)}; a finding is indexed within one`, 409);
+    const listed = (rs: typeof reviews) => rs.map((r) => `${r.seq} by ${r.by} (${r.findings.length} ${r.findings.length === 1 ? "finding" : "findings"})`).join("; ");
+    const all = `the reviews of ${id} at ${at.slice(0, 8)} are ${listed(reviews)}`;
+    let review: (typeof reviews)[number];
+    if (reviewSeq !== undefined) {
+      const found = reviews.find((r) => r.seq === reviewSeq);
+      if (!found) throw new RuleError("no_review", `${id} has no review ${reviewSeq} at ${at.slice(0, 8)}; ${all}`, 409);
+      review = found;
+    } else if (reviewer !== undefined) {
+      const theirs = reviews.filter((r) => sameActor(r.by, reviewer as string));
+      if (!theirs.length) throw new RuleError("no_review", `${reviewer} has no review of ${id} at ${at.slice(0, 8)}; ${all}`, 409);
+      if (theirs.length > 1) throw new RuleError("ambiguous_review", `${reviewer} reviewed ${id} at ${at.slice(0, 8)} more than once: ${listed(theirs)}; name one with --review-seq`, 409);
+      review = theirs[0];
+    } else {
+      const withFindings = reviews.filter((r) => r.findings.length);
+      if (withFindings.length > 1) throw new RuleError("ambiguous_review", `more than one review of ${id} at ${at.slice(0, 8)} has findings: ${listed(withFindings)}; name one with --review-seq or --reviewer`, 409);
+      review = reviews[reviews.length - 1];
+    }
+    const findings = review.findings;
+    if (index > findings.length) {
+      const others = reviews.length > 1 ? `; ${all}, and --review-seq names one` : "";
+      throw new RuleError("no_finding", `${id}'s review ${review.seq} by ${review.by} at ${at.slice(0, 8)} has ${findings.length} ${findings.length === 1 ? "finding" : "findings"}; --index ${index} is outside it${others}`, 409);
     }
     const finding = findings[index - 1];
-    this.log(id, actor, "review.finding", { head: at, index, verdict, note, by: review.by, finding: { file: finding.file, line: finding.line, severity: finding.severity, text: finding.text } }, new Date().toISOString());
+    this.log(id, actor, "review.finding", { head: at, index, verdict, note, by: review.by, review: review.seq, finding: { file: finding.file, line: finding.line, severity: finding.severity, text: finding.text } }, new Date().toISOString());
+    return { review: review.seq, by: review.by };
+  }
+
+  // This task's review events at a head, oldest first: each one's sequence,
+  // reviewer and findings, as `atelier finding` selects among them.
+  private reviewEventsAt(id: string, head: string): { seq: number; by: string; findings: Finding[] }[] {
+    return this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind IN ('review.approved', 'review.rejected') ORDER BY seq`, id).toArray().map(eventOf)
+      .filter((e) => e.data.head === head)
+      .map((e) => ({ seq: e.seq, by: e.actor, findings: Array.isArray(e.data.findings) ? e.data.findings as Finding[] : [] }));
   }
 
   // The owner records which model served events recorded under another
@@ -2781,8 +2834,22 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`SELECT json FROM evidence WHERE item_id = ? ORDER BY id`, id).toArray().map((r) => JSON.parse(r.json as string));
   }
 
-  reviewsFor(id: string): Review[] {
-    return this.sql.exec(`SELECT json FROM reviews WHERE item_id = ? ORDER BY id`, id).toArray().map((r) => JSON.parse(r.json as string));
+  // Each review carries `seq`, the sequence of the review event that
+  // recorded it, matched as backfillReviewProvenance matches one: the first
+  // unused event of its reviewer, verdict and head, in recording order. A
+  // verdict on a finding names its review by that sequence (t486).
+  reviewsFor(id: string): (Review & { seq?: number })[] {
+    const events = this.sql.exec(`SELECT seq, actor, kind, data FROM events WHERE item_id = ? AND kind IN ('review.approved', 'review.rejected') ORDER BY seq`, id).toArray()
+      .map((e) => ({ seq: e.seq as number, actor: e.actor as string, kind: e.kind as string, head: String((JSON.parse(e.data as string) as { head?: unknown }).head ?? "") }));
+    const used = new Set<number>();
+    return this.sql.exec(`SELECT json FROM reviews WHERE item_id = ? ORDER BY id`, id).toArray().map((row) => {
+      const r = JSON.parse(row.json as string) as Review;
+      const kind = r.approve ? "review.approved" : "review.rejected";
+      const ev = events.find((e) => !used.has(e.seq) && e.kind === kind && e.actor === r.by && e.head === r.head);
+      if (!ev) return r;
+      used.add(ev.seq);
+      return { ...r, seq: ev.seq };
+    });
   }
 
   // The unparsable replies kept on a task (t407), oldest first, as the detail
@@ -3841,7 +3908,7 @@ export class Ledger extends DurableObject<Env> {
     const ids = [...new Set(requests.map((r) => r.item as string))];
     const rows = this.sql.exec(`SELECT * FROM items WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(ids)).toArray();
     const items = new Map(this.withPushActors(rows).map((i) => [i.id, i]));
-    return requests.map((r) => {
+    return requests.filter((r) => !["merged", "abandoned"].includes(items.get(r.item as string)?.state ?? "")).map((r) => {
       const item = items.get(r.item as string);
       if (!item) throw new RuleError("no_item", `no item ${r.item as string}`, 404);
       return { ...item, head: r.head as string, request: r.id as number, dispatch: JSON.parse(r.dispatch as string) as Dispatch };
@@ -3945,6 +4012,7 @@ export class Ledger extends DurableObject<Env> {
   // (t197 waited with a review routed to a contributor). The tick rescues
   // the plan, never the claim, so the refusal is thrown as it was.
   async claimReview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved = false): Promise<ReviewClaim> {
+    assertNotTerminal(this.item(itemId));
     try {
       return await this.bindReview(itemId, actor, runner, proved);
     } catch (err) {
@@ -4087,7 +4155,8 @@ export class Ledger extends DurableObject<Env> {
   // verdicts; the Models page reads every project's.
   private reviewPrecision(at: string): PrecisionRecord {
     const window = precisionWindow(new Date(at));
-    const events = this.sql.exec(`SELECT * FROM events WHERE kind = 'review.finding' ORDER BY seq`).toArray().map(eventOf);
+    // The review events too, so a legacy verdict is placed on its review.
+    const events = this.sql.exec(`SELECT * FROM events WHERE kind IN ('review.finding', 'review.approved', 'review.rejected') ORDER BY seq`).toArray().map(eventOf);
     return buildPrecision([{ project: "this", events }], window, this.owner);
   }
 
@@ -4877,6 +4946,22 @@ export class Ledger extends DurableObject<Env> {
   // log alike, so an item's updatedAt and the event that changed it never
   // differ, and a reader comparing the two sees one moment.
   private update(id: string, fields: Record<string, string | null>, at: string): void {
+    if (fields.state === "merged" || fields.state === "abandoned") {
+      this.ctx.storage.transactionSync(() => {
+        const state = fields.state!;
+        // The inner update has no state field, avoiding recursive closure.
+        const rest: Record<string, string | null> = { ...fields, dispatch: null };
+        delete rest.state;
+        this.update(id, rest, at);
+        this.sql.exec(`UPDATE items SET state = ? WHERE id = ?`, state, id);
+        for (const r of this.sql.exec(`SELECT id, head, dispatch, tier FROM review_requests WHERE item = ? AND state IN ('open', 'claimed') ORDER BY id`, id).toArray()) {
+          const d = JSON.parse(r.dispatch as string) as Dispatch;
+          this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
+          this.log(id, ORCHESTRATOR, "review.withdrawn", { head: r.head, reviewer: d.agent && d.model ? `${d.agent}/${d.model}` : null, reason: `the task was ${state}`, ...(r.tier ? { tier: true } : {}) }, at);
+        }
+      });
+      return;
+    }
     // A change of owner always ends the previous holder's runner, and moves
     // the claim generation on, so no claim the previous holder had in flight
     // can record its token afterwards.
