@@ -319,7 +319,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
           return { took: true as const, t0, expired: expired ? expired.item : null };
         } catch (error) {
           const parsed = parseRuleError(error);
-          if (parsed?.code === "landing_lease") return { took: false as const, why: parsed.detail };
+          if (parsed?.code === "landing_lease" || parsed?.code === "post_merge_blocked") return { took: false as const, why: parsed.detail };
           if (parsed && parsed.status >= 400 && parsed.status < 500) throw new NonRetryableError(parsed.detail);
           throw error;
         }
@@ -577,10 +577,17 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
   private async waitForMerge(step: WorkflowStep, L: LedgerStub, p: Landing): Promise<void> {
     const maxPolls = Math.max(1, Math.floor(p.merge / p.mergePoll));
     for (let i = 0; ; i++) {
-      const done = await step.do(`wait for the merge #${i}`, RETRIES, async () => (await L.item(p.item)).state === "merged");
+      const done = await step.do(`wait for the merge #${i}`, RETRIES, async () => {
+        if ((await L.item(p.item)).state !== "merged") return false;
+        const run = await L.postMergeRun(p.item);
+        return !run || run.state === "complete";
+      });
       if (done) return;
       if (i + 1 >= maxPolls) {
-        throw new NonRetryableError(`${p.item}'s merge was not recorded within ${span(p.merge)}; it stays accepted. Merge it by hand: atelier merge ${p.item}`);
+        const run = await L.postMergeRun(p.item);
+        throw new NonRetryableError(run && run.state !== "complete"
+          ? `${p.item} has unresolved post-merge run ${run.id} (${run.state}); later merges remain blocked. Inspect with atelier land ${p.item} --post-merge status`
+          : `${p.item}'s merge was not recorded within ${span(p.merge)}; it stays accepted. Merge it by hand: atelier merge ${p.item}`);
       }
       await step.sleep(`wait for the merge to record #${i}`, p.mergePoll);
     }
