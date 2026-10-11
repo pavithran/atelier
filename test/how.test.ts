@@ -232,3 +232,25 @@ test("each diagram label is short enough for its box at the drawn size", () => {
     assert.ok(s.moves.length <= 16 && s.command.length <= 12);
   }
 });
+
+// t473: only claimed items and the item a live landing lease names hold core
+// files. Nothing the owner or an agent reads may still say a submitted or
+// accepted item holds them, or that a hold lasts until the item merges.
+test("the How page, help and docs state the current core-file hold rule", () => {
+  const texts: [string, string][] = [
+    ...RULES.map((r): [string, string] => [`rule ${r.title}`, `${r.enforced} ${r.why}`]),
+    ...LOOP.map((s): [string, string] => [`loop ${s.title}`, JSON.stringify(s)]),
+    ["src/usage commands", declarations()],
+    ["src/usage.ts", readFileSync(join(root, "src/usage.ts"), "utf8")],
+    ...["docs/orchestrator.md", "docs/orchestrating.md", "README.md"].map((f): [string, string] => [f, readFileSync(join(root, f), "utf8")]),
+  ];
+  const stale = [/live item(?:'s)? \(claimed, submitted or accepted/, /live task's in a core file/,/one claimed, submitted or accepted/, /a submitted or accepted plan item does/, /(?:merges|merged) or is abandoned/, /until (?:that|the live) item merges/];
+  for (const [where, text] of texts) {
+    const flat = text.replace(/\s+/g, " ");
+    for (const old of stale) assert.doesNotMatch(flat, old, `${where} still states the old core-file hold rule`);
+  }
+  const core = RULES.find((r) => r.title === "Core files are built one change at a time")!;
+  assert.match(core.enforced, /claimed item or of the item named by a live landing lease/);
+  assert.match(core.enforced, /submitted or accepted item that is not landing holds nothing/);
+  assert.match(core.enforced, /once each claimed blocker submits or is released and each landing ends/);
+});

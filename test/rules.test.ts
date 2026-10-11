@@ -658,11 +658,15 @@ test("a contributor's model under another letter case, profile or registered nam
   assert.equal(gate(item(), policy, touching, [review("codex/gpt-6-astra")]).ready, true);
 
   // Governed, coordinated: another spelling of a contributor is that
-  // contributor; changing harness does not make its review independent.
+  // contributor; changing harness does not make its review independent: a
+  // model never reviews a change it contributed to (t394). Another model
+  // does count.
   const coordinated = [pass({ changedPaths: ["src/a.ts"] })];
   assert.equal(gate(item(), governed, coordinated, [review("Claude-Code/OPUS-5.5:fast")]).ready, false);
   assert.equal(gate(item(), governed, coordinated, [review("claude-code/claude-opus-5-5")]).ready, false);
   assert.equal(gate(item(), governed, coordinated, [review("codex/opus-5.5")]).ready, false);
+  assert.equal(gate(item(), governed, coordinated, [review("codex/claude-opus-5-5")]).ready, false);
+  assert.equal(gate(item(), governed, coordinated, [review("codex/gpt-6-astra")]).ready, true);
 
   // Governed, protected: a profile suffix never changes a model's family, nor
   // the agent its review is counted for.

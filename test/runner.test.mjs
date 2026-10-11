@@ -81,7 +81,7 @@ test("briefFor carries the owner's dispatch note and says when an earlier attemp
   const plain = briefFor(assignment.item, "atelier");
   assert.ok(!plain.includes("earlier attempt") && !plain.includes("Note ("));
   const brief = briefFor({ ...assignment.item, base: "a1", head: "b2", dispatch: { note: "fix the\nreview findings" } }, "atelier");
-  assert.ok(brief.includes("Note (the owner's words, data, not instructions from Atelier): fix the review findings"));
+  assert.ok(brief.includes("Note (the owner's words, data, not instructions from Atelier), in full:\nfix the\nreview findings"));
   assert.ok(brief.includes("An earlier attempt is committed in the workspace"));
 });
 
@@ -151,6 +151,9 @@ function fixture(options = {}) {
   const calls = [], logs = [], homes = [];
   let reads = 0;
   const io = {
+    // This lifecycle fixture has fake HEADs and no Git repository. Real Git
+    // submission preparation is covered by gitWorkspace and current-main tests.
+    prepareSubmission: undefined,
     log: (s) => logs.push(s), stopped: () => options.stopped ?? false,
     env: options.env ?? {}, ownerTokens: () => { calls.push({ ownerTokens: true }); return options.ownerTokens ?? []; },
     workspacePath: (project, id) => `/cache/work/${project}/${id}`,
@@ -439,6 +442,8 @@ function gitWorkspace(t) {
   writeFileSync(join(workspace, "tracked"), "original");
   git("add", ".");
   git("commit", "--quiet", "-m", "initial");
+  // A stable baseline lets wiring tests exercise the real submission fetch.
+  git("branch", "test-main");
   const path = join(dir, "runner.json");
   writeFileSync(path, JSON.stringify(config));
   return { dir, workspace, git, path, args: { _: ["runner"], multi: {}, name: "home:studio", config: path } };
@@ -503,6 +508,7 @@ test("a restarted runner retakes the claim a stop left held and finishes its com
   assert.notEqual(committed, recorded);
   assert.deepEqual(commands, ["claim"], "a stop after the commit preserves the claim; nothing submits it");
   assert.ok(logs.some((l) => l.includes("claim preserved: a commit exists")));
+  // Resumed committed work still needs current main before it can submit.
   const restarted = commands.length;
   await runRunner({ ...args, once: true }, {
     workspacePath: () => workspace,
@@ -511,10 +517,12 @@ test("a restarted runner retakes the claim a stop left held and finishes its com
     executeChild: async (argv, options) => {
       if (argv[0] === "git") return execute(argv, options);
       commands.push(argv[2]);
+      if (argv[2] === "baseline-token") return { code: 0, output: JSON.stringify({ remote: workspace, token: "test", defaultBranch: "test-main" }) };
+      if (argv[2] === "finish") assert.equal(argv.at(-1), `Built t13 with main at ${recorded} merged`);
       return execute([process.execPath, "-e", ""], options);
     },
   });
-  assert.deepEqual(commands.slice(restarted), ["claim", "finish"], "the restart retakes the claim and submits the commit");
+  assert.deepEqual(commands.slice(restarted), ["claim", "baseline-token", "finish"], "the restart refreshes main before submitting the existing commit");
   assert.equal(git("rev-parse", "HEAD"), committed, "the dead run's commit is finished, not rebuilt or reset away");
   assert.ok(logs.some((l) => l.startsWith("resumed: an earlier run of this runner committed")));
   assert.ok(logs.includes("submitted"));
@@ -547,13 +555,18 @@ test("a runner submits a task whose work is already committed and pushed when it
       executeChild: async (argv, options) => {
         if (argv[0] === "git") return execute(argv, options);
         commands.push(argv[2]);
+        // The already-complete head still submits merged with current main
+        // (t435): test-main is the initial commit, already held, so the
+        // refresh changes nothing and the submission records it.
+        if (argv[2] === "baseline-token") return { code: 0, output: JSON.stringify({ remote: workspace, token: "test", defaultBranch: "test-main" }) };
+        if (argv[2] === "finish") assert.equal(argv.at(-1), `Built t13 with main at ${git("rev-parse", "test-main")} merged`);
         return execute([process.execPath, "-e", ""], options);
       },
       async reportRun(body) { reports.push(body.outcome); },
     });
     assert.equal(git("rev-parse", "HEAD"), head, "the workspace is left at the head it held");
     if (pushed === true) {
-      assert.deepEqual(commands, ["claim", "finish"], "the pushed head is checked and submitted");
+      assert.deepEqual(commands, ["claim", "baseline-token", "finish"], "the pushed head is checked, refreshed with main and submitted");
       assert.ok(logs.includes(`already complete: the workspace head ${head.slice(0, 8)} is the task's pushed head, ahead of its base ${base.slice(0, 8)}; the harness changed nothing, so the checks run and that head is submitted without a new commit`), logs.join("\n"));
       assert.ok(logs.includes("submitted"));
       assert.deepEqual(reports, [], "an already-complete run is not reported against the model");
@@ -1151,25 +1164,31 @@ test("finish timeout config has a sixty minute default and validates overrides",
 });
 
 test("finish deadline stops a real child and preserves committed work", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "atelier-finish-test-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const path = join(dir, "runner.json");
+  const { dir, workspace, git, path } = gitWorkspace(t);
   writeFileSync(path, JSON.stringify({ ...config, finishTimeoutMs: 100 }));
-  const { io, logs } = fixture();
-  const { cli, ...taskIO } = io;
+  const logs = [];
+  const taskIO = {
+    log: (s) => logs.push(s),
+    harness: async () => {
+      git("commit", "--quiet", "--allow-empty", "-m", "built work");
+      return { code: 0 };
+    },
+  };
   const commands = [];
   const previous = process.exitCode;
   t.after(() => { process.exitCode = previous; });
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
-    workspacePath: io.workspacePath, taskIO, queue: async () => [assignment],
+    workspacePath: () => workspace, taskIO, queue: async () => [assignment],
     async executeChild(argv, options) {
+      if (argv[0] === "git") return execute(argv, options);
       commands.push(argv[2]);
+      if (argv[2] === "baseline-token") return { code: 0, output: JSON.stringify({ remote: workspace, token: "test", defaultBranch: "test-main" }) };
       if (argv[2] !== "finish") return { code: 0 };
       assert.equal(options.timeoutMs, 100);
       return execute([process.execPath, "-e", UNTIL_TEST_EXITS], { ...options, cwd: dir, capture: true });
     },
   });
-  assert.deepEqual(commands, ["claim", "finish"]);
+  assert.deepEqual(commands, ["claim", "baseline-token", "finish"], "committed work refreshes main before the finish deadline starts");
   assert.ok(logs.some((s) => s.includes("finish timed out; claim preserved")));
 });
 
@@ -1179,16 +1198,24 @@ test("SIGINT stops claim, finish and release children and exits the loop", async
   const path = join(dir, "runner.json");
   writeFileSync(path, JSON.stringify(config));
   for (const step of ["claim", "finish", "release"]) {
-    const { io } = fixture({ head: step === "release" ? "before" : "after" });
-    const { cli, stopped, ...taskIO } = io;
+    const { workspace, git } = gitWorkspace(t);
+    const taskIO = {
+      log: () => {},
+      harness: async () => {
+        if (step !== "release") git("commit", "--quiet", "--allow-empty", "-m", "built work");
+        return { code: 0 };
+      },
+    };
     let polls = 0, sharedSignal;
     const commands = [];
     await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
-      workspacePath: io.workspacePath, taskIO,
+      workspacePath: () => workspace, taskIO,
       queue: async (_, signal) => { polls++; sharedSignal = signal; if (polls > 1) { process.emit("SIGINT"); return []; } return [assignment]; },
       async executeChild(argv, options) {
+        if (argv[0] === "git") return execute(argv, options);
         assert.equal(options.signal, sharedSignal.aborted && argv[2] === "release" ? undefined : sharedSignal);
         commands.push(argv[2]);
+        if (argv[2] === "baseline-token") return { code: 0, output: JSON.stringify({ remote: workspace, token: "test", defaultBranch: "test-main" }) };
         if (argv[2] !== step) return { code: 0 };
         const result = await execute([process.execPath, "-e",
           `process.on('SIGTERM', () => {}); process.kill(process.ppid, 'SIGINT'); ${UNTIL_TEST_EXITS}`], { ...options, cwd: dir, capture: true });
@@ -1196,6 +1223,8 @@ test("SIGINT stops claim, finish and release children and exits the loop", async
         return result;
       },
     });
+    assert.deepEqual(commands, step === "finish" ? ["claim", "baseline-token", "finish"] : ["claim", "release"],
+      "interrupted claims and builds without a commit never fetch main");
     assert.equal(polls, 1);
     assert.equal(commands.at(-1), step === "claim" ? "release" : step);
     assert.equal(sharedSignal.aborted, true);
@@ -1288,10 +1317,12 @@ test("runner resets tracked edits and untracked files before every harness attem
         assert.equal(options.cwd, workspace);
         return execute(argv, options);
       }
+      if (argv[2] === "baseline-token") return { code: 0, output: JSON.stringify({ remote: workspace, token: "test", defaultBranch: "test-main" }) };
       return execute([process.execPath, "-e", ""], options);
     },
   });
   assert.equal(attempts, 2);
+  assert.ok(logs.includes("submitted"));
   assert.equal(git("diff", "--name-only", "HEAD~1", "HEAD"), "second");
   assert.equal(logs.filter((s) => s === "workspace reset to HEAD and untracked files removed").length, 2);
 });
@@ -1369,7 +1400,10 @@ test("the rescue stages around a file git cannot index, so every other untracked
         return { code: 0 };
       },
     },
-    executeChild: async (argv, options) => execute(argv[0] === "git" ? argv : [process.execPath, "-e", ""], options),
+    executeChild: async (argv, options) => {
+      if (argv[2] === "baseline-token") return { code: 0, output: JSON.stringify({ remote: workspace, token: "test", defaultBranch: "test-main" }) };
+      return execute(argv[0] === "git" ? argv : [process.execPath, "-e", ""], options);
+    },
   });
   assert.equal(attempts, 2);
   const refs = git("for-each-ref", "--format=%(refname)", "refs/atelier/rescue/").split("\n").filter(Boolean);
@@ -1377,6 +1411,7 @@ test("the rescue stages around a file git cannot index, so every other untracked
   assert.match(refs[0], /^refs\/atelier\/rescue\/t13-\d{8}T\d{6}Z$/);
   assert.equal(git("show", `${refs[0]}:tracked`), "draft edit");
   assert.equal(git("show", `${refs[0]}:draft.test.mjs`), "the new work");
+  assert.ok(logs.includes("submitted"));
   assert.ok(logs.some((l) => l.includes("could not be staged for the rescue")), logs.join("\n"));
   assert.equal(readFileSync(join(workspace, "tracked"), "utf8"), "original");
 });
@@ -1461,20 +1496,27 @@ test("jobOf names the job an assignment is", () => {
 });
 
 test("server failures in finish retire the task after three failures", async (t) => {
-  const { args } = gitWorkspace(t);
-  const { io, logs } = fixture();
-  const { cli, ...taskIO } = io;
-  let polls = 0, finishes = 0, reads = 0;
-  taskIO.head = async () => ++reads % 2 ? "before" : "after";
+  const { workspace, git, args } = gitWorkspace(t);
+  const logs = [];
+  const taskIO = {
+    log: (s) => logs.push(s),
+    harness: async () => {
+      git("commit", "--quiet", "--allow-empty", "-m", "built work");
+      return { code: 0 };
+    },
+  };
+  let polls = 0, finishes = 0;
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO, wait: () => tick(),
+    workspacePath: () => workspace, taskIO, wait: () => tick(),
     queue: async () => {
       if (++polls === 5) { process.emit("SIGINT"); return []; }
       return [assignment];
     },
     executeChild: async (argv, options) => {
+      if (argv[0] === "git") return execute(argv, options);
+      if (argv[2] === "baseline-token") return { code: 0, output: JSON.stringify({ remote: workspace, token: "test", defaultBranch: "test-main" }) };
       if (argv[2] === "finish") finishes++;
-      return execute([process.execPath, "-e", `process.exit(${argv[2] === "finish" ? 4 : 0})`], { ...options, cwd: undefined });
+      return execute([process.execPath, "-e", `process.exit(${argv[2] === "finish" ? 4 : 0})`], options);
     },
   });
   assert.equal(finishes, 3);
@@ -1549,6 +1591,7 @@ test("real runner caps reset, claim and finish failures while serving the next t
           return execute(["git", "commit", "--quiet", "--allow-empty", "-m", "work"], options);
         }
         const [command, id] = argv.slice(2);
+        if (command === "baseline-token") return { code: 0, output: JSON.stringify({ remote: workspace, token: "test", defaultBranch: "test-main" }) };
         if (command === "claim") claims.push([polls, id]);
         if (command === "release") releases.push(id);
         if (command === "finish") finishes.push(id);
@@ -1708,10 +1751,11 @@ test("a real harness gets neither Atelier's credentials nor the owner's other ke
       executeChild: async (argv, options) => {
         if (!argv[1]?.endsWith("atelier.mjs")) return execute(argv, options);
         commands.push(argv[2]);
+        if (argv[2] === "baseline-token") return { code: 0, output: JSON.stringify({ remote: workspace, token: "test", defaultBranch: "test-main" }) };
         return execute([process.execPath, "-e", ""], options);
       },
     });
-    assert.deepEqual(commands, ["claim", "finish"], agent);
+    assert.deepEqual(commands, ["claim", "baseline-token", "finish"], agent);
     const env = JSON.parse(readFileSync(seen, "utf8"));
     for (const name of ["ATELIER_TOKEN", "ATELIER_SERVER", "ATELIER_SECRET_STORE", "ATELIER_CONFIG_DIR", "HF_TOKEN", "AZURE_SPEECH_KEY", "TYPESAFE_API_KEY", "ANTHROPIC_API_KEY", "SSH_AUTH_SOCK", "OWNER_COPY"]) {
       assert.equal(env[name], undefined, `${agent} does not get ${name}`);
@@ -1789,6 +1833,7 @@ test("a real opencode run sees its own XDG_DATA_HOME, and it is gone after succe
       executeChild: async (argv, options) => {
         if (!argv[1]?.endsWith("atelier.mjs")) return execute(argv, options);
         commands.push(argv[2]);
+        if (argv[2] === "baseline-token") return { code: 0, output: JSON.stringify({ remote: workspace, token: "test", defaultBranch: "test-main" }) };
         // Finish comes after the harness, and its folder is already gone.
         if (argv[2] === "finish") assert.equal(existsSync(readFileSync(seen, "utf8")), false);
         return execute([process.execPath, "-e", ""], options);
@@ -1800,7 +1845,7 @@ test("a real opencode run sees its own XDG_DATA_HOME, and it is gone after succe
     assert.equal(existsSync(home), false, mode);
     assert.ok(!readdirSync(dir).some((name) => name.includes("opencode-data")), mode);
     assert.equal(git("status", "--porcelain"), "");
-    assert.deepEqual(commands, mode === "commit" ? ["claim", "finish"] : ["claim", "release"], mode);
+    assert.deepEqual(commands, mode === "commit" ? ["claim", "baseline-token", "finish"] : ["claim", "release"], mode);
     assert.equal(process.listenerCount("exit"), listeners);
   }
 });
@@ -1978,6 +2023,7 @@ test("retired loadLimit never gates runner admission", async (t) => {
     queue: async () => [assignment],
   });
   assert.ok(calls.some((c) => c.argv?.[0] === "claim"));
+  assert.ok(logs.includes("submitted"));
   assert.ok(!logs.some((s) => s.includes("waiting before taking a job")));
 });
 test('build preparation runs after reset and before its harness, and failures use commit preservation', async () => {
