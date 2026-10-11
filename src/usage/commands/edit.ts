@@ -2,6 +2,10 @@ import type { CommandSpec } from "../command.ts";
 
 const spec: CommandSpec = {
   name: "edit",
+  // Sets the title, brief and criteria apart, and reads what a change of
+  // criteria withdrew; assigns the task to a function area or clears it
+  // (--area, --clear-area, t456).
+  capabilities: ["items.brief-criteria.v1", "reviews.criteria-binding.v1", "areas.manage.v1"],
   forms: [
     {
       group: "Items", line: 1, slot: 20,

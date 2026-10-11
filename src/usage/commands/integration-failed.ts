@@ -2,6 +2,7 @@ import type { CommandSpec } from "../command.ts";
 
 const spec: CommandSpec = {
   name: "integration-failed",
+  capabilities: ["plans.integration.v1"],
   forms: [
     {
       group: "Agents", line: 5, slot: 40,

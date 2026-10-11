@@ -2,6 +2,7 @@ import type { CommandSpec } from "../command.ts";
 
 const spec: CommandSpec = {
   name: "criteria-verdict",
+  capabilities: ["reviews.criteria-review.v1"],
   forms: [
     {
       group: "Agents", line: 4, slot: 20,
