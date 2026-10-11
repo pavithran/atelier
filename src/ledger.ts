@@ -1,7 +1,7 @@
 import { parsePostMerge, reservePostMerge, preparePostMerge, startAttempt, finishAttempt, recordCommand, recoverPostMerge, expireAttempt, type PostMergePolicy, type PostMergeRun, type Attempt } from "./post-merge.ts";
 import type { Area, BoardSnapshot, StageFacts } from "./board.ts";
 import { cleanSession, type SessionNote } from "./sessions.ts";
-import { landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
+import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
 import { runnerDenied, runnerTaskTerminal, sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
 import { OBSERVED_UNDER, type ModelEntry, type ModelNote, type ModelStatus } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
@@ -11,7 +11,7 @@ import {
   REVIEW_RENEW_MS, reviewLeaseExpired,
   reviewerAdmission, admissionActor, actorFamily, familyRefusal, modelKey, type ReviewerAdmission,
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
-  assertNotTerminal, assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, roleRefusal, RuleError, sameActor, validActor,
+  overlappingRefusal, assertNotTerminal, assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, roleRefusal, RuleError, sameActor, validActor,
   type OverrideConfirmation, type OwnerFactor,
   assertBlockable, assertNotBlocked, blockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
@@ -24,7 +24,7 @@ import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./c
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
-import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, makeDispatch, overrideDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
+import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, makeDispatch, overrideDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
@@ -1477,7 +1477,7 @@ export class Ledger extends DurableObject<Env> {
     }
     if (claim && (item.state === "open" && !item.owner || item.state === "claimed" && item.owner === actor && item.runner === token.runner) && item.dispatch && !["review", "integrate", "refresh"].includes(item.dispatch.job ?? "")) {
       const offer = this.runnerMeta<SeenOffer>(`runner-offer:${token.id}`);
-      if (offer && liveOffers([offer]).length && assign(item.dispatch, offer)?.actor === actor && !coreHold(item, this.items(), this.project().policy.coreFiles)) return;
+      if (offer && liveOffers([offer]).length && assign(item.dispatch, offer)?.actor === actor && !coreHold(item, this.items(), this.project().policy.coreFiles, this.projectLanding())) return;
     }
     throw runnerDenied(token);
   }
@@ -1638,7 +1638,7 @@ export class Ledger extends DurableObject<Env> {
     assertDispatchClaimable(item, items, this.project().policy, d, this.owner);
     this.assertCriteriaReviewed(item, d, "dispatched");
     const retained = input.overlapOk === true && !!item.dispatch;
-    const released = retained && item.state === "open" && !item.owner ? coreHold(item, items, this.project().policy.coreFiles) : null;
+    const released = retained && item.state === "open" && !item.owner ? coreHold(item, items, this.project().policy.coreFiles, this.projectLanding()) : null;
     const held = this.holds(item);
     if (held) {
       this.dropToken(id, token);
@@ -1663,7 +1663,7 @@ export class Ledger extends DurableObject<Env> {
     assertNotTerminal(item);
     const items = this.items(), policy = this.project().policy;
     const d = retainDispatch(item, input, items, policy, this.owner);
-    const released = coreHold(item, items, policy.coreFiles);
+    const released = coreHold(item, items, policy.coreFiles, this.projectLanding());
     if (JSON.stringify(d) !== JSON.stringify(item.dispatch)) {
       const at = new Date().toISOString();
       this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), at, id);
@@ -1739,24 +1739,15 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id);
   }
 
-  // Open tasks waiting for a runner, oldest dispatch first, each one the
-  // project's core files hold carrying `held`: the live item it waits on
-  // (coreHold in src/dispatch/rules.ts). The queue offers a runner none that
-  // is held; the owner's listing shows them with what each waits on. Not
-  // named queue(): that is a reserved handler name, which Durable Object RPC
-  // will not call.
-  //
-  // Read on every runner's poll, so it reads only the rows it answers from:
-  // the open dispatched items, and only when one waits and the project names
-  // core files, the live items that could hold one (claimed, submitted or
-  // accepted, the only states coreHold counts), in id order as items() lists
-  // them, so the first holder found is the same. The event log is read only
-  // for the waiting items' push actors.
-  waiting(): (Item & { held?: CoreHold })[] {
+  // Hold starts are durable and reconciled on mutations as well as polls, so
+  // a clear/re-block between polls starts a new continuous hold.
+  waiting(): (Item & { held?: CoreHold; claimRefusal?: string })[] {
+    return this.dispatchWaiting(true);
+  }
+
+  private dispatchWaiting(pushHistory = false): (Item & { held?: CoreHold; claimRefusal?: string })[] {
     const rows = this.sql.exec(`SELECT * FROM items WHERE state = 'open' AND (owner IS NULL OR owner = '') AND dispatch IS NOT NULL AND dispatch != '' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
-    if (!rows.length) return [];
-    const open = this.withPushActors(rows)
-      .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at))
+    const open = (rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)) : [])
       // A task whose criteria were reviewed carries how many findings the
       // reviews recorded (t438), so its runner fetches the server's brief,
       // which carries them, before it builds.
@@ -1764,13 +1755,29 @@ export class Ledger extends DurableObject<Env> {
         const findings = this.sql.exec(`SELECT COUNT(*) AS n FROM criteria_reviews WHERE item = ? AND state IN ('approved', 'rejected', 'failed')`, i.id).one().n as number;
         return findings ? { ...i, criteriaReviews: findings } : i;
       });
-    const coreFiles = this.project().policy.coreFiles;
-    if (!coreFiles?.length) return open;
-    const live = this.sql.exec(`SELECT * FROM items WHERE state IN ('claimed', 'submitted', 'accepted') ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem);
-    return open.map((i) => {
-      const held = coreHold(i, live, coreFiles);
-      return held ? { ...i, held } : i;
+    const policy = this.project().policy, lease = this.projectLanding(), now = Date.now();
+    const live = open.length && policy.coreFiles?.length ? this.sql.exec(`SELECT * FROM items WHERE state = 'claimed' OR id = ? ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`, lease?.item ?? "").toArray().map(toItem) : [];
+    const all = policy.refuseOverlap || [...open, ...live].some((i) => i.deps?.length) ? this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem) : [...open, ...live];
+    const graph = holdGraph(all, policy.coreFiles, lease, now);
+    const saved = this.sql.exec(`SELECT value FROM meta WHERE key = 'core-holds'`).toArray()[0];
+    const previous: Record<string, { since: string; expires?: number }> = saved ? JSON.parse(saved.value as string) : {};
+    const current: typeof previous = {};
+    const result = open.map((i) => {
+      const d = i.dispatch!;
+      const claimant = d.agent && d.model ? `${d.agent}/${d.model}` : "\u0000dispatch";
+      const claimRefusal = policy.refuseOverlap ? overlappingRefusal(i, all, claimant) : null;
+      const blockers = coreBlockers(i, live, policy.coreFiles, lease, now);
+      if (!blockers.length) return { ...i, ...(claimRefusal ? { claimRefusal } : {}) };
+      const old = previous[i.id];
+      const since = old && (old.expires === undefined || old.expires > now) ? old.since : new Date(now).toISOString();
+      const expires = blockers.every((b) => b.state !== "claimed") && lease ? Date.parse(lease.renewedAt ?? lease.at) + LANDING_LEASE_EXPIRY_MS : undefined;
+      current[i.id] = { since, ...(expires === undefined ? {} : { expires }) };
+      const elapsedMs = Math.max(0, now - Date.parse(since));
+      const held: CoreHold = { ...blockers[0], blockers, since, elapsedMs, warning: elapsedMs >= CORE_HOLD_WARNING_MS, chains: blockerChains(i.id, graph), ...(claimRefusal ? { claimRefusal } : {}) };
+      return { ...i, held, ...(claimRefusal ? { claimRefusal } : {}) };
     });
+    if (JSON.stringify(previous) !== JSON.stringify(current)) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('core-holds', ?)`, JSON.stringify(current));
+    return result;
   }
 
   // Both halves of the queue in one call, as a runner's poll reads them:
@@ -2783,6 +2790,7 @@ export class Ledger extends DurableObject<Env> {
     // lease is written as before.
     this.setProjectLandingQueue(rows.filter((w) => w.item !== id));
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('landing-lease', ?)`, JSON.stringify({ item: id, holder: actor, at, renewedAt: at } satisfies LandingLease));
+    this.dispatchWaiting();
     return { item, expired };
   }
 
@@ -2798,8 +2806,10 @@ export class Ledger extends DurableObject<Env> {
     if (!held || held.item !== id) {
       throw new RuleError("no_lease", held ? `the landing lease is held for ${held.item}, not ${id}` : `no landing lease is held, so ${id}'s landing cannot renew it`, 409);
     }
+    this.dispatchWaiting();
     const renewed = { ...held, renewedAt: at };
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('landing-lease', ?)`, JSON.stringify(renewed));
+    this.dispatchWaiting();
     return renewed;
   }
 
@@ -2818,6 +2828,7 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("landing_lease", `the landing lease is held for ${held.item}, not ${id}: ${held.holder} has been landing ${held.item} since ${since} UTC, and its lease is left alone. Free it with atelier land ${held.item} --release-lease`, 409);
     }
     this.sql.exec(`DELETE FROM meta WHERE key = 'landing-lease'`);
+    this.dispatchWaiting();
     return { held: !!held, lease: held };
   }
 
@@ -3637,7 +3648,7 @@ export class Ledger extends DurableObject<Env> {
     const approval = record.approval;
     const policy = this.project().policy;
     const parts = this.planParts(item.id).map((p) => this.item(p.id));
-    const everything = this.items();
+    const holds = new Map(this.waiting().map((i) => [i.id, i.held]));
     const all = approval ? this.partEvents(item.id) : [];
     const attempts = partAttempts(tickEvents(all, new Map(parts.map((p) => [p.id, p.partKey!]))));
     const ids = new Map(parts.map((p) => [p.partKey!, p.id]));
@@ -3671,7 +3682,7 @@ export class Ledger extends DurableObject<Env> {
           dependsOn: (p.deps ?? []).map((key) => ({ key, id: ids.get(key) ?? null })),
           dispatch: p.dispatch ?? null,
           // A queued part the project's core files hold names the live item it waits on.
-          held: p.state === "open" && !p.owner ? coreHold(p, everything, policy.coreFiles) : null,
+          held: p.state === "open" && !p.owner ? holds.get(p.id) ?? null : null,
           route: route ? rerouted(route, record) : null,
           attempts: attempts.get(p.partKey!) ?? [],
           gate: judged && { ready: judged.ready, blockers: judged.blockers },
@@ -5644,6 +5655,7 @@ export class Ledger extends DurableObject<Env> {
       `INSERT INTO events (item_id, at, actor, kind, data, proved) VALUES (?, ?, ?, ?, ?, ?)`,
       itemId, at, actor, kind, JSON.stringify(data), proved ? 1 : null,
     );
+    if (kind.startsWith("item.") || kind.startsWith("plan.") || kind === "project.set") this.dispatchWaiting();
   }
 }
 

@@ -1,3 +1,4 @@
+import { landingLeaseLapsed, type LandingLease } from "../landing-lease.ts";
 // Dispatch: the project owner (and, later, an orchestrator holding an approved
 // plan) puts an open task in a queue for a kind of runner. Runners do not get
 // work pushed to them; they ask for it, describing what they can run, and then
@@ -189,47 +190,86 @@ export function retainDispatch(item: Item, input: { agent?: unknown; model?: unk
   return next;
 }
 
-// The live item a held dispatch waits on: its id, holder, state and title,
-// and the core-file glob both scopes reach.
-export interface CoreHold {
+// Keep the first blocker fields for older queue consumers; diagnostics include
+// every current blocker and every dependency path.
+export interface CoreBlocker {
   id: string;
   owner: string | null;
   state: ItemState;
   title: string;
   core: string;
 }
+export interface CoreHold extends CoreBlocker {
+  blockers?: CoreBlocker[];
+  since?: string;
+  elapsedMs?: number;
+  warning?: boolean;
+  chains?: { path: string[]; deadlock: boolean }[];
+  claimRefusal?: string;
+}
+export const CORE_HOLD_WARNING_MS = 30 * 60_000;
 
-// Why the queue does not offer a dispatch yet, or null when it may. A
-// dispatch that builds — a task's or a part's, the merge-main job and a
-// part's merge of the plan's branch included — is held while its scope
-// overlaps, within one of the project's core files (policy.coreFiles), the
-// scope of a live item: one claimed, submitted or accepted, so its changes
-// have not reached main. The oldest such item is named. A plan item claimed
-// by its planner or the integrator writes the plan or merges a part onto the
-// plan's branch, neither of which changes main, so it holds nothing; its
-// parts do. Items of one plan never hold each other: a plan's parts whose
-// scopes overlap are ordered by their dependencies (src/plans/validate.ts),
-// which already serialises them. The plan, integrate, refresh and review
-// jobs change no workspace of their own and are never held, and the owner's
-// override (overlapOk) lets a dispatch through.
-export function coreHold(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined): CoreHold | null {
+// Claimed builders and the holder of a live landing lease serialize core
+// edits. Submission alone holds nothing. Plan jobs, same-plan work and the
+// owner's overlap override keep their existing exemptions.
+export function coreBlockers(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null = null, now = Date.now()): CoreBlocker[] {
   const d = item.dispatch;
-  if (!d || d.overlapOk || !coreFiles?.length || item.kind === "plan") return null;
-  if (d.job !== undefined && d.job !== "merge-main") return null;
-  for (const o of items) {
-    if (o.id === item.id || samePlan(item, o)) continue;
-    if (o.state !== "claimed" && o.state !== "submitted" && o.state !== "accepted") continue;
-    if (o.kind === "plan" && o.state === "claimed") continue;
+  if (!d || d.overlapOk || !coreFiles?.length || item.kind === "plan") return [];
+  if (d.job !== undefined && d.job !== "merge-main") return [];
+  return items.flatMap((o) => {
+    if (o.id === item.id || samePlan(item, o)) return [];
+    const landing = lease?.item === o.id && !landingLeaseLapsed(lease, now) && o.state !== "merged" && o.state !== "abandoned";
+    if (o.state !== "claimed" && !landing) return [];
+    if (o.kind === "plan" && o.state === "claimed") return [];
     const core = scopesOverlapWithin(item.scope, o.scope, [...coreFiles]);
-    if (core) return { id: o.id, owner: o.owner, state: o.state, title: o.title, core };
-  }
-  return null;
+    return core ? [{ id: o.id, owner: o.owner, state: o.state, title: o.title, core }] : [];
+  });
 }
 
-// What a held dispatch waits on, in words: the item, its holder and state,
-// and the core-file glob both scopes reach.
+export function coreHold(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null = null, now = Date.now()): CoreHold | null {
+  return coreBlockers(item, items, coreFiles, lease, now)[0] ?? null;
+}
+
+// Active builders do not wait on other builders merely because their scopes
+// intersect. Follow their declared part dependencies; queued work also waits
+// on its core blockers. Completed dependencies no longer obstruct a path.
+export function holdGraph(items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null, now = Date.now()): Map<string, string[]> {
+  const done = (i: Item) => ["integrated", "merged", "abandoned"].includes(i.state);
+  return new Map(items.filter((i) => !done(i)).map((i) => {
+    const deps = i.plan ? items.filter((p) => p.plan === i.plan && p.partKey && i.deps?.includes(p.partKey) && !done(p)).map((p) => p.id) : [];
+    const core = i.state === "open" && !i.owner ? coreBlockers(i, items, coreFiles, lease, now).map((b) => b.id) : [];
+    return [i.id, [...new Set([...core, ...deps])]];
+  }));
+}
+
+// A shared descendant is not a cycle: only repetition on this path is.
+export function blockerChains(id: string, graph: ReadonlyMap<string, readonly string[]>): { path: string[]; deadlock: boolean }[] {
+  const paths: { path: string[]; deadlock: boolean }[] = [];
+  const visit = (path: string[]) => {
+    const next = graph.get(path[path.length - 1]) ?? [];
+    if (!next.length) paths.push({ path, deadlock: false });
+    for (const blocker of next) {
+      if (path.includes(blocker)) paths.push({ path: [...path, blocker], deadlock: true });
+      else visit([...path, blocker]);
+    }
+  };
+  visit([id]);
+  return paths;
+}
+
 export function holdText(h: CoreHold): string {
-  return `waits on ${h.id} (${h.state}${h.owner ? ` by ${h.owner}` : ""}): both scopes reach core file ${h.core}`;
+  const blockers = (h.blockers ?? [h]).map((b) => `${b.id} (${b.state}${b.owner ? ` by ${b.owner}` : ""}): both scopes reach core file ${b.core}`).join("; ");
+  const age = h.elapsedMs === undefined ? "" : `; held for ${Math.floor(h.elapsedMs / 60_000)}m ${Math.floor(h.elapsedMs / 1000) % 60}s`;
+  const chains = (h.chains ?? []).filter((c) => c.deadlock || c.path.length > 2).map((c) => `; ${c.deadlock ? "deadlock" : "blocked chain"}: ${c.path.join(" -> ")}`).join("");
+  return `${h.warning ? "WARNING: core-file hold; " : ""}waits on ${blockers}${age}${chains}${h.claimRefusal ? `; separate claim refusal: ${h.claimRefusal}` : ""}`;
+}
+
+// When the hold lifts: once every blocker stops holding. A claimed item stops
+// when it submits or is released; the item named by the landing lease stops
+// when that landing ends (it merges, is cancelled, or its lease expires).
+export function holdRelease(h: CoreHold): string {
+  const ends = (h.blockers ?? [h]).map((b) => b.state === "claimed" ? `${b.id} submits or is released` : `the landing of ${b.id} ends`);
+  return `offered once ${ends.length > 1 ? `${ends.slice(0, -1).join(", ")} and ${ends[ends.length - 1]}` : ends[0]}`;
 }
 
 export function assertDispatchable(item: Item): void {
