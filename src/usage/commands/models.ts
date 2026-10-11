@@ -50,6 +50,19 @@ const spec: CommandSpec = {
     },
   ],
   flags: { reason: false, harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, item: false, key: false, "api-key": false, token: false, json: true, state: false, roles: false, tier: false },
+  // The pool itself is listed, added to and pruned on any server; the dated
+  // notes, which `note` posts and `show` prints, need models.note.v1, and the
+  // standing (t389), which `set` posts, needs models.standing.v1, as does
+  // `add` when it gives --state, --roles or --tier (requiredForCommand).
+  subcommands: {
+    admit: { capabilities: ["reviews.admission.v1"] },
+    withdraw: { capabilities: ["reviews.admission.v1"] },
+    reviewers: { capabilities: ["reviews.admission.v1"] },
+    note: { capabilities: ["models.note.v1"] },
+    show: { capabilities: ["models.note.v1"] },
+    set: { capabilities: ["models.standing.v1"] },
+    add: { capabilities: ["models.standing.v1"] },
+  },
   help: {
     flags: {
       "--reason TEXT": "why the owner admits or withdraws a reviewer",
