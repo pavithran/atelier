@@ -1,0 +1,46 @@
+
+ RUN  v4.1.11 /work
+
+ ❯ test/sample.spec.ts (3 tests | 2 failed) 8ms
+   ✓ adds numbers 1ms
+   × fails: the cap is enforced 4ms
+     → expected 1 to be 2 // Object.is equality
+   × a suite > fails inside: names are read 1ms
+     → boom
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/sample.spec.ts > fails: the cap is enforced
+AssertionError: expected 1 to be 2 // Object.is equality
+
+- Expected
++ Received
+
+- 2
++ 1
+
+ ❯ test/sample.spec.ts:3:48
+      1| import { describe, it, expect } from "vitest";
+      2| it("adds numbers", () => { expect(1 + 1).toBe(2); });
+      3| it("fails: the cap is enforced", () => { expect(1).toBe(2); });
+       |                                                ^
+      4| describe("a suite", () => {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |atelier| test/sample.spec.ts > a suite > fails inside: names are read
+Error: boom
+ ❯ test/sample.spec.ts:5:54
+      3| it("fails: the cap is enforced", () => { expect(1).toBe(2); });
+      4| describe("a suite", () => {
+      5|   it("fails inside: names are read", () => { throw new Error("boom"); });
+       |                                                      ^
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 1 passed (3)
+   Start at  14:01:02
+   Duration  412ms (transform 31ms, setup 0ms, collect 12ms, tests 8ms, environment 0ms, prepare 40ms)
+
+[atelier] ran in a Cloudflare container in 9s, exit 1

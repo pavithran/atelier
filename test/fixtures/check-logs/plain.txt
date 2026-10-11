@@ -1,0 +1,5 @@
+./check.sh: building…
+cc: error: unrecognized command-line option '-fno-such-flag'
+make: *** [Makefile:12: build] Error 1
+not a test: ok 42 is a line of prose here, not TAP
+[sha256 of full output: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef]
