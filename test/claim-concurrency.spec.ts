@@ -26,6 +26,7 @@ type Tok = { id: string; repo: string; scope: string; revoked: boolean };
 // repository handle asked for, before any call on it.
 type Faults = {
   forkBefore: (n: number) => boolean; forkAfter: (n: number) => boolean; inProgress: number; mint: (n: number) => boolean;
+  onHead?: () => Promise<void>;
   info?: (n: number) => boolean; revoke?: (n: number) => boolean; get?: (n: number) => boolean;
 };
 
@@ -52,6 +53,7 @@ function fakeArtifacts(faults: Faults) {
           if (faults.forkAfter(k)) throw artifactsError("DEADLINE_EXCEEDED", "fork timed out");
         },
         log: async () => {
+          await faults.onHead?.();
           const r = known();
           if (r.reads++ < faults.inProgress) throw artifactsError("FORK_IN_PROGRESS", "fork in progress");
           return [{ hash: H0 }];
@@ -321,3 +323,34 @@ it("a request that fails for an unforeseen reason logs the error's code and mess
   expect(res.status).toBe(500);
   expect(errors.join("\n")).toMatch(/POST \/api\/projects\/concurrency-log\/items\/t1\/read-token failed: Error code=NOT_FOUND message="repo not found: concurrency-log--gone"/);
 });
+
+it("t496: abandon during a dispatched claim's not-ready fork stays closed on every poll and retry", async () => {
+  let close: (() => Promise<void>) | undefined;
+  const { L, fa, claim } = await setup("abandon-not-ready", 1, 0, {
+    forkBefore: () => false, forkAfter: () => false, inProgress: 100,
+    mint: () => { throw new Error("closed work must never mint a token"); },
+    onHead: async () => { const pending = close; close = undefined; await pending?.(); },
+  });
+  await L.dispatch("t1", "owner", { to: "home" });
+  expect(await L.waiting()).toHaveLength(1);
+  close = async () => { await L.abandon("t1", "owner", "Owner closed it while the fork was preparing"); };
+  const bindings = { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: fa.artifacts } as typeof env;
+  const run = () => worker.fetch(new Request(`https://atelier.test/api${claim("t1")}`, {
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json", "x-atelier-actor": "claude-code/agent-1", "x-atelier-runner": "home:studio" }, body: "{}",
+  }), bindings);
+  expect((await run()).status).toBe(503);
+  expect(await L.item("t1")).toMatchObject({ state: "abandoned", owner: null, dispatch: null });
+  const access = vi.spyOn(fa.artifacts, "get");
+  for (let i = 0; i < 3; i++) {
+    expect(await L.waiting()).toEqual([]);
+    const res = await run();
+    expect((await res.json() as { error: string }).error).toBe("closed");
+  }
+  const owner = caller(TOKEN, fa.artifacts, "owner");
+  for (const [verb, body] of [["review-claim", {}], ["dispatch", { job: "merge-main" }]] as const) {
+    const res = await owner("POST", claim("t1").replace(/claim$/, verb), body);
+    expect((await res.json() as { error: string }).error).toBe("closed");
+  }
+  expect(access).not.toHaveBeenCalled();
+  expect(fa.live("abandon-not-ready--t1")).toEqual([]);
+}, 30_000);
