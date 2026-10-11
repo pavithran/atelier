@@ -16,5 +16,6 @@ export const CAPABILITY_DECLARATIONS = [
   { name: "areas.manage.v1", level: 23, summary: "the area routes (list, create, rename, remove) and a task's assignment to an area by new and edit --area" },
   { name: "reviews.lease.v1", level: 26, summary: "five-minute review claim leases: review-renew, and release, unparsable and verdicts naming the claim generation (--request)" },
   { name: "areas.board.v1", level: 23, summary: "the board snapshot, every task grouped by function area, which atelier board and the project page read" },
-  { name: "runners.run-skip.v1", level: 27, summary: "the run-skip route a runner posts for a job other than a review it gives up after its failures, and the queue poll with why: true that says why each dispatch waits" },
+  { name: "runners.run-skip.v1", level: 29, summary: "the run-skip route a runner posts for a job other than a review it gives up after its failures, and the queue poll with why: true that says why each dispatch waits" },
+  { name: "land.post-merge.v1", level: 27, summary: "durable post-merge runs: the project policy's owner-approved postMerge steps, the post-merge run routes (status, prepare, start, command, finish, retry, skip, reconcile) and the merge and landing reservations that block later merges until a run completes" },
 ] as const;

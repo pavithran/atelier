@@ -1,9 +1,9 @@
 import { spawn, spawnSync } from "node:child_process";
 import { excludeScratch } from "./scratch.mjs";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, statSync, readdirSync, realpathSync, renameSync } from "node:fs";
+import { accessSync, constants, appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, statSync, readdirSync, realpathSync, renameSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { checkEnv } from "./check-env.mjs";
@@ -226,8 +226,30 @@ export function nextStep(state, result) {
   }
 }
 
-const quoteShell = (word) => "'" + word.replaceAll("'", "'\\''") + "'";
-const testSlotNote = `Run each test command through the host slot wrapper: ${quoteShell(process.execPath)} ${quoteShell(SLOT_WRAPPER)} -- COMMAND ARGUMENTS. It reuses nested slots and inherits this job's priority. Direct shell commands are outside enforcement.`;
+export const quoteShell = (word) => "'" + word.replaceAll("'", "'\\''") + "'";
+// The wrapper runs as `node WRAPPER`, which a harness's command allow-list
+// that permits Bash(node:*) already accepts; node comes from the harness PATH.
+export const slotNote = (wrapper) => `Run each test command through the host slot wrapper: node ${quoteShell(wrapper)} -- COMMAND ARGUMENTS. It reuses nested slots and inherits this job's priority. Direct shell commands are outside enforcement.`;
+export const testSlotNote = slotNote(SLOT_WRAPPER);
+
+// Starts a harness once node is known to be on its PATH (requireNode).
+export async function startHarness(argv, cwd, env, { capture = false, captureError = false, stream = false, signal, timeoutMs } = {}, executeChild = execute) {
+  requireNode(env, cwd);
+  return executeChild(argv, { cwd, signal, timeoutMs, env, stream, ...(capture ? { capture } : {}), ...(captureError ? { captureError } : {}) });
+}
+
+// Throws unless `node` resolves on the PATH a harness will run with, since its
+// brief tells it to run the slot wrapper with node. The harness starts in
+// `cwd`, so a relative PATH entry is looked up from there, and on POSIX an
+// empty entry means that directory, as execvp has it.
+export function requireNode(env, cwd = process.cwd()) {
+  for (const entry of env.PATH === undefined ? [] : env.PATH.split(delimiter)) {
+    if (!entry && delimiter !== ":") continue;
+    const node = resolve(cwd, entry, "node");
+    try { accessSync(node, constants.X_OK); if (statSync(node).isFile()) return; } catch { /* Not here. */ }
+  }
+  throw new Error("node is not on the harness PATH, so the test-slot wrapper cannot run; put node on the runner's PATH");
+}
 
 const cli = fileURLToPath(new URL("./atelier.mjs", import.meta.url));
 const line = (message) => console.log(`runner: ${String(message).replace(/[\r\n]+/g, " ")}`);
@@ -1869,8 +1891,8 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       await resetTo(cwd, `refs/remotes/origin/${branch}`);
     },
     // `env` is the harness's whole environment (harnessEnv); `io.env` is the runner's.
+    harness: (argv, cwd, env, options = {}) => startHarness(argv, cwd, env, { ...options, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS }, executeChild),
     identityRefusals: async (cwd, env, project) => identityRefusals(cwd, env, project),
-    harness: (argv, cwd, env, { capture = false, captureError = false, stream = false } = {}) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS, env, stream, ...(capture ? { capture } : {}), ...(captureError ? { captureError } : {}) }),
     prepare: async (cwd) => {
       if (!existsSync(join(cwd, ".git"))) return null;
       const git = (argv) => checked(["git", ...argv], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild);
