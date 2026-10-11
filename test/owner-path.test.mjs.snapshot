@@ -80,6 +80,42 @@ exports[`status JSON forms preserve their records 1`] = `
       }
     ],
     "overlaps": [],
+    "attention": {
+      "owner": [
+        {
+          "id": "t1",
+          "title": "Ready for owner",
+          "call": "accept",
+          "sentence": "Accept the revision, whose required checks all passed at its head.",
+          "href": "/p/demo/t1",
+          "command": "atelier land t1 --reviewer H/M --project demo",
+          "why": "Recorded gate result",
+          "notices": [
+            "accept"
+          ],
+          "url": "/p/demo/t1"
+        }
+      ],
+      "pipeline": [
+        {
+          "id": "t2",
+          "title": "Needs assessment",
+          "stage": "submitted",
+          "notices": [
+            "assess"
+          ]
+        },
+        {
+          "id": "t3",
+          "title": "Already accepted",
+          "stage": "accepted",
+          "notices": [
+            "merge"
+          ]
+        }
+      ],
+      "unknown": []
+    },
     "mergedByOverride": []
   }
 ]
@@ -161,5 +197,5 @@ exports[`status JSON forms preserve their records 3`] = `
 `;
 
 exports[`status snapshot: submitted tasks land, accepted tasks merge 1`] = `
-"Demo (demo)\\n  Waiting for you\\n    t1  accept  Ready for owner\\n      Recorded gate result\\n      next: atelier land t1 --reviewer H/M --project demo\\n    t2  assess  Needs assessment\\n      Recorded gate result\\n      next: atelier land t2 --reviewer reviewer/model --project demo\\n  Handled by the orchestrator\\n    t3  merge  Already accepted\\n      Recorded gate result\\n      next: atelier merge t3 --project demo\\n  In progress\\n    t1  submitted  held by builder/model  Ready for owner\\n    t2  submitted  held by builder/model  Needs assessment"
+"Demo (demo)\\n  Waiting for you\\n    t1  Accept  Ready for owner\\n      Accept the revision, whose required checks all passed at its head.\\n      why: Recorded gate result\\n      next: atelier land t1 --reviewer H/M --project demo\\n      /p/demo/t1\\n  In the pipeline: 2 tasks: 1 in review, 1 accepted; none waits on you.\\n  In progress\\n    t2  submitted  held by builder/model  Needs assessment"
 `;
