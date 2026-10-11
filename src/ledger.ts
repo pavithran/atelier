@@ -20,7 +20,7 @@ import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./c
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
-import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, makeDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
+import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, makeDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
@@ -1460,6 +1460,22 @@ export class Ledger extends DurableObject<Env> {
     }
     this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), d.at, id);
     this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job, head: d.head } : {}), ...(d.overlapOk ? { overlapOk: true } : {}) }, d.at);
+    return this.item(id);
+  }
+
+  // The owner's release of an overlap-held dispatch: only the overlap
+  // override (and a given agent or model) changes; see retainDispatch. A task
+  // a runner has claimed since is refused, never redispatched.
+  releaseHold(id: string, actor: string, input: Record<string, unknown>): Item {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner dispatches", 403);
+    const item = this.item(id);
+    this.assertNotPlanned(item);
+    const d = retainDispatch(item, input, this.items(), this.project().policy, this.owner);
+    if (JSON.stringify(d) !== JSON.stringify(item.dispatch)) {
+      const at = new Date().toISOString();
+      this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), at, id);
+      this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, overlapOk: true, retained: true, ...(d.job ? { job: d.job, head: d.head } : {}) }, at);
+    }
     return this.item(id);
   }
 
