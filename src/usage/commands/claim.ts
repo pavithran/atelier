@@ -2,6 +2,7 @@ import type { CommandSpec } from "../command.ts";
 
 const spec: CommandSpec = {
   name: "claim",
+  capabilities: ["projects.commit-identity.v1"],
   forms: [
     {
       group: "Agents", line: 2, slot: 10,

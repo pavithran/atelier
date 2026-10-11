@@ -14,6 +14,14 @@
 // Subcommands belong to their command: `plan show ID` is a form of `plan`,
 // declared in plan.ts with the flags it takes, and no other module may declare
 // a form, subcommand or alias under another command's name.
+//
+// A command that relies on a behaviour of the server's API names it in
+// `capabilities` (src/route-level.ts declares the names), and the CLI checks
+// the server publishes each before the handler runs; a subcommand's own are
+// checked only when that subcommand runs. A command with none asks the
+// server nothing before it runs, so help and the local commands work offline.
+
+import type { CapabilityName } from "../route-level.ts";
 
 // One form of a command, as `atelier help` prints it and the web reference
 // describes it.
@@ -65,6 +73,8 @@ export interface Subcommand {
   takes?: string[];
   // What `atelier COMMAND SUB --help` prints instead of the command's usage.
   usage?: string;
+  // The server behaviours this subcommand relies on beyond the command's own.
+  capabilities?: CapabilityName[];
 }
 
 export interface CommandSpec {
@@ -84,6 +94,15 @@ export interface CommandSpec {
   rest?: true;
   // The command runs checks locally, and its usage says what that means.
   localCheck?: true;
+  // The server behaviours the command relies on, checked before it runs;
+  // none for a command that works offline or calls routes every server has.
+  capabilities?: CapabilityName[];
+  // "handler": the CLI leaves the check to the handler, which makes it
+  // itself before its first dependent request, because a form of the command
+  // touches only routes every server has and must stay reachable while the
+  // server is behind (`land --release-lease` frees a stuck lease). The
+  // handler's check is the same checkCapabilities, with the same refusal.
+  capabilityCheck?: "handler";
 }
 
 export interface CommandModule {
