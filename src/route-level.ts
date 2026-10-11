@@ -217,6 +217,8 @@ export function checkCapabilities(version: unknown, required: readonly string[])
 
 // 26: review-renew and five-minute leases; release and verdicts name the
 // exact request generation, and expired requests are reoffered (t351).
-// 27: the pool's standing: atelier models set (POST /models/ID/set), and PUT
-// /models takes state, roles and tier (t389).
-export const ROUTE_LEVEL = 27;
+// 27: durable owner-approved post-merge steps and recovery (t477,
+// land.post-merge.v1).
+// 31: the pool's standing: atelier models set (POST /models/ID/set), and PUT
+// /models takes state, roles and tier (t389, models.standing.v1).
+export const ROUTE_LEVEL = 31;
