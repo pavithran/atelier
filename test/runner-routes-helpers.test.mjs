@@ -7,8 +7,10 @@
 // import, and judges each server call they make against the table:
 //
 // - every call goes through the CLI's shared transport, `call` or `request`
-//   in cli/atelier.mjs (postEvidence wraps `request`); a bare fetch in a
-//   helper command is a bypass and fails here;
+//   in cli/atelier.mjs (postEvidence wraps `request`); a bare fetch, an
+//   http(s) request or a socket in a command's module, or in any helper of
+//   cli/atelier.mjs it reaches (imported, or named by one it reaches), is a
+//   bypass and fails here, save serverVersion's declared preflight read;
 // - every call's method and path is one the table declares as a cli call,
 //   so a command that starts calling an undeclared route fails npm test
 //   until the route is declared (and, by the other file, allowed and
@@ -103,19 +105,162 @@ function callSites(source, where) {
   return sites;
 }
 
-// The calls a command makes: its module's own, and those of each helper it
-// imports from cli/atelier.mjs that makes a server call itself.
-function commandCalls(command) {
+// A source with its strings, template text and comments blanked to spaces,
+// so a word in a message or a git argument ("fetch") is not read as code,
+// while a template's ${...} stays code. A "/" where an operand is due starts
+// a regular expression, blanked like a string.
+function codeOnly(source) {
+  let out = "", i = 0;
+  const stack = []; // one entry per open ${ in a template: its brace depth
+  let depth = 0, last = "";
+  const blank = (to) => { out += source.slice(i, to).replace(/[^\n]/g, " "); i = to; };
+  const template = () => {
+    // From just inside a template's text to its end or to a "${".
+    let j = i;
+    while (j < source.length && source[j] !== "`" && !(source[j] === "$" && source[j + 1] === "{")) j += source[j] === "\\" ? 2 : 1;
+    blank(j);
+    if (source[i] === "`") { out += "`"; i++; last = "`"; return; }
+    out += "${"; i += 2; stack.push(depth); depth = 0; last = "{";
+  };
+  while (i < source.length) {
+    const ch = source[i], next = source[i + 1];
+    if (ch === "/" && next === "/") { const j = source.indexOf("\n", i); blank(j < 0 ? source.length : j); continue; }
+    if (ch === "/" && next === "*") { const j = source.indexOf("*/", i + 2); blank(j < 0 ? source.length : j + 2); continue; }
+    if (ch === '"' || ch === "'") {
+      let j = i + 1;
+      while (j < source.length && source[j] !== ch && source[j] !== "\n") j += source[j] === "\\" ? 2 : 1;
+      out += ch; i++; blank(j); out += source[i] ?? ""; i++; last = ch; continue;
+    }
+    if (ch === "`") { out += "`"; i++; template(); continue; }
+    if (ch === "/" && (last === "" || "(,=:[!&|?{};+-*%<>~^".includes(last) || /\b(?:return|typeof|case|of|in)$/.test(out.trimEnd()))) {
+      let j = i + 1, cls = false;
+      while (j < source.length && source[j] !== "\n" && (cls || source[j] !== "/")) { if (source[j] === "\\") j++; else if (source[j] === "[") cls = true; else if (source[j] === "]") cls = false; j++; }
+      out += "/"; i++; blank(j); out += "/"; i++;
+      while (/[a-z]/.test(source[i] ?? "")) out += source[i++];
+      last = "/regex"; continue;
+    }
+    if (ch === "{") depth++;
+    if (ch === "}") {
+      if (depth === 0 && stack.length) { depth = stack.pop(); out += "}"; i++; template(); continue; }
+      depth--;
+    }
+    out += ch; i++;
+    if (!/\s/.test(ch)) last = ch;
+  }
+  return out;
+}
+
+// Every way a source could reach a server other than the CLI's transport:
+// fetch (called, aliased or read off globalThis), node's http and https
+// clients and the modules that hold them, undici, a socket, a WebSocket, an
+// EventSource or an XMLHttpRequest. Read on code only, so a string or a
+// comment naming one is not a bypass.
+const BYPASSES = [
+  /(?<![.\w$])fetch\b/g,
+  /\bglobalThis\s*\.\s*fetch\b/g,
+  /(?<![.\w$])https?\s*\.\s*(?:request|get)\b/g,
+  /\bimport\s*\(\s*["'`]\s*["'`]\s*\)/g, // a dynamic import, whose specifier is blanked: judged below
+  /\bnew\s+(?:WebSocket|EventSource|XMLHttpRequest)\b/g,
+];
+const NETWORK_MODULE = /^(?:node:)?(?:https?|http2|net|tls|dgram)$|^undici$/;
+function bypasses(source) {
+  const code = codeOnly(source);
+  const found = [];
+  for (const pattern of BYPASSES) {
+    for (const m of code.matchAll(pattern)) {
+      if (m[0].startsWith("import")) {
+        // A dynamic import names its module in a string; judge the original.
+        const spec = /^import\s*\(\s*["'`]([^"'`]*)["'`]/.exec(source.slice(m.index))?.[1] ?? "";
+        if (NETWORK_MODULE.test(spec)) found.push(`import("${spec}")`);
+        continue;
+      }
+      found.push(source.slice(m.index, m.index + m[0].length + 1).trim());
+    }
+  }
+  for (const m of source.matchAll(/^\s*import\b[^;]*?from\s*["']([^"']+)["']/gm)) if (NETWORK_MODULE.test(m[1])) found.push(`import from "${m[1]}"`);
+  return found;
+}
+
+// The top-level declarations of cli/atelier.mjs, by name: a function from
+// its declaration to the first line that is its closing brace alone, a const
+// or let to the next line that starts at the margin with neither a closing
+// bracket nor whitespace.
+function declarations(source) {
+  const decls = new Map();
+  for (const m of source.matchAll(/^(?:export )?(?:async )?(?:function\*? ([A-Za-z_$][\w$]*)\(|(?:const|let) ([A-Za-z_$][\w$]*) =)/gm)) {
+    const name = m[1] ?? m[2];
+    let end;
+    if (m[1]) { end = source.indexOf("\n}\n", m.index); end = end < 0 ? source.length : end + 2; }
+    else { const rest = /\n(?![\s})\]])/.exec(source.slice(m.index + 1)); end = rest ? m.index + 1 + rest.index : source.length; }
+    if (!decls.has(name)) decls.set(name, source.slice(m.index, end));
+  }
+  return decls;
+}
+const DECLS = declarations(ATELIER);
+
+// The helpers of cli/atelier.mjs a command reaches: those it imports, and
+// every top-level declaration any of them names, transitively. The
+// transport itself is not followed: its fetch is the one the CLI makes.
+function reachable(names, decls = DECLS) {
+  const seen = new Set(), queue = names.filter((n) => decls.has(n) && !TRANSPORT.has(n));
+  while (queue.length) {
+    const name = queue.shift();
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const code = codeOnly(decls.get(name));
+    for (const m of code.matchAll(/(?<![.\w$])([A-Za-z_$][\w$]*)\b/g)) {
+      if (m[1] !== name && decls.has(m[1]) && !TRANSPORT.has(m[1]) && !seen.has(m[1])) queue.push(m[1]);
+    }
+  }
+  return [...seen];
+}
+
+// The transport's own identity read: request asks resolveTokenActor, which
+// reads GET /config once per agent token before the command's first call,
+// so every command the runner spawns makes it. It is the declared config
+// call, which a runner token and an agent token may both make; it is judged
+// here rather than counted as one command's call.
+function identityRead(sites, where) {
+  assert.ok(sites.length, `${where} makes no server call this check can see`);
+  for (const site of sites) {
+    const declared = RUNNER_CALLS.filter((c) => c.method === site.method && c.path === site.path);
+    assert.ok(declared.length, `${where}: ${site.text} is not a call RUNNER_CALLS declares (src/tokens.ts)`);
+    assert.deepEqual(site.keys, [], `${where}: ${site.text} sends a body`);
+    for (const allowed of [runnerRoute, agentRoute]) assert.equal(allowed(site.method, callParts(declared[0]), {}), true, `${where}: ${site.text} is not allowed for every token a spawned command holds`);
+  }
+  return [];
+}
+
+// The server calls a helper body makes, failing on any bypass of the
+// transport. serverVersion is the one helper that fetches: its fetch is the
+// declared public preflight read, judged by preflightFetches below, and any
+// other bypass in it still fails.
+function helperCalls(name, body) {
+  const where = `cli/atelier.mjs ${name}()`;
+  const found = bypasses(body);
+  if (name === "serverVersion") {
+    preflightFetches(body);
+    const others = found.filter((b) => b !== "fetch(");
+    assert.deepEqual(others, [], `${where} reaches the server outside the CLI's transport: ${others.join(", ")}`);
+  } else {
+    assert.deepEqual(found, [], `${where} reaches the server outside the CLI's transport: ${found.join(", ")}`);
+  }
+  const sites = /(?<![.\w])(call|request|postEvidence)\(/.test(codeOnly(body)) ? callSites(body, where) : [];
+  return name === "resolveTokenActor" ? identityRead(sites, where) : sites;
+}
+
+// The calls a command makes: its module's own, and those of every helper of
+// cli/atelier.mjs it reaches, each scanned for a bypass of the transport.
+function commandCalls(command, decls = DECLS) {
   const file = `cli/commands/${command}.mjs`;
   assert.ok(existsSync(resolve(file)), `${command} is declared with no module at ${file}`);
   const source = read(file);
-  assert.equal(source.match(/(?<![.\w])fetch\(/g), null, `${file} calls fetch itself, bypassing the CLI's transport`);
+  const own = bypasses(source);
+  assert.deepEqual(own, [], `${file} reaches the server outside the CLI's transport: ${own.join(", ")}`);
   const sites = callSites(source, file);
   const imports = /import \{([^}]*)\} from "\.\.\/atelier\.mjs"/.exec(source);
-  for (const name of (imports?.[1] ?? "").split(",").map((s) => s.trim()).filter((s) => s && !TRANSPORT.has(s))) {
-    const body = exported(name);
-    if (body && /(?<![.\w])(call|request)\(/.test(body)) sites.push(...callSites(body, `cli/atelier.mjs ${name}()`));
-  }
+  const names = (imports?.[1] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  for (const name of reachable(names, decls)) sites.push(...helperCalls(name, decls.get(name)));
   return sites;
 }
 
@@ -206,4 +351,47 @@ test("the capability check every spawned command makes reads only a declared pub
   assert.throws(() => preflightFetches('await fetch(server() + "/api/version", { signal });'), /not a declared call's path/);
   assert.throws(() => preflightFetches('await fetch(server() + "/api" + callPath(declaredCall("frobnicate")));'), /frobnicate, which is not a declared preflight call/);
   assert.deepEqual(preflightFetches('await fetch(server() + "/api" + callPath(declaredCall("capabilities")), { signal });'), ["capabilities"]);
+});
+
+// A helper the runner's commands reach is scanned for a bypass as the
+// command's own module is: one it imports (claimWorkspace, which atelier
+// claim runs) and one reached only through another (setWorkspaceIdentity,
+// which claimWorkspace runs). A fetch added to either fails the check
+// before any route is judged.
+test("a helper a spawned command reaches fails the check when it bypasses the transport", () => {
+  for (const name of ["claimWorkspace", "setWorkspaceIdentity", "workspacePath"]) assert.ok(DECLS.has(name), `${name} is gone from cli/atelier.mjs; update this check`);
+  const claimReaches = reachable(["actor", "args", "claimWorkspace", "itemArg", "project"]);
+  assert.ok(claimReaches.includes("setWorkspaceIdentity"), "the walk does not follow claimWorkspace to the helpers it runs");
+  assert.ok(!claimReaches.includes("call") && !claimReaches.includes("request"), "the walk follows the transport itself");
+  assert.doesNotThrow(() => commandCalls("claim"));
+  const injected = (name, line) => {
+    const decls = new Map(DECLS), body = decls.get(name);
+    decls.set(name, body.replace(/\{\n/, `{\n${line}\n`));
+    return decls;
+  };
+  for (const name of ["claimWorkspace", "setWorkspaceIdentity"]) {
+    assert.throws(() => commandCalls("claim", injected(name, '  await fetch(server() + "/api/runners", { method: "POST" });')),
+      new RegExp(`cli/atelier\\.mjs ${name}\\(\\) reaches the server outside the CLI's transport: fetch\\(`));
+  }
+  assert.throws(() => commandCalls("claim", injected("claimWorkspace", '  const { request: send } = await import("node:https"); send(server());')), /import\("node:https"\)/);
+  assert.throws(() => commandCalls("claim", injected("claimWorkspace", "  const get = globalThis.fetch;")), /globalThis\.fetch/);
+  assert.throws(() => commandCalls("claim", injected("claimWorkspace", "  https.request(new URL(server()));")), /https\.request/);
+  // A call through the transport from a helper reached only through another
+  // is the command's own call, judged against the table like the rest.
+  const site = commandCalls("claim", injected("setWorkspaceIdentity", '  await call("GET", "/runners", undefined, as);')).find((s) => s.path === "/runners");
+  assert.deepEqual(site && [site.where, site.method], ["cli/atelier.mjs setWorkspaceIdentity()", "GET"]);
+  assert.equal(byRoute("GET", "/runners").length, 0, "the injected route is one the table does not declare");
+});
+
+test("the bypass scan reads code, not strings or comments", () => {
+  assert.deepEqual(bypasses('git(["fetch", "--quiet", "origin"]); // a fetch( in a comment\nconsole.log(`run git fetch first, then ${count(n, "fetch")}`); /* fetch( */'), []);
+  assert.deepEqual(bypasses("const ok = /fetch\\(/.test(text);"), []);
+  assert.deepEqual(bypasses('console.log(`${await fetch(url)}`);'), ["fetch("]);
+  assert.deepEqual(bypasses('import { request } from "node:http";'), ['import from "node:http"']);
+  assert.deepEqual(bypasses("const go = fetch;"), ["fetch;"]);
+  assert.deepEqual(bypasses("new WebSocket(url);"), ["new WebSocket("]);
+  // serverVersion keeps its declared preflight read, and nothing else.
+  assert.deepEqual(helperCalls("serverVersion", DECLS.get("serverVersion")), []);
+  assert.throws(() => helperCalls("serverVersion", DECLS.get("serverVersion").replace(/\{\n/, '{\n  await fetch(server() + "/api/runners");\n')), /not a declared call's path/);
+  assert.throws(() => helperCalls("serverVersion", DECLS.get("serverVersion").replace(/\{\n/, "{\n  http.get(server());\n")), /http\.get/);
 });
