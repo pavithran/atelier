@@ -292,7 +292,8 @@ const TASK_EVENTS = 300;
 async function standingOf(env: Env, key: string): Promise<Standing> {
   const L = ledger(env, key);
   const now = new Date();
-  const [project, items, inbox, offers] = await Promise.all([L.project(), L.items(), L.inbox(now.toISOString()), offersOf(env)]);
+  const [project, items, offers, pool] = await Promise.all([L.project(), L.items(), offersOf(env), poolOf(env)]);
+  const inbox = await L.inbox(now.toISOString(), pool);
   const attention = attentionFor(project.name, items, inbox, offers, now);
   const taskEvents = new Map<string, LedgerEvent[]>();
   await Promise.all(standingTasks(items).map(async (id) => {
@@ -310,6 +311,12 @@ async function standingOf(env: Env, key: string): Promise<Standing> {
 // be read, which the waiting lists say rather than read as no runner.
 async function offersOf(env: Env): Promise<SeenOffer[] | null> {
   try { return await index(env).runnerOffers(); } catch { return null; }
+}
+// The model pool, which tells whether a protected change has a qualifying
+// reviewer or waits on the owner's override, or null when it could not be
+// read, which leaves that unknown and says so rather than counting none.
+async function poolOf(env: Env): Promise<ModelEntry[] | null> {
+  try { return await index(env).models(); } catch { return null; }
 }
 // Waiting decisions drawn as cards; the rest of the list stays as plain rows.
 const CARD_LIMIT = 12;
@@ -2416,7 +2423,7 @@ function isHeld(item: Item): boolean {
 async function inbox(env: Env, token?: AgentToken) {
   const projects = (await index(env).projects()).filter((p) => inScope(token, namesOf(p)));
   const now = new Date().toISOString();
-  const pool = await index(env).models();
+  const pool = await poolOf(env);
   const lists = await Promise.all(projects.map((p) => ledgerOf(env, p).inbox(now, pool)));
   return lists.flat().sort((a, b) => b.weight - a.weight);
 }
@@ -2617,13 +2624,13 @@ async function homePage(c: Ctx): Promise<Response> {
   const { env } = c;
   const { projects, views } = await projectViews(env);
   const now = new Date();
-  const offers = await offersOf(env);
+  const [offers, pool] = await Promise.all([offersOf(env), poolOf(env)]);
   const home: HomeView[] = await Promise.all(views.map(async (v) => {
     if (v.unavailable) return v;
     try {
       const L = ledgerOf(env, v.project);
       const events = (await L.events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
-      const inbox = await L.inbox(now.toISOString()).catch(() => null);
+      const inbox = await L.inbox(now.toISOString(), pool).catch(() => null);
       return { ...v, events, cut: events.length >= STORY_EVENTS, waiting: attentionFor(v.project.name, v.items, inbox, offers, now) };
     } catch { return { ...v, unavailable: true }; }
   }));
@@ -2723,10 +2730,10 @@ async function decisionsPage(c: Ctx, live: { nonce: string; refresh: number }): 
       return buildStory(v.project.name, v.items, events, owner, events.length >= STORY_EVENTS, titleOf(v.project));
     } catch { return null; }
   };
-  const offers = await offersOf(env);
+  const [offers, pool] = await Promise.all([offersOf(env), poolOf(env)]);
   const attention = await Promise.all(views.map(async (v) => {
     if (v.unavailable) return attentionFor(v.project.name, null, null, offers, now);
-    const inbox = await ledgerOf(env, v.project).inbox(now.toISOString()).catch(() => null);
+    const inbox = await ledgerOf(env, v.project).inbox(now.toISOString(), pool).catch(() => null);
     return attentionFor(v.project.name, v.items, inbox, offers, now);
   }));
   const first = attention.flatMap((a) => a.owner.map((t) => ({ project: a.project, itemId: t.id })));

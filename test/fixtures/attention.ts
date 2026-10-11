@@ -19,9 +19,12 @@ export function item(id: string, state: Item["state"], over: Partial<Item> = {},
   };
 }
 
-export function entry(project: string, itemId: string, kind: InboxEntry["kind"], reason = `because ${kind}`): InboxEntry {
-  return { project, itemId, title: `Task ${itemId}`, kind, reason, weight: 1 };
+export function entry(project: string, itemId: string, kind: InboxEntry["kind"], reason = `because ${kind}`, over: Partial<InboxEntry> = {}): InboxEntry {
+  return { project, itemId, title: `Task ${itemId}`, kind, reason, weight: 1, ...over };
 }
+// A reviewer the pool offers for an assess entry, as the Ledger's inbox sets it
+// when given the pool; null when none qualifies.
+const REVIEWER = { reviewer: "claude-code/opus-5.5" };
 
 export const OFFERS: SeenOffer[] = [
   { runner: "home:studio", kind: "home", jobs: ["build"], agents: [{ agent: "codex", models: ["gpt-6"] }], at: NOW.toISOString() } as SeenOffer,
@@ -41,11 +44,12 @@ export const ALPHA_ITEMS: Item[] = [
   item("a11", "merged", { acceptedHead: HEAD }),
   item("a12", "accepted", { owner: "codex/gpt-6", head: HEAD, acceptedHead: HEAD }),
   item("a13", "merged", { acceptedHead: HEAD }),
+  item("a14", "submitted", { owner: "codex/gpt-6", head: HEAD, scope: ["wrangler.toml"] }),
 ];
 
 export const ALPHA_ENTRIES: InboxEntry[] = [
   entry("alpha", "a1", "accept", "all checks observed passing at this head"),
-  entry("alpha", "a2", "assess", "a protected change needs an independent review"),
+  entry("alpha", "a2", "assess", "a protected change needs an independent review", REVIEWER),
   entry("alpha", "a2", "overlap", "scope overlaps a3 (claude-code/opus-5.5)"),
   entry("alpha", "a3", "overlap", "scope overlaps a2 (codex/gpt-6)"),
   entry("alpha", "a3", "stale", "claude-code/opus-5.5 has not pushed for 14h; hand it off or release it"),
@@ -54,11 +58,12 @@ export const ALPHA_ENTRIES: InboxEntry[] = [
   entry("alpha", "a6", "plan-blocked", "blocked: the planner failed twice"),
   entry("alpha", "a10", "failing", "npm test failed"),
   entry("alpha", "a11", "ship", "merged with deploy declared by the ship files and not yet run"),
+  entry("alpha", "a14", "assess", "a protected change needs an independent review; ask a reviewer with atelier land a14 --reviewer H/M, and override only as the owner's last resort", { reviewer: null, weight: 80 }),
   entry("alpha", "a12", "merge", "accepted; run `atelier merge` in the project checkout"),
 ];
 
 export const BETA_ITEMS: Item[] = [item("b1", "submitted", { owner: "codex/gpt-6", head: HEAD }), item("b2", "claimed", { owner: "codex/gpt-6" })];
-export const BETA_ENTRIES: InboxEntry[] = [entry("beta", "b1", "assess"), entry("beta", "b1", "scope", "changes outside its scope: x")];
+export const BETA_ENTRIES: InboxEntry[] = [entry("beta", "b1", "assess", "because assess", REVIEWER), entry("beta", "b1", "scope", "changes outside its scope: x")];
 
 // Every notice, as the server's GET /inbox returns them across projects.
 export const ALL_ENTRIES = [...ALPHA_ENTRIES, ...BETA_ENTRIES];
@@ -67,7 +72,7 @@ export const ALL_ENTRIES = [...ALPHA_ENTRIES, ...BETA_ENTRIES];
 // owner, in the rule's order, and the pipeline's tasks.
 export const EXPECTED = {
   alpha: {
-    owner: [["a10", "clear-secret"], ["a4", "unblock"], ["a6", "decide-plan"], ["a5", "approve-plan"], ["a1", "accept"], ["a11", "ship"], ["a8", "start-runner"]],
+    owner: [["a10", "clear-secret"], ["a4", "unblock"], ["a6", "decide-plan"], ["a5", "approve-plan"], ["a1", "accept"], ["a14", "override"], ["a11", "ship"], ["a8", "start-runner"]],
     pipeline: [["a2", "submitted"], ["a3", "building"], ["a7", "open"], ["a9", "queued"], ["a12", "accepted"]],
     overlaps: [["a2", "a3"]],
   },

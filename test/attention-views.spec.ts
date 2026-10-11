@@ -28,6 +28,9 @@ it("Home, the Overview and Decisions agree with the rule, per project, counting 
   for (const n of ["alpha", "beta"] as const) {
     const s = buildStanding(record(n), items[n], new Map(), 300, place(n), new Map(), NOW);
     expect(s.waiting.map((w) => [w.id, w.call])).toEqual(EXPECTED[n].owner);
+    // The fields older clients of /standing read stay beside the call.
+    for (const w of s.waiting) expect([typeof w.kind, Array.isArray(w.kinds), w.reason]).toEqual(["string", true, w.why]);
+    if (n === "alpha") expect(s.waiting.find((w) => w.call === "override")).toMatchObject({ id: "a14", kind: "assess", kinds: ["assess"] });
     expect(s.overlaps).toEqual(EXPECTED[n].overlaps);
     expect(s.pipeline.reduce((k, x) => k + x.count, 0)).toBe(EXPECTED[n].pipeline.length);
     const page = renderProject(record(n), items[n], [], "PAVI", s);

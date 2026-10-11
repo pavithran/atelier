@@ -4,7 +4,7 @@
 // same in test/attention-views.spec.ts.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatInbox, formatStatus, inboxJson, statusJson } from "../cli/status.mjs";
+import { formatInbox, formatStatus, inboxJson, inboxNotRead, statusJson } from "../cli/status.mjs";
 import { ALL_ENTRIES, ALPHA_ITEMS, BETA_ITEMS, EXPECTED, NOW, OFFERS } from "./fixtures/attention.ts";
 
 const views = () => [
@@ -52,20 +52,38 @@ test("atelier status --json and atelier inbox --json carry the same placement", 
   const status = statusJson(views(), waiting.server, OFFERS, NOW);
   const inbox = inboxJson(views(), waiting);
   for (const name of ["alpha", "beta"]) {
-    const s = status.find((p) => p.name === name), i = inbox.find((p) => p.project === name);
+    const s = status.find((p) => p.name === name);
     assert.deepEqual(s.attention.owner.map((t) => [t.id, t.call]), EXPECTED[name].owner);
-    assert.deepEqual(i.owner.map((t) => [t.id, t.call]), EXPECTED[name].owner);
-    assert.deepEqual(i.pipeline.map((t) => [t.id, t.stage]), EXPECTED[name].pipeline);
+    assert.deepEqual(inbox.filter((x) => x.project === name).map((x) => [x.itemId, x.call]), EXPECTED[name].owner);
+    assert.deepEqual(s.attention.pipeline.map((t) => [t.id, t.stage]), EXPECTED[name].pipeline);
     assert.deepEqual(s.overlaps, EXPECTED[name].overlaps);
-    assert.deepEqual(i.overlaps, EXPECTED[name].overlaps);
   }
-  assert.equal(inbox[0].owner[0].url, "https://atelier.test/p/alpha/a10");
+  assert.equal(inbox[0].url, "https://atelier.test/p/alpha/a10");
+});
+
+test("atelier inbox --json keeps the entry fields older clients read, one entry per task", () => {
+  const inbox = inboxJson(views(), waiting);
+  const ids = inbox.map((x) => `${x.project}/${x.itemId}`);
+  assert.equal(new Set(ids).size, ids.length, "one entry per task, not per notice");
+  for (const x of inbox) {
+    for (const k of ["project", "itemId", "title", "kind", "kinds", "reason", "weight"]) assert.ok(k in x, `${x.itemId}: ${k}`);
+    assert.equal(x.reason, x.why);
+  }
+  const by = Object.fromEntries(inbox.map((x) => [x.itemId, x]));
+  assert.deepEqual([by.a1.kind, by.a1.reason, by.a1.call], ["accept", "all checks observed passing at this head", "accept"]);
+  assert.deepEqual([by.a14.kind, by.a14.reviewer, by.a14.weight, by.a14.call], ["assess", null, 80, "override"]);
+  assert.deepEqual(by.a14.unknown, []);
+  // What was not read is said per project, for standard error.
+  assert.deepEqual(inboxNotRead(views(), waiting), []);
+  const unread = [{ name: "alpha", items: null, inbox: ALL_ENTRIES }];
+  assert.deepEqual(inboxJson(unread, waiting), []);
+  assert.match(inboxNotRead(unread, waiting)[0], /^alpha: The project's tasks could not be read/);
 });
 
 test("atelier inbox prints only what waits on the owner, by project, and what was not read", () => {
   const out = formatInbox(views(), waiting);
   const lines = out.split("\n");
-  assert.equal(lines[0], "Alpha (alpha): 7 waiting on you");
+  assert.equal(lines[0], "Alpha (alpha): 8 waiting on you");
   assert.deepEqual(listedUnder(["h", ...lines.slice(1)], 0, "h").filter((id) => id.startsWith("a")), ownerIds("alpha"));
   assert.ok(!out.includes("Beta (beta)"), "a project with nothing waiting is left out");
   assert.ok(!out.includes("a2 and a3"));

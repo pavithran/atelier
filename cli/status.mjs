@@ -20,7 +20,7 @@
 // jobs it does not.
 import { holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
 import { mergedByOverride } from "../src/rules.ts";
-import { attentionFor, OWNER_CALL_LABEL, pipelineLine } from "../src/attention.ts";
+import { attentionFor, legacyFields, OWNER_CALL_LABEL, pipelineLine } from "../src/attention.ts";
 import { daySpend } from "../src/usage/report.ts";
 import { jobsLine } from "./runner.mjs";
 
@@ -339,11 +339,29 @@ export function formatInbox(views, waiting = {}) {
   return total || lines.length ? lines.join("\n") : "Nothing needs you.";
 }
 
-// The same as JSON: each project's owner tasks, each with its full link, its
-// pipeline tasks, its overlapping pairs and what could not be read.
+// The same as JSON, in the shape `atelier inbox --json` printed before t504:
+// a list of entries, each with project, itemId, title, kind, reason and
+// weight (and reviewer on an assess entry), now one per task that waits on
+// the owner, in the rule's order, each adding its call, the sentence, its
+// full link, the command and `unknown`, what could not be read in its
+// project. `notRead` lists what could not be read per project, which the
+// command prints on standard error so a project with no entry is still said.
 export function inboxJson(views, waiting = {}) {
-  return views.map((v) => {
+  return views.flatMap((v) => {
     const a = attentionFor(v.name, v.items, v.inbox, waiting.offers ?? null, waiting.now ?? new Date());
-    return { project: v.name, owner: a.owner.map((t) => ({ ...t, url: absolute(waiting.server, t.href) })), pipeline: a.pipeline, overlaps: a.overlaps, unknown: a.unknown };
+    return a.owner.map((t) => {
+      const legacy = legacyFields(t);
+      const notices = (v.inbox ?? []).filter((x) => x.project === v.name && x.itemId === t.id);
+      const base = notices.find((x) => x.kind === legacy.kind) ?? notices[0];
+      return {
+        project: v.name, itemId: t.id, title: t.title, ...legacy,
+        weight: Math.max(0, ...notices.map((x) => x.weight ?? 0)),
+        ...(base?.reviewer !== undefined ? { reviewer: base.reviewer } : {}),
+        ...t, url: absolute(waiting.server, t.href), unknown: a.unknown,
+      };
+    });
   });
+}
+export function inboxNotRead(views, waiting = {}) {
+  return views.flatMap((v) => attentionFor(v.name, v.items, v.inbox, waiting.offers ?? null, waiting.now ?? new Date()).unknown.map((x) => `${v.name}: ${x}`));
 }
