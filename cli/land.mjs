@@ -1,3 +1,4 @@
+import { executePostMerge } from "./post-merge.mjs";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -92,17 +93,11 @@ import { landingVerdict } from "../src/landing-verdict.ts";
 // warns, for then the lease really does stand in this task's name until it
 // lapses.
 //
-// Integration boundary for post-merge work (t477, not implemented here):
-// keeping this CLI's lease until a hook finishes cannot serialize landings.
-// landingLive already frees it at merged state, expiry frees it after an
-// executor dies, and the owner can release it manually. The Ledger needs a
-// separate durable reservation checked by every merge entry point, created
-// atomically before another merge is allowed. CLI and Workflow must resolve
-// that same reservation; the Workflow currently ends when it sees merged.
-// Its run identity, member tasks, policy and before/after branch SHAs must
-// survive either executor. Per-merge completion is the t477 boundary; t460
-// batching would need an explicit policy. Confirm the t462 contract before
-// implementing that shared state or its recovery transitions.
+// Post-merge work has a durable Ledger reservation, created before publish
+// and checked by every merge entry point. CLI and Workflow resolve the same
+// run, with a snapshotted policy and before/after SHAs. Lease release, expiry
+// and merged task state never release it. Future batching reuses its member
+// list and landing identity; it does not change per-merge completion today.
 //
 // The push uses the workspace's write token, which lapses 8 hours after the
 // claim that minted it (t275), and a push refused for it would end a landing
@@ -138,6 +133,19 @@ class StepError extends Error {
 
 export async function runLand(io) {
   const { args, name, id, p, request, git, die, print } = io;
+  if (args["post-merge"] === undefined && (args.reason !== undefined || args.resolution !== undefined)) die("--reason and --resolution require --post-merge");
+  if (args["post-merge"] !== undefined) {
+    if (["dry-run", "release-lease", "no-review", "wait", "reviewer", "workflow", "checks"].some(k => args[k] !== undefined)) die("--post-merge recovery is a separate action; omit the landing flags");
+    const action = args["post-merge"];
+    if (!["status", "resume", "retry", "skip", "reconcile"].includes(action)) die("--post-merge takes status, resume, retry, skip or reconcile");
+    const path = `/projects/${encodeURIComponent(name)}/post-merge/${encodeURIComponent(id)}`;
+    const { run } = await request("GET", path);
+    if (!run) { print("No post-merge run recorded."); return; }
+    if (action === "status") { print(JSON.stringify(run, null, 2)); return; }
+    if (action !== "resume") await request("POST", path, { run: run.id, action, reason: args.reason, resolution: args.resolution });
+    if (action !== "reconcile") await executePostMerge({ request, git, name, id, env: io.env, print });
+    return;
+  }
   const dryRun = args["dry-run"] === true;
   const noReview = args["no-review"] === true;
   const wait = args.wait === true;
@@ -183,12 +191,12 @@ export async function runLand(io) {
   // task is named, with the command that frees it, rather than freed from
   // under that task.
   if (releaseLease) {
-    const { lease } = await request("GET", leasePath);
+    const { lease, postMerge } = await request("GET", leasePath);
     if (!lease) { print(`No landing lease is held in ${name}; nothing to release.`); return; }
     if (lease.item !== id) die(`the landing lease in ${name} is held for ${lease.item}, not ${id}: ${lease.holder} has been landing ${lease.item} since ${since(lease)}. Free it with atelier land ${lease.item} --release-lease`);
     // The cancel names the task, so the server frees ${id}'s lease alone.
     const { lease: freed } = await request("POST", leasePath, { cancel: true, item: id });
-    print(`Released the landing lease of ${name}: ${(freed ?? lease).holder} held it for ${id} since ${since(freed ?? lease)}. Another task may land.`);
+    print(`Released the landing lease of ${name}: ${(freed ?? lease).holder} held it for ${id} since ${since(freed ?? lease)}. ${postMerge ? `Post-merge run ${postMerge.id} remains ${postMerge.state}; later merges stay blocked.` : "Another task may land."}`);
     return;
   }
 
@@ -206,6 +214,15 @@ export async function runLand(io) {
   if (!version) die(deploy("the server does not answer GET /api/version"));
   if (level === null) die(deploy("the server is older than route levels"));
   if (level < ROUTE_LEVEL) die(deploy("the server's routes are older than the ones this CLI calls"));
+  if (version.postMergeVersion === 1) {
+    const detail = await request("GET", itemPath);
+    if (detail.item.state === "merged" && detail.postMerge) {
+      if (dryRun) { print(`Post-merge run ${detail.postMerge.id} is ${detail.postMerge.state} at ${detail.postMerge.after}; a resume would execute only pending steps.`); return; }
+      await executePostMerge({ request, name, id, env: io.env, print });
+      return;
+    }
+  }
+
 
   // The lease is read, not taken, so the checks that only refuse are asked
   // before anything changes. A lease held for another live task refuses the
@@ -430,7 +447,7 @@ export async function runLand(io) {
         print(`Landing lease taken for ${id} (${item.state}); one landing at a time in ${name}.`);
         break;
       } catch (error) {
-        const refused = /^landing_lease: /.test(error.message);
+        const refused = /^(landing_lease|post_merge_blocked): /.test(error.message);
         // Another queued landing can take the lease between the poll and
         // this request, the server can judge live a lease this machine's
         // clock judged lapsed, or a landing that queued earlier can still

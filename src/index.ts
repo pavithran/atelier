@@ -1,7 +1,8 @@
+import { parsePostMerge, currentStep, POST_MERGE_VERSION } from "./post-merge.ts";
 import { runnerGitRequest } from "./runner-git.ts";
 import { assertCriteriaAllowed, assertReviewAllowed } from "./rules.ts";
 import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
-import { itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
+import { changedPaths, itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
 import { scanCommit } from "./secret-scan.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
@@ -1058,6 +1059,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       name: project, repo, reset: body.reset === true,
       ...(branch ? { branch } : {}),
       ...(has("title") ? { title: cleanTitle(body.title) ?? null } : {}),
+      ...(has("postMerge") ? { postMerge: parsePostMerge(body.postMerge, actor, new Date().toISOString()) } : {}),
       ...(has("checks") ? { checks: asStrings(body.checks, "checks") } : {}),
       ...(has("checkClasses") ? { checkClasses: parseDeclarations(body.checkClasses) } : {}),
       ...(has("checkPaths") ? { checkPaths: parseCheckPaths(body.checkPaths) } : {}),
@@ -1173,12 +1175,54 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // cancel: true, item } releases that task's lease, answering which task
   // held it since when, and leaves another task's lease alone.
   if (parts[2] === "landing-lease" && parts.length === 3) {
-    if (m === "GET") return json({ lease: await L.readProjectLanding(), waiting: await L.readLandingQueue() });
+    if (m === "GET") {
+      const postMerge = await L.activePostMerge();
+      return json({ lease: await L.readProjectLanding(), waiting: await L.readLandingQueue(), ...(postMerge ? { postMerge } : {}) });
+    }
     requireOwner(env, actor);
     if (body.cancel === true) return json(await L.cancelProjectLanding(String(body.item ?? ""), actor));
     if (body.renew === true) return json({ lease: await L.renewProjectLanding(String(body.item ?? ""), actor) });
     if (body.queued === true) return json(await L.queueProjectLanding(String(body.item ?? ""), actor, body.leave === true));
     return json(await L.beginProjectLanding(String(body.item ?? ""), actor));
+  }
+  if (parts[2] === "post-merge" && parts.length === 4) {
+    const item = parts[3];
+    if (m === "GET") return json({ run: await L.postMergeRun(item) });
+    requireOwner(env, actor);
+    const run = await L.postMergeRun(item);
+    if (!run || run.id !== body.run) throw new RuleError("stale_run", "post-merge run changed", 409);
+    if (body.action === "prepare") {
+      if (!run.after) throw new RuleError("post_merge_blocked", "merge not recorded", 409);
+      using repo = await env.ARTIFACTS.get((await L.project()).repo);
+      const before = await repo.readCommit(run.before), after = await repo.readCommit(run.after);
+      if (!before || !after) throw new RuleError("missing_history", "post-merge diff history is unavailable", 409);
+      const paths = await changedPaths(repoReader(repo), before.treeHash, after.treeHash);
+      return json({ run: await L.preparePostMerge(item, run.id, paths, actor) });
+    }
+    let deployment;
+    const step = run.policy.steps.find(s => s.name === currentStep(run)?.name);
+    if (step?.class === "deploy" && ((body.action === "finish" && body.passed === true) || (body.action === "reconcile" && body.resolution === "completed"))) {
+      // Observe independently of the executor's command result. No owner
+      // credential is sent to the version endpoint and redirects are refused.
+      using repo = await env.ARTIFACTS.get((await L.project()).repo);
+      const commit = await repo.readCommit(run.after!);
+      if (!commit) throw new RuleError("missing_history", "deployment source unavailable", 409);
+      const node = await walk(repoReader(repo), commit.treeHash, ["src", "route-level.ts"]);
+      let requiredLevel = ROUTE_LEVEL;
+      if (node) {
+        if (node.kind !== "blob") throw new RuleError("missing_history", "deployment route level is not a file", 409);
+        const blob = await repo.readBlob(node.hash);
+        if (!blob || blob.size > 65536) throw new RuleError("missing_history", "deployment route level is unavailable", 409);
+        const level = /export\s+const\s+ROUTE_LEVEL\s*=\s*(\d+)\s*;/.exec(await blob.text());
+        if (!level) throw new RuleError("missing_history", "deployment route level cannot be read", 409);
+        requiredLevel = Math.max(requiredLevel, Number(level[1]));
+      }
+      const response = await fetch(step.versionUrl!, { redirect: "error", signal: AbortSignal.timeout(15000) });
+      const v = await response.json() as { commit?: unknown; routeLevel?: unknown };
+      if (!response.ok || v.commit !== run.after || !Number.isInteger(v.routeLevel) || Number(v.routeLevel) < requiredLevel) throw new RuleError("deployment_unverified", "deployment does not report the pinned commit and required route level", 409);
+      deployment = { commit: String(v.commit), routeLevel: Number(v.routeLevel) };
+    }
+    return json({ run: await L.postMergeAction(item, actor, { run: String(body.run), action: String(body.action), attempt: typeof body.attempt === "string" ? body.attempt : undefined, passed: body.passed === true, output: body.output, commandOutcome: body.commandOutcome === "passed" ? "passed" : "failed", publication: body.publication as { source: string; remote: string | null; commits: number } | undefined, reason: body.reason, resolution: body.resolution }, deployment) });
   }
   if (parts[2] === "baseline-token" && m === "POST") {
     const scope = body.scope === "write" ? "write" : "read";
@@ -1900,7 +1944,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const commit = /^[a-f0-9]{40,64}$/.test(merge) ? await baseline.readCommit(merge) : null;
       const history = await baseline.log({limit:1000});
       const observed = !!commit && commit.parents.includes(item.acceptedHead ?? "") && history.some(c=>c.hash===merge);
-      return json(await L.merged(id, actor, merge, observed, item.acceptedHead));
+      const merged = await L.merged(id, actor, merge, observed, item.acceptedHead);
+      const postMerge = await L.postMergeRun(id);
+      return json({ ...merged, ...(postMerge ? { postMerge } : {}) });
     }
     case "landing": {
       requireOwner(env, actor);
@@ -1915,11 +1961,17 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const item = await L.item(id);
         const p = await L.project();
         const top = item.acceptedHead ? await headOf(env, p.repo) : null;
-        const landed = !!top && (await holdsCommit(env, p.repo, top, item.acceptedHead!)).holds === true;
+        const ancestry = top ? (await holdsCommit(env, p.repo, top, item.acceptedHead!)).holds : null;
+        if (await L.postMergeRun(id) && ancestry === null) throw new RuleError("missing_history", "cannot cancel a post-merge reservation without proving the accepted revision is absent from the baseline", 409);
+        const landed = ancestry === true;
         if (landed) throw new RuleError("landed", `${id} is already merged on the baseline; run atelier merge ${id} to record it`, 409);
         return json(await L.cancelLanding(id, actor));
       }
-      return json(await L.beginLanding(id, actor, String(body.head ?? "")));
+      const project = await L.project();
+      if (!project.policy.postMerge) return json(await L.beginLanding(id, actor, String(body.head ?? "")));
+      const generation = await L.mergeGeneration();
+      const before = await headOf(env, project.repo);
+      return json(await L.beginLanding(id, actor, String(body.head ?? ""), before ?? undefined, generation));
     }
     case "plan":
       if (parts.length > 6) break;
@@ -2746,7 +2798,7 @@ export default {
         // refuses on the level, saying to deploy, when the server's is
         // lower than the CLI's.
         if (parts.length === 2 && parts[1] === "version" && (req.method === "GET" || req.method === "HEAD")) {
-          return json({ commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, routeLevel: ROUTE_LEVEL });
+          return json({ commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, routeLevel: ROUTE_LEVEL, postMergeVersion: POST_MERGE_VERSION });
         }
         if (how !== "api" && (typeof how !== "object" || !how)) {
           // A path that names no part of the API answers 404 whoever asks:

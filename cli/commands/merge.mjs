@@ -1,3 +1,4 @@
+import { executePostMerge } from "../post-merge.mjs";
 // atelier merge. Its forms, flags and help are declared in src/usage/commands/merge.ts.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -13,6 +14,7 @@ import { I, OWNER, P, actor, args, at, call, cfg, die, git, gitEnv, itemArg, lan
 // is first approved (with --approve) and accepted at that revision only.
 export default async function mergeCommand() {
   const git = landingGit;
+  const postMerge = (name, id) => executePostMerge({ name, id, request: (method, path, body) => request(method, path, body, OWNER) });
   // A plan's branch is updated only by its integrator, which merges
   // recorded parts, so an accepted plan that conflicts with main would stay
   // accepted with no one able to update it. Its merge, already aborted,
@@ -148,7 +150,7 @@ export default async function mergeCommand() {
     if (!['accepted','merged'].includes(item.state)) die(`${id} is ${item.state}; accept the reviewed revision first`);
     if (args.head && args.head!==item.acceptedHead) die("the accepted revision differs from --head; review it before merging");
     const journal=landingJournal(landing,{project:name,item:id,head:item.acceptedHead});
-    if (item.state==='merged') { journal.clear(); console.log(`${id} is already merged.`); return; }
+    if (item.state==='merged') { journal.clear(); console.log(`${id} is already merged.`); if (d.policy.postMerge || d.postMerge) await postMerge(name, id); return; }
     const acceptedPolicy = acceptancePolicy(d, refreshed?.before ?? d.policy), context = mergeContext(d, refreshed?.items);
     if (refreshed?.policy) {
       const decision = mergePolicyDecision(acceptedPolicy, refreshed.policy, [], false, context);
@@ -268,13 +270,15 @@ export default async function mergeCommand() {
     const alreadyPublished=git(['merge-base','--is-ancestor',published,baselineHead],{cwd,allowFail:true}).status===0;
     git(['push','--quiet',base.remote,...(alreadyPublished?[]:[`${published}:refs/heads/${p.branch}`]),'refs/notes/atelier:refs/notes/atelier'],{cwd,token:base.token});
     journal.save({phase:'published'});
-    await call('POST',`${I(name,id)}/merged`,{mergeCommit:published},OWNER);
+    const recorded = await call('POST',`${I(name,id)}/merged`,{mergeCommit:published},OWNER);
     journal.clear();
-    const notesPush=p.notesRemote?git(['push','--quiet',p.notesRemote,'refs/notes/atelier:refs/notes/atelier'],{cwd,allowFail:true}):null;
+    const privatePublication = (recorded.postMerge?.policy ?? d.policy.postMerge)?.steps.some(s => s.class === 'publish');
+    const notesPush=p.notesRemote&&!privatePublication?git(['push','--quiet',p.notesRemote,'refs/notes/atelier:refs/notes/atelier'],{cwd,allowFail:true}):null;
     console.log(`${id} merged as ${short(mergeCommit)} in ${cwd}${published!==mergeCommit?` (on the baseline as ${short(published)})`:""}; baseline and ledger agree.`);
     console.log(`Provenance: git notes --ref=atelier show ${short(mergeCommit)}`);
     if(notesPush?.status===0)console.log(`Provenance notes pushed to ${p.notesRemote}.`);
     else if(notesPush)console.log(`Provenance notes need retry: git push ${p.notesRemote} refs/notes/atelier:refs/notes/atelier`);
-    console.log("The project branch was not pushed to its own remotes. Nothing was deployed.");
+    if (recorded.postMerge || d.policy.postMerge || d.postMerge) await postMerge(name, id);
+    else console.log("The project branch was not pushed to its own remotes. Nothing was deployed.");
   } finally { unlock(); }
 }
