@@ -24,7 +24,7 @@ test("lists decisions with the next command, work in progress and tasks waiting 
     inbox: [entry("t1", "accept"), entry("t5", "merge"), entry("t2", "overlap")],
   }]).split("\n");
   assert.equal(out[0], "Demo project (demo)");
-  assert.ok(out.includes("      next: atelier accept t1 --project demo"));
+  assert.ok(out.includes("      next: atelier land t1 --reviewer H/M --project demo"));
   assert.ok(out.includes("      next: atelier merge t5 --project demo"));
   assert.ok(out.includes("    t1  submitted  held by claude-code/opus-5.5  Task t1"));
   assert.ok(out.includes("    t2  claimed  held by codex/gpt-6  Task t2"));
@@ -108,12 +108,12 @@ test("three live tasks where t1 overlaps t2 and t3 print two pair lines, each pa
     ],
   }]).split("\n");
   assert.ok(out.includes("    t4  accept  Task t4"), "the owner's waits stay where they are");
-  assert.ok(out.includes("      next: atelier accept t4 --project demo"));
+  assert.ok(out.includes("      next: atelier land t4 --reviewer H/M --project demo"));
   assert.equal(out.filter((l) => l.includes("name overlapping paths")).length, 2, "one line per pair");
   assert.ok(out.includes("    t1 and t2 name overlapping paths"));
   assert.ok(out.includes("    t1 and t3 name overlapping paths"));
   const heading = out.indexOf("  Overlapping scopes");
-  const lastWait = out.indexOf("      next: atelier accept t4 --project demo");
+  const lastWait = out.indexOf("      next: atelier land t4 --reviewer H/M --project demo");
   assert.ok(heading > lastWait, "the pairs print after every wait that needs the owner");
   assert.ok(out.includes("    Expect a merge conflict when the second lands; nothing waits on you."));
 });

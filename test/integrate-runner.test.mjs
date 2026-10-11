@@ -32,6 +32,7 @@ const assignment = {
 function fixture(options = {}) {
   const calls = [], logs = [];
   const io = {
+    prepare: () => assert.fail("this job must not prepare"),
     log: (s) => logs.push(s), stopped: () => false,
     workspacePath: (project, id) => `/cache/work/${project}/${id}`,
     async cli(argv, cwd) {
