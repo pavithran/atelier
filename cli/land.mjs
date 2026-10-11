@@ -120,6 +120,25 @@ import { appendMovedCodeRecord } from "./landing.mjs";
 // own conflicts still stop the landing. A retry compares afresh, so ported
 // edits clear their findings; where main is already merged there is nothing
 // to compare, which the landing says rather than implying no move was missed.
+//
+// A workspace a runner claimed with its runner token pushes through the
+// runner route (t488): its origin is ORIGIN/git/runner/PROJECT/ITEM.git, and
+// the header it carries is the runner's own Git credential, which the server
+// honours for the runner's token and claim alone. The owner's landing cannot
+// push there as itself, and the runner's credential lapses with the runner
+// token, not with the task's write token. So before the lease, and before a
+// Workflow starts — for a task not yet accepted, whatever expiry the
+// workspace records — a runner route found as origin's fetch or push URL is
+// re-claimed for the task's holder with its runner identity, under the
+// owner's credential, which the server answers with the fork remote and a
+// write token of its own; the fork replaces the route as origin's one
+// destination, the route's header goes with it, the expiry is recorded and
+// the fork is fetched, all before anything is leased, pushed or started. The
+// next landing finds the fork and refreshes nothing it need not. A holder the
+// workspace was not claimed by, a re-claim the server refuses, a claim that
+// answers no remote or token, or a remote that cannot be adopted stops the
+// landing there, with the commits untouched; a dry run reads the remotes and
+// writes nothing.
 
 const POLL_MS = Number(process.env.ATELIER_LAND_POLL_MS ?? 5000);
 // The review wait outlasts a build on the runner (its task timeout is 45
@@ -299,6 +318,8 @@ export async function runLand(io) {
     const ahead = aheadOf(waitingRows);
     const queuedAhead = ahead.length ? `${ahead.length} landing${ahead.length === 1 ? "" : "s"} queued ahead of ${id}: ${ahead.map((w) => `${w.item} (queued ${since(w)})`).join(", ")}` : null;
     print(`Dry run: atelier land ${id} in ${name} would:`);
+    const route = d0.item.state === "accepted" ? null : runnerRouteOf(io, dir);
+    if (route) print(`  (first) re-claim ${id} for its holder ${d0.item.owner ?? "(its workspace's builder)"}${d0.item.runner ? ` on ${d0.item.runner}` : ""}, since its workspace ${routeUse(io, dir, route)} the runner route ${shownRemote(route)} with the runner's Git credential, and take the fork remote and write token the claim answers as origin before the lease (a dry run claims nothing and leaves the workspace's remotes and credentials as they are)`);
     print(`  1. ${waitingOn || queuedAhead ? `wait behind ${[waitingOn ? `${waitingOn.holder}'s landing of ${waitingOn.item} (since ${since(waitingOn)})` : null, queuedAhead].filter(Boolean).join(", and ")}, then ` : ""}take the project's landing lease for ${id} (one landing at a time in ${name}, in the order the landings queued)`);
     print(`  2. merge main into ${id}'s workspace (${dir}) once a comparison from their merge base finds none of ${id}'s edits in code main moved to another file (one it finds stops the landing before the merge, naming source and destination${movedOk ? "; --moved-ok records your approval of exactly the findings it detects, then goes on" : ""}); on conflicts, stop and leave them for you to resolve, naming the files, or send them to the task's builder: atelier dispatch ${id} --job merge-main; where main and the task each raised the route level (src/route-level.ts) from one base, raise the merged level past both, wherever the workspace's HEAD holds main — this landing's own merge, a rerun of one you resolved by hand, or a merge that brought main in through a side branch`);
     print(`  3. ${regenerate ? `regenerate the project's fixtures with \`${regenerate}\` and commit what changes; a merge that conflicts only in files that command rewrites is settled by taking either side and regenerating` : "regenerate nothing (the project declares no regenerate command)"}`);
@@ -727,9 +748,81 @@ async function refreshWorkspaceToken(io, { dir, id, itemPath }) {
     io.print(`Claiming ${id} for its workspace's builder ${holder} before refreshing the write token…`);
   }
   const r = await io.request("POST", `${itemPath}/claim`, {}, holder, item.owner && item.runner ? { "x-atelier-runner": item.runner } : {});
-  if (!r?.workspace?.token) throw new StepError(`the re-claim of ${id} as ${holder} returned no workspace token`);
+  if (typeof r?.workspace?.token !== "string" || !r.workspace.token) throw new StepError(`the re-claim of ${id} as ${holder} returned no workspace token`);
+  // The remote the claim answered is origin's one destination before the
+  // header, the expiry and the fetch are taken (t488): a fork workspace
+  // keeps the remote it has, and one on a runner route moves to the fork.
+  const moved = adoptWorkspaceRemote(io, { dir, id, holder }, r.workspace.remote);
   io.adoptWorkspaceToken(dir, r.workspace);
-  return { holder, expiresAt: r.workspace.expiresAt ?? null };
+  return { holder, expiresAt: r.workspace.expiresAt ?? null, remote: r.workspace.remote, moved };
+}
+
+// The runner route a workspace claimed under a runner token fetches from and
+// pushes to (t488): ORIGIN/git/runner/PROJECT/ITEM.git, which the server
+// forwards to the fork for the runner's own Git credential alone.
+const RUNNER_ROUTE = /\/git\/runner\/[^/?#]+\/[^/?#]+$/i;
+const isRunnerRoute = (url) => typeof url === "string" && RUNNER_ROUTE.test(url.trim().replace(/\/+$/, ""));
+// A remote as a message shows it: any userinfo cut, since a URL can carry a
+// credential, and no message of a landing prints one.
+const shownRemote = (url) => String(url).replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/@]*@/i, "$1");
+
+// Where origin fetches from and pushes to, as the workspace's Git config
+// records them, every value of each key: Git fetches from the first URL
+// and pushes to every URL, or to every push URL where any is set apart, so
+// a route that is one of several is read where `--get` would answer only
+// the last. Each URL is trimmed; blank values are left out.
+function originUrls(io, dir) {
+  const readAll = (key) => {
+    const r = io.git(["config", "--local", "--get-all", key], { cwd: dir, allowFail: true });
+    return r && r.status === 0 ? String(r.stdout ?? "").split("\n").map((u) => u.trim()).filter(Boolean) : [];
+  };
+  const urls = readAll("remote.origin.url"), pushUrls = readAll("remote.origin.pushurl");
+  return { urls, pushUrls, url: urls[0] ?? null, destinations: [...urls, ...pushUrls] };
+}
+
+// The runner route origin still fetches from or pushes to, among every URL
+// it is configured with, or null for a workspace on its fork.
+function runnerRouteOf(io, dir) {
+  return originUrls(io, dir).destinations.find(isRunnerRoute) ?? null;
+}
+
+// How the workspace uses the route, for a message: as its fetch and push
+// URL, as a fetch URL alone where push URLs set apart name no route, or as
+// a push URL (one of several, or set apart from a fetch URL that is not
+// the route).
+function routeUse(io, dir, route) {
+  const { url, pushUrls } = originUrls(io, dir);
+  return isRunnerRoute(url) ? (pushUrls.length && !pushUrls.some(isRunnerRoute) ? "fetches from" : "fetches from and pushes to") : "pushes to";
+}
+
+// The remote a re-claim answered, taken as origin's one destination (t488).
+// A fork workspace whose origin is that remote alone, with no push URL
+// apart, is left as it is. Otherwise every fetch URL of origin is replaced
+// by the remote, every push URL set apart is dropped (the fork serves
+// both), and any header .git/config holds for a URL origin no longer uses
+// is removed, so no request carries the runner's credential to the fork or
+// the fork's to the route (the credentials file is rewritten whole by the
+// token's adoption that follows). A claim that answers no remote, or
+// another runner route — the landing's own credential is a runner's, which
+// cannot land — stops here. Answers whether origin moved.
+function adoptWorkspaceRemote(io, { dir, id, holder }, remote) {
+  if (typeof remote !== "string" || !remote.trim()) throw new StepError(`the re-claim of ${id} as ${holder} returned no workspace remote`);
+  if (isRunnerRoute(remote)) throw new StepError(`the re-claim of ${id} as ${holder} answered another runner route (${shownRemote(remote)}) rather than ${id}'s fork, so this landing's own credential is a runner token's; land with the owner's credential`);
+  const { urls, pushUrls, destinations } = originUrls(io, dir);
+  if (urls.length === 1 && urls[0] === remote && !pushUrls.length) return false;
+  const stale = [...new Set(destinations.filter((u) => u !== remote))];
+  // --replace-all leaves origin one fetch URL where it held several.
+  io.git(urls.length ? ["config", "--local", "--replace-all", "remote.origin.url", remote] : ["remote", "add", "origin", remote], { cwd: dir });
+  if (pushUrls.length) {
+    const dropped = io.git(["config", "--local", "--unset-all", "remote.origin.pushurl"], { cwd: dir, allowFail: true });
+    if (dropped.status !== 0 && dropped.status !== 5) throw new StepError(`origin's push URLs could not be dropped from ${id}'s workspace:\n${String(dropped.stderr ?? "").trim()}`);
+  }
+  for (const old of stale) {
+    // Exit status 5 means .git/config held no such header.
+    const unset = io.git(["config", "--local", "--unset-all", `http.${old}.extraHeader`], { cwd: dir, allowFail: true });
+    if (unset.status !== 0 && unset.status !== 5) throw new StepError(`the header for ${shownRemote(old)} could not be removed from ${id}'s workspace:\n${String(unset.stderr ?? "").trim()}`);
+  }
+  return true;
 }
 
 // Before the landing takes the lease: a write token that has lapsed or
@@ -740,18 +833,33 @@ async function refreshWorkspaceToken(io, { dir, id, itemPath }) {
 // could answer later, so a workspace claimed before that was recorded has
 // an unknown expiry, which is refreshed once — the refresh records it, and
 // later landings read it. An accepted task has nothing left to push.
+// A workspace on a runner route (t488) is re-claimed whatever expiry it
+// records, since the route and its credential are the runner's, not the
+// landing's: the claim answers the fork and a write token of its own, which
+// replace the route before the lease.
 async function ensureWorkspaceToken(io, { dir, id, itemPath, item }) {
   if (item?.state === "accepted") return;
+  const route = runnerRouteOf(io, dir);
   const recorded = io.git(["config", "--local", "atelier.write-token-expires-at"], { cwd: dir, allowFail: true }).stdout?.trim() || null;
   const at = recorded ? Date.parse(recorded) : NaN;
-  if (item?.owner && Number.isFinite(at) && at - Date.now() > TOKEN_WINDOW_MS) return;
-  io.print(Number.isFinite(at)
-    ? `${id}'s workspace write token ${at <= Date.now() ? "expired" : "expires"} ${recorded.slice(0, 16).replace("T", " ")} UTC; refreshing it for its holder before the landing takes the lease…`
-    : `${id}'s workspace records no write token expiry (it was claimed before expiries were recorded); refreshing the token for its holder before the landing takes the lease…`);
+  if (!route && item?.owner && Number.isFinite(at) && at - Date.now() > TOKEN_WINDOW_MS) return;
+  const when = Number.isFinite(at) ? `${at <= Date.now() ? "expired" : "expires"} ${recorded.slice(0, 16).replace("T", " ")} UTC` : null;
+  io.print(route
+    ? `${id}'s workspace ${routeUse(io, dir, route)} the runner route ${shownRemote(route)}, with the runner's Git credential${when ? ` (recorded as one that ${when})` : " (its expiry is not recorded)"}, which the owner's landing cannot push through; re-claiming ${id} for its holder to land through its fork, before the landing takes the lease…`
+    : when
+      ? `${id}'s workspace write token ${when}; refreshing it for its holder before the landing takes the lease…`
+      : `${id}'s workspace records no write token expiry (it was claimed before expiries were recorded); refreshing the token for its holder before the landing takes the lease…`);
   let fresh;
   try { fresh = await refreshWorkspaceToken(io, { dir, id, itemPath }); }
-  catch (error) { throw new StepError(`${id}'s workspace write token could not be refreshed, so the landing stops before taking the lease: ${error.message}. Have its builder run atelier claim ${id} in the workspace, then run atelier land ${id} again`); }
-  io.print(`Refreshed ${id}'s workspace write token for ${fresh.holder}${fresh.expiresAt ? `; it expires ${String(fresh.expiresAt).slice(0, 16).replace("T", " ")} UTC` : ""}.`);
+  catch (error) {
+    throw new StepError(route
+      ? `${id}'s workspace could not be moved from the runner route to its fork, so the landing stops before taking the lease: ${error.message}. Its commits are untouched; settle what that names (the task's holder, its claim, or the workspace's remote), then run atelier land ${id} again`
+      : `${id}'s workspace write token could not be refreshed, so the landing stops before taking the lease: ${error.message}. Have its builder run atelier claim ${id} in the workspace, then run atelier land ${id} again`);
+  }
+  const expiry = fresh.expiresAt ? `; it expires ${String(fresh.expiresAt).slice(0, 16).replace("T", " ")} UTC` : "";
+  io.print(route || fresh.moved
+    ? `Moved ${id}'s workspace to its fork ${shownRemote(fresh.remote)} with a write token for ${fresh.holder}${expiry}; the landing pushes there.`
+    : `Refreshed ${id}'s workspace write token for ${fresh.holder}${expiry}.`);
 }
 
 // The landing's push, refreshed and tried once more when the server refuses
