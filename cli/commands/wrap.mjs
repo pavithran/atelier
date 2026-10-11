@@ -32,7 +32,7 @@ export default async function wrapCommand() {
   if (refused.length) die(`${refused.join(".\n")}.\nwrap runs the registered checks in this checkout, so it stopped before running any. Replace the check with atelier init --check, or wrap with --no-check.`);
   const failing = [];
   if (!data.checksSkipped) for (const command of record.policy.checks) {
-    const result = await runGroupedCheck(command, { cwd, env: process.env, maxBytes: 1024 * 1024 });
+    const result = await runGroupedCheck(command, { cwd, env: process.env, metadata: { project: name, actor: as, class: "release" }, maxBytes: 1024 * 1024 });
     const passed = result.status === 0 && !result.error;
     data.checks.push({ command, passed, grade: "reported" });
     console.log(`Reported: ${command}: ${passed ? "passed" : "failed"} (owner's checkout, not a clean clone).`);

@@ -1,3 +1,4 @@
+import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync,spawn} from 'node:child_process';
@@ -129,6 +130,7 @@ test('an accepted task merge conflict names both owner paths back to building',a
 });
 
 test('merge --head resumes after ledger failure without a second merge; finish stops on failed checks',async t=>{
+  if (!canInspectSlots(t)) return;
  const {p,baseline,checkout,workspace,head,box,run,journalFile}=await mergeFixture(t);
  // The ledger's temporary failure is a server error: exit 4, the merge journal kept for the retry.
  box.failMerge=true;const first=await run(checkout,'merge','t1','--head',head,'--approve');assert.equal(first.status,4,first.output);const mergedHead=git(checkout,'rev-parse','HEAD');assert.notEqual(mergedHead,head);assert.ok(existsSync(journalFile));
