@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { runnerRoute } from "../src/tokens.ts";
+import { agentRoute, runnerRoute } from "../src/tokens.ts";
 import { RUNNER_ROUTES, serveRunner } from "./helpers/runner-server.mjs";
 
 // The shared fake runner server (test/helpers/runner-server.mjs) must serve
@@ -9,8 +9,8 @@ import { RUNNER_ROUTES, serveRunner } from "./helpers/runner-server.mjs";
 // gains a route, this test fails until the helper serves it.
 const concrete = (template) => template.split("/").map((part) => part === ":project" ? "demo" : part === ":id" ? "t1" : part === "*" ? "x" : part);
 
-test("every route in the shared helper is one runnerRoute allows", () => {
-  for (const [method, template] of RUNNER_ROUTES) assert.ok(runnerRoute(method, concrete(template), {}), `${method} ${template}`);
+test("every route in the shared helper is one a runner or agent token allows", () => {
+  for (const [method, template] of RUNNER_ROUTES) assert.ok(runnerRoute(method, concrete(template), {}) || agentRoute(method, concrete(template), {}), `${method} ${template}`);
 });
 
 test("the shared helper serves every segment name runnerRoute accepts", () => {

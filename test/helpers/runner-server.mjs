@@ -16,6 +16,8 @@ export const RUNNER_ROUTES = [
   ...["brief", "job-brief", "diff"].map((verb) => ["GET", `${ITEM}/${verb}`]),
   ...["sandbox", "logs", "diffs"].map((verb) => ["GET", `${ITEM}/${verb}/*`]),
   ...["claim", "read-token", "base-token", "push", "evidence", "sandbox", "submit", "plan", "release", "review-skip"].map((verb) => ["POST", `${ITEM}/${verb}`]),
+  // A review runner's lease calls (cli/runner.mjs review jobs): agent routes, served the same way.
+  ...["review-claim", "review-renew", "review-release", "review-unparsable"].map((verb) => ["POST", `${ITEM}/${verb}`]),
 ];
 
 const SEGMENT = /^:|^\*$/;
@@ -41,7 +43,7 @@ const DEFAULTS = {
 // project, id, verb }; a non-function is the 200 body. `requests` holds the
 // item routes called, as "METHOD verb" ("GET item" for the bare item), in order.
 export function serveRunner({ project = "demo", id = "t1", answers = {} } = {}) {
-  const requests = [], all = [];
+  const requests = [], all = [], log = [];
   const server = createServer((req, res) => {
     let text = "";
     req.on("data", (chunk) => { text += chunk; });
@@ -55,6 +57,7 @@ export function serveRunner({ project = "demo", id = "t1", answers = {} } = {}) 
         const isItem = key?.includes(ITEM) && parts[1] === project && parts[3] === id;
         const verb = isItem ? parts[4] ?? "item" : undefined;
         all.push(`${req.method} ${parts.join("/")}`);
+        log.push({ method: req.method, path: req.url, body: text });
         if (isItem) requests.push(`${req.method} ${verb}`);
         if (key) {
           const answer = (isItem ? answers[`${req.method} ${verb}`] : undefined) ?? answers[key] ?? DEFAULTS[key];
@@ -67,7 +70,7 @@ export function serveRunner({ project = "demo", id = "t1", answers = {} } = {}) 
     });
   });
   return new Promise((ready) => server.listen(0, "127.0.0.1", () => ready({
-    url: `http://127.0.0.1:${server.address().port}`, requests, all,
+    url: `http://127.0.0.1:${server.address().port}`, requests, all, log,
     close: () => new Promise((done) => server.close(() => done())),
   })));
 }
