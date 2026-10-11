@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockup: Task page — Atelier</title>
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<div class="mock-head">
+  <p class="mock-back"><a href="index.html">All mockups</a></p>
+  <p class="mock-title">Task page</p>
+  <p class="mock-routes">Covers <code>/p/NAME/tN</code> in all states. Drawn: <code>/p/ledger-core/t192</code> (Ready to accept); the state strip below shows the header for six other states. Fixture time 2026-10-10 12:00 UTC.</p>
+</div>
+
+<div class="frames">
+<figure class="frame desktop">
+<figcaption>Desktop · 1440 · t192</figcaption>
+<div class="screen">
+<header class="ob">
+  <a class="skip" href="#d-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <ul>
+      <li><a href="/decisions">Decisions <span class="count">(14)</span></a></li>
+      <li><a href="/home" aria-current="true">Projects</a></li>
+      <li><a href="/studio">Activity</a></li>
+    </ul>
+    <span class="spacer"></span>
+    <details><summary>Ledger Core ▾</summary><div class="menu-panel"><a href="/p/ledger-core">Ledger Core <span>9</span></a><a href="/p/field-notes">Field Notes <span>4</span></a><a href="/p/open-tool">Open Tool <span>1</span></a><a href="/p/blank-slate">blank-slate</a><a href="/p/cold-storage">cold-storage <span>unavailable</span></a></div></details>
+    <details><summary>Pavi ▾</summary><div class="menu-panel"><a href="/models">Models</a><a href="/usage">Usage</a><hr><a href="/logout">Sign out</a></div></details>
+  </nav>
+  <nav class="r2" aria-label="Project">
+    <p class="loc"><a href="/p/ledger-core">Ledger Core</a><span class="sep">›</span><a href="/p/ledger-core/t192" aria-current="page">t192</a><a class="mk" href="#n1">1</a></p>
+    <ul class="tabs">
+      <li><a href="/p/ledger-core">Overview</a></li>
+      <li><a class="on" href="/p/ledger-core/tasks">Tasks <span class="count">(200)</span></a></li>
+      <li><a href="/p/ledger-core/code">Code</a></li>
+      <li><a href="/p/ledger-core/flow">Activity</a></li>
+      <li><a href="/p/ledger-core/settings">Settings</a></li>
+    </ul>
+  </nav>
+</header>
+<main id="d-main" class="app-main">
+  <p class="dim mono">t192 · task · held by <span class="who f-openai">codex/gpt-6-astra</span></p>
+  <h1>Add idempotency keys to the posting API</h1>
+  <section class="decision r-go" aria-labelledby="d-dec">
+    <h2 id="d-dec" class="row-flex" style="margin:0"><span class="tag go big">Ready to accept</span><span class="muted" style="font:400 15px var(--sans)">revision 9c41e0b · pushed 40 min ago</span><a class="mk" href="#n2">2</a></h2>
+    <p class="why">Checks passed on a runner, in a clean clone, at 9c41e0b. The diff below is the one you accept.</p>
+    <div class="row-flex"><button class="btn primary">Accept revision 9c41e0b</button><a href="#d-evidence">Read the evidence first</a><a class="mk" href="#n3">3</a></div>
+  </section>
+
+  <h2 id="d-evidence">Evidence <a class="mk" href="#n4">4</a></h2>
+  <div class="cols">
+    <div class="card">
+      <p style="margin:0 0 6px"><span class="tag go">Passed</span> <span class="mono">npm test</span></p>
+      <p class="muted" style="margin:0">On runner <span class="mono">mac-mini-2</span>, in a clean clone of 9c41e0b · 2 min 14 s · 12:00 UTC</p>
+      <p class="muted" style="margin:8px 0 0">Agent's summary <span class="dim">(not verified)</span>: "Keys stored 24 h; repeated posts return the first result."</p>
+    </div>
+    <div class="card">
+      <p style="margin:0 0 6px"><strong>4 files</strong> <span class="muted">+182 −20, all inside the declared scope <span class="mono">src/posting/**</span></span></p>
+      <ul class="plain mono" style="line-height:1.8">
+        <li>src/posting/idempotency.ts <span class="dim">+96</span></li>
+        <li>src/posting/handler.ts <span class="dim">+41 −18</span></li>
+        <li>src/posting/store.ts <span class="dim">+23 −2</span></li>
+        <li>test/posting.spec.ts <span class="dim">+22</span></li>
+      </ul>
+      <a href="#d-diff">Open the diff</a>
+    </div>
+  </div>
+
+  <h2>Brief <a class="mk" href="#n5">5</a></h2>
+  <div class="inset">
+    <p style="margin:0;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden">Clients retry posts after timeouts and we record the same journal entry twice. Accept an <span class="mono">Idempotency-Key</span> header on <span class="mono">POST /entries</span>; store the key with the response for 24 hours; a repeat with the same key and body returns the stored response with status 200, a repeat with a different body returns 422. Keys are scoped per account. Do not change the entry schema; a separate table is fine. Add tests for the race where two posts with one key arrive together.</p>
+    <details><summary>Show the whole brief (612 characters) and its criteria</summary></details>
+  </div>
+
+  <h2>Thread</h2>
+  <ul class="rows">
+    <li><span class="id">12:00</span><span>Checks passed on a runner at 9c41e0b</span><span class="meta">mac-mini-2</span><span class="tag go">Passed</span></li>
+    <li><span class="id">11:20</span><span>Pushed 9c41e0b</span><span class="meta"><span class="who f-openai">codex/gpt-6-astra</span></span><span></span></li>
+    <li><span class="id">09:02</span><span>Claimed</span><span class="meta"><span class="who f-openai">codex/gpt-6-astra</span></span><span></span></li>
+  </ul>
+
+  <h2>Other actions <a class="mk" href="#n6">6</a></h2>
+  <div class="row-flex">
+    <details><summary class="btn">Send back with a note…</summary></details>
+    <details><summary class="btn">Block…</summary></details>
+    <a class="btn" href="/p/ledger-core/t192/code">Browse the workspace</a>
+  </div>
+</main>
+</div>
+</figure>
+
+<figure class="frame phone">
+<figcaption>Phone · 390 · t192</figcaption>
+<div class="screen">
+<header class="ob phone">
+  <a class="skip" href="#p-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <a href="/decisions">Decisions <span class="count">(14)</span></a>
+    <span class="spacer"></span>
+    <details><summary>Menu ▾</summary><div class="menu-panel"><a href="/home">Projects</a><a href="/studio">Activity</a><hr><a href="/p/ledger-core">Ledger Core <span>9</span></a><a href="/p/field-notes">Field Notes <span>4</span></a><a href="/p/open-tool">Open Tool <span>1</span></a><hr><a href="/models">Models</a><a href="/usage">Usage</a><a href="/logout">Sign out</a></div></details>
+  </nav>
+  <nav class="r2" aria-label="Project">
+    <p class="loc"><a href="/p/ledger-core">Ledger Core</a><span class="sep">›</span><a href="/p/ledger-core/t192" aria-current="page">t192</a></p>
+    <ul class="tabs"><li><a href="/p/ledger-core">Overview</a></li><li><a class="on" href="/p/ledger-core/tasks">Tasks (200)</a></li><li><a href="/p/ledger-core/code">Code</a></li><li><a href="/p/ledger-core/flow">Activity</a></li><li><a href="/p/ledger-core/settings">Settings</a></li></ul>
+  </nav>
+</header>
+<main id="p-main" class="app-main">
+  <p class="dim mono" style="margin:0">t192 · <span class="who f-openai">codex/gpt-6-astra</span></p>
+  <h1>Add idempotency keys to the posting API</h1>
+  <section class="decision r-go" aria-labelledby="p-dec">
+    <h2 id="p-dec" style="margin:0"><span class="tag go big">Ready to accept</span><a class="mk" href="#n2">2</a></h2>
+    <p class="why">Checks passed on a runner, in a clean clone, at 9c41e0b.</p>
+    <button class="btn primary">Accept revision 9c41e0b</button>
+  </section>
+  <h2>Evidence</h2>
+  <div class="card">
+    <p style="margin:0"><span class="tag go">Passed</span> <span class="mono">npm test</span></p>
+    <p class="muted" style="margin:6px 0 0">Runner mac-mini-2, clean clone · 2 min 14 s</p>
+    <p style="margin:8px 0 0"><strong>4 files</strong> <span class="muted">+182 −20, in scope</span> · <a href="#p-diff">Diff</a></p>
+  </div>
+  <h2>Brief</h2>
+  <div class="inset"><p style="margin:0;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden">Clients retry posts after timeouts and we record the same journal entry twice. Accept an Idempotency-Key header on POST /entries; store the key with the response for 24 hours…</p>
+  <details><summary>Show the whole brief</summary></details></div>
+  <h2>Other actions</h2>
+  <div class="row-flex"><details><summary class="btn">Send back…</summary></details><details><summary class="btn">Block…</summary></details></div>
+</main>
+</div>
+</figure>
+</div>
+
+<p class="section-label">State strip: the decision header in six other states (desktop, cropped) <a class="mk" href="#n7">7</a></p>
+<div class="strip">
+  <div class="screen"><p class="cap">t197 · Round half-even in currency conversion</p>
+    <div class="decision r-fault"><span class="tag fault big">Sent back</span>
+      <p class="why">Sent back — codex reviewer asked for changes at 5a2f6e6c.</p>
+      <div class="row-flex"><a class="btn primary" href="#">Open the review note</a><span class="dim">Approve is not offered: the note stands on this revision.</span></div></div></div>
+  <div class="screen"><p class="cap">t191 · Stream CSV export for large ledgers</p>
+    <div class="decision r-caution"><span class="tag caution big">Ready to accept · diff unreadable</span>
+      <p class="why">Cannot accept yet — changes could not be read. Checks passed at 71be0d2, but the diff was not loaded.</p>
+      <div class="row-flex"><a class="btn primary" href="#">Reload</a><span class="dim">Accept returns once the diff is shown.</span></div></div></div>
+  <div class="screen"><p class="cap">t200 · Paginate account statements</p>
+    <div class="decision r-ask"><span class="tag ask big">Needs review</span>
+      <p class="why">Needs review — 1 file outside its scope: <span class="mono">src/ledger/accounts.ts</span>.</p>
+      <div class="row-flex"><a class="btn primary" href="#">Review the out-of-scope file</a><span class="dim">Accept follows the review.</span></div></div></div>
+  <div class="screen"><p class="cap">t163 · Migrate balances to integer cents</p>
+    <div class="decision r-caution"><span class="tag caution big">Working · stale 2 d</span>
+      <p class="why">Claimed by zcode/glm-5.3 on 8 Oct; nothing pushed for 2 days.</p>
+      <div class="row-flex"><a class="btn primary" href="#">Hand off</a><a class="btn" href="#">Release</a></div></div></div>
+  <div class="screen"><p class="cap">t188 · Lock entries after the period closes</p>
+    <div class="decision r-fault"><span class="tag fault big">Checks failed</span>
+      <p class="why"><span class="mono">npm test</span> failed on a runner, in a clean clone, at 3d90a14: 2 of 418 tests.</p>
+      <div class="row-flex"><a class="btn primary" href="#">Read the failing output</a><span class="dim">The holder has been told; nothing to accept.</span></div></div></div>
+  <div class="screen"><p class="cap">t1 · Initial double-entry posting model</p>
+    <div class="decision r-done"><span class="tag done big">Merged</span>
+      <p class="why">Merged into main as 0f3a9c1 on 2 Sep. Deploying is separate.</p>
+      <div class="row-flex"><a class="btn primary" href="#">See the diff as it landed</a></div></div></div>
+</div>
+
+<section class="notes" aria-labelledby="notes-h">
+  <h2 id="notes-h">Notes</h2>
+  <ol>
+    <li id="n1"><span class="num">1</span><div>The location row replaces the breadcrumb, the rail and the eight tabs: "Ledger Core › t192" carries <code>aria-current="page"</code>; Tasks is shown current but is not a second current. <span class="cite">F1 → P1</span></div></li>
+    <li id="n2"><span class="num">2</span><div>One state word from brief §5, coloured by role and with its shape, replaces the badge, decision line and recommendation that disagreed. <span class="cite">F3 → P3</span></div></li>
+    <li id="n3"><span class="num">3</span><div>One sentence says why, then exactly one primary action. It is computed from everything the page knows: a send-back, failed check, scope change or unreadable diff overrides Ready (see the strip). <span class="cite">F3, F4 → P3</span></div></li>
+    <li id="n4"><span class="num">4</span><div>Evidence comes before any secondary form, and says where it ran (runner, clean clone). Scope is stated beside the file count. <span class="cite">F5, F20 → P3</span></div></li>
+    <li id="n5"><span class="num">5</span><div>The brief folds after three lines with a disclosure; long titles wrap at most twice on phones. <span class="cite">F19 → P3</span></div></li>
+    <li id="n6"><span class="num">6</span><div>Send back and Block are disclosures after the thread, so the 25-word block explanation and up to nine forms no longer precede the evidence. <span class="cite">F5 → P3</span></div></li>
+    <li id="n7"><span class="num">7</span><div>Overrides: t197 offers "Open the review note", never Approve; t191 is qualified "Ready to accept · diff unreadable" in the caution role (like "Working · stale"), says "Cannot accept yet" and offers Reload; t200 is Needs review, not Ready; t163 says stale on its own page with Hand off first. <span class="cite">F3, F4 → P3, P7</span></div></li>
+  </ol>
+</section>
+</body>
+</html>

@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockup: Models and Usage — Atelier</title>
+<link rel="stylesheet" href="mockup.css">
+<style>
+  .state-rows > li { grid-template-columns: 300px 150px 1fr auto; }
+  .meter-row { display: grid; grid-template-columns: 1fr 120px; gap: 10px; align-items: center; }
+  .meter .th { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--text); }
+  .phone .state-rows > li { grid-template-columns: 1fr auto; }
+  .alert { border-left: 4px solid var(--caution); }
+  .alert.over { border-left-color: var(--fault); }
+</style>
+</head>
+<body>
+<div class="mock-head">
+  <p class="mock-back"><a href="index.html">All mockups</a></p>
+  <p class="mock-title">Account: Models and Usage</p>
+  <p class="mock-routes">Covers <code>/models</code> (desktop frame, account menu shown open) and <code>/usage</code> (phone frame). Both are reached from the owner's name, "Pavi ▾", in row 1.</p>
+</div>
+
+<div class="frames">
+<figure class="frame desktop">
+<figcaption>Desktop · 1440 · /models</figcaption>
+<div class="screen">
+<header class="ob">
+  <a class="skip" href="#d-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <ul>
+      <li><a href="/decisions">Decisions <span class="count">(14)</span></a></li>
+      <li><a href="/home">Projects</a></li>
+      <li><a href="/studio">Activity</a></li>
+    </ul>
+    <span class="spacer"></span>
+    <details><summary>Project ▾</summary><div class="menu-panel"><a href="/p/ledger-core">Ledger Core <span>9</span></a></div></details>
+    <details open><summary class="on">Pavi ▾</summary><div class="menu-panel"><a href="/models" aria-current="page">Models</a><a href="/usage">Usage</a><hr><a href="/logout">Sign out</a></div></details><a class="mk" href="#n1">1</a>
+  </nav>
+</header>
+<main id="d-main" class="app-main">
+  <h1>Models</h1>
+  <ul class="counts" aria-label="Pool state">
+    <li><span class="n">0</span><span class="w">in the pool</span></li>
+    <li><span class="n">Off</span><span class="w">AI Gateway</span></li>
+    <li><span class="n">5</span><span class="w">agents seen</span></li>
+    <li style="border:0;background:none"><a class="mk" href="#n2">2</a></li>
+  </ul>
+  <div class="card alert" style="max-width:820px">
+    <p style="margin:0"><span class="tag caution">Pool empty</span> Only agents with their own keys can work. <a class="btn small" href="/models#add">Add a model</a> <a href="/how#models">What the pool is</a></p>
+  </div>
+  <h2>Track record · from 2,293 events <a class="mk" href="#n3">3</a></h2>
+  <ul class="rows state-rows">
+    <li><span class="who f-anthropic">claude-code/opus-5.5</span><span class="tag go">Healthy</span><span class="muted">61 merged · 4 sent back · last 1 h ago</span><span class="meta">in use</span></li>
+    <li><span class="who f-openai">codex/gpt-6-astra</span><span class="tag caution">Near limit</span><span class="muted">48 merged · 7 sent back · 92% of weekly limit</span><span class="meta">in use</span></li>
+    <li><span class="who f-zai">zcode/glm-5.3</span><span class="tag caution">Stale work</span><span class="muted">22 merged · holds t163, no push for 2 d</span><span class="meta">in use</span></li>
+    <li><span class="who f-google">antigravity/gemini-3.1-pro</span><span class="tag go">Healthy</span><span class="muted">31 merged · 2 sent back · last 12 min ago</span><span class="meta">in use</span></li>
+    <li><span class="who f-qwen">opencode/qwen-4</span><span class="tag fault">Checks failing</span><span class="muted">17 merged · 3 of its last 5 failed checks</span><span class="meta">idle</span></li>
+  </ul>
+  <details style="margin-top:16px" id="add"><summary class="btn">Add a model to the pool…</summary></details>
+</main>
+</div>
+</figure>
+
+<figure class="frame phone">
+<figcaption>Phone · 390 · /usage</figcaption>
+<div class="screen">
+<header class="ob phone">
+  <a class="skip" href="#p-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <a href="/decisions">Decisions <span class="count">(14)</span></a>
+    <span class="spacer"></span>
+    <details><summary>Menu ▾</summary><div class="menu-panel"><a href="/home">Projects</a><a href="/studio">Activity</a><hr><a href="/models">Models</a><a href="/usage" aria-current="page">Usage</a><a href="/logout">Sign out</a></div></details>
+  </nav>
+</header>
+<main id="p-main" class="app-main">
+  <h1>Usage</h1>
+  <p class="lede">2 alerts · 2 runners, 1 stale</p>
+  <ul class="plain" style="display:grid;gap:8px">
+    <li class="card alert over"><span class="tag fault">Over limit</span> <strong>codex</strong> 5-hour window at 100%; resets 14:20 UTC</li>
+    <li class="card alert"><span class="tag caution">Near limit</span> <strong>claude-code</strong> 92% of the week</li>
+  </ul>
+  <h2>Limits <a class="mk" href="#n4">4</a></h2>
+  <div class="meter-row"><span>claude-code · week</span><span class="muted">92% / alert 85%</span></div>
+  <div class="meter warn" role="img" aria-label="92 percent, alert at 85 percent"><span style="width:92%"></span><i class="th" style="left:85%"></i></div>
+  <div class="meter-row" style="margin-top:10px"><span>codex · 5 h</span><span class="muted">100% / alert 85%</span></div>
+  <div class="meter over" role="img" aria-label="100 percent, alert at 85 percent"><span style="width:100%"></span><i class="th" style="left:85%"></i></div>
+  <div class="meter-row" style="margin-top:10px"><span>zcode · week</span><span class="muted">41% / alert 85%</span></div>
+  <div class="meter" role="img" aria-label="41 percent, alert at 85 percent"><span style="width:41%"></span><i class="th" style="left:85%"></i></div>
+  <h2>Runners</h2>
+  <ul class="rows state-rows">
+    <li><span>mac-mini-2</span><span class="tag go">Reporting</span><span class="meta">4 min ago</span></li>
+    <li><span>hetzner-ax41</span><span class="tag caution">Stale report</span><span class="meta">3 d ago</span></li>
+  </ul>
+  <p class="dim" style="font-size:13px"><a href="/how#usage">How limits and alerts work</a></p>
+</main>
+</div>
+</figure>
+</div>
+
+<section class="notes" aria-labelledby="notes-h">
+  <h2 id="notes-h">Notes</h2>
+  <ol>
+    <li id="n1"><span class="num">1</span><div>Models and Usage live under the owner's name ("Pavi ▾") with Sign out; the rail's "Settings ▸" and its foot are gone, so "Settings" means the project only. <span class="cite">F1 → P1</span></div></li>
+    <li id="n2"><span class="num">2</span><div>State first: pool size and Gateway as a counts strip, the empty pool as one caution row with its action; the old record of 1,100 words no longer precedes it. <span class="cite">F8 → P11</span></div></li>
+    <li id="n3"><span class="num">3</span><div>One row per agent with a status word and the facts behind it; family colour is the swatch only, never the name's colour. <span class="cite">F8, F17 → P11, P14</span></div></li>
+    <li id="n4"><span class="num">4</span><div>Usage: alerts first, each threshold drawn beside its meter instead of a lead naming four environment settings; explanations link to <code>/how</code>. <span class="cite">F8 → P11</span></div></li>
+  </ol>
+</section>
+</body>
+</html>

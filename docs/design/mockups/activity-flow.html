@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockup: Activity, Flow — Atelier</title>
+<link rel="stylesheet" href="mockup.css">
+<style>
+  .graph line, .graph path { stroke-width: 3; fill: none; }
+  .graph circle { stroke: var(--surface-raised); stroke-width: 2; }
+  .stories > li { grid-template-columns: 70px 1fr auto auto; }
+</style>
+</head>
+<body>
+<div class="mock-head">
+  <p class="mock-back"><a href="index.html">All mockups</a></p>
+  <p class="mock-title">Activity: Flow</p>
+  <p class="mock-routes">Covers <code>/flow</code> (<code>?since=1d|7d|all&amp;family=&amp;more=</code>) and, with the project row, <code>/p/NAME/flow</code> (project Activity tab). Drawn: <code>/flow?since=7d</code>, latest 20 stories.</p>
+</div>
+
+<div class="frames">
+<figure class="frame desktop">
+<figcaption>Desktop · 1440 · /flow?since=7d</figcaption>
+<div class="screen">
+<header class="ob">
+  <a class="skip" href="#d-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <ul>
+      <li><a href="/decisions">Decisions <span class="count">(14)</span></a></li>
+      <li><a href="/home">Projects</a></li>
+      <li><a href="/flow" aria-current="page">Activity</a></li>
+    </ul>
+    <span class="spacer"></span>
+    <details><summary>Project ▾</summary><div class="menu-panel"><a href="/p/ledger-core">Ledger Core <span>9</span></a><a href="/p/field-notes">Field Notes <span>4</span></a><a href="/p/open-tool">Open Tool <span>1</span></a></div></details>
+    <details><summary>Pavi ▾</summary><div class="menu-panel"><a href="/models">Models</a><a href="/usage">Usage</a><hr><a href="/logout">Sign out</a></div></details>
+  </nav>
+</header>
+<main id="d-main" class="app-main">
+  <div class="row-flex">
+    <h1>Flow · last 7 days · all families <a class="mk" href="#n1">1</a></h1>
+    <nav aria-label="Activity views" class="switch"><a href="/studio">Now</a><a href="/flow" aria-current="page">Flow</a><a href="/history">Merges</a></nav>
+  </div>
+  <nav aria-label="Filter the flow" class="row-flex" style="font-size:14px">
+    <span class="chips"><span class="muted">Since</span><a class="chip" href="?since=1d">1 day</a><a class="chip" href="?since=7d" aria-current="page">7 days</a><a class="chip" href="?since=all">All</a></span>
+    <span class="chips"><span class="muted">Family</span><a class="chip" href="?since=7d" aria-current="page">All</a><a class="chip" href="?since=7d&amp;family=anthropic"><span class="who f-anthropic">Anthropic</span></a><a class="chip" href="?since=7d&amp;family=openai"><span class="who f-openai">OpenAI</span></a><a class="chip" href="?since=7d&amp;family=zai"><span class="who f-zai">Z.ai</span></a><a class="chip" href="?since=7d&amp;family=google"><span class="who f-google">Google</span></a><a class="chip" href="?since=7d&amp;family=qwen"><span class="who f-qwen">Qwen</span></a></span>
+  </nav>
+  <p><a href="#d-stories">Skip the graph</a> <a class="mk" href="#n2">2</a></p>
+  <p class="muted" style="font-size:14px;margin:0 0 6px">Line: family · ● merged · ■ stale · dashed: no push for 12 h <a class="mk" href="#n4">4</a></p>
+  <div class="graph" role="img" aria-label="Threads of the 20 latest stories branching from and merging into main; the same stories are listed below.">
+    <svg width="1340" height="150" viewBox="0 0 1340 150" aria-hidden="true">
+      <line class="main" x1="10" y1="20" x2="1330" y2="20"/>
+      <path d="M60 20 C90 20 90 60 120 60 L320 60 C350 60 350 20 380 20" style="stroke:var(--m-anthropic)"/>
+      <path d="M200 20 C230 20 230 95 260 95 L560 95 C590 95 590 20 620 20" style="stroke:var(--m-openai)"/>
+      <path d="M420 20 C450 20 450 60 480 60 L900 60" style="stroke:var(--m-zai)" stroke-dasharray="8 6"/>
+      <path d="M660 20 C690 20 690 130 720 130 L980 130 C1010 130 1010 20 1040 20" style="stroke:var(--m-google)"/>
+      <path d="M940 20 C970 20 970 95 1000 95 L1300 95" style="stroke:var(--m-qwen)"/>
+      <path d="M1080 20 C1110 20 1110 60 1140 60 L1300 60" style="stroke:var(--m-anthropic)"/>
+      <circle cx="380" cy="20" r="7" style="fill:var(--observed)"/>
+      <circle cx="620" cy="20" r="7" style="fill:var(--observed)"/>
+      <circle cx="1040" cy="20" r="7" style="fill:var(--observed)"/>
+      <rect x="893" y="53" width="14" height="14" style="fill:var(--caution)"/>
+      <circle cx="1300" cy="95" r="7" style="fill:var(--fault)"/>
+      <circle cx="1300" cy="60" r="7" style="fill:var(--text-muted)"/>
+    </svg>
+  </div>
+  <h2 id="d-stories" tabindex="-1">Stories · 20 of 61 <a class="mk" href="#n3">3</a></h2>
+  <ul class="rows stories">
+    <li><span class="id">12:00</span><span><strong>Ledger Core t192</strong> · Add idempotency keys to the posting API</span><span class="who f-openai">codex</span><span class="tag go">Ready to accept</span></li>
+    <li><span class="id">11:52</span><span><strong>Ledger Core t188</strong> · Lock entries after the period closes</span><span class="who f-qwen">opencode</span><span class="tag fault">Checks failed</span></li>
+    <li><span class="id">11:41</span><span><strong>Ledger Core t195</strong> · Rotate the signing key for audit exports</span><span class="who f-anthropic">claude-code</span><span class="tag ask">Needs review</span></li>
+    <li><span class="id">10:40</span><span><strong>Ledger Core t197</strong> · Round half-even in currency conversion</span><span class="who f-openai">codex</span><span class="tag fault">Sent back</span></li>
+    <li><span class="id">09:58</span><span><strong>Ledger Core t156</strong> · Validate ISO 4217 codes on import</span><span class="who f-openai">codex</span><span class="tag done">Merged</span></li>
+    <li><span class="id">09:12</span><span><strong>Field Notes t68</strong> · Offline drafts survive app restart</span><span class="who f-google">antigravity</span><span class="tag neutral">Working</span></li>
+    <li><span class="id">8 Oct</span><span><strong>Ledger Core t163</strong> · Migrate balances to integer cents</span><span class="who f-zai">zcode</span><span class="tag caution">Working · stale 2 d</span></li>
+    <li><span class="id dim">…</span><span class="dim">13 more stories</span><span></span><span></span></li>
+  </ul>
+  <p class="pager"><span>Showing the latest 20 · page is about 90 KB</span><a class="btn" href="?since=7d&amp;more=20">Show 20 more</a></p>
+</main>
+</div>
+</figure>
+
+<figure class="frame phone">
+<figcaption>Phone · 390 · /p/ledger-core/flow (project Activity)</figcaption>
+<div class="screen">
+<header class="ob phone">
+  <a class="skip" href="#p-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <a href="/decisions">Decisions <span class="count">(14)</span></a>
+    <span class="spacer"></span>
+    <details><summary>Menu ▾</summary><div class="menu-panel"><a href="/home">Projects</a><a href="/studio">Activity</a><hr><a href="/models">Models</a><a href="/usage">Usage</a><a href="/logout">Sign out</a></div></details>
+  </nav>
+  <nav class="r2" aria-label="Project">
+    <p class="loc"><a href="/p/ledger-core">Ledger Core</a><span class="sep">›</span><span>Activity</span><a class="mk" href="#n5">5</a></p>
+    <ul class="tabs"><li><a href="/p/ledger-core">Overview</a></li><li><a href="/p/ledger-core/tasks">Tasks (200)</a></li><li><a href="/p/ledger-core/code">Code</a></li><li><a href="/p/ledger-core/flow" aria-current="page">Activity</a></li><li><a href="/p/ledger-core/settings">Settings</a></li></ul>
+  </nav>
+</header>
+<main id="p-main" class="app-main">
+  <h1>Activity · all time</h1>
+  <p><a href="#p-stories">Skip the graph</a></p>
+  <div class="graph" role="img" aria-label="Ledger Core's latest 20 threads; listed below.">
+    <svg width="560" height="110" viewBox="0 0 560 110" aria-hidden="true">
+      <line class="main" x1="10" y1="16" x2="550" y2="16"/>
+      <path d="M40 16 C60 16 60 50 80 50 L220 50 C240 50 240 16 260 16" style="stroke:var(--m-openai)"/>
+      <path d="M150 16 C170 16 170 86 190 86 L540 86" style="stroke:var(--m-zai)" stroke-dasharray="8 6"/>
+      <path d="M300 16 C320 16 320 50 340 50 L540 50" style="stroke:var(--m-anthropic)"/>
+      <circle cx="260" cy="16" r="6" style="fill:var(--observed)"/>
+      <rect x="533" y="79" width="14" height="14" style="fill:var(--caution)"/>
+    </svg>
+  </div>
+  <p class="dim" style="font-size:13px">The graph scrolls sideways inside its frame.</p>
+  <h2 id="p-stories" tabindex="-1">Stories · 20 of 200</h2>
+  <ul class="rows">
+    <li><span class="id">t192</span><span class="tag go">Ready to accept</span><span class="title">Add idempotency keys to the posting API</span></li>
+    <li><span class="id">t188</span><span class="tag fault">Checks failed</span><span class="title">Lock entries after the period closes</span></li>
+    <li><span class="id">t163</span><span class="tag caution">Working · stale 2 d</span><span class="title">Migrate balances to integer cents</span></li>
+  </ul>
+  <p><a class="btn" href="?more=20">Show 20 more</a></p>
+</main>
+</div>
+</figure>
+</div>
+
+<section class="notes" aria-labelledby="notes-h">
+  <h2 id="notes-h">Notes</h2>
+  <ol>
+    <li id="n1"><span class="num">1</span><div>The filter state is in the heading ("last 7 days · all families"); filters stay links that work without script. <span class="cite">F6 → P8</span></div></li>
+    <li id="n2"><span class="num">2</span><div>"Skip the graph" precedes each graph, so a keyboard user does not tab through every bead to reach the list. Beads that remain focusable get the 2 px ring. <span class="cite">F16, F10 → P13</span></div></li>
+    <li id="n3"><span class="num">3</span><div>The latest 20 stories by default with "Show 20 more": roughly 90 KB instead of 1.5 MB and 1,681 links. <span class="cite">F6, F10 → P8</span></div></li>
+    <li id="n4"><span class="num">4</span><div>Graph lines use family colour plus a shape for state (dashed + square for stale, filled circle for merged); every story is also written below with its state word. <span class="cite">F17, F11 → P14, P4</span></div></li>
+    <li id="n5"><span class="num">5</span><div>The project's flow is the same view inside the project row (Activity tab); the old <code>/flow?project=</code> keeps its 301. <span class="cite">F1 → P1, P8</span></div></li>
+  </ol>
+</section>
+</body>
+</html>

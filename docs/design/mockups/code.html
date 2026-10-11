@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockup: Code — Atelier</title>
+<link rel="stylesheet" href="mockup.css">
+<style>
+  .tree > li { grid-template-columns: 6px 260px 1fr auto; gap: 12px; padding: 8px 4px; }
+  .tree .stripe { width: 6px; height: 22px; border-radius: 2px; background: var(--fam); }
+  .tree a { color: var(--text); font-family: var(--mono); font-size: 14px; text-decoration: none; }
+  .log > li { grid-template-columns: 6px 90px 1fr auto auto; }
+  .phone .tree > li { grid-template-columns: 6px 1fr auto; }
+  .phone .tree .msg { display: none; }
+</style>
+</head>
+<body>
+<div class="mock-head">
+  <p class="mock-back"><a href="index.html">All mockups</a></p>
+  <p class="mock-title">Project: Code</p>
+  <p class="mock-routes">Covers <code>/p/NAME/code/PATH</code>, <code>/p/NAME/log</code>, <code>/p/NAME/commit/HASH</code>, <code>/p/NAME/history/PATH</code>, and a task's workspace under <code>/p/NAME/tN/code</code>. Drawn: <code>/p/ledger-core/code</code> (Files) and <code>/p/ledger-core/log</code> (Log).</p>
+</div>
+
+<div class="frames">
+<figure class="frame desktop">
+<figcaption>Desktop · 1440 · Files</figcaption>
+<div class="screen">
+<header class="ob">
+  <a class="skip" href="#d-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <ul>
+      <li><a href="/decisions">Decisions <span class="count">(14)</span></a></li>
+      <li><a href="/home" aria-current="true">Projects</a></li>
+      <li><a href="/studio">Activity</a></li>
+    </ul>
+    <span class="spacer"></span>
+    <details><summary>Ledger Core ▾</summary><div class="menu-panel"><a href="/p/ledger-core">Ledger Core <span>9</span></a><a href="/p/field-notes">Field Notes <span>4</span></a><a href="/p/open-tool">Open Tool <span>1</span></a></div></details>
+    <details><summary>Pavi ▾</summary><div class="menu-panel"><a href="/models">Models</a><a href="/usage">Usage</a><hr><a href="/logout">Sign out</a></div></details>
+  </nav>
+  <nav class="r2" aria-label="Project">
+    <p class="loc"><a href="/p/ledger-core">Ledger Core</a><span class="sep">›</span><span>Code</span><a class="mk" href="#n1">1</a></p>
+    <ul class="tabs">
+      <li><a href="/p/ledger-core">Overview</a></li>
+      <li><a href="/p/ledger-core/tasks">Tasks <span class="count">(200)</span></a></li>
+      <li><a href="/p/ledger-core/code" aria-current="page">Code</a></li>
+      <li><a href="/p/ledger-core/flow">Activity</a></li>
+      <li><a href="/p/ledger-core/settings">Settings</a></li>
+    </ul>
+  </nav>
+</header>
+<main id="d-main" class="app-main">
+  <div class="row-flex">
+    <h1>Code <span class="muted mono" style="font-size:18px;font-weight:400">main @ 7e21b04</span></h1>
+    <nav aria-label="Code views" class="switch"><a href="/p/ledger-core/code" aria-current="page">Files</a><a href="/p/ledger-core/log">Log</a></nav><a class="mk" href="#n2">2</a>
+  </div>
+  <p class="lede"><span class="mono">/</span> · 7 entries · last change t156 by codex/gpt-6-astra, 2 h ago</p>
+  <ul class="rows tree">
+    <li class="f-zai"><span class="stripe"></span><a href="/p/ledger-core/code/migrations">migrations/</a><span class="muted msg">Fix off-by-one in statement ranges (t153)</span><span class="meta">9 h</span></li>
+    <li class="f-openai"><span class="stripe"></span><a href="/p/ledger-core/code/src">src/</a><span class="muted msg">Validate ISO 4217 codes on import (t156)</span><span class="meta">2 h</span></li>
+    <li class="f-google"><span class="stripe"></span><a href="/p/ledger-core/code/test">test/</a><span class="muted msg">Seed chart of accounts for tests (t151)</span><span class="meta">1 d</span></li>
+    <li class="f-anthropic"><span class="stripe"></span><a href="/p/ledger-core/code/DESIGN.md">DESIGN.md</a><span class="muted msg">Show closing balance per period (t155)</span><span class="meta">5 h</span></li>
+    <li class="f-qwen"><span class="stripe"></span><a href="/p/ledger-core/code/package.json">package.json</a><span class="muted msg">Rename Txn to Entry in the API (t150)</span><span class="meta">1 d</span></li>
+    <li class="f-anthropic"><span class="stripe"></span><a href="/p/ledger-core/code/README.md">README.md</a><span class="muted msg">Initial double-entry posting model (t1)</span><span class="meta">38 d</span></li>
+    <li class="f-zai"><span class="stripe"></span><a href="/p/ledger-core/code/tsconfig.json">tsconfig.json</a><span class="muted msg">Migrate tests to node:test (t40)</span><span class="meta">30 d</span></li>
+  </ul>
+  <p class="muted" style="font-size:14px">The stripe is the family of the last change; the message names it in words. <a class="mk" href="#n3">3</a></p>
+  <h2>README.md</h2>
+  <div class="inset" tabindex="0" style="font-family:var(--mono);font-size:14px;white-space:pre-wrap">Ledger Core — double-entry posting, statements and exports.
+npm test   runs the suite (418 tests)</div><a class="mk" href="#n4">4</a>
+</main>
+</div>
+</figure>
+
+<figure class="frame phone">
+<figcaption>Phone · 390 · Files</figcaption>
+<div class="screen">
+<header class="ob phone">
+  <a class="skip" href="#p-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <a href="/decisions">Decisions <span class="count">(14)</span></a>
+    <span class="spacer"></span>
+    <details><summary>Menu ▾</summary><div class="menu-panel"><a href="/home">Projects</a><a href="/studio">Activity</a><hr><a href="/models">Models</a><a href="/usage">Usage</a><a href="/logout">Sign out</a></div></details>
+  </nav>
+  <nav class="r2" aria-label="Project">
+    <p class="loc"><a href="/p/ledger-core">Ledger Core</a><span class="sep">›</span><span>Code</span></p>
+    <ul class="tabs"><li><a href="/p/ledger-core">Overview</a></li><li><a href="/p/ledger-core/tasks">Tasks (200)</a></li><li><a href="/p/ledger-core/code" aria-current="page">Code</a></li><li><a href="/p/ledger-core/flow">Activity</a></li><li><a href="/p/ledger-core/settings">Settings</a></li></ul>
+  </nav>
+</header>
+<main id="p-main" class="app-main">
+  <h1>Code</h1>
+  <nav aria-label="Code views" class="switch"><a href="/p/ledger-core/code" aria-current="page">Files</a><a href="/p/ledger-core/log">Log</a></nav>
+  <p class="muted mono" style="font-size:13px">main @ 7e21b04 · /</p>
+  <ul class="rows tree">
+    <li class="f-zai"><span class="stripe"></span><a href="/p/ledger-core/code/migrations">migrations/</a><span class="meta">9 h</span></li>
+    <li class="f-openai"><span class="stripe"></span><a href="/p/ledger-core/code/src">src/</a><span class="meta">2 h</span></li>
+    <li class="f-google"><span class="stripe"></span><a href="/p/ledger-core/code/test">test/</a><span class="meta">1 d</span></li>
+    <li class="f-anthropic"><span class="stripe"></span><a href="/p/ledger-core/code/DESIGN.md">DESIGN.md</a><span class="meta">5 h</span></li>
+    <li class="f-qwen"><span class="stripe"></span><a href="/p/ledger-core/code/package.json">package.json</a><span class="meta">1 d</span></li>
+  </ul>
+</main>
+</div>
+</figure>
+
+<figure class="frame desktop small">
+<figcaption>Desktop · 1440 · Log (page 1 of 4)</figcaption>
+<div class="screen">
+<header class="ob">
+  <nav class="r1" aria-label="Atelier"><a class="brand" href="/decisions">Atelier</a><ul><li><a href="/decisions">Decisions <span class="count">(14)</span></a></li><li><a href="/home" aria-current="true">Projects</a></li><li><a href="/studio">Activity</a></li></ul><span class="spacer"></span><details><summary>Ledger Core ▾</summary></details><details><summary>Pavi ▾</summary></details></nav>
+  <nav class="r2" aria-label="Project"><p class="loc"><a href="/p/ledger-core">Ledger Core</a><span class="sep">›</span><span>Code</span></p>
+    <ul class="tabs"><li><a href="/p/ledger-core">Overview</a></li><li><a href="/p/ledger-core/tasks">Tasks <span class="count">(200)</span></a></li><li><a href="/p/ledger-core/code" aria-current="page">Code</a></li><li><a href="/p/ledger-core/flow">Activity</a></li><li><a href="/p/ledger-core/settings">Settings</a></li></ul></nav>
+</header>
+<main class="app-main">
+  <div class="row-flex"><h1>Log · 157 commits</h1><nav aria-label="Code views" class="switch"><a href="/p/ledger-core/code">Files</a><a href="/p/ledger-core/log" aria-current="page">Log</a></nav></div>
+  <ul class="rows tree log">
+    <li class="f-openai"><span class="stripe"></span><a href="/p/ledger-core/commit/7e21b04">7e21b04</a><span>Validate ISO 4217 codes on import <span class="muted">(t156)</span></span><span class="who">codex/gpt-6-astra</span><span class="meta">2 h</span></li>
+    <li class="f-anthropic"><span class="stripe"></span><a href="/p/ledger-core/commit/c09d1e2">c09d1e2</a><span>Show closing balance per period <span class="muted">(t155)</span></span><span class="who">claude-code/opus-5.5</span><span class="meta">5 h</span></li>
+    <li class="f-zai"><span class="stripe"></span><a href="/p/ledger-core/commit/41aa8f0">41aa8f0</a><span>Fix off-by-one in statement ranges <span class="muted">(t153)</span></span><span class="who">zcode/glm-5.3</span><span class="meta">9 h</span></li>
+    <li class="f-google"><span class="stripe"></span><a href="/p/ledger-core/commit/9b3c771">9b3c771</a><span>Seed chart of accounts for tests <span class="muted">(t151)</span></span><span class="who">antigravity/gemini-3.1-pro</span><span class="meta">1 d</span></li>
+  </ul>
+  <nav class="pager" aria-label="Pages"><span>Commits 1–50 of 157 <a class="mk" href="#n5">5</a></span><span class="row-flex"><span class="btn small" aria-disabled="true">← Newer</span><a class="btn small" href="?page=1">Older →</a></span></nav>
+</main>
+</div>
+</figure>
+</div>
+
+<section class="notes" aria-labelledby="notes-h">
+  <h2 id="notes-h">Notes</h2>
+  <ol>
+    <li id="n1"><span class="num">1</span><div>One location row, "Ledger Core › Code", replaces the breadcrumb + tabs + rail; deeper paths extend it (Ledger Core › Code › src › ui.ts). <span class="cite">F1 → P1</span></div></li>
+    <li id="n2"><span class="num">2</span><div>Files · Log is a switch inside Code, so Log no longer competes with "History" in the rail; commit and path-history pages sit under the same tab. <span class="cite">F1 → P1</span></div></li>
+    <li id="n3"><span class="num">3</span><div>The family stripe is kept (a strength) and the last change is also written in words, so colour never carries it alone. <span class="cite">F20, F17 → P14</span></div></li>
+    <li id="n4"><span class="num">4</span><div>File views and code lines (<code>tabindex="0"</code>) get the same 2 px focus ring as links. <span class="cite">F16 → P13</span></div></li>
+    <li id="n5"><span class="num">5</span><div>The Log keeps its 50-a-page paging with Newer/Older; "no commits yet" and "no workspace" become in-shell messages that keep this row. <span class="cite">F6, F14 → P2</span></div></li>
+  </ol>
+</section>
+</body>
+</html>
