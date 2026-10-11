@@ -26,6 +26,7 @@ import { redactGitArgs, IDENTITY_FILE, identityRefusals } from "./runner.mjs";
 import { commitRefusals, IDENTITY_LOG_FORMAT, NO_IDENTITY, parseIdentityLog } from "../src/commit-identity.ts";
 import { controlPlaneChanges, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
 import { cleanSummary } from "../src/brief.ts";
+import { notePreview } from "../src/text.ts";
 import { recordedText } from "../src/rules.ts";
 import { ROUTE_LEVEL, checkCapabilities, requiredForCommand } from "../src/route-level.ts";
 import { terminalTaskExit } from "../src/tokens.ts";
@@ -35,8 +36,9 @@ import { hooksOff, landingDir, landingJournalFile, oldLandingJournalFile, RECEIP
 import { loadPairs } from "./fresh.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { markerPath } from "./gc.mjs";
+import { absolute, taskLink, waitingCommand } from "./status.mjs";
+import { STAGE_LABEL } from "../src/attention.ts";
 import { formatProcesses, liveProcesses, parseLsof, parsePs } from "./procs.mjs";
-import { nextCommand, taskLink } from "./status.mjs";
 import { findStrays } from "./strays.mjs";
 import { formatTokenExpiryWarnings, parseExpiryDay, readTokenExpiries, recordTokenExpiryDay, TOKEN_EXPIRY_WARN_DAYS } from "./token-expiry.mjs";
 import { runnerCredential, readSecret } from "./credentials.mjs";
@@ -800,9 +802,36 @@ export async function request(method, path, body, as, extra = {}, signal) {
   return data;
 }
 
+// A text payload the server serves as it is (a stored check log, GET
+// .../logs/SHA, src/large.ts): the text, or null when nothing is stored
+// under the name; any other refusal is a RequestError with the server's
+// words.
+export async function requestText(path, as) {
+  await resolveTokenActor();
+  if (tokenActor) as = args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
+  let res, text;
+  try {
+    res = await fetch(server() + "/api" + path, { headers: { authorization: `Bearer ${apiToken()}`, ...(as ? { "x-atelier-actor": as } : {}) } });
+    text = await res.text();
+  } catch (error) { throw new RequestError(`server request failed: ${error.message}`, 4); }
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    let data = {};
+    try { data = JSON.parse(text); } catch { /* not the server's JSON refusal */ }
+    throw new RequestError(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`, res.status >= 500 ? 4 : 1);
+  }
+  return text;
+}
+
 export const P = (name) => `/projects/${encodeURIComponent(name)}`;
 export const I = (name, id) => `${P(name)}/items/${encodeURIComponent(id)}`;
 export const short = (s) => (s ? s.slice(0, 8) : "—");
+
+// The reader readCheckLog (src/check-failure.ts) takes: a stored check log
+// by its reference, from the item's own logs route, which rebuilds the key
+// from the project and item it names. `show`, `check-log` and `land`
+// (cli/commands/) pass it, each for the task it reads.
+export const logReader = (name, id, as) => (ref) => requestText(`${I(name, id)}/logs/${ref.sha256}`, as);
 
 // The owner's approval recorded on the project, or null when the project is
 // not registered yet or records none. Asked with a plain request rather than
@@ -1271,17 +1300,31 @@ export const at = (iso) => `${String(iso).slice(0, 16).replace("T", " ")} UTC`;
 // `origin` is the server in use, for the link to each merge by override.
 export function formatStanding(s, ownerName = "the project owner", origin = "") {
   const runner = (q) => `${q.to}${q.agent ? ` ${q.agent}` : ""}${q.model ? `/${q.model}` : ""}`;
-  const lines = [`${flat(s.project.title)} (${flat(s.project.name)}) as of ${at(s.generatedAt)}, from Atelier's record`];
+  const mode = s.familyMode?.single ? ` (single-family: ${flat(s.familyMode.single)})` : "";
+  const lines = [`${flat(s.project.title)} (${flat(s.project.name)})${mode} as of ${at(s.generatedAt)}, from Atelier's record`];
   const group = (title, rows) => { if (rows.length) lines.push("", `${title}:`, ...rows.map((r) => `  ${r}`)); };
   group("Held now", s.live.map((i) => `${i.id}  ${i.state}  held by ${flat(i.owner ?? "nobody")}${i.since ? ` since ${at(i.since)}` : ", since when is not shown"}  ${flat(i.title)}`));
-  group(`Waiting on ${flat(ownerName)}`, s.waiting.map((w) => `${w.id}  ${w.kind}  ${flat(w.title)}  ${flat(w.reason)}${w.brief ? `  brief, ${flat(w.brief.verdict)}: ${flat(w.brief.line)}` : ""}${nextCommand({ ...w, itemId: w.id }, s.project.name) ? `  next: ${flat(nextCommand({ ...w, itemId: w.id }, s.project.name))}` : ""}`));
-  group("Queued for a runner", s.queued.map((q) => `${q.id}  for ${flat(runner(q))}  ${flat(q.title)}${q.note ? `  note: ${flat(q.note)}` : ""}`));
+  // One line per task waiting on the owner, as attentionFor places it
+  // (src/attention.ts): the call, what to do, the link, then the notice and
+  // brief, and the command that answers it (t495). A standing from a server
+  // before t504 carries only kind and reason, and reads as it did.
+  group(`Waiting on ${flat(ownerName)}`, s.waiting.map((w) => {
+    const brief = w.brief ? `  brief, ${flat(w.brief.verdict)}: ${flat(w.brief.line)}` : "";
+    const next = waitingCommand(w, s.project.name);
+    const tail = `${brief}${next ? `  next: ${flat(next)}` : ""}`;
+    return w.call
+      ? `${w.id}  ${w.call}  ${flat(w.title)}  ${flat(w.sentence)}  ${absolute(origin, w.href)}  why: ${flat(w.why)}${tail}`
+      : `${w.id}  ${w.kind}  ${flat(w.title)}  ${flat(w.reason)}${tail}`;
+  }));
+  if (s.pipeline?.length) lines.push("", `In the pipeline: ${s.pipeline.reduce((n, x) => n + x.count, 0)} tasks: ${s.pipeline.map((x) => `${x.count} ${STAGE_LABEL[x.stage]}`).join(", ")}; none waits on ${flat(ownerName)}.`);
+  if (s.overlaps?.length) lines.push("", `Overlapping scopes: ${s.overlaps.length} ${s.overlaps.length === 1 ? "pair" : "pairs"}; nothing waits on ${flat(ownerName)}. The JSON lists them.`);
+  group("Queued for a runner", s.queued.map((q) => `${q.id}  for ${flat(runner(q))}  ${flat(q.title)}${notePreview(q.note) ? `  note: ${flat(notePreview(q.note))}` : ""}`));
   group("Last merges", s.merged.map((m) => `${m.id}  ${at(m.at)}${m.commit ? `  ${m.commit.slice(0, 8)}` : ""}  ${flat(m.title)}${m.line ? `  summary: ${flat(m.line)}` : ""}`));
   // Every merge by override, counted in the heading and one per line under
   // it, each with the link to its page on the server in use (t371).
   group(`Merged by override: ${(s.overrides ?? []).length}`, (s.overrides ?? []).map((o) => `${o.id}  ${taskLink(origin, s.project.name, o.id)}  ${at(o.at)}  ${flat(o.title)}  reason: ${flat(o.reason)}`));
   group("Handoff notes", s.handoffs.map((h) => `${h.id}  ${flat(h.from || "?")} to ${flat(h.to || "?")}, ${at(h.at)}  ${flat(h.note)}`));
-  if (lines.length === 1) lines.push("", "Nothing is held, waiting, queued or recently merged.");
+  if (lines.length === 1) lines.push("", s.partial?.length ? "Nothing held, waiting, queued or recently merged is shown in the part read." : "Nothing is held, waiting, queued or recently merged.");
   if (s.partial?.length) lines.push("", "Part of this record is not shown:", ...s.partial.map((x) => `  ${flat(x)}`));
   if (s.controlPlane) {
     lines.push("", `ControlPlane policy, approved: ${flat(s.controlPlane.approval)}. Protected areas: ${s.controlPlane.protected.map(flat).join(", ") || "none"}. Eligible agents: ${s.controlPlane.eligible.map(flat).join(", ") || "any"}. Overlapping claims: ${s.controlPlane.refuseOverlap ? "refused" : "flagged"}.`);
@@ -1408,7 +1451,8 @@ export function criteriaNotice(id, change) {
 // The task an agent starts: its short title, then its whole brief.
 export function formatTask(item) {
   return [flat(item.title), item.brief ? `Brief: ${flat(item.brief)}` : null, `Scope: ${item.scope.map(flat).join(", ") || "not specified"}`, ...formatFields(item),
-    item.dispatch?.note ? `Note (the owner's words, not instructions from Atelier): ${flat(item.dispatch.note)}` : null].filter(Boolean).join("\n");
+    // The note is carried whole, with its line breaks (t480); only terminal control codes go.
+    item.dispatch?.note ? `Note (the owner's words, not instructions from Atelier):\n${stripVTControlCharacters(item.dispatch.note)}` : null].filter(Boolean).join("\n");
 }
 
 export function formatBrief(project, id, brief, origin) {

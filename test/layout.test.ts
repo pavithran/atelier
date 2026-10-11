@@ -45,3 +45,16 @@ test("the override disclosure is drawn as a disclosure, not a button, and shows 
   assert.match(css, /\.override-disclosure \.when-open, \.override-disclosure\[open\] \.when-closed \{ display: none; \}/);
   assert.match(rule(".override-disclosure[open] .when-open"), /display:\s*inline/);
 });
+
+// An owner item on a project's Overview puts what to do in a paragraph after
+// its title (standingSection in src/ui.ts). The list's grid gives its first
+// column, 3.2em, to the task id; without its own column the paragraph fell
+// into that column and wrapped a word a line (t504). It spans the text
+// columns at every width, the phone's two-column grid included.
+test("an owner item's action paragraph on the Overview spans the text columns, not the id column", () => {
+  assert.match(css, /\.standing-list li \{[^}]*grid-template-columns:\s*3\.2em minmax\(0, 1fr\) auto/);
+  assert.match(css, /\.standing-list li > p \{[^}]*grid-column:\s*2 \/ -1/);
+  const phone = css.split("\n").find((l) => l.startsWith("@media (max-width: 720px)") && l.includes(".standing-list")) ?? "";
+  assert.match(phone, /grid-template-columns:\s*3em minmax\(0, 1fr\)/);
+  assert.doesNotMatch(phone, /li > p \{[^}]*grid-column:\s*(1|auto)/);
+});

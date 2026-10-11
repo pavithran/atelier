@@ -3,10 +3,14 @@ import {expect,it} from 'vitest';
 import { NO_CRITERIA } from "../src/criteria.ts";
 import {renderInbox,renderItem,renderProject,renderProjectTasks,renderProjectSettings,renderProjectFlow,renderProjectShip,renderHome,renderHistory,renderProjectPlans,renderModels,renderError,type Detail} from '../src/ui';
 import {buildFloor} from '../src/floor';
+import {attentionFor} from '../src/attention';
+import type {InboxEntry} from '../src/rules';
 import {stamp} from '../src/time';
 import type {ProjectRecord} from '../src/ledger';
 const head='a'.repeat(40),time='2026-10-03T12:00:00Z';
 const project:ProjectRecord={name:'example',repo:'example',policy:{checks:['npm test'],protected:['src/**']},createdAt:time};
+// The waiting rule's placement for one project, at the fixtures' time, with no runner offers.
+const place=(items:any[],entries:Partial<InboxEntry>[],name='example')=>attentionFor(name,items as never,entries.map((x)=>({project:name,title:'',reason:'r',weight:1,...x})) as never,[],new Date(time));
 // A server behind Access, whose task page offers the override forms (t371).
 function detail():Detail{return{ownerActor:'pavi',ownerFactor:'access',item:{id:'t1',title:'<script>unsafe title</script>',state:'submitted',owner:'codex/gpt-6',scope:['src/**'],fork:'example--t1',base:'b'.repeat(40),head,acceptedHead:null,lastPushAt:time,updatedAt:time,createdAt:time},policy:project.policy,evidence:[{itemId:'t1',claim:'npm test',grade:'observed',head,passed:true,by:'codex/gpt-6',at:time,changedPaths:['src/a.ts']}],reviews:[],gate:{ready:false,needsAssessor:true,blockers:['Protected'],outOfScope:[]},events:[]};}
 it('review puts revision-bound actions before the diff and escapes untrusted task text',()=>{
@@ -147,10 +151,23 @@ it('the dispatch and withdraw forms carry the revision, as every other form does
   const send = renderItem(project, d, 'PAVI', null);
   const sendForm = send.slice(send.indexOf('action="/ui/example/t1/dispatch"'));
   expect(sendForm.slice(0, 200)).toContain(`name="head" value="${head}"`);
+  // The page takes a note as long as the CLI's (t480): a full set of findings.
+  expect(sendForm).toContain('<textarea name="note" rows="4" maxlength="2000"></textarea>');
   d.item.dispatch = { to: 'home', agent: null, model: null, by: 'pavi', at: time, note: '' };
   const wait = renderItem(project, d, 'PAVI', null);
   const withdraw = wait.slice(wait.indexOf('action="/ui/example/t1/undispatch"'));
   expect(withdraw.slice(0, 200)).toContain(`name="head" value="${head}"`);
+});
+
+it('the task page shows a waiting dispatch note whole, line breaks kept and escaped (t480)', () => {
+  const d = detail();
+  d.item.state = 'open'; d.item.owner = null;
+  d.item.dispatch = { to: 'home', agent: null, model: null, by: 'pavi', at: time, note: 'Findings:\n1. <b>first</b>\n2. second' };
+  const html = renderItem(project, d, 'PAVI', null);
+  expect(html).toContain('<p class="dispatch-note">Findings:\n1. &lt;b&gt;first&lt;/b&gt;\n2. second</p>');
+  expect(html).not.toContain('<b>first</b>');
+  // The page's own stylesheet keeps those breaks on screen.
+  expect(html).toMatch(/\.dispatch-note \{ white-space: pre-wrap;/);
 });
 
 // ── flow ──
@@ -619,75 +636,63 @@ it('the thread is left off when the record holds no claim, and the note when the
  const html=renderItem(project,merged,'PAVI',null);
  expect(html).toContain('id="thread"');expect(html).not.toContain('<g class="g-note');
 });
-it('Decisions draws one card per waiting entry, each with its brief and a mini-thread',()=>{
+it('Decisions draws one card per task waiting on the owner, each with its brief, a mini-thread and the link to act',()=>{
  const a=threaded('t1','First'),b=threaded('t2','Second <i>x</i>');
- const entries=[{project:'example',itemId:'t2',title:'Second <i>x</i>',kind:'assess' as const,reason:'r',weight:80},{project:'example',itemId:'t1',title:'First',kind:'accept' as const,reason:'r',weight:100}];
- const html=renderInbox(entries,[project],'PAVI',undefined,[],undefined,new Date(),[],undefined,new Map([['example/t1',a],['example/t2',b]]));
+ b.item.state='blocked';b.item.blocked={by:'codex/gpt-6',reason:'keys',at:time,from:'claimed'};
+ const att=place([a.item,b.item],[{itemId:'t2',kind:'blocked'},{itemId:'t1',kind:'accept'}]);
+ const html=renderInbox([att],[project],'PAVI',undefined,[],undefined,new Date(),[],undefined,new Map([['example/t1',a],['example/t2',b]]));
  expect(html.match(/class="decision-card"/g)).toHaveLength(2);
  expect(html.match(/<svg class="graph compact mini"/g)).toHaveLength(2);
+ // Unblocking comes before accepting in the rule's precedence.
  expect(html.indexOf('data-task="example/t2"')).toBeLessThan(html.indexOf('data-task="example/t1"'));
  expect(html).toContain('href="/decisions?project=example&task=t1#review"');
  expect(html).toContain('href="/p/example/t1">Open the task page</a>');
+ expect(html).toContain('Accept the revision, whose required checks all passed at its head.');
+ expect(html).toContain('Settle what blocks it, then unblock it so it goes on.');
  expect(html).toContain('class="card-brief"');
- expect(html).toContain('<span class="tag ask">review</span>');
- expect(html).toContain('class="g-edge approve pop"');expect(html).toContain('class="g-edge reject pop"');
+ expect(html).toContain('2 tasks need your attention.');
  expect(html).toContain('Second &lt;i&gt;x&lt;/i&gt;');expect(html).not.toContain('<i>x</i>');
 });
-it('a waiting entry without its record stays a plain row, and an empty inbox renders as before',()=>{
- const entries=[{project:'example',itemId:'t1',title:'First',kind:'accept' as const,reason:'r',weight:100}];
- const plain=renderInbox(entries,[project],'PAVI');
+it('a waiting task without its record stays a plain row with its action link, and an empty inbox renders as before',()=>{
+ const att=place([threaded('t1','First').item],[{itemId:'t1',kind:'accept'}]);
+ const plain=renderInbox([att],[project],'PAVI');
  expect(plain).toContain('class="decision-row"');expect(plain).not.toContain('class="decision-card"');
+ expect(plain).toContain('<p class="meta card-links"><a href="/p/example/t1">Open the task page</a></p>');
  const empty=renderInbox([],[project],'PAVI');
  expect(empty).toContain('You’re clear.');expect(empty).toContain('Nothing is waiting on you.');expect(empty).not.toContain('class="decision-card"');
- const selected=renderInbox(entries,[project],'PAVI',{project,detail:threaded(),diff:null},[],undefined,new Date(),[],undefined,new Map([['example/t1',threaded()]]));
+ const selected=renderInbox([att],[project],'PAVI',{project,detail:threaded(),diff:null},[],undefined,new Date(),[],undefined,new Map([['example/t1',threaded()]]));
  expect(selected).toContain('aria-current="true"');expect(selected).toContain('aria-label="Selected task"');
 });
 it('a selected decision marks the desk and carries a back link; without one, the list stands alone',()=>{
- const entries=[{project:'example',itemId:'t1',title:'First',kind:'accept' as const,reason:'r',weight:100}];
- const selected=renderInbox(entries,[project],'PAVI',{project,detail:threaded(),diff:null},[],undefined,new Date(),[],undefined,new Map([['example/t1',threaded()]]));
+ const att=place([threaded('t1','First').item],[{itemId:'t1',kind:'accept'}]);
+ const selected=renderInbox([att],[project],'PAVI',{project,detail:threaded(),diff:null},[],undefined,new Date(),[],undefined,new Map([['example/t1',threaded()]]));
  expect(selected).toContain('class="desk has-selection"');
  expect(selected).toContain('class="review-back" href="/decisions"');
  expect(selected).toContain('>All decisions</span>');
- const rest=renderInbox(entries,[project],'PAVI');
+ const rest=renderInbox([att],[project],'PAVI');
  expect(rest).toContain('class="desk">');
  expect(rest).not.toContain('class="desk has-selection"');
  expect(rest).not.toContain('class="review-back"');
 });
-it('Decisions lists the lead developer\'s own calls under Needs your attention and the orchestrator\'s apart',()=>{
-  const entries=[
-    {project:'example',itemId:'t1',title:'Accept me',kind:'accept' as const,reason:'r',weight:100},
-    {project:'example',itemId:'t2',title:'Merge me',kind:'merge' as const,reason:'r',weight:90},
-    {project:'example',itemId:'t3',title:'Stale me',kind:'stale' as const,reason:'r',weight:50},
-  ];
-  const html=renderInbox(entries,[project],'PAVI');
+it('Decisions lists only the owner\'s calls under Needs your attention; the pipeline and overlapping scopes sit in disclosures',()=>{
+  const it=(id:string,state:string,title:string)=>({...detail().item,id,state,title});
+  const att=place([it('t1','submitted','Accept me'),it('t2','accepted','Merge me'),it('t3','claimed','Stale me'),it('t4','submitted','Assess me')],[
+    {itemId:'t1',kind:'accept'},{itemId:'t2',kind:'merge'},{itemId:'t3',kind:'stale'},{itemId:'t4',kind:'assess'},
+    {itemId:'t1',kind:'overlap',reason:'scope overlaps t3 (codex/gpt-6)'},
+  ]);
+  const html=renderInbox([att],[project],'PAVI');
   const needs=html.indexOf('Needs your attention');
-  const handled=html.indexOf('Handled by the orchestrator');
-  expect(needs).toBeGreaterThan(-1);expect(handled).toBeGreaterThan(-1);
-  expect(needs).toBeLessThan(handled);
-  expect(html.indexOf('Accept me')).toBeLessThan(handled);
-  expect(html.indexOf('Merge me')).toBeGreaterThan(handled);
-  expect(html.indexOf('Stale me')).toBeGreaterThan(handled);
-  expect(html).toContain('1 decision needs your attention.');
-});
-it('Decisions lists a task that has both an own call and a handled one under each list with its own kind, the handled row linking to the task page',()=>{
-  const entries=[
-    {project:'example',itemId:'t1',title:'Assess me',kind:'assess' as const,reason:'r',weight:100},
-    {project:'example',itemId:'t1',title:'Merge me',kind:'merge' as const,reason:'r',weight:90},
-  ];
-  const html=renderInbox(entries,[project],'PAVI');
-  const needs=html.indexOf('Needs your attention');
-  const handled=html.indexOf('Handled by the orchestrator');
-  expect(needs).toBeGreaterThan(-1);expect(handled).toBeGreaterThan(-1);
-  expect(needs).toBeLessThan(handled);
-  const ownSection=html.slice(needs,handled);
-  const handledSection=html.slice(handled);
-  expect(ownSection).toContain('Review required');
-  expect(ownSection).not.toContain('Ready to merge');
-  expect(ownSection).toContain('href="/decisions?project=example&task=t1#review"');
-  expect(handledSection).toContain('Ready to merge');
-  expect(handledSection).not.toContain('Review required');
-  expect(handledSection).toContain('href="/p/example/t1"');
-  expect(handledSection).not.toContain('aria-current');
+  const pipeline=html.indexOf('<details class="disclosure pipeline">');
+  const overlaps=html.indexOf('<details class="disclosure overlaps">');
+  expect(needs).toBeGreaterThan(-1);expect(pipeline).toBeGreaterThan(needs);expect(overlaps).toBeGreaterThan(pipeline);
+  expect(html.indexOf('Accept me')).toBeLessThan(pipeline);
+  for(const t of ['Merge me','Stale me','Assess me'])expect(html.indexOf(t)).toBeGreaterThan(pipeline);
+  expect(html).toContain('3 tasks in the pipeline: 1 in review · 1 accepted · 1 building</summary>');
+  expect(html).toContain('1 pair of tasks with overlapping scopes</summary>');
+  expect(html.slice(0,pipeline)).not.toContain('overlap');
+  expect(html).toContain('1 task needs your attention.');
+  // A task carrying an own call and other notices is one row.
+  expect(html.match(/task=t1#review/g)).toHaveLength(1);
 });
 it('the merge preview says plainly whether a task would merge into main, and escapes paths',async()=>{
  const {renderMainPreview}=await import('../src/ui');
@@ -930,7 +935,7 @@ async function standingFixture(over:Partial<{approval:string}>={}){
  const items=[
   {...base,id:'t1',title:'Held <b>task</b>',state:'claimed',owner:'claude-code/opus-5.5'},
   {...base,id:'t2',title:'Ready task',state:'submitted',owner:'codex/gpt-6',head},
-  {...base,id:'t3',title:'Queued task',state:'open',owner:null,dispatch:{to:'home',agent:'codex',model:'gpt-6',by:'pavi',at:at(5),note:'<i>small</i>'}},
+  {...base,id:'t3',title:'Queued task',state:'open',owner:null,dispatch:{to:'home',agent:'codex',model:'gpt-6',by:'pavi',at:at(5),note:'<i>small</i>\nSecond line of the findings'}},
   ...[4,5,6,7,8,9,10].map((n)=>({...base,id:`t${n}`,title:`Merged ${n}`,state:'merged',owner:null,acceptedHead:head,updatedAt:at(n+6)})),
  ] as never[];
  const evs=[
@@ -945,19 +950,26 @@ async function standingFixture(over:Partial<{approval:string}>={}){
  d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[]};
  const tasks=new Map<string,any[]>();
  for(const ev of evs as any[])tasks.set(ev.itemId,[...(tasks.get(ev.itemId)??[]),ev]);
- return {buildStanding,renderProject,renderProjectSettings,renderProjectTasks,p,items,evs,tasks,inbox,details:new Map([['t2',d]]),now:new Date('2026-10-05T12:00:00Z')};
+ const now=new Date('2026-10-05T12:00:00Z');
+ // A live runner offers what t3 is queued for, so it stays in the pipeline.
+ const offers=[{runner:'home:studio',kind:'home',jobs:['build'],agents:[{agent:'codex',models:['gpt-6']}],at:now.toISOString()}] as never[];
+ const att=(entries:any[]=inbox,list:any[]=items)=>attentionFor('example',list as never,entries as never,offers,now);
+ return {buildStanding,renderProject,renderProjectSettings,renderProjectTasks,p,items,evs,tasks,inbox,att,details:new Map([['t2',d]]),now};
 }
 it('the Overview tab leads with where the project stands: waiting with a brief, queued, merged and handoff notes; who holds what is the Tasks tab',async()=>{
  const f=await standingFixture();
- const s=f.buildStanding(f.p,f.items,f.tasks,300,f.inbox,f.details,f.now);
+ const s=f.buildStanding(f.p,f.items,f.tasks,300,f.att(),f.details,f.now);
  const html=f.renderProject(f.p,f.items,[],'PAVI',s);
  const sec=html.slice(html.indexOf('id="standing"'),html.indexOf('<details class="disclosure"'));
  expect(html.indexOf('id="standing"')).toBeLessThan(html.indexOf('<details class="disclosure"'));
  // The one list of who holds what is the Tasks tab's, not a second one here (finding 8).
  expect(sec).not.toContain('Held now');
  expect(sec).toContain('Waiting on the owner');expect(sec).toContain('all checks observed passing · brief, accept: 1 of 1 required checks passed at this revision and nothing blocks it.');
- expect(sec).not.toContain('bad');expect(sec).toContain('Ready to accept');
+ expect(sec).not.toContain('bad');expect(sec).toContain('<span class="tag go">Accept</span>');
+ expect(sec).toContain('Accept the revision, whose required checks all passed at its head. <a href="/p/example/t2">Open the task page</a>');
  expect(sec).toContain('Queued for a runner');expect(sec).toContain('for home codex/gpt-6 · sent by pavi');
+ // A queued row shows the note's first-line preview; the whole note is the task page's (t480).
+ expect(sec).toContain(' · &lt;i&gt;small&lt;/i&gt;…</span>');expect(sec).not.toContain('Second line of the findings');
  expect(sec).toContain('Last merges');
  expect((sec.match(/href="\/p\/example\/t(?:4|5|6|7|8|9|10)"/g)||[]).length).toBe(5);
  expect(sec).toContain('Merged 10');expect(sec).toContain('Merged &lt;u&gt;summary&lt;/u&gt;');
@@ -969,7 +981,7 @@ it('the Overview tab leads with where the project stands: waiting with a brief, 
 });
 it('the standing section and the Settings tab escape everything a person or agent wrote',async()=>{
  const f=await standingFixture({approval:'<b>PAVI</b>'});
- const s=f.buildStanding(f.p,f.items,f.tasks,300,f.inbox,f.details,f.now);
+ const s=f.buildStanding(f.p,f.items,f.tasks,300,f.att(),f.details,f.now);
  const page=f.renderProject(f.p,f.items,[],'PAVI',s);
  const sec=page.split('id="standing"')[1].split('<details class="disclosure"')[0];
  for(const raw of ['<b>task</b>','<script>x</script>','<i>small</i>','<b>PAVI</b>','<u>summary</u>'])expect(page).not.toContain(raw);
@@ -980,53 +992,89 @@ it('the standing section and the Settings tab escape everything a person or agen
  for(const esc of ['ControlPlane policy, approved: &lt;b&gt;PAVI&lt;/b&gt;','Protected areas: src/**. Eligible agents: claude. Overlapping claims: refused.'])expect(settings).toContain(esc);
  expect(settings).not.toContain('<b>PAVI</b>');
 });
+// t394: a project on one company's models says so under its title on every
+// tab, on the Settings tab under Models, and in the standing data; the
+// default names the mode on Settings alone, with a recorded return.
+it('single-family mode is named under the project title on every tab, on Settings, and in the standing data',async()=>{
+ const f=await standingFixture();
+ const mode={single:'anthropic' as const,by:'<b>pavi</b>',at:'2026-10-09T10:00:00.000Z'};
+ const single:ProjectRecord={...f.p,policy:{...f.p.policy,familyMode:mode}};
+ const banner='Single-family mode, anthropic: building and reviewing use anthropic models only, and a review counts from a different anthropic model than every contributor, not from another company (set by &lt;b&gt;pavi&lt;/b&gt; on 2026-10-09).';
+ for(const page of [f.renderProject(single,f.items as never,f.evs as never,'PAVI'),f.renderProjectTasks(single,f.items as never),f.renderProjectSettings(single)]){
+  expect(page).toContain(`<p class="meta family-mode" role="note">${banner}</p>`);
+  expect(page).not.toContain('<b>pavi</b>');
+ }
+ expect(f.renderProjectSettings(single)).toContain('<dt>Models</dt><dd>Single-family mode, anthropic:');
+ expect(f.buildStanding(single,f.items,f.tasks,300,f.att(),f.details,f.now).familyMode).toEqual(mode);
+ // The default: no banner, Settings says cross-family, and a recorded return names who and when.
+ const plain=f.renderProjectSettings(f.p);
+ expect(plain).not.toContain('family-mode');
+ expect(plain).toContain('<dt>Models</dt><dd>Cross-family, the default: a protected change needs approval from a model of another company than every contributor</dd>');
+ expect(f.buildStanding(f.p,f.items,f.tasks,300,f.att(),f.details,f.now).familyMode).toBeNull();
+ const returned:ProjectRecord={...f.p,policy:{...f.p.policy,familyMode:{single:null,by:'pavi',at:'2026-10-10T10:00:00.000Z'}}};
+ expect(f.renderProject(returned,f.items as never,f.evs as never,'PAVI')).not.toContain('family-mode');
+ expect(f.renderProjectSettings(returned)).toContain('<dt>Models</dt><dd>Cross-family, the default: a protected change needs approval from a model of another company than every contributor (set by pavi on 2026-10-10)</dd>');
+ // The task page's ask for a review names the mode too.
+ const d=detail();
+ const task=renderItem(single,{...d,policy:single.policy},'PAVI',null);
+ expect(task).toContain('a different anthropic model than every contributor (single-family mode)');
+ expect(renderItem(f.p,d,'PAVI',null)).not.toContain('single-family');
+ const strict={...single,policy:{...single.policy,noOverride:true}};
+ const strictPage=renderItem(strict,{...d,policy:strict.policy},'PAVI',{head,base:'b'.repeat(40),files:[],truncated:false});
+ expect(strictPage).toContain('the revision lands only with an approval from a different anthropic model from every contributor (single-family mode).');
+ expect(strictPage).not.toContain('the revision lands only with an approval from a model of another family');
+});
 it('the standing data lists the last five merges newest first, with the agent\'s summary, and empty parts are left out',async()=>{
  const f=await standingFixture();
- const s=f.buildStanding(f.p,f.items,f.tasks,300,f.inbox,f.details,f.now);
+ const s=f.buildStanding(f.p,f.items,f.tasks,300,f.att(),f.details,f.now);
  expect(s.merged.map((m)=>m.id)).toEqual(['t10','t9','t8','t7','t6']);
  expect(s.merged[0].commit).toBe('10'.repeat(40));
  expect(s.merged[0].line).toBe('Merged <u>summary</u>');expect(s.merged[1].line).toBeNull();
  expect(s.waiting.map((w)=>w.id)).toEqual(['t2']);
  expect(s.live.map((l)=>l.id)).toEqual(['t1','t2']);
  expect(s.handoffs.map((h)=>h.note)).toEqual(['Read <script>x</script> first']);
- const quiet=f.buildStanding(f.p,[],new Map(),300,[],new Map(),f.now);
+ const quiet=f.buildStanding(f.p,[],new Map(),300,f.att([],[]),new Map(),f.now);
  expect(f.renderProject(f.p,[],[],'PAVI',quiet)).toContain('Nothing is waiting, queued or recently merged.');
  expect(f.renderProject(f.p,[],[],'PAVI',quiet)).not.toContain('<h3>');
 });
 
-it('a waiting task keeps the inbox\'s own reason, with the brief after it, and an overlap names the other task',async()=>{
+it('the Overview waits only on the owner\'s calls, one per task; the pipeline and overlaps are counted in disclosures',async()=>{
  const f=await standingFixture();
  const inbox=[
   {project:'example',itemId:'t2',title:'Ready task',kind:'accept' as const,reason:'all checks observed passing',weight:100},
-  {project:'example',itemId:'t2',title:'Ready task',kind:'overlap' as const,reason:'scope overlaps t9 (codex/gpt-6)',weight:40},
+  {project:'example',itemId:'t2',title:'Ready task',kind:'overlap' as const,reason:'scope overlaps t1 (claude-code/opus-5.5)',weight:40},
   {project:'example',itemId:'t1',title:'Held',kind:'stale' as const,reason:'claude-code/opus-5.5 has not pushed for 14h; hand it off or release it',weight:50},
  ];
- const s=f.buildStanding(f.p,f.items,f.tasks,300,inbox,f.details,f.now);
- const t2=s.waiting.find((w)=>w.id==='t2')!,t1=s.waiting.find((w)=>w.id==='t1')!;
- expect(t2.kind).toBe('accept');expect(t2.kinds).toEqual(['accept','overlap']);
- expect(t2.reason).toBe('all checks observed passing; scope overlaps t9 (codex/gpt-6)');
- expect(t1.kind).toBe('stale');expect(t1.reason).toContain('hand it off or release it');expect(t1.brief).toBeNull();
- const sec=f.renderProject(f.p,f.items,[],'PAVI',s).split('id="standing"')[1].split('<details class="disclosure"')[0];
- expect(sec).toContain('scope overlaps t9 (codex/gpt-6) · brief, accept: ');
- expect(sec).toContain('hand it off or release it');expect(sec).not.toContain('brief, wait');
+ const s=f.buildStanding(f.p,f.items,f.tasks,300,f.att(inbox),f.details,f.now);
+ expect(s.waiting.map((w)=>[w.id,w.call])).toEqual([['t2','accept']]);
+ expect(s.waiting[0].why).toBe('all checks observed passing');
+ expect(s.pipeline).toEqual([{stage:'building',count:1},{stage:'queued',count:1}]);
+ expect(s.overlaps).toEqual([['t1','t2']]);
+ const html=f.renderProject(f.p,f.items,[],'PAVI',s);
+ const sec=html.split('id="standing"')[1].split('<details class="disclosure')[0];
+ expect(sec).toContain('1 task waiting on you here');
+ expect(sec).toContain('all checks observed passing · brief, accept: ');
+ expect(sec).not.toContain('hand it off or release it');expect(sec).not.toContain('scope overlaps');
+ expect(html).toContain('2 tasks in the pipeline: 1 building · 1 queued for a runner</summary>');
+ expect(html).toContain('1 pair of tasks with overlapping scopes</summary>');
 });
 it('since when comes from the task\'s own claim or handoff, and a record that cannot say is reported, not guessed',async()=>{
  const f=await standingFixture();
  // t1 was updated days after it was taken; its own events say when it was taken.
  const late=f.items.map((i:any)=>i.id==='t1'?{...i,updatedAt:'2026-10-09T00:00:00.000Z'}:i);
- const ok=f.buildStanding(f.p,late as never,f.tasks,300,[],new Map(),f.now);
+ const ok=f.buildStanding(f.p,late as never,f.tasks,300,f.att([],late),new Map(),f.now);
  expect(ok.live.find((l)=>l.id==='t1')!.since).toBe('2026-10-04T10:02:00.000Z');
  expect(ok.partial.filter((x)=>x.startsWith('t1: '))).toEqual([]);
  // Its events are cut: the window is full and holds no claim. Nothing is made up.
  const cut=new Map(f.tasks);cut.set('t1',[{seq:50,at:'2026-10-04T10:40:00.000Z',actor:'claude-code/opus-5.5',kind:'push.observed',itemId:'t1',data:{head}}] as never);
- const s=f.buildStanding(f.p,late as never,cut as never,1,[],new Map(),f.now);
+ const s=f.buildStanding(f.p,late as never,cut as never,1,f.att([],late),new Map(),f.now);
  expect(s.live.find((l)=>l.id==='t1')!.since).toBeNull();
  expect(s.partial).toContain('t1: when it was taken is not shown, because its record is longer than the last 1 events read.');
  const html=f.renderProject(f.p,late as never,[],'PAVI',s);
  expect(html).toContain('Part of this record is not shown');expect(html).toContain('when it was taken is not shown');
  expect(html.split('id="standing"')[1].split('<details class="disclosure"')[0]).not.toContain('2026-10-09');
  // A task whose record was not read at all says so.
- const unread=f.buildStanding(f.p,late as never,new Map(),300,[],new Map(),f.now);
+ const unread=f.buildStanding(f.p,late as never,new Map(),300,f.att([],late),new Map(),f.now);
  expect(unread.partial).toContain('t1: when it was taken is not shown, because its record was not read here.');
 });
 it('the last merges come from the merged items, however much newer work there is',async()=>{
@@ -1034,7 +1082,7 @@ it('the last merges come from the merged items, however much newer work there is
  const {standingTasks}=await import('../src/ui');
  expect(standingTasks(f.items as never)).toEqual(['t1','t2','t10','t9','t8','t7','t6']);
  // Merge times are the items' own; a task with no events read still lists, from its item.
- const s=f.buildStanding(f.p,f.items,new Map([['t10',f.tasks.get('t10')!]]),300,[],new Map(),f.now);
+ const s=f.buildStanding(f.p,f.items,new Map([['t10',f.tasks.get('t10')!]]),300,f.att([]),new Map(),f.now);
  expect(s.merged).toHaveLength(5);
  expect(s.merged[0]).toMatchObject({id:'t10',commit:'10'.repeat(40),line:'Merged <u>summary</u>'});
  expect(s.merged[1]).toMatchObject({id:'t9',commit:null,at:'2026-10-04T10:15:00.000Z'});
@@ -1043,7 +1091,7 @@ it('the last merges come from the merged items, however much newer work there is
 
 it('the standing page shows the newest session with escaped reported text', async () => {
  const f = await standingFixture();
- const s = f.buildStanding(f.p, [], new Map(), 100, [], new Map(), new Date(time));
+ const s = f.buildStanding(f.p, [], new Map(), 100, f.att([], []), new Map(), new Date(time));
  s.session = { actor: 'codex/gpt-6-astra', at: time, data: { summary: '<script>session</script>', next: 'Continue', head, dirty: true, checks: [{ command: 'npm test', passed: false, grade: 'reported' }], checksSkipped: false } };
  const html = f.renderProject(f.p, [], [], 'PAVI', s);
  expect(html).toContain('Newest session');
@@ -1123,14 +1171,18 @@ it('Home draws a card per project with what waits, what runs, its two-week graph
   {seq:4,itemId:'t3',at:at(2),actor:'claude-code/opus-5.5',kind:'item.claimed',data:{}},
   {seq:5,itemId:'t3',at:at(1),actor:'pavi',kind:'item.accepted',data:{head}},
  ].reverse();
- const waiting=[{project:'cloudflare-git',itemId:'t2',title:'Open <i>thing</i>',kind:'assess' as const,reason:'a review is wanted',weight:80}];
+ items[1]={...items[1],title:'Open <i>thing</i>',kind:'plan'} as never;
+ const waiting=place(items,[{itemId:'t2',kind:'approve-plan',reason:'the planner proposed 2 parts'}],'cloudflare-git');
  const html=renderHome([{project:titled,items,events,waiting},{project:{...project,name:'gone'},items:[],unavailable:true}],'PAVI',now,'pavi');
  expect(html.match(/<li class="project-card/g)).toHaveLength(2);
  expect(html).toContain('<h1>Home</h1>');
  expect(html).toContain('href="/flow">the whole flow</a>');expect(html).toContain('href="/history">the timeline of merges</a>');
  expect(html).toContain('<h2>&lt;Atelier&gt;</h2>');expect(html).toContain('href="/p/cloudflare-git"');
  expect(html).toContain('<b>1</b>waiting on you');expect(html).toContain('<b>1</b>running');expect(html).toContain('<b>1</b>ready to start');expect(html).toContain('<b>1</b>merged');
- expect(html).toContain('Waiting on you');expect(html).toContain('href="/p/cloudflare-git/t2">Open &lt;i&gt;thing&lt;/i&gt;</a>');expect(html).not.toContain('<i>thing</i>');
+ expect(html).toContain('Waiting on you');expect(html).toContain('href="/p/cloudflare-git/t2"><strong>Open &lt;i&gt;thing&lt;/i&gt;</strong></a>');
+ expect(html).toContain('Read the planner&#39;s split, then approve it by its hash or send it back with a note.');
+ // A project not read says its count is unknown, never none.
+ expect(html).toContain('<b>?</b>waiting on you');expect(html).not.toContain('<i>thing</i>');
  expect(html).toContain('Running');expect(html).toContain('href="/p/cloudflare-git/t1"');
  expect(html).toContain('Last merge: <a href="/p/cloudflare-git/t3">');
  expect(html.match(/<svg class="pulse-graph"/g)).toHaveLength(1);
@@ -1148,42 +1200,35 @@ it('Home draws a card per project with what waits, what runs, its two-week graph
  expect(quiet).toContain('Nothing merged yet.');
  expect(renderHome([],'PAVI',now,'pavi')).toContain('Start with one project');
 });
-it('Home lists what the orchestrator handles apart from what waits on the lead developer',async()=>{
+it('Home counts only the owner\'s calls as waiting, one per task, with the pipeline and overlaps in disclosures',async()=>{
   const {renderHome}=await import('../src/ui');
   const titled={...project,name:'cloudflare-git',title:'Atelier'};
-  const items=[{...detail().item,id:'t1',state:'submitted' as const},{...detail().item,id:'t2',state:'accepted' as const}];
-  const waiting=[
-    {project:'cloudflare-git',itemId:'t1',title:'Assess me',kind:'assess' as const,reason:'r',weight:80},
-    {project:'cloudflare-git',itemId:'t2',title:'Merge me',kind:'merge' as const,reason:'r',weight:90},
-  ];
+  const items=[{...detail().item,id:'t1',title:'Assess me',state:'submitted' as const},{...detail().item,id:'t2',title:'Merge me',state:'accepted' as const},{...detail().item,id:'t3',title:'Accept me',state:'submitted' as const}];
+  const waiting=place(items,[
+    {itemId:'t1',kind:'assess',reviewer:'codex/gpt-6-astra'},{itemId:'t2',kind:'merge'},{itemId:'t3',kind:'accept'},{itemId:'t3',kind:'scope'},
+    {itemId:'t1',kind:'overlap',reason:'scope overlaps t3 (codex/gpt-6)'},
+  ],'cloudflare-git');
   const html=renderHome([{project:titled,items,waiting}],'PAVI',new Date('2026-10-06T14:30:00Z'),'pavi');
   const yours=html.indexOf('<h3>Waiting on you</h3>');
-  const handled=html.indexOf('<h3>Handled by the orchestrator</h3>');
-  expect(yours).toBeGreaterThan(-1);expect(handled).toBeGreaterThan(-1);
-  expect(yours).toBeLessThan(handled);
-  expect(html.indexOf('Assess me')).toBeLessThan(handled);
-  expect(html.indexOf('Merge me')).toBeGreaterThan(handled);
+  const pipeline=html.indexOf('<details class="disclosure pipeline">');
+  expect(yours).toBeGreaterThan(-1);expect(pipeline).toBeGreaterThan(yours);
+  expect(html.indexOf('Accept me')).toBeLessThan(pipeline);
+  expect(html.indexOf('Assess me')).toBeGreaterThan(pipeline);expect(html.indexOf('Merge me')).toBeGreaterThan(pipeline);
   expect(html).toContain('<b>1</b>waiting on you');
+  expect(html).toContain('1 pair of tasks with overlapping scopes</summary>');
+  expect(html).not.toContain('Handled by the orchestrator');
 });
-it('Home lists a task that has both an own call and a handled one under each list with its own kind',async()=>{
+it('Home labels a project whose notices or runners could not be read',async()=>{
   const {renderHome}=await import('../src/ui');
   const titled={...project,name:'cloudflare-git',title:'Atelier'};
-  const items=[{...detail().item,id:'t1',state:'submitted' as const}];
-  const waiting=[
-    {project:'cloudflare-git',itemId:'t1',title:'Assess me',kind:'assess' as const,reason:'r',weight:100},
-    {project:'cloudflare-git',itemId:'t1',title:'Merge me',kind:'merge' as const,reason:'r',weight:90},
-  ];
+  const items=[{...detail().item,id:'t1',state:'open' as const,owner:null,dispatch:{to:'home' as const,agent:null,model:null,by:'o',at:time,note:''}}];
+  const waiting=attentionFor('cloudflare-git',items as never,null,null,new Date(time));
   const html=renderHome([{project:titled,items,waiting}],'PAVI',new Date('2026-10-06T14:30:00Z'),'pavi');
-  const yours=html.indexOf('<h3>Waiting on you</h3>');
-  const handled=html.indexOf('<h3>Handled by the orchestrator</h3>');
-  expect(yours).toBeGreaterThan(-1);expect(handled).toBeGreaterThan(-1);
-  expect(yours).toBeLessThan(handled);
-  const ownSection=html.slice(yours,handled);
-  const handledSection=html.slice(handled);
-  expect(ownSection).toContain('Review required');
-  expect(ownSection).not.toContain('Ready to merge');
-  expect(handledSection).toContain('Ready to merge');
-  expect(handledSection).not.toContain('Review required');
+  expect(html).toContain('<b>0?</b>waiting on you');
+  expect(html).toContain('Not everything was read');
+  expect(html).toContain('notices could not be read');expect(html).toContain('runner offers could not be read');
+  const unread=renderHome([{project:titled,items}],'PAVI',new Date('2026-10-06T14:30:00Z'),'pavi');
+  expect(unread).toContain('<b>?</b>waiting on you');expect(unread).toContain('What waits on you here could not be read.');
 });
 it('History is a timeline of merges by day, each marked with the family that held the task, and closures apart',async()=>{
  const {renderHistory}=await import('../src/ui');
@@ -1437,6 +1482,11 @@ it('Plans draws each plan as one unit with its parts, their state and why each w
  expect(html).toContain('Ship &lt;the&gt; thing');
  expect(html).toContain('built by claude-code/opus-5.5: Rank 1 of 3 eligible for feature work, score 0.72');
  expect(html).toContain('reviewer zcode/glm-5.3, of another family');
+ const single={...project,policy:{...project.policy,familyMode:{single:'anthropic' as const,by:'pavi',at:when}}};
+ const singleView={...view,parts:view.parts.map(part=>({...part,route:{...part.route,reviewer:{actor:'claude-code/sonnet-5.5',reasons:[]}}}))};
+ const singleHtml=renderProjectPlans(single,[singleView as never],'PAVI');
+ expect(singleHtml).toContain('reviewer claude-code/sonnet-5.5, a different anthropic model from every contributor (single-family mode)');
+ expect(singleHtml).not.toContain('of another family');
  expect(html).toContain('attempts: codex/gpt-6-astra released with no commit');
  expect(html).toContain('queued for zcode/glm-5.3');
  expect(html).toContain('depends on a (t6)');
