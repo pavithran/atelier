@@ -1,0 +1,23 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.2, pytest-8.3.4, pluggy-1.5.0
+rootdir: /work
+collected 4 items
+
+tests/test_cap.py .F.E                                                   [100%]
+
+=================================== FAILURES ===================================
+____________________________ test_cap_is_enforced ______________________________
+
+    def test_cap_is_enforced():
+>       assert 1 == 2
+E       assert 1 == 2
+
+tests/test_cap.py:5: AssertionError
+==================================== ERRORS ====================================
+_________________________ ERROR at setup of test_fixture _______________________
+E       RuntimeError: no database
+=========================== short test summary info ============================
+FAILED tests/test_cap.py::test_cap_is_enforced - assert 1 == 2
+FAILED tests/test_cap.py::test_names[are-read] - Error: boom
+ERROR tests/test_cap.py::test_fixture - RuntimeError: no database
+==================== 2 failed, 1 passed, 1 error in 0.07s ======================
