@@ -92,6 +92,8 @@ function fixture(t, { conflict = false, generatedConflict = false, regenerate = 
     jobBrief: async () => ({ text: 'Review findings: fix the behavior.' }),
     brief: async (cwd, text) => { briefs.push(text); return { file: join(root, `brief-${briefs.length}`) }; },
     removeBrief: async () => {},
+    // The builder's commit identity (t451): the policy allows it here.
+    identityRefusals: async () => [],
     harness: async (argv, cwd) => {
       harnessCalls++;
       assert.deepEqual(argv, ['codex', 'exec', '--dangerously-bypass-approvals-and-sandbox', join(root, `brief-${briefs.length}`)]);
