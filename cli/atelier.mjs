@@ -37,6 +37,7 @@ import { formatTokenExpiryWarnings, parseExpiryDay, readTokenExpiries, recordTok
 import { runnerCredential, readSecret } from "./credentials.mjs";
 import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
+import { slotInvocation } from "./load.mjs";
 export { checkEnv } from "./check-env.mjs";
 import { COMMANDS, COMMAND_USAGE, commandFor } from "./help.mjs";
 import { HANDLER_MODULES } from "./commands/index.mjs";
@@ -86,6 +87,7 @@ export const trimSlash = (url) => String(url).replace(/\/$/, "");
 // together, so that server is the one the stored token belongs to, and the
 // token goes nowhere else: with ATELIER_SERVER naming another server it is
 // not sent, and the command says what to do instead.
+let ownerNoticeGiven = false;
 export function apiToken() {
   if (cliState.loginToken) return cliState.loginToken;
   try {
@@ -94,6 +96,10 @@ export function apiToken() {
     if (!name && ["claim", "start"].includes(args._[0])) name = args.runner;
     const runner = runnerCredential(server(), name);
     if (runner) return runner;
+    if (name && !ownerNoticeGiven) {
+      ownerNoticeGiven = true;
+      process.stderr.write(`runner ${name} has no runner token: running with the owner's credential\n`);
+    }
   } catch (error) { die(error.message); }
   const fromEnv = process.env.ATELIER_TOKEN?.trim();
   if (fromEnv) return fromEnv;
@@ -936,24 +942,29 @@ export function mergeWithMain(dir, id) {
 // when its shell exits, when its time limit passes or when its output
 // overruns, every process left in the group is ended, and the result comes
 // back only once the group is gone, so nothing the check started still
-// writes in the clone when it is removed.
-export async function runCheck(cmd, dir, secrets, graceMs = 5000) {
+// writes in the clone when it is removed. The group's leader is the
+// test-slot wrapper (cli/load.mjs), so the check holds one host-wide slot
+// for as long as its tree runs.
+export async function runCheck(cmd, dir, secrets, metadata, graceMs = 5000) {
   process.stderr.write(`atelier: running \`${cmd}\` in a clean clone…\n`);
   const record = JSON.parse(readFileSync(markerPath(dir), "utf8"));
-  const r = await runGroupedCheck(cmd, { cwd: dir, graceMs, onSpawn: (pid) => writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: pid })) });
+  const r = await runGroupedCheck(cmd, { cwd: dir, metadata, graceMs, onSpawn: (pid) => writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: pid })) });
   writeFileSync(markerPath(dir), JSON.stringify(record));
   const output = redact(`${r.stdout}${r.stderr}${r.error ? `\n[atelier] check ${r.error.message}` : ""}`, secrets);
   return { passed: r.status === 0 && !r.error, output, sha: createHash("sha256").update(output).digest("hex") };
 }
 
-// One registered check through runGroup, bounded by CHECK_TIMEOUT_MS. An
+// One registered check through runGroup, bounded by CHECK_TIMEOUT_MS, under
+// the test-slot wrapper with `metadata` (its class, project, task, actor). An
 // interrupt, a terminal hang-up or a SIGTERM of this command does not reach
 // the check's group, so each ends this process, and runGroup ends the group
-// on the way out.
-export async function runGroupedCheck(cmd, { cwd, env = checkEnv(), graceMs, onSpawn, maxBytes }) {
+// on the way out; a slot whose wrapper died that way is reclaimed at the
+// next admission or status read.
+export async function runGroupedCheck(cmd, { cwd, env = checkEnv(), metadata, graceMs, onSpawn, maxBytes }) {
   const onInt = interrupted("SIGINT"), onTerm = interrupted("SIGTERM"), onHup = interrupted("SIGHUP");
   process.once("SIGINT", onInt).once("SIGTERM", onTerm).once("SIGHUP", onHup);
-  try { return await runGroup(["/bin/sh", "-c", cmd], { cwd, env, timeoutMs: CHECK_TIMEOUT_MS, graceMs, maxBytes, onSpawn }); }
+  const invocation = slotInvocation(["/bin/sh", "-c", cmd], metadata, env);
+  try { return await runGroup(invocation.argv, { cwd, env: invocation.env, timeoutMs: CHECK_TIMEOUT_MS, graceMs, maxBytes, onSpawn }); }
   finally { process.off("SIGINT", onInt).off("SIGTERM", onTerm).off("SIGHUP", onHup); }
 }
 
@@ -1576,10 +1587,13 @@ export function wrapReady(name, cwd, report) {
 
 // A report a runner makes under its name: a model's status, a tool's usage.
 // The answer is the server's JSON; a refusal is an error naming its detail.
-export async function postAsRunner(path, body, runner, signal) {
+// The report goes as the owner, whose token the runner holds, unless `as`
+// names another actor: a runner token cannot act as the owner, so its
+// review skip goes as the review job's actor (t353).
+export async function postAsRunner(path, body, runner, signal, as = OWNER) {
   const res = await fetch(`${server()}/api${path}`, {
     method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
-    headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": OWNER, "x-atelier-runner": runner, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "x-atelier-runner": runner, "content-type": "application/json" },
     body: JSON.stringify(body),
   });
   let data = null;
