@@ -974,6 +974,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // offer with `why: true` (t420), and gets back the listing GET gives, its
   // token's projects only, each dispatch with why it is not being taken and
   // those for another runner said as such: a runner token may not GET it.
+  // A runner token gets each entry as id, title, dispatch (its note left
+  // out) and why alone, and only its own refusals and skips among the
+  // reasons: the full item is what GET items/tN refuses it with 403.
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const offer = m === "POST" ? runnerOffer(body) : null;
     if (c.token?.runner && (!offer || offer.runner !== c.token.runner)) throw runnerDenied(c.token);
@@ -1017,7 +1020,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // as another's claim (claim guards the runner name; assign the actor).
           return a && (!c.token?.runner || !["integrate", "refresh"].includes(item.dispatch?.job ?? "")) && (!c.token || c.token.runner || a.actor === actor) && (!isHeld(item) || item.owner === a.actor) ? [{ project, item, ...a }] : [];
         })
-      : await queueWhy(env, queued.filter(({ item }) => !isHeld(item)), offer);
+      : await queueWhy(env, queued.filter(({ item }) => !isHeld(item)), offer, c.token?.runner ? c.token.runner : null);
     // A project that could not be read is named, so a missing task is never silent.
     const res = json(result);
     if (unreadable.length) res.headers.set("x-atelier-incomplete", unreadable.sort().join(","));
@@ -2495,19 +2498,36 @@ function isHeld(item: Item): boolean {
 // reports), and the model or job no live runner offers (unclaimed in
 // src/dispatch/rules.ts); asked by one runner (`offer`), also a dispatch
 // meant for another. A review request is listed apart, so it carries none.
-async function queueWhy(env: Env, queued: { project: string; item: Item & { held?: CoreHold; overlap?: OverlapRefusal; refusals?: ClaimRefusal[]; skips?: RunSkip[] } }[], offer: RunnerOffer | null = null): Promise<{ project: string; item: Item & { why?: UnclaimedReason[] } }[]> {
+async function queueWhy(env: Env, queued: { project: string; item: Item & { held?: CoreHold; overlap?: OverlapRefusal; refusals?: ClaimRefusal[]; skips?: RunSkip[] } }[], offer: RunnerOffer | null = null, runner: string | null = null): Promise<{ project: string; item: (Item | RunnerWhyItem) & { why?: UnclaimedReason[] } }[]> {
   // Each waiting dispatch's build runs since it was dispatched, read task by
   // task, so the newest reports of other tasks never push its failures out.
   const asks = queued.flatMap(({ project, item }) => item.dispatch && item.dispatch.job !== "review" ? [{ project, item: item.id, since: item.dispatch.at }] : []);
   const [offers, runs] = await Promise.all([index(env).runnerOffers(), asks.length ? index(env).buildRunsSince(asks) : []]);
-  const reports = runs.map((r) => ({ project: r.project, item: r.item, role: r.role, outcome: r.outcome, runner: r.runner, at: r.at }));
+  // Asked under a runner token, the reasons are built from that runner's own
+  // refusals, skips and run reports only, and each entry is cut to what the
+  // runner prints (runnerWhyItem): another runner's refusal or failure, and
+  // the task's brief and note, are the owner's to read.
+  const mine = <T extends { runner: string }>(list: readonly T[] | undefined) => list && runner ? list.filter((r) => r.runner === runner) : list ?? null;
+  const reports = mine(runs.map((r) => ({ project: r.project, item: r.item, role: r.role, outcome: r.outcome, runner: r.runner, at: r.at }))) ?? [];
   return queued.map(({ project, item }) => {
-    if (item.dispatch?.job === "review") return { project, item };
-    const why = unclaimed(item, { held: item.held ?? null, overlap: item.overlap ?? null, refusals: item.refusals ?? null, skips: item.skips ?? null, offers, runs: reports, project, offer });
+    if (item.dispatch?.job === "review") return { project, item: runner ? runnerWhyItem(item, undefined) : item };
+    const why = unclaimed(item, { held: item.held ?? null, overlap: item.overlap ?? null, refusals: mine(item.refusals), skips: mine(item.skips), offers, runs: reports, project, offer });
+    if (runner) return { project, item: runnerWhyItem(item, why) };
     // Always carried, empty when nothing holds it, so the CLI can tell this
     // listing from an older server's, which carries `held` alone.
     return { project, item: { ...item, why } };
   });
+}
+
+// What a runner token's why poll carries of a waiting dispatch: no more than
+// it prints (the id and the reasons) and the dispatch it was not offered,
+// without the dispatch's note, which a plain poll gives only the runner it
+// offers the task to.
+interface RunnerWhyItem { id: string; title: string; dispatch: { to: string; agent: string | null; model: string | null; job: string | null } | null; why?: UnclaimedReason[] }
+function runnerWhyItem(item: Item, why: UnclaimedReason[] | undefined): RunnerWhyItem {
+  const d = item.dispatch;
+  const dispatch = d ? { to: d.to, agent: d.agent, model: d.model, job: d.job ?? null } : null;
+  return { id: item.id, title: item.title, dispatch, ...(why ? { why } : {}) };
 }
 
 async function inbox(env: Env, token?: AgentToken) {

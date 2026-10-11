@@ -166,3 +166,37 @@ it("a skip is said however many other run reports follow its failures", async ()
     `Skipped by home:why-window after 2 failed runs under this dispatch (the last refused); that runner passes it by until it is dispatched again or the runner restarts: fix the cause, then atelier dispatch ${task.id} --to home --agent codex --model gpt-6-astra.`,
   ]);
 });
+
+// Pre-review finding (t420): a runner token's why poll gave it the full item
+// of every waiting dispatch in scope, the brief, the dispatch's note and
+// other runners' refusals included, though GET items/tN refuses it that task
+// with 403. It now gets id, title, dispatch and why, its own reasons alone.
+it("a runner token's why poll carries no brief, note or other runner's refusal of a task it may not read", async () => {
+  const name = "queue-why-private";
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  const p = { name, repo: name, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+  await L.setProject(p, "owner");
+  await index().registerProject(p);
+  const task = await L.newItem("Someone else's", [], "owner", { brief: "SECRET-BRIEF the owner wrote" });
+  await L.dispatch(task.id, "owner", { to: "home", agent: "codex", model: "other", note: "SECRET-NOTE for the other runner" });
+  await index().putRunnerOffer({ runner: "home:why-peer", kind: "home", agents: [{ agent: "codex", models: ["other"] }], started: new Date(Date.now() - 60_000).toISOString() } as never, new Date().toISOString());
+  await L.noteClaimRefusal(task.id, "home:why-peer", "codex/other", "check_failed", "SECRET-REFUSAL from the peer's workspace");
+  const issued = await request("POST", "/tokens", OWNER, "owner", { runner: "home:why-private", projects: [name] });
+  const token = (await issued.json() as { token: string }).token;
+  const offer = { runner: "home:why-private", agents: [{ agent: "codex", models: ["gpt-6-astra"] }], jobs: ["build"], started: new Date(Date.now() - 60_000).toISOString() };
+
+  // The owner's listing names the peer's refusal: the secrets are there to leak.
+  const owner = await (await request("GET", "/queue", OWNER, "owner")).json() as Entry[];
+  expect(JSON.stringify(owner.find((q) => q.project === name && q.item.id === task.id))).toContain("SECRET-REFUSAL");
+  // The runner may not read the task itself...
+  expect((await request("GET", `/projects/${name}/items/${task.id}`, token, "codex/gpt-6-astra")).status).toBe(403);
+  // ...and its why poll gives it no more than id, title, dispatch and why.
+  const res = await request("POST", "/queue", token, "codex/gpt-6-astra", { ...offer, why: true });
+  expect(res.status, await res.clone().text()).toBe(200);
+  const body = await res.text();
+  for (const secret of ["SECRET-BRIEF", "SECRET-NOTE", "SECRET-REFUSAL"]) expect(body).not.toContain(secret);
+  const entry = (JSON.parse(body) as Entry[]).find((q) => q.project === name && q.item.id === task.id);
+  expect(Object.keys(entry?.item ?? {}).sort()).toEqual(["dispatch", "id", "title", "why"]);
+  expect(entry?.item).toMatchObject({ title: "Someone else's", dispatch: { to: "home", agent: "codex", model: "other", job: null } });
+  expect(entry?.item.why?.map((r) => r.kind)).not.toContain("refused");
+});
