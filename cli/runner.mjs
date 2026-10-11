@@ -17,6 +17,7 @@ import { parseVerdict, VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { rolePrompt, ROLE_PROMPT_MAX } from "../src/usage.ts";
+import { mergeMainAndRegenerate } from "./land.mjs";
 
 export function offerFrom(config, name) {
   if (typeof name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(name)) throw new Error("use --name home:NAME");
@@ -432,7 +433,7 @@ export function removeDataHome({ dir, onExit }) {
 // command fails; every other command's goes to the runner's own output, as
 // the owner watching it expects. The integrate and refresh jobs read check's
 // to say what failed, and log it either way.
-const READS_OUTPUT = new Set(["review-claim", "read-token", "integrated", "integration-failed", "refreshed", "refresh-failed", "base-token", "check"]);
+const READS_OUTPUT = new Set(["review-claim", "read-token", "integrated", "integration-failed", "refreshed", "refresh-failed", "base-token", "baseline-token", "check"]);
 export const readsOutput = (argv) => READS_OUTPUT.has(argv[0]);
 
 export async function checked(argv, options, executeChild = execute) {
@@ -569,42 +570,70 @@ export function mergeMainSection(merge) {
   ].join("\n");
 }
 
-// Refresh main at the submission boundary, after the builder has committed.
-// The base token of a part's plan reads the baseline, not the plan's fork.
+// A build job merges main as it is then into the workspace before it
+// submits (t435): a first build, a fix after findings, a dead run's commit
+// resumed, and a merge-main job's own finish alike, so what is submitted is
+// measured against current main and the checks run on the merged tree. The
+// merge is the landing's (mergeMainAndRegenerate in cli/land.mjs): no-ff,
+// settling conflicts that lie only in files the project's regenerate
+// command rewrites, raising the merged route level where both sides raised
+// it, and regenerating and committing what the merge made stale, so the
+// generated files a landing would rewrite are not submitted stale. Main is
+// read through the project's baseline-token route, which a runner token
+// may call for any project it serves; the item's base-token answers a
+// runner only for the job it holds, so a part's runner cannot read main
+// through its plan's (403, assertRunnerJob in src/ledger.ts). A token is
+// read for every fetch, since a resolver can outlive one.
+//
+// A merge that conflicts elsewhere is left in the workspace, markers and
+// all, and `resolve` runs the same harness in the same run with a brief
+// naming the files. A harness exit alone is no evidence it committed the
+// resolution: the workspace must hold no conflict and no merge in
+// progress, and HEAD's history must hold both main's head and the head the
+// build had, so a resolver cannot submit main by discarding the build.
+// Main may have moved while the resolver ran, so it is read and merged
+// once more before the submission. A baseline that cannot be fetched is an
+// infrastructure failure, the network's or the server's, not the model's
+// (the error carries `infrastructure`; runTask reads it). Answers main's
+// head as merged and the workspace's head.
 export async function prepareBuildSubmission(assignment, workspace, io, resolve) {
   const { project, item, actor } = assignment;
+  const guard = () => { if (io.stopped()) throw new Error("interrupted"); };
+  const verify = async (mainHead, workHead) => {
+    if ((await io.conflicts(workspace)).length || (await io.git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], { cwd: workspace, allowFail: true })).status === 0) throw new Error("the merge of main is still unresolved or uncommitted");
+    if (!await io.isAncestor(workspace, mainHead, "HEAD")) throw new Error(`the build does not hold main at ${mainHead.slice(0, 8)}`);
+    if (!await io.isAncestor(workspace, workHead, "HEAD")) throw new Error("the merge of main discarded the build's committed work");
+  };
   for (;;) {
-    if (io.stopped()) throw new Error("interrupted");
-    // A conflict resolver can outlive a read token. Obtain a fresh one for
-    // every fetch, including the refresh after the harness returns.
-    const base = JSON.parse(await io.cli(["base-token", item.plan ?? item.id, "--project", project, "--as", actor]));
-    if (!base.defaultBranch) throw new Error("main base token has no default branch");
-    await io.fetch(workspace, base.remote, base.token, base.defaultBranch);
-    const mainHead = (await io.revParse(workspace, "FETCH_HEAD")).trim();
-    if (!/^[a-f0-9]{40,64}$/.test(mainHead)) throw new Error("main fetch returned an invalid commit");
-    if (io.stopped()) throw new Error("interrupted");
+    guard();
+    const base = JSON.parse(await io.cli(["baseline-token", "--project", project, "--as", actor]));
+    if (!base.remote || !base.token || !base.defaultBranch) throw new Error("the baseline token names no repository, token or branch");
+    const regenerate = typeof base.regenerate === "string" && base.regenerate.trim() ? base.regenerate : null;
     const workHead = (await io.head(workspace)).trim();
-    const merged = await io.mergeMain(workspace, mainHead, `Merge main at ${mainHead} into ${item.id}\n\nAgent: ${actor}`);
-    const files = await io.conflicts(workspace);
-    if (files.length) {
-      if (io.stopped()) throw new Error("interrupted");
-      io.log(`main at ${mainHead} conflicts; returning to ${actor} in this run`);
+    const landing = { git: io.git, print: io.log, redact: (text) => redactSecrets(text, [base.token]), secrets: () => [base.token] };
+    let merged;
+    try {
+      merged = await mergeMainAndRegenerate(landing, { dir: workspace, id: item.id, name: project, regenerate, record: async () => {}, guard, d0: null, base,
+        message: (mainHead) => `Merge main at ${mainHead.slice(0, 8)} into ${item.id}\n\nAgent: ${actor}` });
+    } catch (error) {
+      const files = error.data?.conflicts ?? [];
+      if (!files.length) throw error;
+      guard();
+      const { mainHead } = error.data;
+      io.log(`main at ${mainHead.slice(0, 8)} merged with conflicts in ${files.join(", ")}; ${actor} resolves them in this run`);
       await resolve({ mainHead, state: "conflicts", files });
-    } else if (merged.code !== 0) {
-      throw new Error(`merging current main failed: ${oneLine(merged.output ?? "").slice(0, 500)}`);
+      await verify(mainHead, workHead);
+      continue;
     }
-    // A successful harness exit alone is not evidence that it committed the
-    // resolution: verify ancestry and the absence of a pending merge as well.
-    if ((await io.conflicts(workspace)).length || await io.mergePending(workspace)) throw new Error("main merge is still unresolved or uncommitted");
-    if ((await io.mergeBase(workspace, mainHead, "HEAD")).trim() !== mainHead) throw new Error("the build does not contain the fetched main commit");
-    // Resetting to main would satisfy the main ancestry check while losing
-    // the builder's work. A resolution must preserve both sides' history.
-    if ((await io.mergeBase(workspace, workHead, "HEAD")).trim() !== workHead) throw new Error("the main merge discarded the build's committed work");
-    // Resolution may take long enough for main to advance again. Refresh it
-    // once more before finishing; a clean or already-held head can proceed.
-    if (files.length) continue;
-    return { mainHead, head: await io.head(workspace) };
+    await verify(merged.mainHead, workHead);
+    return { mainHead: merged.mainHead, head: merged.head };
   }
+}
+
+// Each secret cut from a text, longest first, as the CLI's redact does.
+function redactSecrets(text, secrets) {
+  for (const secret of [...new Set(secrets)].filter(Boolean).sort((a, b) => b.length - a.length)) text = text.split(secret).join("[redacted]");
+  return text;
 }
 
 // Dependencies keep the task lifecycle testable without a server or a harness.
@@ -1608,7 +1637,21 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
       ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild),
     prepareSubmission: (assignment, workspace, resolve) => prepareBuildSubmission(assignment, workspace, io, resolve),
-    mergePending: async (cwd) => (await executeChild(["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"], { cwd, capture: true, signal: controller.signal })).code === 0,
+    // Git as the landing's merge of main calls it (mergeMainAndRegenerate in
+    // cli/land.mjs, run by prepareBuildSubmission): each command a runner
+    // child in `cwd`; `token` reaches git through its environment (gitAuth),
+    // never an argument; with `allowFail` the answer is git's own status and
+    // output, as the landing's git answers, and otherwise a failure throws
+    // with the arguments redacted.
+    git: async (args, { cwd, token, allowFail = false, raw = false } = {}) => {
+      const result = await executeChild(["git", ...args], { cwd, capture: true, captureError: true, signal: controller.signal, step: args[0], ...(token ? { env: gitAuth(token) } : {}) });
+      if (result.timedOut) throw new Error(`git ${args[0]} timed out`);
+      if (controller.signal.aborted) throw new Error("interrupted");
+      const output = result.output ?? "", stderr = result.stderr ?? "";
+      if (allowFail) return { status: result.code, stdout: output, stderr };
+      if (result.code !== 0) throw new Error(`git ${redactGitArgs(args).join(" ")} failed:\n${(stderr || output).trim() || `git exited ${result.signal ?? result.code}`}`);
+      return raw ? output : output.trim();
+    },
     head: (cwd, { cleanup = false, ref = "HEAD" } = {}) => checked(["git", "rev-parse", "--verify", `${ref}^{commit}`],
       { cwd, capture: true, ...(cleanup ? cleanupOptions() : { signal: controller.signal }) }, executeChild),
     // Every build, plan and merge job's workspace keeps .scratch/ out of Git

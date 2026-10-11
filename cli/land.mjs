@@ -120,7 +120,7 @@ const short = (sha) => (sha ? sha.slice(0, 8) : "—");
 
 // A step that failed carries its own event data beside the failure: the files
 // a conflict stopped on, or which check failed.
-class StepError extends Error {
+export class StepError extends Error {
   constructor(message, data = {}) { super(message); this.data = data; }
 }
 
@@ -764,22 +764,38 @@ async function landStep(io, record, kind, argv, cwd, data = {}) {
 // landing's; every failure throws a StepError carrying the failed
 // step's data. Answers the head the workspace reached, main's head and
 // whether main was merged at all.
-async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, guard, d0 }) {
+//
+// A build's runner runs the same code before it submits (t435,
+// prepareBuildSubmission in cli/runner.mjs), so the merge it makes
+// regenerates what the landing's would and settles the same conflicts:
+// its `git` runs each command as a runner child, so every call here is
+// awaited, which the landing's synchronous git does not mind; `base` is
+// the baseline token it already read through the project's baseline-token
+// route, which a runner token may call where the item's base-token answers
+// only for the job it holds, so no request is made here; and `message`
+// names the merge commit's message from main's head, ending in the
+// builder's Agent line where the landing's names the landing. A baseline
+// that cannot be fetched is the network's or the server's failure, not
+// the build's: the error carries `infrastructure`, which the runner counts
+// as such and the landing does not read.
+export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, guard, d0, base = null, message = null }) {
   const { request, git, print } = io;
   guard();
   const t0 = Date.now();
-  const base = await request("POST", `/projects/${encodeURIComponent(name)}/items/${encodeURIComponent(id)}/base-token`, { scope: "read" });
-  git(["fetch", "--quiet", base.remote, base.defaultBranch], { cwd: dir, token: base.token });
-  const mainHead = git(["rev-parse", "FETCH_HEAD"], { cwd: dir });
+  const read = base ?? await request("POST", `/projects/${encodeURIComponent(name)}/items/${encodeURIComponent(id)}/base-token`, { scope: "read" });
+  try { await git(["fetch", "--quiet", read.remote, read.defaultBranch], { cwd: dir, token: read.token }); }
+  catch (error) { throw Object.assign(error, { infrastructure: true }); }
+  const mainHead = await git(["rev-parse", "FETCH_HEAD"], { cwd: dir });
+  const mergeMessage = message ? message(mainHead) : `Merge main into ${id}\n\nAtelier land: main at ${mainHead}`;
   let fromMain = [], mergedIn = false, settled = null, settledConflicts = [], routeLevel = null;
-  if (git(["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true }).status === 0) {
+  if ((await git(["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true })).status === 0) {
     print(`main at ${short(mainHead)} is already merged into ${id}'s workspace.`);
   } else {
-    const forkPoint = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: dir });
-    fromMain = git(["rev-list", "--max-count=200", `${forkPoint}..FETCH_HEAD`], { cwd: dir }).split("\n").filter(Boolean);
-    const r = git(["merge", "--no-ff", "--no-edit", "-m", `Merge main into ${id}\n\nAtelier land: main at ${mainHead}`, "FETCH_HEAD"], { cwd: dir, allowFail: true });
+    const forkPoint = await git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: dir });
+    fromMain = (await git(["rev-list", "--max-count=200", `${forkPoint}..FETCH_HEAD`], { cwd: dir })).split("\n").filter(Boolean);
+    const r = await git(["merge", "--no-ff", "--no-edit", "-m", mergeMessage, "FETCH_HEAD"], { cwd: dir, allowFail: true });
     if (r.status !== 0) {
-      const conflicts = git(["diff", "--name-only", "--diff-filter=U", "-z"], { cwd: dir, raw: true }).split("\0").filter(Boolean);
+      const conflicts = (await git(["diff", "--name-only", "--diff-filter=U", "-z"], { cwd: dir, raw: true })).split("\0").filter(Boolean);
       // A conflict that lies only in files the regenerate command rewrites
       // is not the owner's to settle by hand: whichever side such a file
       // took, the command writes it again from the merged code, so either
@@ -795,21 +811,24 @@ async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, g
       let reason = null;
       if (conflicts.length && regenerate) {
         print(`The merge stops on conflicts in ${conflicts.join(", ")}; taking either side and regenerating with \`${regenerate}\`…`);
-        const shaOf = (file) => (existsSync(join(dir, file)) ? git(["hash-object", "--", file], { cwd: dir }) : "gone");
+        const shaOf = async (file) => (existsSync(join(dir, file)) ? await git(["hash-object", "--", file], { cwd: dir }) : "gone");
         const taken = new Map();
         let either = true, regen = null, unwritten = null;
         for (const file of conflicts) {
-          if (git(["checkout", "--ours", "--", file], { cwd: dir, allowFail: true }).status !== 0
-            && git(["checkout", "--theirs", "--", file], { cwd: dir, allowFail: true }).status !== 0) { either = false; break; }
-          taken.set(file, shaOf(file));
+          if ((await git(["checkout", "--ours", "--", file], { cwd: dir, allowFail: true })).status !== 0
+            && (await git(["checkout", "--theirs", "--", file], { cwd: dir, allowFail: true })).status !== 0) { either = false; break; }
+          taken.set(file, await shaOf(file));
         }
         if (either) {
           regen = await runRegenerateIn(dir, regenerate, io);
-          unwritten = regen.ok ? conflicts.filter((file) => shaOf(file) === taken.get(file)) : null;
+          if (regen.ok) {
+            unwritten = [];
+            for (const file of conflicts) if (await shaOf(file) === taken.get(file)) unwritten.push(file);
+          }
         }
         if (regen?.ok && !unwritten.length) {
-          git(["add", "-A", "--", ...conflicts], { cwd: dir });
-          git(["commit", "--quiet", "--no-edit"], { cwd: dir });
+          await git(["add", "-A", "--", ...conflicts], { cwd: dir });
+          await git(["commit", "--quiet", "--no-edit"], { cwd: dir });
           settled = "atelier land, taking either side and regenerating";
           settledConflicts = conflicts;
           print(`The conflicts were all in files \`${regenerate}\` rewrites; took either side and let the command write them again.`);
@@ -817,13 +836,13 @@ async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, g
           reason = !either ? "a conflicted file had neither side to take"
             : !regen.ok ? `the regenerate command \`${regenerate}\` failed (${regen.why})`
               : `the regenerate command left ${unwritten.join(", ")} as either side had it`;
-          const back = git(["reset", "--hard", "HEAD"], { cwd: dir, allowFail: true });
+          const back = await git(["reset", "--hard", "HEAD"], { cwd: dir, allowFail: true });
           if (back.status !== 0) print(`Warning: the workspace could not be reset after the regeneration did not settle the conflicts (${(back.stderr || back.stdout || "").trim()}); resolve what is there by hand`);
-          else git(["merge", "--no-ff", "--no-edit", "-m", `Merge main into ${id}\n\nAtelier land: main at ${mainHead}`, "FETCH_HEAD"], { cwd: dir, allowFail: true });
+          else await git(["merge", "--no-ff", "--no-edit", "-m", mergeMessage, "FETCH_HEAD"], { cwd: dir, allowFail: true });
         }
       }
       if (!settled) {
-        const data = { fromMain, ...(conflicts.length ? { conflicts, resolvedBy: "the project owner, by hand", ...(reason ? { reason } : {}) } : {}) };
+        const data = { fromMain, mainHead, ...(conflicts.length ? { conflicts, resolvedBy: "the project owner, by hand", ...(reason ? { reason } : {}) } : {}) };
         await record("merge", Date.now() - t0, { failed: true, ...data });
         // The conflicts can go back to the task's builder instead of the
         // owner's session (t243): a merge-main dispatch makes a runner
@@ -866,27 +885,27 @@ async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, g
   // add, and the levels merge as they always did — as they also do for
   // a repo with no src/route-level.ts, where the comparison is skipped
   // and the landing goes on, or a level one side alone raised.
-  const levelAt = (rev) => {
-    const shown = git(["show", `${rev}:src/route-level.ts`], { cwd: dir, allowFail: true });
+  const levelAt = async (rev) => {
+    const shown = await git(["show", `${rev}:src/route-level.ts`], { cwd: dir, allowFail: true });
     const found = /export const ROUTE_LEVEL = (\d+);/.exec(shown.stdout ?? "");
     return found ? Number(found[1]) : null;
   };
-  const holdsMain = (rev) => git(["merge-base", "--is-ancestor", mainHead, rev], { cwd: dir, allowFail: true }).status === 0;
-  const line = git(["rev-list", "--first-parent", "--max-count=200", "HEAD"], { cwd: dir }).split("\n").map((sha) => sha.trim()).filter(Boolean);
+  const holdsMain = async (rev) => (await git(["merge-base", "--is-ancestor", mainHead, rev], { cwd: dir, allowFail: true })).status === 0;
+  const line = (await git(["rev-list", "--first-parent", "--max-count=200", "HEAD"], { cwd: dir })).split("\n").map((sha) => sha.trim()).filter(Boolean);
   let stepped = 0;
-  while (stepped < line.length && holdsMain(line[stepped])) stepped++;
+  while (stepped < line.length && await holdsMain(line[stepped])) stepped++;
   const taskHead = stepped > 0 && stepped < line.length ? line[stepped] : null;
-  const based = taskHead ? git(["merge-base", taskHead, mainHead], { cwd: dir, allowFail: true }) : null;
+  const based = taskHead ? await git(["merge-base", taskHead, mainHead], { cwd: dir, allowFail: true }) : null;
   const forkPoint = based && based.status === 0 ? String(based.stdout ?? "").trim() : null;
   if (taskHead && forkPoint && forkPoint !== mainHead) {
-    const baseLevel = levelAt(forkPoint), taskLevel = levelAt(taskHead), mainLevel = levelAt(mainHead), mergedLevel = levelAt("HEAD");
+    const baseLevel = await levelAt(forkPoint), taskLevel = await levelAt(taskHead), mainLevel = await levelAt(mainHead), mergedLevel = await levelAt("HEAD");
     if (baseLevel !== null && taskLevel > baseLevel && mainLevel > baseLevel && mergedLevel !== null) {
       const rightLevel = mainLevel + (taskLevel - baseLevel);
       if (mergedLevel < rightLevel) {
         const levelFile = join(dir, "src", "route-level.ts");
         writeFileSync(levelFile, readFileSync(levelFile, "utf8").replace(/export const ROUTE_LEVEL = \d+;/, `export const ROUTE_LEVEL = ${rightLevel};`));
-        git(["add", "--", "src/route-level.ts"], { cwd: dir });
-        git(["commit", "--quiet", "-m", `Raise the route level after merging main into ${id}\n\nAtelier land: main and ${id} each raised it from ${baseLevel}, so the merged level is ${rightLevel}`], { cwd: dir });
+        await git(["add", "--", "src/route-level.ts"], { cwd: dir });
+        await git(["commit", "--quiet", "-m", `Raise the route level after merging main into ${id}\n\nAtelier land: main and ${id} each raised it from ${baseLevel}, so the merged level is ${rightLevel}`], { cwd: dir });
         routeLevel = { base: baseLevel, main: mainLevel, task: taskLevel, was: mergedLevel, set: rightLevel };
         print(`main and ${id} each raised the route level from ${baseLevel} (main to ${mainLevel}, ${id} to ${taskLevel}), and the merge left it at ${mergedLevel}: the merged CLI calls both sides' routes, so the level is raised to ${rightLevel}. Deploy the server from a checkout at route level ${rightLevel} or newer (npm run deploy, which records the commit it deploys) before the next landing or runner.`);
       }
@@ -910,15 +929,15 @@ async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, g
       throw new StepError(`the fixture regeneration command \`${regenerate}\` failed (${r.why}); the merge is left in the workspace. Fix the command (the project's policy declares it: atelier init --regenerate), then run atelier land ${id} again`);
     }
     let changed = false;
-    if (git(["status", "--porcelain"], { cwd: dir })) {
-      git(["add", "-A"], { cwd: dir });
-      git(["commit", "--quiet", "-m", `Regenerate after merging main into ${id}`], { cwd: dir });
+    if (await git(["status", "--porcelain"], { cwd: dir })) {
+      await git(["add", "-A"], { cwd: dir });
+      await git(["commit", "--quiet", "-m", `Regenerate after merging main into ${id}`], { cwd: dir });
       changed = true;
       print("Committed what the regeneration changed.");
     }
     await record("regenerate", Date.now() - start, { command: regenerate, changed });
   }
-  return { head: git(["rev-parse", "HEAD"], { cwd: dir }), mainHead, mergedIn };
+  return { head: await git(["rev-parse", "HEAD"], { cwd: dir }), mainHead, mergedIn };
 }
 
 // ── the landing as a Cloudflare Workflow (t280) ────────────────────────────

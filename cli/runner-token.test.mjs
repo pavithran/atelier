@@ -50,16 +50,18 @@ test("the direct CLI sends an explicit invalid runner credential once and never 
 
 // A build merges current main before it submits (prepareBuildSubmission,
 // t435): between the harness and finish the runner's children are the
-// base-token CLI call, which must carry the runner credential as every CLI
-// child does (the server lets a runner token mint a read token for main:
-// runnerRoute in src/tokens.ts, covered by src/runner-token.spec.mjs), and
-// git's fetch, which authenticates with that read token, never the runner's.
-// The plan job merges nothing and keeps its two calls.
+// baseline-token CLI call, which must carry the runner credential as every
+// CLI child does (the server lets a runner token read the project's
+// baseline token: runnerRoute in src/tokens.ts, covered by
+// src/runner-token.spec.mjs), and the landing's merge of main
+// (mergeMainAndRegenerate in cli/land.mjs) as git commands in the
+// workspace, whose fetch authenticates with that read token, never the
+// runner's. The plan job merges nothing and keeps its two calls.
 for (const job of ["build", "plan"]) test(`the real runner completes ${job} with runner credentials in children and no token in harnesses/logs`, async (t) => {
   const dir = fixture(t), workspace = join(dir, "work");
   mkdirSync(workspace);
   const config = join(dir, "runner.json");
-  const token = "runner-flow-secret", baseToken = "main-read-secret", mainHead = "f".repeat(40);
+  const token = "runner-flow-secret", baseToken = "main-read-secret", mainHead = "f".repeat(40), forkPoint = "e".repeat(40);
   // Not Codex: a Codex build is refused unless its command grants the checks
   // full access (codexBuildRefusal, 3dc757f), and this stub harness is no such command.
   writeFileSync(config, JSON.stringify({ agents: [{ agent: "claude-code", models: ["gpt-6-astra"], env: ["LEAK_ALIAS"], command: ["stub-harness", "{model}", "{brief_file}", "{workspace}", "{plan_file}"] }], jobs: ["build", "plan"] }));
@@ -81,23 +83,29 @@ for (const job of ["build", "plan"]) test(`the real runner completes ${job} with
         assert.equal(options.env.ATELIER_RUNNER_TOKEN, token);
         assert.equal(options.env.ATELIER_RUNNER_NAME, "home:studio");
         calls.push(argv[2]);
-        if (argv[2] === "base-token") {
-          assert.deepEqual(argv.slice(2), ["base-token", "t1", "--project", "demo", "--as", actor]);
-          return { code: 0, output: JSON.stringify({ remote: "https://git.test/demo.git", token: baseToken, defaultBranch: "main" }), stderr: "" };
+        if (argv[2] === "baseline-token") {
+          assert.deepEqual(argv.slice(2), ["baseline-token", "--project", "demo", "--as", actor]);
+          return { code: 0, output: JSON.stringify({ remote: "https://git.test/demo.git", token: baseToken, defaultBranch: "main", regenerate: null }), stderr: "" };
         }
         if (argv[2] === "finish") finish = argv.slice(2);
       } else if (argv[0] === "git") {
         gitCalls.push(argv[1]);
         assert.equal(options.cwd, workspace);
+        assert.equal(options.signal?.aborted, false, "git runs under the runner's stop signal");
+        const headers = Object.entries(options.env ?? {}).filter(([key]) => /^GIT_CONFIG_VALUE_/.test(key)).map(([, value]) => value);
         if (argv[1] === "fetch") {
           assert.deepEqual(argv.slice(2), ["--quiet", "https://git.test/demo.git", "main"]);
-          const headers = Object.entries(options.env).filter(([key]) => /^GIT_CONFIG_VALUE_/.test(key)).map(([, value]) => value);
           assert.deepEqual(headers, [`Authorization: Bearer ${baseToken}`]);
-        }
+        } else assert.deepEqual(headers, [], "only the fetch carries the read token");
+        assert.ok(!argv.includes(token) && !argv.includes(baseToken), "no credential is a git argument");
+        // A workspace whose fork predates main's head: main is not yet in
+        // HEAD, so the landing's merge runs; everything else holds.
+        if (argv[1] === "merge-base" && argv[2] === "--is-ancestor") return { code: argv[3] === "FETCH_HEAD" ? 1 : 0, output: "", stderr: "" };
+        if (argv[1] === "merge-base") return { code: 0, output: `${forkPoint}\n`, stderr: "" };
+        if (argv[1] === "rev-list") return { code: 0, output: argv.includes("--first-parent") ? `${mainHead}\n` : "", stderr: "" };
         if (argv[1] === "rev-parse" && argv.includes("MERGE_HEAD")) return { code: 1, output: "", stderr: "" };
         if (argv[1] === "rev-parse") return { code: 0, output: `${mainHead}\n`, stderr: "" };
-        if (argv[1] === "merge-base") return { code: 0, output: `${argv[2]}\n`, stderr: "" };
-        if (argv[1] === "merge") assert.deepEqual(argv.slice(2, 4), ["--no-ff", "-m"]);
+        if (argv[1] === "merge") assert.deepEqual(argv.slice(2), ["--no-ff", "--no-edit", "-m", `Merge main at ${mainHead.slice(0, 8)} into t1\n\nAgent: ${actor}`, "FETCH_HEAD"]);
       } else {
         harness = true;
         assert.equal(argv[0], "stub-harness");
@@ -109,8 +117,12 @@ for (const job of ["build", "plan"]) test(`the real runner completes ${job} with
     },
   });
   assert.ok(harness);
-  assert.deepEqual(calls, job === "plan" ? ["claim", "release"] : ["claim", "base-token", "finish"]);
-  assert.deepEqual(gitCalls, job === "plan" ? [] : ["fetch", "rev-parse", "merge", "diff", "diff", "rev-parse", "merge-base", "merge-base"]);
+  assert.deepEqual(calls, job === "plan" ? ["claim", "release"] : ["claim", "baseline-token", "finish"]);
+  // The landing's merge (fetch, main's head, the fork point and the commits
+  // from main, the no-ff merge, the route-level comparison, the merged
+  // head), then the runner's own checks of the result (no conflict, no merge
+  // pending, main's head and the build's head both in HEAD's history).
+  assert.deepEqual(gitCalls, job === "plan" ? [] : ["fetch", "rev-parse", "merge-base", "merge-base", "rev-list", "merge", "rev-list", "merge-base", "rev-parse", "diff", "rev-parse", "merge-base", "merge-base"]);
   assert.deepEqual(finish, job === "plan" ? null : ["finish", "t1", "--project", "demo", "--as", actor, "--summary", `Built t1 with main at ${mainHead} merged`]);
   assert.equal(posted, job === "plan");
   assert.doesNotMatch(logs.join("\n"), new RegExp(`${token}|${baseToken}`));
@@ -118,26 +130,32 @@ for (const job of ["build", "plan"]) test(`the real runner completes ${job} with
 
 // The CLI half of the step above, as the runner's child runs it: with
 // ATELIER_RUNNER_TOKEN and ATELIER_RUNNER_NAME set and no owner token,
-// `atelier base-token` sends the runner credential, asks for read scope and
-// prints the token the server minted, so the runner can fetch main with it.
-test("the direct CLI fetches a base token with the runner credential and no owner token", (t) => {
+// `atelier baseline-token` sends the runner credential, asks the project's
+// baseline-token route for read scope and reads the project's policy, and
+// prints the token the server minted with the regenerate command beside
+// it, so the runner can fetch main with the one and regenerate with the
+// other. No item route is called: the item's base-token answers a runner
+// only for the job it holds, which a part's plan never is.
+test("the direct CLI reads the baseline token and the regenerate command with the runner credential and no owner token", (t) => {
   const dir = fixture(t), cli = resolve("cli/atelier.mjs"), secret = "atl_runner_flow";
   const env = { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_SECRET_STORE: "file", ATELIER_SERVER: "https://one.test", ATELIER_RUNNER_TOKEN: secret, ATELIER_RUNNER_NAME: "home:studio" };
   for (const key of ["ATELIER_TOKEN", "ATELIER_ACTOR"]) delete env[key];
   const script = `
-    process.argv = [process.execPath, ${JSON.stringify(cli)}, "base-token", "t1", "--project", "demo", "--as", "claude-code/gpt-6-astra"];
+    process.argv = [process.execPath, ${JSON.stringify(cli)}, "baseline-token", "--project", "demo", "--as", "claude-code/gpt-6-astra"];
     globalThis.fetch = async (url, options = {}) => {
       if (options.headers.authorization !== "Bearer ${secret}") throw new Error("wrong credential");
       if (url === "https://one.test/api/config") return Response.json({ runner: "home:studio", tokenId: "id" });
-      if (url !== "https://one.test/api/projects/demo/items/t1/base-token" || options.method !== "POST") throw new Error("unexpected route " + url);
-      if (JSON.parse(options.body).scope !== "read" || options.headers["x-atelier-actor"] !== "claude-code/gpt-6-astra") throw new Error("wrong base-token request");
-      return Response.json({ remote: "https://git.test/demo.git", token: "main-read-secret", defaultBranch: "main" });
+      if (options.headers["x-atelier-actor"] !== "claude-code/gpt-6-astra") throw new Error("wrong actor");
+      if (url === "https://one.test/api/projects/demo" && options.method === "GET") return Response.json({ project: { name: "demo", policy: { checks: [], regenerate: "node cli/regenerate.mjs" } }, items: [], events: [] });
+      if (url !== "https://one.test/api/projects/demo/baseline-token" || options.method !== "POST") throw new Error("unexpected route " + url);
+      if (JSON.parse(options.body).scope !== "read") throw new Error("wrong baseline-token request");
+      return Response.json({ remote: "https://git.test/demo.git", token: "main-read-secret", tokenId: "up-1", expiresAt: "2026-10-11T00:00:00.000Z", defaultBranch: "main" });
     };
     await import(${JSON.stringify(cli)});
   `;
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", env });
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), { remote: "https://git.test/demo.git", token: "main-read-secret", defaultBranch: "main" });
+  assert.deepEqual(JSON.parse(result.stdout), { remote: "https://git.test/demo.git", token: "main-read-secret", defaultBranch: "main", regenerate: "node cli/regenerate.mjs" });
   assert.doesNotMatch(result.stderr, new RegExp(secret));
 });
 

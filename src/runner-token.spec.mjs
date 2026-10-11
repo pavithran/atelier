@@ -117,6 +117,16 @@ it("allows job reads, held-job resume, evidence, release and reports; invalid cr
   await t.claim();
   for (const path of [`/projects/${t.name}`, `${t.base}`, `${t.base}/brief`, `/projects/${t.name}/decisions`]) expect((await t.api("GET", path)).status).toBe(200);
   for (const verb of ["read-token", "base-token"]) expect((await t.api("POST", `${t.base}/${verb}`, {})).status).toBe(200);
+  // A build's runner merges current main before it submits (t435) and
+  // reads main through the project's baseline token, which a runner token
+  // may read for any project it serves; an item's base-token answers a
+  // runner only for the job it holds (assertRunnerJob), so a part's runner
+  // cannot read main through its plan item's, which is another's job.
+  const baseline = await t.api("POST", `/projects/${t.name}/baseline-token`, { scope: "read" });
+  expect(baseline.status).toBe(200);
+  expect(await baseline.json()).toMatchObject({ remote: `https://git.test/${t.name}.git`, defaultBranch: "main" });
+  expect(t.upstream.at(-1)).toMatchObject({ scope: "read" });
+  expect((await t.api("POST", `${t.base.replace("t1", "t2")}/base-token`, { scope: "read" })).status).toBe(403);
   expect((await t.poll()).status).toBe(200);
   expect((await t.api("POST", `${t.base}/claim`, {})).status).toBe(200);
   expect((await t.api("POST", `${t.base}/evidence`, { claim: "inspected", kind: "note", head: HEAD, passed: true })).status).toBe(200);
