@@ -1,3 +1,4 @@
+import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
@@ -6,11 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-// t403: a landing's required checks wait for the load to fall under the limit
-// before they start, say so, and record the load each result started at. These
-// run the CLI against a stand-in server, forcing the load with ATELIER_LOAD
-// (a comma-separated sequence; the last reading repeats) and the limit with
-// ATELIER_LOAD_LIMIT, so no real load is consulted.
+// Retired load controls must not prevent applicable local commands from running.
 
 const cli = resolve("cli/atelier.mjs");
 const actor = "codex/test";
@@ -49,30 +46,12 @@ async function fixture(t, checks = ["exit 0"]) {
   return { run, evidence };
 }
 
-test("a check under the load limit records the load it started at in its evidence", async (t) => {
-  const f = await fixture(t);
-  const r = await f.run({ ATELIER_LOAD_LIMIT: "4", ATELIER_LOAD: "2" });
-  assert.equal(r.status, 0, r.stdout + r.stderr);
-  assert.equal(f.evidence.length, 1);
-  assert.equal(f.evidence[0].passed, true);
-  assert.equal(f.evidence[0].load, 2, "the evidence carries the load read when the check started");
-});
-
-test("a check at or above the limit waits, says so, and records the load it finally started at", { timeout: 30_000 }, async (t) => {
-  const f = await fixture(t);
-  const r = await f.run({ ATELIER_LOAD_LIMIT: "4", ATELIER_LOAD: "90,1" });
-  assert.equal(r.status, 0, r.stdout + r.stderr);
-  assert.match(r.stderr, /load 90 is at or above the limit 4; waiting for it to fall before running the checks/);
-  assert.equal(f.evidence.length, 1);
-  assert.equal(f.evidence[0].load, 1, "the evidence records the load once it had fallen under the limit");
-});
-
-test("each check waits in turn and records its own starting load, not the first check's", { timeout: 30_000 }, async (t) => {
+test("retired load settings do not hold local checks", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await fixture(t, ["exit 0", "exit 0"]);
-  const r = await f.run({ ATELIER_LOAD_LIMIT: "4", ATELIER_LOAD: "1,90,2" });
+  const r = await f.run({ ATELIER_LOAD_LIMIT: "1", ATELIER_LOAD: "999999" });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.equal(f.evidence.length, 2);
-  assert.equal(f.evidence[0].load, 1, "the first check starts at the first reading");
-  assert.equal(f.evidence[1].load, 2, "the second check records its own starting load");
-  assert.match(r.stderr, /load 90 is at or above the limit 4; waiting for it to fall before running the checks/, "the second check waits and says so too");
+  assert.ok(f.evidence.every((e) => e.passed));
+  assert.doesNotMatch(r.stderr, /waiting for it to fall/);
 });
