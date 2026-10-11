@@ -70,6 +70,7 @@ import command_unblock from "./unblock.mjs";
 import command_undispatch from "./undispatch.mjs";
 import command_unwrap from "./unwrap.mjs";
 import command_update from "./update.mjs";
+import command_wait from "./wait.mjs";
 import command_wrap from "./wrap.mjs";
 
 export const HANDLER_MODULES = [
@@ -144,5 +145,6 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/undispatch.mjs", run: command_undispatch },
   { path: "cli/commands/unwrap.mjs", run: command_unwrap },
   { path: "cli/commands/update.mjs", run: command_update },
+  { path: "cli/commands/wait.mjs", run: command_wait },
   { path: "cli/commands/wrap.mjs", run: command_wrap },
 ];
