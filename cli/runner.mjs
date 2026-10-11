@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { excludeScratch } from "./scratch.mjs";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, statSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, statSync, readdirSync, realpathSync, renameSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +11,7 @@ import { killTree, treeGroups } from "./group.mjs";
 import { SLOT_WRAPPER } from "./load.mjs";
 import { runnerChildEnv, envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
+import { REVIEW_RENEW_MS } from "../src/rules.ts";
 import { reviewBrief, BRIEF_LIMITS, criteriaCount } from "../src/review/brief.ts";
 import { deferredCriteria } from "../src/review/criteria.ts";
 import { submission } from "../src/brief.ts";
@@ -256,7 +257,7 @@ export function killGroups() {
 // SIGTERM. The result comes back once the group is gone, so nothing the
 // child started still runs in its folder. A process that leaves the group
 // (setsid) is beyond this.
-export function execute(argv, { cwd, signal, capture = false, captureError = false, stream = false, timeoutMs, env, graceMs = 5000 } = {}) {
+export function execute(argv, { cwd, signal, capture = false, captureError = false, stream = false, timeoutMs, env, captureLimit = Infinity, graceMs = 5000 } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("interrupted"));
     const child = spawn(argv[0], argv.slice(1), { cwd, shell: false, detached: true, ...(env ? { env } : {}),
@@ -292,13 +293,84 @@ export function execute(argv, { cwd, signal, capture = false, captureError = fal
     };
     const deadline = timeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; end(); }, timeoutMs);
     signal?.addEventListener("abort", end, { once: true });
-    child.stdout?.on("data", (chunk) => { output += chunk; if (stream) process.stdout.write(chunk); });
-    child.stderr?.on("data", (chunk) => { stderr += chunk; });
+    child.stdout?.on("data", (chunk) => { output = (output + chunk).slice(-captureLimit); if (stream) process.stdout.write(chunk); });
+    child.stderr?.on("data", (chunk) => { stderr = (stderr + chunk).slice(-captureLimit); });
     child.on("error", (e) => { error = e; });
     // Once the child has exited, a deadline not yet passed no longer applies, and what it left in its group goes.
     child.on("exit", () => { clearTimeout(deadline); end(); });
     child.on("close", (code, sig) => { closed = { code, signal: sig }; finish(); });
   });
+}
+
+// Preparation belongs to a local Git directory, never the synced checkout.
+export function prepareTimeout(value = process.env.ATELIER_PREPARE_TIMEOUT) {
+  if (value === undefined) return 600_000;
+  if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) > 2_147_483_647) {
+    throw new Error("ATELIER_PREPARE_TIMEOUT must be positive integer milliseconds (at most 2147483647)");
+  }
+  return Number(value);
+}
+
+const digest = (value) => createHash("sha256").update(value).digest("hex");
+export function preparationMarker(cache, gitDir) {
+  return join(cache, "prepare", `${digest(realpathSync(gitDir))}.json`);
+}
+
+// Directories are content inputs too; order, path names and executable bits
+// matter. A missing/unreadable input can never certify a cache hit.
+function preparationInput(path) {
+  const stat = statSync(path);
+  if (stat.isDirectory()) return readdirSync(path).sort().map((name) => [name, preparationInput(join(path, name))]);
+  if (!stat.isFile()) throw new Error(`not a regular preparation input: ${path}`);
+  return [stat.mode & 0o777, digest(readFileSync(path))];
+}
+
+export async function prepareWorkspace(cwd, spec, { cache, gitDir, conflicts = [], signal, timeoutMs = prepareTimeout(), executeChild = execute,
+  runtime = [process.execPath, process.version, process.platform, process.arch, process.env.PATH ?? ""], log = () => {} } = {}) {
+  if (!spec?.command) return null;
+  const { command, inputs, outputs } = spec;
+  if (!Array.isArray(inputs) || !inputs.length || !Array.isArray(outputs) || !outputs.length ||
+      [...inputs, ...outputs].some((p) => typeof p !== "string" || !p || p.startsWith("/") || p.split("/").some((v) => v === ".." || v === ".") || /[\\*?\[\]\0]/.test(p))) {
+    throw Object.assign(new Error("preparation requires declared relative input and output paths"), { infrastructure: true });
+  }
+  if (conflicts.some((file) => inputs.some((p) => file === p || file.startsWith(`${p}/`) || p.startsWith(`${file}/`)))) {
+    const instruction = `Preparation deferred: resolve the merge conflicts, then run in ${JSON.stringify(cwd)}: ${command}`;
+    log(instruction);
+    return { deferred: instruction };
+  }
+  const marker = preparationMarker(cache, gitDir);
+  const keyOf = () => {
+    try { return digest(JSON.stringify([1, command, inputs, outputs, runtime, inputs.map((p) => preparationInput(join(cwd, p)))])); }
+    catch { return null; }
+  };
+  const outputsExist = () => outputs.every((p) => existsSync(join(cwd, p)));
+  const key = keyOf();
+  let saved;
+  try { saved = JSON.parse(readFileSync(marker, "utf8")); } catch { /* No valid success marker. */ }
+  if (key && saved?.version === 1 && saved.key === key && outputsExist()) {
+    log("preparation reused");
+    return { key };
+  }
+  // An old success must not survive a failed re-run.
+  rmSync(marker, { force: true });
+  log(`preparing ${cwd}: ${command}`);
+  let result;
+  try {
+    result = await executeChild(["/bin/sh", "-c", command], { cwd, signal, timeoutMs, capture: true, captureError: true, captureLimit: 4096 });
+    if (signal?.aborted || result.timedOut || result.code !== 0) throw new Error(signal?.aborted ? "interrupted" : result.timedOut ? "timed out" : `exited ${result.code}`);
+    if (!outputsExist()) throw new Error("declared outputs are missing");
+  } catch (error) {
+    throw Object.assign(new Error(`preparation ${error.message}: ${[result?.output, result?.stderr].filter(Boolean).map((v) => v.slice(-4096)).join("\n")}`), { infrastructure: true });
+  }
+  if (key && keyOf() === key) {
+    mkdirSync(dirname(marker), { recursive: true });
+    const temporary = `${marker}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(temporary, JSON.stringify({ version: 1, key }), { mode: 0o600, flag: "wx" });
+      renameSync(temporary, marker);
+    } finally { rmSync(temporary, { force: true }); }
+  }
+  return { key, succeeded: true };
 }
 
 export function redactGitArgs(args) {
@@ -732,7 +804,7 @@ export async function runTask(assignment, config, name, io) {
   io.log("nothing claimed");
   if (!assignment) { advance({ type: "claim", empty: true }); return state; }
   const { project, item, agent, model, actor } = assignment;
-  let workspace, before, claimed = false, claimAttempted = false, taskFailure = false, brief, mergedMain, already = null;
+  let workspace, before, claimed = false, claimAttempted = false, taskFailure = false, brief, mergedMain, already = null, preparation = null, resumed = false;
   // The merges the run started (startMergeMain, startMergePlan), kept for
   // the exit: a head is not complete while one is in progress (alreadyComplete).
   const merges = [];
@@ -757,8 +829,12 @@ export async function runTask(assignment, config, name, io) {
     // The marker holds back only what it was written for: this actor's
     // unverified commit, still the workspace's head. Another builder, or this
     // one after the commit moved on, runs its harness and the checks as usual.
+    // A runner with preparation checks the marker afterwards: a successful
+    // preparation can repair the environment that an old marker described.
     const priorBlock = await io.readValidationBlock?.(workspace);
-    if (priorBlock?.actor === actor && priorBlock.head && priorBlock.head === await io.head(workspace).catch(() => null)) {
+    if (priorBlock?.actor === actor && priorBlock.head &&
+        !(io.hasPreparation ? await io.hasPreparation(project, actor) : !!io.prepare) &&
+        priorBlock.head === await io.head(workspace).catch(() => null)) {
       throw Object.assign(new Error(priorBlock.detail), { validationBlocked: true, skipped: true });
     }
     if (io.stopped()) throw new Error("interrupted");
@@ -783,9 +859,19 @@ export async function runTask(assignment, config, name, io) {
     // plan's branch — and committed the resolution. A workspace at the
     // recorded head means the dead run committed nothing, and the harness
     // runs as for any other claim.
-    const resumed = item.state === "claimed" && item.owner === actor && !!item.head && before !== item.head;
+    resumed = item.state === "claimed" && item.owner === actor && !!item.head && before !== item.head;
     let result = null;
+    const prepare = async () => {
+      preparation = await io.prepare?.(workspace);
+      const currentHead = priorBlock && merges.some((m) => m.state === "merged") ? await io.head(workspace) : before;
+      if (priorBlock?.actor === actor && priorBlock.head === currentHead &&
+          !preparation?.deferred && (!preparation || (priorBlock.prepared && (!priorBlock.prepareKey || priorBlock.prepareKey === preparation.key)))) {
+        throw Object.assign(new Error(priorBlock.detail), { validationBlocked: true });
+      }
+      if (preparation && !preparation.deferred) await io.clearValidationBlock?.(workspace);
+    };
     if (resumed) {
+      await prepare();
       io.log(`resumed: an earlier run of this runner committed ${String(before).slice(0, 8)} and never submitted it; finishing it without the harness`);
       advance({ type: "start" });
     } else {
@@ -807,6 +893,7 @@ export async function runTask(assignment, config, name, io) {
         logMerge(merges.at(-1));
         if (io.stopped()) throw new Error("interrupted");
       }
+      await prepare();
       const merged = merges.some((m) => m.state === "merged") && !merges.some((m) => m.state === "conflicts" || m.state === "skipped");
       if (merged) {
         // A clean merge is the part's work: the job finishes with it, no harness.
@@ -838,7 +925,7 @@ export async function runTask(assignment, config, name, io) {
         : merging
           ? `${local}\n${reworked?.text ? `${reworked.text}\n\n` : ""}${mergeMainSection(merges[0])}\n\n${conflictsSection(...merges)}\n`
           : reworked?.text ? `${local}\n${reworked.text}\n` : local;
-      brief = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${body}`);
+      brief = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${body}${preparation?.deferred ? `\n${preparation.deferred}` : ""}`);
       const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
       for (const name of withheld) io.log(`${name} holds the Atelier owner token, so ${agent} does not get it; take it out of env in the runner config`);
       // See OWN_DATA_HOME. The folder lasts exactly as long as the harness: it
@@ -867,7 +954,7 @@ export async function runTask(assignment, config, name, io) {
       // Persist outside the reset's tracked/untracked tree: a later runner
       // must not mistake this committed but unverified work for a dead run.
       const head = await io.head(workspace).catch(() => null);
-      await io.writeValidationBlock?.(workspace, { actor, head, detail: blocked });
+      await io.writeValidationBlock?.(workspace, { actor, head, detail: blocked, prepared: !!preparation && !preparation.deferred, ...(preparation?.key ? { prepareKey: preparation.key } : {}) });
       throw Object.assign(new Error(blocked), { validationBlocked: true });
     }
     if (result?.timedOut) throw new Error("harness timed out");
@@ -913,7 +1000,7 @@ export async function runTask(assignment, config, name, io) {
         await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", state.reason], workspace);
         io.log("released: the part goes back to its plan with the failing output");
       } catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
-    } else if (claimed && state.head) {
+    } else if (claimed && (state.head || resumed)) {
       io.log("claim preserved: work was committed before finish");
     } else if (claimed && before) {
       let head;
@@ -975,10 +1062,11 @@ export function jobOf(task) {
 // request, so another reviewer may take it.
 export async function runReview(assignment, config, name, runnerIO) {
   const { project, item, agent, model, actor } = assignment;
-  let brief, diffFile, workspace, verdictFile, claimedRequest = false, released = false, io = runnerIO;
+  let brief, diffFile, workspace, verdictFile, request, renewal, renewing = false, renewalFailure, claimedRequest = false, released = false, io = runnerIO;
+  const generation = () => request === undefined ? [] : ["--request", String(request)];
   const release = async (reason) => {
     released = true;
-    try { await io.cli(["review-release", item.id, "--project", project, "--as", actor, "--note", reason]); }
+    try { await io.cli(["review-release", item.id, "--project", project, "--as", actor, "--note", reason, ...generation()]); }
     catch (error) { io.log(`review release failed: ${error.message}`); }
   };
   try {
@@ -997,9 +1085,24 @@ export async function runReview(assignment, config, name, runnerIO) {
     // Claim the request; the server returns the part, the brief's inputs and a
     // read token for the fork, so the part can be cloned read-only.
     // From the claim on, any error releases the request (see the catch), so a
-    // failed review never holds the task for the claim's two hours.
-    const claimed = JSON.parse(await io.cli(["review-claim", item.id, "--project", project, "--as", actor, "--runner", name])
-      .then((output) => { claimedRequest = true; return output; }));
+    // failed review need not wait for its five-minute lease to expire.
+    const claimed = JSON.parse(await io.cli(["review-claim", item.id, "--project", project, "--as", actor, "--runner", name]));
+    request = claimed.request;
+    claimedRequest = request !== undefined;
+    if (request !== undefined) {
+      // One renewal in flight; network failures recover on the next interval.
+      // A refused generation must never post a verdict, even for this actor.
+      renewal = setInterval(async () => {
+        if (renewing || io.stopped()) return;
+        renewing = true;
+        try { await io.cli(["review-renew", item.id, "--project", project, "--as", actor, ...generation()]); }
+        catch (error) {
+          io.log(`review renewal failed: ${error.message}`);
+          if (error.status === 409) renewalFailure = error;
+        } finally { renewing = false; }
+      }, REVIEW_RENEW_MS);
+      renewal.unref?.();
+    }
     // A review clones into a folder of its own beside the task's workspace,
     // never into the builder's, and the folder is removed when the job ends.
     workspace = `${io.workspacePath(project, item.id)}-review-${randomUUID().slice(0, 8)}`;
@@ -1098,7 +1201,7 @@ export async function runReview(assignment, config, name, runnerIO) {
       // workspace, removed once the call ends whatever it answered.
       const kept = await io.brief(workspace, reply.slice(-VERDICT_LIMITS.reply));
       try {
-        await io.cli(["review-unparsable", item.id, "--project", project, "--as", actor, "--head", claimed.head, "--note", parsed.error, "--reply-file", kept.file]);
+        await io.cli(["review-unparsable", item.id, "--project", project, "--as", actor, "--head", claimed.head, "--note", parsed.error, "--reply-file", kept.file, ...generation()]);
         io.log(`review released: ${parsed.error}`);
       } catch (error) {
         io.log(`could not keep the unparsable reply on the task: ${error.message}`);
@@ -1115,6 +1218,7 @@ export async function runReview(assignment, config, name, runnerIO) {
     if (claimed.criteria) argv.push("--criteria", claimed.criteria);
     if (claimed.request !== undefined && claimed.request !== null) argv.push("--request", String(claimed.request));
     if (parsed.findings.length) argv.push("--findings", JSON.stringify(parsed.findings));
+    if (renewalFailure) throw renewalFailure;
     await io.cli(argv);
     io.log(`reviewed${claimed.tier ? " as the tier review" : ""}: ${parsed.verdict}`);
     return { phase: "reviewed", verdict: parsed.verdict };
@@ -1123,6 +1227,7 @@ export async function runReview(assignment, config, name, runnerIO) {
     if (claimedRequest && !released) await release(error.message);
     return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
   } finally {
+    clearInterval(renewal);
     if (brief) await io.removeBrief(brief);
     if (diffFile) io.removeDiff(diffFile);
     if (verdictFile) io.removeFile?.(verdictFile);
@@ -1626,9 +1731,10 @@ export async function runPlanTask(assignment, config, name, io) {
     await io.reset(workspace);
     io.log("workspace reset to HEAD and untracked files removed");
     if (io.stopped()) throw new Error("interrupted");
+    const preparation = await io.prepare?.(workspace);
     const job = await io.jobBrief(project, item.id, actor);
     if (!job || typeof job.text !== "string") throw new Error("the server's job brief has no text");
-    brief = await io.brief(workspace, `${roleText("plan", workspace)}\n\n${testSlotNote}\n\n${job.text}`);
+    brief = await io.brief(workspace, `${roleText("plan", workspace)}\n\n${testSlotNote}\n\n${job.text}${preparation?.deferred ? `\n${preparation.deferred}` : ""}`);
     const planFile = planFilePath(workspace);
     const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
     for (const each of withheld) io.log(`${each} holds the Atelier owner token, so ${agent} does not get it; take it out of env in the runner config`);
@@ -1710,11 +1816,12 @@ export function runOutcome(state) {
 
 // `reportRun(body, runner, signal)` sends a run report; a report that fails
 // is logged and the loop goes on.
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, version }) {
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, version, api }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
   }
+  const preparationTimeoutMs = prepareTimeout();
   const integrating = args.integrate === true;
   if (typeof args.name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(args.name)) throw new Error("use --name home:NAME");
   // The integrator runs no model: it offers the integrate and refresh jobs
@@ -1777,15 +1884,37 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     removeTree: (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }),
     // The empty folder a criteria review job works in (runCriteriaReview).
     makeDir: (dir) => mkdirSync(dir, { recursive: true }),
-    workspacePath, log: line, stopped: () => controller.signal.aborted,
+    workspacePath, hasPreparation, log: line, stopped: () => controller.signal.aborted,
     // `options.token` (a review job's, t346) is the Atelier token this one
     // call authenticates with, handed to the CLI as ATELIER_TOKEN in the
     // child's environment, which wins over the owner's stored token; it is
     // never an argument, which any local user could read.
-    cli: (argv, cwd, options = {}) => checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, capture: readsOutput(argv), claim: argv[0] === "claim",
-      env: runnerChildEnv(process.env, offer.runner, credential, options.token),
-      step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
-      ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable" || argv[0] === "criteria-review-failed") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild),
+    cli: async (argv, cwd, options = {}) => {
+      // Lease control calls stay in the runner so shutdown can give each
+      // request its own deadline, independent of the aborted child signal.
+      if (["review-renew", "review-release", "review-unparsable"].includes(argv[0]) && argv.includes("--request")) {
+        // The CLI hands its own helpers in (api): inside `atelier runner`, a
+        // dynamic import of atelier.mjs waits on that module's unfinished
+        // top-level await, and Node exits 13 with nothing left to run (t505).
+        const { server, I } = api ?? await import("./atelier.mjs");
+        const value = (flag) => argv[argv.indexOf(flag) + 1];
+        const body = { request: Number(value("--request")), note: argv.includes("--note") ? value("--note") : "" };
+        if (argv[0] === "review-unparsable") {
+          body.head = value("--head");
+          body.reply = readFileSync(value("--reply-file"), "utf8");
+        }
+        const response = await fetch(`${server()}/api${I(value("--project"), argv[1])}/${argv[0]}`, {
+          method: "POST", redirect: "error", headers: { authorization: `Bearer ${options.token}`, "x-atelier-actor": value("--as"), "content-type": "application/json" },
+          body: JSON.stringify(body), signal: AbortSignal.timeout(5000),
+        });
+        if (!response.ok) throw Object.assign(new Error(`${argv[0]}: ${response.status}`), { status: response.status });
+        return response.text();
+      }
+      return checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, capture: readsOutput(argv), claim: argv[0] === "claim",
+        env: runnerChildEnv(process.env, offer.runner, credential, options.token),
+        step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
+        ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable" || argv[0] === "criteria-review-failed") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild);
+    },
     head: (cwd, { cleanup = false, ref = "HEAD" } = {}) => checked(["git", "rev-parse", "--verify", `${ref}^{commit}`],
       { cwd, capture: true, ...(cleanup ? cleanupOptions() : { signal: controller.signal }) }, executeChild),
     // Every build, plan and merge job's workspace keeps .scratch/ out of Git
@@ -1800,6 +1929,21 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // `env` is the harness's whole environment (harnessEnv); `io.env` is the runner's.
     identityRefusals: async (cwd, env, project) => identityRefusals(cwd, env, project),
     harness: (argv, cwd, env, { capture = false, captureError = false, stream = false } = {}) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS, env, stream, ...(capture ? { capture } : {}), ...(captureError ? { captureError } : {}) }),
+    prepare: async (cwd) => {
+      if (!existsSync(join(cwd, ".git"))) return null;
+      const git = (argv) => checked(["git", ...argv], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild);
+      const configured = await executeChild(["git", "config", "--local", "--get", "atelier.prepare"], { cwd, capture: true, captureError: true, signal: controller.signal });
+      if (configured.code === 1) return null; // A workspace claimed before preparation existed.
+      if (configured.code !== 0 || configured.timedOut) throw new Error("could not read workspace preparation");
+      const spec = configured.output ? JSON.parse(configured.output) : null;
+      if (!spec) return null;
+      const gitDir = await git(["rev-parse", "--absolute-git-dir"]);
+      const conflicts = (await git(["diff", "--name-only", "--diff-filter=U", "-z"])).split("\0").filter(Boolean);
+      return prepareWorkspace(cwd, spec, { gitDir, conflicts,
+        cache: process.env.ATELIER_CACHE ?? join(homedir(), "Library", "Caches", "ai-projects", "cloudflare-git"),
+        signal: controller.signal, timeoutMs: preparationTimeoutMs, executeChild, log: io.log });
+    },
+    clearValidationBlock: async (cwd) => rmSync(join(cwd, ".git", "atelier-validation-blocked"), { force: true }),
     // { actor, head, detail }; a marker that does not parse holds nothing back.
     readValidationBlock: async (cwd) => {
       const file = join(cwd, ".git", "atelier-validation-blocked");

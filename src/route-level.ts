@@ -36,7 +36,9 @@
 // agentEmails, privateEmails and publicMirrors (t451).
 // 25: the owner admits, withdraws and lists outside reviewers (PUT, DELETE
 // and GET /projects/:p/reviewers), which an older server answers 404 (t492).
-// 26: the criteria-review routes, which the runner's criteria-review job
+// 26: review-renew and five-minute leases; release and verdicts name the
+// exact request generation, and expired requests are reoffered (t351).
+// 27: the criteria-review routes, which the runner's criteria-review job
 // calls to claim a review of a task's acceptance criteria and record its
 // verdict or failure, and init takes --require-criteria-review (t438).
-export const ROUTE_LEVEL = 26;
+export const ROUTE_LEVEL = 27;
