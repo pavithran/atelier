@@ -1,0 +1,53 @@
+atelier atelier/t528 "The runner Git route streams packs instead of buffering them"
+accepted head f2e75e40bacd341d93174793693f1f192bfe4dcb
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-11T20:44:58.572Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-11T20:45:02.456Z
+REVIEW approve by codex/gpt-6-astra at f2e75e40bacd341d93174793693f1f192bfe4dcb, recorded by codex/gpt-6-astra
+2026-10-11T19:16:57.490Z pavi item.created
+2026-10-11T19:17:03.250Z claude-code/opus-5.5 item.claimed
+2026-10-11T19:17:54.339Z claude-code/opus-5.5 fork.created
+2026-10-11T19:31:22.874Z pavi land.lease
+2026-10-11T19:31:29.833Z pavi land.merge
+2026-10-11T19:31:44.128Z pavi land.regenerate
+2026-10-11T19:31:47.592Z claude-code/opus-5.5 push.observed
+2026-10-11T19:31:48.292Z pavi land.push
+2026-10-11T19:38:47.608Z claude-code/opus-5.5 evidence.observed
+2026-10-11T19:38:51.952Z claude-code/opus-5.5 evidence.observed
+2026-10-11T19:38:52.676Z pavi land.check
+2026-10-11T19:57:31.255Z pavi land.lease
+2026-10-11T19:57:38.899Z pavi land.merge
+2026-10-11T19:57:52.284Z pavi land.regenerate
+2026-10-11T19:57:55.826Z claude-code/opus-5.5 push.observed
+2026-10-11T19:57:56.639Z pavi land.push
+2026-10-11T20:04:26.023Z claude-code/opus-5.5 evidence.observed
+2026-10-11T20:04:29.335Z claude-code/opus-5.5 evidence.observed
+2026-10-11T20:04:29.997Z pavi land.check
+2026-10-11T20:13:13.244Z pavi land.lease
+2026-10-11T20:13:19.876Z pavi land.merge
+2026-10-11T20:13:32.596Z pavi land.regenerate
+2026-10-11T20:13:34.963Z claude-code/opus-5.5 push.observed
+2026-10-11T20:13:35.661Z pavi land.push
+2026-10-11T20:19:44.086Z claude-code/opus-5.5 evidence.observed
+2026-10-11T20:19:47.456Z claude-code/opus-5.5 evidence.observed
+2026-10-11T20:19:47.968Z pavi land.check
+2026-10-11T20:19:50.851Z claude-code/opus-5.5 item.submitted
+2026-10-11T20:19:50.894Z pavi land.submit
+2026-10-11T20:19:51.161Z pavi review.requested
+2026-10-11T20:20:00.219Z codex/gpt-6-astra review.claimed
+2026-10-11T20:21:11.864Z codex/gpt-6-astra review.rejected
+2026-10-11T20:21:22.891Z pavi land.review
+2026-10-11T20:22:35.122Z pavi review.finding
+2026-10-11T20:38:20.427Z pavi land.lease
+2026-10-11T20:38:27.517Z pavi land.merge
+2026-10-11T20:38:39.220Z pavi land.regenerate
+2026-10-11T20:38:43.295Z claude-code/opus-5.5 push.observed
+2026-10-11T20:38:44.169Z pavi land.push
+2026-10-11T20:44:59.388Z claude-code/opus-5.5 evidence.observed
+2026-10-11T20:45:02.739Z claude-code/opus-5.5 evidence.observed
+2026-10-11T20:45:03.495Z pavi land.check
+2026-10-11T20:45:06.396Z pavi review.requested
+2026-10-11T20:45:07.203Z codex/gpt-6-astra review.claimed
+2026-10-11T20:46:20.947Z codex/gpt-6-astra review.approved
+2026-10-11T20:46:22.448Z pavi land.review
+2026-10-11T20:46:23.155Z pavi item.accepted
+2026-10-11T20:46:23.178Z pavi land.accept
