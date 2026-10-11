@@ -75,7 +75,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
   // claimed as soon as it is made, as a review.claimed event. `items` and `queue` answer
   // the project's items and the runner queue, which the wait explains from.
   const box = {
-    states: {}, reviews: { t1: [], t2: [] }, lease: null, waiting: [], version: null, routeLevel: ROUTE_LEVEL,
+    states: {}, reviews: { t1: [], t2: [] }, lease: null, waiting: [], version: null, routeLevel: ROUTE_LEVEL, policy: {},
     review: { needed: true, reviewer: "codex/gpt-6-astra", approve: true, pending: false, at: null, approveAfter: 0, claimed: false, skips: [] },
     requests: [], regen: "echo generated > gen-fixtures.txt", checks: ["exit 0"], items: [], queue: [], runners: null, renewFails: false, kinds: {},
     wf: { instance: null, stage: null, round: 0, checks: null, status: null, files: null, error: null, output: null, events: [], started: [], reads: 0, baseTokenAt: [], tick: null, onEvent: null },
@@ -115,7 +115,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     ];
     return {
       item: { id, title: `Fixture ${id}`, state, owner: "codex/test", ...(box.pushActors ? { pushActors: box.pushActors } : {}), head, ...(box.kinds[id] ? { kind: box.kinds[id] } : {}), acceptedHead: state === "accepted" || state === "merged" ? head : null },
-      policy: { reviewerAdmissions: box.reviewerAdmissions, checks: box.checks, protected: ["work.txt"], regenerate: box.regen, commitIdentity: { name: "Fixture", email: "fixture@example.invalid", agentEmails: [] }, ...(box.agents ? { agents: box.agents } : {}), ...(box.eligible ? { eligible: box.eligible } : {}) },
+      policy: { reviewerAdmissions: box.reviewerAdmissions, checks: box.checks, protected: ["work.txt"], regenerate: box.regen, commitIdentity: { name: "Fixture", email: "fixture@example.invalid", agentEmails: [] }, ...(box.agents ? { agents: box.agents } : {}), ...(box.eligible ? { eligible: box.eligible } : {}), ...box.policy },
       gate: { ready: true, outOfScope: [], blockers: [] }, evidence: [], reviews, events,
     };
   };
@@ -1963,16 +1963,27 @@ test("a push that fails for any other reason is not refreshed or retried (t275)"
 // The early review notice (t422): land says which policy requires a review
 // before it takes the lease or runs a check, though the task's fork already
 // holds the head, and says nothing under --no-review.
-test("land prints the review notice before it takes the lease or runs a check", async (t) => {
+for (const postMerge of [false, true]) test(`land prints the review notice before it takes the lease or runs a check (post-merge policy: ${postMerge})`, async (t) => {
   const f = await landFixture(t);
+  if (postMerge) f.box.policy = {
+    protected: [],
+    postMerge: {
+      version: 1,
+      approval: { by: "owner", at: "2026-10-09T00:00:00Z", reason: "run checks after landing" },
+      steps: [{ name: "check", command: "node scripts/check.mjs", class: "check", when: "always", protect: ["scripts/**"], timeoutMs: 1000 }],
+    },
+  };
   f.box.checks = ["echo CHECK-RAN"];
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
   const notice = r.output.indexOf("A review will be needed before this lands");
   assert.ok(notice >= 0, r.output);
-  assert.match(r.output, /work\.txt matches the protected glob work\.txt/);
+  assert.match(r.output, postMerge
+    ? /work\.txt matches the protected glob \*\*, from the post-merge policy/
+    : /work\.txt matches the protected glob work\.txt/);
+  if (postMerge) assert.match(r.output, /Controlling policy:.*post-merge policy/);
   const ran = r.output.indexOf("CHECK-RAN");
-  if (ran >= 0) assert.ok(notice < ran, r.output);
+  assert.ok(ran > notice, r.output);
   const firstLease = f.box.requests.findIndex((x) => x.path.endsWith("/landing-lease") && x.method === "POST");
   const baseToken = f.box.requests.findIndex((x) => x.path.endsWith("/base-token"));
   assert.ok(baseToken >= 0 && baseToken < firstLease, "the baseline was read before the lease was taken");
