@@ -418,6 +418,45 @@ test("an LFS object that is missing, binary, oversized or not what its pointer s
   assert.equal(ok.ok, true, ok.text);
 });
 
+test("a pointer completed by adding only its size line is read as a pointer and its object scanned", (t) => {
+  // The reviewer's probe: a published text file holding a valid version and
+  // oid line but no size line is no pointer; the outgoing commit appends the
+  // size and makes it one, adding neither a version nor an oid line. The blob
+  // is a pointer now, so the object it names is scanned or refused.
+  const f = fixture(t);
+  const payload = `weights\ntoken = ${KEY}\n`;
+  const oid = createHash("sha256").update(payload).digest("hex");
+  const partial = `version https://git-lfs.github.com/spec/v1\noid sha256:${oid}\n`;
+  f.put("data/weights.txt", partial);
+  f.commit("Partial");
+  let r = f.publish();
+  assert.equal(r.ok, true, r.text);
+  assert.equal(f.head(), f.git(f.checkout, "rev-parse", "main"));
+  f.put(join(".git", "lfs", "objects", oid.slice(0, 2), oid.slice(2, 4), oid), payload);
+  f.put("data/weights.txt", `${partial}size ${Buffer.byteLength(payload)}\n`);
+  const completed = f.commit("Complete").slice(0, 12);
+  const patch = f.git(f.checkout, "diff-tree", "-p", "-U0", "--no-commit-id", "HEAD");
+  assert.ok(!patch.includes("+version ") && !patch.includes("+oid "), patch);
+  r = f.publish();
+  assert.equal(r.ok, false, r.text);
+  assert.ok(r.text.includes(`${completed} data/weights.txt (LFS object ${oid.slice(0, 12)}):2: secret`), r.text);
+  assert.ok(!r.text.includes(KEY));
+  assert.equal(f.head(), f.git(f.checkout, "rev-parse", "main~1"));
+  // The same transition with the object absent from the checkout is refused
+  // for that, not pushed as a text change.
+  const g = fixture(t);
+  const absent = createHash("sha256").update("elsewhere").digest("hex");
+  const start = `version https://git-lfs.github.com/spec/v1\noid sha256:${absent}\n`;
+  g.put("data/absent.txt", start); g.commit("Partial");
+  assert.equal(g.publish().ok, true);
+  g.put("data/absent.txt", `${start}size 9\n`);
+  const c = g.commit("Complete").slice(0, 12);
+  const refused = g.publish();
+  assert.equal(refused.ok, false, refused.text);
+  assert.match(refused.text, new RegExp(`cannot scan ${c} data/absent\\.txt: LFS object ${absent.slice(0, 12)} is not in the checkout's LFS storage`));
+  assert.equal(g.head(), g.git(g.checkout, "rev-parse", "main~1"));
+});
+
 test("lfsPointer and lfsObject read the spec's pointer and check the object against it", (t) => {
   const oid = createHash("sha256").update("payload\n").digest("hex");
   assert.deepEqual(lfsPointer(`version https://git-lfs.github.com/spec/v1\noid sha256:${oid}\nsize 8\n`), { oid, size: 8 });
