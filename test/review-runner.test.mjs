@@ -888,6 +888,55 @@ test("runReview renews every thirty seconds throughout a forty-minute review", a
   assert.equal(calls.filter((c) => c.argv?.[0] === "review-renew").length, 80);
 });
 
+for (const status of [200, 409]) test(`runner HTTP renewal authenticates and fences the claim (${status})`, async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const args = runnerConfig(t);
+  const { io } = fixture();
+  const { cli, stopped, ...taskIO } = io;
+  const requests = [], children = [];
+  const previous = process.exitCode;
+  const oldServer = process.env.ATELIER_SERVER;
+  process.env.ATELIER_SERVER = "https://atelier.test";
+  t.after(() => {
+    process.exitCode = previous;
+    if (oldServer === undefined) delete process.env.ATELIER_SERVER;
+    else process.env.ATELIER_SERVER = oldServer;
+  });
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    requests.push({ url: String(url), body: JSON.parse(options.body), options, aborted: options.signal.aborted });
+    return new Response("{}", { status });
+  });
+  await runRunner(args, {
+    workspacePath: io.workspacePath, wait: () => tick(), queue: async () => [assignment],
+    taskIO: { ...taskIO, async harness() {
+      t.mock.timers.tick(30_000);
+      await tick();
+      return { code: 0 };
+    } },
+    async executeChild(argv) {
+      children.push(argv[2]);
+      return { code: 0, output: argv[2] === "review-claim" ? JSON.stringify(claimed) : "{}" };
+    },
+  });
+  assert.deepEqual(requests.map((r) => r.url), [
+    "https://atelier.test/api/projects/atelier/items/t21/review-renew",
+    ...(status === 409 ? ["https://atelier.test/api/projects/atelier/items/t21/review-release"] : []),
+  ]);
+  for (const request of requests) {
+    assert.equal(request.body.request, claimed.request);
+    assert.equal(request.options.method, "POST");
+    assert.equal(request.options.headers.authorization, `Bearer ${FAKE_TOKEN}`);
+    assert.equal(request.options.headers["x-atelier-actor"], assignment.actor);
+    assert.equal(request.aborted, false);
+    assert.equal(request.options.redirect, "error");
+  }
+  assert.equal(children.includes("review"), status === 200, "a stale renewal prevents a verdict");
+  assert.ok(!children.includes("review-renew") && !children.includes("review-release"), "lease calls use the runner API directly");
+  t.mock.timers.tick(300_000);
+  await tick();
+  assert.equal(requests.length, status === 200 ? 1 : 2, "renewal stops when the review ends");
+});
+
 test("a lost claim response leaves recovery to expiry and never sends unfenced cleanup", async () => {
   const { io, calls } = fixture();
   const cli = io.cli;
