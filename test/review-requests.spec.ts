@@ -8,6 +8,7 @@ import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import { planText, type PlanView } from "../src/plans/show.ts";
 import { REVIEW_CLAIM_TIMEOUT_MS } from "../src/review/needed.ts";
+import { reportLimits, stuckReport } from "../src/stuck/report.ts";
 import { reviewBrief } from "../src/review/brief.ts";
 import { criteriaHash } from "../src/criteria.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.ts";
@@ -1099,6 +1100,45 @@ it("a forty-minute review renews on server time; writes coalesce and connectivit
       const [recovered] = instance.reviewWaiting();
       expect(recovered.request).not.toBe(claim.request);
       expect(recovered.dispatch).toMatchObject({ agent: "codex", model: "gpt-6-astra" });
+    } finally { Date.now = realNow; }
+  });
+});
+
+it("the stuck report ages a renewed review from its claim, and a re-claim after expiry from the new claim", async () => {
+  const L = await setup("review-stuck-age");
+  const { partId } = await approved(L);
+  await submitPart(L, partId, "a".repeat(40));
+  const claim = await L.claimReview(partId, GPT, RUNNER, true) as unknown as ReviewClaim;
+  await runInDurableObject(L, async (instance: Ledger, state: DurableObjectState) => {
+    const stamp = (id: number) => state.storage.sql.exec(`SELECT claimedAt FROM review_requests WHERE id = ?`, id).one().claimedAt as string;
+    const start = Date.parse(stamp(claim.request));
+    const realNow = Date.now;
+    let now = start;
+    Date.now = () => now;
+    const reviews = () => stuckReport("review-stuck-age", "https://atelier.test", new Date(now), reportLimits(), instance.stuckSnapshot(), [], [], [])
+      .entries.filter((e) => e.kind === "review");
+    try {
+      // Renewed every 30 s for three hours: still claimed, last renewed now.
+      for (let elapsed = 30_000; elapsed <= 3 * 3_600_000; elapsed += 30_000) {
+        now = start + elapsed;
+        instance.renewReview(partId, GPT, claim.request);
+      }
+      expect(Date.parse(stamp(claim.request))).toBe(now);
+      expect(reviews()).toMatchObject([{ subject: partId, since: new Date(start).toISOString(), ageMs: 3 * 3_600_000 }]);
+      // The claim lapses; a re-claim is a new request that ages from itself.
+      now += 300_001;
+      const [waiting] = instance.reviewWaiting();
+      expect(waiting.request).not.toBe(claim.request);
+      const again = await instance.claimReview(partId, GPT, RUNNER, true) as unknown as ReviewClaim;
+      const restart = now;
+      for (let elapsed = 30_000; elapsed <= 2 * 3_600_000; elapsed += 30_000) {
+        now = restart + elapsed;
+        instance.renewReview(partId, GPT, again.request);
+      }
+      expect(reviews()).toEqual([]);
+      now += 1;
+      instance.renewReview(partId, GPT, again.request);
+      expect(reviews()).toMatchObject([{ subject: partId, reason: `review request ${again.request} claimed by ${GPT}`, since: new Date(restart).toISOString() }]);
     } finally { Date.now = realNow; }
   });
 });
