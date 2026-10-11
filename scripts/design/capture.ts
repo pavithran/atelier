@@ -145,10 +145,12 @@ async function main() {
       const at: Record<string, unknown> = { structure, targets };
       if (vp.width === 1440) {
         at.contrast = [];
+        // Buttons transition their background (layout.css), and reduced motion does not stop
+        // that; measured mid-switch, a dark button reads as its light colour under dark text.
+        // Only the timing is removed here, after the screenshot: no colour changes.
+        await page.addStyleTag({ content: "*, *::before, *::after { transition: none !important; }" });
         for (const scheme of ["light", "dark"] as const) {
           await page.emulateMedia({ colorScheme: scheme });
-          // Buttons transition their background (layout.css), and reduced motion does not stop
-          // that; measured mid-switch, a dark button reads as its light colour under dark text.
           await page.evaluate(() => { for (const a of document.getAnimations()) a.finish(); });
           (at.contrast as unknown[]).push(await page.evaluate(contrastInPage));
         }
