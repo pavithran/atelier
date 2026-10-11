@@ -10,14 +10,14 @@
 // which is not a wait but a mismatch between the dispatch and the runners
 // (unoffered in src/dispatch/rules.ts); `waiting.server` is the server in
 // use, which the link to each merge by override names. A queued job the project's core
-// files hold (coreHold there) says which live item it waits on, as the
+// files hold (coreBlockers there) names every claimed or landing item it waits on, as the
 // queue's entry for it carries that. The offers (GET /runners) are each
 // { runner, kind, agents: [{ agent, models }], jobs?, at }, `at` saying when
 // the runner last asked, and a Runners section lists them after the projects,
 // each named runner's jobs said as the runner's own first line says them
 // (jobsLine in cli/runner.mjs): the jobs it takes and, behind them, the known
 // jobs it does not.
-import { holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
+import { holdRelease, holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
 import { isOwnCall, mergedByOverride } from "../src/rules.ts";
 import { daySpend } from "../src/usage/report.ts";
 import { jobsLine } from "./runner.mjs";
@@ -219,12 +219,12 @@ function heldIn(waiting, name) {
     .map((q) => [q.item.id, q.item.held]));
 }
 
-// A held job's line: what it waits on, and how it goes ahead — once that
-// item merges or is abandoned, or at once, for a task, by the owner's
-// override. A plan's part takes no override: the plan dispatches it.
+// A held job's line: what it waits on, and how it goes ahead — once every
+// blocker stops holding (a claimed one submits or is released, a landing
+// ends), or at once, for a task, by the owner's override. A plan's part takes no override: the plan dispatches it.
 function heldLine(item, held) {
   const next = item.kind === "part" ? "" : `, or at once with atelier dispatch ${item.id} --overlap-ok`;
-  return `Held: ${holdText(held)}; offered once ${held.id} merges or is abandoned${next}.`;
+  return `Held: ${holdText(held)}; ${holdRelease(held)}${next}.`;
 }
 
 // One queued job no live runner offers: said as its own line, capitalised,
