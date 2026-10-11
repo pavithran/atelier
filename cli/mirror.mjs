@@ -89,6 +89,28 @@ export function globMatcher(glob) {
 const sameUrl = (a, b) => a.trim().replace(/\/+$/, "") === b.trim().replace(/\/+$/, "");
 const firstLine = (text) => (text || "").trim().split("\n")[0];
 
+// wrap pushes every checkout remote. An alias of a pinned public destination
+// needs exactly the same check as its declared name, including pushurl fanout.
+export function publishCheckoutRemote({ git, dir, branch, remote, say, identity }) {
+  const urls = git(["remote", "get-url", "--push", "--all", remote], { cwd: dir, allowFail: true });
+  if (urls.status !== 0) { say(`Not published: cannot read push destinations for ${remote}.`); return { ok: false }; }
+  const destinations = urls.stdout.trim().split("\n");
+  const named = identity?.publicMirrors?.includes(remote);
+  const alias = Object.entries(identity?.publicMirrorDestinations ?? {}).find(([, url]) =>
+    typeof url === "string" && destinations.some((destination) => sameUrl(destination, url)));
+  if (named || alias) {
+    // Validate the original policy before deriving an alias; otherwise a
+    // missing declaration could be silently repaired by this routing step.
+    const policy = readPolicy(identity);
+    if (!policy.ok) { say(`Not published: ${policy.why}.`); return { ok: false }; }
+    if (!named) identity = { ...identity, publicMirrors: [...identity.publicMirrors, remote],
+      publicMirrorDestinations: { ...identity.publicMirrorDestinations, [remote]: alias[1] } };
+    return publishMirror({ git, dir, branch, remote, say, identity });
+  }
+  const result = git(["-c", `remote.${remote}.mirror=false`, "push", "--no-force", "--no-follow-tags", remote, `refs/heads/${branch}:refs/heads/${branch}`], { cwd: dir, allowFail: true, ownerRemote: true });
+  return { ok: result.status === 0 };
+}
+
 // The paths one commit changes, with each one's new mode, blob and size (null
 // when the object is missing): the file list `git log --name-only` would give,
 // read in raw form so the mode and the blob come with it. A merge lists what
@@ -209,7 +231,10 @@ export function commitPatch(raw, commit) {
 // line first, then `oid sha256:HEX` and `size N`, one key per line.
 const LFS_VERSIONS = ["https://git-lfs.github.com/spec/v1", "https://hawser.github.com/spec/v1", "http://git-media.io/v/2"];
 export function lfsPointer(text) {
-  if (typeof text !== "string" || Buffer.byteLength(text) > LFS_POINTER_BYTES) return null;
+  if ((!Buffer.isBuffer(text) && typeof text !== "string") || Buffer.byteLength(text) > LFS_POINTER_BYTES) return null;
+  // Measure the original bytes: invalid UTF-8 in a replaced extension can
+  // expand on decoding and make a valid, uploadable pointer look oversized.
+  if (Buffer.isBuffer(text)) text = text.toString("utf8");
   // Go's bytes.TrimSpace, ScanLines (including CRLF) and ignored empty
   // lines, matching git-lfs/lfs/pointer.go. Extensions can precede version.
   const lines = text.replace(/^[\s\u0085]+|[\s\u0085]+$/g, "").split(/\r?\n/).filter((line) => line !== "");
@@ -381,7 +406,7 @@ export function publishMirror({ git, dir, branch, remote, say, identity }) {
       // the commit that adds only its size line makes it one, so the lines
       // the commit adds say nothing about whether the blob is a pointer now.
       if (blob.size > LFS_POINTER_BYTES) continue;
-      const shown = raw(["cat-file", "blob", blob.sha]);
+      const shown = raw(["cat-file", "blob", blob.sha], { bytes: true });
       if (shown.status !== 0) { refusals.push(`${at}: unreadable (${firstLine(shown.stderr) || "git cat-file failed"})`); continue; }
       const pointer = lfsPointer(shown.stdout);
       if (!pointer) continue; // a text file, not a pointer
