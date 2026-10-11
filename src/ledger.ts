@@ -1523,10 +1523,18 @@ export class Ledger extends DurableObject<Env> {
       assertClaimAllowed(item, this.items(), this.project().policy, actor, this.owner, item.kind === "plan" ? "planner" : "executor");
       // A build or plan job dispatched before the owner paused, reserved or
       // kept this model from the job is not claimable: a dispatch naming it
-      // is withdrawn, and the claim refused with the reason. A holder
-      // refreshing its claim keeps it: a pool change leaves held claims alone.
-      const role = item.owner === actor ? null : claimRole(item);
+      // is withdrawn, and the claim refused with the reason.
+      const role = claimRole(item);
       const held = role ? actorStanding(this.poolStanding(), actor, role) : null;
+      // A holder renewing its claim is judged by the same standing: a model
+      // held from the job keeps the claim it has (a pool change leaves held
+      // claims alone, and nothing here releases or rewrites the record) but
+      // is not given another claim generation, so no fresh write token. The
+      // owner recovers the task by handing it off or releasing it, or by
+      // giving the model its standing back.
+      if (held && item.owner === actor) {
+        throw new RuleError("model_held", `${held}; it keeps its claim of ${id} but may not renew it: hand it off with atelier handoff ${id} --to HARNESS/MODEL, release it with atelier release ${id}, or change its standing with atelier models set`, 409);
+      }
       if (held) {
         const d = item.dispatch;
         const named = !!d?.agent && !!d.model && sameActor(`${d.agent}/${d.model}`, actor);

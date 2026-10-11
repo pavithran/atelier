@@ -65,3 +65,80 @@ test("every review request and every dispatch written is built by the standing c
   // its own making.
   for (const name of PASS_THROUGH) assert.doesNotMatch(methods.find((m) => m.name === name).body, /makeDispatch\(|to: "(home|cloud|any)"/, name);
 });
+
+// Criterion 4 again, for ownership: every write that gives a task an owner,
+// or lets its holder keep one with a fresh claim generation (and so a fresh
+// write token), is found by scanning the source, not taken from a list, and
+// must sit in a method that checks the owner's standing. A write is found
+// however it is made: an item update naming `owner` with anything but null,
+// an `owner` property or key assigned anywhere in src, a computed key or an
+// unknown record in an item update, raw SQL that sets or inserts an owner,
+// or a claim generation reserved for the holder.
+const CHECKS = /\bactorStanding\(|this\.assertStanding\(|this\.handoffAllowed\(/;
+
+// The text of a call from its opening parenthesis to the one that closes it.
+function callArgs(text, open) {
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === "(") depth++;
+    else if (text[i] === ")" && --depth === 0) return text.slice(open + 1, i);
+  }
+  return text.slice(open + 1);
+}
+const lineOf = (text, index) => text.slice(0, index).split("\n").length;
+
+// The owner writes in one source text, each with its offset and kind.
+function writesIn(text) {
+  const found = [];
+  const add = (index, how) => found.push({ index, how });
+  // An item update naming the owner, other than to clear it, or one with a
+  // computed key; a record spread or passed whole is made in the same source,
+  // so an owner put into it is caught as assigned below.
+  for (const m of text.matchAll(/\bthis\.update\(/g)) {
+    const args = callArgs(text, m.index + m[0].length - 1);
+    if (/\bowner\b(?!\s*:\s*null\b)/.test(args)) add(m.index, "update naming owner");
+    else if (/\[[^\]]+\]\s*:/.test(args)) add(m.index, "update with a computed key");
+  }
+  // An owner property or key assigned (the project owner's own field aside).
+  for (const m of text.matchAll(/(?<!this)(?:\.owner|\[\s*["'`]owner["'`]\s*\])\s*=(?!=)/g)) add(m.index, "owner assigned");
+  // Raw SQL setting or inserting an owner.
+  for (const m of text.matchAll(/UPDATE\s+items\s+SET\b[^`;]*?\bowner\s*=/g)) add(m.index, "SQL sets owner");
+  for (const m of text.matchAll(/INSERT\s+(?:OR\s+\w+\s+)?INTO\s+items\s*\(([^)]*)\)/g)) if (/\bowner\b/.test(m[1])) add(m.index, "SQL inserts owner");
+  // A holder keeping its claim: a claim generation reserved for its next token.
+  for (const m of text.matchAll(/\bthis\.reserve\(/g)) add(m.index, "claim generation reserved");
+  return found;
+}
+
+const LEDGER = join("src", "ledger.ts");
+const ownerWrites = () => files("src").filter((f) => !/\.test\.m?[jt]s$/.test(f)).flatMap((file) => {
+  const text = readFileSync(file, "utf8");
+  return writesIn(text).map((w) => ({ file, line: lineOf(text, w.index), how: w.how }));
+});
+
+test("every write that assigns or keeps a task's owner checks the owner's standing", () => {
+  const writes = ownerWrites();
+  const methodOf = (w) => (w.file === LEDGER ? methodAt(w.line - 1) : null);
+  // The scan sees the paths it must: a claim (and a runner adopting a
+  // handed-off one), a renewal's reserved generation, and a handoff.
+  const where = writes.filter((w) => w.file === LEDGER).map((w) => `${methodOf(w).name}: ${w.how}`);
+  for (const known of ["claim: update naming owner", "claim: claim generation reserved", "handoff: update naming owner"]) {
+    assert.ok(where.includes(known), `the scan misses ${known}; it found ${where.join(", ")}`);
+  }
+  const unchecked = writes.filter((w) => !methodOf(w) || !CHECKS.test(methodOf(w).body))
+    .map((w) => `${w.file}:${w.line} (${w.how}${methodOf(w) ? ` in ${methodOf(w).name}` : ""})`);
+  assert.deepEqual(unchecked, [], "these assign or keep an owner without checking the owner's standing (actorStanding, assertStanding or handoffAllowed)");
+});
+
+test("the owner-write scan finds an owner assigned however it is written", () => {
+  const scan = (text) => writesIn(text).map((w) => w.how);
+  assert.deepEqual(scan(`this.update(id, {\n  state: "claimed",\n  owner: to,\n}, at);`), ["update naming owner"]);
+  assert.deepEqual(scan(`this.update(id, { owner, state: "claimed" }, at);`), ["update naming owner"]);
+  assert.deepEqual(scan(`this.update(id, { [key]: actor }, at);`), ["update with a computed key"]);
+  assert.deepEqual(scan(`fields.owner = actor; this.update(id, fields, at);`), ["owner assigned"]);
+  assert.deepEqual(scan(`fields["owner"] = actor;`), ["owner assigned"]);
+  assert.deepEqual(scan("this.sql.exec(`UPDATE items SET state = 'claimed', owner = ? WHERE id = ?`, a, id);"), ["SQL sets owner"]);
+  assert.deepEqual(scan("this.sql.exec(`INSERT INTO items (id, owner) VALUES (?, ?)`, id, a);"), ["SQL inserts owner"]);
+  assert.deepEqual(scan(`return { ...this.reserve(id) };`), ["claim generation reserved"]);
+  // Clearing an owner, reading one, and the project owner's own field are not writes.
+  assert.deepEqual(scan(`this.update(id, { state: "merged", owner: null }, at); if (item.owner === actor) {} this.owner = owner;`), []);
+});
