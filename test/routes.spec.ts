@@ -1445,3 +1445,39 @@ it("a verdict on criteria that changed while its reviewer ran is refused with ho
   // The brief route gives the criteria and their binding, as atelier show prints them.
   expect(await (await owner("GET", "/items/t1/brief")).json()).toMatchObject({ accept: TWO, partAccept: null, criteria: two });
 });
+
+// Task t480: the page's textarea counts a line break as one character and its
+// maxlength stops a note at 2000 of those, but a browser posts each break as
+// CRLF. A note the form took must not then be refused as 2010 characters, so
+// the form handler stores every break as LF before the limit is checked. The
+// API and CLI text is checked and stored as given.
+it("a dispatch note at the limit posted with CRLF line breaks is taken and stored with LF, while API text is kept as given", async () => {
+  const name = "routes-crlf-note";
+  await project(name);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.newItem("Form note", [], "owner");
+  await L.newItem("API note", [], "owner");
+  const lines = Array.from({ length: 11 }, (_, i) => String(i % 10).repeat(i < 10 ? 181 : 180));
+  const stored = lines.join("\n");
+  expect(stored.length).toBe(2000);
+  const posted = lines.join("\r\n");
+  expect(posted.length).toBe(2010);
+
+  const cookie = await signIn(TOKEN, testEnv);
+  const form = await worker.fetch(new Request(`https://atelier.test/ui/${name}/t1/dispatch`, {
+    method: "POST", headers: { origin: "https://atelier.test", cookie }, body: new URLSearchParams({ to: "home", agent: "", model: "", note: posted }), redirect: "manual",
+  }), testEnv);
+  expect(form.status, await form.clone().text()).toBe(303);
+  expect((await L.item("t1")).dispatch?.note).toBe(stored);
+
+  // The API, as atelier dispatch --note-file sends a file, stores the text as
+  // given: a lone CR is kept, and CRLF counts as two units, so the same note
+  // in CRLF (2010 units) is refused whole, never folded to fit.
+  const api = await call("POST", `/projects/${name}/items/t2/dispatch`, "owner", { to: "home", note: lines.join("\r") });
+  expect(api.status, await api.clone().text()).toBe(200);
+  expect((await L.item("t2")).dispatch?.note).toBe(lines.join("\r"));
+  const over = await call("POST", `/projects/${name}/items/t2/dispatch`, "owner", { to: "home", note: posted });
+  expect(over.status).toBe(400);
+  expect(((await over.json()) as { error: string }).error).toBe("too_long");
+  expect((await L.item("t2")).dispatch?.note).toBe(lines.join("\r"));
+});
