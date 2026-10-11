@@ -1,0 +1,36 @@
+atelier atelier/t482 "A machine's test-slot capacity can be changed without a capacity conflict"
+accepted head ff3e3b85a53fe19b3bdc9bdd9055dcf71c48e07a
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — codex/gpt-6-astra 2026-10-11T05:31:43.825Z
+OBSERVED pass npm run types && npm run typecheck — codex/gpt-6-astra 2026-10-11T05:31:47.607Z
+REVIEW approve by antigravity/gemini-3.1-pro at ff3e3b85a53fe19b3bdc9bdd9055dcf71c48e07a, recorded by antigravity/gemini-3.1-pro
+2026-10-10T23:30:50.157Z pavi item.created
+2026-10-11T00:38:20.300Z pavi item.edited
+2026-10-11T00:38:20.300Z pavi item.criteria_changed
+2026-10-11T00:38:35.399Z pavi item.dispatched
+2026-10-11T00:49:22.295Z codex/gpt-6-astra item.claimed
+2026-10-11T00:49:29.471Z codex/gpt-6-astra fork.created
+2026-10-11T01:00:24.326Z codex/gpt-6-astra push.observed
+2026-10-11T01:04:30.363Z codex/gpt-6-astra evidence.observed
+2026-10-11T01:04:33.231Z codex/gpt-6-astra evidence.observed
+2026-10-11T01:04:33.847Z codex/gpt-6-astra item.submitted
+2026-10-11T01:06:45.523Z pavi item.released
+2026-10-11T01:06:45.523Z pavi item.dispatched
+2026-10-11T01:24:20.330Z codex/gpt-6-astra item.claimed
+2026-10-11T01:36:44.934Z codex/gpt-6-astra push.observed
+2026-10-11T01:41:32.871Z codex/gpt-6-astra evidence.observed
+2026-10-11T01:41:36.092Z codex/gpt-6-astra evidence.observed
+2026-10-11T01:41:36.657Z codex/gpt-6-astra item.submitted
+2026-10-11T05:26:56.472Z pavi land.lease
+2026-10-11T05:27:06.961Z pavi land.merge
+2026-10-11T05:27:16.957Z pavi land.regenerate
+2026-10-11T05:27:20.279Z codex/gpt-6-astra push.observed
+2026-10-11T05:27:21.274Z pavi land.push
+2026-10-11T05:31:44.370Z codex/gpt-6-astra evidence.observed
+2026-10-11T05:31:47.884Z codex/gpt-6-astra evidence.observed
+2026-10-11T05:31:48.293Z pavi land.check
+2026-10-11T05:31:49.849Z pavi review.requested
+2026-10-11T05:31:50.572Z antigravity/gemini-3.1-pro review.claimed
+2026-10-11T05:34:29.904Z antigravity/gemini-3.1-pro review.approved
+2026-10-11T05:34:37.232Z pavi land.review
+2026-10-11T05:34:37.804Z pavi item.accepted
+2026-10-11T05:34:37.835Z pavi land.accept
