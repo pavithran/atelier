@@ -35,6 +35,7 @@ export default async function runnerCommand() {
   try {
     await runRunner(args, {
       credential: apiToken(),
+      api: { server, I },
       workspacePath,
       // The server's route level against the CLI's, checked once at start:
       // a server behind this CLI would fail the runner's calls one by one.
