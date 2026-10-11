@@ -60,8 +60,9 @@ test("legacy route levels map to the documented guarantees only", () => {
   assert.deepEqual(capabilitiesForLevel(5), []);
   assert.deepEqual(capabilitiesForLevel(13), ["plans.integration.v1", "plans.refresh.v1"]);
   assert.deepEqual(capabilitiesForLevel(14), ["plans.integration.v1", "plans.refresh.v1", "land.workflow.v1"]);
-  assert.deepEqual(capabilitiesForLevel(ROUTE_LEVEL), [...SERVER_CAPABILITIES]);
-  assert.deepEqual(capabilitiesForLevel(ROUTE_LEVEL + 5), [...SERVER_CAPABILITIES]);
+  const legacy = CAPABILITIES.filter((c) => c.level !== undefined && c.level <= ROUTE_LEVEL).map((c) => c.name);
+  assert.deepEqual(capabilitiesForLevel(ROUTE_LEVEL), legacy);
+  assert.deepEqual(capabilitiesForLevel(ROUTE_LEVEL + 100), legacy);
   assert.equal(checkCapabilities({ routeLevel: 17 }, ["reviews.unparsable.v1"]).ok, true);
   const behind = checkCapabilities({ routeLevel: 17 }, ["reviews.unparsable.v1", "models.note.v1"]);
   assert.equal(behind.kind, "missing");
@@ -73,6 +74,32 @@ test("a legacy server is refused for a requirement no level guarantees", () => {
   const r = checkCapabilities({ routeLevel: ROUTE_LEVEL + 100 }, ["future.thing.v1"]);
   assert.equal(r.kind, "unmapped");
   assert.deepEqual(r.missing, ["future.thing.v1"]);
+});
+
+test("new declarations, including queued legacy metadata, require published names", async (t) => {
+  const dir = mkdtempSync(resolve(".capabilities-new-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const declarations = [...CAPABILITIES,
+    { name: "future.named.v1", summary: "a new route" },
+    { name: "future.queued.v1", level: ROUTE_LEVEL + 6, summary: "a queued route" },
+  ];
+  // Load the real support check against future declarations, as another task would.
+  const source = readFileSync(resolve("src/route-level.ts"), "utf8")
+    .replace('import { CAPABILITY_DECLARATIONS } from "./capability-declarations.ts";', `const CAPABILITY_DECLARATIONS = ${JSON.stringify(declarations)} as const;`)
+    .replaceAll('from "./usage/', `from "${resolve("src/usage")}/`);
+  const file = join(dir, "route-level.ts");
+  writeFileSync(file, source);
+  const future = await import(file);
+  for (const name of ["future.named.v1", "future.queued.v1"]) {
+    assert.ok(future.SERVER_CAPABILITIES.includes(name));
+    for (const version of [{ routeLevel: ROUTE_LEVEL }, { routeLevel: ROUTE_LEVEL + 100 }, { capabilities: SERVER_CAPABILITIES }]) {
+      const old = future.checkCapabilities(version, [name]);
+      assert.equal(old.ok, false);
+      assert.deepEqual(old.missing, [name]);
+      assert.match(old.message, /Deploy the server .*npm run deploy/);
+    }
+    assert.equal(future.checkCapabilities({ routeLevel: 0, capabilities: future.SERVER_CAPABILITIES }, [name]).ok, true);
+  }
 });
 
 // The check a client from before capabilities made, as cli/land.mjs and
@@ -196,16 +223,8 @@ test("the integration routes are guaranteed from legacy level 6, as the commits 
   assert.deepEqual(capabilitiesForLevel(14), ["plans.integration.v1", "plans.refresh.v1", "land.workflow.v1"]);
 });
 
-// Raising ROUTE_LEVEL gates nothing by itself since t458: a raise stands for
-// the capability declared with its level, and a raise that declares none
-// would leave a legacy server at the old level passing for the new routes.
-// Every level from the last one declared before capabilities (20) to the
-// current one ties to a declaration, and no declaration runs ahead of the
-// number.
-test("every route level raised since capabilities declares the capability it stands for", () => {
-  const levels = new Set(CAPABILITIES.map((c) => c.level).filter((l) => l !== undefined));
-  for (let level = 21; level <= ROUTE_LEVEL; level++) assert.ok(levels.has(level), `route level ${level} was raised without declaring a capability in src/route-level.ts`);
-  assert.equal(Math.max(...levels), ROUTE_LEVEL, "a declaration carries a level ROUTE_LEVEL has not reached");
+test("the legacy route level is frozen; additions need no numeric allocation", () => {
+  assert.equal(ROUTE_LEVEL, 28, "declare a named capability instead of raising ROUTE_LEVEL");
   // main's raises while t458 was built: the review skip (t353, 21 and 22) and the function areas (t456, 23).
   assert.deepEqual(CAPABILITIES.filter((c) => c.level === 21).map((c) => c.name), ["reviews.skip.v1"]);
   assert.deepEqual(CAPABILITIES.filter((c) => c.level === 22).map((c) => c.name), ["reviews.skip-as-runner.v1"]);
@@ -231,10 +250,14 @@ test("the landing's triage is guaranteed from legacy level 28 alone, and init an
   }
 });
 
-test("the stuck report is guaranteed from legacy level 30 alone, and atelier stuck requires it (t441)", () => {
-  assert.deepEqual(CAPABILITIES.filter((c) => c.level === 30).map((c) => c.name), ["projects.stuck.v1"]);
-  assert.deepEqual(checkCapabilities({ routeLevel: 29 }, COMMAND_CAPABILITIES.stuck).missing, ["projects.stuck.v1"]);
-  assert.equal(checkCapabilities({ routeLevel: 30 }, COMMAND_CAPABILITIES.stuck).ok, true);
+test("atelier stuck requires the stuck report by name, which no legacy level guarantees (t441)", () => {
+  assert.equal(CAPABILITIES.find((c) => c.name === "projects.stuck.v1")?.level, undefined);
+  assert.ok(SERVER_CAPABILITIES.includes("projects.stuck.v1"));
+  assert.equal(checkCapabilities({ capabilities: SERVER_CAPABILITIES }, COMMAND_CAPABILITIES.stuck).ok, true);
+  assert.deepEqual(checkCapabilities({ capabilities: SERVER_CAPABILITIES.filter((n) => n !== "projects.stuck.v1") }, COMMAND_CAPABILITIES.stuck).missing, ["projects.stuck.v1"]);
+  const legacy = checkCapabilities({ routeLevel: ROUTE_LEVEL + 2 }, COMMAND_CAPABILITIES.stuck);
+  assert.equal(legacy.kind, "unmapped");
+  assert.deepEqual(legacy.missing, ["projects.stuck.v1"]);
 });
 
 test("main's identity and reviewer admission guarantees keep their legacy boundaries", () => {
@@ -285,29 +308,56 @@ test("independent capability additions merge cleanly, including the same and new
   const base = readFileSync(resolve(file), "utf8");
   writeFileSync(join(dir, file), base);
   writeFileSync(join(dir, ".gitattributes"), readFileSync(resolve(".gitattributes")));
-  writeFileSync(join(dir, "src/route-level.ts"), `export const ROUTE_LEVEL = ${ROUTE_LEVEL};\n`);
+  const supportSource = readFileSync(resolve("src/route-level.ts"), "utf8")
+    .replaceAll('from "./usage/', `from "${resolve("src/usage")}/`);
+  writeFileSync(join(dir, "src/route-level.ts"), supportSource);
   git("add", "."); git("commit", "-qm", "base");
   const baseline = git("rev-parse", "HEAD").trim();
-  const add = (name, summary) => base.replace("] as const;", `  { name: "${name}", summary: "${summary}" },\n] as const;`);
-  for (const [i, names] of [["reviews.first.v1", "reviews.second.v1"], ["one.new.v1", "two.new.v1"], ["reviews.same.v1", "reviews.same.v1"]].entries()) {
+  const add = (name, summary, level) => base.replace("] as const;", `  { name: "${name}", ${level === undefined ? "" : `level: ${level}, `}summary: "${summary}" },\n] as const;`);
+  const cases = [
+    { names: ["reviews.first.v1", "reviews.second.v1"] },
+    { names: ["one.new.v1", "two.new.v1"] },
+    { names: ["reviews.same.v1", "reviews.same.v1"] },
+    // Queued tasks keep their metadata, even with gaps or overlapping levels.
+    { names: ["queued.first.v1", "queued.second.v1"], levels: [ROUTE_LEVEL + 1, ROUTE_LEVEL + 6] },
+    { names: ["queued.first.v1", "queued.second.v1"], levels: [ROUTE_LEVEL + 1, ROUTE_LEVEL + 1] },
+  ];
+  for (const [i, { names, levels = [] }] of cases.entries()) {
     git("checkout", "-qB", `ours-${i}`, baseline);
-    writeFileSync(join(dir, file), add(names[0], "ours"));
-    writeFileSync(join(dir, "src/route-level.ts"), `export const ROUTE_LEVEL = ${ROUTE_LEVEL + 1};\n`);
-    git("add", "."); git("commit", "-qm", "ours");
+    writeFileSync(join(dir, file), add(names[0], "ours", levels[0]));
+    git("add", file); git("commit", "-qm", "ours");
     git("checkout", "-qB", `theirs-${i}`, baseline);
-    writeFileSync(join(dir, file), add(names[1], "theirs"));
-    git("add", "."); git("commit", "-qm", "theirs");
-    git("checkout", "-q", `ours-${i}`);
-    git("merge", "--no-edit", `theirs-${i}`);
-    const merged = readFileSync(join(dir, file), "utf8");
-    assert.doesNotMatch(merged, /^[<>=]{7}/m);
-    assert.ok(merged.includes('summary: "ours"') && merged.includes('summary: "theirs"'));
-    assert.match(readFileSync(join(dir, "src/route-level.ts"), "utf8"), new RegExp(`ROUTE_LEVEL = ${ROUTE_LEVEL + 1}`));
-    const { CAPABILITY_DECLARATIONS } = await import(`${join(dir, file)}?case=${i}`);
-    if (names[0] === names[1]) assert.throws(() => buildCapabilities(CAPABILITY_DECLARATIONS), /declared twice/);
-    else {
-      const published = buildCapabilities(CAPABILITY_DECLARATIONS).map((c) => c.name);
-      assert.deepEqual(published.filter((n) => names.includes(n)).sort(), names.sort());
+    writeFileSync(join(dir, file), add(names[1], "theirs", levels[1]));
+    git("add", file); git("commit", "-qm", "theirs");
+    for (const [first, second] of [[`ours-${i}`, `theirs-${i}`], [`theirs-${i}`, `ours-${i}`]]) {
+      git("checkout", "-qB", `merge-${first}`, first);
+      git("merge", "--no-edit", second);
+      const merged = readFileSync(join(dir, file), "utf8");
+      assert.doesNotMatch(merged, /^[<>=]{7}/m);
+      assert.ok(merged.includes('summary: "ours"') && merged.includes('summary: "theirs"'));
+      assert.equal(readFileSync(join(dir, "src/route-level.ts"), "utf8"), supportSource);
+      // Give each merged module its own declaration import to avoid Node's cache.
+      const declarationsFile = `declarations-${first}.ts`;
+      writeFileSync(join(dir, "src", declarationsFile), merged);
+      const supportFile = join(dir, "src", `support-${first}.ts`);
+      writeFileSync(supportFile, supportSource.replace("./capability-declarations.ts", `./${declarationsFile}`));
+      if (names[0] === names[1]) await assert.rejects(import(supportFile), /declared twice/);
+      else {
+        const { SERVER_CAPABILITIES: published, checkCapabilities, ROUTE_LEVEL: mergedLevel } = await import(supportFile);
+        assert.equal(mergedLevel, ROUTE_LEVEL);
+        assert.deepEqual(published.filter((n) => names.includes(n)).sort(), [...names].sort());
+        for (const name of names) {
+          for (const version of [{ routeLevel: ROUTE_LEVEL + 100 }, { routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES }]) {
+            const old = checkCapabilities(version, [name]);
+            assert.equal(old.ok, false);
+            assert.deepEqual(old.missing, [name]);
+            assert.match(old.message, /Deploy the server .*npm run deploy/);
+          }
+          assert.deepEqual(checkCapabilities({ routeLevel: ROUTE_LEVEL, capabilities: published }, [name]), { ok: true, via: "capabilities" });
+          const firstOnly = [...SERVER_CAPABILITIES, names[first.startsWith("ours") ? 0 : 1]];
+          assert.equal(checkCapabilities({ capabilities: firstOnly }, [name]).ok, firstOnly.includes(name));
+        }
+      }
     }
   }
 });
