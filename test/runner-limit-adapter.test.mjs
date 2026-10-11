@@ -115,6 +115,8 @@ const FIXTURES = [
     [harness, "ETIMEDOUT", { status: 1, stderr: "connect ETIMEDOUT 10.0.0.1:443\n" }, "none"],
     [harness, "a run killed by the runner's time limit", { status: null, signal: "SIGTERM", stderr: claudeStderr }, "none"],
     [harness, "a harness that could not start", { status: null, error: new Error("spawn ENOENT"), stderr: claudeStderr }, "none"],
+    [harness, "a short answer about rate limits, exit 0", { status: 0, stdout: "Rate limit headers added\n" }, "none"],
+    [harness, "a short answer about a 429 handler, exit 0", { status: 0, stdout: "Rate limit handling added; 429 responses retry.\n" }, "none"],
     [harness, "a successful long run", { status: 0, stdout: "All done.\n", stderr: "" }, "none"],
   ]),
 ];
@@ -128,6 +130,17 @@ for (const [harness, name, run, expected] of FIXTURES) {
     assert.ok(found.reason.length > 0 && found.reason.length <= 300);
   });
 }
+
+test("a zone Intl does not know reads no zoned time: the reset is null, the fallback's", () => {
+  const p = (text, timeZone) => parseReset(text, { now: NOW, timeZone });
+  assert.equal(p("limit reached, resets 3pm", "Not/AZone"), null);
+  assert.equal(p("limit reached, resets Oct 14 at 3pm (Foo/Bar)", NY), null);
+  assert.equal(p("limit reached, resets 2026-10-14 15:00", "bogus"), null);
+  // An explicit offset or a duration needs no zone.
+  assert.equal(p("limit reached, retry after 120", "Not/AZone"), NOW + 2 * MIN);
+  const found = detectLimit({ status: 1, stdout: "", stderr: "usage limit reached, resets 3pm\n" }, { now: NOW, timeZone: "Not/AZone", harness: "codex" });
+  assert.equal(found.resetAt, null);
+});
 
 // ── the adapter's spawn ─────────────────────────────────────────────────────
 
