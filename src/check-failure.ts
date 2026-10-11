@@ -17,6 +17,16 @@
 // that blocks acceptance. A check whose latest run passes is not a failure,
 // however many earlier runs failed; one at another head is not read at all.
 //
+// Which attempt: a run is numbered once, by attemptNumbers, and `show`, both
+// landings and `atelier check-log` print that one number. It counts every
+// observed run of the command at the head, oldest first: the head's own
+// runs, the runs on the merge with main, runs on someone's machine under
+// sandboxOnly and not-applicable records alike, so "attempt 3 of 3" in a
+// summary is the third block check-log prints for that command. Whether the
+// gate counts a run is said beside the number, never by renumbering: a
+// summary names only runs the gate reads, and check-log says of a run on a
+// machine under sandboxOnly that the gate does not count it.
+//
 // Which log: a run made in a Cloudflare container keeps its whole output in
 // R2 by reference (src/large.ts) when the output outgrew the tail held
 // inline, and readCheckLog reads that reference when the run has one; else
@@ -75,7 +85,7 @@
 // is never left without the command that prints what was left out.
 
 import { LARGE_MAX, type LargeRef } from "./large.ts";
-import { blockingMergedRuns, countingRunsAt, evidenceAt, mergedRunsAt, type Evidence, type ProjectPolicy } from "./rules.ts";
+import { blockingMergedRuns, countingRunsAt, evidenceAt, type Evidence, type ProjectPolicy } from "./rules.ts";
 
 // What a check run on someone's machine keeps of its output inline:
 // `atelier check` posts the output's last LOCAL_OUTPUT_TAIL characters and a
@@ -107,8 +117,8 @@ export interface CheckFailure {
   merged: boolean;         // a failing run on the merge with main that blocks acceptance
   mainHead: string | null;
   load: number | null;
-  attempt: number;         // which run of the check at this head this is, counting from 1
-  attempts: number;        // how many runs of the check the head holds, this one included
+  attempt: number;         // which run of the check at this head this is, counting from 1 (attemptNumbers)
+  attempts: number;        // how many runs of the check the head holds, this one included (attemptNumbers)
   outputTail: string;
   log: LargeRef | null;
 }
@@ -130,21 +140,49 @@ const failureOf = (e: Evidence, attempt: number, attempts: number): CheckFailure
   log: e.log ?? null,
 });
 
+// The one numbering of the runs at a head (see the head of this file):
+// every observed run of each command at the head, oldest first (by time,
+// then evidence id), numbered from 1 among the runs of its command. Reports
+// are not runs and are left out.
+export interface AttemptNumber {
+  attempt: number;
+  attempts: number;
+}
+
+const observedAt = (evidence: Evidence[], head: string): Evidence[] =>
+  evidence.filter((e) => e.head === head && e.grade === "observed").sort((a, b) => a.at.localeCompare(b.at) || ((a.id ?? 0) - (b.id ?? 0)));
+
+export function attemptNumbers(evidence: Evidence[], head: string | null): Map<Evidence, AttemptNumber> {
+  const out = new Map<Evidence, AttemptNumber>();
+  if (!head) return out;
+  const rows = observedAt(evidence, head);
+  const totals = new Map<string, number>(), seen = new Map<string, number>();
+  for (const e of rows) totals.set(e.claim, (totals.get(e.claim) ?? 0) + 1);
+  for (const e of rows) {
+    const attempt = (seen.get(e.claim) ?? 0) + 1;
+    seen.set(e.claim, attempt);
+    out.set(e, { attempt, attempts: totals.get(e.claim)! });
+  }
+  return out;
+}
+
 // The failed checks at the head, as the gate reads them (see the head of
 // this file): the head's own failures first, in the policy's order, then
-// the merged runs that block.
+// the merged runs that block. Each is numbered by attemptNumbers, as
+// check-log numbers it.
 export function effectiveFailures(policy: ProjectPolicy, evidence: Evidence[], head: string | null): CheckFailure[] {
   if (!head) return [];
+  const numbers = attemptNumbers(evidence, head);
+  const numbered = (e: Evidence): CheckFailure => {
+    const n = numbers.get(e) ?? { attempt: 1, attempts: 1 };
+    return failureOf(e, n.attempt, n.attempts);
+  };
   const out: CheckFailure[] = [];
   for (const c of evidenceAt(policy, evidence, head).checks) {
     if (c.grade !== "observed" || c.passed) continue;
-    const runs = countingRunsAt(policy, evidence, head, c.claim);
-    out.push(failureOf(runs.at(-1)!, runs.length, runs.length));
+    out.push(numbered(countingRunsAt(policy, evidence, head, c.claim).at(-1)!));
   }
-  for (const { run } of blockingMergedRuns(policy, evidence, head)) {
-    const runs = mergedRunsAt(policy, evidence, head, run.claim);
-    out.push(failureOf(run, runs.length, runs.length));
-  }
+  for (const { run } of blockingMergedRuns(policy, evidence, head)) out.push(numbered(run));
   return out;
 }
 
@@ -195,7 +233,10 @@ export async function readCheckLog(e: Pick<Evidence, "outputTail" | "log" | "whe
   let stored: string | null = null, failure: string | null = null;
   try { stored = await read(e.log); } catch (error) { failure = String((error as Error)?.message ?? error).split("\n")[0].slice(0, 200); }
   if (stored === null) return inline(`unavailable: the stored log ${sha} could not be read${failure ? ` (${failure})` : ""}`);
-  if (e.log.bytes >= LARGE_MAX || stored.length >= LARGE_MAX) {
+  // The store keeps the last LARGE_MAX characters of a longer log
+  // (capLarge), so a cut log is told by its length in characters; its size
+  // in bytes is larger wherever a character takes more than one byte.
+  if (stored.length >= LARGE_MAX) {
     return { text: stored, source: "stored", whole: false, label: `stored log ${sha}, cut to its last ${thousands(LARGE_MAX)} characters (${thousands(e.log.bytes)} bytes)` };
   }
   return { text: stored, source: "stored", whole: true, label: `whole log, stored (${thousands(e.log.bytes)} bytes, ${sha})` };
@@ -395,6 +436,20 @@ export function failureLines(f: ResolvedFailure, fit: FailureFit = {}): string[]
   ];
 }
 
+// The line every summary ends with: the command that prints the whole logs.
+export const checkLogPointer = (id: string): string => `  Whole logs of every attempt at this head: atelier check-log ${id}`;
+
+// The summary as the landing Workflow records it: `why`, the line naming the
+// failed checks, then the summary fitted to what remains of `max`. A `why`
+// so long that the summary would have less room than its check-log line
+// (the bare `…` and the line) is cut first, so the record, held at `max`,
+// still ends with the command that prints the whole logs.
+export function failureDetail(why: string, id: string, head: string, failures: ResolvedFailure[], max: number): string {
+  const floor = checkLogPointer(id).length + 2;
+  const line = why.length + 1 + floor > max ? `${why.slice(0, Math.max(0, max - floor - 2))}…` : why;
+  return `${line}\n${failureSummary(id, head, failures, max - line.length - 1)}`;
+}
+
 // The failure summary of a task at a head, as `atelier show`, the plain
 // landing and the landing Workflow all print it: the gate's reading, one
 // block per failed check, and the command that prints the whole logs.
@@ -405,7 +460,7 @@ export function failureLines(f: ResolvedFailure, fit: FailureFit = {}): string[]
 export function failureSummary(id: string, head: string, failures: ResolvedFailure[], maxChars = Infinity): string {
   if (!failures.length) return `No required check fails at ${short(head)} as the gate reads it.`;
   const heading = `Failed checks at ${short(head)}, as the gate reads them (the latest counting run of each required check at this head):`;
-  const pointer = `  Whole logs of every attempt at this head: atelier check-log ${id}`;
+  const pointer = checkLogPointer(id);
   const tails = failures.map((f) => boundedTail(f.logRead.text).lines.length);
   const text = (kept: number, names: number, shown: number[]): string => {
     const left = failures.slice(kept);
@@ -459,9 +514,10 @@ export function failureJson(f: ResolvedFailure) {
 
 export interface CheckAttempt {
   claim: string;
-  attempt: number;         // which run of the check at the head, counting from 1, merged runs in the same count
+  attempt: number;         // which run of the check at the head, counting from 1 (attemptNumbers), as show numbers it
   attempts: number;
   outcome: "passed" | "failed" | "not applicable";
+  uncounted: string | null; // why the gate never counts this run, when the policy says it does not; null otherwise
   merged: boolean;
   mainHead: string | null;
   where: Where;
@@ -474,20 +530,19 @@ export interface CheckAttempt {
 }
 
 // Every observed check at the head, in the order they were recorded, each
-// numbered among the runs of its command: the retained logs `atelier
-// check-log` prints. Reports are not checks and are left out.
-export function checkAttemptsAt(evidence: Evidence[], head: string | null): CheckAttempt[] {
+// numbered by attemptNumbers, as `show` and the landings number it: the
+// retained logs `atelier check-log` prints. Reports are not checks and are
+// left out. Given the project's policy, a run the gate never counts (one on
+// someone's machine under sandboxOnly) says so beside its number.
+export function checkAttemptsAt(evidence: Evidence[], head: string | null, policy?: Pick<ProjectPolicy, "sandboxOnly"> | null): CheckAttempt[] {
   if (!head) return [];
-  const rows = evidence.filter((e) => e.head === head && e.grade === "observed").sort((a, b) => a.at.localeCompare(b.at) || ((a.id ?? 0) - (b.id ?? 0)));
-  const seen = new Map<string, number>();
-  const totals = new Map<string, number>();
-  for (const e of rows) totals.set(e.claim, (totals.get(e.claim) ?? 0) + 1);
-  return rows.map((e) => {
-    const attempt = (seen.get(e.claim) ?? 0) + 1;
-    seen.set(e.claim, attempt);
+  const numbers = attemptNumbers(evidence, head);
+  return observedAt(evidence, head).map((e) => {
+    const { attempt, attempts } = numbers.get(e)!;
     return {
-      claim: e.claim, attempt, attempts: totals.get(e.claim) ?? 1,
+      claim: e.claim, attempt, attempts,
       outcome: e.notApplicable ? "not applicable" : e.passed ? "passed" : "failed",
+      uncounted: policy?.sandboxOnly && e.where !== "sandbox" ? "not counted by the gate: this project counts only runs in a Cloudflare container" : null,
       merged: e.merged === true, mainHead: e.mainHead ?? null,
       where: e.where === "sandbox" ? "sandbox" : "runner", at: e.at, by: e.by,
       id: typeof e.id === "number" ? e.id : null, run: typeof e.run === "string" && e.run ? e.run : null,
@@ -513,5 +568,5 @@ export function headsWithChecks(evidence: Evidence[]): { head: string; runs: num
 // The header of one attempt as check-log prints it.
 export function attemptHeader(a: CheckAttempt): string {
   const ident = [a.id !== null ? `evidence #${a.id}` : null, a.run ? `run ${flatLine(a.run)}` : null].filter(Boolean).join(", ");
-  return `── \`${flatLine(a.claim)}\` · attempt ${a.attempt} of ${a.attempts} · ${a.outcome}${a.merged ? ` on the merge with main at ${short(a.mainHead)}` : ""} · ${WHERE_TEXT[a.where]} · ${when(a.at)}${a.load !== null ? ` · load ${a.load}` : ""}${ident ? ` · ${ident}` : ""}`;
+  return `── \`${flatLine(a.claim)}\` · attempt ${a.attempt} of ${a.attempts} · ${a.outcome}${a.merged ? ` on the merge with main at ${short(a.mainHead)}` : ""} · ${WHERE_TEXT[a.where]} · ${when(a.at)}${a.load !== null ? ` · load ${a.load}` : ""}${ident ? ` · ${ident}` : ""}${a.uncounted ? ` · ${a.uncounted}` : ""}`;
 }

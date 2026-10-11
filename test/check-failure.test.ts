@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
-  attemptHeader, boundedTail, checkAttemptsAt, effectiveFailures, failingTests, failingTestsLine, failureJson, failureSummary,
+  attemptHeader, attemptNumbers, boundedTail, checkAttemptsAt, checkLogPointer, effectiveFailures, failingTests, failingTestsLine, failureDetail, failureJson, failureSummary,
   headsWithChecks, LOCAL_OUTPUT_TAIL, readCheckLog, resolveFailures, SANDBOX_OUTPUT_TAIL, SUMMARY_TAIL_CHARS, SUMMARY_TAIL_LINES, SUMMARY_TEST_NAMES,
 } from "../src/check-failure.ts";
 import { LARGE_MAX, type LargeRef } from "../src/large.ts";
@@ -123,7 +123,8 @@ test("a log kept as a tail says the names may have been cut with the rest, inste
   assert.ok(failureSummary("t1", H1, [cut]).includes("    failing tests: none named in the tail of the output that was kept (the vitest output in it names no failing test; the lines naming them may have been cut with the rest, or the check failed for another reason)\n    log: inline tail only"));
   assert.ok(failureSummary("t1", H1, [wholeRun]).includes("    failing tests: none named (the vitest output names no failing test, so the check failed for another reason)\n    log: whole output, inline"));
   // A stored log that was itself cut is a tail too.
-  const [stored] = await resolveFailures(effectiveFailures(policy, [ev({ passed: false, where: "sandbox", log: ref({ bytes: LARGE_MAX }), outputTail: "t" })], H1), async () => VITEST_SUMMARY_ONLY);
+  const capped = `${"x".repeat(LARGE_MAX - VITEST_SUMMARY_ONLY.length - 1)}\n${VITEST_SUMMARY_ONLY}`;
+  const [stored] = await resolveFailures(effectiveFailures(policy, [ev({ passed: false, where: "sandbox", log: ref({ bytes: LARGE_MAX }), outputTail: "t" })], H1), async () => capped);
   assert.ok(failureSummary("t1", H1, [stored]).includes("none named in the tail of the output that was kept"));
 });
 
@@ -180,7 +181,7 @@ test("under sandboxOnly a failure on someone's machine does not count, as the ga
   const only: ProjectPolicy = { ...policy, sandboxOnly: true };
   assert.deepEqual(effectiveFailures(only, [ev({ passed: false }), ev({ claim: "npm run typecheck", passed: false })], H1), []);
   const failures = effectiveFailures(only, [ev({ passed: false }), ev({ passed: false, where: "sandbox" })], H1);
-  assert.deepEqual(failures.map((f) => [f.claim, f.where, f.attempts]), [["npm test", "sandbox", 1]]);
+  assert.deepEqual(failures.map((f) => [f.claim, f.where, f.attempt, f.attempts]), [["npm test", "sandbox", 2, 2]]);
 });
 
 test("a failing run on the merge with main is a failure exactly when the gate counts it as a blocker", () => {
@@ -250,9 +251,14 @@ test("a cut tail that ends in the recorder's time-limit line is still a tail: th
   const [f] = await resolveFailures(effectiveFailures(policy, [ev({ passed: false, outputTail: `${output.slice(-LOCAL_OUTPUT_TAIL)}${sha}` })], H1), none);
   assert.ok(failureSummary("t1", H1, [f]).includes("read from a tail of the output") || failureSummary("t1", H1, [f]).includes("in the tail of the output that was kept"), failureSummary("t1", H1, [f]));
   // A stored log that was itself capped says so.
-  const capped = await readCheckLog({ outputTail: "t", log: ref({ bytes: LARGE_MAX }), where: "sandbox" }, async () => "the end");
+  const capped = await readCheckLog({ outputTail: "t", log: ref({ bytes: LARGE_MAX }), where: "sandbox" }, async () => `${"x".repeat(LARGE_MAX - 8)}\nthe end`);
   assert.deepEqual([capped.whole, capped.source], [false, "stored"]);
   assert.match(capped.label, /^stored log c{12}, cut to its last 33,554,432 characters/);
+  // The cap is in characters (capLarge): a log of fewer characters is whole,
+  // though its multi-byte characters take LARGE_MAX bytes or more.
+  const wide = await readCheckLog({ outputTail: "t", log: ref({ bytes: LARGE_MAX + 2 }), where: "sandbox" }, async () => "é the end");
+  assert.deepEqual([wide.whole, wide.source], [true, "stored"]);
+  assert.equal(wide.label, `whole log, stored (33,554,434 bytes, ${"c".repeat(12)})`);
 });
 
 test("the shown tail is bounded by lines and characters, flattened, with the log's length said", () => {
@@ -302,7 +308,7 @@ test("a failure with no test names and no stored log says so, and a merged failu
   const merged = ev({ passed: false, merged: true, mainHead: M2, changedPaths: null, outputTail: fixture("plain.txt") });
   const [f] = await resolveFailures(effectiveFailures(policy, [own, ownType, merged], H1), none);
   const text = failureSummary("t1", H1, [f]);
-  assert.ok(text.includes(`\`npm test\` failed on the merge with main at 22222222 on a runner, in a clean clone at 2026-10-10 12:00 UTC: evidence #${merged.id}, attempt 1 of 1 at this head`), text);
+  assert.ok(text.includes(`\`npm test\` failed on the merge with main at 22222222 on a runner, in a clean clone at 2026-10-10 12:00 UTC: evidence #${merged.id}, attempt 2 of 2 at this head`), text);
   assert.ok(text.includes("    failing tests: names unavailable (no test reporter format this summary reads was recognised in the output)"), text);
   assert.ok(text.includes("    log: whole output, inline; 5 lines, whole:"), text);
   assert.ok(text.includes("      make: *** [Makefile:12: build] Error 1"), text);
@@ -403,4 +409,68 @@ test("check-log lists every observed attempt at the head in order, numbered amon
   assert.deepEqual(checkAttemptsAt(evidence, H2).map((a) => [a.attempt, a.attempts, a.outcome]), [[1, 1, "failed"]]);
   assert.deepEqual(checkAttemptsAt(evidence, null), []);
   assert.deepEqual(headsWithChecks(evidence).map((h) => [h.head, h.runs]), [[H1, 4], [H2, 1]]);
+});
+
+// ── one numbering of the attempts, in show, the landings and check-log ─────
+
+// The number a summary line prints for a run, and the number check-log prints for the same run.
+const summaryAttempt = (text: string) => /attempt (\d+) of (\d+) at this head/.exec(text)?.slice(1).join(" of ");
+const logAttempt = (attempts: ReturnType<typeof checkAttemptsAt>, id: number | null) => {
+  const a = attempts.find((x) => x.id === id)!;
+  return /· attempt (\d+) of (\d+) ·/.exec(attemptHeader(a))?.slice(1).join(" of ");
+};
+
+test("show, the landings and check-log number a run alike: own, merged, own at one head", async () => {
+  const first = ev({ passed: false, mainHead: M1 }), typecheck = ev({ claim: "npm run typecheck", passed: true, mainHead: M1 });
+  const merged = ev({ passed: true, merged: true, mainHead: M1, changedPaths: null, where: "sandbox", run: "k:t1:a:2" });
+  const third = ev({ passed: false, mainHead: M1, outputTail: "not ok 1 - the cap" });
+  const evidence = [first, typecheck, merged, third];
+  const [f] = await resolveFailures(effectiveFailures(policy, evidence, H1), none);
+  assert.deepEqual([f.id, f.attempt, f.attempts], [third.id, 3, 3]);
+  const text = failureSummary("t1", H1, [f]);
+  assert.ok(text.includes(`evidence #${third.id}, attempt 3 of 3 at this head`), text);
+  const attempts = checkAttemptsAt(evidence, H1, policy);
+  assert.equal(summaryAttempt(text), "3 of 3");
+  assert.equal(logAttempt(attempts, third.id), "3 of 3");
+  assert.deepEqual(attempts.filter((a) => a.claim === "npm test").map((a) => [a.id, a.attempt, a.attempts, a.uncounted]), [[first.id, 1, 3, null], [merged.id, 2, 3, null], [third.id, 3, 3, null]]);
+  assert.deepEqual(failureJson(f).attempt, 3);
+  // One helper numbers both: the number of every row is the one attemptNumbers gives it.
+  const numbers = attemptNumbers(evidence, H1);
+  for (const a of attempts) assert.deepEqual(numbers.get(a.evidence), { attempt: a.attempt, attempts: a.attempts });
+  // A blocking merged failure is numbered among the head's own runs too.
+  const own = ev({ passed: true, mainHead: M1 }), blocking = ev({ passed: false, merged: true, mainHead: M2, changedPaths: null });
+  const rows = [own, typecheck, blocking];
+  const [m] = await resolveFailures(effectiveFailures(policy, rows, H1), none);
+  assert.equal(summaryAttempt(failureSummary("t1", H1, [m])), "2 of 2");
+  assert.equal(logAttempt(checkAttemptsAt(rows, H1, policy), blocking.id), "2 of 2");
+});
+
+test("under sandboxOnly a container run is numbered after the machine run before it, everywhere, and check-log says the gate does not count the machine run", async () => {
+  const only: ProjectPolicy = { ...policy, sandboxOnly: true };
+  const machine = ev({ passed: false }), container = ev({ passed: false, where: "sandbox", run: "k:t1:a:2" });
+  const typecheck = ev({ claim: "npm run typecheck", passed: true, where: "sandbox" });
+  const evidence = [machine, container, typecheck];
+  const [f] = await resolveFailures(effectiveFailures(only, evidence, H1), none);
+  assert.deepEqual([f.id, f.attempt, f.attempts], [container.id, 2, 2]);
+  const text = failureSummary("t1", H1, [f]);
+  const attempts = checkAttemptsAt(evidence, H1, only);
+  assert.equal(summaryAttempt(text), "2 of 2");
+  assert.equal(logAttempt(attempts, container.id), "2 of 2");
+  assert.equal(attemptHeader(attempts[0]), `── \`npm test\` · attempt 1 of 2 · failed · on a runner, in a clean clone · ${machine.at.slice(0, 16).replace("T", " ")} UTC · evidence #${machine.id} · not counted by the gate: this project counts only runs in a Cloudflare container`);
+  assert.ok(!attemptHeader(attempts[1]).includes("not counted"), attemptHeader(attempts[1]));
+  // Without the policy, check-log says nothing of what the gate counts.
+  assert.equal(checkAttemptsAt(evidence, H1)[0].uncounted, null);
+});
+
+test("a why line longer than the landing record leaves the summary its check-log line", async () => {
+  const [f] = await resolveFailures(effectiveFailures(policy, [ev({ passed: false, outputTail: "not ok 1 - the cap" }), ev({ claim: "npm run typecheck", passed: true })], H1), none);
+  const why = `the required checks failed: ${"npm test; ".repeat(400)}`;
+  const detail = failureDetail(why, "t1", H1, [f], 2000);
+  assert.ok(detail.length <= 2000, String(detail.length));
+  assert.ok(detail.endsWith(`…\n${checkLogPointer("t1")}`), detail.slice(-200));
+  assert.ok(detail.startsWith("the required checks failed: npm test; "));
+  // A why that leaves room is kept whole, and the summary fitted after it.
+  const short = failureDetail("the required checks failed: npm test.", "t1", H1, [f], 2000);
+  assert.ok(short.startsWith("the required checks failed: npm test.\nFailed checks at aaaaaaaa"), short);
+  assert.equal(short, `the required checks failed: npm test.\n${failureSummary("t1", H1, [f], 2000 - 38)}`);
 });
