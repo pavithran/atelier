@@ -1591,10 +1591,13 @@ export function wrapReady(name, cwd, report) {
 
 // A report a runner makes under its name: a model's status, a tool's usage.
 // The answer is the server's JSON; a refusal is an error naming its detail.
-export async function postAsRunner(path, body, runner, signal) {
+// The report goes as the owner, whose token the runner holds, unless `as`
+// names another actor: a runner token cannot act as the owner, so its
+// review skip goes as the review job's actor (t353).
+export async function postAsRunner(path, body, runner, signal, as = OWNER) {
   const res = await fetch(`${server()}/api${path}`, {
     method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
-    headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": OWNER, "x-atelier-runner": runner, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "x-atelier-runner": runner, "content-type": "application/json" },
     body: JSON.stringify(body),
   });
   let data = null;
