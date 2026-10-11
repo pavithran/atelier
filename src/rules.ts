@@ -376,6 +376,16 @@ export interface CheckPaths {
   paths: string[];
 }
 
+// Preparation paths are literal workspace-relative files or directories, not globs.
+export function preparationPaths(value: unknown): string[] {
+  if (!Array.isArray(value) || !value.length || value.some((p) =>
+    typeof p !== "string" || !p || p.startsWith("/") ||
+    p.split("/").some((part) => !part || part === "." || part === "..") || /[\\*?\[\]\0]/.test(p))) {
+    throw new RuleError("bad_prepare", "preparation requires nonempty lists of literal relative input and output paths", 400);
+  }
+  return [...new Set(value)];
+}
+
 export interface ReviewerAdmission {
   id: string;
   aliases: string[];
@@ -401,6 +411,12 @@ export interface ProjectPolicy {
   reviewerAdmissions?: ReviewerAdmission[];
   agents?: Record<string, AgentPolicy>;
   execution?: ExecutionPolicy;
+  prepare?: {
+    command: string;
+    inputs: string[];
+    outputs: string[];
+    declaration: CheckDeclaration;
+  };
   checks: string[];         // commands that must pass, observed, before acceptance
   checkClasses?: CheckDeclaration[];  // how each check is known to be read-only (src/checks.ts)
   checkPaths?: CheckPaths[];          // checks that apply only when the change touches these paths
@@ -1812,4 +1828,12 @@ export function pushNotice(value: unknown, namespace = "atelier"): PushNotice | 
   const { ref, after } = v.payload ?? {};
   if (!v.source.repoName || !ref?.startsWith("refs/heads/") || !after || !/^[a-f0-9]{40,64}$/.test(after) || /^0+$/.test(after)) return null;
   return { repo: v.source.repoName, ref, after };
+}
+
+// Review leases use the server clock. Renewal is coalesced to one write per
+// 30 seconds; five minutes without one fences the claim, even after SIGKILL.
+export const REVIEW_RENEW_MS = 30_000;
+export const REVIEW_LEASE_MS = 5 * 60_000;
+export function reviewLeaseExpired(renewedAt: string | null | undefined, now: number): boolean {
+  return !renewedAt || !Number.isFinite(Date.parse(renewedAt)) || now - Date.parse(renewedAt) >= REVIEW_LEASE_MS;
 }

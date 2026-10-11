@@ -460,7 +460,7 @@ test("new and edit send the framing as lists and a line, block sends its reason,
   // A field not given is not sent, so the server keeps what the item has.
   const plain = f.run(f.checkout, ["new", "Plain", "--project", "demo"]);
   assert.equal(plain.status, 0, plain.stderr);
-  assert.deepEqual(f.requests().map((q) => q.body), [{ title: "Plain", scope: [] }]);
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => q.body), [{ title: "Plain", scope: [] }]);
   f.clear();
   for (const [argv, message] of [
     [["new", "Title", "--non-goal", "", "--project", "demo"], /--non-goal needs text: atelier new --non-goal "TEXT", once per entry/],
@@ -550,13 +550,13 @@ test("new sends a title, a brief and repeatable criteria; one long string alone 
   const f = fixture(t);
   const made = f.run(f.checkout, ["new", "Short titles", "--brief", "The whole task.", "--accept", "Lists show it", "--accept", "The page shows the brief", "--project", "demo"]);
   assert.equal(made.status, 0, made.stderr);
-  assert.deepEqual(f.requests().map((q) => q.body), [{ title: "Short titles", scope: [], brief: "The whole task.", accept: ["Lists show it", "The page shows the brief"] }]);
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => q.body), [{ title: "Short titles", scope: [], brief: "The whole task.", accept: ["Lists show it", "The page shows the brief"] }]);
   assert.equal(made.stdout, "t9  Short titles\nAcceptance criterion 1: Lists show it\nAcceptance criterion 2: The page shows the brief\n\n" + POINTER);
   f.clear();
   const long = "word ".repeat(30).trim();
   const derived = f.run(f.checkout, ["new", long, "--project", "demo"]);
   assert.equal(derived.status, 0, derived.stderr);
-  assert.deepEqual(f.requests().map((q) => q.body), [{ title: long, scope: [] }]);
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => q.body), [{ title: long, scope: [] }]);
   assert.equal(derived.stdout, 't9  Derived title\nThe text is longer than a title, so it is kept as the brief and the title is its first clause; change it with atelier edit t9 --title "TEXT".\n\n' + POINTER);
   f.clear();
   for (const [argv, message] of [
@@ -605,6 +605,27 @@ test("review sends the criteria binding and the request only as given, and refus
     assert.match(bad.stderr, message);
   }
   assert.equal(f.requests().filter((q) => q.path.endsWith("/review")).length, 0);
+});
+
+test("review-release forwards the claim generation and preserves owner recovery without a number", (t) => {
+  const f = fixture(t);
+  const run = (...flags) => f.run(f.workspace, ["review-release", "t2", ...flags], { ATELIER_ACTOR: "claude-code/opus" });
+  const numbered = run("--request", "7", "--note", "harness stopped");
+  assert.equal(numbered.status, 0, numbered.stderr);
+  assert.deepEqual(f.requests().map((q) => [q.path, q.body]), [["/api/projects/demo/items/t2/review-release", { request: 7, note: "harness stopped" }]]);
+  f.clear();
+  const owner = run("--note", "manual recovery");
+  assert.equal(owner.status, 0, owner.stderr);
+  assert.deepEqual(f.requests().map((q) => q.body), [{ note: "manual recovery" }]);
+  f.clear();
+  for (const value of ["x", "0", "-1", "1.5", "1e2", "9007199254740992", ""]) {
+    const bad = run(`--request=${value}`);
+    assert.equal(bad.status, 1, value);
+    assert.match(bad.stderr, /--request needs the request number the review claim gave/);
+  }
+  const bare = run("--request");
+  assert.equal(bare.status, 1);
+  assert.equal(f.requests().length, 0, "invalid generations never reach the server");
 });
 
 test("edit says when the acceptance criteria changed, what that withdrew, and that a fresh review is needed; otherwise nothing of them", (t) => {

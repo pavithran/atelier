@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
-import type { LedgerEvent } from "../src/ledger.ts";
+import type { ReviewClaim, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import { planText, type PlanView } from "../src/plans/show.ts";
@@ -89,8 +89,8 @@ async function submitApproved(L: L, partId: string, head: string, key: string) {
   await L.submit(partId, builder);
   const waiting = (await L.reviewWaiting()).filter((w) => w.id === partId);
   const reviewer = `${waiting[0].dispatch!.agent}/${waiting[0].dispatch!.model}`;
-  await L.claimReview(partId, reviewer, RUNNER);
-  await L.addReview({ itemId: partId, criteria: await L.criteria(partId), by: reviewer, head, approve: true, note: "Good", at: new Date().toISOString() });
+  const reviewClaim1 = await L.claimReview(partId, reviewer, RUNNER) as unknown as ReviewClaim;
+  await L.addReview({ request: reviewClaim1.request, itemId: partId, criteria: await L.criteria(partId), by: reviewer, head, approve: true, note: "Good", at: new Date().toISOString() });
 }
 
 // Part a integrated as MA, with main's head noted at `main` first, as the
