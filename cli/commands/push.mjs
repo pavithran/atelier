@@ -54,10 +54,17 @@ export default async function pushCommand() {
     lease.push(`--force-with-lease=${branch}:${known}`);
   }
   const pushArgs = ["push", "--quiet", "--recurse-submodules=no", ...lease, "origin", `HEAD:${branch}`];
-  if (!lease.length) git(pushArgs);
-  else {
-    const r = git(pushArgs, { allowFail: true });
-    if (r.status !== 0) die(`${id}'s fork no longer stands at ${short(known)}, the head Atelier recorded: something was pushed to it since. Run atelier update to take what it holds, then atelier push --force again. Nothing was pushed.\n${(r.stderr || r.stdout).trim()}`);
+  const r = git(pushArgs, { allowFail: true });
+  if (r.status !== 0 || r.error) {
+    // Git's refusal says nothing about why the fork refused. A runner's
+    // workspace pushes through the Worker, which refuses the push once the
+    // task is merged or abandoned (src/runner-git.ts), so the task is read
+    // before the refusal is reported: a closed task answers task_terminal
+    // there, and the command ends with that state's exit (t476), not git's.
+    await call("GET", I(name, id), undefined, as);
+    const said = (r.stderr || r.stdout || r.error?.message || "").trim();
+    if (lease.length) die(`${id}'s fork no longer stands at ${short(known)}, the head Atelier recorded: something was pushed to it since. Run atelier update to take what it holds, then atelier push --force again. Nothing was pushed.\n${said}`);
+    die(`git ${pushArgs.join(" ")} failed:\n${said}`);
   }
   const item = await call("POST", `${I(name, id)}/push`, { head, ...(rebasedFrom ? { rebasedFrom } : {}) }, as);
   if (item.head !== head) die(`pushed ${short(head)} but Artifacts reports ${short(item.head)}; recorded what Artifacts reports`);

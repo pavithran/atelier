@@ -79,7 +79,9 @@ const spec: CommandSpec = {
     revise: { takes: ["note"] },
     reroute: { takes: ["to"] },
     retry: { takes: [] },
-    refresh: { takes: ["resolve", "to"] },
+    // refresh posts the plan refresh route; the other forms call routes
+    // every server has.
+    refresh: { takes: ["resolve", "to"], capabilities: ["plans.refresh.v1"] },
     stop: { takes: ["note"] },
     post: { takes: [] },
   },
