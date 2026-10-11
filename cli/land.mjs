@@ -142,7 +142,13 @@ export async function runLand(io) {
     const { run } = await request("GET", path);
     if (!run) { print("No post-merge run recorded."); return; }
     if (action === "status") { print(JSON.stringify(run, null, 2)); return; }
-    if (action !== "resume") await request("POST", path, { run: run.id, action, reason: args.reason, resolution: args.resolution });
+    if (action !== "resume") {
+      const { run: recovered } = await request("POST", path, { run: run.id, action, reason: args.reason, resolution: args.resolution });
+      if (action === "skip" && recovered?.state === "reserved") {
+        print(`Post-merge run ${recovered.id}: step waived; remaining steps still need diff preparation or an owner waiver.`);
+        return;
+      }
+    }
     if (action !== "reconcile") await executePostMerge({ request, git, name, id, env: io.env, print });
     return;
   }

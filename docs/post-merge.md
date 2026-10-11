@@ -47,6 +47,10 @@ Omitting all post-merge options preserves policy. `--post-merge ''` alone
 clears it. `--reset` clears it unless replacement steps are supplied. Clearing
 policy does not clear a reservation or alter its snapshot. Projects without
 steps keep their existing merge behavior.
+The first landing request records the baseline SHA even without steps. Enabling
+steps during that landing uses this original SHA, including after publication;
+resuming never replaces it with the current branch tip. A legacy landing with
+no recorded before SHA cannot reserve new steps using a guessed baseline.
 
 ## Execution and recovery
 
@@ -85,6 +89,12 @@ atelier land t123 --post-merge reconcile --resolution no-effect --reason 'Stoppe
 `resume` runs pending work, `retry` authorizes the failed unresolved step and
 then resumes, and `skip` records a waiver and continues. Passed and nonmatching
 steps never replay. Retry/skip of a running or uncertain attempt is refused.
+If a recorded merge is still `reserved` because its diff history is unavailable,
+the owner can `skip --reason` each unstarted step. Each waiver is recorded;
+remaining steps stay reserved until their diff can be prepared or they too are
+waived. The last waiver releases the reservation without changing the merged
+task or pretending the missing diff was empty. Before publication, use landing
+cancellation instead; post-merge skip requires a recorded merge.
 After stopping its executor, the owner reconciles it as `no-effect` (leaving a
 failed step for retry/skip) or `completed` (recording a confirmed external
 effect). Reconciling deploy as completed independently checks its version again: the

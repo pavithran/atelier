@@ -32,7 +32,7 @@ async function setup(name: string, configured = true, accepted = true) {
     create: async () => ({}),
     get: async () => ({
       log: async () => merged ? commits : [commits[1]],
-      readCommit: async (hash: string) => missing ? null : commits.find(c => c.hash === hash),
+      readCommit: async (hash: string) => missing && hash === A ? null : commits.find(c => c.hash === hash),
       readTree: async (hash: string) => [{ name: hash === T0 ? "old.txt" : "new.txt", hash: "e".repeat(40), type: "blob", mode: "100644" }],
       info: async () => ({ remote: "https://git.test/repo", defaultBranch: "main" }),
       createToken: async () => ({ plaintext: "token", id: "id", expiresAt: "later" }),
@@ -120,6 +120,60 @@ it("missing history never becomes an empty diff; expired execution stays blocked
   await missing.call("POST", "/items/t1/landing", { head: B }); missing.publish(); await missing.call("POST", "/items/t1/merged", { mergeCommit: M }); missing.missing();
   expect((await missing.action("prepare")).status).toBe(409);
   expect((await missing.L.postMergeRun("t1"))?.paths).toBeNull();
+});
+
+it("owner waivers release a merged reservation with missing history without replaying or changing the merged state", async () => {
+  const { L, call, action, publish, missing } = await setup("post-reserved-waiver");
+  await call("POST", "/items/t1/landing", { head: B });
+  publish(); await call("POST", "/items/t1/merged", { mergeCommit: M }); missing();
+  expect((await action("prepare")).status).toBe(409);
+  expect((await action("skip", { reason: "missing history" }, builder)).status).toBe(403);
+  expect((await action("skip", { reason: "" })).status).toBe(400);
+  for (let i = 0; i < policy.steps.length; i++) {
+    expect((await L.item("t1")).state).toBe("merged");
+    expect(await L.beginProjectLanding("t2", "owner").then(() => "unexpected", e => e.message)).toMatch(/post-merge/);
+    expect((await action("start")).status).toBe(409);
+    expect((await action("skip", { reason: "owner waives unavailable history" })).status).toBe(200);
+  }
+  const run = (await L.postMergeRun("t1"))!;
+  expect(run).toMatchObject({ state: "complete", before: A, after: M, paths: null });
+  expect(run.steps.every(s => s.outcome === "waived" && s.attempts.length === 1 && s.attempts[0].by === "owner")).toBe(true);
+  expect(await L.activePostMerge()).toBeNull();
+  expect(await runInDurableObject(L, (instance: Ledger) => instance.events("t1").filter(e => e.kind === "post-merge.skip").length)).toBe(3);
+  expect((await L.beginLanding("t2", "owner", "d".repeat(40), M)).id).toBe("t2");
+});
+
+it("steps enabled after publication use the original landing baseline across repeated reservations", async () => {
+  const name = "post-late-policy", { L, call, action, publish } = await setup(name, false);
+  expect((await call("POST", "/items/t1/landing", { head: B })).status).toBe(200);
+  expect(await L.postMergeRun("t1")).toBeNull();
+  publish();
+  // Even a resume before configuration must preserve the first snapshot.
+  expect((await call("POST", "/items/t1/landing", { head: B })).status).toBe(200);
+  await L.initProject({ name, repo: name, reset: false, postMerge: policy }, "owner");
+  expect((await call("POST", "/items/t1/landing", { head: B })).status).toBe(200);
+  const reserved = (await L.postMergeRun("t1"))!;
+  expect(reserved.before).toBe(A);
+  expect((await call("POST", "/items/t1/landing", { head: B })).status).toBe(200);
+  expect((await L.postMergeRun("t1"))!.id).toBe(reserved.id);
+  expect((await call("POST", "/items/t1/merged", { mergeCommit: M })).status).toBe(200);
+  expect((await action("prepare")).status).toBe(200);
+  const run = (await L.postMergeRun("t1"))!;
+  expect(run).toMatchObject({ before: A, after: M, paths: ["new.txt", "old.txt"] });
+  expect(run.steps.map(s => s.outcome)).toEqual(["pending", "pending", "not_applicable"]);
+});
+
+it("legacy landings with an unknown original baseline cannot substitute the published tip", async () => {
+  const name = "post-unknown-baseline", { L, call, publish } = await setup(name, false);
+  await L.beginLanding("t1", "owner", B);
+  await runInDurableObject(L, (_instance: Ledger, state: DurableObjectState) => {
+    state.storage.sql.exec("UPDATE meta SET value = ? WHERE key = ?", JSON.stringify({ head: B, at: Date.now() }), "landing:t1");
+  });
+  publish();
+  await L.initProject({ name, repo: name, reset: false, postMerge: policy }, "owner");
+  expect((await call("POST", "/items/t1/landing", { head: B })).status).toBe(400);
+  expect(await L.postMergeRun("t1")).toBeNull();
+  expect((await call("POST", "/items/t1/merged", { mergeCommit: M })).status).toBe(409);
 });
 
 it("Workflow's real merge wait does not complete while the same Ledger reservation remains unresolved", async () => {

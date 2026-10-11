@@ -92,7 +92,7 @@ export function preparePostMerge(run: PostMergeRun, paths: string[]): void {
   if (run.paths !== null) return;
   if (!Array.isArray(paths) || !paths.every(p => typeof p === "string" && !!p && !p.includes("\0"))) bad("the complete net diff is required");
   run.paths = [...new Set(paths)];
-  run.steps.forEach((s, i) => { const when = run.policy.steps[i].when; if (when !== "always" && !paths.some(p => matchesFolded(p, when.paths))) s.outcome = "not_applicable"; });
+  run.steps.forEach((s, i) => { const when = run.policy.steps[i].when; if (s.outcome === "pending" && when !== "always" && !paths.some(p => matchesFolded(p, when.paths))) s.outcome = "not_applicable"; });
   run.state = currentStep(run) ? "pending" : "complete";
 }
 export function startAttempt(run: PostMergeRun, id: string, at: string): Attempt {
@@ -141,13 +141,17 @@ export function recoverPostMerge(run: PostMergeRun, action: string, reason: unkn
     run.state = resolution === "completed" ? currentStep(run) ? "pending" : "complete" : "failed";
     return;
   }
-  if (["running", "uncertain", "reserved"].includes(run.state)) throw new RuleError("post_merge_uncertain", "stop the executor and reconcile its external effect before retry or skip", 409);
+  // A recorded merge can be stranded before diff preparation (for example,
+  // its before commit is unavailable). No command has started, so the owner
+  // may waive each step without inventing a diff or an execution outcome.
+  const reservedWaiver = run.state === "reserved" && !!run.after && action === "skip" && run.steps.every(s => s.attempts.every(a => a.outcome === "waived"));
+  if (["running", "uncertain", "reserved"].includes(run.state) && !reservedWaiver) throw new RuleError("post_merge_uncertain", "stop the executor and reconcile its external effect before retry or skip", 409);
   if (action === "retry") {
     if (run.state !== "failed") bad("only a failed step can be retried");
     if (a) a.retry = { by: actor, at, reason: String(reason) };
     run.state = "pending";
   } else if (action === "skip") {
     step!.attempts.push({ id: crypto.randomUUID(), number: step!.attempts.length + 1, startedAt: at, deadline: at, endedAt: at, outcome: "waived", reason: String(reason), by: actor });
-    step!.outcome = "waived"; run.state = currentStep(run) ? "pending" : "complete";
+    step!.outcome = "waived"; run.state = currentStep(run) ? run.paths === null ? "reserved" : "pending" : "complete";
   } else bad("unknown post-merge recovery action");
 }

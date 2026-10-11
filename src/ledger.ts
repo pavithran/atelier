@@ -2141,14 +2141,19 @@ export class Ledger extends DurableObject<Env> {
     const policy = this.project().policy.postMerge;
     if (generation !== undefined && generation !== this.mergeGeneration()) throw new RuleError("stale_default_branch", "another landing completed while the default branch was read; read it again", 409);
     const previous = this.postMergeRun(id);
+    // Capture the baseline once even when no steps are configured yet. A
+    // resumed landing may already have published, so its newly observed tip
+    // must never replace the original before SHA. Legacy unknowns fail closed.
+    const landingRow = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `landing:${id}`).toArray()[0];
+    const landing = landingRow ? JSON.parse(landingRow.value as string) as { head: string; at: number; before?: string | null } : { head, at: Date.now(), before: before ?? null };
     // A cancelled reservation remains in history, but does not become the
     // run of a new landing after the owner clears the step policy.
     if (!policy && previous?.state === "complete" && !previous.after) this.sql.exec(`DELETE FROM meta WHERE key = ?`, `post-merge-item:${id}`);
     if (policy && (!previous || previous.state === "complete")) {
-      const run = reservePostMerge(policy, [id], before ?? "", crypto.randomUUID(), new Date().toISOString());
+      const run = reservePostMerge(policy, [id], landing.before ?? "", crypto.randomUUID(), new Date().toISOString());
       this.savePostMerge(run, actor, "reserved");
     }
-    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing:${id}`, JSON.stringify({ head, at: Date.now() }));
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing:${id}`, JSON.stringify(landing));
     return item;
   }
 
