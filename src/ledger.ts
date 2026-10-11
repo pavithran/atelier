@@ -1,3 +1,4 @@
+import { parsePostMerge, reservePostMerge, preparePostMerge, startAttempt, finishAttempt, recordCommand, recoverPostMerge, expireAttempt, type PostMergePolicy, type PostMergeRun, type Attempt } from "./post-merge.ts";
 import type { Area, BoardSnapshot, StageFacts } from "./board.ts";
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
@@ -22,7 +23,7 @@ import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./c
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
-import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, makeDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
+import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, makeDispatch, overrideDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
@@ -155,6 +156,7 @@ type Row = Record<string, SqlStorageValue>;
 // value; a field absent keeps it. `reset` starts from the defaults, as a
 // first init does. `title: null` clears the title.
 export interface ProjectInit {
+  postMerge?: PostMergePolicy | null;
   name: string;
   repo: string;
   reset: boolean;
@@ -393,6 +395,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       ...((i.agents ?? p?.agents) !== undefined ? { agents: i.agents ?? p?.agents } : {}),
       ...((i.execution ?? p?.execution) !== undefined ? { execution: i.execution ?? p?.execution } : {}),
       checks,
+      ...((i.postMerge === undefined ? p?.postMerge : i.postMerge) ? { postMerge: (i.postMerge === undefined ? p?.postMerge : i.postMerge)! } : {}),
       ...(prepare ? { prepare } : {}),
       ...(checkClasses.length ? { checkClasses } : {}),
       ...(checkPaths.length ? { checkPaths } : {}),
@@ -980,6 +983,8 @@ export class Ledger extends DurableObject<Env> {
   // runs one call at a time, so no other init can change the project between
   // the read and the write.
   initProject(init: ProjectInit, actor: string): ProjectRecord {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner initializes policy", 403);
+    if (init.postMerge !== undefined) init = { ...init, postMerge: parsePostMerge(init.postMerge, actor, new Date().toISOString()) };
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'project'`).toArray()[0];
     const at = new Date().toISOString();
     const record = mergeProject(row ? JSON.parse(row.value as string) : null, init, at);
@@ -1530,11 +1535,18 @@ export class Ledger extends DurableObject<Env> {
   // runner merges main at the dispatch's head into the workspace and leaves
   // the conflicts for it to resolve, where a plain rework would reset the
   // workspace to a head that cannot reach main.
-  dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null): Item {
+  //
+  // With overlapOk, a task already dispatched keeps its offer: omitted fields
+  // stay as they were (overrideDispatch in src/dispatch/rules.ts), and the
+  // answer names the core-file hold the override released, if one held it.
+  dispatch(id: string, actor: string, input: Record<string, unknown>, token?: string | null): Item & { retainedDispatch?: true; releasedCoreHold?: CoreHold } {
     const item = this.checkDispatch(id, actor);
-    const d = makeDispatch(input, actor, new Date().toISOString());
+    const d = overrideDispatch(input, item.dispatch, actor, new Date().toISOString());
     this.assertMergeMainWorkspace(item, d);
-    assertDispatchClaimable(item, this.items(), this.project().policy, d, this.owner);
+    const items = this.items();
+    assertDispatchClaimable(item, items, this.project().policy, d, this.owner);
+    const retained = input.overlapOk === true && !!item.dispatch;
+    const released = retained && item.state === "open" && !item.owner ? coreHold(item, items, this.project().policy.coreFiles) : null;
     const held = this.holds(item);
     if (held) {
       this.dropToken(id, token);
@@ -1544,24 +1556,28 @@ export class Ledger extends DurableObject<Env> {
     }
     this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), d.at, id);
     this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, ...(d.job ? { job: d.job, head: d.head } : {}), ...(d.overlapOk ? { overlapOk: true } : {}) }, d.at);
-    return this.item(id);
+    return { ...this.item(id), ...(retained ? { retainedDispatch: true as const } : {}), ...(released ? { releasedCoreHold: released } : {}) };
   }
 
   // The owner's release of an overlap-held dispatch: only the overlap
   // override (and a given agent or model) changes; see retainDispatch. A task
-  // a runner has claimed since is refused, never redispatched.
-  releaseHold(id: string, actor: string, input: Record<string, unknown>): Item {
+  // a runner has claimed since is refused, never redispatched. As for an
+  // override sent as a dispatch (t491), the answer names the core-file hold
+  // released, if one held it.
+  releaseHold(id: string, actor: string, input: Record<string, unknown>): Item & { retainedDispatch: true; releasedCoreHold?: CoreHold } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner dispatches", 403);
     const item = this.item(id);
     this.assertNotPlanned(item);
     assertNotTerminal(item);
-    const d = retainDispatch(item, input, this.items(), this.project().policy, this.owner);
+    const items = this.items(), policy = this.project().policy;
+    const d = retainDispatch(item, input, items, policy, this.owner);
+    const released = coreHold(item, items, policy.coreFiles);
     if (JSON.stringify(d) !== JSON.stringify(item.dispatch)) {
       const at = new Date().toISOString();
       this.sql.exec(`UPDATE items SET dispatch = ?, updated_at = ? WHERE id = ?`, JSON.stringify(d), at, id);
       this.log(id, actor, "item.dispatched", { to: d.to, agent: d.agent, model: d.model, note: d.note, overlapOk: true, retained: true, ...(d.job ? { job: d.job, head: d.head } : {}) }, at);
     }
-    return this.item(id);
+    return { ...this.item(id), retainedDispatch: true as const, ...(released ? { releasedCoreHold: released } : {}) };
   }
 
   // A merge-main job merges main into the task's workspace, so a task with
@@ -1584,7 +1600,7 @@ export class Ledger extends DurableObject<Env> {
     if (item.state === "accepted") this.acceptedReworkAllowed(item, actor);
     if (!this.holds(item)) assertDispatchable(item);
     if (input) {
-      const d = makeDispatch(input, actor, new Date().toISOString());
+      const d = overrideDispatch(input, item.dispatch, actor, new Date().toISOString());
       this.assertMergeMainWorkspace(item, d);
       assertDispatchClaimable(item, this.items(), this.project().policy, d, this.owner);
     }
@@ -2369,11 +2385,15 @@ export class Ledger extends DurableObject<Env> {
 
   cancelLanding(id: string, actor: string): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner merges", 403);
+    const run = this.postMergeRun(id);
+    if (run && (run.after || !["reserved", "complete"].includes(run.state))) throw new RuleError("post_merge_blocked", "a recorded merge cannot release its post-merge reservation", 409);
+    if (run?.state === "reserved") { run.state = "complete"; this.savePostMerge(run, actor, "cancelled"); }
     this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing:${id}`);
     return this.item(id);
   }
 
-  beginLanding(id: string, actor: string, head: string): Item {
+  beginLanding(id: string, actor: string, head: string, before?: string, generation?: number): Item {
+    this.assertPostMergeFree(id);
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner merges", 403);
     const item = this.item(id);
     if (item.state !== "accepted" || item.acceptedHead !== head) {
@@ -2395,7 +2415,22 @@ export class Ledger extends DurableObject<Env> {
       const since = held.at.slice(0, 16).replace("T", " ");
       throw new RuleError("landing_lease", `${held.holder} has been landing ${held.item} since ${since} UTC; one landing runs at a time in this project, so ${id} cannot merge beside it. Wait for it to finish, run atelier land ${held.item} again to finish or release that landing, or free the lease with atelier land ${held.item} --release-lease, then atelier merge ${id} again`, 409);
     }
-    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing:${id}`, JSON.stringify({ head, at: Date.now() }));
+    const policy = this.project().policy.postMerge;
+    if (generation !== undefined && generation !== this.mergeGeneration()) throw new RuleError("stale_default_branch", "another landing completed while the default branch was read; read it again", 409);
+    const previous = this.postMergeRun(id);
+    // Capture the baseline once even when no steps are configured yet. A
+    // resumed landing may already have published, so its newly observed tip
+    // must never replace the original before SHA. Legacy unknowns fail closed.
+    const landingRow = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `landing:${id}`).toArray()[0];
+    const landing = landingRow ? JSON.parse(landingRow.value as string) as { head: string; at: number; before?: string | null } : { head, at: Date.now(), before: before ?? null };
+    // A cancelled reservation remains in history, but does not become the
+    // run of a new landing after the owner clears the step policy.
+    if (!policy && previous?.state === "complete" && !previous.after) this.sql.exec(`DELETE FROM meta WHERE key = ?`, `post-merge-item:${id}`);
+    if (policy && (!previous || previous.state === "complete")) {
+      const run = reservePostMerge(policy, [id], landing.before ?? "", crypto.randomUUID(), new Date().toISOString());
+      this.savePostMerge(run, actor, "reserved");
+    }
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing:${id}`, JSON.stringify(landing));
     return item;
   }
 
@@ -2591,6 +2626,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   beginProjectLanding(id: string, actor: string, instance?: string): { item: Item; expired: LandingLease | null } {
+    this.assertPostMergeFree(id);
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
     const item = this.item(id);
     this.fenceLandingInstance(id, instance);
@@ -2665,6 +2701,67 @@ export class Ledger extends DurableObject<Env> {
     return { held: !!held, lease: held };
   }
 
+  mergeGeneration(): number {
+    return Number(this.sql.exec(`SELECT COALESCE(MAX(seq), 0) AS generation FROM events WHERE kind = 'item.merged'`).toArray()[0].generation);
+  }
+
+  postMergeRuns(): PostMergeRun[] {
+    return this.sql.exec(`SELECT value FROM meta WHERE key LIKE 'post-merge:%' ORDER BY key`).toArray().map(r => JSON.parse(r.value as string));
+  }
+
+  postMergeRun(item: string): PostMergeRun | null {
+    const latest = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `post-merge-item:${item}`).toArray()[0];
+    const row = latest ? this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `post-merge:${latest.value}`).toArray()[0] : null;
+    const run: PostMergeRun | null = row ? JSON.parse(row.value as string) : null;
+    if (run) {
+      const before = run.state;
+      expireAttempt(run, Date.now());
+      if (before !== run.state) this.savePostMerge(run, this.owner, "uncertain");
+    }
+    return run;
+  }
+
+  activePostMerge(): PostMergeRun | null {
+    const active = this.sql.exec(`SELECT value FROM meta WHERE key = 'post-merge-active'`).toArray()[0];
+    const row = active ? this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `post-merge:${active.value}`).toArray()[0] : null;
+    const run: PostMergeRun | null = row ? JSON.parse(row.value as string) : null;
+    return run?.state === "complete" ? null : run;
+  }
+
+  private assertPostMergeFree(item: string): void {
+    const held = this.activePostMerge();
+    if (held && !held.members.includes(item)) throw new RuleError("post_merge_blocked", `post-merge run ${held.id} for ${held.members.join(", ")} is ${held.state}; resolve it before another merge`, 409);
+  }
+
+  private savePostMerge(run: PostMergeRun, actor: string, action: string): void {
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `post-merge:${run.id}`, JSON.stringify(run));
+      for (const item of run.members) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `post-merge-item:${item}`, run.id);
+      if (run.state === "complete") this.sql.exec(`DELETE FROM meta WHERE key = 'post-merge-active' AND value = ?`, run.id);
+      else this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('post-merge-active', ?)`, run.id);
+      this.log(run.members[0], actor, `post-merge.${action}`, { run }, new Date().toISOString());
+    });
+  }
+
+  preparePostMerge(item: string, runId: string, paths: string[], actor: string): PostMergeRun {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner executes post-merge work", 403);
+    const run = this.postMergeRun(item);
+    if (!run || run.id !== runId) throw new RuleError("stale_run", "post-merge run changed", 409);
+    preparePostMerge(run, paths); this.savePostMerge(run, actor, "prepared"); return run;
+  }
+
+  postMergeAction(item: string, actor: string, input: { run: string; action: string; attempt?: string; passed?: boolean; output?: unknown; commandOutcome?: Attempt["commandOutcome"]; publication?: Attempt["publication"]; reason?: unknown; resolution?: unknown }, deployment?: Attempt["deployment"]): PostMergeRun {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner executes or reconciles post-merge work", 403);
+    const run = this.postMergeRun(item);
+    if (!run || run.id !== input.run) throw new RuleError("stale_run", "post-merge run changed", 409);
+    const at = new Date().toISOString();
+    if (input.action === "start") startAttempt(run, crypto.randomUUID(), at);
+    else if (input.action === "command") recordCommand(run, input.attempt ?? "", input.passed === true, input.publication);
+    else if (input.action === "finish") finishAttempt(run, input.attempt ?? "", input.passed === true, input.output, at, deployment, input.commandOutcome);
+    else recoverPostMerge(run, input.action, input.reason, actor, at, input.resolution, deployment);
+    this.savePostMerge(run, actor, input.action); return run;
+  }
+
   // One step of a landing (atelier land, t187): what the step was, how long
   // it took and what it settled, recorded as a land.* event for the
   // integration record (t186) to read the cost of landing a task.
@@ -2689,8 +2786,16 @@ export class Ledger extends DurableObject<Env> {
     if (acceptedHead !== undefined && item.acceptedHead !== acceptedHead) {
       throw new RuleError("acceptance_changed", `${id} was accepted again at another revision while this merge was checked; merge again`, 409);
     }
+    this.assertPostMergeFree(id);
+    const post = this.postMergeRun(id);
+    if (this.project().policy.postMerge && !post) throw new RuleError("post_merge_blocked", "reserve post-merge work through the landing route before publishing", 409);
+    if (post) {
+      if (post.state !== "reserved") throw new RuleError("post_merge_blocked", "reservation is not awaiting a merge", 409);
+      post.after = mergeCommit;
+      this.savePostMerge(post, actor, "merged");
+    }
     this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing:${id}`);
-    this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing-workflow:${id}`);
+    if (!post) this.sql.exec(`DELETE FROM meta WHERE key = ?`, `landing-workflow:${id}`);
     const at = new Date().toISOString();
     this.update(id, { state: "merged", owner: null }, at);
     this.log(id, actor, "item.merged", { mergeCommit, head: item.acceptedHead, observedOnBaseline: observed }, at);
@@ -2989,7 +3094,7 @@ export class Ledger extends DurableObject<Env> {
       : null;
     // `criteria` is the binding of the item's acceptance criteria now, which a
     // review of it names (src/criteria.ts).
-    return { item, criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, evidence, reviews, unparsable: this.unparsableFor(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
+    return { item, postMerge: this.postMergeRun(id), criteria: criteriaOf(item), policy, acceptanceProtected, acceptancePolicy, evidence, reviews, unparsable: this.unparsableFor(id), ownerActor: this.owner, gate: gate(item, policy, evidence, reviews, this.owner), events: this.events(id) };
   }
 
   inbox(now: string, pool: readonly ModelEntry[] = []): InboxEntry[] {
