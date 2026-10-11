@@ -935,12 +935,14 @@ async function runRegenerateIn(dir, regenerate, io) {
 // output stands, as before, when the server records no failure at that head
 // (the check died before it posted, or the server is older than the
 // summary), and the step is recorded by `step` as any other. The error's
-// message holds the summary whole, for the terminal; its data's `reason` is
-// the same failure fitted to WORKSPACE_REASON_MAX by failureDetail (the
-// tails give way first, then the names, then later checks are counted in
-// one line), which the Workflow landing reports as why its workspace
-// failed, so the record keeps every failed check and the check-log line
-// however long the first check's output ran.
+// message holds the summary whole, for the terminal; its data's
+// `workflowReason` is the same failure fitted to WORKSPACE_REASON_MAX by
+// failureDetail (the tails give way first, then the names, then later
+// checks are counted in one line), which the Workflow landing reports as
+// why its workspace failed, so the record keeps every failed check and the
+// check-log line however long the first check's output ran. (Its own key:
+// a merge stop's data carries a `reason` of its own, the note the ledger's
+// merge step records, which is not what the Workflow is told.)
 async function checkStep(io, itemPath, id, step, dir) {
   try { await step("check", ["check"], dir); }
   catch (error) {
@@ -956,7 +958,7 @@ async function checkStep(io, itemPath, id, step, dir) {
       }
     } catch (read) { io.print(`Warning: the failed checks could not be read from the server (${read.message}); the check's own output follows.`); }
     if (!summary) throw error;
-    throw new StepError(`${why}\n${summary.whole}`, { ...error.data, reason: summary.reason });
+    throw new StepError(`${why}\n${summary.whole}`, { ...error.data, workflowReason: summary.reason });
   }
 }
 
@@ -1401,12 +1403,13 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, moved }) {
         // A conflict pauses the Workflow (it releases the lease and waits
         // for the owner); any other failure ends it with this message, which
         // the Workflow keeps to WORKSPACE_REASON_MAX: a failed check reports
-        // the summary checkStep fitted to that size, so it is never cut
-        // here; any other message is cut at it. Edits in code main moved
+        // the summary checkStep fitted to that size (its data's
+        // workflowReason), so it is never cut here; any other message,
+        // conflicts included, is cut at it. Edits in code main moved
         // pause it the same way (t471), naming the moved code's files,
         // though no merge was made: the resume asks for the workspace steps
         // again, which compare afresh.
-        const reason = String(typeof error.data?.reason === "string" ? error.data.reason : error.message).slice(0, WORKSPACE_REASON_MAX);
+        const reason = String(typeof error.data?.workflowReason === "string" ? error.data.workflowReason : error.message).slice(0, WORKSPACE_REASON_MAX);
         try { await send("workspace", conflicts ? { round, conflict: true, files: conflicts, reason } : { round, failed: true, reason }); }
         catch { /* the Workflow times out on its own and releases the lease */ }
         die(conflicts && error.data.moved
