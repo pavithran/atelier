@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -512,13 +512,31 @@ test("a submodule is refused: its content is in another repository", (t) => {
 
 test("a blob the checkout is missing, or holds corrupt, is refused with its path", (t) => {
   const f = fixture(t);
-  const loose = (path) => { const sha = f.git(f.checkout, "rev-parse", `HEAD:${path}`); return [sha, join(f.checkout, ".git", "objects", sha.slice(0, 2), sha.slice(2))]; };
+  // Git may pack the checkout's objects on its own (a full-suite run on a
+  // loaded runner once found the blob missing as a loose file), and a packed
+  // copy would survive the damage below. Unpack every pack first so each blob
+  // exists only as the loose file the test removes or corrupts.
+  const unpack = () => {
+    const packs = join(f.checkout, ".git", "objects", "pack");
+    for (const name of existsSync(packs) ? readdirSync(packs).filter((n) => n.endsWith(".pack")) : []) {
+      const pack = readFileSync(join(packs, name));
+      for (const n of readdirSync(packs).filter((n) => n.startsWith(name.slice(0, -5)))) rmSync(join(packs, n));
+      const r = spawnSync("git", ["unpack-objects", "-q"], { cwd: f.checkout, input: pack });
+      assert.equal(r.status, 0, String(r.stderr));
+    }
+  };
+  const loose = (path) => {
+    const sha = f.git(f.checkout, "rev-parse", `HEAD:${path}`), file = join(f.checkout, ".git", "objects", sha.slice(0, 2), sha.slice(2));
+    assert.ok(existsSync(file), `${path} is stored as a loose object`);
+    return [sha, file];
+  };
   f.put("data/gone.txt", "gone\n");
   const missing = f.commit("Gone").slice(0, 12);
   f.put("data/broken.txt", "broken\n");
   const corrupt = f.commit("Broken").slice(0, 12);
   // Both commits are made before either object is touched: a later `git add`
   // would write a missing blob back.
+  unpack();
   const [goneSha, goneFile] = loose("data/gone.txt");
   rmSync(goneFile);
   const [brokenSha, brokenFile] = loose("data/broken.txt");
