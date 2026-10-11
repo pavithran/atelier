@@ -904,7 +904,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     throw new RuleError("not_found", "no such route", 404);
   }
-  if (parts[0] === "inbox" && m === "GET") return json(await inbox(env, c.token, c.url.searchParams.get("unread") === "1"));
+  if (parts[0] === "inbox" && m === "GET") {
+    const read = await inbox(env, c.token);
+    const res = json(c.url.searchParams.get("unread") === "1" ? read : read.entries);
+    // Older clients keep the list shape, but a failed read is still labelled.
+    if (read.unread.length) res.headers.set("x-atelier-incomplete", read.unread.slice().sort().join(","));
+    return res;
+  }
   // The model pool requires the owner token. Owner tools may read it and
   // report runner status; changes also require the owner actor.
   if (parts[0] === "models") {
@@ -2469,11 +2475,12 @@ function isHeld(item: Item): boolean {
 
 // The portfolio's notices, each project's read on its own: a project whose
 // Ledger cannot be read drops out of the list instead of failing it, so the
-// healthy projects' notices still reach the owner. With `withUnread` (GET
-// /inbox?unread=1) the answer names those projects, `{ entries, unread }`, so
+// healthy projects' notices still reach the owner. With GET
+// /inbox?unread=1 the answer names those projects, `{ entries, unread }`, so
 // a reader passes them to attentionFor as not read (null notices) rather than
-// as nothing waiting; the bare list stays for older clients.
-async function inbox(env: Env, token?: AgentToken, withUnread = false) {
+// as nothing waiting; the bare list stays for older clients, with unread
+// projects named in the x-atelier-incomplete response header.
+async function inbox(env: Env, token?: AgentToken) {
   const projects = (await index(env).projects()).filter((p) => inScope(token, namesOf(p)));
   const now = new Date().toISOString();
   const pool = await poolOf(env);
@@ -2485,7 +2492,7 @@ async function inbox(env: Env, token?: AgentToken, withUnread = false) {
     unread.push(projects[i].name);
     return [];
   }).sort((a, b) => b.weight - a.weight);
-  return withUnread ? { entries, unread } : entries;
+  return { entries, unread };
 }
 
 // Whether a revision is on a project's main line as Atelier holds it: the

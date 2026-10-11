@@ -90,6 +90,10 @@ it("the standing labels the tasks as not read when the task list cannot be read,
   const s = await readStanding(source("alpha", ["items"]), OFFERS, [], 300, NOW);
   expect(s.waiting).toEqual([]);
   expect(s.partial).toContain("The project's tasks could not be read, so what waits on you there is unknown.");
+  const page = renderProject(record("alpha"), [], null, "PAVI", s, null);
+  expect(page).toContain("The project&#39;s tasks could not be read");
+  expect(page).toContain("Nothing waiting, queued or recently merged is shown in the part read.");
+  expect(page).not.toContain("Nothing is waiting, queued or recently merged.");
 });
 
 it("Home keeps a project's owner calls when its moves or notices cannot be read, and labels what was not", () => {
@@ -102,4 +106,18 @@ it("Home keeps a project's owner calls when its moves or notices cannot be read,
   expect(ids(alphaCard, /<li class="owner-call"><a href="\/p\/alpha\/(\w+)"/g)).toEqual(waiting.owner.slice(0, 3).map((t) => t.id));
   // The healthy project beside it is read in full.
   expect(home.slice(home.indexOf('href="/p/beta"'))).toContain("<b>0</b>waiting on you");
+});
+
+it("Decisions never says the owner is clear when tasks or notices could not be read", async () => {
+  for (const failed of ["items", "inbox"]) {
+    const L = source("beta", [failed]);
+    const [tasks, notices] = await Promise.all([L.items().catch(() => null), L.inbox(NOW.toISOString(), []).catch(() => null)]);
+    const a = attentionFor("beta", tasks, notices, OFFERS, NOW);
+    const page = renderInbox([a], [record("beta")], "PAVI");
+    expect(page).toContain("Nothing is known to be waiting on you; more may be waiting.");
+    expect(page).toContain("The list may be incomplete.");
+    expect(page).toContain(failed === "items" ? "tasks could not be read" : "notices could not be read");
+    expect(page).not.toContain("You’re clear.");
+    expect(page).not.toContain("Nothing is waiting on you.");
+  }
 });

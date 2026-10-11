@@ -197,5 +197,9 @@ test("atelier inbox shows the projects it read and labels one whose tasks could 
     assert.ok(lines.some((l) => l.startsWith("    a10  ")), r.output);
     assert.ok(lines.includes("Beta (beta): 0 waiting on you, and more may be"), r.output);
     assert.ok(lines.some((l) => /^ {4}Not read: The project's tasks could not be read/.test(l)), r.output);
+    const json = await runCli(["inbox", "--json"]);
+    assert.equal(json.code, 0, json.output);
+    assert.ok(JSON.parse(json.stdout).some((entry) => entry.itemId === "a10"));
+    assert.match(json.output.slice(json.stdout.length), /Not read: beta: The project's tasks could not be read/);
   });
 });

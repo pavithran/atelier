@@ -79,3 +79,12 @@ test("the brief says what it could not read", () => {
 test("the review queue is the array the API returns, and its waiting reviews are counted", () => {
   assert.match(formatStatusBrief(brief()), /1 waiting for a runner \(t2 by codex\/gpt-6\)/);
 });
+
+test("a partial brief labels its counts, retains known owner calls and all read failures within 20 lines", () => {
+  const partial = Array.from({ length: 50 }, (_, i) => `t${i}: events could not\nbe read.`);
+  const out = formatStatusBrief(brief({ standing: { ...brief().standing, partial } }));
+  assert.match(out, /counts cover only what was read:/);
+  for (let i = 0; i < 50; i++) assert.ok(out.includes(`t${i}: events could not be read.`));
+  assert.match(out, /Waiting on the owner: t2 accept; next: .*; more may be waiting\./);
+  assert.ok(out.split("\n").length < 20);
+});
