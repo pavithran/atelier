@@ -1668,6 +1668,7 @@ export class Ledger extends DurableObject<Env> {
   // A failed fork must not leave an owner holding nothing.
   unclaim(id: string, actor: string, reason: string, proved = false): void {
     const at = new Date().toISOString();
+    this.dropRunnerJobs(id);
     this.update(id, { owner: null, state: "open" }, at);
     this.log(id, actor, "item.claim_failed", { reason }, at, proved);
   }
@@ -1974,6 +1975,7 @@ export class Ledger extends DurableObject<Env> {
   // move to an alternate, then block the plan.
   private reworkPart(item: Item, review: Review, at: string, proved: boolean): void {
     const builder = item.owner;
+    this.dropRunnerJobs(item.id);
     this.update(item.id, { owner: null, state: "open" }, at);
     this.log(item.id, ORCHESTRATOR, "review.rework", { head: review.head, by: review.by, builder, findings: review.findings ?? [] }, at, proved);
   }
@@ -4543,6 +4545,7 @@ export class Ledger extends DurableObject<Env> {
     if (part.state !== "submitted") throw new RuleError("not_submitted", `part ${partKey} (${part.id}) is ${part.state}; only a submitted part fails integration`, 409);
     const at = new Date().toISOString();
     const builder = part.owner;
+    this.dropRunnerJobs(part.id);
     this.update(part.id, { owner: null, state: "open" }, at);
     this.log(part.id, ORCHESTRATOR, "integration.failed", { reason: reason.slice(0, 500), builder, ...(kind ? { kind } : {}) }, at);
     this.sql.exec(`UPDATE items SET dispatch = NULL, updated_at = ? WHERE id = ?`, at, id);

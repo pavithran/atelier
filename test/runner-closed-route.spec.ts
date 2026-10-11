@@ -163,7 +163,7 @@ for (const state of STATES) it(`a job offered to the runner and claimed without 
 
 // A prior holder has no lasting right to read the state after its assignment
 // ends, even when a later owner claim names the very same actor and runner.
-for (const state of STATES) for (const transition of ["release", "other runner", "owner claim", "redispatch", "handoff"] as const) {
+for (const state of STATES) for (const transition of ["release", "other runner", "owner claim", "redispatch", "handoff", "unclaim", "rework", "integration failure"] as const) {
   it(`a former holder after ${transition}, then ${state}, stays forbidden`, async () => {
     const t = await setup();
     await t.claim();
@@ -179,6 +179,26 @@ for (const state of STATES) for (const transition of ["release", "other runner",
       expect((await t.request("POST", `${t.base}/claim`, OWNER, ACTOR, {}, "home:studio")).status).toBe(200);
     } else if (transition === "redispatch") {
       await t.L.dispatch("t1", "owner", { to: "home", agent: "codex", model: "other" });
+    } else if (transition === "unclaim") {
+      await t.L.unclaim("t1", ACTOR, "fork failed");
+    } else if (transition === "rework" || transition === "integration failure") {
+      const { item: plan } = await t.L.newPlan("Parent", [], "owner", ACTOR, []);
+      // Make the held task a submitted part without redispatching it: a
+      // redispatch would itself clear the hold and hide this regression.
+      await runInDurableObject(t.L, (instance) => {
+        (instance as unknown as { update(id: string, fields: Record<string, string>, at: string): void }).update("t1", {
+          kind: "part", plan: plan.id, part_key: "a", state: "submitted", head: PUSHED,
+        }, new Date().toISOString());
+      });
+      if (transition === "rework") {
+        await t.L.addReview({ itemId: "t1", by: "claude-code/opus-5.5", head: PUSHED,
+          criteria: await t.L.criteria("t1"), approve: false, note: "Needs rework", at: new Date().toISOString(),
+          findings: [{ file: "src/a.ts", line: 1, severity: "blocking", text: "Loses data" }],
+        });
+      } else {
+        await t.L.integrationFailed(plan.id, "atelier/integrator", "a", "merge conflict", "conflict");
+      }
+      expect(await t.L.item("t1")).toMatchObject({ state: "open", owner: null });
     } else {
       await t.L.handoff("t1", ACTOR, "codex/other", "pass on the work");
     }

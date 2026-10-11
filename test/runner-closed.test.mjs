@@ -33,7 +33,7 @@ for (const state of ["merged", "abandoned"]) {
       },
       head: async () => head, reset: async () => { resets++; },
       brief: async () => ({ file: "/unused/brief" }), removeBrief: async () => {},
-      env: {}, ownerTokens: () => [], harness: async () => { head = "committed"; return { code: 0 }; },
+      identityRefusals: async () => [], env: {}, ownerTokens: () => [], harness: async () => { head = "committed"; return { code: 0 }; },
     });
     assert.equal(result.phase, "terminal");
     assert.equal(result.terminalState, state);
