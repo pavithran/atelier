@@ -54,6 +54,7 @@ import { buildPrecision, precisionWindow, type PrecisionRecord } from "./models/
 import { independenceRefusal } from "./review/independence.ts";
 import { gateServesTier, pickTierReviewer } from "./review/tier.ts";
 import type { LargeRef } from "./large.ts";
+import { linkVerdict, type Contradicts } from "./models/judgement.ts";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
 // event log. A Durable Object runs one request at a time, so "exactly one owner"
@@ -2267,7 +2268,10 @@ export class Ledger extends DurableObject<Env> {
   // token alone, which an agent session holds, never confirms, and nor does
   // a browser session, which that token buys. A project that forbids
   // overrides refuses every override first.
-  accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string, confirmedBy?: OwnerFactor): Item {
+  // `acting` is the harness/model that recorded the override for the owner
+  // (src/models/judgement.ts), kept on review.overridden; the authority to
+  // override stays the owner's.
+  accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string, confirmedBy?: OwnerFactor, acting: string | null = null): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner accepts", 403);
     if (note !== undefined) assertLength(note, NOTE_MAX, "the acceptance note");
     const item = this.item(id);
@@ -2310,6 +2314,7 @@ export class Ledger extends DurableObject<Env> {
       this.log(id, actor, "review.overridden", {
         head: item.head, reason: override.override.reason, waived: override.waived, contributors: override.contributors,
         confirmed: confirmedBy ? "page" : "command line", confirmedAt: override.override.confirmedAt, ...(factor ? { factor } : {}),
+        ...(acting ? { acting } : {}),
       }, at);
     }
     this.update(id, { state: "accepted", accepted_head: item.head }, at);
@@ -2839,31 +2844,54 @@ export class Ledger extends DurableObject<Env> {
   // merged or not. Nothing about the item changes: the event is the record,
   // and the reliability record counts it against the model that built that
   // revision and every model that approved it. An item never accepted
-  // carries no approved change, so it is refused.
-  traceDefect(id: string, actor: string, note: string, foundIn: string | null): Item {
+  // carries no approved change, so it is refused. `contradicts` names the
+  // verdict on a finding the defect shows was wrong (t440): the link is
+  // checked against this task's own verdicts and revisions (linkVerdict) and
+  // recorded with the defect, which counts it against the model that acted.
+  traceDefect(id: string, actor: string, note: string, foundIn: string | null, contradicts: Contradicts | null = null): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner traces a defect to a change", 403);
     const item = this.item(id);
     if (!item.acceptedHead) {
       throw new RuleError("not_accepted", `${id} is not accepted at any revision, so no approved change of it carries the defect; trace it to the task whose accepted revision introduced it`, 409);
     }
+    const link = contradicts ? linkVerdict(contradicts, this.eventAt(contradicts.event), id, this.revisionsAccepted(id)) : null;
     const at = new Date().toISOString();
-    this.log(id, actor, "item.defect", { head: item.acceptedHead, note, ...(foundIn ? { foundIn } : {}) }, at);
+    this.log(id, actor, "item.defect", { head: item.acceptedHead, note, ...(foundIn ? { foundIn } : {}), ...(link ? { contradicts: link } : {}) }, at);
     return item;
+  }
+
+  private eventAt(seq: number): LedgerEvent | undefined {
+    const row = this.sql.exec(`SELECT * FROM events WHERE seq = ?`, seq).toArray()[0];
+    return row ? eventOf(row) : undefined;
+  }
+
+  // The revisions a task was submitted at up to its latest acceptance, and
+  // the accepted one: the revisions whose reviews the accepted change answered.
+  private revisionsAccepted(id: string): string[] {
+    const accepted = this.sql.exec(`SELECT seq FROM events WHERE item_id = ? AND kind = 'item.accepted' ORDER BY seq DESC LIMIT 1`, id).toArray()[0]?.seq as number | undefined;
+    const heads = this.sql.exec(`SELECT data FROM events WHERE item_id = ? AND kind = 'item.submitted' AND seq <= ?`, id, accepted ?? Number.MAX_SAFE_INTEGER).toArray()
+      .map((r) => JSON.parse(r.data as string).head as string);
+    const head = this.item(id).acceptedHead;
+    return [...new Set([...heads, ...(head ? [head] : [])])];
   }
 
   // The owner records a verdict on one finding of a review, at the head the
   // review was made at and the finding's position (one based) in that
   // review's findings. Nothing about the review changes: the event is the
   // record, and the reliability record counts the reviewer's findings
-  // confirmed and refuted (src/models/reliability.ts).
+  // confirmed and refuted (src/models/reliability.ts). `acting` is the
+  // harness/model that recorded the verdict for the owner (t440), measured
+  // by src/models/judgement.ts.
   // The review is this task's review event at the head: the one whose
   // sequence `select.reviewSeq` names, the one review there of
   // `select.reviewer`, or, with neither, the newest review there while at
   // most one review at the head has findings. Any other case is refused with
   // the reviews at the head listed, so the owner names one (t486). The
   // verdict records the review's sequence, so two reviews with identical
-  // findings by one reviewer at one head are judged apart.
-  addFinding(id: string, actor: string, head: string, index: number, verdict: string, note: string, select: { reviewSeq?: unknown; reviewer?: unknown } = {}): { review: number; by: string } {
+  // findings by one reviewer at one head are judged apart. Returns the
+  // review, its reviewer and the verdict event's sequence number, the number
+  // a defect names to contradict it.
+  addFinding(id: string, actor: string, head: string, index: number, verdict: string, note: string, select: { reviewSeq?: unknown; reviewer?: unknown } = {}, acting: string | null = null): { review: number; by: string; event: number } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner records a verdict on a finding", 403);
     if (!["confirmed", "refuted", "fixed"].includes(verdict)) throw new RuleError("bad_finding", "a finding's verdict is confirmed, refuted or fixed", 400);
     if (typeof head !== "string" || !/^[a-f0-9]{40,64}$/.test(head)) throw new RuleError("bad_finding", "--head must be the full revision the review was made at", 400);
@@ -2899,8 +2927,9 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("no_finding", `${id}'s review ${review.seq} by ${review.by} at ${at.slice(0, 8)} has ${findings.length} ${findings.length === 1 ? "finding" : "findings"}; --index ${index} is outside it${others}`, 409);
     }
     const finding = findings[index - 1];
-    this.log(id, actor, "review.finding", { head: at, index, verdict, note, by: review.by, review: review.seq, finding: { file: finding.file, line: finding.line, severity: finding.severity, text: finding.text } }, new Date().toISOString());
-    return { review: review.seq, by: review.by };
+    this.log(id, actor, "review.finding", { head: at, index, verdict, note, by: review.by, review: review.seq, finding: { file: finding.file, line: finding.line, severity: finding.severity, text: finding.text }, ...(acting ? { acting } : {}) }, new Date().toISOString());
+    const event = this.sql.exec(`SELECT MAX(seq) AS seq FROM events WHERE item_id = ? AND kind = 'review.finding'`, id).one().seq as number;
+    return { review: review.seq, by: review.by, event };
   }
 
   // This task's review events at a head, oldest first: each one's sequence,
@@ -2988,9 +3017,9 @@ export class Ledger extends DurableObject<Env> {
     return { sql: this.sql, owner: this.owner, log: (kind, data) => this.log(null, this.owner, kind, data, new Date().toISOString()) };
   }
 
-  recordDecision(body: Record<string, unknown>, actor: string): DecisionView {
+  recordDecision(body: Record<string, unknown>, actor: string, acting: string | null = null): DecisionView {
     this.project();
-    return recordDecision(this.decisionStore, actor, body, new Date().toISOString());
+    return recordDecision(this.decisionStore, actor, body, new Date().toISOString(), acting);
   }
 
   decisions(): DecisionView[] {
@@ -3003,9 +3032,9 @@ export class Ledger extends DurableObject<Env> {
     return standingDecisions(this.decisionStore);
   }
 
-  withdrawDecision(id: string, actor: string, note: unknown): DecisionView {
+  withdrawDecision(id: string, actor: string, note: unknown, acting: string | null = null): DecisionView {
     this.project();
-    return withdrawDecision(this.decisionStore, actor, id, note, new Date().toISOString());
+    return withdrawDecision(this.decisionStore, actor, id, note, new Date().toISOString(), acting);
   }
 
   // ── protected actions (src/actions.ts) ──────────────────────────────────
