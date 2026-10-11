@@ -32,6 +32,9 @@ const spec: CommandSpec = {
   subcommands: {
     issue: {
       flags: { runner: false },
+      // --runner mints a runner-scoped token; store verifies one by the
+      // runner the server reads from it.
+      capabilities: ["runners.scoped-token.v1"],
       usage: `usage: atelier token issue --as H/M [--project P]... [--days N] [--label TEXT]
        atelier token issue --runner NAME --project P [--days N] [--label TEXT]
 
@@ -42,6 +45,7 @@ The token is shown once. See docs/runners.md for owner-free build and plan runne
     },
     store: {
       flags: { runner: false },
+      capabilities: ["runners.scoped-token.v1"],
       usage: `usage: atelier token store --runner NAME
 
 Reads a runner token from stdin or a hidden prompt, verifies its runner name

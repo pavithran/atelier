@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
 import { commandWords, executablePaths, hooksOff, landingDir, landingJournalFile, landingSymlinks, touchedExecutables, treeEntries } from '../cli/landing.mjs';
+import { SERVER_CAPABILITIES } from '../src/route-level.ts';
 
 // The client hooks a landing's Git commands could start.
 const HOOKS = ['pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit', 'pre-merge-commit', 'post-merge', 'post-checkout', 'pre-push', 'reference-transaction', 'post-index-change', 'post-rewrite', 'pre-auto-gc'];
@@ -74,6 +75,8 @@ async function landFixture(t, { setup = () => {}, change, controlPlane = false, 
     let raw = '';
     for await (const chunk of req) raw += chunk;
     const body = raw ? JSON.parse(raw) : {}, path = new URL(req.url, 'http://x').pathname;
+    // merge checks the server's capabilities first (t458).
+    if (path === '/api/version') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ capabilities: SERVER_CAPABILITIES })); }
     box.requests.push(`${req.method} ${path}`);
     const item = { id: 't1', title: 'Task one', scope: [], state: box.state, owner: 'codex/test', head, acceptedHead: head, base };
     let answer = {};

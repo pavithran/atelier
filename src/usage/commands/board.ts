@@ -2,6 +2,8 @@ import type { CommandSpec } from "../command.ts";
 
 const spec: CommandSpec = {
   name: "board",
+  // The board snapshot (t456).
+  capabilities: ["areas.board.v1"],
   forms: [{
     group: "Items", line: 3, slot: 10,
     form: "board [--json]",
