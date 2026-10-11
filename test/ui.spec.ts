@@ -1510,6 +1510,16 @@ it('derives one open-again headline from the ledger and keeps actions',()=>{
  expect((header.match(/decision-status/g)||[]).length).toBe(1);
  expect(html).toContain('Race &lt;unsafe&gt;');
 });
+it('shares board stage precedence for blocked and terminal tasks with returned history',()=>{
+ const {d,at}=historyFixture();d.item.state='open';
+ d.item.blocked={reason:'Waiting for owner input',by:'pavi',at:at(9),from:'open'};
+ expect(taskPage(d).title).toBe('Blocked');
+ expect(taskPage(d).detail).toBe('Waiting for owner input');
+ d.item.state='merged';
+ expect(taskPage(d).title).toBe('Merged into the project');
+ d.item.state='abandoned';
+ expect(taskPage(d).title).toBe('Task closed');
+});
 it('groups blocked reports and supersedes only covering observed passes',()=>{
  const {d,at,ev}=historyFixture();
  expect(taskPage(d).notices).toHaveLength(1);
