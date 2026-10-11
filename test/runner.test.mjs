@@ -665,15 +665,16 @@ test("versionRefusal names the missing capabilities and says to deploy, and clea
   assert.match(versionRefusal({ capabilities: ["items.brief-criteria.v1"] }, ["review"]), /reviews\.unparsable\.v1/);
   // A legacy server at 19 has the routes but not the runner credential;
   // one at 21 refuses a runner token's review skip (t353), which the review
-  // job needs; the runner's jobs ask nothing of the levels past 24, so the
-  // level a server reports may trail this CLI's and the runner still starts.
+  // job needs; a server at 25 lacks the review claim leases (t351), which
+  // the review job needs; the build jobs ask nothing past 24.
   const behind = versionRefusal({ routeLevel: 19, commit: "abcdef0123456789" });
   assert.match(behind, /lacks capabilities .*runners\.scoped-token\.v1/);
   assert.match(behind, /main at abcdef01/);
   assert.match(behind, /then start the runner again/);
   assert.match(versionRefusal({ routeLevel: 21 }), /lacks capabilities .*reviews\.skip-as-runner\.v1: it reports only route level 21/);
   assert.match(versionRefusal({ routeLevel: 21 }, ["build"]), /projects\.commit-identity\.v1/);
-  assert.equal(versionRefusal({ routeLevel: 24, commit: "abcdef0123456789" }), null);
+  assert.match(versionRefusal({ routeLevel: 25, commit: "abcdef0123456789" }), /reviews\.lease\.v1/);
+  assert.equal(versionRefusal({ routeLevel: 24, commit: "abcdef0123456789" }, ["build"]), null);
   assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL, commit: "abcdef0123456789" }), null);
   assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL + 1, commit: "abcdef0123456789" }), null);
 });

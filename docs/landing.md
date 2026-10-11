@@ -176,7 +176,7 @@ The steps in between:
    `models admit`, `withdraw` and `reviewers` require `reviews.admission.v1`. The home runner checks the
    union of its jobs' (`JOB_CAPABILITIES`, `src/route-level.ts`) before its
    first poll, the integrator's `integrate` and `refresh` jobs included;
-   the review job's include the review skip (`reviews.skip.v1`,
+   the review job's include the review claim leases (`reviews.lease.v1`) and the review skip (`reviews.skip.v1`,
    `reviews.skip-as-runner.v1`), so a reviewer against a server from before
    t353 refuses to start instead of losing its skips.
 
