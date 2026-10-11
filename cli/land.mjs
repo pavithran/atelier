@@ -823,8 +823,19 @@ async function triageGate(io, { triage, dir, id, itemPath, head, mainHead, targe
       return binding;
     }
     throw new StepError([...findings,
-      `The landing stops before the review request: nothing was submitted for review, the merged head stays pushed to ${id}'s fork, and ${id} stays with its holder. Fix what the triage found and run ${retry} again, which triages the new head; or, as the project owner, go past this stop with ${retry} --override-triage "REASON", or skip the triage with ${retry} --no-triage "REASON" — either is recorded with the head and the criteria binding before the landing goes on.`].join("\n"));
+      `The landing stops before the review request: nothing was submitted for review, the merged head stays pushed to ${id}'s fork, and ${id} stays with its holder. Fix what the triage found and run ${retry} again, which triages the new head; or, as the project owner, ${triageBypass(retry, triage)}.`].join("\n"));
   }
+}
+
+// The owner's ways past a stopped triage, each a command that runs as
+// given. A triage named with --triage H/M cannot also be skipped with
+// --no-triage, which that flag refuses, and without it the project may
+// have no triage to skip; the override needs neither, and goes past the
+// stop recorded at this head without asking the model again.
+function triageBypass(retry, triage) {
+  const override = `go past this stop with ${retry} --override-triage "REASON", which overrides the stop recorded at this head and criteria without asking ${triage.actor} again`;
+  if (triage.source === "--triage") return `${override}; it is recorded with the head and the criteria binding before the landing goes on`;
+  return `${override}, or skip the triage with ${retry} --no-triage "REASON" — either is recorded with the head and the criteria binding before the landing goes on`;
 }
 
 // The command that runs the landing again, triaging as this one did.

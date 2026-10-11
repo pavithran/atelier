@@ -178,8 +178,15 @@ export function triageBrief(input: TriageBriefInput): string {
   ].join("\n");
 }
 
-const STATUSES: Record<string, TriageStatus> = {
+// Read as own properties only: a status such as "constructor" or
+// "__proto__" names nothing here, not something Object.prototype has.
+const STATUSES: Readonly<Record<string, TriageStatus>> = Object.freeze(Object.assign(Object.create(null), {
   met: "met", "not-met": "not-met", "not met": "not-met", not_met: "not-met", notmet: "not-met", unmet: "not-met", unsure: "unsure",
+}));
+const statusOf = (value: unknown): TriageStatus | undefined => {
+  if (typeof value !== "string") return undefined;
+  const key = value.trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(STATUSES, key) ? STATUSES[key] : undefined;
 };
 
 class Refusal extends Error {}
@@ -229,7 +236,7 @@ function resultFrom(entry: unknown, at: string, count: number): TriageResult {
   const o = entry as Record<string, unknown>;
   const n = o.criterion ?? o.n;
   if (typeof n !== "number" || !Number.isSafeInteger(n) || n < 1 || n > count) refuse(`${at}: "criterion" must be a number from 1 to ${count}`);
-  const status = typeof o.status === "string" ? STATUSES[o.status.trim().toLowerCase()] : undefined;
+  const status = statusOf(o.status);
   if (!status) refuse(`${at}: "status" must be met, not-met or unsure, not ${JSON.stringify(o.status ?? null)}`);
   const evidence = typeof o.evidence === "string" ? plain(o.evidence) : "";
   if (!evidence) refuse(`${at} (criterion ${n}) gives no evidence`);
@@ -282,12 +289,14 @@ function closingBrace(text: string, start: number): number {
   return -1;
 }
 
-// Only every criterion met goes on to the review. Anything else stops the
-// landing, naming the criteria not met and those the model was unsure of.
+// Only every criterion met goes on to the review: each status must be met,
+// so a status that is neither not-met nor unsure stops too. Anything else
+// stops the landing, naming the criteria not met and those the model was
+// unsure of, and any whose status is none of the three as not met.
 export function decideTriage(results: readonly TriageResult[]): { proceed: boolean; notMet: number[]; unsure: number[] } {
-  const notMet = results.filter((r) => r.status === "not-met").map((r) => r.n);
   const unsure = results.filter((r) => r.status === "unsure").map((r) => r.n);
-  return { proceed: results.length > 0 && !notMet.length && !unsure.length, notMet, unsure };
+  const notMet = results.filter((r) => r.status !== "met" && r.status !== "unsure").map((r) => r.n);
+  return { proceed: results.length > 0 && results.every((r) => r.status === "met"), notMet, unsure };
 }
 
 // One line per criterion, as the landing prints a triage's findings.
