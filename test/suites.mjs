@@ -4,22 +4,34 @@
 // every test file by name, whatever the runners' own patterns are, and
 // assigns each to exactly one runner. A file no runner owns, or that several
 // own, is rejected before anything runs, so no file is silently skipped or run
-// twice. The Vitest suites are *.spec.ts files, which its config
-// (vitest.config.ts) selects itself; they are not discovered here.
+// twice. Vitest ownership comes from its resolved, active configuration.
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { createVitest } from "vitest/node";
 
 // Every name that looks like a test file, so a misnamed one (x.test.js, say)
 // is found and rejected rather than ignored.
-const TEST_FILE = /\.test\.[cm]?[jt]sx?$/;
+const TEST_FILE = /\.(test|spec)\.(js|jsx|ts|tsx|mjs|mts|cjs|cts)$/;
 const SKIPPED_DIRS = new Set(["node_modules"]);
 
-export const RUNNERS = [
-  { name: "node", owns: (file) => /\.test\.(mjs|ts)$/.test(file) },
-  // Vitest's config includes test/**/*.spec.ts only.
-  { name: "vitest", owns: (file) => /^test\/.*\.spec\.ts$/.test(file) },
-];
+export const NODE_RUNNER = { name: "node", owns: (file) => /\.test\.(mjs|ts)$/.test(file) };
+
+// Resolve through Vitest itself, including defaults and config/plugin changes.
+// No suite is collected or executed while validating ownership. Close the Vite
+// server before launching either runner, including on invalid assignments.
+export async function plan(root = ".") {
+  root = resolve(root);
+  const vitest = await createVitest("test", { root, watch: false });
+  try {
+    return assign(discover(root), [NODE_RUNNER, ...vitest.projects.map((project, i) => ({
+      name: vitest.projects.length === 1 ? "vitest" : `vitest:${project.name || i}`,
+      owns: (file) => project.matchesTestGlob(resolve(root, file)),
+    }))]);
+  } finally {
+    await vitest.close();
+  }
+}
 
 // Every test file under root, as slash-separated paths relative to it, sorted.
 // In a git work tree the list is git's own (tracked files, plus untracked ones
@@ -43,7 +55,7 @@ function walk(root, rel) {
 }
 
 // { byRunner: {name: [files]}, unassigned: [files], multiple: [{file, runners}] }
-export function assign(files, runners = RUNNERS) {
+export function assign(files, runners) {
   const byRunner = Object.fromEntries(runners.map((r) => [r.name, []]));
   const unassigned = [], multiple = [];
   for (const file of files) {

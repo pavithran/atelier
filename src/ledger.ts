@@ -1,3 +1,4 @@
+import type { Area, BoardSnapshot, StageFacts } from "./board.ts";
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
 import { runnerDenied, sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
@@ -16,6 +17,7 @@ import {
 import { cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, sameCriteria } from "./criteria.ts";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
+import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
 import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, makeDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
@@ -177,6 +179,8 @@ export interface ProjectInit {
   sandboxOnly?: boolean;
   noOverride?: boolean;       // overrides of the independent review are refused (see ProjectPolicy.noOverride)
   approval?: string | null;
+  // The project's commit identity, field by field (see ProjectPolicy.commitIdentity).
+  commitIdentity?: CommitIdentityInit;
 }
 
 // A project's role prompts (`atelier guide --role`, docs in the README) live
@@ -343,6 +347,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   const reviewBar = i.reviewBar === undefined ? p?.reviewBar : i.reviewBar ?? undefined;
   const reviewTier = i.reviewTier ?? p?.reviewTier ?? [];
   const coreFiles = i.coreFiles ?? p?.coreFiles ?? [];
+  const commitIdentity = settleCommitIdentity(i.commitIdentity ?? {}, p?.commitIdentity);
   return {
     revision: (current?.revision ?? 0) + 1,
     name: i.name,
@@ -369,6 +374,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       // Carried only when set, so a project that allows overrides records nothing new.
       ...((i.noOverride ?? p?.noOverride) ? { noOverride: true } : {}),
       ...(approval ? { approval } : {}),
+      ...(commitIdentity ? { commitIdentity } : {}),
     },
     createdAt: current?.createdAt ?? at,
   };
@@ -430,6 +436,7 @@ export class Ledger extends DurableObject<Env> {
     // and each routing, and a reply of up to 100 KB there would bloat them
     // all; the event says the rest.
     this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS areas (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, purpose TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS projects (name TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS names (name TEXT PRIMARY KEY, key TEXT NOT NULL);
@@ -472,6 +479,7 @@ export class Ledger extends DurableObject<Env> {
     if (!eventColumns.includes("proved")) this.sql.exec(`ALTER TABLE events ADD COLUMN proved INTEGER`);
     // Added after the first deploy; existing ledgers gain the column once.
     const columns = this.sql.exec(`PRAGMA table_info(items)`).toArray().map((c) => c.name);
+    if (!columns.includes("area")) this.sql.exec(`ALTER TABLE items ADD COLUMN area TEXT`);
     if (!columns.includes("dispatch")) this.sql.exec(`ALTER TABLE items ADD COLUMN dispatch TEXT`);
     if (!columns.includes("runner")) this.sql.exec(`ALTER TABLE items ADD COLUMN runner TEXT`);
     if (!columns.includes("review_override")) this.sql.exec(`ALTER TABLE items ADD COLUMN review_override TEXT`);
@@ -1016,6 +1024,76 @@ export class Ledger extends DurableObject<Env> {
     return record;
   }
 
+  areas(): Area[] {
+    return this.sql.exec(`SELECT id, name, purpose FROM areas ORDER BY name, id`).toArray().map((r) => ({ id: r.id as string, name: r.name as string, purpose: r.purpose as string }));
+  }
+
+  private assertArea(id: string | null | undefined): void {
+    if (id != null && !this.areas().some((a) => a.id === id)) throw new RuleError("bad_area", `unknown area ID: ${id}`, 400);
+  }
+
+  saveArea(actor: string, name: unknown, purpose: unknown, id?: string): Area {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner changes areas", 403);
+    const clean = (v: unknown, max: number) => {
+      if (typeof v !== "string" || !v.trim() || v.trim().length > max || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(v)) throw new RuleError("bad_area", `area name and purpose must be single lines of at most ${max} characters`, 400);
+      return v.trim();
+    };
+    const label = clean(name, 80), why = clean(purpose, 300);
+    if (label.toLowerCase() === "unsorted" || this.areas().some((a) => a.id !== id && a.name.toLowerCase() === label.toLowerCase())) throw new RuleError("duplicate_area", "area names must be unique; Unsorted is reserved", 409);
+    if (id !== undefined) this.assertArea(id);
+    return this.ctx.storage.transactionSync(() => {
+      if (id === undefined) {
+        const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'area-sequence'`).toArray()[0];
+        const next = Number(row?.value ?? 0) + 1;
+        this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('area-sequence', ?)`, String(next));
+        id = `a${next}`;
+      }
+      this.sql.exec(`INSERT INTO areas (id, name, purpose) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, purpose = excluded.purpose`, id, label, why);
+      this.log(null, actor, "area.saved", { id, name: label, purpose: why }, new Date().toISOString());
+      return { id, name: label, purpose: why };
+    });
+  }
+
+  removeArea(id: string, actor: string): void {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner removes areas", 403);
+    this.assertArea(id);
+    this.ctx.storage.transactionSync(() => {
+      const at = new Date().toISOString();
+      this.sql.exec(`UPDATE items SET area = NULL, updated_at = ? WHERE area = ?`, at, id);
+      this.sql.exec(`DELETE FROM areas WHERE id = ?`, id);
+      this.log(null, actor, "area.removed", { id }, at);
+    });
+  }
+
+  board(): BoardSnapshot {
+    const items = this.items(), policy = this.project().policy;
+    const held = this.readProjectLanding();
+    const lease = held && !landingLeaseLapsed(held, Date.now()) ? held : null;
+    const facts: Record<string, StageFacts> = {};
+    for (const item of items) {
+      const record = item.kind === "plan" ? this.planRecord(item.id) : null;
+      const fact: StageFacts = {
+        ready: false, landing: !!this.landing(item.id) || lease?.item === item.id,
+        planBlocked: !!record?.blocked,
+      };
+      facts[item.id] = fact;
+      // Only a submission or acceptance can be ready. Historical rows need
+      // no evidence/review scans just to show their terminal state.
+      if (item.state !== "submitted" && item.state !== "accepted") continue;
+      const current: Item = item.state === "accepted" ? { ...item, state: "submitted" } : item;
+      const parts = record ? this.planParts(item.id) : [];
+      const evidence = this.evidenceFor(item.id), reviews = this.reviewsFor(item.id);
+      const g = record ? planGate({
+        plan: current, parts: this.integrationViews(parts), integrationHead: record.integrationHead ?? null,
+        policy, evidence, reviews: [...reviews, ...parts.flatMap((p) => this.reviewsFor(p.id))], owner: this.owner,
+      }) : gate(current, policy, evidence, reviews, this.owner);
+      const siblings = item.kind === "part" && item.plan ? this.integrationViews(this.planParts(item.plan)) : [];
+      const part = siblings.find((p) => p.id === item.id);
+      fact.ready = g.ready && (!part || integrationBlockers(part, siblings, reviews, policy, this.owner).length === 0);
+    }
+    return { areas: this.areas(), items, facts };
+  }
+
   // `title` is what the creator sent as the title, and `fields.brief` the
   // long text if sent apart (itemText): a title too long with no brief, as
   // an older CLI sends, becomes the brief with a short title derived from
@@ -1039,6 +1117,7 @@ export class Ledger extends DurableObject<Env> {
         return { ...item, revert };
       });
     }
+    this.assertArea(fields.area);
     const text = itemText(title, fields.brief);
     const n = this.sql.exec(`SELECT COUNT(*) AS n FROM items`).one().n as number;
     const id = `t${n + 1}`;
@@ -1068,7 +1147,9 @@ export class Ledger extends DurableObject<Env> {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner edits a task's fields", 403);
     if (fields.revertOf !== undefined) throw new RuleError("bad_field", "revertOf is set only when creating a task", 400);
     const item = this.item(id);
-    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; its fields stay as they were`);
+    const areaOnly = fields.area !== undefined && Object.keys(fields).every((key) => key === "area") && scope === undefined;
+    if ((item.state === "merged" || item.state === "abandoned") && !areaOnly) throw new RuleError("closed", `${id} is ${item.state}; its fields stay as they were`);
+    this.assertArea(fields.area);
     const set = fieldColumns(fields);
     if (fields.title !== undefined) {
       const title = titleLine(fields.title);
@@ -4615,6 +4696,7 @@ function briefFingerprint(text: string): string {
 function toItem(r: Row): Item {
   return {
     id: r.id as string,
+    area: (r.area as string | null) ?? null,
     title: r.title as string,
     scope: JSON.parse(r.scope as string),
     state: r.state as ItemState,
@@ -4660,6 +4742,7 @@ function toItem(r: Row): Item {
 // empty list or null gate becomes NULL, and a field left out sets nothing.
 function fieldColumns(fields: ItemFields): Record<string, string | null> {
   const set: Record<string, string | null> = {};
+  if (fields.area !== undefined) set.area = fields.area;
   if (fields.nonGoals !== undefined) set.non_goals = fields.nonGoals.length ? JSON.stringify(fields.nonGoals) : null;
   if (fields.stopWhen !== undefined) set.stop_when = fields.stopWhen.length ? JSON.stringify(fields.stopWhen) : null;
   if (fields.nextGate !== undefined) set.next_gate = fields.nextGate;

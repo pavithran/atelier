@@ -3,6 +3,7 @@ import { MODEL_PROFILES } from "./models/registry.ts";
 import type { Dispatch } from "./dispatch/rules";
 import type { CheckDeclaration } from "./checks.ts";
 import type { LargeRef } from "./large.ts";
+import type { CommitIdentityPolicy } from "./commit-identity.ts";
 import { criteriaOf } from "./criteria.ts";
 // Atelier's rules, as pure functions. Nothing here touches Cloudflare, so the
 // whole policy can be tested with `node --test` and read in one place.
@@ -12,6 +13,7 @@ import { criteriaOf } from "./criteria.ts";
 export type ItemState = "open" | "claimed" | "submitted" | "accepted" | "integrated" | "merged" | "abandoned" | "blocked";
 
 export interface Item {
+  area?: string | null;
   id: string;
   title: string;            // the short title every list shows, at most TITLE_MAX characters
   // The long text of the task, shown only on its own page and in briefs to
@@ -128,6 +130,7 @@ export interface SecretClearance {
 // item's value; one absent keeps it. An empty list, a null gate or a null
 // brief clears. `title` is read by edit only: new takes its title apart.
 export interface ItemFields {
+  area?: string | null;
   // Creation only: the ledger resolves this task's recorded merge itself.
   revertOf?: string;
   nonGoals?: string[];
@@ -439,6 +442,12 @@ export interface ProjectPolicy {
   // or without the owner's confirmation (`atelier init --no-override`, t371):
   // every change gets its review from another family, or does not land.
   noOverride?: boolean;
+  // The name and address the project's commits carry, the agent addresses
+  // allowed beside it, and the addresses declared private (t451,
+  // src/commit-identity.ts). A claim writes the name and address into the
+  // workspace's Git config; a runner and a landing refuse what falls outside
+  // it. Absent in a project set up before t451 until the owner names one.
+  commitIdentity?: CommitIdentityPolicy;
 }
 
 // Reject malformed policy at the boundary instead of silently widening access.
@@ -1089,6 +1098,10 @@ export function itemFields(input: Record<string, unknown>): ItemFields {
     return entries;
   };
   const out: ItemFields = {};
+  if (input.area !== undefined) {
+    if (input.area !== null && (typeof input.area !== "string" || !/^a[1-9]\d*$/.test(input.area))) throw new RuleError("bad_area", "area must be an area ID or null to clear", 400);
+    out.area = input.area as string | null;
+  }
   if (input.revertOf !== undefined) {
     if (typeof input.revertOf !== "string" || !/^t[1-9]\d*$/.test(input.revertOf)) throw new RuleError("bad_field", "revertOf must name a task, such as t7", 400);
     out.revertOf = input.revertOf;
