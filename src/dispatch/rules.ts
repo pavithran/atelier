@@ -135,6 +135,22 @@ export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unk
   return { to: to as Dispatch["to"], agent, model, by, at, note, ...(job ? { job, head: head!, task: true as const } : {}), ...(input.overlapOk === true ? { overlapOk: true as const } : {}) };
 }
 
+// An overlap override edits the existing offer. Undefined means omitted;
+// empty strings deliberately remove the corresponding builder restriction.
+// Ordinary redispatch still starts with makeDispatch's fresh defaults.
+export function retainDispatch(input: Record<string, unknown>, previous: Dispatch | null | undefined, by: string, at: string): Dispatch {
+  if (input.overlapOk !== true || !previous) return makeDispatch(input, by, at);
+  const merged = { ...previous, ...Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)) };
+  const keepJob = input.job === undefined && input.head === undefined;
+  const validated = makeDispatch(keepJob ? { ...merged, job: undefined, head: undefined } : merged, by, at);
+  if (keepJob) {
+    // Validate the retained merge target too, before any holder is released.
+    if (previous.job === "merge-main") makeDispatch(merged, by, at);
+    return { ...previous, ...validated };
+  }
+  return validated;
+}
+
 // The live item a held dispatch waits on: its id, holder, state and title,
 // and the core-file glob both scopes reach.
 export interface CoreHold {
