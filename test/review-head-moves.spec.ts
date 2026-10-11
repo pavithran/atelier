@@ -91,12 +91,12 @@ it("t282: a review asked at A, then the landing pushes B and submits — the A r
   expect(ev.filter((e) => e.kind === "review.requested").at(0)).toMatchObject({ data: { head: B, reviewer: GPT, via: "head-moved", from: A, wanted: true } });
   // The queue offers the B request alone, and the runner's claim gets B.
   expect((await L.reviewWaiting()).map((i) => i.head)).toEqual([B]);
-  const claim = await L.claimReview(id, GPT, RUNNER) as unknown as { head: string; need: { basis: string } | null };
+  const claim = await L.claimReview(id, GPT, RUNNER) as unknown as { request: number; head: string; need: { basis: string } | null };
   expect(claim.head).toBe(B);
   expect(claim.need).not.toBeNull();
   // The landing's own request at B finds the live request rather than making another.
   expect(await L.requestReview(id, "owner", GPT, POOL, true)).toMatchObject({ requested: false, head: B, reviewer: GPT });
-  await L.addReview({ itemId: id, criteria: await L.criteria(id), by: GPT, head: B, approve: true, note: "Reviewed the merged head.", at: new Date().toISOString() });
+  await L.addReview({ request: claim.request, itemId: id, criteria: await L.criteria(id), by: GPT, head: B, approve: true, note: "Reviewed the merged head.", at: new Date().toISOString() });
   await L.accept(id, "owner", B);
   expect(await L.item(id)).toMatchObject({ state: "accepted" });
 });
@@ -107,12 +107,12 @@ it("a picked reviewer's request follows the head too, and a claimed request at t
   await submittedAt(L, id, A);
   expect(await L.requestReview(id, "owner", null, POOL)).toMatchObject({ requested: true, reviewer: GPT });
   // The reviewer's runner has claimed it at A when the head moves.
-  await L.claimReview(id, GPT, RUNNER);
+  const lease1 = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
   await landingMerge(L, id, B);
   expect(await gateRequests(L, id)).toEqual([{ head: A, state: "withdrawn" }, { head: B, state: "open" }]);
   // Its late verdict at A is refused; the release of a request already closed is refused, not reopened.
-  await refusal(L.addReview({ itemId: id, criteria: await L.criteria(id), by: GPT, head: A, approve: true, note: "Late.", at: new Date().toISOString() }), "stale_head", /older head/);
-  await refusal(L.releaseReview(id, GPT, "no verdict"), "no_review", /no review request claimed/);
+  await refusal(L.addReview({ request: lease1.request, itemId: id, criteria: await L.criteria(id), by: GPT, head: A, approve: true, note: "Late.", at: new Date().toISOString() }), "stale_head", /older head/);
+  await refusal(L.releaseReview(id, GPT, "no verdict", false, lease1.request), "stale_request", /no longer current/);
   expect((await L.claimReview(id, GPT, RUNNER) as unknown as { head: string }).head).toBe(B);
 });
 

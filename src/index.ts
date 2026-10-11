@@ -1630,8 +1630,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       }
       return json({ ...claim, ...(diffRef ? { diffRef } : {}) });
     }
+    case "review-renew": {
+      await L.renewReview(id, actor, Number(body.request));
+      return json({ renewed: true });
+    }
     case "review-release": {
-      await L.releaseReview(id, actor, String(body.note ?? ""), !!c.token);
+      await L.releaseReview(id, actor, String(body.note ?? ""), !!c.token, body.request);
       return json({ released: true });
     }
     // A runner's word that it will not serve the review of this head (t353):
@@ -1663,7 +1667,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review-unparsable": {
       const head = String(body.head ?? "");
       if (!/^[a-f0-9]{40,64}$/.test(head)) throw new RuleError("bad_head", "--head must be the full revision the review read", 400);
-      return json({ kept: true, ...await L.unparsableReview(id, actor, head, String(body.note ?? ""), String(body.reply ?? ""), !!c.token) });
+      return json({ kept: true, ...await L.unparsableReview(id, actor, head, String(body.note ?? ""), String(body.reply ?? ""), !!c.token, body.request) });
     }
     // A review request for an item outside a plan (atelier land): the owner
     // asks for the independent review the gate needs, naming the reviewer or
