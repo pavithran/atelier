@@ -18,7 +18,7 @@ import { MERGE_MAIN } from "../src/plans/state.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { rolePrompt, ROLE_PROMPT_MAX } from "../src/usage.ts";
 import { mergeMainAndRegenerate } from "./land.mjs";
-import { describeFinding } from "../src/moved-code.ts";
+import { DETECTOR_ENV, RENAME_THRESHOLD, describeFinding, detectMovedEditsAsync, normalize, parseRawZ, showPath } from "../src/moved-code.ts";
 
 export function offerFrom(config, name) {
   if (typeof name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(name)) throw new Error("use --name home:NAME");
@@ -665,15 +665,24 @@ function movedCodeLines(findings) {
 // source and destination (mergeMainSection): the builder ports the edits
 // and commits, and a finding is never counted as the model's failure. The
 // port is verified as a resolution is — no merge left in progress, main and
-// the build's head both held — and main is read once more, which finds it
-// merged and compares nothing: what the port did is the builder's work.
+// the build's head both held — and then as a port: the comparison is made
+// again at the revisions it compared, and each finding's edit is required
+// at its destination in HEAD (unportedEdits), since a harness exit alone is
+// no evidence it ported, and main read once more, which finds it merged,
+// compares nothing. An edit not at its destination is the model's failure,
+// as an unresolved conflict is, and nothing is submitted.
 export async function prepareBuildSubmission(assignment, workspace, io, resolve) {
   const { project, item, actor } = assignment;
   const guard = () => { if (io.stopped()) throw new Error("interrupted"); };
-  const verify = async (mainHead, workHead) => {
-    if ((await io.conflicts(workspace)).length || (await io.git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], { cwd: workspace, allowFail: true })).status === 0) throw new Error("the merge of main is still unresolved or uncommitted");
+  const git = (args, options = {}) => io.git(args, { cwd: workspace, ...options });
+  const verify = async (mainHead, workHead, findings = []) => {
+    if ((await io.conflicts(workspace)).length || (await git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], { allowFail: true })).status === 0) throw new Error("the merge of main is still unresolved or uncommitted");
     if (!await io.isAncestor(workspace, mainHead, "HEAD")) throw new Error(`the build does not hold main at ${mainHead.slice(0, 8)}`);
     if (!await io.isAncestor(workspace, workHead, "HEAD")) throw new Error("the merge of main discarded the build's committed work");
+    if (!findings.length) return;
+    const unported = await unportedEdits(git, { task: workHead, main: mainHead });
+    if (unported.length) throw new Error(`${unported.length === 1 ? "an edit of the build's" : `${unported.length} edits of the build's`} in code main moved to another file ${unported.length === 1 ? "was" : "were"} not ported to ${unported.length === 1 ? "its" : "their"} destination: ${unported.map(({ finding, why }) => `${describeFinding(finding)}; ${why}`).join("; ")}`);
+    io.log(`the port is verified: ${findings.length === 1 ? "the edit is" : `all ${findings.length} edits are`} at ${findings.length === 1 ? "its" : "their"} destination`);
   };
   const count = (findings) => `${findings.length} of the build's edits ${findings.length === 1 ? "lies" : "lie"} in code main moved to another file`;
   for (;;) {
@@ -697,19 +706,78 @@ export async function prepareBuildSubmission(assignment, workspace, io, resolve)
       const { mainHead } = error.data;
       io.log(`main at ${mainHead.slice(0, 8)} merged with conflicts in ${files.join(", ")}${findings.length ? `, and ${count(findings)}` : ""}; ${actor} resolves them in this run`);
       await resolve({ mainHead, state: "conflicts", files, findings });
-      await verify(mainHead, workHead);
+      await verify(mainHead, workHead, findings);
       continue;
     }
     if (findings.length) {
       guard();
       io.log(`main at ${merged.mainHead.slice(0, 8)} merged cleanly as ${merged.head.slice(0, 8)}, but ${count(findings)}; ${actor} ports them in this run`);
       await resolve({ mainHead: merged.mainHead, state: "moved", files: [], findings });
-      await verify(merged.mainHead, workHead);
+      await verify(merged.mainHead, workHead, findings);
       continue;
     }
     await verify(merged.mainHead, workHead);
     return { mainHead: merged.mainHead, head: merged.head };
   }
+}
+
+// The port the harness made, checked (t435): the moved-code comparison is
+// made again after the harness, at the revisions it compared before the
+// merge — the build's head then (`task`), main's (`main`) and their merge
+// base, none of which the merge or the port changed — and each finding's
+// edit is required at its destination in `head`. A harness exit alone is
+// no evidence of the port, as it is none of a resolution: one that exits 0
+// without porting would otherwise submit, and a landing, which compares
+// nothing once main is merged, could not tell. What is required: the
+// destination file holds the moved block as the task's edit leaves it — the
+// block's base text with the task's lines in place of the lines it changed,
+// or between the lines it inserted among, read without blank lines and with
+// each line's leading and trailing whitespace ignored, as the comparison
+// reads text — and holds the block as main had it nowhere outside that, so
+// an edit that only removes lines is found ported only where the removed
+// lines are gone from the destination, and a copy the builder left beside
+// its port is found too. A file the task deleted leaves an empty edit, so
+// its block is required gone from the destination; a destination the
+// builder deleted holds nothing. The task's lines are read at the task's
+// path of the source file, the same file where main renamed it. `git` is
+// the runner's, bound to the workspace. Answers the findings whose edit is
+// not at its destination, each with why.
+export async function unportedEdits(git, { task, main, head = "HEAD" }) {
+  const mergeBase = await git(["merge-base", task, main]);
+  const report = await detectMovedEditsAsync((args) => git(args, { raw: true, env: DETECTOR_ENV }), { task, main, mergeBase });
+  if (!report.findings.length) return [];
+  const taskPaths = new Map(parseRawZ(await git(["diff-tree", "-r", "-z", "--no-commit-id", `--find-renames=${RENAME_THRESHOLD}`, mergeBase, task], { raw: true }))
+    .map((e) => [e.from ?? e.path, e.status === "D" ? null : e.path]));
+  const lines = (text) => { const l = text.split("\n"); if (l.at(-1) === "") l.pop(); return l; };
+  const read = async (rev, path) => {
+    const r = await git(["cat-file", "blob", `${rev}:${path}`], { raw: true, allowFail: true });
+    return r.status === 0 ? lines(r.stdout ?? "") : null;
+  };
+  // Lines `from` to `to`, 1-indexed and inclusive; none where from > to.
+  const slice = (l, from, to) => l.slice(Math.max(from, 1) - 1, Math.max(to, 0));
+  const text = (l) => l.map(normalize).filter(Boolean);
+  const starts = (haystack, needle) => {
+    const found = [];
+    for (let i = 0; i + needle.length <= haystack.length; i++) if (needle.every((line, k) => haystack[i + k] === line)) found.push(i);
+    return found;
+  };
+  const unported = [];
+  for (const f of report.findings) {
+    const { source, destination, edit } = f;
+    const base = await read(mergeBase, source.path) ?? [];
+    const taskPath = taskPaths.get(source.path);
+    const taskLines = taskPath && edit.taskEnd >= edit.taskStart ? slice(await read(task, taskPath) ?? [], edit.taskStart, edit.taskEnd) : [];
+    const original = text(slice(base, source.start, source.end));
+    const expected = edit.kind === "change"
+      ? text([...slice(base, source.start, Math.min(edit.start - 1, source.end)), ...taskLines, ...slice(base, Math.max(edit.end + 1, source.start), source.end)])
+      : text([...slice(base, source.start, edit.start), ...taskLines, ...slice(base, edit.start + 1, source.end)]);
+    const dest = text(await read(head, destination.path) ?? []);
+    const ported = expected.length ? starts(dest, expected) : [];
+    if (expected.length && !ported.length) { unported.push({ finding: f, why: `${showPath(destination.path)} at the build's head does not hold the moved code with the task's edit made` }); continue; }
+    const stale = starts(dest, original).filter((j) => !ported.some((i) => i <= j && j + original.length <= i + expected.length));
+    if (stale.length) unported.push({ finding: f, why: `${showPath(destination.path)} at the build's head still holds the moved code as main had it${expected.length ? ", beside the port" : ", without the task's edit"}` });
+  }
+  return unported;
 }
 
 // Each secret cut from a text, longest first, as the CLI's redact does.
