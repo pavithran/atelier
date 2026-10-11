@@ -61,7 +61,7 @@ test("pure output keeps the brief and gate wording", () => {
 // `forkBranch` is the branch the fork's HEAD names, and `branch.claim` the
 // one the claim route gives; the test may change it between claims. The
 // push route reports the fork's HEAD, as headOf reads it in Artifacts.
-async function fixture(t, { failed = false, dirtyWorkspace = false, blockers = [], failStep, sandbox = false, forkBranch = "main", claimBranch = forkBranch } = {}) {
+async function fixture(t, { failed = false, dirtyWorkspace = false, blockers = [], failStep, sandbox = false, forkBranch = "main", claimBranch = forkBranch, prepare = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), "atelier-agent-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, "cache", "work", "proj", "t1");
@@ -83,7 +83,8 @@ async function fixture(t, { failed = false, dirtyWorkspace = false, blockers = [
     if (req.method === "POST") posts.push({ path, body: JSON.parse(raw) });
     if (req.method === "POST" && path.endsWith("/submit")) item.state = "submitted";
     let data = { item, gate, policy: { checks: [command], sandboxOnly: sandbox } };
-    if (path.endsWith("/claim")) data = { item, workspace: { token: "fake", remote, defaultBranch: branch.claim, expiresAt: "tomorrow" } };
+    if (path === "/api/projects/proj") data = { project: { policy: { prepare } } };
+    if (path.endsWith("/claim")) data = { item, workspace: { token: "fake", remote, defaultBranch: branch.claim, expiresAt: "tomorrow" }, commitIdentity: { name: "Test Owner", email: "owner@example.test", agentEmails: [] } };
     if (path.endsWith("/push")) data = { ...item, head: git(remote, "rev-parse", "HEAD") };
     if (path.endsWith("/read-token") || path.endsWith("/baseline-token") || path.endsWith("/base-token")) data = { remote, token: "fake", head, defaultBranch: "main" };
     if (path.endsWith("/brief")) data = brief;
@@ -351,4 +352,16 @@ test("the task an agent starts and the brief it reads carry the owner's framing,
   const text = formatBrief("proj", "t1", { ...brief, ...framed, summary: null }, "https://atelier.test");
   assert.deepEqual(text.split("\n").slice(1, 5), [brief.decided, "Non-goals: no CSS changes; no routes", "Stop when: a check fails twice", "Next gate: design review"]);
   assert.ok(!text.includes("\x1b"));
+});
+
+test("manual claim prints the preparation command and directory without executing it", async (t) => {
+  const prepare = { command: "printf prepared > prepared.txt && printf ready", inputs: ["package.json"], outputs: ["prepared.txt"] };
+  const f = await fixture(t, { prepare });
+  const result = await f.run(["claim", "t1", "--as", actor]);
+  assert.equal(result.status, 0, result.output);
+  assert.ok(result.output.includes(`Preparation (run in ${JSON.stringify(f.workspace)}): ${prepare.command}`));
+  assert.equal(git(f.workspace, "status", "--porcelain"), "");
+  assert.deepEqual(JSON.parse(git(f.workspace, "config", "atelier.prepare")), prepare);
+  assert.equal(git(f.workspace, "config", "user.name"), "Test Owner");
+  assert.equal(git(f.workspace, "config", "user.email"), "owner@example.test");
 });
