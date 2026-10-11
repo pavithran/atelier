@@ -35,7 +35,7 @@ import { DEFAULT_OWNER, type ChangeClass, type Item } from "../rules.ts";
 import type { LargeRef } from "../large.ts";
 import { DIFF_INLINE_MAX, TEXT_CONTROLS } from "../text.ts";
 import { DECISIONS_HEADING, DECISIONS_RULE, NO_DECISIONS, decisionLines, type Decision } from "../decisions.ts";
-import { findingKey, ownerVerdicts, refutedRejection, type OwnerVerdict, type ReviewRecord, type ReviewRequired } from "./needed.ts";
+import { ownerVerdicts, refutedRejection, verdictOn, type OwnerVerdict, type ReviewRecord, type ReviewRequired } from "./needed.ts";
 import { DEFAULT_REVIEW_BAR, replyFormat } from "./verdict.ts";
 
 // An estimate of 10,000 tokens of diff, at about four characters a token, so
@@ -430,7 +430,7 @@ function earlier(previous: readonly ReviewRecord[], head: string, owner: string,
     ];
     lines.push(body.length ? block(body.join("\n")) : "No note and no findings.");
     const answered = findings.flatMap((f, i) => {
-      const v = verdicts.get(findingKey(r.head, r.by, i + 1, f));
+      const v = verdictOn(verdicts, r, i + 1, f);
       return v ? [`- finding ${i + 1}: ${inline(v.verdict)}${v.note.trim() ? `, noting ${code(v.note.trim())}` : ""}`] : [];
     });
     if (answered.length) lines.push("The project owner's verdicts on these findings:", ...answered);
