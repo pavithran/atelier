@@ -18,6 +18,7 @@ for `land.sh` and `queue.sh` (default `atelier`).
 | `land.sh TASK CONTEXT NOTE` | Pushes, checks, submits and reviews the head it read before the review; records the verdict with the reviewer's own summary and its findings either way, and on approval accepts at that head with NOTE on the acceptance and merges, then type-checks main. `REVIEW_MODEL` is `gemini-3.1-pro-high` (recorded as `antigravity/gemini-3.1-pro`) or `gpt-oss-120b-medium` (`antigravity/gpt-oss-120b`); any other is refused. |
 | `verdict.mjs ANSWERFILE` | Reads a reviewer's answer with Atelier's own parser (`src/review/verdict.ts`) and prints the verdict and findings as JSON; `land.sh` records them. |
 | `regen-fixtures.sh` | Rewrites the CLI's help fixtures from the CLI in the current directory. |
+| `land-queue.sh [TASK:H/M ...]` | Lands queued tasks one after another with `atelier land --workflow --wait --reviewer`, each once the five-minute load average is under `LAND_QUEUE_LOAD` (25), printing one `LANDQ tN: OUTCOME` line per landing for a watcher. Run it once in the background from the project's checkout; add a task with `land-queue.sh --add tN:harness/model`, which takes the queue's lock (a bare append to the queue file is not safe). `docs/orchestrating.md`, "The loop with runners", says how its outcomes are handled. It is a workaround until the server keeps a queue of landings itself (t460). |
 
 `atelier land` (task t187) does what `queue.sh` and `land.sh` do inside
 Atelier, under a lease on the server; use it where the server's version
@@ -25,12 +26,19 @@ check allows (task t190).
 
 ## Setting up the agents
 
+A runner needs none of what follows: the harness adapters ship in
+`bin/harness/`, and `atelier runner setup` writes the runner config and the
+opencode provider configs, reading keys from the credential store at run
+time (docs/runners.md, "Setting up a runner"). `run-agent.sh` and
+`review.sh`, for a session without a runner, still use the wrappers below.
+
 Each opencode agent runs through a small wrapper in `~/.local/bin` that reads
 its key from `~/.config/api-keys/NAME.key` into its own process and points
 opencode at a config that names the key's variable, never the key:
 
 ```sh
 #!/bin/sh
+CF_AIG_TOKEN="$(tr -d '\n' < "$HOME/.config/api-keys/gateway.key")" \
 DEEPSEEK_API_KEY="$(tr -d '\n' < "$HOME/.config/api-keys/deepseek.key")" \
 OPENCODE_CONFIG="$HOME/.config/opencode/deepseek-api.json" \
 exec opencode "$@"
@@ -45,14 +53,32 @@ exec opencode "$@"
 Each config uses `"npm": "@ai-sdk/openai-compatible"` with
 `"apiKey": "{env:VARIABLE}"`, and disables every MCP server so an agent sees
 only its workspace. The DeepSeek and OpenRouter configs give their providers
-the gateway's base URL and two headers: `cf-aig-authorization`
-(`Bearer {env:CF_AIG_TOKEN}`, a Cloudflare API token with AI Gateway · Run),
-read from the environment opencode runs in, and `cf-aig-metadata`
-(`{env:CF_AIG_METADATA}`), which the home runner sets per run — task, role,
-runner — and `run-agent.sh` sets from the brief's task line, so the gateway's
-figures count calls per task (docs/models-and-usage.md, "AI Gateway costs").
-The provider's own key still goes in its own header; the gateway passes it
-through and logs the call.
+the gateway's base URL and two headers:
+
+```json
+{
+  "provider": {
+    "deepseek-api": {
+      "options": {
+        "baseURL": "https://gateway.ai.cloudflare.com/v1/ACCOUNT/atelier/deepseek",
+        "headers": {
+          "cf-aig-authorization": "Bearer {env:CF_AIG_TOKEN}",
+          "cf-aig-metadata": "{env:CF_AIG_METADATA}"
+        }
+      }
+    }
+  }
+}
+```
+
+The gateway token (a Cloudflare API token with AI Gateway · Run) is read from
+the environment opencode runs in (`{env:CF_AIG_TOKEN}`) and never written into
+the config, so the file can be shared and the token is not leaked. The
+`cf-aig-metadata` header (`{env:CF_AIG_METADATA}`) is set by the home runner
+per run — task, role, runner — and `run-agent.sh` sets it from the brief's task
+line, so the gateway's figures count calls per task (docs/models-and-usage.md,
+"AI Gateway costs"). The provider's own key still goes in its own header; the
+gateway passes it through and logs the call.
 
 Reviews run through Antigravity's CLI, `agy`, signed in to a Google account
 with Gemini access; its models include `gemini-3.1-pro-high` and
@@ -380,3 +406,31 @@ access can end the run silently: every brief says so, and puts what the
 agent needs inside the workspace under `.scratch/`. The reviewer in
 `review.sh` may run commands only inside its throwaway clone, with its
 terminal sandboxed. No script pushes a project's own remotes or deploys.
+
+## Between landings
+
+`land-queue.sh` runs `post-merge.sh TASK` synchronously after the CLI reports
+that a task landed through the landing Workflow. This step requires clean
+`main`, pulls, runs `npm run typecheck` and `npm test`,
+deploys (owner decision d6), and publishes to `public`. Set `NOREPLY` to the
+recorded public no-reply address. It checks author and committer separately
+and audits every outgoing commit, including paths removed in later commits.
+
+The first run stops for human inspection of the files in
+`$(git rev-parse --git-path public-audit)`. Read all outgoing history and
+binary assets, clear every private detail, then set
+`PUBLIC_AUDIT_HEAD` to the inspected `git rev-parse HEAD` and restart the
+queue. This acknowledgement cannot bypass private paths or bad identities.
+A main change invalidates it. `POST_MERGE_SMOKE` can name an executable
+called with `before` and `after` around deployment; use it for declared
+remote smoke checks and verification the orchestrator owes after deploy.
+
+Any error leaves `PROJECT.queue.post-merge` beside the queue, prints
+`post-merge blocked`, and exits without taking another task. Read
+`TASK.post-merge.log`, fix the cause and restart: the pending step retries
+before the queue advances. Do not delete the marker. A successful run prints
+`post-merge complete`. `LAND_QUEUE_POST_MERGE` may name another executable
+receiving TASK, but its zero status must certify checks, required deployment,
+verification and publication all completed; any failure must return nonzero.
+The default step repeats checks/deploy on retry. Run only one queue process.
+Open task **t460**, a merge queue that tests ahead in parallel and lands in batches, replaces this workaround (it superseded t432, abandoned).

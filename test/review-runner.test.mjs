@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { setImmediate as tick } from "node:timers/promises";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -6,6 +7,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runReview, runRunner, commandFor, execute } from "../cli/runner.mjs";
 import { BRIEF_LIMITS } from "../src/review/brief.ts";
+import { VERDICT_LIMITS } from "../src/review/verdict.ts";
+
+// Pin the load under the runner's limit so these tests are not held back by
+// this machine's real load; the gate is tested with an injected load.
+process.env.ATELIER_LOAD = "0";
 
 // The review job (docs/orchestrator.md, section 4, build step 10) driven
 // through the same stand-in io the other runner tests use: the server answers
@@ -120,11 +126,12 @@ test("runReview posts a rejection with its findings, and releases the request wh
   assert.ok(posted.includes("--findings"));
   assert.ok(posted.includes(JSON.stringify([{ file: "src/review/needed.ts", line: 88, severity: "blocking", text: "A lapsed claim is never retried." }])));
 
-  // A harness that writes no valid verdict releases the request.
+  // A harness that writes no valid verdict keeps the reply on the task (t407)
+  // and releases the request.
   const blank = fixture({ verdict: "Looks good, ship it." });
   const blankState = await runReview(assignment, config, "home:studio", blank.io);
   assert.equal(blankState.phase, "failed");
-  assert.ok(blank.calls.some((c) => c.argv && c.argv[0] === "review-release"));
+  assert.ok(blank.calls.some((c) => c.argv && c.argv[0] === "review-unparsable"), "the reply is kept on the task");
 });
 
 // t325: the claim's part carries acceptance criteria, so the reply must prove
@@ -135,8 +142,8 @@ test("runReview releases the request when an approval proves no acceptance crite
   const state = await runReview(assignment, config, "home:studio", bare.io);
   assert.equal(state.phase, "failed");
   assert.match(state.reason, /an approval needs a CRITERION line for each of the 1 acceptance criteria: criterion 1 has none/);
-  const release = bare.calls.find((c) => c.argv && c.argv[0] === "review-release").argv;
-  assert.ok(release.some((a) => a.includes("criterion 1 has none")), release.join(" "));
+  const unparsable = bare.calls.find((c) => c.argv && c.argv[0] === "review-unparsable").argv;
+  assert.ok(unparsable.some((a) => a.includes("criterion 1 has none")), unparsable.join(" "));
   assert.ok(!bare.calls.some((c) => c.argv && c.argv[0] === "review"), "no review is posted");
 
   // A task with no criteria and no plan is approved without CRITERION lines,
@@ -153,6 +160,57 @@ test("runReview releases the request when the harness fails or times out", async
     assert.equal(state.phase, "failed");
     assert.ok(calls.some((c) => c.argv && c.argv[0] === "review-release"), JSON.stringify(options));
   }
+});
+
+// t407: a reply with no verdict is kept on the task, its last 100 KB with the
+// reviewer and the head it judged, as the request is released for another
+// reviewer. Before this the reply was discarded and the only evidence was the
+// runner's log.
+test("runReview keeps an unparsable reply on the task and releases the request", async () => {
+  const noVerdict = "I read the change.\nIt works as far as I can tell; nothing to add.";
+  const { io, calls, logs } = fixture({ verdict: noVerdict });
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.phase, "failed");
+  assert.match(state.reason, /the reply states no verdict: it has no VERDICT line and no JSON verdict/);
+  const kept = calls.find((c) => c.argv && c.argv[0] === "review-unparsable");
+  assert.ok(kept, "the unparsable reply is posted");
+  const argv = kept.argv;
+  assert.equal(argv[argv.indexOf("--head") + 1], H1);
+  assert.equal(argv[argv.indexOf("--as") + 1], assignment.actor);
+  assert.match(argv[argv.indexOf("--note") + 1], /the reply states no verdict/);
+  // The reply itself travels as a file the CLI reads, never as an argument.
+  const written = calls.filter((c) => c.brief).find((c) => c.brief === noVerdict);
+  assert.ok(written, "the reply is written to a file whole");
+  assert.equal(argv[argv.indexOf("--reply-file") + 1], "/cache/work/atelier/brief.txt", "the CLI is pointed at the file the runner wrote");
+  assert.ok(!argv.some((a) => a === noVerdict), "the reply text is never an argument");
+  assert.ok(!calls.some((c) => c.argv && c.argv[0] === "review"), "no review is posted");
+  assert.ok(calls.some((c) => c.removed === written.file), "the reply file is removed after the call");
+  assert.ok(logs.some((l) => l.includes("review released")), logs.join("\n"));
+  assert.ok(kept.token === FAKE_TOKEN, "the reply is kept with the reviewer's own token");
+
+  // A reply longer than the 100 KB a verdict needs is kept as its last 100 KB.
+  const long = `${"a line of a reply that never reaches a verdict\n".repeat(3400)}the tail that matters`;
+  assert.ok(long.length > VERDICT_LIMITS.reply, `${long.length} characters`);
+  const longRun = fixture({ verdict: long });
+  const longState = await runReview(assignment, config, "home:studio", longRun.io);
+  assert.match(longState.reason, /over the 100000 a verdict needs/);
+  const tail = longRun.calls.filter((c) => c.brief).find((c) => c.brief.endsWith("the tail that matters"));
+  assert.ok(tail, "the kept reply is the reply's end");
+  assert.equal(tail.brief.length, VERDICT_LIMITS.reply, "exactly the last 100 KB");
+
+  // When the task cannot take the reply, the request is released as before
+  // and the run still fails with the parse's reason.
+  const refused = fixture({ verdict: noVerdict });
+  const cli = refused.io.cli;
+  refused.io.cli = async (argv, cwd, options) => {
+    if (argv[0] === "review-unparsable") throw new Error("server refused");
+    return cli(argv, cwd, options);
+  };
+  const failed = await runReview(assignment, config, "home:studio", refused.io);
+  assert.equal(failed.phase, "failed");
+  assert.match(failed.reason, /the reply states no verdict/);
+  assert.ok(refused.calls.some((c) => c.argv && c.argv[0] === "review-release"), "the request is still released");
+  assert.ok(refused.logs.some((l) => l.includes("could not keep the unparsable reply")), refused.logs.join("\n"));
 });
 
 test("runReview carries a diff too large for the brief by its R2 reference, not inline (t284)", async () => {
@@ -202,7 +260,7 @@ test("runReview releases the request when the harness wrote no verdict file at a
   io.readVerdict = () => { throw Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" }); };
   const state = await runReview(assignment, config, "home:studio", io);
   assert.equal(state.phase, "failed");
-  assert.ok(calls.some((c) => c.argv && c.argv[0] === "review-release"), "the request is released");
+  assert.ok(calls.some((c) => c.argv && c.argv[0] === "review-unparsable"), "the empty reply is kept on the task and the request released");
 });
 
 test("runReview clones into a folder of its own, never the builder's workspace, and removes it and the verdict file", async () => {
@@ -270,6 +328,8 @@ test("runReview gives an opencode reviewer its own data folder for the length of
     const home = calls.find((c) => c.dataHome);
     assert.ok(home, "a data folder is made");
     assert.equal(harness.env.XDG_DATA_HOME, `${home.dataHome}-opencode-data`);
+    assert.equal(harness.env.ATELIER_TEST_PRIORITY, "review");
+    assert.equal(harness.env.ATELIER_TEST_TASK, "t21");
     assert.equal(harness.env.CF_AIG_METADATA, '{"task":"t21","role":"review","runner":"home:studio"}');
     assert.ok(calls.indexOf(home) < calls.indexOf(harness));
     assert.ok(calls.findIndex((c) => c.removedDataHome === harness.env.XDG_DATA_HOME) > calls.indexOf(harness), "the folder is removed after the harness");
@@ -291,7 +351,7 @@ test("the runner serves a review job before the builds the queue lists first", a
   const args = runnerConfig(t, ["build", "review"]);
   const { io, calls } = fixture();
   const build = { ...assignment, item: { id: "t20", title: "Build" } };
-  await runRunner(args, { workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, queue: async () => [build, assignment] });
+  await runRunner(args, { workspacePath: io.workspacePath, taskIO: io, wait: () => tick(), queue: async () => [build, assignment] });
   assert.deepEqual(calls.filter((c) => c.argv).map((c) => c.argv[0]).slice(0, 1), ["review-claim"]);
   assert.ok(!calls.some((c) => c.argv?.[0] === "claim"), "the build waits for the next poll");
 });
@@ -310,7 +370,7 @@ test("a reviews-only runner passes builds by and serves the review", async (t) =
   ];
   const offers = [];
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
     queue: async (offer) => { offers.push(offer.jobs); return [...builds, assignment]; },
   });
   assert.deepEqual(offers, [["review"]], "the offer names reviews alone");
@@ -319,12 +379,15 @@ test("a reviews-only runner passes builds by and serves the review", async (t) =
 
 // t252: with only builds offered, a reviews-only runner claims nothing and
 // keeps polling, and the builds stay in the queue for a runner that takes them.
-test("a reviews-only runner claims nothing when the queue offers only builds", async (t) => {
+// The stand-in wait yields to the timers (tick), so should the stop never
+// come the test's timeout still fires, where a wait that resolved at once
+// left the poll loop spinning a core for a day (t419).
+test("a reviews-only runner claims nothing when the queue offers only builds", { timeout: 10_000 }, async (t) => {
   const args = { ...runnerConfig(t), once: undefined };
   const { io, calls } = fixture();
   let polls = 0;
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
     queue: async () => {
       if (++polls === 2) process.emit("SIGINT");
       return [{ ...assignment, item: { id: "t20", title: "Build" } }];
@@ -342,16 +405,185 @@ test("a review run that timed out is reported with the review role", async (t) =
   const previous = process.exitCode;
   t.after(() => { process.exitCode = previous; });
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, queue: async () => [assignment],
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(), queue: async () => [assignment],
     async reportRun(body) { reports.push(body); },
   });
   assert.deepEqual(reports.map((r) => [r.role, r.outcome]), [["review", "timed-out"]]);
 });
 
+// t353: a review this runner fails twice is skipped for this process, and the
+// skip is reported to the server; a new review request (a new head and request
+// number) is served again, so an earlier landing's failures never strand the
+// next landing's review.
+test("a review that fails twice is reported as skipped, and a new head is served again", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { io, calls } = fixture({ code: 1 });
+  const reports = [];
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const first = { ...assignment, item: { ...assignment.item, head: "a".repeat(40), request: 1, dispatch: { job: "review" } } };
+  const second = { ...assignment, item: { ...assignment.item, head: "b".repeat(40), request: 2, dispatch: { job: "review" } } };
+  let polls = 0;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async reportReviewSkip(body) { reports.push(body); },
+    async queue() {
+      polls++;
+      if (polls === 1 || polls === 2) return [first];
+      if (polls === 3) return [second];
+      process.emit("SIGINT");
+      return [];
+    },
+  });
+  // The skip is reported once, for the first request's head and number, so
+  // the landing counts it against that request alone.
+  assert.equal(reports.length, 1, JSON.stringify(reports));
+  assert.equal(reports[0].item, "t21");
+  assert.equal(reports[0].head, "a".repeat(40));
+  assert.equal(reports[0].request, 1);
+  // The second request is served after the first was skipped: two claims for
+  // the first, one for the second.
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 3);
+});
+
+// t353: a skip report that fails is not dropped. The capped review is no
+// longer taken, so the report must be tried again on its own, each poll,
+// until the server has it; otherwise the landing waiting on the review never
+// hears the skip and waits out the hour.
+test("a review skip report that fails is tried again each poll until the server has it, while the capped review is no longer taken", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { io, calls, logs } = fixture({ code: 1 });
+  const attempts = [], persisted = [];
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const task = { ...assignment, item: { ...assignment.item, head: "a".repeat(40), request: 1, dispatch: { job: "review" } } };
+  let polls = 0;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async reportReviewSkip(body) {
+      attempts.push(body);
+      // The first report meets a transient server failure; the next lands.
+      if (attempts.length === 1) throw new Error("503");
+      persisted.push(body);
+    },
+    async queue() {
+      polls++;
+      // The request stays open in the queue, as it would while no runner serves it.
+      if (polls <= 5) return [task];
+      process.emit("SIGINT");
+      return [];
+    },
+  });
+  // Two runs reach the cap; the review is not taken again after that.
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 2);
+  // The failed report is tried again on the next poll and lands once; a
+  // report that landed is not sent again on the polls after it.
+  assert.equal(attempts.length, 2, JSON.stringify(attempts));
+  assert.equal(persisted.length, 1, JSON.stringify(persisted));
+  assert.deepEqual(persisted[0], { project: "atelier", item: "t21", head: "a".repeat(40), request: 1, actor: assignment.actor, note: attempts[0].note });
+  assert.ok(logs.some((l) => /could not report the review skip for atelier\/t21.*503.*again next poll/.test(l)), logs.join("\n"));
+  assert.ok(logs.some((l) => /^reported the review skip for atelier\/t21/.test(l)), logs.join("\n"));
+});
+
+// t353: a 408 (the server timed the request out) or a 429 (it was busy) is as
+// temporary as a 5xx, not a refusal: the report is kept and lands on a later
+// poll, so a busy moment never strands the landing for the hour.
+for (const status of ["408", "429 slow down"]) {
+  test(`a review skip report that meets a ${status.slice(0, 3)} is tried again and lands, not dropped`, async (t) => {
+    const args = { ...runnerConfig(t), once: undefined };
+    const { io, calls, logs } = fixture({ code: 1 });
+    const attempts = [], persisted = [];
+    const previous = process.exitCode;
+    t.after(() => { process.exitCode = previous; });
+    const task = { ...assignment, item: { ...assignment.item, head: "a".repeat(40), request: 1, dispatch: { job: "review" } } };
+    let polls = 0;
+    await runRunner(args, {
+      workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+      async reportReviewSkip(body) {
+        attempts.push(body);
+        if (attempts.length === 1) throw new Error(status);
+        persisted.push(body);
+      },
+      async queue() {
+        polls++;
+        if (polls <= 5) return [task];
+        process.emit("SIGINT");
+        return [];
+      },
+    });
+    assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 2);
+    assert.equal(attempts.length, 2, JSON.stringify(attempts));
+    assert.equal(persisted.length, 1, JSON.stringify(persisted));
+    assert.equal(persisted[0].request, 1);
+    assert.ok(logs.some((l) => new RegExp(`could not report the review skip for atelier/t21: ${status}; trying again next poll`).test(l)), logs.join("\n"));
+    assert.ok(logs.some((l) => /^reported the review skip for atelier\/t21/.test(l)), logs.join("\n"));
+  });
+}
+
+// t353: a report that keeps failing is retried with the queue backoff, in
+// polls — the next poll, then two, four and eight polls on, at most ten (five
+// minutes) — not every poll, so a server that is down or busy is not asked
+// every 30 seconds for as long as the runner lives.
+test("a review skip report that keeps failing backs off in polls, and lands when the server answers", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { io, logs } = fixture({ code: 1 });
+  const attemptPolls = [], persisted = [];
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const task = { ...assignment, item: { ...assignment.item, head: "a".repeat(40), request: 1, dispatch: { job: "review" } } };
+  let polls = 0;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async reportReviewSkip(body) {
+      attemptPolls.push(polls);
+      // 429, 503, 408, a dropped connection, then the server answers.
+      if (attemptPolls.length <= 4) throw new Error(["429", "503", "408", "fetch failed"][attemptPolls.length - 1]);
+      persisted.push(body);
+    },
+    async queue() {
+      polls++;
+      if (polls <= 20) return [task];
+      process.emit("SIGINT");
+      return [];
+    },
+  });
+  // The cap is reached on poll 2 and the first report fails there; the retries
+  // come 1, 2, 4 and 8 polls after each failure, and the fifth lands.
+  assert.deepEqual(attemptPolls, [2, 3, 5, 9, 17]);
+  assert.equal(persisted.length, 1, JSON.stringify(persisted));
+  assert.ok(logs.some((l) => /could not report the review skip for atelier\/t21: 503; trying again in 2 polls$/.test(l)), logs.join("\n"));
+  assert.ok(logs.some((l) => /could not report the review skip for atelier\/t21: 408; trying again in 4 polls$/.test(l)), logs.join("\n"));
+});
+
+// t353: a skip report the server refuses outright — a request it does not
+// have, a malformed head — would never land however often it is tried, so it
+// is said once and dropped rather than sent every poll.
+test("a review skip report the server refuses is dropped after the refusal, not tried every poll", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { io, logs } = fixture({ code: 1 });
+  const attempts = [];
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const task = { ...assignment, item: { ...assignment.item, head: "a".repeat(40), request: 1, dispatch: { job: "review" } } };
+  let polls = 0;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async reportReviewSkip(body) { attempts.push(body); throw new Error("404 no review request 1 of t21"); },
+    async queue() {
+      polls++;
+      if (polls <= 4) return [task];
+      process.emit("SIGINT");
+      return [];
+    },
+  });
+  assert.equal(attempts.length, 1, JSON.stringify(attempts));
+  assert.ok(logs.some((l) => /could not report the review skip for atelier\/t21: 404 no review request 1 of t21$/.test(l)), logs.join("\n"));
+});
+
 // t213: an interrupt during a review still gives the request back, with the
 // cleanup deadline a build's release gets, since the runner's own signal is
 // already aborted by then.
-test("an interrupted review releases the request through the real CLI helper", async (t) => {
+test("an interrupted review releases the request through the real CLI helper", { timeout: 10_000 }, async (t) => {
   const args = { ...runnerConfig(t), once: undefined };
   const { io } = fixture();
   const { cli, stopped, ...taskIO } = io;
@@ -361,7 +593,7 @@ test("an interrupted review releases the request through the real CLI helper", a
   // polls, and the assertion below fails instead of the poll loop spinning.
   let polls = 0;
   await runRunner(args, {
-    workspacePath: io.workspacePath, wait: async () => {}, queue: async () => { if (++polls > 3) process.emit("SIGINT"); return [assignment]; },
+    workspacePath: io.workspacePath, wait: () => tick(), queue: async () => { if (++polls > 3) process.emit("SIGINT"); return [assignment]; },
     taskIO: { ...taskIO, async harness() { process.emit("SIGINT"); return { code: 0 }; } },
     async executeChild(argv, options) {
       if (argv[2] === "review-claim") return { code: 0, output: JSON.stringify(claimed) };
@@ -400,7 +632,7 @@ async function serveReview(t, dir, claim) {
   t.after(() => { process.exitCode = previous; });
   const seen = {}, posted = [];
   await runRunner(args, {
-    workspacePath: () => join(dir, "t21"), wait: async () => {}, queue: async () => [task],
+    workspacePath: () => join(dir, "t21"), wait: () => tick(), queue: async () => [task],
     taskIO: { readSecret: () => FAKE_TOKEN },
     async executeChild(argv, options) {
       if (argv[0] === "git") return execute(argv, options);
