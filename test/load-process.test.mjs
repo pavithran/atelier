@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { slotStatus } from "../cli/load.mjs";
@@ -84,5 +84,48 @@ test("real nested wrappers reuse one slot and a failed spawn releases it", { tim
   assert.equal((await f.status()).active.length, 0);
   const signalled = f.run([process.execPath, "-e", "process.kill(process.pid, 'SIGTERM')"]);
   assert.equal((await signalled.finished).signal, "SIGTERM");
+  assert.equal((await f.status()).active.length, 0);
+});
+
+
+test("real wrapper CLI sets capacity, preserves launch tokens, drains and reports exit status", { timeout: 30000 }, async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = fixture(t);
+  // Isolate only the fixed database location; execute the actual CLI and its
+  // nonce-launch route, with no replacement of admission or process inspection.
+  const wrapper = join(realpathSync(f.root), "load.mjs");
+  writeFileSync(wrapper, readFileSync(new URL("../cli/load.mjs", import.meta.url), "utf8")
+    .replace('"/tmp/atelier-test-slots-v1.sqlite"', JSON.stringify(f.path)));
+  const cli = (args, slots = "invalid") => {
+    const env = { ...process.env, ATELIER_TEST_SLOTS: slots };
+    delete env.ATELIER_TEST_LEASE;
+    delete env.ATELIER_TOKEN;
+    const child = spawn(process.execPath, [wrapper, ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", (s) => stdout += s);
+    child.stderr.on("data", (s) => stderr += s);
+    t.after(() => child.kill("SIGKILL"));
+    return new Promise((resolve) => child.once("exit", (code) => resolve({ code, stdout, stderr })));
+  };
+  assert.equal((await cli(["--set", "2"])).code, 0);
+  const holds = [f.run([process.execPath, "-e", "setTimeout(() => {}, 20000)"]), f.run([process.execPath, "-e", "setTimeout(() => {}, 20000)"])];
+  await until(async () => (await f.status()).active.length === 2, "two commands did not start");
+  assert.equal((await cli(["--set", "1"])).code, 0);
+  const json = await cli(["--status", "--json"]);
+  assert.equal(json.code, 0);
+  const status = JSON.parse(json.stdout);
+  assert.equal(status.capacity, 1);
+  assert.equal(status.usage, 2);
+  assert.equal(status.draining, 1);
+  assert.deepEqual(new Set(status.active.map((e) => e.lease)), new Set(holds.map((e) => e.lease)));
+  assert.match((await cli(["--status"])).stdout, /draining excess: 1/);
+  for (const value of ["0", "-1", "1.5", "9007199254740992"]) assert.equal((await cli(["--set", value])).code, 1);
+  assert.equal((await cli(["--set", "2", "extra"])).code, 1);
+  for (const held of holds) held.kill("SIGTERM");
+  await Promise.all(holds.map((held) => held.finished));
+  const nested = await cli(["--", process.execPath, wrapper, "--", process.execPath, "-e", 'console.log(process.env.ATELIER_TEST_LEASE); process.exit(7)']);
+  assert.equal(nested.code, 7, nested.stderr);
+  assert.match(nested.stdout, /[a-f0-9-]{36}/);
+  assert.match(nested.stderr, /warning:.*invalid/);
   assert.equal((await f.status()).active.length, 0);
 });
