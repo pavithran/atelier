@@ -1049,8 +1049,7 @@ test("--dry-run prints the steps and the refusals without changing anything", as
   assert.match(r.output, /for up to 60 minutes/);
   // Reads only: the lease is read, never taken, and nothing that changes state was posted.
   assert.ok(f.box.requests.some((x) => x.method === "GET" && x.path.endsWith("/landing-lease")));
-  // (A read grant for the baseline is no change: the early review notice, t422, measures against it.)
-  assert.deepEqual(f.box.requests.filter((x) => x.method === "POST" && !x.path.endsWith("/base-token")), []);
+  assert.deepEqual(f.box.requests.filter((x) => x.method === "POST"), []);
   assert.equal(f.box.lease, null);
   assert.equal(git(f.workspace("t1"), "rev-parse", "HEAD"), before.workspace);
   assert.equal(f.forkHead("t1"), before.fork);
