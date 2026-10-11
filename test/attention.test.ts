@@ -105,7 +105,12 @@ test("a protected change no reviewer in the pool qualifies for waits on the owne
   assert.deepEqual(none.unknown, []);
   // A project that forbids overrides asks for a reviewer, never an override.
   const forbids = attentionFor("p", [t], [entry("p", "t1", "assess", "needs a review; this project forbids overrides", { reviewer: null })], [], NOW);
-  assert.match(forbids.owner[0].sentence, /forbids overrides: start a runner offering a reviewer of another family\.$/);
+  assert.match(forbids.owner[0].sentence, /forbids overrides: start a runner offering a reviewer of another family than every contributor, then land the task with that reviewer\.$/);
+  // The command is never the override such a project refuses (override_forbidden),
+  // but the landing with a qualifying reviewer; a project that allows overrides still gets the override.
+  assert.equal(forbids.owner[0].command, "atelier land t1 --reviewer H/M --project p");
+  assert.doesNotMatch(forbids.owner[0].command ?? "", /override/);
+  assert.equal(none.owner[0].command, "atelier accept t1 --override-review REASON --project p");
   // The pool not read: it stays in review, and the doubt is said.
   const unread = attentionFor("p", [t], assess({}), [], NOW);
   assert.deepEqual(pipeline(unread), [["t1", "submitted"]]);

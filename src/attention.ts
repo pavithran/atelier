@@ -139,11 +139,15 @@ export function placeTask(project: string, item: Item, notices: readonly InboxEn
   // reviewer that qualifies, so only the owner moves it. Undefined: the pool
   // was not read, and the task stays at its stage (attentionFor says so).
   const unreviewable = notices.find((x) => x.kind === "assess" && x.reviewer === null);
+  // A project that forbids overrides refuses the override itself
+  // (assertOverridesAllowed, override_forbidden), so it is never offered
+  // there: the way on is a qualifying reviewer, landed with atelier land.
   if (unreviewable) {
-    return own("override", /forbids overrides/.test(unreviewable.reason)
-      ? "No reviewer in the pool qualifies for this protected change, and the project forbids overrides: start a runner offering a reviewer of another family."
-      : "No reviewer in the pool qualifies for this protected change: start a runner offering one, or allow an override on the task page and accept with a reason.",
-    `atelier accept ${item.id} --override-review REASON${flag}`, unreviewable.reason);
+    return /forbids overrides/.test(unreviewable.reason)
+      ? own("override", "No reviewer in the pool qualifies for this protected change, and the project forbids overrides: start a runner offering a reviewer of another family than every contributor, then land the task with that reviewer.",
+        `atelier land ${item.id} --reviewer H/M${flag}`, unreviewable.reason)
+      : own("override", "No reviewer in the pool qualifies for this protected change: start a runner offering one, or allow an override on the task page and accept with a reason.",
+        `atelier accept ${item.id} --override-review REASON${flag}`, unreviewable.reason);
   }
   const stage = taskStage(item, { ready: !!ready });
   if (stage === "queued" && typeof noRunner === "string") {

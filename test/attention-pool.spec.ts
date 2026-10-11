@@ -69,3 +69,28 @@ it("a protected change with no qualifying reviewer waits on the owner in every v
   expect(await page("/home", cookie)).not.toMatch(row);
   expect(await page(`/p/${NAME}`, cookie)).not.toContain("waiting on you here");
 });
+
+// The portfolio inbox reads each project on its own (t504 review): a project
+// whose Ledger cannot be read is named as unread beside the healthy projects'
+// notices, and the bare list still answers with the healthy ones instead of
+// failing as a whole.
+it("one project whose Ledger cannot be read leaves the inbox answering with the others and naming it", async () => {
+  const healthy = "inbox-healthy", ghost = "inbox-ghost";
+  const record = { name: healthy, repo: healthy, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() };
+  await L(healthy).setProject(record, "owner");
+  await I().registerProject(record);
+  await L(healthy).newItem("Blocked work", ["src/**"], "owner");
+  await L(healthy).block("t1", "owner", "waiting on a decision");
+  // Registered in the index, but its Ledger was never initialised: reading it throws no_project.
+  await I().registerProject({ name: ghost, repo: ghost, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() });
+
+  const res = await api("/inbox?unread=1");
+  expect(res.status).toBe(200);
+  const read = (await res.json()) as { entries: { project: string; itemId: string; kind: string }[]; unread: string[] };
+  expect(read.unread).toEqual([ghost]);
+  expect(read.entries.filter((x) => x.project === healthy).map((x) => [x.itemId, x.kind])).toContainEqual(["t1", "blocked"]);
+  expect(read.entries.some((x) => x.project === ghost)).toBe(false);
+  const bare = await api("/inbox");
+  expect(bare.status).toBe(200);
+  expect(((await bare.json()) as { project: string }[]).some((x) => x.project === healthy)).toBe(true);
+});

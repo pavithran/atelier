@@ -93,7 +93,7 @@ async function fixture(t, { failed = false, dirtyWorkspace = false, blockers = [
     if (path.endsWith("/push")) data = { ...item, head: git(remote, "rev-parse", "HEAD") };
     if (path.endsWith("/read-token") || path.endsWith("/baseline-token") || path.endsWith("/base-token")) data = { remote, token: "fake", head, defaultBranch: "main" };
     if (path.endsWith("/brief")) data = brief;
-    if (path.endsWith("/inbox")) data = [{ project: "proj", itemId: "t1", title: item.title, kind: "accept", reason: "all checks observed passing at this head", weight: 100 }];
+    if (path.split("?")[0].endsWith("/inbox")) data = [{ project: "proj", itemId: "t1", title: item.title, kind: "accept", reason: "all checks observed passing at this head", weight: 100 }];
     if (path.endsWith("/sandbox")) data = { runId: "run" };
     if (path.endsWith("/sandbox/run")) data = { status: "done", recorded: true, request: { head }, results: [{ claim: command, passed: !failed, seconds: 1, outputTail: "check output" }] };
     const broken = failStep && path.endsWith(`/${failStep}`);
