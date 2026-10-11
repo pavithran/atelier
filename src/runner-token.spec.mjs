@@ -159,7 +159,10 @@ it.each(["revoke", "expire", "release", "reassign"])("direct Git credentials sto
     expect(options.headers.get("authorization")).toBe("Bearer upstream-secret");
     return new Response("0000", { headers: { "content-type": "application/x-git-receive-pack-result" } });
   });
-  expect((await t.request("POST", path, workspace.token, null, "0000")).status).toBe(200);
+  const pushed = await t.request("POST", path, workspace.token, null, "0000");
+  expect(pushed.status).toBe(200);
+  // The pack streams back (t528): the upstream token is revoked once the body is read.
+  expect(await pushed.text()).toBe("0000");
   expect(t.upstream.at(-1)).toHaveProperty("revoked");
   expect((await t.request("GET", "/config", workspace.token)).status).toBe(401);
   expect((await t.request("POST", path.replace("t1.git", "t2.git"), workspace.token, null, "0000")).status).toBe(403);
