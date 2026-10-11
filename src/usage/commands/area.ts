@@ -2,6 +2,8 @@ import type { CommandSpec } from "../command.ts";
 
 const spec: CommandSpec = {
   name: "area",
+  // The area routes (t456).
+  capabilities: ["areas.manage.v1"],
   forms: [
     { group: "Items", line: 4, slot: 10, form: "area list", about: "Lists stable area IDs, unique names and one-line purposes." },
     { group: "Items", line: 5, slot: 10, form: "area create NAME --purpose TEXT", about: "The project owner creates a function area with a unique name and a one-line purpose." },
