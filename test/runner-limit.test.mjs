@@ -73,6 +73,7 @@ function buildFixture(options = {}) {
   const calls = [], logs = [];
   let reads = 0;
   const io = {
+    identityRefusals() { return []; },
     log: (s) => logs.push(s), stopped: () => false, env: {}, ownerTokens: () => [], now: () => NOW,
     workspacePath: (project, id) => `/cache/work/${project}/${id}`,
     async cli(argv, cwd) { calls.push({ argv, cwd }); if (argv[0] === options.failCommand) throw new Error(`${argv[0]} refused`); },
@@ -155,6 +156,7 @@ const reviewJob = { project: "atelier", item: { id: "t21", head: H1, request: 7,
 test("a review that ends in a provider limit releases the request and posts no verdict", async () => {
   const calls = [], logs = [];
   const io = {
+    identityRefusals() { return []; },
     log: (s) => logs.push(s), stopped: () => false, env: {}, ownerTokens: () => [], readSecret: () => "atl_" + "f".repeat(64), now: () => NOW,
     workspacePath: (project, id) => `/cache/work/${project}/${id}`,
     async cli(argv) { calls.push({ argv }); return argv[0] === "review-claim" ? JSON.stringify(claimed) : "{}"; },
@@ -180,6 +182,7 @@ test("a plan job that ends in a provider limit is released, with no failure and 
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const calls = [], logs = [];
   const io = {
+    identityRefusals() { return []; },
     log: (s) => logs.push(s), stopped: () => false, env: {}, ownerTokens: () => [], now: () => NOW,
     workspacePath: () => { const dir = join(root, "t7"); mkdirSync(dir, { recursive: true }); return dir; },
     async cli(argv) { calls.push({ argv }); }, async reset() {},
@@ -252,6 +255,7 @@ function loop(t, { harnessFor, tasks, step = 10 * MIN, polls = 4, file, start = 
         return tasks(poll, clock, seen).filter((x) => offer.agents.some((a) => a.agent === x.agent && a.models.includes(x.model)));
       },
       taskIO: {
+        identityRefusals() { return []; },
         log: (s) => seen.logs.push(s), env: {}, ownerTokens: () => [],
         async cli(argv) { if (argv[0] === "release") seen.released.push(argv[1]); if (argv[0] === "finish") seen.finished.push(argv[1]); },
         async reset() {}, async head() { return seen.served.length % 2 ? "after" : "before"; },
