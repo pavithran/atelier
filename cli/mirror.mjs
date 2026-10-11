@@ -232,11 +232,6 @@ export function lfsPointer(text) {
   return oid !== null && size !== null ? { oid, size } : null;
 }
 
-// Whether a line a commit adds could belong to an LFS pointer: a pointer that
-// is new has its version line added; one that names a new object has its oid
-// line added. Only a path with such a line has its blob read as a pointer.
-const lfsLine = (text) => /^version https:\/\/(?:git-lfs|hawser)\.github\.com\/spec\/v1$/.test(text) || /^oid sha256:[0-9a-f]{64}$/.test(text);
-
 // Where the checkout keeps its LFS objects: lfs.storage when set (relative to
 // the git directory), else `lfs` in the common git directory, as git-lfs does.
 function lfsStorage(raw, dir) {
@@ -372,11 +367,16 @@ export function publishMirror({ git, dir, branch, remote, say }) {
       }
       // An LFS pointer publishes the object it names: that object is read
       // from the checkout's LFS storage and scanned, or the commit is refused.
-      if (blob.size > LFS_POINTER_BYTES || !file.added.some((a) => lfsLine(a.text))) continue;
+      // Every changed blob small enough to be a pointer is read whole and
+      // parsed as one, whatever lines the commit added to it: a file that
+      // held a version and an oid line but no size line was no pointer, and
+      // the commit that adds only its size line makes it one, so the lines
+      // the commit adds say nothing about whether the blob is a pointer now.
+      if (blob.size > LFS_POINTER_BYTES) continue;
       const shown = raw(["cat-file", "blob", blob.sha]);
       if (shown.status !== 0) { refusals.push(`${at}: unreadable (${firstLine(shown.stderr) || "git cat-file failed"})`); continue; }
       const pointer = lfsPointer(shown.stdout);
-      if (!pointer) continue; // a text file with a line shaped like a pointer's, not a pointer
+      if (!pointer) continue; // a text file, not a pointer
       storage ??= lfsStorage(raw, dir);
       const object = lfsObject(storage, pointer);
       if (!object.ok) { refusals.push(`${at}: ${object.why}`); continue; }
