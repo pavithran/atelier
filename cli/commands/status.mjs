@@ -2,7 +2,7 @@
 import { formatLocal, formatStatus, formatStatusBrief, statusJson } from "../status.mjs";
 import { formatStrays } from "../strays.mjs";
 import { formatSlots, slotStatus } from "../load.mjs";
-import { OWNER, OWNER_NAME, P, actor, args, call, checkoutStatus, die, formatStanding, landingLease, localStanding, localStrays, pointToGuide, project, registeredHere, request, server, tokenExpiryWarningsText, wsConfig } from "../atelier.mjs";
+import { OWNER, OWNER_NAME, P, actor, args, call, checkoutStatus, die, formatStanding, landingLease, localStanding, localStrays, liveHere, liveText, pointToGuide, project, registeredHere, request, server, tokenExpiryWarningsText, wsConfig } from "../atelier.mjs";
 
 // The owner's queue: decisions waiting, tasks in progress, tasks waiting for a runner.
 export default async function statusCommand() {
@@ -31,10 +31,11 @@ export default async function statusCommand() {
     const standing = await call("GET", `${P(name)}/standing`, undefined, as);
     const checkout = await checkoutStatus(name, as);
     const local = await localStanding(name, as);
+    const live = liveHere(name);
     const testSlots = await slotStatus();
     const strays = localStrays();
-    if (args.json) return console.log(JSON.stringify({ project: standing, checkout, testSlots, ...(local ? { local } : {}), ...(strays.length ? { strayTests: strays } : {}) }, null, 2));
-    console.log(tokenExpiryWarningsText(formatStanding(standing, OWNER_NAME, server()) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + "\n\n" + formatSlots(testSlots)));
+    if (args.json) return console.log(JSON.stringify({ project: standing, checkout, testSlots, processes: live, ...(local ? { local } : {}), ...(strays.length ? { strayTests: strays } : {}) }, null, 2));
+    console.log(tokenExpiryWarningsText(formatStanding(standing, OWNER_NAME, server()) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)));
     pointToGuide([name]);
     return;
   }
@@ -59,6 +60,7 @@ export default async function statusCommand() {
   if (args.json) return console.log(JSON.stringify(statusJson(views, server()), null, 2));
   const strays = formatStrays(localStrays());
   console.log(tokenExpiryWarningsText(formatStatus(views, { queue, offers, server: server() }) + (strays ? "\n\n" + strays : "")));
+  console.log(liveText(liveHere()));
   console.log(formatSlots(await slotStatus()));
   pointToGuide(chosen.map((p) => p.name));
 }

@@ -38,7 +38,11 @@ points at it and states the review path (it does not edit the file).
 - Never override a review, a check or a block, except on the owner's own
   confirmation. Ask, and cite the owner's words; never infer them.
 - Judge each review finding against the code before acting, and record every
-  verdict with `atelier finding`.
+  verdict with `atelier finding ... --as H/M`, naming yourself, as you name
+  yourself on `atelier decide`, `atelier decisions withdraw` and on an
+  override: the Models page measures your verdicts as it measures a
+  reviewer's. Without `--as` the record cannot tell you from the owner, and
+  the page counts the judgement as unknown.
 - File every task with its acceptance criteria, written before the build. A
   review judges the change against them, so a task without them gives the
   review nothing to bind to. Write with each criterion the edge cases it
@@ -104,10 +108,11 @@ the project's core files: the queue does not start two pieces of work whose
 scopes overlap in one. Name them with `atelier init --core GLOB`, once per
 glob (for Atelier: `cli/runner.mjs`, `src/ledger.ts`,
 `src/dispatch/rules.ts`, the files where a dozen tasks built at once left
-half the landings on merge conflicts). A dispatch whose scope overlaps a
-live item's (claimed, submitted or accepted) within a core file waits in the
-queue until that item merges or is abandoned; `atelier status` names the item
-it waits on, and `atelier dispatch ID --overlap-ok` lets it through when the
+half the landings on merge conflicts). A dispatch whose scope overlaps,
+within a core file, a claimed item's or that of the item a live landing
+lease names waits in the queue until each claimed blocker submits or is
+released and each landing ends; a submitted or accepted item that is not
+landing holds nothing. `atelier status` names every item it waits on, and `atelier dispatch ID --overlap-ok` lets it through when the
 overlap is known to be harmless. Parts of one plan never hold each other,
 since the plan orders overlapping parts already. Landing is the part that
 must not run in parallel.
@@ -122,7 +127,8 @@ is in Atelier, the repository and this handbook. Before dispatching anything:
 2. For each claimed task, look at its workspace: uncommitted changes, a
    `COMMIT_MSG.txt` an agent left, a merge in progress, or an agent's log in
    `.scratch/`. Check whether the agent's process still runs before starting
-   the same work again.
+   the same work again: `atelier status` ends with the runners and agent
+   processes live on this Mac, by task, with no command lines.
 3. Check that main type-checks and that the deployed server holds main's
    routes.
 4. Read the owner's standing decisions where the project keeps them, and
@@ -281,7 +287,17 @@ accepts and merges. Each step and how long it took are recorded on the
 task as `land.*` events, and a landing stopped partway is resumed by
 running the same command again, which takes its lease back. The same
 lease guards every merge, a plan's included (`POST items/tP/landing` in
-`cli/atelier.mjs`). `bin/orchestrate/queue.sh` and `land.sh` are the
+`cli/atelier.mjs`). To wait on a landing, a runner's build or an agent, use
+`atelier wait ID` (`cli/wait.mjs`), never a hand-written `pgrep` or `lsof`
+loop, which matches its own command line and cannot see a death:
+`--for merged` (the default) ends when the task merges, `--for submitted`
+when its agent submits, `--for reviewed` when a review is recorded at its
+head and current acceptance criteria, and `--for any-change` at the first
+change of state, head, owner or review count. It prints one line and exits 0 when reached, 1 when the task
+failed (abandoned, blocked, or rejected in review), 3 at `--timeout`, 4 when
+the task cannot be read. A task whose agent died stays claimed, so pair a
+long wait with `--timeout` and look at `atelier status` when it ends.
+`bin/orchestrate/queue.sh` and `land.sh` are the
 fallback for a session without a runner to serve the review. When the
 review waits because the runners are busy (one runner works one job at a
 time), the session can start a second runner (`atelier runner --name
@@ -302,6 +318,24 @@ server has the new behaviour too. Each such merge raises `ROUTE_LEVEL`
 before they start while the server's route level (`GET /api/version`) is
 older than the CLI's, naming both levels and saying to deploy. Deploy after
 such merges, before landing the next task or starting a runner.
+
+Since t458 they check named capabilities instead: each command declares what
+it needs in its module (`capabilities` in `src/usage/commands/NAME.ts`, or
+under one of its `subcommands`), each runner job in `JOB_CAPABILITIES`
+(`src/route-level.ts`), the server lists what it supports in `capabilities`
+beside `routeLevel`, and every command that declares some is refused before
+its first request while the server lacks one, naming the missing
+capabilities, the server's revision and the deploy to run; the runner
+refuses the same way before its first poll, for the jobs it offers. A change
+that adds API behaviour a command relies on declares a new capability on a
+line of its own under its family in `src/route-level.ts` and names it in
+that command's module, or in the job's row; a command that names one the
+file does not declare fails to load, naming the module. An incompatible
+change takes a new name (`…v2`). Keep raising `ROUTE_LEVEL` for now, as
+the migration in [Landing](landing.md) says, since servers that predate
+capabilities are read through it, and give the new declaration the level
+the raise reaches: the number gates nothing on its own, and
+`test/capabilities.test.mjs` fails a raise that declares no capability.
 
 **Keep the machine's load down.** Checks run the whole suite. A dozen agents
 and checks at once pushed the load average past 100 and made timing tests
@@ -432,12 +466,14 @@ with every task that landed before it. Within that, put first the tasks that
 another piece of work waits on. To reorder it, hold the lock while you edit the queue file:
 `mkdir "$ATELIER_CACHE/land-queue/atelier.queue.lock"`, edit, then `rmdir` it.
 
-Do not chain landings by having a shell wait on `pgrep -f "… tN"`: the
-waiting shell's own command line contains the pattern, so `pgrep` finds the
-waiter itself and it waits forever. On 10 October two landings sat for fifty
-minutes that way. If a wait on a process is unavoidable, write the pattern so
-it cannot match itself (`pgrep -f "land-queue.sh t40[5]"`). t408 replaces
-these waits with a command.
+Wait for a landing with `atelier wait tN --project atelier --for merged`.
+For a runner's build use `--for submitted`, for an agent's review use
+`--for reviewed`, and to observe the next task change use `--for any-change`.
+Add `--timeout 600` to bound the wait, including a stalled server read.
+The command prints the outcome and exits 0 when reached, 1 when the task
+fails, 3 on timeout, or 4 when it cannot read the task. Check that outcome
+before starting dependent work. A merge does not confirm deployment or
+publishing; check the landing queue's post-merge outcome separately.
 
 A failed post-merge step prints `LANDQ tN: post-merge blocked` and exits
 nonzero. Read `$ATELIER_CACHE/land-queue/atelier.queue.post-merge` for the
@@ -498,8 +534,8 @@ round; t435 has the runner merge main before submitting.
 ### Held dispatches
 
 Scope each task as narrowly as the change allows. A scope of `src/**`
-reaches every core file, so the task is held behind any live task in any of
-them: on 10 October twelve tasks filed with broad scopes all waited on one
+reaches every core file, so the task is held behind any claimed or landing task in
+any of them: on 10 October twelve tasks filed with broad scopes all waited on one
 task, while a second machine's runners sat idle.
 
 When runners sit idle, read `atelier queue` first: held dispatches are work
@@ -507,7 +543,8 @@ waiting on scope overlaps, not an empty backlog. If none are held, use
 `atelier status` to check runner eligibility and health.
 
 `atelier status` shows `Held: waits on tX … both scopes reach core file F`
-for a dispatch whose scope overlaps a live task's in a core file. Check that
+for a dispatch whose scope overlaps, in a core file, a claimed task's or the
+landing task's. Check that
 tX is really moving (its workspace's last commit, an agent process in it). If
 tX is stuck, fix tX first. If many tasks wait on one, release the few that
 matter most with `atelier dispatch tN --overlap-ok`, not all of them: tasks
@@ -648,6 +685,13 @@ owner it read as a defect. The other half were real, and some were serious.
   reviewers are right, and how often, is the most useful thing Atelier can
   measure about them. The next review brief shows each verdict and its note,
   so put the file and line that answer a refuted finding in the note.
+- Pass `--as H/M` with every verdict, naming the harness/model you are; it
+  must be a model in the pool. Your verdicts are measured too (task t440):
+  the Models page counts each upheld when another named model later agrees,
+  contradicted when a later verdict corrects it or a defect names it, and
+  unresolved otherwise. `atelier finding` prints the verdict's event number;
+  a defect that shows a refuted or fixed verdict wrong names it with
+  `atelier defect ID --note "…" --contradicts SEQ#N`.
 
 ## Keeping the record honest
 

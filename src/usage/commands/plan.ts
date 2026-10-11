@@ -11,7 +11,7 @@ const spec: CommandSpec = {
     {
       group: "Plans", line: 1, slot: 20,
       form: "plan show ID [--json]",
-      about: "Prints a plan: its phase, the newest proposal with its hash, or once approved each part with its state, dependencies, scope, routing and attempts, the live item outside the plan a queued part waits on while the project's core files hold it, any live review request naming the reviewer asked and whether a runner claimed it, and saying, when no live runner offers that reviewer for the review job, that the request can never be claimed until one does, with the reroute that names another, then the part dispatches used, why it is blocked, the main head the branch last took against main's head now with any refresh in flight or failed, and the command for each decision waiting on the owner. Before approval it shows the routing an approval would fix now, its reviewers judged against the live runner offers the same way. It accepts a part's id too.",
+      about: "Prints a plan: its phase, the newest proposal with its hash, or once approved each part with its state, dependencies, scope, routing and attempts, every claimed or landing item outside the plan a queued part waits on while the project's core files hold it and when each stops holding, any live review request naming the reviewer asked and whether a runner claimed it, and saying, when no live runner offers that reviewer for the review job, that the request can never be claimed until one does, with the reroute that names another, then the part dispatches used, why it is blocked, the main head the branch last took against main's head now with any refresh in flight or failed, and the command for each decision waiting on the owner. Before approval it shows the routing an approval would fix now, its reviewers judged against the live runner offers the same way. It accepts a part's id too.",
     },
     {
       group: "Plans", line: 2, slot: 10,
@@ -79,7 +79,9 @@ const spec: CommandSpec = {
     revise: { takes: ["note"] },
     reroute: { takes: ["to"] },
     retry: { takes: [] },
-    refresh: { takes: ["resolve", "to"] },
+    // refresh posts the plan refresh route; the other forms call routes
+    // every server has.
+    refresh: { takes: ["resolve", "to"], capabilities: ["plans.refresh.v1"] },
     stop: { takes: ["note"] },
     post: { takes: [] },
   },

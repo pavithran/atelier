@@ -51,8 +51,13 @@ export const MIN_MATCH_LINES = 3;
 export const MAX_BRIDGE = 2;
 
 // Git, run in the repository: answers the command's whole standard output
-// and throws when the command fails.
+// and throws when the command fails. A landing's git answers at once; a
+// runner's (t435) runs each command as a child and answers a promise, so
+// the comparison is written once, as the sequence of reads it makes
+// (`comparison`), and driven by either reader.
 export type GitRead = (args: string[]) => string;
+export type GitReadAsync = (args: string[]) => string | Promise<string>;
+type Steps<T> = Generator<string[], T, string>;
 
 export interface Span { path: string; start: number; end: number }
 // A task edit in base lines: `change` replaces lines start..end; `insert`
@@ -144,25 +149,42 @@ interface SourceFile { path: string; same: Set<string>; base: string[]; deleted:
 interface AddedRun { path: string; start: number; lines: string[] }
 
 // The comparison: the task's edits (merge base → task) against what main
-// moved (merge base → main).
+// moved (merge base → main), read through a synchronous git.
 export function detectMovedEdits(read: GitRead, revs: { task: string; main: string; mergeBase: string }): MovedReport {
+  const steps = comparison(revs);
+  let next = steps.next();
+  while (!next.done) next = steps.next(read(next.value));
+  return next.value;
+}
+
+// The same comparison through a git that answers a promise (a runner's).
+export async function detectMovedEditsAsync(read: GitReadAsync, revs: { task: string; main: string; mergeBase: string }): Promise<MovedReport> {
+  const steps = comparison(revs);
+  let next = steps.next();
+  while (!next.done) next = steps.next(await read(next.value));
+  return next.value;
+}
+
+// The comparison as the Git reads it makes, in order: each yield is one
+// command's arguments, and takes back its whole standard output.
+function* comparison(revs: { task: string; main: string; mergeBase: string }): Steps<MovedReport> {
   const report: MovedReport = { ...revs, findings: [], ambiguous: [] };
-  const blob = (id: string): string | null => { const text = read(["cat-file", "blob", id]); return text.includes("\0") ? null : text; };
-  const hunksOf = (a: string, b: string) => parseHunks(read([...DIFF, a, b]));
+  const blob = function* (id: string): Steps<string | null> { const text: string = yield ["cat-file", "blob", id]; return text.includes("\0") ? null : text; };
+  const hunksOf = function* (a: string, b: string): Steps<Hunk[] | null> { return parseHunks(yield [...DIFF, a, b]); };
 
   // What main removed, file by file, and what it added anywhere.
   const sources = new Map<string, SourceFile>();
   const added: AddedRun[] = [];
-  const mainEntries = parseRawZ(read([...LIST, revs.mergeBase, revs.main]));
+  const mainEntries = parseRawZ(yield [...LIST, revs.mergeBase, revs.main]);
   // The task's files first, so main's files are read only where the task edited.
-  const taskEntries = parseRawZ(read([...LIST, revs.mergeBase, revs.task]))
+  const taskEntries = parseRawZ(yield [...LIST, revs.mergeBase, revs.task])
     .filter((e) => ["M", "R", "D"].includes(e.status) && REGULAR.has(e.modes[0]) && (e.status === "D" || REGULAR.has(e.modes[1])));
   const taskPaths = new Set(taskEntries.map((e) => e.from ?? e.path));
   for (const e of mainEntries) {
     const regularA = REGULAR.has(e.modes[0]), regularB = REGULAR.has(e.modes[1]);
     if (e.status === "A") {
       if (!regularB) continue;
-      const text = blob(e.blobs[1]);
+      const text = yield* blob(e.blobs[1]);
       if (text !== null) added.push({ path: e.path, start: 1, lines: splitLines(text) });
       continue;
     }
@@ -171,17 +193,17 @@ export function detectMovedEdits(read: GitRead, revs: { task: string; main: stri
     const wanted = taskPaths.has(source);
     if (e.status === "D") {
       if (!wanted) continue;
-      const text = blob(e.blobs[0]);
+      const text = yield* blob(e.blobs[0]);
       if (text === null) continue;
       const base = splitLines(text);
       sources.set(source, { path: source, same: new Set([source]), base, deleted: new Set(base.map((_, i) => i + 1)) });
       continue;
     }
-    const hunks = hunksOf(e.blobs[0], e.blobs[1]);
+    const hunks = yield* hunksOf(e.blobs[0], e.blobs[1]);
     if (!hunks) continue;
     for (const h of hunks) if (h.newCount > 0) added.push({ path: e.path, start: h.newStart, lines: h.added });
     if (!wanted) continue;
-    const text = blob(e.blobs[0]);
+    const text = yield* blob(e.blobs[0]);
     if (text === null) continue;
     const deleted = new Set<number>();
     for (const h of hunks) for (let l = h.oldStart; l < h.oldStart + h.oldCount; l++) deleted.add(l);
@@ -204,7 +226,7 @@ export function detectMovedEdits(read: GitRead, revs: { task: string; main: stri
     let edits: TaskEdit[];
     if (e.status === "D") edits = [{ kind: "change", start: 1, end: src.base.length, taskStart: 0, taskEnd: -1 }];
     else {
-      const hunks = hunksOf(e.blobs[0], e.blobs[1]);
+      const hunks = yield* hunksOf(e.blobs[0], e.blobs[1]);
       if (!hunks) continue;
       edits = hunks.map((h) => h.oldCount > 0
         ? { kind: "change" as const, start: h.oldStart, end: h.oldStart + h.oldCount - 1, taskStart: h.newStart, taskEnd: h.newStart + h.newCount - 1 }

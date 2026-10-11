@@ -50,6 +50,7 @@ const ORCHESTRATE_RULES = [
   /reviewed by a model from another\s+company/,
   /Never override[^.]*except on the owner's own\s+confirmation/,
   /Judge each review finding against the code[^.]*record every\s+verdict/,
+  /`atelier finding \.\.\. --as H\/M`, naming yourself/,
   /Land one task at a time[^.]*--reviewer H\/M/,
   /override[\s\S]*?last resort[\s\S]*?never the\s+way to land another\s+agent's work/,
   /Report every run that ended without a result/,

@@ -11,7 +11,7 @@ task with exactly one owner. Never edit the project checkout directly.
    smoke check run before and after deploy.
 2. Commit your changes, then run `atelier done "summary"` in that workspace.
    It pushes, runs required checks and submits only after they pass. Relay
-   its final line to the owner. The project owner accepts and merges.
+   its final line to the owner.
 3. `atelier inbox` and `atelier show ID` print briefs you can relay to the owner.
 4. `atelier ls --project NAME` lists tasks. Ask the owner to create one if needed.
 5. Individual steps remain available: `atelier claim`, `atelier push`,
@@ -28,6 +28,15 @@ task with exactly one owner. Never edit the project checkout directly.
    of the selected company from every contributor counts; a contributor
    never reviews its own work.
 8. `atelier update` rebases your workspace onto whatever has merged since.
+
+The project owner runs `atelier land ID --reviewer H/M` in the registered
+checkout to land a submitted task: it updates from main, runs checks, obtains
+an independent review, then accepts and merges. Choose a reviewer of another
+family than every contributor. Manual fallback: the reviewer runs
+`atelier diff ID` and `atelier review ID --approve|--reject --as H/M --note "…"`;
+after approval and passing checks, the owner runs `atelier accept ID`, then
+`atelier merge ID`. For an already accepted task, run `atelier merge ID`,
+not land. Builders and reviewers do not accept or merge their own work.
 
 For each session the project owner runs in the registered checkout:
 

@@ -10,7 +10,8 @@ import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOU
 import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, failureKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, skipRefusedForGood, skipRetryPolls, jobsLine, gatewayMetadata, harnessRunEnv, codexBuildRefusal, validationBlockedReport, alreadyComplete } from "../cli/runner.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
 import { helpText, ROLE_PROMPTS } from "../src/usage.ts";
-import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
+import { terminalTaskExit } from "../src/tokens.ts";
 
 const entry = { agent: "opencode", models: ["GLM-5.3-Flash-4_8bit", "glm:fast"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{workspace}"] };
 const config = { agents: [entry] };
@@ -150,6 +151,9 @@ function fixture(options = {}) {
   const calls = [], logs = [], homes = [];
   let reads = 0;
   const io = {
+    // This lifecycle fixture has fake HEADs and no Git repository. Real Git
+    // submission preparation is covered by gitWorkspace and current-main tests.
+    prepareSubmission: undefined,
     log: (s) => logs.push(s), stopped: () => options.stopped ?? false,
     env: options.env ?? {}, ownerTokens: () => { calls.push({ ownerTokens: true }); return options.ownerTokens ?? []; },
     workspacePath: (project, id) => `/cache/work/${project}/${id}`,
@@ -438,6 +442,8 @@ function gitWorkspace(t) {
   writeFileSync(join(workspace, "tracked"), "original");
   git("add", ".");
   git("commit", "--quiet", "-m", "initial");
+  // A stable baseline lets wiring tests exercise the real submission fetch.
+  git("branch", "test-main");
   const path = join(dir, "runner.json");
   writeFileSync(path, JSON.stringify(config));
   return { dir, workspace, git, path, args: { _: ["runner"], multi: {}, name: "home:studio", config: path } };
@@ -502,6 +508,7 @@ test("a restarted runner retakes the claim a stop left held and finishes its com
   assert.notEqual(committed, recorded);
   assert.deepEqual(commands, ["claim"], "a stop after the commit preserves the claim; nothing submits it");
   assert.ok(logs.some((l) => l.includes("claim preserved: a commit exists")));
+  // Resumed committed work still needs current main before it can submit.
   const restarted = commands.length;
   await runRunner({ ...args, once: true }, {
     workspacePath: () => workspace,
@@ -510,10 +517,12 @@ test("a restarted runner retakes the claim a stop left held and finishes its com
     executeChild: async (argv, options) => {
       if (argv[0] === "git") return execute(argv, options);
       commands.push(argv[2]);
+      if (argv[2] === "baseline-token") return { code: 0, output: JSON.stringify({ remote: workspace, token: "test", defaultBranch: "test-main" }) };
+      if (argv[2] === "finish") assert.equal(argv.at(-1), `Built t13 with main at ${recorded} merged`);
       return execute([process.execPath, "-e", ""], options);
     },
   });
-  assert.deepEqual(commands.slice(restarted), ["claim", "finish"], "the restart retakes the claim and submits the commit");
+  assert.deepEqual(commands.slice(restarted), ["claim", "baseline-token", "finish"], "the restart refreshes main before submitting the existing commit");
   assert.equal(git("rev-parse", "HEAD"), committed, "the dead run's commit is finished, not rebuilt or reset away");
   assert.ok(logs.some((l) => l.startsWith("resumed: an earlier run of this runner committed")));
   assert.ok(logs.includes("submitted"));
@@ -546,13 +555,18 @@ test("a runner submits a task whose work is already committed and pushed when it
       executeChild: async (argv, options) => {
         if (argv[0] === "git") return execute(argv, options);
         commands.push(argv[2]);
+        // The already-complete head still submits merged with current main
+        // (t435): test-main is the initial commit, already held, so the
+        // refresh changes nothing and the submission records it.
+        if (argv[2] === "baseline-token") return { code: 0, output: JSON.stringify({ remote: workspace, token: "test", defaultBranch: "test-main" }) };
+        if (argv[2] === "finish") assert.equal(argv.at(-1), `Built t13 with main at ${git("rev-parse", "test-main")} merged`);
         return execute([process.execPath, "-e", ""], options);
       },
       async reportRun(body) { reports.push(body.outcome); },
     });
     assert.equal(git("rev-parse", "HEAD"), head, "the workspace is left at the head it held");
     if (pushed === true) {
-      assert.deepEqual(commands, ["claim", "finish"], "the pushed head is checked and submitted");
+      assert.deepEqual(commands, ["claim", "baseline-token", "finish"], "the pushed head is checked, refreshed with main and submitted");
       assert.ok(logs.includes(`already complete: the workspace head ${head.slice(0, 8)} is the task's pushed head, ahead of its base ${base.slice(0, 8)}; the harness changed nothing, so the checks run and that head is submitted without a new commit`), logs.join("\n"));
       assert.ok(logs.includes("submitted"));
       assert.deepEqual(reports, [], "an already-complete run is not reported against the model");
@@ -657,17 +671,24 @@ test("skipRefusedForGood drops a 4xx other than 408 and 429, and skipRetryPolls 
   assert.deepEqual([1, 2, 3, 4, 5, 10].map(skipRetryPolls), [1, 2, 4, 8, 10, 10]);
 });
 
-test("versionRefusal names both levels and says to deploy, and clears a current server", () => {
-  assert.match(versionRefusal(null), /reports no route level/);
-  assert.match(versionRefusal(null), /the server does not answer GET \/api\/version/);
-  assert.match(versionRefusal(null), new RegExp(`this CLI route level ${ROUTE_LEVEL}`));
-  assert.match(versionRefusal({ commit: "abcdef0123456789" }), /reports no route level/);
-  assert.match(versionRefusal({ commit: "abcdef0123456789" }), new RegExp(`this CLI route level ${ROUTE_LEVEL}`));
-  const behind = versionRefusal({ routeLevel: ROUTE_LEVEL - 1, commit: "abcdef0123456789" });
-  assert.match(behind, new RegExp(`runs route level ${ROUTE_LEVEL - 1}`));
-  assert.match(behind, new RegExp(`this CLI route level ${ROUTE_LEVEL}`));
-  assert.match(behind, /runs main at abcdef01/);
+test("versionRefusal names the missing capabilities and says to deploy, and clears a current server", () => {
+  assert.match(versionRefusal(null), /did not answer GET \/api\/version/);
+  assert.match(versionRefusal({ commit: "abcdef0123456789" }), /neither capabilities nor a route level/);
+  assert.equal(versionRefusal({ capabilities: [...SERVER_CAPABILITIES, "future.thing.v1"] }), null);
+  assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL }, ["merge-main"]), null);
+  assert.match(versionRefusal({ capabilities: ["items.brief-criteria.v1"] }, ["review"]), /reviews\.unparsable\.v1/);
+  // A legacy server at 19 has the routes but not the runner credential;
+  // one at 21 refuses a runner token's review skip (t353), which the review
+  // job needs; a server at 25 lacks the review claim leases (t351), which
+  // the review job needs; the build jobs ask nothing past 24.
+  const behind = versionRefusal({ routeLevel: 19, commit: "abcdef0123456789" });
+  assert.match(behind, /lacks capabilities .*runners\.scoped-token\.v1/);
+  assert.match(behind, /main at abcdef01/);
   assert.match(behind, /then start the runner again/);
+  assert.match(versionRefusal({ routeLevel: 21 }), /lacks capabilities .*reviews\.skip-as-runner\.v1: it reports only route level 21/);
+  assert.match(versionRefusal({ routeLevel: 21 }, ["build"]), /projects\.commit-identity\.v1/);
+  assert.match(versionRefusal({ routeLevel: 25, commit: "abcdef0123456789" }), /reviews\.lease\.v1/);
+  assert.equal(versionRefusal({ routeLevel: 24, commit: "abcdef0123456789" }, ["build"]), null);
   assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL, commit: "abcdef0123456789" }), null);
   assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL + 1, commit: "abcdef0123456789" }), null);
 });
@@ -678,13 +699,21 @@ test("the runner refuses at start on a lower route level and polls nothing", asy
   const path = join(dir, "runner.json");
   writeFileSync(path, JSON.stringify(config));
   t.mock.method(console, "log", () => {});
-  for (const version of [null, {}, { routeLevel: ROUTE_LEVEL - 1 }]) {
+  // A reviewer's config: the review job needs the skip routes (t353), which a
+  // legacy server at 21 lacks and a build runner never asks for.
+  const reviewing = join(dir, "reviewer.json");
+  writeFileSync(reviewing, JSON.stringify({ agents: [{ ...entry, command: [...entry.command, "{verdict_file}"] }], jobs: ["review"] }));
+  const refused = [
+    [path, null], [path, {}], [path, { routeLevel: 19 }],
+    [reviewing, { routeLevel: 21 }], [reviewing, { capabilities: SERVER_CAPABILITIES.filter((n) => n !== "reviews.skip.v1") }],
+  ];
+  for (const [config, version] of refused) {
     let polls = 0;
-    await assert.rejects(runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+    await assert.rejects(runRunner({ _: ["runner"], multi: {}, name: "home:studio", config }, {
       workspacePath: () => { throw new Error("no task should be claimed"); },
       version: async () => version,
       async queue() { polls++; return []; },
-    }), /Deploy the server/);
+    }), /Deploy the server/, `${basename(config)} against ${JSON.stringify(version)}`);
     assert.equal(polls, 0, "a runner that refuses at start never polls the queue");
   }
 });
@@ -702,6 +731,40 @@ test("the runner starts on a current route level and polls the queue", async (t)
     async queue() { polls++; return []; },
   });
   assert.equal(polls, 1);
+});
+
+// t458 rework: the integrator's jobs claim the task, read Git through the
+// runner's credential and post the integration routes, so a server short of
+// those is refused before the first poll, as a build runner's is.
+test("the integrator refuses a server lacking its jobs' capabilities and polls nothing", async (t) => {
+  t.mock.method(console, "log", () => {});
+  const integrator = { _: ["runner"], multi: { name: ["home:studio"], integrate: [true] }, name: "home:studio", integrate: true, once: true };
+  for (const [version, expected] of [
+    [null, /did not answer GET \/api\/version/],
+    [{ capabilities: [] }, /lacks capabilities projects\.commit-identity\.v1, plans\.integration\.v1, runners\.scoped-token\.v1/],
+    [{ routeLevel: 0 }, /lacks capabilities projects\.commit-identity\.v1, plans\.integration\.v1, runners\.scoped-token\.v1: it reports only route level 0/],
+    [{ routeLevel: 19 }, /lacks capabilities .*runners\.scoped-token\.v1/],
+    [{ capabilities: ["runners.scoped-token.v1"] }, /lacks capabilities projects\.commit-identity\.v1, plans\.integration\.v1/],
+  ]) {
+    let polls = 0;
+    await assert.rejects(runRunner(integrator, {
+      workspacePath: () => { throw new Error("no task should be claimed"); },
+      version: async () => version,
+      async queue() { polls++; return []; },
+    }), expected, JSON.stringify(version));
+    assert.equal(polls, 0, `${JSON.stringify(version)}: a runner that refuses at start never polls`);
+  }
+  for (const version of [{ routeLevel: ROUTE_LEVEL }, { capabilities: ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1"] }, { capabilities: [...SERVER_CAPABILITIES, "future.thing.v1"] }]) {
+    let polls = 0;
+    await runRunner(integrator, {
+      workspacePath: () => { throw new Error("no task should be claimed"); },
+      version: async () => version,
+      async queue() { polls++; return []; },
+    });
+    assert.equal(polls, 1, JSON.stringify(version));
+  }
+  assert.match(versionRefusal({ routeLevel: 5 }, ["integrate"]), /plans\.integration\.v1/);
+  assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL }, ["integrate", "refresh"]), null);
 });
 
 test("config validates task timeouts and honours ATELIER_CONFIG_DIR", (t) => {
@@ -971,20 +1034,23 @@ test("CLI distinguishes server claim refusals from unknown failures without netw
   const source = readFileSync(new URL("../cli/atelier.mjs", import.meta.url), "utf8");
   // The helpers are exported for the command modules; the slice runs as a script.
   const callSource = source.slice(source.indexOf("async function call("), source.indexOf("const P =")).replace(/^export /gm, "");
-  for (const [status, method, path, expected] of [
+  for (const [status, method, path, expected, answer = { error: "refused", detail: "reason" }] of [
     [403, "POST", "/projects/p/items/t1/claim", 3],
     [409, "POST", "/projects/p/items/t1/claim", 3],
     [500, "POST", "/projects/p/items/t1/claim", 4],
     [409, "POST", "/projects/p/items/t1/release", 1],
+    // A task closed under the runner's job (t476) ends with the state's exit, a claim's included.
+    [409, "POST", "/projects/p/items/t1/claim", 5, { error: "task_terminal", detail: "t1 is merged (state: merged)" }],
+    [409, "GET", "/projects/p/items/t1", 6, { error: "task_terminal", detail: "t1 is closed (state: abandoned)" }],
   ]) {
     const call = runInNewContext(`${callSource}; call`, {
       // No agent token here: the actor is never looked up.
-      tokenActor: undefined, resolveTokenActor: async () => {},
+      tokenActor: undefined, resolveTokenActor: async () => {}, terminalTaskExit,
       server: () => "https://unused", apiToken: () => "unused",
-      fetch: async () => ({ ok: false, status, text: async () => JSON.stringify({ error: "refused", detail: "reason" }) }),
+      fetch: async () => ({ ok: false, status, text: async () => JSON.stringify(answer) }),
       die: (message, code) => { throw Object.assign(new Error(message), { code }); },
     });
-    await assert.rejects(call(method, path, {}, "codex/model"), (error) => error.code === expected && error.message === "refused: reason");
+    await assert.rejects(call(method, path, {}, "codex/model"), (error) => error.code === expected && error.message === `${answer.error}: ${answer.detail}`);
   }
 });
 
@@ -1098,25 +1164,31 @@ test("finish timeout config has a sixty minute default and validates overrides",
 });
 
 test("finish deadline stops a real child and preserves committed work", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "atelier-finish-test-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const path = join(dir, "runner.json");
+  const { dir, workspace, git, path } = gitWorkspace(t);
   writeFileSync(path, JSON.stringify({ ...config, finishTimeoutMs: 100 }));
-  const { io, logs } = fixture();
-  const { cli, ...taskIO } = io;
+  const logs = [];
+  const taskIO = {
+    log: (s) => logs.push(s),
+    harness: async () => {
+      git("commit", "--quiet", "--allow-empty", "-m", "built work");
+      return { code: 0 };
+    },
+  };
   const commands = [];
   const previous = process.exitCode;
   t.after(() => { process.exitCode = previous; });
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
-    workspacePath: io.workspacePath, taskIO, queue: async () => [assignment],
+    workspacePath: () => workspace, taskIO, queue: async () => [assignment],
     async executeChild(argv, options) {
+      if (argv[0] === "git") return execute(argv, options);
       commands.push(argv[2]);
+      if (argv[2] === "baseline-token") return { code: 0, output: JSON.stringify({ remote: workspace, token: "test", defaultBranch: "test-main" }) };
       if (argv[2] !== "finish") return { code: 0 };
       assert.equal(options.timeoutMs, 100);
       return execute([process.execPath, "-e", UNTIL_TEST_EXITS], { ...options, cwd: dir, capture: true });
     },
   });
-  assert.deepEqual(commands, ["claim", "finish"]);
+  assert.deepEqual(commands, ["claim", "baseline-token", "finish"], "committed work refreshes main before the finish deadline starts");
   assert.ok(logs.some((s) => s.includes("finish timed out; claim preserved")));
 });
 
@@ -1126,16 +1198,24 @@ test("SIGINT stops claim, finish and release children and exits the loop", async
   const path = join(dir, "runner.json");
   writeFileSync(path, JSON.stringify(config));
   for (const step of ["claim", "finish", "release"]) {
-    const { io } = fixture({ head: step === "release" ? "before" : "after" });
-    const { cli, stopped, ...taskIO } = io;
+    const { workspace, git } = gitWorkspace(t);
+    const taskIO = {
+      log: () => {},
+      harness: async () => {
+        if (step !== "release") git("commit", "--quiet", "--allow-empty", "-m", "built work");
+        return { code: 0 };
+      },
+    };
     let polls = 0, sharedSignal;
     const commands = [];
     await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
-      workspacePath: io.workspacePath, taskIO,
+      workspacePath: () => workspace, taskIO,
       queue: async (_, signal) => { polls++; sharedSignal = signal; if (polls > 1) { process.emit("SIGINT"); return []; } return [assignment]; },
       async executeChild(argv, options) {
+        if (argv[0] === "git") return execute(argv, options);
         assert.equal(options.signal, sharedSignal.aborted && argv[2] === "release" ? undefined : sharedSignal);
         commands.push(argv[2]);
+        if (argv[2] === "baseline-token") return { code: 0, output: JSON.stringify({ remote: workspace, token: "test", defaultBranch: "test-main" }) };
         if (argv[2] !== step) return { code: 0 };
         const result = await execute([process.execPath, "-e",
           `process.on('SIGTERM', () => {}); process.kill(process.ppid, 'SIGINT'); ${UNTIL_TEST_EXITS}`], { ...options, cwd: dir, capture: true });
@@ -1143,6 +1223,8 @@ test("SIGINT stops claim, finish and release children and exits the loop", async
         return result;
       },
     });
+    assert.deepEqual(commands, step === "finish" ? ["claim", "baseline-token", "finish"] : ["claim", "release"],
+      "interrupted claims and builds without a commit never fetch main");
     assert.equal(polls, 1);
     assert.equal(commands.at(-1), step === "claim" ? "release" : step);
     assert.equal(sharedSignal.aborted, true);
@@ -1235,10 +1317,12 @@ test("runner resets tracked edits and untracked files before every harness attem
         assert.equal(options.cwd, workspace);
         return execute(argv, options);
       }
+      if (argv[2] === "baseline-token") return { code: 0, output: JSON.stringify({ remote: workspace, token: "test", defaultBranch: "test-main" }) };
       return execute([process.execPath, "-e", ""], options);
     },
   });
   assert.equal(attempts, 2);
+  assert.ok(logs.includes("submitted"));
   assert.equal(git("diff", "--name-only", "HEAD~1", "HEAD"), "second");
   assert.equal(logs.filter((s) => s === "workspace reset to HEAD and untracked files removed").length, 2);
 });
@@ -1316,7 +1400,10 @@ test("the rescue stages around a file git cannot index, so every other untracked
         return { code: 0 };
       },
     },
-    executeChild: async (argv, options) => execute(argv[0] === "git" ? argv : [process.execPath, "-e", ""], options),
+    executeChild: async (argv, options) => {
+      if (argv[2] === "baseline-token") return { code: 0, output: JSON.stringify({ remote: workspace, token: "test", defaultBranch: "test-main" }) };
+      return execute(argv[0] === "git" ? argv : [process.execPath, "-e", ""], options);
+    },
   });
   assert.equal(attempts, 2);
   const refs = git("for-each-ref", "--format=%(refname)", "refs/atelier/rescue/").split("\n").filter(Boolean);
@@ -1324,6 +1411,7 @@ test("the rescue stages around a file git cannot index, so every other untracked
   assert.match(refs[0], /^refs\/atelier\/rescue\/t13-\d{8}T\d{6}Z$/);
   assert.equal(git("show", `${refs[0]}:tracked`), "draft edit");
   assert.equal(git("show", `${refs[0]}:draft.test.mjs`), "the new work");
+  assert.ok(logs.includes("submitted"));
   assert.ok(logs.some((l) => l.includes("could not be staged for the rescue")), logs.join("\n"));
   assert.equal(readFileSync(join(workspace, "tracked"), "utf8"), "original");
 });
@@ -1408,20 +1496,27 @@ test("jobOf names the job an assignment is", () => {
 });
 
 test("server failures in finish retire the task after three failures", async (t) => {
-  const { args } = gitWorkspace(t);
-  const { io, logs } = fixture();
-  const { cli, ...taskIO } = io;
-  let polls = 0, finishes = 0, reads = 0;
-  taskIO.head = async () => ++reads % 2 ? "before" : "after";
+  const { workspace, git, args } = gitWorkspace(t);
+  const logs = [];
+  const taskIO = {
+    log: (s) => logs.push(s),
+    harness: async () => {
+      git("commit", "--quiet", "--allow-empty", "-m", "built work");
+      return { code: 0 };
+    },
+  };
+  let polls = 0, finishes = 0;
   await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO, wait: () => tick(),
+    workspacePath: () => workspace, taskIO, wait: () => tick(),
     queue: async () => {
       if (++polls === 5) { process.emit("SIGINT"); return []; }
       return [assignment];
     },
     executeChild: async (argv, options) => {
+      if (argv[0] === "git") return execute(argv, options);
+      if (argv[2] === "baseline-token") return { code: 0, output: JSON.stringify({ remote: workspace, token: "test", defaultBranch: "test-main" }) };
       if (argv[2] === "finish") finishes++;
-      return execute([process.execPath, "-e", `process.exit(${argv[2] === "finish" ? 4 : 0})`], { ...options, cwd: undefined });
+      return execute([process.execPath, "-e", `process.exit(${argv[2] === "finish" ? 4 : 0})`], options);
     },
   });
   assert.equal(finishes, 3);
@@ -1439,7 +1534,7 @@ test("CLI marks network and server failures distinctly from task errors", async 
   ]) {
     const call = runInNewContext(`${callSource}; call`, {
       // No agent token here: the actor is never looked up.
-      tokenActor: undefined, resolveTokenActor: async () => {},
+      tokenActor: undefined, resolveTokenActor: async () => {}, terminalTaskExit,
       server: () => "https://unused", apiToken: () => "unused", fetch,
       die: (message, code) => { throw Object.assign(new Error(message), { code }); },
     });
@@ -1496,6 +1591,7 @@ test("real runner caps reset, claim and finish failures while serving the next t
           return execute(["git", "commit", "--quiet", "--allow-empty", "-m", "work"], options);
         }
         const [command, id] = argv.slice(2);
+        if (command === "baseline-token") return { code: 0, output: JSON.stringify({ remote: workspace, token: "test", defaultBranch: "test-main" }) };
         if (command === "claim") claims.push([polls, id]);
         if (command === "release") releases.push(id);
         if (command === "finish") finishes.push(id);
@@ -1655,10 +1751,11 @@ test("a real harness gets neither Atelier's credentials nor the owner's other ke
       executeChild: async (argv, options) => {
         if (!argv[1]?.endsWith("atelier.mjs")) return execute(argv, options);
         commands.push(argv[2]);
+        if (argv[2] === "baseline-token") return { code: 0, output: JSON.stringify({ remote: workspace, token: "test", defaultBranch: "test-main" }) };
         return execute([process.execPath, "-e", ""], options);
       },
     });
-    assert.deepEqual(commands, ["claim", "finish"], agent);
+    assert.deepEqual(commands, ["claim", "baseline-token", "finish"], agent);
     const env = JSON.parse(readFileSync(seen, "utf8"));
     for (const name of ["ATELIER_TOKEN", "ATELIER_SERVER", "ATELIER_SECRET_STORE", "ATELIER_CONFIG_DIR", "HF_TOKEN", "AZURE_SPEECH_KEY", "TYPESAFE_API_KEY", "ANTHROPIC_API_KEY", "SSH_AUTH_SOCK", "OWNER_COPY"]) {
       assert.equal(env[name], undefined, `${agent} does not get ${name}`);
@@ -1736,6 +1833,7 @@ test("a real opencode run sees its own XDG_DATA_HOME, and it is gone after succe
       executeChild: async (argv, options) => {
         if (!argv[1]?.endsWith("atelier.mjs")) return execute(argv, options);
         commands.push(argv[2]);
+        if (argv[2] === "baseline-token") return { code: 0, output: JSON.stringify({ remote: workspace, token: "test", defaultBranch: "test-main" }) };
         // Finish comes after the harness, and its folder is already gone.
         if (argv[2] === "finish") assert.equal(existsSync(readFileSync(seen, "utf8")), false);
         return execute([process.execPath, "-e", ""], options);
@@ -1747,7 +1845,7 @@ test("a real opencode run sees its own XDG_DATA_HOME, and it is gone after succe
     assert.equal(existsSync(home), false, mode);
     assert.ok(!readdirSync(dir).some((name) => name.includes("opencode-data")), mode);
     assert.equal(git("status", "--porcelain"), "");
-    assert.deepEqual(commands, mode === "commit" ? ["claim", "finish"] : ["claim", "release"], mode);
+    assert.deepEqual(commands, mode === "commit" ? ["claim", "baseline-token", "finish"] : ["claim", "release"], mode);
     assert.equal(process.listenerCount("exit"), listeners);
   }
 });
@@ -1925,6 +2023,7 @@ test("retired loadLimit never gates runner admission", async (t) => {
     queue: async () => [assignment],
   });
   assert.ok(calls.some((c) => c.argv?.[0] === "claim"));
+  assert.ok(logs.includes("submitted"));
   assert.ok(!logs.some((s) => s.includes("waiting before taking a job")));
 });
 test('build preparation runs after reset and before its harness, and failures use commit preservation', async () => {

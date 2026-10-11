@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { noProjectMessage, parseArgs, unregisteredMessage } from "../cli/atelier.mjs";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 // How the CLI reads its flags. A switch (--approve, --cancel, --json,
 // --sandbox-only) never takes the word after it, so an item id written after
@@ -112,6 +113,8 @@ const CHANGES = {
 const detail = (id) => ({ item: item(id), policy: { checks: ["exit 0"], protected: [], sandboxOnly: false }, gate: { ready: true, blockers: [] }, evidence: [], reviews: [], events: [], acceptanceProtected: [] });
 globalThis.fetch = async (url, options = {}) => {
   const path = new URL(url).pathname, method = options.method ?? "GET";
+  // The capability check before new, edit, init, review and merge (t458) reads the version.
+  if (path === "/api/version") return Response.json({ capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
   const body = options.body ? JSON.parse(options.body) : undefined;
   appendFileSync(${JSON.stringify(log)}, JSON.stringify({ method, path, body, actor: options.headers?.["x-atelier-actor"] ?? null }) + "\\n");
   let data = {};

@@ -1,3 +1,4 @@
+import { executePostMerge } from "./post-merge.mjs";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -5,12 +6,12 @@ import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
 import { excludeScratch } from "./scratch.mjs";
 import { runCommand } from "./ship.mjs";
-import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { COMMAND_CAPABILITIES, checkCapabilities } from "../src/route-level.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-lease.ts";
 import { unoffered } from "../src/dispatch/rules.ts";
 import { contributorsOf, roleRefusal, sameActor } from "../src/rules.ts";
 import { landingVerdict, allSkipped } from "../src/landing-verdict.ts";
-import { DETECTOR_ENV, describeAmbiguous, describeFinding, detectMovedEdits, findingKey } from "../src/moved-code.ts";
+import { DETECTOR_ENV, describeAmbiguous, describeFinding, detectMovedEditsAsync, findingKey } from "../src/moved-code.ts";
 import { appendMovedCodeRecord } from "./landing.mjs";
 
 // atelier land (t187): the project owner lands one task whole, taking the
@@ -94,6 +95,12 @@ import { appendMovedCodeRecord } from "./landing.mjs";
 // warns, for then the lease really does stand in this task's name until it
 // lapses.
 //
+// Post-merge work has a durable Ledger reservation, created before publish
+// and checked by every merge entry point. CLI and Workflow resolve the same
+// run, with a snapshotted policy and before/after SHAs. Lease release, expiry
+// and merged task state never release it. Future batching reuses its member
+// list and landing identity; it does not change per-merge completion today.
+//
 // The push uses the workspace's write token, which lapses 8 hours after the
 // claim that minted it (t275), and a push refused for it would end a landing
 // that already holds the lease and has merged main. So before the lease (the
@@ -120,6 +127,25 @@ import { appendMovedCodeRecord } from "./landing.mjs";
 // own conflicts still stop the landing. A retry compares afresh, so ported
 // edits clear their findings; where main is already merged there is nothing
 // to compare, which the landing says rather than implying no move was missed.
+//
+// A workspace a runner claimed with its runner token pushes through the
+// runner route (t488): its origin is ORIGIN/git/runner/PROJECT/ITEM.git, and
+// the header it carries is the runner's own Git credential, which the server
+// honours for the runner's token and claim alone. The owner's landing cannot
+// push there as itself, and the runner's credential lapses with the runner
+// token, not with the task's write token. So before the lease, and before a
+// Workflow starts — for a task not yet accepted, whatever expiry the
+// workspace records — a runner route found as origin's fetch or push URL is
+// re-claimed for the task's holder with its runner identity, under the
+// owner's credential, which the server answers with the fork remote and a
+// write token of its own; the fork replaces the route as origin's one
+// destination, the route's header goes with it, the expiry is recorded and
+// the fork is fetched, all before anything is leased, pushed or started. The
+// next landing finds the fork and refreshes nothing it need not. A holder the
+// workspace was not claimed by, a re-claim the server refuses, a claim that
+// answers no remote or token, or a remote that cannot be adopted stops the
+// landing there, with the commits untouched; a dry run reads the remotes and
+// writes nothing.
 
 const POLL_MS = Number(process.env.ATELIER_LAND_POLL_MS ?? 5000);
 // The review wait outlasts a build on the runner (its task timeout is 45
@@ -140,12 +166,37 @@ const short = (sha) => (sha ? sha.slice(0, 8) : "—");
 
 // A step that failed carries its own event data beside the failure: the files
 // a conflict stopped on, or which check failed.
-class StepError extends Error {
+export class StepError extends Error {
   constructor(message, data = {}) { super(message); this.data = data; }
 }
 
 export async function runLand(io) {
   const { args, name, id, p, request, git, die, print } = io;
+  if (args["post-merge"] === undefined && (args.reason !== undefined || args.resolution !== undefined)) die("--reason and --resolution require --post-merge");
+  if (args["post-merge"] !== undefined) {
+    if (["dry-run", "release-lease", "no-review", "wait", "reviewer", "workflow", "checks"].some(k => args[k] !== undefined)) die("--post-merge recovery is a separate action; omit the landing flags");
+    const action = args["post-merge"];
+    if (!["status", "resume", "retry", "skip", "reconcile"].includes(action)) die("--post-merge takes status, resume, retry, skip or reconcile");
+    // The recovery calls the post-merge routes alone, so it asks for their
+    // capability alone, before its first request to them.
+    let version = null;
+    try { version = await request("GET", "/version"); } catch { /* a server with no version route is one that predates it */ }
+    const check = checkCapabilities(version, ["land.post-merge.v1"]);
+    if (!check.ok) die(`${check.message}, then run atelier land ${id} --post-merge ${action} again`);
+    const path = `/projects/${encodeURIComponent(name)}/post-merge/${encodeURIComponent(id)}`;
+    const { run } = await request("GET", path);
+    if (!run) { print("No post-merge run recorded."); return; }
+    if (action === "status") { print(JSON.stringify(run, null, 2)); return; }
+    if (action !== "resume") {
+      const { run: recovered } = await request("POST", path, { run: run.id, action, reason: args.reason, resolution: args.resolution });
+      if (action === "skip" && recovered?.state === "reserved") {
+        print(`Post-merge run ${recovered.id}: step waived; remaining steps still need diff preparation or an owner waiver.`);
+        return;
+      }
+    }
+    if (action !== "reconcile") await executePostMerge({ request, git, name, id, env: io.env, print });
+    return;
+  }
   const dryRun = args["dry-run"] === true;
   const noReview = args["no-review"] === true;
   const wait = args.wait === true;
@@ -192,29 +243,34 @@ export async function runLand(io) {
   // task is named, with the command that frees it, rather than freed from
   // under that task.
   if (releaseLease) {
-    const { lease } = await request("GET", leasePath);
+    const { lease, postMerge } = await request("GET", leasePath);
     if (!lease) { print(`No landing lease is held in ${name}; nothing to release.`); return; }
     if (lease.item !== id) die(`the landing lease in ${name} is held for ${lease.item}, not ${id}: ${lease.holder} has been landing ${lease.item} since ${since(lease)}. Free it with atelier land ${lease.item} --release-lease`);
     // The cancel names the task, so the server frees ${id}'s lease alone.
     const { lease: freed } = await request("POST", leasePath, { cancel: true, item: id });
-    print(`Released the landing lease of ${name}: ${(freed ?? lease).holder} held it for ${id} since ${since(freed ?? lease)}. Another task may land.`);
+    print(`Released the landing lease of ${name}: ${(freed ?? lease).holder} held it for ${id} since ${since(freed ?? lease)}. ${postMerge ? `Post-merge run ${postMerge.id} remains ${postMerge.state}; later merges stay blocked.` : "Another task may land."}`);
     return;
   }
 
-  // The server's route level against this CLI's: a server older than the
-  // routes this command calls would fail them one by one, so the landing
-  // refuses here instead, saying to deploy, before the lease or any
-  // workspace changes. The level (src/route-level.ts) rises only when a CLI
-  // starts calling a route the server did not have; which commit either
-  // side runs says nothing, since every merge moves the CLI past the
-  // deployed one.
+  // The server's capabilities against the ones this command declares
+  // (COMMAND_CAPABILITIES, src/route-level.ts): a server short of them would
+  // fail the routes one by one, so the landing refuses here instead, naming
+  // what is missing and saying to deploy, before the lease or any workspace
+  // changes. Which commit either side runs says nothing, since every merge
+  // moves the CLI past the deployed one.
   let version = null;
   try { version = await request("GET", "/version"); } catch { /* a server with no version route is one that predates it */ }
-  const level = Number.isInteger(version?.routeLevel) ? version.routeLevel : null;
-  const deploy = (why) => `the server ${typeof version?.commit === "string" && version.commit ? `runs main at ${short(version.commit)}, ` : ""}${level === null ? "reports no route level" : `runs route level ${level}`}, this CLI route level ${ROUTE_LEVEL}: ${why}. Deploy the server from a checkout at route level ${ROUTE_LEVEL} or newer (npm run deploy, which records the commit it deploys), then run atelier land ${id} again`;
-  if (!version) die(deploy("the server does not answer GET /api/version"));
-  if (level === null) die(deploy("the server is older than route levels"));
-  if (level < ROUTE_LEVEL) die(deploy("the server's routes are older than the ones this CLI calls"));
+  const check = checkCapabilities(version, COMMAND_CAPABILITIES.land);
+  if (!check.ok) die(`${check.message}, then run atelier land ${id} again`);
+  // A merged task whose post-merge run is still open resumes it (t477); the
+  // server publishes the post-merge routes as land.post-merge.v1, which the
+  // check above required.
+  const detail = await request("GET", itemPath);
+  if (detail.item.state === "merged" && detail.postMerge) {
+    if (dryRun) { print(`Post-merge run ${detail.postMerge.id} is ${detail.postMerge.state} at ${detail.postMerge.after}; a resume would execute only pending steps.`); return; }
+    await executePostMerge({ request, name, id, env: io.env, print });
+    return;
+  }
 
   // The lease is read, not taken, so the checks that only refuse are asked
   // before anything changes. A lease held for another live task refuses the
@@ -300,6 +356,8 @@ export async function runLand(io) {
     const ahead = aheadOf(waitingRows);
     const queuedAhead = ahead.length ? `${ahead.length} landing${ahead.length === 1 ? "" : "s"} queued ahead of ${id}: ${ahead.map((w) => `${w.item} (queued ${since(w)})`).join(", ")}` : null;
     print(`Dry run: atelier land ${id} in ${name} would:`);
+    const route = d0.item.state === "accepted" ? null : runnerRouteOf(io, dir);
+    if (route) print(`  (first) re-claim ${id} for its holder ${d0.item.owner ?? "(its workspace's builder)"}${d0.item.runner ? ` on ${d0.item.runner}` : ""}, since its workspace ${routeUse(io, dir, route)} the runner route ${shownRemote(route)} with the runner's Git credential, and take the fork remote and write token the claim answers as origin before the lease (a dry run claims nothing and leaves the workspace's remotes and credentials as they are)`);
     print(`  1. ${waitingOn || queuedAhead ? `wait behind ${[waitingOn ? `${waitingOn.holder}'s landing of ${waitingOn.item} (since ${since(waitingOn)})` : null, queuedAhead].filter(Boolean).join(", and ")}, then ` : ""}take the project's landing lease for ${id} (one landing at a time in ${name}, in the order the landings queued)`);
     print(`  2. merge main into ${id}'s workspace (${dir}) once a comparison from their merge base finds none of ${id}'s edits in code main moved to another file (one it finds stops the landing before the merge, naming source and destination${movedOk ? "; --moved-ok records your approval of exactly the findings it detects, then goes on" : ""}); on conflicts, stop and leave them for you to resolve, naming the files, or send them to the task's builder: atelier dispatch ${id} --job merge-main; where main and the task each raised the route level (src/route-level.ts) from one base, raise the merged level past both, wherever the workspace's HEAD holds main — this landing's own merge, a rerun of one you resolved by hand, or a merge that brought main in through a side branch`);
     print(`  3. ${regenerate ? `regenerate the project's fixtures with \`${regenerate}\` and commit what changes; a merge that conflicts only in files that command rewrites is settled by taking either side and regenerating` : "regenerate nothing (the project declares no regenerate command)"}`);
@@ -444,7 +502,7 @@ export async function runLand(io) {
         print(`Landing lease taken for ${id} (${item.state}); one landing at a time in ${name}.`);
         break;
       } catch (error) {
-        const refused = /^landing_lease: /.test(error.message);
+        const refused = /^(landing_lease|post_merge_blocked): /.test(error.message);
         // Another queued landing can take the lease between the poll and
         // this request, the server can judge live a lease this machine's
         // clock judged lapsed, or a landing that queued earlier can still
@@ -728,9 +786,81 @@ async function refreshWorkspaceToken(io, { dir, id, itemPath }) {
     io.print(`Claiming ${id} for its workspace's builder ${holder} before refreshing the write token…`);
   }
   const r = await io.request("POST", `${itemPath}/claim`, {}, holder, item.owner && item.runner ? { "x-atelier-runner": item.runner } : {});
-  if (!r?.workspace?.token) throw new StepError(`the re-claim of ${id} as ${holder} returned no workspace token`);
+  if (typeof r?.workspace?.token !== "string" || !r.workspace.token) throw new StepError(`the re-claim of ${id} as ${holder} returned no workspace token`);
+  // The remote the claim answered is origin's one destination before the
+  // header, the expiry and the fetch are taken (t488): a fork workspace
+  // keeps the remote it has, and one on a runner route moves to the fork.
+  const moved = adoptWorkspaceRemote(io, { dir, id, holder }, r.workspace.remote);
   io.adoptWorkspaceToken(dir, r.workspace);
-  return { holder, expiresAt: r.workspace.expiresAt ?? null };
+  return { holder, expiresAt: r.workspace.expiresAt ?? null, remote: r.workspace.remote, moved };
+}
+
+// The runner route a workspace claimed under a runner token fetches from and
+// pushes to (t488): ORIGIN/git/runner/PROJECT/ITEM.git, which the server
+// forwards to the fork for the runner's own Git credential alone.
+const RUNNER_ROUTE = /\/git\/runner\/[^/?#]+\/[^/?#]+$/i;
+const isRunnerRoute = (url) => typeof url === "string" && RUNNER_ROUTE.test(url.trim().replace(/\/+$/, ""));
+// A remote as a message shows it: any userinfo cut, since a URL can carry a
+// credential, and no message of a landing prints one.
+const shownRemote = (url) => String(url).replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/@]*@/i, "$1");
+
+// Where origin fetches from and pushes to, as the workspace's Git config
+// records them, every value of each key: Git fetches from the first URL
+// and pushes to every URL, or to every push URL where any is set apart, so
+// a route that is one of several is read where `--get` would answer only
+// the last. Each URL is trimmed; blank values are left out.
+function originUrls(io, dir) {
+  const readAll = (key) => {
+    const r = io.git(["config", "--local", "--get-all", key], { cwd: dir, allowFail: true });
+    return r && r.status === 0 ? String(r.stdout ?? "").split("\n").map((u) => u.trim()).filter(Boolean) : [];
+  };
+  const urls = readAll("remote.origin.url"), pushUrls = readAll("remote.origin.pushurl");
+  return { urls, pushUrls, url: urls[0] ?? null, destinations: [...urls, ...pushUrls] };
+}
+
+// The runner route origin still fetches from or pushes to, among every URL
+// it is configured with, or null for a workspace on its fork.
+function runnerRouteOf(io, dir) {
+  return originUrls(io, dir).destinations.find(isRunnerRoute) ?? null;
+}
+
+// How the workspace uses the route, for a message: as its fetch and push
+// URL, as a fetch URL alone where push URLs set apart name no route, or as
+// a push URL (one of several, or set apart from a fetch URL that is not
+// the route).
+function routeUse(io, dir, route) {
+  const { url, pushUrls } = originUrls(io, dir);
+  return isRunnerRoute(url) ? (pushUrls.length && !pushUrls.some(isRunnerRoute) ? "fetches from" : "fetches from and pushes to") : "pushes to";
+}
+
+// The remote a re-claim answered, taken as origin's one destination (t488).
+// A fork workspace whose origin is that remote alone, with no push URL
+// apart, is left as it is. Otherwise every fetch URL of origin is replaced
+// by the remote, every push URL set apart is dropped (the fork serves
+// both), and any header .git/config holds for a URL origin no longer uses
+// is removed, so no request carries the runner's credential to the fork or
+// the fork's to the route (the credentials file is rewritten whole by the
+// token's adoption that follows). A claim that answers no remote, or
+// another runner route — the landing's own credential is a runner's, which
+// cannot land — stops here. Answers whether origin moved.
+function adoptWorkspaceRemote(io, { dir, id, holder }, remote) {
+  if (typeof remote !== "string" || !remote.trim()) throw new StepError(`the re-claim of ${id} as ${holder} returned no workspace remote`);
+  if (isRunnerRoute(remote)) throw new StepError(`the re-claim of ${id} as ${holder} answered another runner route (${shownRemote(remote)}) rather than ${id}'s fork, so this landing's own credential is a runner token's; land with the owner's credential`);
+  const { urls, pushUrls, destinations } = originUrls(io, dir);
+  if (urls.length === 1 && urls[0] === remote && !pushUrls.length) return false;
+  const stale = [...new Set(destinations.filter((u) => u !== remote))];
+  // --replace-all leaves origin one fetch URL where it held several.
+  io.git(urls.length ? ["config", "--local", "--replace-all", "remote.origin.url", remote] : ["remote", "add", "origin", remote], { cwd: dir });
+  if (pushUrls.length) {
+    const dropped = io.git(["config", "--local", "--unset-all", "remote.origin.pushurl"], { cwd: dir, allowFail: true });
+    if (dropped.status !== 0 && dropped.status !== 5) throw new StepError(`origin's push URLs could not be dropped from ${id}'s workspace:\n${String(dropped.stderr ?? "").trim()}`);
+  }
+  for (const old of stale) {
+    // Exit status 5 means .git/config held no such header.
+    const unset = io.git(["config", "--local", "--unset-all", `http.${old}.extraHeader`], { cwd: dir, allowFail: true });
+    if (unset.status !== 0 && unset.status !== 5) throw new StepError(`the header for ${shownRemote(old)} could not be removed from ${id}'s workspace:\n${String(unset.stderr ?? "").trim()}`);
+  }
+  return true;
 }
 
 // Before the landing takes the lease: a write token that has lapsed or
@@ -741,18 +871,33 @@ async function refreshWorkspaceToken(io, { dir, id, itemPath }) {
 // could answer later, so a workspace claimed before that was recorded has
 // an unknown expiry, which is refreshed once — the refresh records it, and
 // later landings read it. An accepted task has nothing left to push.
+// A workspace on a runner route (t488) is re-claimed whatever expiry it
+// records, since the route and its credential are the runner's, not the
+// landing's: the claim answers the fork and a write token of its own, which
+// replace the route before the lease.
 async function ensureWorkspaceToken(io, { dir, id, itemPath, item }) {
   if (item?.state === "accepted") return;
+  const route = runnerRouteOf(io, dir);
   const recorded = io.git(["config", "--local", "atelier.write-token-expires-at"], { cwd: dir, allowFail: true }).stdout?.trim() || null;
   const at = recorded ? Date.parse(recorded) : NaN;
-  if (item?.owner && Number.isFinite(at) && at - Date.now() > TOKEN_WINDOW_MS) return;
-  io.print(Number.isFinite(at)
-    ? `${id}'s workspace write token ${at <= Date.now() ? "expired" : "expires"} ${recorded.slice(0, 16).replace("T", " ")} UTC; refreshing it for its holder before the landing takes the lease…`
-    : `${id}'s workspace records no write token expiry (it was claimed before expiries were recorded); refreshing the token for its holder before the landing takes the lease…`);
+  if (!route && item?.owner && Number.isFinite(at) && at - Date.now() > TOKEN_WINDOW_MS) return;
+  const when = Number.isFinite(at) ? `${at <= Date.now() ? "expired" : "expires"} ${recorded.slice(0, 16).replace("T", " ")} UTC` : null;
+  io.print(route
+    ? `${id}'s workspace ${routeUse(io, dir, route)} the runner route ${shownRemote(route)}, with the runner's Git credential${when ? ` (recorded as one that ${when})` : " (its expiry is not recorded)"}, which the owner's landing cannot push through; re-claiming ${id} for its holder to land through its fork, before the landing takes the lease…`
+    : when
+      ? `${id}'s workspace write token ${when}; refreshing it for its holder before the landing takes the lease…`
+      : `${id}'s workspace records no write token expiry (it was claimed before expiries were recorded); refreshing the token for its holder before the landing takes the lease…`);
   let fresh;
   try { fresh = await refreshWorkspaceToken(io, { dir, id, itemPath }); }
-  catch (error) { throw new StepError(`${id}'s workspace write token could not be refreshed, so the landing stops before taking the lease: ${error.message}. Have its builder run atelier claim ${id} in the workspace, then run atelier land ${id} again`); }
-  io.print(`Refreshed ${id}'s workspace write token for ${fresh.holder}${fresh.expiresAt ? `; it expires ${String(fresh.expiresAt).slice(0, 16).replace("T", " ")} UTC` : ""}.`);
+  catch (error) {
+    throw new StepError(route
+      ? `${id}'s workspace could not be moved from the runner route to its fork, so the landing stops before taking the lease: ${error.message}. Its commits are untouched; settle what that names (the task's holder, its claim, or the workspace's remote), then run atelier land ${id} again`
+      : `${id}'s workspace write token could not be refreshed, so the landing stops before taking the lease: ${error.message}. Have its builder run atelier claim ${id} in the workspace, then run atelier land ${id} again`);
+  }
+  const expiry = fresh.expiresAt ? `; it expires ${String(fresh.expiresAt).slice(0, 16).replace("T", " ")} UTC` : "";
+  io.print(route || fresh.moved
+    ? `Moved ${id}'s workspace to its fork ${shownRemote(fresh.remote)} with a write token for ${fresh.holder}${expiry}; the landing pushes there.`
+    : `Refreshed ${id}'s workspace write token for ${fresh.holder}${expiry}.`);
 }
 
 // The landing's push, refreshed and tried once more when the server refuses
@@ -812,9 +957,19 @@ async function landStep(io, record, kind, argv, cwd, data = {}) {
 // round of the Workflow that finds edits in moved code again stops for a
 // fresh one. Answers the line the merge step records: the revisions compared
 // and the merge base, with what was found.
+//
+// A build's runner runs the same comparison before it submits (t435):
+// its `moved.port` is a function, and findings do not stop its merge. They
+// are logged as handed to the builder (`moved.resolver`), given to `port`,
+// and the merge goes on, clean or in conflict, so the builder ports each
+// edit to its destination in the same run, as it resolves a conflict;
+// a finding is never the model's failure. Every git call is awaited,
+// since the runner's git runs each command as a child (the landing's
+// synchronous git does not mind), and the detector reads through
+// detectMovedEditsAsync for the same reason.
 async function compareMoved(io, { dir, id, name, record, moved, t0, mainHead }) {
   const { request, git, print } = io;
-  const taskHead = git(["rev-parse", "HEAD"], { cwd: dir });
+  const taskHead = await git(["rev-parse", "HEAD"], { cwd: dir });
   // A stop records the failed merge step (`reason`, cut to the ledger's
   // length, the message when none is given) and answers the StepError, whose
   // data adds what only this CLI reads.
@@ -822,31 +977,40 @@ async function compareMoved(io, { dir, id, name, record, moved, t0, mainHead }) 
     await record("merge", Date.now() - t0, { failed: true, reason: reason.slice(0, 500), ...data });
     return new StepError(message, { ...data, ...only });
   };
-  const based = git(["merge-base", taskHead, mainHead], { cwd: dir, allowFail: true });
+  const based = await git(["merge-base", taskHead, mainHead], { cwd: dir, allowFail: true });
   const mergeBase = based.status === 0 ? String(based.stdout ?? "").trim() : "";
   if (!mergeBase) throw await stop(`${id}'s head ${short(taskHead)} and main at ${short(mainHead)} have no merge base, so the landing cannot compare ${id}'s edits with code main moved to another file, and stops before merging main; Git and the workspace are unchanged.${String(based.stderr ?? "").trim() ? ` Git said: ${String(based.stderr).trim()}` : ""}`);
   const revs = `task ${taskHead}, main ${mainHead}, merge base ${mergeBase}`;
   const shortRevs = `task ${short(taskHead)}, main ${short(mainHead)}, merge base ${short(mergeBase)}`;
   let report;
-  try { report = detectMovedEdits((args) => git(args, { cwd: dir, raw: true, env: DETECTOR_ENV }), { task: taskHead, main: mainHead, mergeBase }); }
+  try { report = await detectMovedEditsAsync((args) => git(args, { cwd: dir, raw: true, env: DETECTOR_ENV }), { task: taskHead, main: mainHead, mergeBase }); }
   catch (error) { throw await stop(`the comparison of ${id}'s edits with code main moved to another file failed (${shortRevs}), so the landing stops before merging main; Git and the workspace are unchanged: ${error.message}`); }
   // The workspace's moved-code log (cli/landing.mjs), flushed before the
   // landing goes on; one that cannot be written stops it.
-  const log = (entry) => {
-    try { appendMovedCodeRecord(git(["rev-parse", "--absolute-git-dir"], { cwd: dir }), { at: new Date().toISOString(), project: name, item: id, task: taskHead, main: mainHead, mergeBase, ...entry, ambiguous: report.ambiguous }); }
+  const log = async (entry) => {
+    try { appendMovedCodeRecord(await git(["rev-parse", "--absolute-git-dir"], { cwd: dir }), { at: new Date().toISOString(), project: name, item: id, task: taskHead, main: mainHead, mergeBase, ...entry, ambiguous: report.ambiguous }); }
     catch (error) { throw new StepError(`the moved-code comparison (${shortRevs}) could not be written to ${id}'s workspace log, so the landing stops before merging main; Git and the workspace are unchanged: ${error.message}`); }
   };
   for (const a of report.ambiguous) print(`Warning: ${describeAmbiguous(a)}.`);
   const ambiguity = report.ambiguous.length ? `; ${report.ambiguous.length} ambiguous match${report.ambiguous.length === 1 ? "" : "es"}, not taken for a move` : "";
   if (!report.findings.length) {
     print(`Compared ${id}'s edits with code main moved to another file (${shortRevs}): none found${ambiguity}.${moved.ok ? " --moved-ok had nothing to approve." : ""}`);
-    log({ kind: "compared", findings: [] });
+    await log({ kind: "compared", findings: [] });
     return `moved-code comparison at ${revs}: no edit in moved code${ambiguity}`;
   }
   const n = report.findings.length, findings = `${n} finding${n === 1 ? "" : "s"}`;
   const keys = report.findings.map(findingKey).sort();
   const listed = report.findings.map((f) => `  - ${describeFinding(f)}`).join("\n");
   const paths = [...new Set(report.findings.flatMap((f) => [f.source.path, f.destination.path]))];
+  if (typeof moved.port === "function") {
+    // A runner's merge before a build's submission (t435): the findings go
+    // to the builder, who ports the edits in this run once main is merged.
+    const resolver = moved.resolver ?? "the builder";
+    print(`${id}'s edits lie in code main moved to another file (${shortRevs}):\n${listed}\nThe merge of main goes on, and ${resolver} ports each edit to its destination in this run.`);
+    await log({ kind: "handed", resolver, findings: report.findings });
+    await moved.port(report.findings);
+    return `moved-code comparison at ${revs}: ${findings} handed to ${resolver} to port after the merge`;
+  }
   const approved = moved.approved;
   const same = approved && approved.task === taskHead && approved.main === mainHead && approved.mergeBase === mergeBase && approved.keys.join("\n") === keys.join("\n");
   if (moved.ok && (!approved || same)) {
@@ -857,7 +1021,7 @@ async function compareMoved(io, { dir, id, name, record, moved, t0, mainHead }) 
       const summary = `--moved-ok: ${actor} approved ${findings} at ${revs}: ${report.findings.map(describeFinding).join("; ")}`;
       try { await request("POST", `/projects/${encodeURIComponent(name)}/items/${encodeURIComponent(id)}/land`, { step: "merge", ms: 0, head: taskHead, resolvedBy: `${actor} with --moved-ok`, conflicts: paths.map((p) => p.slice(0, 200)), reason: summary.slice(0, 500) }); }
       catch (error) { throw new StepError(`the --moved-ok approval of ${findings} (${shortRevs}) could not be recorded on the ledger, so the landing stops before merging main; Git and the workspace are unchanged: ${error.message}`); }
-      log({ kind: "moved-ok", actor, findings: report.findings });
+      await log({ kind: "moved-ok", actor, findings: report.findings });
       moved.approved = { task: taskHead, main: mainHead, mergeBase, keys };
     }
     print(`${id}'s edits lie in code main moved to another file (${shortRevs}):\n${listed}\n--moved-ok: your approval of exactly these ${findings} at these revisions is recorded; the landing goes on, and a conflict in Git's merge still stops it.`);
@@ -867,7 +1031,7 @@ async function compareMoved(io, { dir, id, name, record, moved, t0, mainHead }) 
     ? `--moved-ok approved the findings at task ${short(approved.task)}, main ${short(approved.main)}, merge base ${short(approved.mergeBase)}; this comparison is at other revisions or found other edits, so it needs a fresh approval. `
     : "";
   const instructions = `To port them: merge main into the workspace (in ${JSON.stringify(dir)}, or have the task's builder do it: atelier dispatch ${id} --job merge-main), make each edit again at its destination, commit, and run ${moved.again} again, which compares afresh. If a finding is wrong, ${moved.again} --moved-ok records your approval of exactly the findings it detects at those revisions and goes on.`;
-  log({ kind: "stopped", findings: report.findings, instructions });
+  await log({ kind: "stopped", findings: report.findings, instructions });
   throw await stop(`${fresh}${id}'s edits lie in code main moved to another file, so the landing stops before merging main; Git and the workspace are unchanged (${shortRevs}):\n${listed}\nA merge would leave each edit in the old place, or stop on a conflict there, and the moved code would never get it. ${instructions}`, {
     reason: `moved-code comparison at ${revs}: ${findings} stopped the landing before the merge; port each edit to its destination, then land again: ${report.findings.map(describeFinding).join("; ")}`,
     conflicts: paths.map((p) => p.slice(0, 200)),
@@ -885,28 +1049,48 @@ async function compareMoved(io, { dir, id, name, record, moved, t0, mainHead }) 
 // landing's; every failure throws a StepError carrying the failed
 // step's data. Answers the head the workspace reached, main's head and
 // whether main was merged at all.
-async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, guard, d0, moved = { ok: false, approved: null, again: `atelier land ${id}` } }) {
+//
+// A build's runner runs the same code before it submits (t435,
+// prepareBuildSubmission in cli/runner.mjs), so the merge it makes
+// regenerates what the landing's would, settles the same conflicts and
+// runs the same moved-code comparison: its `git` runs each command as a
+// runner child, so every call here is awaited, which the landing's
+// synchronous git does not mind; `base` is the baseline token it already
+// read through the project's baseline-token route, which a runner token
+// may call where the item's base-token answers only for the job it holds,
+// so no request is made here; `message` names the merge commit's message
+// from main's head, ending in the builder's Agent line where the landing's
+// names the landing; and `moved.port` takes the comparison's findings
+// instead of stopping, so the merge goes on and the builder ports the
+// edits in the same run (compareMoved). A baseline that cannot be fetched
+// is the network's or the server's failure, not the build's: the error
+// carries `infrastructure`, which the runner counts as such and the
+// landing does not read.
+export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, guard, d0, base = null, message = null, moved = { ok: false, approved: null, again: `atelier land ${id}` } }) {
   const { request, git, print } = io;
   guard();
   const t0 = Date.now();
-  const base = await request("POST", `/projects/${encodeURIComponent(name)}/items/${encodeURIComponent(id)}/base-token`, { scope: "read" });
-  git(["fetch", "--quiet", base.remote, base.defaultBranch], { cwd: dir, token: base.token });
-  const mainHead = git(["rev-parse", "FETCH_HEAD"], { cwd: dir });
+  const read = base ?? await request("POST", `/projects/${encodeURIComponent(name)}/items/${encodeURIComponent(id)}/base-token`, { scope: "read" });
+  try { await git(["fetch", "--quiet", read.remote, read.defaultBranch], { cwd: dir, token: read.token }); }
+  catch (error) { throw Object.assign(error, { infrastructure: true }); }
+  const mainHead = await git(["rev-parse", "FETCH_HEAD"], { cwd: dir });
+  const mergeMessage = message ? message(mainHead) : `Merge main into ${id}\n\nAtelier land: main at ${mainHead}`;
   let fromMain = [], mergedIn = false, settled = null, settledConflicts = [], routeLevel = null, movedNote = null;
-  if (git(["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true }).status === 0) {
+  if ((await git(["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true })).status === 0) {
     // Main already merged leaves nothing to compare (t471): a move that an
     // earlier merge of main brought in lies behind the merge base.
-    movedNote = `moved-code comparison: main ${mainHead} is already in ${id}'s head ${git(["rev-parse", "HEAD"], { cwd: dir })}, so nothing was compared and edits an earlier merge of main left in moved code cannot be detected`;
+    movedNote = `moved-code comparison: main ${mainHead} is already in ${id}'s head ${await git(["rev-parse", "HEAD"], { cwd: dir })}, so nothing was compared and edits an earlier merge of main left in moved code cannot be detected`;
     print(`main at ${short(mainHead)} is already merged into ${id}'s workspace. With main already merged there is nothing to compare, so this landing cannot detect edits that an earlier merge of main left in code main had moved to another file.`);
   } else {
     // Edits in code main moved to another file stop the landing here,
-    // before Git merges anything (t471).
+    // before Git merges anything (t471); a runner's merge goes on and
+    // hands them to the builder (moved.port).
     movedNote = await compareMoved(io, { dir, id, name, record, moved, t0, mainHead });
-    const forkPoint = git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: dir });
-    fromMain = git(["rev-list", "--max-count=200", `${forkPoint}..FETCH_HEAD`], { cwd: dir }).split("\n").filter(Boolean);
-    const r = git(["merge", "--no-ff", "--no-edit", "-m", `Merge main into ${id}\n\nAtelier land: main at ${mainHead}`, "FETCH_HEAD"], { cwd: dir, allowFail: true });
+    const forkPoint = await git(["merge-base", "HEAD", "FETCH_HEAD"], { cwd: dir });
+    fromMain = (await git(["rev-list", "--max-count=200", `${forkPoint}..FETCH_HEAD`], { cwd: dir })).split("\n").filter(Boolean);
+    const r = await git(["merge", "--no-ff", "--no-edit", "-m", mergeMessage, "FETCH_HEAD"], { cwd: dir, allowFail: true });
     if (r.status !== 0) {
-      const conflicts = git(["diff", "--name-only", "--diff-filter=U", "-z"], { cwd: dir, raw: true }).split("\0").filter(Boolean);
+      const conflicts = (await git(["diff", "--name-only", "--diff-filter=U", "-z"], { cwd: dir, raw: true })).split("\0").filter(Boolean);
       // A conflict that lies only in files the regenerate command rewrites
       // is not the owner's to settle by hand: whichever side such a file
       // took, the command writes it again from the merged code, so either
@@ -922,21 +1106,24 @@ async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, g
       let reason = null;
       if (conflicts.length && regenerate) {
         print(`The merge stops on conflicts in ${conflicts.join(", ")}; taking either side and regenerating with \`${regenerate}\`…`);
-        const shaOf = (file) => (existsSync(join(dir, file)) ? git(["hash-object", "--", file], { cwd: dir }) : "gone");
+        const shaOf = async (file) => (existsSync(join(dir, file)) ? await git(["hash-object", "--", file], { cwd: dir }) : "gone");
         const taken = new Map();
         let either = true, regen = null, unwritten = null;
         for (const file of conflicts) {
-          if (git(["checkout", "--ours", "--", file], { cwd: dir, allowFail: true }).status !== 0
-            && git(["checkout", "--theirs", "--", file], { cwd: dir, allowFail: true }).status !== 0) { either = false; break; }
-          taken.set(file, shaOf(file));
+          if ((await git(["checkout", "--ours", "--", file], { cwd: dir, allowFail: true })).status !== 0
+            && (await git(["checkout", "--theirs", "--", file], { cwd: dir, allowFail: true })).status !== 0) { either = false; break; }
+          taken.set(file, await shaOf(file));
         }
         if (either) {
           regen = await runRegenerateIn(dir, regenerate, io);
-          unwritten = regen.ok ? conflicts.filter((file) => shaOf(file) === taken.get(file)) : null;
+          if (regen.ok) {
+            unwritten = [];
+            for (const file of conflicts) if (await shaOf(file) === taken.get(file)) unwritten.push(file);
+          }
         }
         if (regen?.ok && !unwritten.length) {
-          git(["add", "-A", "--", ...conflicts], { cwd: dir });
-          git(["commit", "--quiet", "--no-edit"], { cwd: dir });
+          await git(["add", "-A", "--", ...conflicts], { cwd: dir });
+          await git(["commit", "--quiet", "--no-edit"], { cwd: dir });
           settled = "atelier land, taking either side and regenerating";
           settledConflicts = conflicts;
           print(`The conflicts were all in files \`${regenerate}\` rewrites; took either side and let the command write them again.`);
@@ -944,13 +1131,13 @@ async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, g
           reason = !either ? "a conflicted file had neither side to take"
             : !regen.ok ? `the regenerate command \`${regenerate}\` failed (${regen.why})`
               : `the regenerate command left ${unwritten.join(", ")} as either side had it`;
-          const back = git(["reset", "--hard", "HEAD"], { cwd: dir, allowFail: true });
+          const back = await git(["reset", "--hard", "HEAD"], { cwd: dir, allowFail: true });
           if (back.status !== 0) print(`Warning: the workspace could not be reset after the regeneration did not settle the conflicts (${(back.stderr || back.stdout || "").trim()}); resolve what is there by hand`);
-          else git(["merge", "--no-ff", "--no-edit", "-m", `Merge main into ${id}\n\nAtelier land: main at ${mainHead}`, "FETCH_HEAD"], { cwd: dir, allowFail: true });
+          else await git(["merge", "--no-ff", "--no-edit", "-m", mergeMessage, "FETCH_HEAD"], { cwd: dir, allowFail: true });
         }
       }
       if (!settled) {
-        const data = { fromMain, ...(conflicts.length ? { conflicts, resolvedBy: "the project owner, by hand", ...(reason ? { reason } : {}) } : {}) };
+        const data = { fromMain, mainHead, ...(conflicts.length ? { conflicts, resolvedBy: "the project owner, by hand", ...(reason ? { reason } : {}) } : {}) };
         await record("merge", Date.now() - t0, { failed: true, ...data });
         // The conflicts can go back to the task's builder instead of the
         // owner's session (t243): a merge-main dispatch makes a runner
@@ -993,27 +1180,32 @@ async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, g
   // add, and the levels merge as they always did — as they also do for
   // a repo with no src/route-level.ts, where the comparison is skipped
   // and the landing goes on, or a level one side alone raised.
-  const levelAt = (rev) => {
-    const shown = git(["show", `${rev}:src/route-level.ts`], { cwd: dir, allowFail: true });
+  const levelAt = async (rev) => {
+    const shown = await git(["show", `${rev}:src/route-level.ts`], { cwd: dir, allowFail: true });
     const found = /export const ROUTE_LEVEL = (\d+);/.exec(shown.stdout ?? "");
     return found ? Number(found[1]) : null;
   };
-  const holdsMain = (rev) => git(["merge-base", "--is-ancestor", mainHead, rev], { cwd: dir, allowFail: true }).status === 0;
-  const line = git(["rev-list", "--first-parent", "--max-count=200", "HEAD"], { cwd: dir }).split("\n").map((sha) => sha.trim()).filter(Boolean);
+  const holdsMain = async (rev) => (await git(["merge-base", "--is-ancestor", mainHead, rev], { cwd: dir, allowFail: true })).status === 0;
+  const line = (await git(["rev-list", "--first-parent", "--max-count=200", "HEAD"], { cwd: dir })).split("\n").map((sha) => sha.trim()).filter(Boolean);
   let stepped = 0;
-  while (stepped < line.length && holdsMain(line[stepped])) stepped++;
+  while (stepped < line.length && await holdsMain(line[stepped])) stepped++;
   const taskHead = stepped > 0 && stepped < line.length ? line[stepped] : null;
-  const based = taskHead ? git(["merge-base", taskHead, mainHead], { cwd: dir, allowFail: true }) : null;
+  const based = taskHead ? await git(["merge-base", taskHead, mainHead], { cwd: dir, allowFail: true }) : null;
   const forkPoint = based && based.status === 0 ? String(based.stdout ?? "").trim() : null;
   if (taskHead && forkPoint && forkPoint !== mainHead) {
-    const baseLevel = levelAt(forkPoint), taskLevel = levelAt(taskHead), mainLevel = levelAt(mainHead), mergedLevel = levelAt("HEAD");
+    const baseLevel = await levelAt(forkPoint), taskLevel = await levelAt(taskHead), mainLevel = await levelAt(mainHead), mergedLevel = await levelAt("HEAD");
     if (baseLevel !== null && taskLevel > baseLevel && mainLevel > baseLevel && mergedLevel !== null) {
       const rightLevel = mainLevel + (taskLevel - baseLevel);
       if (mergedLevel < rightLevel) {
         const levelFile = join(dir, "src", "route-level.ts");
+        // A numeric raise alone would falsely map the task's capabilities to
+        // main's old level. Keep the merge for the builder to resolve explicitly.
+        if (/\b(?:declare|buildCapabilities)\s*\(/.test(readFileSync(levelFile, "utf8"))) {
+          throw new StepError(`main and ${id} each raised the route level from ${baseLevel}; named capability legacy mappings need manual resolution. Move the task's new capability declaration levels above main's ${mainLevel}, set ROUTE_LEVEL to ${rightLevel}, and commit before rerunning atelier land ${id}. Keep main's published mappings unchanged.`);
+        }
         writeFileSync(levelFile, readFileSync(levelFile, "utf8").replace(/export const ROUTE_LEVEL = \d+;/, `export const ROUTE_LEVEL = ${rightLevel};`));
-        git(["add", "--", "src/route-level.ts"], { cwd: dir });
-        git(["commit", "--quiet", "-m", `Raise the route level after merging main into ${id}\n\nAtelier land: main and ${id} each raised it from ${baseLevel}, so the merged level is ${rightLevel}`], { cwd: dir });
+        await git(["add", "--", "src/route-level.ts"], { cwd: dir });
+        await git(["commit", "--quiet", "-m", `Raise the route level after merging main into ${id}\n\nAtelier land: main and ${id} each raised it from ${baseLevel}, so the merged level is ${rightLevel}`], { cwd: dir });
         routeLevel = { base: baseLevel, main: mainLevel, task: taskLevel, was: mergedLevel, set: rightLevel };
         print(`main and ${id} each raised the route level from ${baseLevel} (main to ${mainLevel}, ${id} to ${taskLevel}), and the merge left it at ${mergedLevel}: the merged CLI calls both sides' routes, so the level is raised to ${rightLevel}. Deploy the server from a checkout at route level ${rightLevel} or newer (npm run deploy, which records the commit it deploys) before the next landing or runner.`);
       }
@@ -1037,15 +1229,15 @@ async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, g
       throw new StepError(`the fixture regeneration command \`${regenerate}\` failed (${r.why}); the merge is left in the workspace. Fix the command (the project's policy declares it: atelier init --regenerate), then run atelier land ${id} again`);
     }
     let changed = false;
-    if (git(["status", "--porcelain"], { cwd: dir })) {
-      git(["add", "-A"], { cwd: dir });
-      git(["commit", "--quiet", "-m", `Regenerate after merging main into ${id}`], { cwd: dir });
+    if (await git(["status", "--porcelain"], { cwd: dir })) {
+      await git(["add", "-A"], { cwd: dir });
+      await git(["commit", "--quiet", "-m", `Regenerate after merging main into ${id}`], { cwd: dir });
       changed = true;
       print("Committed what the regeneration changed.");
     }
     await record("regenerate", Date.now() - start, { command: regenerate, changed });
   }
-  return { head: git(["rev-parse", "HEAD"], { cwd: dir }), mainHead, mergedIn };
+  return { head: await git(["rev-parse", "HEAD"], { cwd: dir }), mainHead, mergedIn };
 }
 
 // ── the landing as a Cloudflare Workflow (t280) ────────────────────────────

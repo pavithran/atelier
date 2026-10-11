@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
-import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { LANDING_LEASE_EXPIRY_MS } from "../src/landing-lease.ts";
 import { LAND_JSON_MAX } from "../src/ledger.ts";
 import type { ReviewClaim, Ledger, LedgerEvent } from "../src/ledger.ts";
@@ -476,7 +476,7 @@ it("GET /api/version answers without a token, and every other /api route still n
   const noToken = { ...env, ATELIER_TOKEN: "land-routes-token" } as typeof env;
   const version = await worker.fetch(new Request("https://atelier.test/api/version"), noToken);
   expect(version.status).toBe(200);
-  expect(await version.json()).toMatchObject({ routeLevel: ROUTE_LEVEL });
+  expect(await version.json()).toMatchObject({ routeLevel: ROUTE_LEVEL, capabilities: [...SERVER_CAPABILITIES] });
   expect((await worker.fetch(new Request("https://atelier.test/api/projects"), noToken)).status).toBe(401);
 });
 
