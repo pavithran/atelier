@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { addressRefusal, builderRefusals, commitRefusals, emailProblem, IDENTITY_LOG_FORMAT, isPublicMirror, parseIdentityLog, publicRefusals, settleCommitIdentity } from "../src/commit-identity.ts";
+import { addressRefusal, builderRefusals, commitRefusals, emailProblem, gitIdentProblem, IDENTITY_LOG_FORMAT, isPublicMirror, parseIdentityLog, publicRefusals, settleCommitIdentity } from "../src/commit-identity.ts";
 import { identityRefusals, IDENTITY_FILE, resolveIdentity, runTask } from "../cli/runner.mjs";
 import { identityEnv, identityRangeRefusals } from "../cli/atelier.mjs";
 
@@ -326,4 +326,44 @@ test("a claim in a project with no identity says so, and the runner's check refu
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /Warning: proj has no commit identity in its policy; the owner sets one with atelier init --commit-name NAME --commit-email EMAIL/);
   assert.deepEqual(identityRefusals(f.ws, f.env, "proj"), [r.output.match(/Warning: (proj has no commit identity[^\n]*?\))\./)[1]]);
+});
+
+test("a commit name is accepted exactly when Git keeps it as written (t451, Git's ident.c as the oracle)", (t) => {
+  const repo = mkdtempSync(join(tmpdir(), "atelier-ident-"));
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  execFileSync("git", ["init", "-q", repo]);
+  const tree = execFileSync("git", ["-C", repo, "mktree"], { input: "", encoding: "utf8" }).trim();
+  // What Git records as the author name for NAME, or null when it refuses it.
+  const recorded = (name) => {
+    try {
+      const env = { ...process.env, GIT_AUTHOR_NAME: name, GIT_AUTHOR_EMAIL: "owner@example.org", GIT_COMMITTER_NAME: "Owner", GIT_COMMITTER_EMAIL: "owner@example.org", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
+      const sha = execFileSync("git", ["-C", repo, "commit-tree", tree, "-m", "x"], { env, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+      return execFileSync("git", ["-C", repo, "log", "-1", "--format=%an", sha], { encoding: "utf8" }).replace(/\n$/, "");
+    } catch { return null; }
+  };
+  const names = ["Project Owner", "pavi thomas", ",,,", ";", "'", "\"Owner\"", "Owner,", ",Owner", "Owner;", "Owner:", "'Owner'", "Owner\\", "Ann O'Neil", "Dr. Owner", "Owner.", ".Owner", "-", "李 小龍", "a,b", "x;y", "O\"wner"];
+  for (const name of names) {
+    const keeps = recorded(name) === name;
+    assert.equal(gitIdentProblem(name) === null, keeps, `${JSON.stringify(name)}: Git records ${JSON.stringify(recorded(name))}`);
+    if (keeps) assert.equal(settleCommitIdentity({ commitName: name, commitEmail: "owner@example.org" }, undefined).name, name);
+    else assert.throws(() => settleCommitIdentity({ commitName: name, commitEmail: "owner@example.org" }, undefined), (e) => e.code === "bad_identity");
+  }
+});
+
+test("every commit email the policy accepts is one Git keeps as written (t451)", (t) => {
+  const repo = mkdtempSync(join(tmpdir(), "atelier-ident-"));
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  execFileSync("git", ["init", "-q", repo]);
+  const tree = execFileSync("git", ["-C", repo, "mktree"], { input: "", encoding: "utf8" }).trim();
+  const recorded = (email) => {
+    try {
+      const env = { ...process.env, GIT_AUTHOR_NAME: "Owner", GIT_AUTHOR_EMAIL: email, GIT_COMMITTER_NAME: "Owner", GIT_COMMITTER_EMAIL: "owner@example.org", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
+      const sha = execFileSync("git", ["-C", repo, "commit-tree", tree, "-m", "x"], { env, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+      return execFileSync("git", ["-C", repo, "log", "-1", "--format=%ae", sha], { encoding: "utf8" }).replace(/\n$/, "");
+    } catch { return null; }
+  };
+  const emails = ["owner@example.org", "1111157+pavithran@users.noreply.github.com", "a.b@c.d.example", "o'neil@example.org", "owner@example.org,", ",owner@example.org", "owner@example.org.", "'owner@example.org'", "owner;x@example.org", "owner\"@example.org", "own er@example.org", "owner@example.org\\", ":owner@example.org"];
+  for (const email of emails) {
+    if (emailProblem(email) === null) assert.equal(recorded(email), email, `${JSON.stringify(email)} is accepted but Git records ${JSON.stringify(recorded(email))}`);
+  }
 });
