@@ -5,6 +5,7 @@ import command_adopt from "./adopt.mjs";
 import command_approvals from "./approvals.mjs";
 import command_approve from "./approve.mjs";
 import command_base_token from "./base-token.mjs";
+import command_baseline_token from "./baseline-token.mjs";
 import command_block from "./block.mjs";
 import command_check from "./check.mjs";
 import command_claim from "./claim.mjs";
@@ -75,6 +76,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/approvals.mjs", run: command_approvals },
   { path: "cli/commands/approve.mjs", run: command_approve },
   { path: "cli/commands/base-token.mjs", run: command_base_token },
+  { path: "cli/commands/baseline-token.mjs", run: command_baseline_token },
   { path: "cli/commands/block.mjs", run: command_block },
   { path: "cli/commands/check.mjs", run: command_check },
   { path: "cli/commands/claim.mjs", run: command_claim },

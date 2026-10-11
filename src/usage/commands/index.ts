@@ -6,6 +6,7 @@ import command_adopt from "./adopt.ts";
 import command_approvals from "./approvals.ts";
 import command_approve from "./approve.ts";
 import command_base_token from "./base-token.ts";
+import command_baseline_token from "./baseline-token.ts";
 import command_block from "./block.ts";
 import command_check from "./check.ts";
 import command_claim from "./claim.ts";
@@ -76,6 +77,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/approvals.ts", spec: command_approvals },
   { path: "src/usage/commands/approve.ts", spec: command_approve },
   { path: "src/usage/commands/base-token.ts", spec: command_base_token },
+  { path: "src/usage/commands/baseline-token.ts", spec: command_baseline_token },
   { path: "src/usage/commands/block.ts", spec: command_block },
   { path: "src/usage/commands/check.ts", spec: command_check },
   { path: "src/usage/commands/claim.ts", spec: command_claim },
