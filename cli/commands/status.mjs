@@ -54,7 +54,7 @@ export default async function statusCommand() {
     const { items } = await call("GET", P(p.name), undefined, OWNER);
     return { name: p.name, title: p.title, items, inbox };
   }));
-  if (args.json) return console.log(JSON.stringify(statusJson(views, server()), null, 2));
+  if (args.json) return console.log(JSON.stringify(statusJson(views, server(), Array.isArray(offers) ? offers : null), null, 2));
   const strays = formatStrays(localStrays());
   console.log(tokenExpiryWarningsText(formatStatus(views, { queue, offers, server: server() }) + (strays ? "\n\n" + strays : "")));
   console.log(formatSlots(await slotStatus()));

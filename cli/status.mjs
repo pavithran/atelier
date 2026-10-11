@@ -1,9 +1,10 @@
 // The owner's queue as plain text. Pure: the caller fetches, this only formats.
 // A view is { name, title?, items, inbox }, where items are the project's items
-// and inbox holds the entries the Decisions page lists for it. The waiting
-// list splits into the lead developer's own decisions, under "Waiting for
-// you", and what the orchestrator and runners handle, under their own heading
-// (isOwnCall in src/rules.ts). With `waiting` —
+// and inbox holds the notices the server's inbox holds for it. What waits on
+// the owner is what attentionFor (src/attention.ts) places under the owner's
+// calls, one line per task, as Home, the Overview and `atelier inbox` place
+// it; the rest of the live tasks are counted by pipeline stage, and
+// overlapping scopes are counted, not listed. With `waiting` —
 // the runner queue and the runner offers as the server holds them — the
 // waiting section also names each open review request and its reviewer, and
 // says of any queued job no live runner offers that it can never be claimed,
@@ -18,7 +19,8 @@
 // (jobsLine in cli/runner.mjs): the jobs it takes and, behind them, the known
 // jobs it does not.
 import { holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
-import { isOwnCall, mergedByOverride } from "../src/rules.ts";
+import { mergedByOverride } from "../src/rules.ts";
+import { attentionFor, OWNER_CALL_LABEL, pipelineLine } from "../src/attention.ts";
 import { daySpend } from "../src/usage/report.ts";
 import { jobsLine } from "./runner.mjs";
 
@@ -36,20 +38,24 @@ export function itemJson(i) {
     createdAt: i.createdAt, updatedAt: i.updatedAt, lastPushAt: i.lastPushAt };
 }
 
-// The queue as JSON: each project with its own decisions, its items each
-// carrying its times, and the project's overlapping pairs of tasks, each
-// pair once and sorted. Merged and abandoned items are included; a reader
-// that wants only live work filters by state.
-// `server` is the server in use, for the link to each merge by override.
-export function statusJson(views, server = "") {
+// The queue as JSON: each project with its notices, its items each carrying
+// its times, the project's overlapping pairs of tasks, each pair once and
+// sorted, and its placement (attentionFor): what waits on the owner, the
+// pipeline and what could not be read. Merged and abandoned items are
+// included; a reader that wants only live work filters by state.
+// `server` is the server in use, for the link to each merge by override;
+// `offers` the runner offers (null when not read) and `now` the time read at.
+export function statusJson(views, server = "", offers = null, now = new Date()) {
   return views.map((v) => {
     const mine = v.inbox.filter((x) => x.project === v.name);
+    const a = attentionFor(v.name, v.items, v.inbox, offers, now);
     return {
       name: v.name,
       ...(v.title ? { title: v.title } : {}),
       inbox: mine,
       items: v.items.map(itemJson),
-      overlaps: overlapPairs(mine),
+      overlaps: a.overlaps,
+      attention: { owner: a.owner.map((t) => ({ ...t, url: absolute(server, t.href) })), pipeline: a.pipeline, unknown: a.unknown },
       // The merges that went in on the owner's override, each with the link
       // to its page (t371).
       mergedByOverride: mergedByOverride(v.items).map((i) => ({ id: i.id, url: taskLink(server, v.name, i.id) })),
@@ -57,33 +63,8 @@ export function statusJson(views, server = "") {
   });
 }
 
-// The other task an overlap entry's reason names, or null when the reason is
-// worded another way or names the entry's own item: no pair comes of it.
-function overlapOther(x) {
-  const other = /^scope overlaps (\S+) \(/.exec(x.reason)?.[1];
-  return other && other !== x.itemId ? other : null;
-}
-
-// The unordered pairs of tasks whose scopes overlap, each pair once, sorted,
-// whether the decisions name it from one side or both. One side is the
-// entry's item, the other the id its reason names ("scope overlaps t186
-// (owner)", as src/rules.ts words it), so an entry worded another way names
-// no pair.
-function overlapPairs(entries) {
-  const seen = new Set();
-  const pairs = [];
-  for (const x of entries) {
-    if (x.kind !== "overlap") continue;
-    const other = overlapOther(x);
-    if (!other) continue;
-    const [a, b] = [x.itemId, other].sort();
-    const key = `${a} ${b}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    pairs.push([a, b]);
-  }
-  return pairs.sort((p, q) => p[0].localeCompare(q[0]) || p[1].localeCompare(q[1]));
-}
+// A path on the server in use, as a full address where the server is known.
+export const absolute = (server, path) => `${server ? String(server).replace(/\/+$/, "") : ""}${path}`;
 
 // The local half of `status --project`, as text: what this machine holds for
 // the project's tasks and whether a landing is running here. Pure: the caller
@@ -120,27 +101,15 @@ export function formatLocal(local) {
   return ["On this Mac:", ...local.tasks.map((t) => `  ${localTaskLine(t)}`), ...leftover, `  Landing: ${lockText}; ${leaseText}.`].join("\n");
 }
 
-// The command that answers an inbox entry, where there is one.
-function nextCommand(entry, project) {
-  const flag = ` --project ${project}`;
-  if (entry.kind === "accept") return `atelier accept ${entry.itemId}${flag}`;
-  if (entry.kind === "assess") return `atelier land ${entry.itemId} --reviewer ${entry.reviewer ?? "H/M"}${flag}`;
-  if (entry.kind === "merge") return `atelier merge ${entry.itemId}${flag}`;
-  if (entry.kind === "ship") return `atelier ship --dry-run${flag}`;
-  if (entry.kind === "stale") return `atelier release ${entry.itemId}${flag}`;
-  // A plan's entries are answered from what the plan shows.
-  if (entry.kind === "approve-plan" || entry.kind === "plan-blocked") return `atelier plan show ${entry.itemId}${flag}`;
-  return null;
-}
-
-// The lines for one group of decisions: each entry's id, kind and title, its
-// reason, and the command that answers it where there is one.
-function decisionLines(entries, project) {
+// The lines for the tasks waiting on the owner: each task's id, call and
+// title, the one sentence saying what to do, the notice behind it, the
+// command where there is one and the link to where the call is made.
+export function ownerLines(owner, server = "") {
   const lines = [];
-  for (const x of entries) {
-    lines.push(`    ${x.itemId}  ${x.kind}  ${x.title}`, `      ${x.reason}`);
-    const next = nextCommand(x, project);
-    if (next) lines.push(`      next: ${next}`);
+  for (const t of owner) {
+    lines.push(`    ${t.id}  ${OWNER_CALL_LABEL[t.call]}  ${t.title}`, `      ${t.sentence}`, `      why: ${t.why}`);
+    if (t.command) lines.push(`      next: ${t.command}`);
+    lines.push(`      ${absolute(server, t.href)}`);
   }
   return lines;
 }
@@ -230,41 +199,32 @@ function unofferedLine(dead) {
 export function formatStatus(views, waiting = {}) {
   if (!views.length) return "No projects.";
   const offers = Array.isArray(waiting.offers) ? waiting.offers : null;
+  const now = waiting.now ?? new Date();
   const lines = [];
   for (const v of views) {
-    const mine = v.inbox.filter((x) => x.project === v.name);
-    // An overlap notice is not a wait: it says a conflict is likely, not that
-    // the owner must decide anything, so it leaves the decisions and stands
-    // under its own heading below them. One whose reason names no other task
-    // stands under no heading, so it stays among the decisions and the
-    // server's word is not lost.
-    const decisions = mine.filter((x) => x.kind !== "overlap" || !overlapOther(x));
-    // The lead developer's own decisions wait on the human; the rest the
-    // orchestrator and runners handle, so they are listed apart.
-    const own = decisions.filter((x) => isOwnCall(x.kind));
-    const handled = decisions.filter((x) => !isOwnCall(x.kind));
-    const overlaps = overlapPairs(mine);
-    const working = v.items.filter((i) => i.state === "claimed" || i.state === "submitted");
-    const queued = v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch);
+    const a = attentionFor(v.name, v.items, v.inbox, offers, now);
+    // Each task is said once: a task waiting on the owner is not listed again
+    // as in progress or waiting for a runner.
+    const theirs = new Set(a.owner.map((t) => t.id));
+    const working = v.items.filter((i) => (i.state === "claimed" || i.state === "submitted") && !theirs.has(i.id));
+    const queued = v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch && !theirs.has(i.id));
     const reviews = reviewQueue(waiting, v.name, offers);
     const held = heldIn(waiting, v.name);
     const deadBuilds = new Map(queued
       .filter((i) => offers && (i.dispatch.agent || i.dispatch.model))
-      .map((i) => [i.id, unoffered(i.dispatch, offers, waiting.now)])
+      .map((i) => [i.id, unoffered(i.dispatch, offers, now)])
       .filter(([, dead]) => dead !== null));
     lines.push(v.title ? `${v.title} (${v.name})` : v.name);
-    if (!decisions.length && !working.length && !queued.length && !reviews.length) {
-      // Only overlaps follow, so the idle line is worded for the owner: it
-      // would otherwise read against the heading printed under it.
-      lines.push(overlaps.length ? "  Nothing waiting on you." : "  Nothing waiting.");
-    }
-    if (own.length) lines.push("  Waiting for you", ...decisionLines(own, v.name));
-    if (handled.length) lines.push("  Handled by the orchestrator", ...decisionLines(handled, v.name));
-    if (overlaps.length) {
-      lines.push("  Overlapping scopes");
-      for (const [a, b] of overlaps) lines.push(`    ${a} and ${b} name overlapping paths`);
-      lines.push("    Expect a merge conflict when the second lands; nothing waits on you.");
-    }
+    if (!a.owner.length) {
+      // With nothing else following, the bare line; otherwise it is worded
+      // for the owner, so it does not read against what is listed under it.
+      const quiet = !a.pipeline.length && !a.overlaps.length && !reviews.length && !a.unknown.length;
+      lines.push(quiet ? "  Nothing waiting." : "  Nothing waiting on you.");
+    } else lines.push("  Waiting for you", ...ownerLines(a.owner, waiting.server));
+    if (a.unknown.length) lines.push("  Not read", ...a.unknown.map((x) => `    ${x}`));
+    if (a.pipeline.length) lines.push(`  In the pipeline: ${pipelineLine(a)}; none waits on you.`);
+    // Overlapping scopes are counted, not listed: --json names each pair.
+    if (a.overlaps.length) lines.push(`  Overlapping scopes: ${a.overlaps.length} ${a.overlaps.length === 1 ? "pair" : "pairs"}; expect a merge conflict when the second lands; nothing waits on you. atelier status --json lists them.`);
     if (working.length) {
       lines.push("  In progress");
       for (const i of working) lines.push(`    ${i.id}  ${i.state}  held by ${i.owner ?? "nobody"}  ${i.title}`);
@@ -353,7 +313,37 @@ export function formatStatusBrief(b) {
   lines.push(!lease ? "Landing: none running."
     : lease.unreadable ? `Landing: the lease could not be read (${oneLine(lease.unreadable)}).`
       : `Landing: ${lease.item} held by ${lease.holder} since ${lease.since}.`);
-  lines.push(`Waiting on the owner: ${s.waiting.length ? named(s.waiting.map((w) => `${w.id} ${w.kind}`)) : "nothing"}.`);
+  lines.push(`Waiting on the owner: ${s.waiting.length ? named(s.waiting.map((w) => `${w.id} ${w.call}`)) : "nothing"}.`);
   lines.push(spendLine(b.usage));
   return lines.join("\n");
+}
+
+// `atelier inbox`: across projects, only what waits on the owner, one entry
+// per task with what to do and the link to where it is done; the pipeline and
+// overlapping scopes counted in a line each, and what could not be read said.
+// A view is { name, title?, items (null when not read), inbox }; `waiting`
+// is { offers (null when not read), server, now }.
+export function formatInbox(views, waiting = {}) {
+  const lines = [];
+  let total = 0;
+  for (const v of views) {
+    const a = attentionFor(v.name, v.items, v.inbox, waiting.offers ?? null, waiting.now ?? new Date());
+    total += a.owner.length;
+    if (!a.owner.length && !a.unknown.length) continue;
+    lines.push(`${v.title ? `${v.title} (${v.name})` : v.name}: ${a.owner.length} waiting on you${a.unknown.length ? ", and more may be" : ""}`);
+    lines.push(...ownerLines(a.owner, waiting.server));
+    for (const x of a.unknown) lines.push(`    Not read: ${x}`);
+    if (a.pipeline.length) lines.push(`    In the pipeline: ${pipelineLine(a)}; none waits on you.`);
+    if (a.overlaps.length) lines.push(`    Overlapping scopes: ${a.overlaps.length} ${a.overlaps.length === 1 ? "pair" : "pairs"}; atelier status --json lists them.`);
+  }
+  return total || lines.length ? lines.join("\n") : "Nothing needs you.";
+}
+
+// The same as JSON: each project's owner tasks, each with its full link, its
+// pipeline tasks, its overlapping pairs and what could not be read.
+export function inboxJson(views, waiting = {}) {
+  return views.map((v) => {
+    const a = attentionFor(v.name, v.items, v.inbox, waiting.offers ?? null, waiting.now ?? new Date());
+    return { project: v.name, owner: a.owner.map((t) => ({ ...t, url: absolute(waiting.server, t.href) })), pipeline: a.pipeline, overlaps: a.overlaps, unknown: a.unknown };
+  });
 }

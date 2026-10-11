@@ -867,8 +867,11 @@ it("the standing route is readable by any signed-in actor, and by no one else", 
     const s = await res.json() as { project: { name: string }; live: { id: string }[]; waiting: { id: string; brief: { verdict: string } | null }[]; queued: { id: string }[] };
     expect(s.project.name).toBe(name);
     expect(s.live.map((x) => x.id)).toEqual(["t1"]);
-    expect(s.waiting).toEqual([expect.objectContaining({ id: "t1", kind: "accept", brief: expect.objectContaining({ verdict: "accept" }) })]);
-    expect(s.queued.map((x) => x.id)).toEqual(["t2"]);
+    // t2 waits on the owner too while no live runner can take it, which
+    // depends on the runner offers earlier tests in this file recorded.
+    expect(s.waiting.filter((w) => (w as { call?: string }).call !== "start-runner")).toEqual([expect.objectContaining({ id: "t1", call: "accept", href: `/p/${name}/t1`, brief: expect.objectContaining({ verdict: "accept" }) })]);
+    for (const w of s.waiting.filter((x) => (x as { call?: string }).call === "start-runner")) expect(w.id).toBe("t2");
+    expect(s.queued.map((x) => x.id)).toEqual(["t2"])
   }
   const anonymous = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/standing`, { headers: { "x-atelier-actor": "owner" } }), testEnv);
   expect(anonymous.status).toBe(401);

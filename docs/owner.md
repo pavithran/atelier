@@ -82,8 +82,10 @@ from that record and cannot go stale or be written wrongly by hand.
   change classes, so none are shown.
   Each part reads its own source, not a window over the project's record:
   holders from the items, since when and handoff notes from each live task's
-  own events, merges from the merged items. A waiting task keeps the inbox's
-  own reason, with the brief after it. Where a task's record is longer than
+  own events, merges from the merged items. A waiting task says what to do,
+  links where it is done and keeps the notice behind it, with the brief
+  after it; the rest of the live tasks are counted by stage, and
+  overlapping scopes counted, each in a disclosure. Where a task's record is longer than
   what is read of it, the page and the text say what is not shown rather than
   guess.
 - `GET /api/projects/NAME/standing` returns the same as JSON to any signed-in
@@ -95,6 +97,47 @@ from that record and cannot go stale or be written wrongly by hand.
   head is the commit the baseline's head is paired with; otherwise whether the
   baseline's head is in the checkout. `atelier status` with no project keeps
   its owner's queue output.
+
+## What waits on the owner
+
+Home, a project's Overview, the Decisions page, `atelier status` and
+`atelier inbox` read one rule, `attentionFor` in `src/attention.ts`. From a
+project's items, its notices (the server's inbox), the runner offers and
+the time, it places each live task once: under the owner's call, when one
+applies, or else at its pipeline stage (`taskStage` in `src/board.ts`).
+The views count tasks, never notices, so they give the same number per
+project. A merged or abandoned task is placed nowhere, unless its merge has
+protected actions still to ship.
+
+The owner's calls, in precedence: a task that qualifies for two is placed
+under the first.
+
+| Order | Situation | Placed | What the owner is asked to do | Where |
+| --- | --- | --- | --- | --- |
+| 1 | Secret flag standing at the task's head | Owner: clear secret flag | Check the flagged line and clear the flag with a reason, or send the task back | Task page |
+| 2 | Block (`atelier block`, any holder) | Owner: unblock | Settle what blocks it, then unblock it | Task page, `atelier unblock` |
+| 3 | Plan blocked | Owner: decide plan | Read the blocked plan and decide how it goes on | Task page, `atelier plan show` |
+| 4 | Plan approval (a proposal waits) | Owner: approve plan | Read the split, approve it by its hash or send it back | Task page, `atelier plan show` |
+| 5 | Acceptance (every required check passed at the head) | Owner: accept | Accept the revision | Task page, `atelier accept` |
+| 6 | Merged with declared protected actions not yet run | Owner: ship | Dry run, then approve and ship | Ship tab, `atelier ship --dry-run` |
+| 7 | Unavailable runner: queued, and no live runner can take it | Owner: no runner | Start a runner that offers it, or send the task elsewhere | Task page |
+
+What stays with the pipeline, at its stage, for the orchestrator, runners
+and reviewers:
+
+| Situation | Placed |
+| --- | --- |
+| Undispatched open work | Pipeline: open (not yet dispatched); the orchestrator dispatches it |
+| Queued, and a live runner can take it | Pipeline: queued |
+| Claimed, stale or not | Pipeline: building |
+| Submitted, needing an independent review, failing checks or out of scope | Pipeline: submitted (in review) |
+| Accepted, waiting to merge | Pipeline: accepted |
+| Overlapping scopes | A note on both tasks, counted in a disclosure, never inline |
+
+What a view could not read is said, never counted as nothing: a project
+whose tasks were not read shows its count as unknown, notices not read
+leave acceptance and plan decisions unshown and say so, and runner offers
+not read leave queued tasks at their stage with the doubt stated.
 
 ## Decisions, projects, and history
 
