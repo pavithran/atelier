@@ -346,7 +346,8 @@ it("decision 2026-10-09: the inbox names the reviewer a land would use for an as
   // Only the contributor's own model is available: the entry names no reviewer.
   const none = await L.inbox(T, [entry("opus-5.5", { harness: "claude-code" })]);
   expect(none[0].reviewer).toBeNull();
-  expect((await L.inbox(T)).map((e) => [e.kind, e.reviewer])).toEqual([["assess", null]]);
+  // With no pool given the reviewer is left unset: not read, never "none qualifies".
+  expect((await L.inbox(T)).map((e) => [e.kind, e.reviewer])).toEqual([["assess", undefined]]);
 });
 
 it("the holder under another letter case, profile or registered name cannot review, and that model's approval does not count", async () => {

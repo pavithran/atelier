@@ -38,17 +38,26 @@ const standing = {
 };
 const brief = { standing, version: null, queue: [], lease: null, usage: null };
 
-for (const [form, render] of [
-  ["status", () => formatStatus(views)],
-  ["status --project", () => formatStanding(standing)],
-  ["status --brief", () => formatStatusBrief(brief)],
+// `status` places each task by attentionFor (src/attention.ts, t504): only
+// the accept waits on the owner, while the review a qualifying reviewer can
+// take and the merge are the pipeline's, counted there with no command. The
+// standing forms word each waiting entry they are given.
+for (const [form, render, ownerOnly] of [
+  ["status", () => formatStatus(views), true],
+  ["status --project", () => formatStanding(standing), false],
+  ["status --brief", () => formatStatusBrief(brief), false],
 ]) {
   test(`${form} snapshot: submitted tasks land, accepted tasks merge`, (t) => {
     const text = render();
     t.assert.snapshot(text);
     assert.match(text, /atelier land t1 --reviewer H\/M --project demo/);
-    assert.match(text, /atelier land t2 --reviewer reviewer\/model --project demo/);
-    assert.match(text, /atelier merge t3 --project demo/);
+    assert.doesNotMatch(text, /atelier accept t1/);
+    if (ownerOnly) {
+      assert.match(text, /In the pipeline: 2 tasks: 1 in review, 1 accepted; none waits on you\./);
+    } else {
+      assert.match(text, /atelier land t2 --reviewer reviewer\/model --project demo/);
+      assert.match(text, /atelier merge t3 --project demo/);
+    }
     assert.doesNotMatch(text, /atelier land t3/);
   });
 }
