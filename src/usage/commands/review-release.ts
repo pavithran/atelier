@@ -5,16 +5,17 @@ const spec: CommandSpec = {
   forms: [
     {
       group: "Agents", line: 3, slot: 80,
-      form: "review-release ID [--note T]",
-      about: "Using the owner's credentials, release the current review claim for the actor named by --as, so another reviewer may take it. This also recovers a claim left by a stopped runner. Agent and runner API clients must send the current request number when releasing a claim.",
+      form: "review-release ID [--request N] [--note T]",
+      about: "Release the review claim for the actor named by --as, so another reviewer may take it. Agents and runners must send --request with the number returned by review-claim; stale numbers cannot release a successor's claim. Only the owner's credentials may omit --request to recover the actor's current claim.",
     },
   ],
-  flags: { note: false },
+  flags: { request: false, note: false },
   help: {
     flags: {
+      "--request N": "the current claim's request number; required for agents and runners",
       "--note TEXT": "why the review request is let go; kept with the event",
     },
-    example: 'atelier review-release t3 --note "The harness wrote no verdict" --project demo',
+    example: 'atelier review-release t3 --request 7 --note "The harness wrote no verdict" --project demo',
   },
 };
 

@@ -607,6 +607,27 @@ test("review sends the criteria binding and the request only as given, and refus
   assert.equal(f.requests().filter((q) => q.path.endsWith("/review")).length, 0);
 });
 
+test("review-release forwards the claim generation and preserves owner recovery without a number", (t) => {
+  const f = fixture(t);
+  const run = (...flags) => f.run(f.workspace, ["review-release", "t2", ...flags], { ATELIER_ACTOR: "claude-code/opus" });
+  const numbered = run("--request", "7", "--note", "harness stopped");
+  assert.equal(numbered.status, 0, numbered.stderr);
+  assert.deepEqual(f.requests().map((q) => [q.path, q.body]), [["/api/projects/demo/items/t2/review-release", { request: 7, note: "harness stopped" }]]);
+  f.clear();
+  const owner = run("--note", "manual recovery");
+  assert.equal(owner.status, 0, owner.stderr);
+  assert.deepEqual(f.requests().map((q) => q.body), [{ note: "manual recovery" }]);
+  f.clear();
+  for (const value of ["x", "0", "-1", "1.5", "1e2", "9007199254740992", ""]) {
+    const bad = run(`--request=${value}`);
+    assert.equal(bad.status, 1, value);
+    assert.match(bad.stderr, /--request needs the request number the review claim gave/);
+  }
+  const bare = run("--request");
+  assert.equal(bare.status, 1);
+  assert.equal(f.requests().length, 0, "invalid generations never reach the server");
+});
+
 test("edit says when the acceptance criteria changed, what that withdrew, and that a fresh review is needed; otherwise nothing of them", (t) => {
   const f = fixture(t);
   const edit = (id, ...flags) => {

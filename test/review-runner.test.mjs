@@ -159,7 +159,10 @@ test("runReview releases the request when the harness fails or times out", async
     const { io, calls } = fixture(options);
     const state = await runReview(assignment, config, "home:studio", io);
     assert.equal(state.phase, "failed");
-    assert.ok(calls.some((c) => c.argv && c.argv[0] === "review-release"), JSON.stringify(options));
+    const releases = calls.filter((c) => c.argv?.[0] === "review-release");
+    assert.equal(releases.length, 1, JSON.stringify(options));
+    assert.equal(releases[0].argv[releases[0].argv.indexOf("--request") + 1], String(claimed.request));
+    assert.equal(releases[0].token, FAKE_TOKEN);
   }
 });
 
