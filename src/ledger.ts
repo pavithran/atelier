@@ -4066,6 +4066,15 @@ export class Ledger extends DurableObject<Env> {
 
   releaseReview(itemId: string, actor: string, note: string, proved = false, request?: number): void {
     this.item(itemId);
+    // The owner's manual review-release command predates claim generations.
+    // Resolve its actor to the current claim here, without an RPC race. Agent
+    // credentials and explicitly numbered requests always remain fenced.
+    if (!proved && request === undefined) {
+      this.expireReviewClaims();
+      const row = this.sql.exec(`SELECT id, claimedBy FROM review_requests WHERE item = ? AND state = 'claimed'`, itemId)
+        .toArray().find((row) => sameActor(row.claimedBy as string, actor));
+      request = row?.id as number | undefined;
+    }
     const row = this.currentReviewClaim(itemId, actor, request);
     this.replaceReviewClaim(row.id as number);
     this.log(itemId, actor, "review.released", { note, request }, new Date().toISOString(), proved);
