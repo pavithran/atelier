@@ -95,12 +95,14 @@ async function fixture(t, { failed = false, dirtyWorkspace = false, blockers = [
       return;
     }
     let data = { item, gate, policy: { checks: [command], sandboxOnly: sandbox, ...policy }, evidence };
-    if (path === "/api/projects/proj") data = { project: { policy: { prepare } } };
+    if (path === "/api/projects/proj") data = { project: { policy: { prepare } }, items: [item] };
+    if (path === "/api/projects") data = [{ name: "proj", title: "Proj" }];
+    if (path === "/api/runners") data = [];
     if (path.endsWith("/claim")) data = { item, workspace: { token: "fake", remote, defaultBranch: branch.claim, expiresAt: "tomorrow" }, commitIdentity: { name: "Test Owner", email: "owner@example.test", agentEmails: [] } };
     if (path.endsWith("/push")) data = { ...item, head: git(remote, "rev-parse", "HEAD") };
     if (path.endsWith("/read-token") || path.endsWith("/baseline-token") || path.endsWith("/base-token")) data = { remote, token: "fake", head, defaultBranch: "main" };
     if (path.endsWith("/brief")) data = brief;
-    if (path.endsWith("/inbox")) data = [{ project: "proj", itemId: "t1", title: item.title }];
+    if (path.split("?")[0].endsWith("/inbox")) data = [{ project: "proj", itemId: "t1", title: item.title, kind: "accept", reason: "all checks observed passing at this head", weight: 100 }];
     if (path.endsWith("/sandbox")) data = { runId: "run" };
     if (path.endsWith("/sandbox/run")) data = { status: "done", recorded: true, request: { head }, results: [{ claim: command, passed: !failed, seconds: 1, outputTail: "check output" }] };
     const broken = failStep && path.endsWith(`/${failStep}`) && (failStep !== "base-token" || requests.filter((p) => p.endsWith("/base-token")).length === 1);
@@ -311,18 +313,38 @@ for (const failStep of ["push", "submit"]) test(`done names a failed ${failStep}
   if (failStep === "push") assert.ok(!f.posts.some((p) => /\/(evidence|submit)$/.test(p.path)));
 });
 
-test("inbox and show print the owner brief and preserve JSON output", async (t) => {
+test("show prints the owner brief and preserves JSON output", async (t) => {
   const f = await fixture(t);
-  for (const argv of [["inbox"], ["show", "t1"]]) {
-    const r = await f.run(argv);
-    assert.equal(r.status, 0, r.output);
-    assert.equal(r.output.trim(), formatBrief("proj", "t1", brief, f.origin));
-    const json = await f.run([...argv, "--json"]);
-    assert.equal(json.status, 0, json.output);
-    // show's JSON carries the reviews and any unparsable replies kept on the
-    // task (t407); this fixture records none.
-    assert.deepEqual(JSON.parse(json.output), argv[0] === "show" ? { ...brief, reviews: [], unparsable: [], failedChecks: [] } : [{ project: "proj", itemId: "t1", title: brief.title }]);
-  }
+  const r = await f.run(["show", "t1"]);
+  assert.equal(r.status, 0, r.output);
+  assert.equal(r.output.trim(), formatBrief("proj", "t1", brief, f.origin));
+  const json = await f.run(["show", "t1", "--json"]);
+  assert.equal(json.status, 0, json.output);
+  // show's JSON carries the reviews and any unparsable replies kept on the
+  // task (t407); this fixture records none.
+  assert.deepEqual(JSON.parse(json.stdout), { ...brief, reviews: [], unparsable: [], failedChecks: [] });
+});
+
+test("inbox prints each task waiting on the owner with what to do and its link, and --json one entry per task in the older shape (t504)", async (t) => {
+  const f = await fixture(t);
+  const r = await f.run(["inbox"]);
+  assert.equal(r.status, 0, r.output);
+  assert.deepEqual(r.stdout.trim().split("\n"), [
+    "Proj (proj): 1 waiting on you",
+    `    t1  Accept  ${brief.title}`,
+    "      Accept the revision, whose required checks all passed at its head.",
+    "      why: all checks observed passing at this head",
+    "      next: atelier land t1 --reviewer H/M --project proj",
+    `      ${f.origin}/p/proj/t1`,
+  ]);
+  const json = await f.run(["inbox", "--json"]);
+  assert.equal(json.status, 0, json.output);
+  // The entry list older clients read, one entry per task, with the call beside it.
+  const entries = JSON.parse(json.stdout);
+  assert.deepEqual(entries.map((x) => [x.project, x.itemId, x.kind, x.reason, x.call, x.url]),
+    [["proj", "t1", "accept", "all checks observed passing at this head", "accept", `${f.origin}/p/proj/t1`]]);
+  assert.deepEqual(entries[0].unknown, []);
+  assert.equal(json.output, json.stdout, "nothing goes to standard error when everything was read");
 });
 
 test("show displays both ledger revert links without claiming the undo has merged", async (t) => {
