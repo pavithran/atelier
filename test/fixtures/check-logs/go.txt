@@ -1,0 +1,14 @@
+=== RUN   TestAdds
+--- PASS: TestAdds (0.00s)
+=== RUN   TestCapIsEnforced
+    cap_test.go:12: expected 2, got 1
+--- FAIL: TestCapIsEnforced (0.00s)
+=== RUN   TestSuite
+=== RUN   TestSuite/names_are_read
+    cap_test.go:20: boom
+--- FAIL: TestSuite (0.00s)
+    --- FAIL: TestSuite/names_are_read (0.00s)
+FAIL
+FAIL	example.com/cap	0.123s
+ok  	example.com/sum	0.045s
+FAIL

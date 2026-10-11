@@ -101,7 +101,7 @@ test("show --json carries the reviews with their findings, newest first", async 
   for (const argv of [["show", "t1", "--json", "--project", "proj"], ["show", "t1", "--reviews", "--json", "--project", "proj"]]) {
     const r = await f.run(argv);
     assert.equal(r.status, 0, r.output);
-    assert.deepEqual(JSON.parse(r.output), { ...BRIEF, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [] });
+    assert.deepEqual(JSON.parse(r.output), { ...BRIEF, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [], failedChecks: [] });
   }
 });
 
@@ -132,7 +132,7 @@ test("show --reviews prints each unparsable reply with the reviewer and the head
   assert.equal(full.status, 0, full.output);
   assert.ok(full.output.includes(lines[kept]), "the kept reply is printed with the reviews");
   const asJson = await f.run(["show", "t1", "--json", "--project", "proj"]);
-  assert.deepEqual(JSON.parse(asJson.output), { ...BRIEF, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [UNPARSABLE[0], UNPARSABLE[1]] });
+  assert.deepEqual(JSON.parse(asJson.output), { ...BRIEF, reviews: [REVIEWS[1], REVIEWS[0]], unparsable: [UNPARSABLE[0], UNPARSABLE[1]], failedChecks: [] });
 });
 
 // A fake server answering the two routes show reads: the brief and the item's
