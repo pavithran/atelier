@@ -8,6 +8,9 @@
 // --allow-failing is given. Wrap commits and updates the baseline; checkout
 // remote pushes are opt-in.
 
+import { areaField, AREA_USAGE, BOARD_USAGE } from "../src/area-commands.ts";
+import { boardText } from "../src/board.ts";
+
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { accessSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -245,7 +248,7 @@ const REST = new Set(Object.values(COMMANDS).filter((c) => c.rest).map((c) => c.
 // version is a switch too, so --version=… is refused as a value it does not
 // take, instead of slipping through as a string that answers anyway.
 const ROWS = Object.values(COMMANDS).flatMap((c) => [c.flags, ...Object.values(c.subcommands ?? {}).map((sub) => sub.flags ?? {})]);
-const SWITCHES = new Set(["version", ...ROWS.flatMap((row) => Object.keys(row).filter((flag) => row[flag] === true))]);
+const SWITCHES = new Set(["version", "clear-area", ...ROWS.flatMap((row) => Object.keys(row).filter((flag) => row[flag] === true))]);
 // --brief is text for new and edit and a switch for status, so it is a switch
 // only when the command is status: the first word that is not a flag or a
 // flag's value.
@@ -301,7 +304,8 @@ export function parseArgs(argv, switches = switchesFor(argv)) {
 const subcommandOf = (cmd, word) => (Object.hasOwn(COMMANDS[cmd].subcommands ?? {}, word ?? "") ? COMMANDS[cmd].subcommands[word] : null);
 function checkFlags(cmd) {
   const subcommand = subcommandOf(cmd, args._[1]);
-  const row = { ...COMMON, ...FLAGS[cmd], ...subcommand?.flags };
+  const areaFlags = cmd === "new" ? { area: false } : cmd === "edit" ? { area: false, "clear-area": true } : {};
+  const row = { ...COMMON, ...FLAGS[cmd], ...areaFlags, ...subcommand?.flags };
   const see = COMMAND_USAGE[cmd] ? `atelier ${cmd} --help` : "atelier help";
   for (const flag of Object.keys(args.multi)) if (!(flag in row)) die(`${cmd} does not take --${flag}; see ${see}`);
   if (args.rest && !REST.has(cmd)) die(`${cmd} does not take "--" and the words after it; see ${see}`);
@@ -633,7 +637,8 @@ export function coreArg() {
 // empty value clears the field (the title cannot be cleared); for new, an
 // empty value is refused as a bare flag is, with the flag table's wording.
 export function fieldsArg(cmd) {
-  const out = {};
+  let out;
+  try { out = areaField(args, cmd); } catch (error) { die(error.message); }
   if (args.title !== undefined) {
     if (typeof args.title !== "string" || !args.title.trim()) die(FLAGS[cmd].title);
     out.title = args.title.trim();
@@ -1281,6 +1286,7 @@ export function formatFields(fields) {
     fields.nonGoals?.length ? `Non-goals: ${fields.nonGoals.map(flat).join("; ")}` : null,
     fields.stopWhen?.length ? `Stop when: ${fields.stopWhen.map(flat).join("; ")}` : null,
     fields.nextGate ? `Next gate: ${flat(fields.nextGate)}` : null,
+    fields.area ? `Area: ${flat(fields.area)}` : null,
   ].filter(Boolean);
 }
 
@@ -1683,7 +1689,45 @@ export function registerHandlers(modules, commands = COMMANDS) {
 }
 export const HANDLERS = registerHandlers(HANDLER_MODULES);
 
-if (isMain) {
+// The board and area entry points live here so their implementation stays
+// with the shared area surface (src/area-commands.ts).
+export async function areaCommand() {
+  const [, sub, idOrName, name] = args._;
+  const path = `${P(project())}/areas`;
+  if (sub === "list" && args._.length === 2) {
+    const areas = await call("GET", path);
+    console.log(areas.map(a => `${a.id}  ${a.name}  ${a.purpose}`).join("\n") || "No areas. Tasks appear under Unsorted.");
+  } else if (sub === "create" && idOrName && args._.length === 3 && typeof args.purpose === "string") {
+    const area = await call("POST", path, { name: idOrName, purpose: args.purpose }, OWNER);
+    console.log(`${area.id}  ${area.name}  ${area.purpose}`);
+  } else if (sub === "rename" && idOrName && name && args._.length === 4) {
+    const old = (await call("GET", path)).find(a => a.id === idOrName);
+    if (!old) die(`unknown area ID: ${idOrName}`);
+    const area = await call("POST", `${path}/${encodeURIComponent(idOrName)}`, { name, purpose: args.purpose ?? old.purpose }, OWNER);
+    console.log(`${area.id}  ${area.name}  ${area.purpose}`);
+  } else if (sub === "remove" && idOrName && args._.length === 3) {
+    await call("DELETE", `${path}/${encodeURIComponent(idOrName)}`, {}, OWNER);
+    console.log(`${idOrName} removed. Its tasks are now Unsorted.`);
+  } else die(AREA_USAGE);
+}
+
+export async function boardCommand() {
+  if (args._.length !== 1) die(BOARD_USAGE);
+  const snapshot = await call("GET", `${P(project())}/board`);
+  console.log(args.json ? JSON.stringify(snapshot, null, 2) : boardText(snapshot));
+}
+
+if (isMain && ["board", "area"].includes(args._[0])) {
+  const board = args._[0] === "board";
+  if (args.version) console.log(VERSION_LINE);
+  else if (args.help) console.log(board ? BOARD_USAGE : AREA_USAGE);
+  else {
+    const flags = new Set(["project", "as", ...(board ? ["json"] : ["purpose"])]);
+    for (const flag of Object.keys(args.multi)) if (!flags.has(flag)) die(`${args._[0]} does not take --${flag}`);
+    if (args.rest || args.bare.length || args.problems.length) die(board ? BOARD_USAGE : AREA_USAGE);
+    await (board ? boardCommand() : areaCommand());
+  }
+} else if (isMain) {
   // The command a word names, by its name or one of its aliases.
   const word = args._[0] ?? "help", cmd = commandFor(word);
   const fn = cmd && HANDLERS.get(cmd);
