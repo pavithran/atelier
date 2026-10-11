@@ -272,3 +272,110 @@ it("a pool change leaves a queued build or plan job for a model still free to ta
   expect((await L.claim(id, GPT, RUNNER)).item).toMatchObject({ state: "claimed", owner: GPT });
   expect(await undispatched(L, id)).toEqual([]);
 });
+
+// The owner's standing reaches a ledger three more ways than the pool change
+// a set sends (sendPool in src/index.ts), each tested so that losing it fails:
+// a project registered after a model was held starts with the pool as it is
+// (src/index.ts, PUT /projects/NAME); a dispatch that names a model reads the
+// pool again first, so a ledger the pool change did not reach still refuses
+// it (src/index.ts, the dispatch route); and a handoff checks the new owner's
+// standing for the task's job as a dispatch does (src/ledger.ts,
+// handoffAllowed).
+
+// PUT creates the baseline in Artifacts before the Ledger write; this pool
+// does not reach Artifacts, so a stand-in answers those calls.
+const artifacts = {
+  create: async () => ({}),
+  get: async () => ({
+    info: async () => ({ remote: "https://git.test/repo", defaultBranch: "main" }),
+    createToken: async () => ({ plaintext: "token", id: "id", expiresAt: "soon" }),
+    [Symbol.dispose]() {},
+  }),
+} as unknown as typeof env.ARTIFACTS;
+
+function callWithArtifacts(method: string, path: string, body?: unknown) {
+  return worker.fetch(new Request(`https://atelier.test/api${path}`, {
+    method,
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
+}
+
+const LUNA = "codex/gpt-6-luna";
+
+it("a project registered after a model was held starts with the owner's standing, and refuses the model before any pool change reaches it", async () => {
+  const I = index();
+  await I.putModel(entry("gpt-6-luna", "codex"));
+  // Held in the index alone: no pool change is sent to any project.
+  await I.setModel("gpt-6-luna", { state: "reserved", note: "luna's credits" }, AT);
+
+  const name = "model-held-at-init";
+  const made = await callWithArtifacts("PUT", `/projects/${name}`, { checks: ["npm test"] });
+  expect(made.status, await made.text().catch(() => "")).toBe(200);
+  const L = ledger(name);
+  const { id } = await L.newItem("Small task", ["src/**"], "owner");
+  // Straight to the ledger, past the dispatch route's own refresh.
+  await refusal(L.dispatch(id, "owner", { to: "home", agent: "codex", model: "gpt-6-luna" }), "model_held", /codex\/gpt-6-luna is reserved since 2026-10-05 \(the owner's standing\): luna's credits/);
+  await refusal(L.claim(id, LUNA, RUNNER), "model_held", /codex\/gpt-6-luna is reserved since 2026-10-05/);
+  expect(await L.item(id)).toMatchObject({ state: "open", owner: null, dispatch: null });
+
+  await I.setModel("gpt-6-luna", { state: "available" }, "2026-10-09T10:00:00.000Z");
+});
+
+it("a dispatch that names a model reads the pool again, so a ledger the pool change never reached refuses a model held since", async () => {
+  const I = index();
+  await I.putModel(entry("gpt-6-luna", "codex"));
+  const name = "model-held-stale-copy";
+  const L = await project(name);
+  await index().registerProject({ name, repo: `${name}--baseline`, policy, createdAt: new Date().toISOString() });
+  // The ledger's copy has the model free.
+  await L.poolChanged(await I.models());
+  const { id } = await L.newItem("Small task", ["src/**"], "owner");
+  const send = () => call("POST", `/projects/${name}/items/${id}/dispatch`, "owner", { to: "home", agent: "codex", model: "gpt-6-luna" });
+
+  // Held in the index alone, as when the pool change could not reach this project.
+  await I.setModel("gpt-6-luna", { state: "paused", note: "AI Studio down" }, AT);
+  const held = await send();
+  expect(held.status).toBe(409);
+  expect(await held.json()).toMatchObject({ error: "model_held", detail: expect.stringMatching(/codex\/gpt-6-luna is paused since 2026-10-05 \(the owner's standing\): AI Studio down/) });
+  expect((await L.item(id)).dispatch).toBeNull();
+  // The ledger keeps what it read, so a claim by hand is refused too.
+  await refusal(L.claim(id, LUNA, RUNNER), "model_held", /codex\/gpt-6-luna is paused since 2026-10-05/);
+
+  // Available again in the index alone: the next dispatch reads that too.
+  await I.setModel("gpt-6-luna", { state: "available" }, "2026-10-09T10:00:00.000Z");
+  const freed = await send();
+  expect(freed.status, await freed.clone().text()).toBe(200);
+  expect((await L.item(id)).dispatch).toMatchObject({ agent: "codex", model: "gpt-6-luna" });
+});
+
+it("a handoff to a model the owner's standing holds from the task's job is refused with the reason, and the owner keeps the task", async () => {
+  for (const [name, change, reason] of [...HELD, ["review-only", { roles: ["review"] }, /codex\/gpt-6-astra is not a builder; its roles are review/]] as const) {
+    const L = await project(`handoff-held-${name}`);
+    await L.poolChanged(holding(change));
+    const { id } = await L.newItem("Small task", ["src/**"], "owner");
+    await L.claim(id, BUILDER, RUNNER);
+    await refusal(L.handoff(id, BUILDER, GPT, "a second opinion"), "model_held", reason);
+    await refusal(L.handoff(id, "owner", GPT, "a second opinion"), "model_held", reason);
+    // A profile names the same model, held the same.
+    await refusal(L.handoff(id, "owner", `${GPT}:high`, "a second opinion"), "model_held", new RegExp(reason.source.replace("codex\\/gpt-6-astra is", "codex\\/gpt-6-astra:high is")));
+    expect(await L.item(id), name).toMatchObject({ state: "claimed", owner: BUILDER });
+    expect(((await L.events(id)) as unknown as Event[]).filter((e) => e.kind === "item.handoff"), name).toEqual([]);
+    // Back to available and building, the same handoff goes through.
+    await L.poolChanged(POOL);
+    expect(await L.handoff(id, BUILDER, GPT, "a second opinion"), name).toMatchObject({ state: "claimed", owner: GPT });
+  }
+});
+
+it("a plan's plan job handed to a model kept from planning is refused, while its builder may take a part", async () => {
+  const L = await project("handoff-held-plan");
+  // The plan keeps the pool it is given, as a landing does.
+  const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", BUILDER, holding({ roles: ["build"] }));
+  await L.claim(item.id, BUILDER, RUNNER);
+  await refusal(L.handoff(item.id, BUILDER, GPT, "take the plan"), "model_held", /codex\/gpt-6-astra is not a planner; its roles are build/);
+  expect(await L.item(item.id)).toMatchObject({ state: "claimed", owner: BUILDER });
+  // The same model builds: a task is handed to it.
+  const { id } = await L.newItem("Small task", ["src/**"], "owner");
+  await L.claim(id, BUILDER, RUNNER);
+  expect(await L.handoff(id, BUILDER, GPT, "take the build")).toMatchObject({ state: "claimed", owner: GPT });
+});

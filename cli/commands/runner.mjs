@@ -77,6 +77,16 @@ export default async function runnerCommand() {
       // A run that stalled, timed out or was refused goes to the run
       // reports, under the runner's name, as a model's status does.
       reportRun: (body, runner, signal) => postAsRunner("/runs", body, runner, signal),
+      // A review this runner will not serve is reported to the project, so
+      // the landing waiting on it can say, by runner, when every runner
+      // that offers the reviewer has skipped (t353). Under a runner token,
+      // which cannot act as the owner, the report goes as the review job's
+      // actor, for which the poll was offered the job; under the owner's
+      // token it goes as the owner, as the run reports do.
+      async reportReviewSkip(body, runner, signal) {
+        await resolveTokenActor();
+        return postAsRunner(`${I(body.project, body.item)}/review-skip`, body, runner, signal, tokenRunner ? body.actor : OWNER);
+      },
     });
   } catch (error) { die(error.message); }
 }
