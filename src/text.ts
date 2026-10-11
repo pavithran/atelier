@@ -35,9 +35,9 @@ export const NOTE_PREVIEW_MAX = 120;
 // marked with an ellipsis when any of the note is left out. An empty note
 // has none.
 export function notePreview(note: string | null | undefined): string {
-  const text = String(note ?? "").trim();
-  if (!text) return "";
-  const first = text.split(/\r\n|[\n\r\u2028\u2029]/)[0].trimEnd();
+  const text = String(note ?? "");
+  if (!text.trim()) return "";
+  const first = text.split(/\r\n|[\n\r\u2028\u2029]/)[0];
   let end = Math.min(first.length, NOTE_PREVIEW_MAX);
   if (end < first.length && /[\ud800-\udbff]/.test(first[end - 1]) && /[\udc00-\udfff]/.test(first[end])) end--;
   return first.slice(0, end) + (end < text.length ? "…" : "");

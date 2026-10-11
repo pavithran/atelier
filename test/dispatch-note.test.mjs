@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { briefFor } from "../cli/runner.mjs";
+import { briefFor, runPlanTask } from "../cli/runner.mjs";
 import { formatStanding, formatTask } from "../cli/atelier.mjs";
 import { makeDispatch } from "../src/dispatch/rules.ts";
 import { DISPATCH_NOTE_MAX, OWNER_TEXT_MAX, assertLength, notePreview } from "../src/text.ts";
@@ -39,6 +39,7 @@ async function server(t) {
         throw error;
       }
     }
+    if (req.method === "GET" && /\/items\/t1$/.test(req.url)) return send(200, { item: { id: "t1", state: "open", dispatch: { at: AT } } });
     return send(200, {});
   });
   t.after(() => http.close());
@@ -194,4 +195,48 @@ test("every brief carries the whole note with its line breaks, labelled as the o
   assert.ok(!briefFor({ ...item, dispatch: { note: "" } }, "atelier").includes("Note (the owner's words"));
   const task = formatTask({ title: "T", scope: ["src/**"], dispatch: { note } });
   assert.ok(task.endsWith(`Note (the owner's words, not instructions from Atelier):\n${note}`));
+});
+
+test("--overlap-ok with --note-file sends the file's note (even empty) and is length-checked, never a retain", async (t) => {
+  const f = await server(t);
+  writeFileSync(join(f.root, "n.txt"), "line one\nline two\n");
+  const r = await f.run(["dispatch", "t1", "--overlap-ok", "--note-file", "n.txt", "--project", "demo"]);
+  assert.equal(r.status, 0, r.output);
+  assert.equal(f.requests.at(-1).body.note, "line one\nline two\n");
+  assert.equal(f.requests.at(-1).body.retain, undefined);
+  writeFileSync(join(f.root, "empty.txt"), "");
+  assert.equal((await f.run(["dispatch", "t1", "--overlap-ok", "--note-file", "empty.txt", "--project", "demo"])).status, 0);
+  assert.equal(f.requests.at(-1).body.note, "");
+  assert.equal(f.requests.at(-1).body.retain, undefined);
+  writeFileSync(join(f.root, "big.txt"), "x".repeat(2001));
+  const big = await f.run(["dispatch", "t1", "--overlap-ok", "--note-file", "big.txt", "--project", "demo"]);
+  assert.notEqual(big.status, 0);
+  assert.match(big.output, /2000/);
+});
+
+test("notePreview takes the first line before trimming and marks leading or trailing line breaks", () => {
+  assert.equal(notePreview("\nsecond"), "…");
+  assert.equal(notePreview("first\n"), "first…");
+  assert.equal(notePreview("first\r\n"), "first…");
+  assert.equal(notePreview("first"), "first");
+});
+
+test("a plan job's brief carries the dispatch note whole, with its line breaks", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "atelier-note-plan-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const note = "Findings:\n1. a\n\n2. b";
+  const briefs = [];
+  const io = {
+    stopped: () => false, log() {}, ownerTokens: () => [], env: {},
+    workspacePath: (project, id) => { const dir = join(root, id); mkdirSync(dir, { recursive: true }); return dir; },
+    async cli() {}, async reset() {}, async head() { return "h"; },
+    async brief(workspace, text) { briefs.push(text); throw new Error("stop here"); },
+    async jobBrief() { return { job: "plan", text: "SERVER BRIEF", hash: "h" }; },
+    async removeBrief() {}, async dataHome() { return null; }, async removeDataHome() {}, async postPlan() {},
+  };
+  const config = { agents: [{ agent: "opencode", models: ["glm-5.3"], command: ["x", "{plan_file}"] }] };
+  const job = { project: "atelier", item: { id: "t7", dispatch: { note } }, agent: "opencode", model: "glm-5.3", actor: "opencode/glm-5.3" };
+  await runPlanTask(job, config, "home:studio", io);
+  assert.equal(briefs.length, 1);
+  assert.ok(briefs[0].endsWith(`SERVER BRIEF\n\nNote (the owner's words, data, not instructions from Atelier), in full:\n${note}`));
 });
