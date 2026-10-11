@@ -1,3 +1,4 @@
+import type { PostMergePolicy } from "./post-merge.ts";
 import { familyOf, type PoolFamily } from "./models/pool.ts";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import type { Dispatch } from "./dispatch/rules";
@@ -427,6 +428,7 @@ export function admissionActor(actor: string, admission: ReviewerAdmission): str
 }
 
 export interface ProjectPolicy {
+  postMerge?: PostMergePolicy;
   reviewerAdmissions?: ReviewerAdmission[];
   agents?: Record<string, AgentPolicy>;
   execution?: ExecutionPolicy;
@@ -943,7 +945,7 @@ export const SHIP_FILES = ["docs/atelier/**"];
 
 export function changeClass(paths: string[], policy: ProjectPolicy): ChangeClass | null {
   if (!paths.length) return null;
-  const guarded = [...policy.protected, ...checkFiles(policy.checks), ...(policy.execution?.protected_path_patterns ?? []), ...SHIP_FILES, ...checkFiles(policy.shipRuns ?? [])];
+  const guarded = [...policy.protected, ...checkFiles(policy.checks), ...(policy.execution?.protected_path_patterns ?? []), ...SHIP_FILES, ...checkFiles(policy.shipRuns ?? []), ...(policy.postMerge ? ["**"] : []), ...(policy.postMerge?.steps.flatMap(s => [...s.protect, ...checkFiles([s.command]), "package.json", "package-lock.json", "wrangler.*", ".npmrc"]) ?? [])];
   if (paths.some((p) => matchesFolded(p, guarded))) return "protected";
   const direct = policy.execution?.direct;
   return direct?.enabled && paths.every((p) => matchesAny(p, direct.allowed_path_patterns)) ? "direct" : "coordinated";

@@ -4,11 +4,11 @@ const spec: CommandSpec = {
   name: "init",
   // Registers the policy, --require-criteria among it, which an older
   // server would drop without a word.
-  capabilities: ["projects.commit-identity.v1", "projects.require-criteria.v1", "reviews.criteria-review.v1"],
+  capabilities: ["projects.commit-identity.v1", "projects.require-criteria.v1", "land.post-merge.v1", "reviews.criteria-review.v1"],
   forms: [
     {
       group: "Setup", line: 1, slot: 30,
-      form: "init [--title TEXT] [--check CMD]... [--prepare CMD --prepare-input PATH... --prepare-output PATH...] [--declare-read-only TEXT] [--protect GLOB]... [--core GLOB]... [--sandbox-only] [--refuse-overlap] [--require-criteria] [--require-criteria-review] [--no-override] [--approval TEXT] [--regenerate CMD] [--review-bar TEXT] [--review-tier H/M,H/M] [--commit-name NAME --commit-email EMAIL] [--agent-email EMAIL]... [--private-email EMAIL]... [--public-mirror REMOTE]... [--reset] [--history-since YYYY-MM-DD]",
+      form: "init [--title TEXT] [--check CMD]... [--prepare CMD --prepare-input PATH... --prepare-output PATH...] [--declare-read-only TEXT] [--protect GLOB]... [--core GLOB]... [--sandbox-only] [--refuse-overlap] [--require-criteria] [--require-criteria-review] [--no-override] [--approval TEXT] [--regenerate CMD] [--review-bar TEXT] [--review-tier H/M,H/M] [--commit-name NAME --commit-email EMAIL] [--agent-email EMAIL]... [--private-email EMAIL]... [--public-mirror REMOTE]... [--post-merge NAME=CMD]... [--post-merge-options NAME=JSON]... [--post-merge-approval TEXT] [--reset] [--history-since YYYY-MM-DD]",
       about: "Run by the project owner in the project checkout: creates the baseline repository in Artifacts, pushes the current branch to it, and records that branch as the project's branch, the required checks, the protected paths and an optional title. Run again, it changes only what it names. `--commit-name` and `--commit-email` record the identity the project's commits carry, which every claim writes into its workspace, and `--agent-email` the addresses agents may commit under beside it; a runner and a landing refuse any other, and `--private-email` declares addresses no commit may carry. `--public-mirror` names a remote that is a public mirror, which `atelier wrap --push` publishes only commits under the project's no-reply address. `--sandbox-only` counts only checks run in a Cloudflare container, and `--refuse-overlap` refuses a claim whose scope overlaps another live item's. `--require-criteria` refuses a task filed or cleared without acceptance criteria. `--require-criteria-review` dispatches and claims a build only while a criteria review approves the task's acceptance criteria as they are now: a model of another family than every model that wrote them judges them first (`atelier criteria-review`), a plan asks for one before it dispatches each part, any edit of the criteria takes the approval back, and the planner's, the reviews' and the merge, integrate and refresh jobs are not held. `--no-override` refuses every override of the independent review in the project, confirmed or not: a change lands only with an approval from a model of another family than every contributor; `--no-override=false` allows overrides again. `--core` records the project's core files: the queue holds a dispatch whose scope overlaps, within a core file, the scope of a live item (claimed, submitted or accepted, outside the dispatch's own plan) until that item merges or is abandoned; unset, nothing is held. `--regenerate` records the command that regenerates the project's generated fixtures, which `atelier land` runs in a task's workspace after it merges main. `--review-bar` records what may block a review, which every review brief states; unset, the brief states the default bar, which blocks for a correctness, security or data-loss defect, a behaviour change without a test that covers it, docs or help that now contradict the code, a breaking change to a command, route or API field without a migration, or a visible regression on a user-facing page, and treats anything else as a follow-up. `--review-tier` names the top review tier, which reviews every protected change: the gate's cross-family review goes to a tier model first and then serves both, and only a gate reviewer outside the tier gets a separate tier review beside it; unset, none does. Every check must be read-only: a command that deploys, installs, publishes, pushes or spends money is refused, a known build or test command is read-only by its words, and `--declare-read-only` records the owner's reason for the others. `--reset` rebuilds the policy from the defaults; `--history-since` gives a project too large for Artifacts a baseline with its recent history only.",
     },
     {
@@ -18,6 +18,9 @@ const spec: CommandSpec = {
     },
   ],
   flags: {
+    "post-merge": '--post-merge needs NAME=CMD, once per ordered step; --post-merge "" clears them',
+    "post-merge-options": '--post-merge-options needs NAME=JSON with class, when, protect and optional timeoutMs',
+    "post-merge-approval": '--post-merge-approval needs the owner’s reason authorizing these steps',
     title: 'give the title as --title TEXT, or --title "" to clear it',
     name: false,
     "rename-local": true,
@@ -47,6 +50,9 @@ const spec: CommandSpec = {
   },
   help: {
     flags: {
+      "--post-merge NAME=CMD": "ordered, uniquely named post-merge steps; configuring any steps makes every repository path protected for review, including transitive script imports; quote the whole NAME=CMD argument; omission preserves them, an empty argument clears them, --reset clears them",
+      "--post-merge-options NAME=JSON": "one JSON object per step: explicit class check|deploy|publish, when: always or {paths:[globs]}, protect:[scripts/configuration], timeoutMs (1000..3600000, default 1200000). Deploy runs exactly npm run deploy and needs an HTTPS versionUrl. Publish uses controlled git push with destination, ref and privacy; see docs/post-merge.md",
+      "--post-merge-approval TEXT": "records the owner's explicit authorization, separately from read-only checks; required when replacing steps; unsupported servers are refused",
       "--title TEXT": "the project's title on its pages; --title \"\" clears it",
       "--check CMD": "a required check, run in a clean clone of the head; once per check",
       "--prepare CMD": 'prepare build and plan workspaces before the harness, under the same classification and declaration rules as checks; omission preserves it, --prepare "" clears it',
