@@ -18,9 +18,10 @@ const POLICY = { name: "Pub", email: PUBLIC, agentEmails: [], publicMirrors: ["g
 
 // Atelier's own runner, as publishMirror takes it: cwd, input and allowFail.
 const runner = (args, opts = {}) => {
-  const r = spawnSync("git", args, { cwd: opts.cwd, input: opts.input, encoding: "utf8", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" } });
+  const r = spawnSync("git", args, { cwd: opts.cwd, input: opts.input, encoding: opts.bytes ? null : "utf8", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", ...opts.env } });
+  if (opts.bytes && r.stderr) r.stderr = r.stderr.toString("utf8");
   if (!opts.allowFail && r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
-  return opts.allowFail ? r : r.stdout.trim();
+  return opts.allowFail ? r : r.stdout.toString().trim();
 };
 
 function fixture(t, { policy = POLICY, emptyMirror = true } = {}) {
@@ -622,4 +623,142 @@ test("a mirror push URL must match the pinned destination and cannot fan out", (
   f.put("next.txt", "next\n"); f.commit("Next");
   f.git(f.checkout, "config", "--add", "remote.github.pushurl", join(f.dir, "other.git"));
   assert.match(f.publish().text, /points at a different place/);
+});
+
+// Replace refs and grafts change what Git shows for an object or a commit's
+// parents, and never what a push sends: the scan reads the objects the push
+// sends, so neither can hide a secret from it.
+test("a replace ref cannot hide a blob's secret from the scan", (t) => {
+  const f = fixture(t);
+  f.put("config/app.txt", `key = ${KEY}\n`);
+  const c = f.commit("Add key").slice(0, 12);
+  const bad = f.git(f.checkout, "rev-parse", "HEAD:config/app.txt");
+  const clean = runner(["hash-object", "-w", "--stdin"], { cwd: f.checkout, input: "nothing here\n" });
+  f.git(f.checkout, "replace", bad, clean);
+  assert.equal(f.git(f.checkout, "show", "HEAD:config/app.txt"), "nothing here");
+  const r = f.publish();
+  assert.equal(r.ok, false, r.text);
+  assert.ok(r.text.includes(`${c} config/app.txt:1: secret`), r.text);
+  assert.ok(!r.text.includes(KEY));
+  assert.deepEqual(f.refs(), []);
+});
+
+test("a graft, by replace ref or by info/grafts, cannot hide an ancestor's secret", (t) => {
+  for (const how of ["replace", "grafts"]) {
+    const f = fixture(t);
+    f.put("config/app.txt", `key = ${KEY}\n`);
+    const added = f.commit("Add key").slice(0, 12);
+    f.put("config/app.txt", "clean\n");
+    const tip = f.commit("Remove key");
+    if (how === "replace") f.git(f.checkout, "replace", "--graft", tip);
+    else writeFileSync(join(f.checkout, ".git", "info", "grafts"), `${tip}\n`);
+    assert.equal(runner(["rev-list", "--count", "HEAD"], { cwd: f.checkout }), "1", how);
+    const r = f.publish();
+    assert.equal(r.ok, false, `${how}: ${r.text}`);
+    assert.ok(r.text.includes(`${added} config/app.txt:1: secret`), `${how}: ${r.text}`);
+    assert.ok(!r.text.includes(KEY));
+    assert.deepEqual(f.refs(), [], how);
+  }
+});
+
+test("commit messages, author and committer names are scanned, by place and never by value", (t) => {
+  const f = fixture(t, { policy: { ...POLICY, privateEmails: ["me@private.example"] } });
+  const subject = `Add ${KEY}`;
+  const body = "Reach 10.0.0.5, or write to Me@Private.Example";
+  f.put("a.txt", "a\n");
+  f.git(f.checkout, "add", "-A");
+  f.git(f.checkout, "commit", "-qm", subject, "-m", body);
+  const c = f.git(f.checkout, "rev-parse", "HEAD").slice(0, 12);
+  f.put("b.txt", "b\n");
+  const named = f.commit("Clean", { GIT_AUTHOR_NAME: "Box 192.168.4.4", GIT_COMMITTER_NAME: "ACME-INTERNAL-7" }).slice(0, 12);
+  const r = f.publish();
+  assert.equal(r.ok, false, r.text);
+  for (const expected of [`${c}: commit message line 1: secret`, `${c}: commit message line 3: private-email, private-ipv4`,
+    `${named}: commit author header: private-ipv4`, `${named}: commit committer header: private-pattern`]) {
+    assert.ok(r.text.includes(expected), `${expected}\n${r.text}`);
+  }
+  for (const value of [KEY, "10.0.0.5", "private.example", "192.168.4.4", "ACME-INTERNAL-7"]) assert.ok(!r.text.toLowerCase().includes(value.toLowerCase()), value);
+  assert.deepEqual(f.refs(), []);
+});
+
+test("a commit object that is not UTF-8 text is refused", (t) => {
+  const f = fixture(t);
+  const tree = f.git(f.checkout, "rev-parse", "HEAD^{tree}");
+  const raw = Buffer.concat([Buffer.from(`tree ${tree}\nparent ${f.first}\nauthor Pub <${PUBLIC}> 1700000000 +0000\ncommitter Pub <${PUBLIC}> 1700000000 +0000\nencoding UTF-16LE\n\n`), Buffer.from(`K\0${KEY.split("").join("\0")}\0`)]);
+  const c = runner(["hash-object", "-t", "commit", "-w", "--literally", "--stdin"], { cwd: f.checkout, input: raw });
+  f.git(f.checkout, "update-ref", "refs/heads/main", c);
+  const r = f.publish();
+  assert.equal(r.ok, false, r.text);
+  assert.ok(r.text.includes(`cannot scan ${c.slice(0, 12)}: the commit object`), r.text);
+  assert.deepEqual(f.refs(), []);
+});
+
+test("path names are scanned: added, renamed and deleted, and a flagged name is never printed", (t) => {
+  const f = fixture(t, { policy: { ...POLICY, privateEmails: ["me@private.example"] } });
+  const name = "hosts/10.1.2.3/me@private.example.txt";
+  f.put(name, "fine\n");
+  const added = f.commit("Add").slice(0, 12);
+  mkdirSync(join(f.checkout, "moved"));
+  f.git(f.checkout, "mv", name, `moved/${KEY}.txt`);
+  const renamed = f.commit("Rename").slice(0, 12);
+  f.put("hosts/fd12:3456::/x.bin", "ab\0cd");
+  const binary = f.commit("Binary under a private name").slice(0, 12);
+  let r = f.publish();
+  assert.equal(r.ok, false, r.text);
+  for (const expected of [`${added}: a path the commit adds or changes`, `${renamed}: a path the commit deletes`, `${renamed}: a path the commit adds or changes`, `cannot scan ${binary} (path`]) {
+    assert.ok(r.text.includes(expected), `${expected}\n${r.text}`);
+  }
+  assert.match(r.text, new RegExp(`${added}: a path the commit adds or changes \\(path 1 of 1, name withheld\\): private-email, private-ipv4`));
+  assert.match(r.text, new RegExp(`${renamed}: a path the commit adds or changes \\(path \\d of 2, name withheld\\): secret`));
+  assert.match(r.text, /private-ipv6/);
+  for (const value of [KEY, "10.1.2.3", "private.example", "fd12:3456"]) assert.ok(!r.text.includes(value), `${value}\n${r.text}`);
+  assert.deepEqual(f.refs(), []);
+  // A deletion of a name the mirror already holds is still read: the name
+  // is in the commit the mirror would receive.
+  const g = fixture(t, { policy: { ...POLICY, privateEmails: ["me@private.example"] } });
+  g.put(name, "fine\n"); g.commit("Add");
+  g.git(g.checkout, "push", "-q", g.mirror, "main");
+  g.git(g.checkout, "rm", "-q", name);
+  const deleted = g.commit("Delete").slice(0, 12);
+  r = g.publish();
+  assert.equal(r.ok, false, r.text);
+  assert.ok(r.text.includes(`${deleted}: a path the commit deletes (path 1 of 1, name withheld): private-email, private-ipv4`), r.text);
+});
+
+test("the mirror's branch is read by its exact name, not by a ref ending in it", (t) => {
+  const f = fixture(t);
+  assert.equal(f.publish().ok, true);
+  f.put("config/app.txt", `key = ${KEY}\n`);
+  const added = f.commit("Add key").slice(0, 12);
+  f.put("config/app.txt", "clean\n");
+  f.commit("Remove key");
+  // A ref whose name ends in refs/heads/main and sorts before it, holding
+  // the branch's tip: matched as a tail, it stood for the mirror's head, so
+  // the publish found nothing to do and the commits after the mirror's real
+  // head were never scanned.
+  f.git(f.checkout, "push", "-q", f.mirror, "HEAD:refs/heads/a/refs/heads/main");
+  const r = f.publish();
+  assert.equal(r.ok, false, r.text);
+  assert.ok(r.text.includes(`${added} config/app.txt:1: secret`), r.text);
+  assert.equal(f.head(), f.first);
+});
+
+test("diff.ignoreSubmodules and submodule.*.ignore cannot hide a gitlink", (t) => {
+  for (const how of ["config", "gitmodules"]) {
+    const f = fixture(t);
+    const sub = join(f.checkout, "vendor", "lib");
+    mkdirSync(sub, { recursive: true });
+    f.git(sub, "init", "-q", "-b", "main");
+    f.put("vendor/lib/inner.txt", "inner\n");
+    f.git(sub, "add", "-A");
+    f.git(sub, "-c", `user.email=${PUBLIC}`, "-c", "user.name=S", "commit", "-qm", "Inner");
+    if (how === "config") f.git(f.checkout, "config", "diff.ignoreSubmodules", "all");
+    else f.put(".gitmodules", '[submodule "lib"]\n\tpath = vendor/lib\n\turl = ./vendor/lib\n\tignore = all\n');
+    f.git(f.checkout, "add", "vendor/lib");
+    const c = f.commit("Submodule").slice(0, 12);
+    const r = f.publish();
+    assert.equal(r.ok, false, `${how}: ${r.text}`);
+    assert.ok(r.text.includes(`cannot scan ${c} vendor/lib: a submodule, whose content is in another repository`), `${how}: ${r.text}`);
+    assert.deepEqual(f.refs(), [], how);
+  }
 });
