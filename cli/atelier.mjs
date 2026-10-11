@@ -998,12 +998,12 @@ export function mergeWithMain(dir, id) {
 // test-slot wrapper (cli/load.mjs), so the check holds one host-wide slot
 // for as long as its tree runs.
 export async function runCheck(cmd, dir, secrets, metadata, graceMs = 5000) {
-  process.stderr.write(`atelier: running \`${cmd}\` in a clean clone…\n`);
+  process.stderr.write(`atelier: running \`${redact(cmd, secrets)}\` in a clean clone…\n`);
   const record = JSON.parse(readFileSync(markerPath(dir), "utf8"));
   const r = await runGroupedCheck(cmd, { cwd: dir, metadata, graceMs, onSpawn: (pid) => writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: pid })) });
   writeFileSync(markerPath(dir), JSON.stringify(record));
   const output = redact(`${r.stdout}${r.stderr}${r.error ? `\n[atelier] check ${r.error.message}` : ""}`, secrets);
-  return { passed: r.status === 0 && !r.error, output, sha: createHash("sha256").update(output).digest("hex") };
+  return { passed: r.status === 0 && !r.error, status: r.status, signal: r.signal, timedOut: r.timedOut, output, sha: createHash("sha256").update(output).digest("hex") };
 }
 
 // One registered check through runGroup, bounded by CHECK_TIMEOUT_MS, under
