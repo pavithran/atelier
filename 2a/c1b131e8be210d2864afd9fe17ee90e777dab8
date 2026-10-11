@@ -1,0 +1,27 @@
+atelier atelier/t500 "A stalled harness adapter fails its test in seconds, not after 300"
+accepted head dfbb2512d3de1e5de5695611318c7c0a04e5404f
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — codex/gpt-6-astra 2026-10-11T07:32:28.889Z
+OBSERVED pass npm run types && npm run typecheck — codex/gpt-6-astra 2026-10-11T07:32:32.446Z
+REVIEW approve by antigravity/gemini-3.1-pro at dfbb2512d3de1e5de5695611318c7c0a04e5404f, recorded by antigravity/gemini-3.1-pro
+2026-10-11T03:18:54.342Z pavi item.created
+2026-10-11T05:10:42.954Z pavi item.dispatched
+2026-10-11T07:07:43.960Z codex/gpt-6-astra item.claimed
+2026-10-11T07:08:02.413Z codex/gpt-6-astra fork.created
+2026-10-11T07:15:53.724Z codex/gpt-6-astra push.observed
+2026-10-11T07:20:53.934Z codex/gpt-6-astra evidence.observed
+2026-10-11T07:20:56.792Z codex/gpt-6-astra evidence.observed
+2026-10-11T07:20:57.229Z codex/gpt-6-astra item.submitted
+2026-10-11T07:27:25.670Z pavi land.lease
+2026-10-11T07:27:35.316Z pavi land.merge
+2026-10-11T07:27:45.576Z pavi land.regenerate
+2026-10-11T07:27:48.253Z codex/gpt-6-astra push.observed
+2026-10-11T07:27:48.575Z pavi land.push
+2026-10-11T07:32:29.399Z codex/gpt-6-astra evidence.observed
+2026-10-11T07:32:32.580Z codex/gpt-6-astra evidence.observed
+2026-10-11T07:32:32.956Z pavi land.check
+2026-10-11T07:32:35.837Z pavi review.requested
+2026-10-11T07:33:02.937Z antigravity/gemini-3.1-pro review.claimed
+2026-10-11T07:38:27.817Z antigravity/gemini-3.1-pro review.approved
+2026-10-11T07:38:41.670Z pavi land.review
+2026-10-11T07:38:42.627Z pavi item.accepted
+2026-10-11T07:38:42.656Z pavi land.accept
