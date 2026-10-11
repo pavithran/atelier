@@ -197,3 +197,18 @@ test("post-merge policy gives even a direct docs-only change a protected notice 
     assert.equal(reviewNotice(["docs/guide.md"], { ...policy, postMerge: null }), null);
   }
 });
+
+test("a plan part's notice names the rule's real file and fits a project without an execution policy", () => {
+  const text = reviewNotice(["src/a.ts"], open, null, true)!.join("\n");
+  assert.match(text, /src\/review\/needed\.ts: reviewNeeded/);
+  assert.doesNotMatch(text, /src\/rules\.ts: reviewNeeded/);
+  assert.doesNotMatch(text, /execution policy's direct paths/);
+  assert.match(text, /no execution policy/);
+});
+
+test("a plan part's notice in single-family mode asks for a different model of the same company", () => {
+  const single = { ...open, familyMode: { single: "anthropic", by: "pavi", at: "2026-10-11T00:00:00Z" } } as typeof open;
+  const text = reviewNotice(["src/a.ts"], single, null, true)!.join("\n");
+  assert.match(text, /different anthropic model/);
+  assert.doesNotMatch(text, /another family/);
+});
