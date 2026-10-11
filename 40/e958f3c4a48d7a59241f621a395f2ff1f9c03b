@@ -1,0 +1,57 @@
+atelier atelier/t351 "A restarted review runner strands its claimed reviews"
+accepted head 34a6a40ec77978c65b2c9285f03b6e598bb5b84e
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — codex/gpt-6-astra 2026-10-11T06:01:23.982Z
+OBSERVED pass npm run types && npm run typecheck — codex/gpt-6-astra 2026-10-11T06:01:26.830Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — codex/gpt-6-astra 2026-10-11T06:15:43.950Z
+OBSERVED pass npm run types && npm run typecheck — codex/gpt-6-astra 2026-10-11T06:15:47.514Z
+REVIEW approve by antigravity/gemini-3.1-pro at 34a6a40ec77978c65b2c9285f03b6e598bb5b84e, recorded by antigravity/gemini-3.1-pro
+2026-10-08T20:51:18.382Z pavi item.created
+2026-10-11T02:15:10.729Z pavi item.edited
+2026-10-11T02:15:10.729Z pavi item.criteria_changed
+2026-10-11T02:15:11.750Z pavi item.dispatched
+2026-10-11T02:15:16.344Z codex/gpt-6-astra item.claimed
+2026-10-11T02:15:24.829Z codex/gpt-6-astra fork.created
+2026-10-11T02:32:31.516Z codex/gpt-6-astra push.observed
+2026-10-11T02:36:17.712Z codex/gpt-6-astra evidence.observed
+2026-10-11T02:36:24.414Z codex/gpt-6-astra evidence.observed
+2026-10-11T02:36:24.827Z codex/gpt-6-astra item.submitted
+2026-10-11T02:40:09.347Z pavi item.released
+2026-10-11T02:40:09.347Z pavi item.dispatched
+2026-10-11T02:40:27.573Z codex/gpt-6-astra item.claimed
+2026-10-11T03:01:33.936Z codex/gpt-6-astra push.observed
+2026-10-11T03:06:58.096Z codex/gpt-6-astra evidence.observed
+2026-10-11T03:07:00.762Z codex/gpt-6-astra evidence.observed
+2026-10-11T03:07:01.245Z codex/gpt-6-astra item.submitted
+2026-10-11T03:17:06.803Z pavi item.released
+2026-10-11T03:17:06.803Z pavi item.dispatched
+2026-10-11T04:24:18.645Z codex/gpt-6-astra item.claimed
+2026-10-11T04:34:41.614Z codex/gpt-6-astra push.observed
+2026-10-11T04:39:38.950Z codex/gpt-6-astra evidence.observed
+2026-10-11T04:39:46.273Z codex/gpt-6-astra evidence.observed
+2026-10-11T04:45:38.408Z codex/gpt-6-astra push.observed
+2026-10-11T04:49:33.989Z codex/gpt-6-astra evidence.observed
+2026-10-11T04:49:36.606Z codex/gpt-6-astra evidence.observed
+2026-10-11T04:49:37.035Z codex/gpt-6-astra item.submitted
+2026-10-11T05:00:03.118Z pavi land.lease
+2026-10-11T05:00:24.373Z pavi land.merge
+2026-10-11T05:00:43.314Z pavi item.released
+2026-10-11T05:00:43.314Z pavi item.dispatched
+2026-10-11T05:46:43.769Z codex/gpt-6-astra item.claimed
+2026-10-11T05:57:06.583Z codex/gpt-6-astra push.observed
+2026-10-11T06:01:24.490Z codex/gpt-6-astra evidence.observed
+2026-10-11T06:01:27.096Z codex/gpt-6-astra evidence.observed
+2026-10-11T06:01:27.487Z codex/gpt-6-astra item.submitted
+2026-10-11T06:11:13.407Z pavi land.merge
+2026-10-11T06:11:23.488Z pavi land.regenerate
+2026-10-11T06:11:24.344Z pavi land.push
+2026-10-11T06:11:26.632Z pavi land.push
+2026-10-11T06:15:44.484Z codex/gpt-6-astra evidence.observed
+2026-10-11T06:15:47.748Z codex/gpt-6-astra evidence.observed
+2026-10-11T06:15:48.185Z pavi land.check
+2026-10-11T06:15:49.165Z pavi review.requested
+2026-10-11T06:16:00.127Z antigravity/gemini-3.1-pro review.claimed
+2026-10-11T06:16:01.453Z antigravity/gemini-3.1-pro review.diff
+2026-10-11T06:21:06.285Z antigravity/gemini-3.1-pro review.approved
+2026-10-11T06:21:09.491Z pavi land.review
+2026-10-11T06:21:10.548Z pavi item.accepted
+2026-10-11T06:21:10.577Z pavi land.accept
