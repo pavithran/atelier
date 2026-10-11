@@ -93,6 +93,22 @@ test("the pick asks the previous round's reviewer first, passes over refused, pa
   assert.match(empty.unpicked!, /written by owner, claude-code\/opus-5.5: no model is in the pool/);
 });
 
+// Found merging t394 into t438: criteria review asked a model of another
+// company than the authors even in single-family mode, where no other
+// company's model may touch the project, and a criteria review bound by its
+// claim was the one review request whose company nobody judged.
+test("under single-family mode the criteria reviewer is a different model of that company, never another company's", () => {
+  const single: ProjectPolicy = { ...policy, familyMode: { single: "anthropic", by: "owner", at: T } };
+  assert.equal(criteriaIndependenceRefusal(SONNET, [OPUS], "owner", "anthropic"), null);
+  assert.match(criteriaIndependenceRefusal(GPT, [OPUS], "owner", "anthropic")!, /not one of anthropic's models/);
+  assert.match(criteriaIndependenceRefusal(GPT, ["owner"], "owner", "anthropic")!, /not one of anthropic's models/);
+  assert.match(criteriaIndependenceRefusal("claude-code/opus-5.5", [OPUS], "owner", "anthropic")!, /wrote these criteria/);
+  const pick = pickCriteriaReviewer({ authors: [OPUS], pool: [...POOL, entry("sonnet-5.5", "claude-code")], policy: single, owner: "owner" });
+  assert.equal(pick.reviewer?.actor, SONNET);
+  assert.ok(pick.passedOver.some((c) => c.actor === GPT && c.reasons.some((r) => /single-family mode/.test(r))));
+  assert.equal(pickCriteriaReviewer({ authors: [OPUS], pool: POOL, policy: single, owner: "owner" }).reviewer, null);
+});
+
 test("the build jobs the criteria gate holds, and the jobs it does not", () => {
   assert.equal(buildJob(null), true);
   assert.equal(buildJob({}), true);
