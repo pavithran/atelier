@@ -87,6 +87,7 @@ export const trimSlash = (url) => String(url).replace(/\/$/, "");
 // together, so that server is the one the stored token belongs to, and the
 // token goes nowhere else: with ATELIER_SERVER naming another server it is
 // not sent, and the command says what to do instead.
+let ownerNoticeGiven = false;
 export function apiToken() {
   if (cliState.loginToken) return cliState.loginToken;
   try {
@@ -95,6 +96,10 @@ export function apiToken() {
     if (!name && ["claim", "start"].includes(args._[0])) name = args.runner;
     const runner = runnerCredential(server(), name);
     if (runner) return runner;
+    if (name && !ownerNoticeGiven) {
+      ownerNoticeGiven = true;
+      process.stderr.write(`runner ${name} has no runner token: running with the owner's credential\n`);
+    }
   } catch (error) { die(error.message); }
   const fromEnv = process.env.ATELIER_TOKEN?.trim();
   if (fromEnv) return fromEnv;
@@ -1582,10 +1587,13 @@ export function wrapReady(name, cwd, report) {
 
 // A report a runner makes under its name: a model's status, a tool's usage.
 // The answer is the server's JSON; a refusal is an error naming its detail.
-export async function postAsRunner(path, body, runner, signal) {
+// The report goes as the owner, whose token the runner holds, unless `as`
+// names another actor: a runner token cannot act as the owner, so its
+// review skip goes as the review job's actor (t353).
+export async function postAsRunner(path, body, runner, signal, as = OWNER) {
   const res = await fetch(`${server()}/api${path}`, {
     method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
-    headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": OWNER, "x-atelier-runner": runner, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "x-atelier-runner": runner, "content-type": "application/json" },
     body: JSON.stringify(body),
   });
   let data = null;
