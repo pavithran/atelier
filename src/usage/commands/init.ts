@@ -38,7 +38,7 @@ const spec: CommandSpec = {
   },
   help: {
     flags: {
-      "--post-merge NAME=CMD": "ordered, uniquely named post-merge steps; quote the whole NAME=CMD argument; omission preserves them, an empty argument clears them, --reset clears them",
+      "--post-merge NAME=CMD": "ordered, uniquely named post-merge steps; configuring any steps makes every repository path protected for review, including transitive script imports; quote the whole NAME=CMD argument; omission preserves them, an empty argument clears them, --reset clears them",
       "--post-merge-options NAME=JSON": "one JSON object per step: explicit class check|deploy|publish, when: always or {paths:[globs]}, protect:[scripts/configuration], timeoutMs (1000..3600000, default 1200000). Deploy runs exactly npm run deploy and needs an HTTPS versionUrl. Publish uses controlled git push with destination, ref and privacy; see docs/post-merge.md",
       "--post-merge-approval TEXT": "records the owner's explicit authorization, separately from read-only checks; required when replacing steps; unsupported servers are refused",
       "--title TEXT": "the project's title on its pages; --title \"\" clears it",

@@ -103,9 +103,23 @@ export function startAttempt(run: PostMergeRun, id: string, at: string): Attempt
   const a: Attempt = { id, number: step.attempts.length + 1, startedAt: at, deadline: new Date(Date.parse(at) + spec.timeoutMs + 600000).toISOString(), outcome: "running" };
   step.attempts.push(a); run.state = "running"; return a;
 }
-// Output is deliberately withheld rather than trying to recognize every
-// possible secret. Outcomes and safe structured observations remain useful.
-export function redactedOutput(output: unknown): string { return output ? "[output withheld: may contain credentials or private content]" : ""; }
+// Redact before truncation so a boundary cannot expose part of a credential.
+// The executor also supplies environment values; the server repeats generic
+// redaction rather than trusting executor output to have been sanitized.
+export function redactedOutput(output: unknown, secrets: string[] = []): string {
+  if (typeof output !== "string") return "";
+  let text = output.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+  for (const secret of [...new Set(secrets)].filter(Boolean).sort((a, b) => b.length - a.length)) text = text.split(secret).join("[redacted]");
+  text = text
+    .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)/g, "[redacted private key]")
+    .replace(/\b(Bearer|Basic)\s+[^\s,;]+/gi, "$1 [redacted]")
+    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[redacted]@")
+    .replace(/(\b["']?[\w.-]{0,128}(?:token|password|passwd|secret|api[_-]?key|authorization|credential)[\w.-]{0,128}["']?\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^\s,;&]+)/gi, "$1[redacted]")
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|AKIA[A-Z0-9]{16})\b/g, "[redacted]")
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "");
+  const limit = 8192, marker = "\n[output truncated]";
+  return text.length > limit ? text.slice(0, limit - marker.length) + marker : text;
+}
 export function recordCommand(run: PostMergeRun, id: string, passed: boolean, publication?: Attempt["publication"]): void {
   const a = currentStep(run)?.attempts.at(-1);
   if (!a || a.id !== id || a.outcome !== "running") throw new RuleError("stale_attempt", "command report is no longer current", 409);
@@ -120,7 +134,7 @@ export function finishAttempt(run: PostMergeRun, id: string, passed: boolean, ou
   if (!a || a.id !== id || a.outcome !== "running") throw new RuleError("stale_attempt", "attempt is no longer running; reconcile its external effect", 409);
   const spec = run.policy.steps.find(s => s.name === step!.name)!;
   if (passed && spec.class === "deploy" && (!deployment || deployment.commit !== run.after)) bad("deployment must be observed at the pinned SHA");
-  Object.assign(a, { outcome: passed ? "passed" : "failed", output: redactedOutput(output), endedAt: at, ...(deployment ? { deployment } : {}), ...(commandOutcome ? { commandOutcome } : {}) });
+  Object.assign(a, { outcome: passed ? "passed" : "failed", output: redactedOutput(output, spec.privacy?.patterns), endedAt: at, ...(deployment ? { deployment } : {}), ...(commandOutcome ? { commandOutcome } : {}) });
   if (passed) step!.outcome = "passed";
   run.state = passed ? currentStep(run) ? "pending" : "complete" : "failed";
 }

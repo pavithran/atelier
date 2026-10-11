@@ -101,8 +101,13 @@ effect). Reconciling deploy as completed independently checks its version again:
 observation must pass, or the owner must explicitly waive it. Reconciliation records the explanation
 and invalidates stale outcome reports. Status and task/project history include
 run, SHAs, policy snapshot, step, attempt and outcomes. Raw command output is
-bounded to 1 MiB during execution and withheld in the durable record because
-arbitrary owner tools may print credentials; error values are never logged.
+bounded to 1 MiB per command during execution. Durable diagnostics retain at most
+8192 characters, with a truncation marker. The executor redacts environment
+values of at least eight characters and publication privacy patterns; both
+executor and server redact credential assignments, authorization headers, URL
+credentials, common token formats and private-key blocks. Ordinary diagnostic
+lines remain visible. This is not a detector for arbitrary unlabelled secrets;
+approved scripts must avoid printing private content.
 
 Deploy commands are exactly `npm run deploy`. A command exit of zero is not
 proof of deployment: the Worker independently fetches the configured HTTPS
@@ -147,7 +152,10 @@ explicit URL/ref, fast-forward ancestry, no hooks/tags/submodule pushes, and an 
 `--force-with-lease=REF:TIP` (empty TIP for a new ref). A change after the final
 read is rejected atomically by Git. This publishes no other ref or notes. A configured publish step also suppresses the legacy automatic notesRemote push, so it cannot publish an unscanned ref.
 Privacy failures identify the commit/path locally without including the
-matching secret value; raw output is withheld from the ledger.
+matching secret value; durable diagnostics apply the redaction above.
+Successful blob scans are cached by object ID within one publication attempt,
+including remote-tip rescans. Every commit identity/message and every path is
+still checked; the cache is never reused across attempts or policies.
 
 ## Required owner rollout smoke
 
