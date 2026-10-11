@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { introspectWorkflow, introspectWorkflowInstance } from "cloudflare:test";
+import { introspectWorkflow, introspectWorkflowInstance, runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
@@ -429,7 +429,7 @@ function workflowRequest(project: string, id: string, method = "POST") {
   });
 }
 
-it("does not remember a failed create and can retry the landing", async () => {
+it("remembers a failed create and reconciles the landing after the grace period", async () => {
   const project = "wf-create-retry";
   const { L, id } = await pushedTask(project, "expired-before-create");
   await L.setLandingWorkflowStage(id, "expired-before-create", "failed", 0);
@@ -439,8 +439,8 @@ it("does not remember a failed create and can retry the landing", async () => {
     get: async () => { throw new Error("instance.not_found"); },
     create: async (options: Parameters<typeof env.LANDING_WORKFLOW.create>[0]) => {
       creates++;
-      // The new id is claimed before the create (t430), and a failed
-      // create withdraws the claim, so no record outlives it.
+      // The new ID is claimed before create and retained on failure,
+      // so retry reconciles the same claim rather than a new successor.
       expect((await L.landingWorkflowOf(id))?.instance).toBe(options?.id);
       if (creates === 1) throw new Error("internal error");
       return env.LANDING_WORKFLOW.create(options);
@@ -448,10 +448,19 @@ it("does not remember a failed create and can retry the landing", async () => {
   };
   const testEnv = { ...env, ATELIER_TOKEN: TOKEN, LANDING_WORKFLOW: binding } as typeof env;
   expect((await worker.fetch(workflowRequest(project, id), testEnv)).status).toBe(500);
-  expect(await L.landingWorkflowOf(id)).toBeNull();
+  const claim = await L.landingWorkflowOf(id);
+  expect(claim).toMatchObject({ checks: "local", stage: "lease" });
+  expect((await worker.fetch(workflowRequest(project, id), testEnv)).status).toBe(503);
+  expect(creates).toBe(1);
+  await runInDurableObject(L, async (_instance, state) => {
+    const key = `landing-workflow:${id}`;
+    const record = JSON.parse(state.storage.sql.exec(`SELECT value FROM meta WHERE key = ?`, key).one().value as string);
+    state.storage.sql.exec(`UPDATE meta SET value = ? WHERE key = ?`, JSON.stringify({ ...record, at: new Date(Date.now() - 120_000).toISOString() }), key);
+  });
   const response = await worker.fetch(workflowRequest(project, id), testEnv);
-  expect(response.status).toBe(201);
+  expect(response.status).toBe(200);
   const result = await response.json() as { instance: string };
+  expect(result.instance).toBe(claim!.instance);
   expect(await L.landingWorkflowOf(id)).toMatchObject({ instance: result.instance, checks: "local" });
   await until(() => L.landingWorkflowOf(id), (r) => r?.stage === "workspace");
   expect(creates).toBe(2);

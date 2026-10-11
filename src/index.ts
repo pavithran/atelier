@@ -46,7 +46,7 @@ import { renderActions } from "./actions-page.ts";
 export { CheckRunner, Egress, Ledger };
 export { LandingWorkflow } from "./landing-workflow.ts";
 import { LANDING_CHECKS_MODES, type LandingChecksMode } from "./landing-workflow.ts";
-import { ENDED, replacementFor, terminateConfirmed, type Replacement } from "./landing/replace.ts";
+import { ENDED, LANDING_CREATE_RECONCILE_MS, replacementFor, terminateConfirmed, type Replacement } from "./landing/replace.ts";
 import { replacementInstanceId } from "./landing/lease-wait.ts";
 import { renderHow } from "./how.ts";
 
@@ -1732,6 +1732,25 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
               standing = remembered.lastStatus;
             } else if (remembered.stage === "done" || remembered.stage === "failed") {
               standing = { status: remembered.stage === "done" ? "complete" : "errored" };
+            } else if (!remembered.lastStatus && remembered.stage === "lease" && Date.now() - Date.parse(remembered.at) >= LANDING_CREATE_RECONCILE_MS) {
+              // Recover a claimant that died before create, using its SAME ID
+              // and recorded options. Concurrent retries (or a delayed owner)
+              // cannot create a second instance with this ID. Never turn an
+              // unreadable status into permission to create another executor.
+              try {
+                handle = await env.LANDING_WORKFLOW.create({
+                  id: remembered.instance,
+                  params: { project, key: ref.key, item: id, actor, origin: c.url.origin,
+                    checks: remembered.checks ?? "container",
+                    ...(remembered.reviewer ? { reviewer: remembered.reviewer } : {}),
+                    ...(remembered.noReview ? { noReview: true } : {}),
+                  },
+                });
+              } catch {
+                // A competing create may have won; only a readable instance
+                // confirms that. Keep the claim on any ambiguous failure.
+                handle = await env.LANDING_WORKFLOW.get(remembered.instance);
+              }
             } else {
               throw new Error("instance is missing but its end is not confirmed; its create may still be in progress");
             }
@@ -1786,9 +1805,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // it, or one replacing it and one that found it already ended) claims
       // the same successor: the one whose claim is recorded creates it, with
       // the options it recorded, and every other answers that record and the
-      // instance it names. A claim whose create fails is withdrawn.
+      // instance it names. A failed create keeps its claim for reconciliation.
       const instanceId = remembered ? replacementInstanceId(id, remembered.instance) : `land-${id}-${Date.now()}`;
-      const claim = await L.claimLandingWorkflow(id, expected, instanceId, actor, options, replacing ?? remembered?.replaced);
+      const claim = await L.claimLandingWorkflow(id, expected, instanceId, actor, options, replacing ?? undefined);
       if (!claim.owner) {
         const record = claim.record;
         if (!record) throw new RuleError("landing_replaced", `${id}'s landing Workflow ${expected ?? "record"} was cleared meanwhile; run atelier land ${id} --workflow again to start one`, 409);
@@ -1812,8 +1831,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           },
         });
       } catch (error) {
-        await L.clearLandingWorkflow(id, instanceId, actor);
-        throw error;
+        // Creation may have succeeded despite an error, or reconciliation
+        // may have won while this request was delayed. Never erase its claim.
+        try { instance = await env.LANDING_WORKFLOW.get(instanceId); }
+        catch { throw error; }
       }
       const status = await instance.status();
       await L.observeLandingWorkflowStatus(id, instanceId, status);
