@@ -258,12 +258,22 @@ atelier init --commit-name "Project Owner" --commit-email 123+owner@users.norepl
 - `--public-mirror`, once per remote, names the checkout's remotes that are
   public mirrors, such as `--public-mirror github`. A project that declares
   one must have a GitHub no-reply `--commit-email`.
+- `--public-mirror-destination REMOTE=URL`, once per mirror, pins the URL
+  `atelier publish REMOTE` pushes to. Every declared mirror needs one;
+  `publish` refuses a mirror without it, and a remote whose URL is not it.
+- `--private-path GLOB`, once per glob, names paths no published commit may
+  touch (`*` within a folder, `**` across folders, a glob without `/` at any
+  depth, a trailing `/` for a folder).
+- `--private-pattern REGEX`, once per expression, adds a JavaScript regular
+  expression no line a published commit adds may match, beside the built-in
+  secret and private-address rules.
 
-Each flag replaces what is recorded; `--agent-email ""`, `--private-email ""`
-or `--public-mirror ""` alone clears the list, and `--reset` drops the
-identity with the rest of the policy. The fields travel in
-`PUT /api/projects/NAME` as `commitName`, `commitEmail`, `agentEmails`,
-`privateEmails` and `publicMirrors`, and are stored as
+Each flag replaces what is recorded; `--agent-email ""`, `--private-email ""`,
+`--public-mirror ""`, `--private-path ""` or `--private-pattern ""` alone
+clears the list, and `--reset` drops the identity with the rest of the policy.
+The fields travel in `PUT /api/projects/NAME` as `commitName`, `commitEmail`,
+`agentEmails`, `privateEmails`, `publicMirrors`, `publicMirrorDestinations`,
+`privatePaths` and `privatePatterns`, and are stored as
 `policy.commitIdentity`. They raise the route level to 24
 (`src/route-level.ts`): `atelier land` and the runner refuse a server below
 it, since one would not record or return the identity.
@@ -288,12 +298,15 @@ Where the identity is enforced:
   which it makes under the project's identity whatever the checkout or its
   environment says. Commits the baseline already holds are not read. A
   refusal names the commit and the field.
-- **A public mirror** asks more: `atelier wrap --push` pushes a remote the
-  policy declares in `publicMirrors` only when every commit it lacks carries
-  the project's own no-reply address (`commitEmail`) as author and committer.
-  An agent address allowed for landing is not thereby public, nor is another
-  no-reply address. Remotes not declared are the owner's own and are pushed
-  as before.
+- **A public mirror** asks more: `atelier publish REMOTE` and
+  `atelier wrap --push` push only when every commit the destination lacks
+  carries the project's own no-reply address (`commitEmail`) as author and
+  committer and passes the privacy scan (docs/owner.md). An agent address
+  allowed for landing is not thereby public, nor is another no-reply
+  address. Once `publicMirrors` names any remote, `wrap --push` gives every
+  checkout remote this check, declared or not, since a URL cannot prove a
+  remote is not the mirror under another name; a policy without
+  `publicMirrors` pushes remotes as before.
 
 ### Migrating a project from before t451
 
@@ -307,8 +320,16 @@ land, each naming the command below. To migrate:
 2. Run `atelier init --commit-name NAME --commit-email EMAIL` there, adding
    `--agent-email` for each address the project's agents commit under, and
    `--private-email` for addresses that must never appear, and
-   `--public-mirror` for each remote that is a public mirror. Until a remote
-   is declared, `atelier wrap --push` checks it as no public mirror.
+   `--public-mirror` for each remote that is a public mirror. Until a mirror
+   is declared, `atelier wrap --push` checks no remote.
+   A mirror declared before `--public-mirror-destination` existed has no
+   destination, and `publish` and `wrap --push` refuse every push until it
+   has one: run `atelier init --public-mirror-destination REMOTE=URL` with
+   the URL `git remote get-url --push REMOTE` prints, once per mirror, adding
+   `--private-path` and `--private-pattern` as the project needs. A project
+   that kept `.atelier/publication.json` moves its `destination`,
+   `privatePaths` and `privatePatterns` into these flags; the file is no
+   longer read and can be deleted.
 3. Claim again (`atelier claim ID`) in any open workspace, so it takes the
    identity; a runner's next claim does this itself.
 

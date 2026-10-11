@@ -113,35 +113,55 @@ test("raw pointer size cannot be inflated by invalid UTF-8 in an inherited exten
   assert.equal(f.git(["--git-dir", f.mirror, "rev-parse", "main"]).stdout, before);
 });
 
-test("wrap scans aliases of declared destinations, including push URLs and fanout", (t) => {
-  for (const mode of ["clean", "secret", "pushurl", "fanout", "invalid", "race", "owner"]) {
+test("with a public mirror declared, wrap checks every remote whatever its URL says", (t) => {
+  // Aliases URL matching missed (file://, no .git, a pushurl, fanout), an
+  // undeclared remote, an invalid policy and a remote re-pointed mid-check.
+  for (const mode of ["clean", "file-url", "no-dot-git", "secret", "pushurl", "fanout", "invalid", "race", "owner", "agent", "missing"]) {
     const f = repository(t);
-    writeFileSync(join(f.checkout, "data.txt"), ["secret", "pushurl"].includes(mode) ? `key = ${secret}\n` : "safe\n");
-    f.commit();
-    const other = join(f.checkout, "..", "other.git");
+    writeFileSync(join(f.checkout, "data.txt"), ["secret", "pushurl", "fanout", "file-url", "no-dot-git", "owner", "race"].includes(mode) ? `key = ${secret}\n` : "safe\n");
+    if (mode === "agent") f.git(["config", "user.email", "agent@example.invalid"]);
+    const tip = f.commit();
+    const other = join(f.checkout, "..", "other.git"), plain = join(f.checkout, "..", "plain");
     f.git(["init", "-q", "--bare", "-b", "main", other]);
-    f.git(["remote", "add", "alias", mode === "owner" || mode === "pushurl" ? other : f.mirror]);
+    f.git(["init", "-q", "--bare", "-b", "main", plain]);
+    const url = { "file-url": `file://${f.mirror}`, "no-dot-git": plain, pushurl: other, owner: other, race: other }[mode] ?? f.mirror;
+    f.git(["remote", "add", "alias", url]);
     if (mode === "pushurl") f.git(["config", "remote.alias.pushurl", f.mirror]);
     if (mode === "fanout") {
-      f.git(["config", "--add", "remote.alias.pushurl", f.mirror]);
       f.git(["config", "--add", "remote.alias.pushurl", other]);
+      f.git(["config", "--add", "remote.alias.pushurl", f.mirror]);
     }
     if (mode === "invalid") f.options.identity.email = "invalid";
+    if (mode === "missing") delete f.options.identity.publicMirrorDestinations;
     let changed = false;
     const git = (args, opts) => {
       const result = f.git(args, opts);
       if (mode === "race" && !changed && args.includes("--name-only")) {
         changed = true;
-        f.git(["remote", "set-url", "alias", other]);
+        f.git(["remote", "set-url", "alias", f.mirror]);
       }
       return result;
     };
     const result = publishCheckoutRemote({ ...f.options, git, remote: "alias" });
-    assert.equal(result.ok, mode === "clean" || mode === "owner", `${mode}: ${f.lines.join("\n")}`);
-    assert.ok(!f.lines.join("\n").includes(secret));
-    for (const destination of [f.mirror, other]) {
+    const output = f.lines.join("\n");
+    assert.equal(result.ok, mode === "clean", `${mode}: ${output}`);
+    assert.ok(!output.includes(secret), mode);
+    if (mode === "agent") assert.ok(output.includes(`${tip.slice(0, 12)}: author and committer email is not ${email}`), output);
+    else if (mode === "invalid" || mode === "missing") assert.match(output, /publication policy is invalid/);
+    else if (mode !== "clean") assert.ok(output.includes(`${tip.slice(0, 12)} data.txt:1: secret`), `${mode}: ${output}`);
+    for (const destination of [f.mirror, other, plain]) {
       const refs = f.git(["--git-dir", destination, "for-each-ref", "--format=%(refname)"]).stdout.trim();
-      assert.equal(refs, result.ok && destination === (mode === "owner" ? other : f.mirror) ? "refs/heads/main" : "", mode);
+      assert.equal(refs, result.ok && destination === f.mirror ? "refs/heads/main" : "", `${mode} ${destination}`);
     }
   }
+});
+
+test("with no public mirror declared, wrap pushes a remote without the public check", (t) => {
+  const f = repository(t);
+  f.git(["config", "user.email", "agent@example.invalid"]);
+  writeFileSync(join(f.checkout, "data.txt"), "agent work\n");
+  const tip = f.commit();
+  const identity = { name: "Owner", email, agentEmails: [] };
+  assert.equal(publishCheckoutRemote({ ...f.options, identity }).ok, true, f.lines.join("\n"));
+  assert.equal(f.git(["--git-dir", f.mirror, "rev-parse", "main"]).stdout.trim(), tip);
 });
