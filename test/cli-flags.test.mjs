@@ -128,7 +128,9 @@ globalThis.fetch = async (url, options = {}) => {
   else if (path === "/api/models/gpt-6-astra/set") data = { id: "gpt-6-astra", state: body.state, stateAt: "2026-10-10T08:00:00.000Z", note: body.note, roles: body.roles.split(","), tier: body.tier };
   else if (m) {
     const rest = m[1] ?? "";
-    const project = { name: "demo", title: "Demo", repo: "demo", policy: { checks: body?.checks ?? ["exit 0"], protected: body?.protected ?? [], eligible: [], refuseOverlap: body?.refuseOverlap ?? false, sandboxOnly: body?.sandboxOnly ?? false } };
+    // t394: the stub records a model-policy switch as the server does, stamped with who and when.
+    const familyMode = body?.singleFamily !== undefined ? { familyMode: { single: body.singleFamily || null, by: "owner", at: "2026-10-09T10:00:00.000Z" } } : {};
+    const project = { name: "demo", title: "Demo", repo: "demo", policy: { checks: body?.checks ?? ["exit 0"], protected: body?.protected ?? [], eligible: [], refuseOverlap: body?.refuseOverlap ?? false, sandboxOnly: body?.sandboxOnly ?? false, ...familyMode } };
     if (rest === "standing") data = { project: { name: "demo", title: "Demo" }, generatedAt: "2026-10-09T12:34:56Z", live: [], waiting: [], merged: [] };
     else if (rest === "" && method === "GET") data = { project, items: [item("t1"), item("t2")], events: [] };
     else if (rest === "" && method === "PUT") data = { project, baseline: { remote: BASELINE, token: "fake-baseline-token", defaultBranch: "main" } };
@@ -436,6 +438,39 @@ test("init sends a switch as true or false, as it was written, and refuses any o
   assert.deepEqual(f.requests(), []);
 });
 
+// t394: init --single-family COMPANY sends the company, --cross-family sends
+// null, neither sends nothing, both together are refused, and the answer's
+// mode is printed with who switched and when.
+test("init sends --single-family as the company and --cross-family as null, prints the mode, and refuses both at once", (t) => {
+  const f = fixture(t);
+  const sent = (argv) => {
+    f.clear();
+    const r = f.run(f.checkout, ["init", ...argv]);
+    assert.equal(r.status, 0, r.stderr);
+    const put = f.requests().find((q) => q.method === "PUT");
+    return { singleFamily: put.body.singleFamily, has: "singleFamily" in put.body, stdout: r.stdout };
+  };
+  const single = sent(["--single-family", "anthropic"]);
+  assert.equal(single.singleFamily, "anthropic");
+  assert.match(single.stdout, /^Models:     single-family, anthropic: building and reviewing use anthropic models only, and a review counts from a different anthropic model than every contributor \(set by owner at 2026-10-09T10:00:00\.000Z\)$/m);
+  const cross = sent(["--cross-family"]);
+  assert.equal(cross.singleFamily, null);
+  assert.ok(cross.has);
+  assert.match(cross.stdout, /^Models:     cross-family, the default: a protected change needs approval from a model of another company than every contributor \(set by owner at 2026-10-09T10:00:00\.000Z\)$/m);
+  const none = sent([]);
+  assert.equal(none.has, false);
+  assert.match(none.stdout, /^Models:     cross-family, the default: a protected change needs approval from a model of another company than every contributor$/m);
+  f.clear();
+  const bare = f.run(f.checkout, ["init", "--single-family"]);
+  assert.equal(bare.status, 1);
+  assert.match(bare.stderr, /--single-family needs a company: atelier init --single-family anthropic/);
+  assert.deepEqual(f.requests(), []);
+  const both = f.run(f.checkout, ["init", "--single-family", "anthropic", "--cross-family"]);
+  assert.equal(both.status, 1);
+  assert.match(both.stderr, /--single-family and --cross-family contradict each other; give one of them/);
+  assert.deepEqual(f.requests(), []);
+});
+
 test("a flag the command does not take, or a stray --, is refused before any request", (t) => {
   const f = fixture(t);
   for (const [argv, message] of [
@@ -478,6 +513,13 @@ test("ls --json and status --json print each item with its times, for Observator
       { id: "t2", title: "Task t2", state: "submitted", owner: "codex/test", head: f.head, ...TIMES },
     ],
     overlaps: [],
+    // The waiting rule's placement (src/attention.ts): nothing waits on the
+    // owner, and both submitted tasks are in review.
+    attention: {
+      owner: [],
+      pipeline: [{ id: "t1", title: "Task t1", stage: "submitted", notices: [] }, { id: "t2", title: "Task t2", stage: "submitted", notices: [] }],
+      unknown: [],
+    },
     mergedByOverride: [],
   }]);
 

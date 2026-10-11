@@ -1,0 +1,11 @@
+✔ adds numbers (0.239416ms)
+✖ fails: the cap is enforced (0.311792ms)
+▶ a suite
+  ✔ passes inside (0.325916ms)
+  ✖ fails inside: names are read (0.060208ms)
+  ﹣ skipped one (0.040125ms) # SKIP
+✖ a suite (0.588125ms)
+ℹ tests 5
+ℹ suites 1
+ℹ pass 2
+ℹ fail 2

@@ -16,7 +16,7 @@ const spec: CommandSpec = {
     {
       group: "Plans", line: 2, slot: 10,
       form: "plan approve ID --hash HASH [--allow-paid]",
-      about: "Approves the split, once, by the hash of its newest proposal; an older hash is refused. The routing of each part is fixed then, with the limits: 2 parts live at once, 3 attempts a part, 4 dispatches a part, 24 hours. A part that no model can build, or that no model of another family can review, refuses the approval; a reviewer counts only when a live runner offers it for the review job, and when no runner is live the pool stands, with the routing saying so. `--allow-paid` lets models paid per token build and review.",
+      about: "Approves the split, once, by the hash of its newest proposal; an older hash is refused. The routing of each part is fixed then, with the limits: 2 parts live at once, 3 attempts a part, 4 dispatches a part, 24 hours. A part that no model can build, or that no independent model can review under the family policy (by default another family than every contributor; in single-family mode a different model of the selected company from every contributor), refuses the approval; a reviewer counts only when a live runner offers it for the review job, and when no runner is live the pool stands, with the routing saying so. `--allow-paid` lets models paid per token build and review.",
     },
     {
       group: "Plans", line: 2, slot: 20,
@@ -26,7 +26,7 @@ const spec: CommandSpec = {
     {
       group: "Plans", line: 3, slot: 10,
       form: "plan reroute ID --to H/M",
-      about: "Names who builds an open part from now on, its attempts counted afresh; for a submitted part, or one blocked for want of an eligible reviewer, names its reviewer, in the pool or not, which must be of another family than every contributor; before approval, names another planner for the plan.",
+      about: "Names who builds an open part from now on, its attempts counted afresh; for a submitted part, or one blocked for want of an eligible reviewer, names its reviewer, in the pool or not, which must be of another family than every contributor by default, or in single-family mode a different model of the selected company from every contributor; before approval, names another planner for the plan.",
     },
     {
       group: "Plans", line: 3, slot: 20,
