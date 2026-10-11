@@ -27,7 +27,7 @@ const spec: CommandSpec = {
       "--reviewer H/M": "names the reviewer the request goes to, and the review is asked for even where the gate needs none; otherwise, when the gate needs a review, the server suggests a model of another company than every contributor from the pool and the models' records, and the landing prints which and why",
       "--no-review": "skips waiting: the task is left submitted for the owner to settle the review by hand",
       "--triage H/M": "names the model that triages the merged diff against the task's acceptance criteria before the review is asked for, in place of the project's triage setting; same-company models may triage, and the pool's access and cost rules apply",
-      "--no-triage REASON": "skips the triage the project or --triage sets; the project owner's reason is recorded with the head and the criteria binding before the landing goes on",
+      "--no-triage REASON": "skips the triage the project sets; the project owner's reason is recorded with the head and the criteria binding before the landing goes on",
       "--override-triage REASON": "goes on past a triage that stops; the project owner's reason is recorded with the head and the criteria binding first. Neither this nor --no-triage stands in for the independent review",
       "--wait": "queues for the landing lease while another task's landing holds it, saying whose landing it waits behind and which landings are queued ahead; the server hands the lease to the waiting landings in the order they queued, so it starts when its turn comes (three hours at most)",
       "--dry-run": "prints the steps and the refusals without changing anything",

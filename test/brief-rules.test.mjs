@@ -107,6 +107,7 @@ test("a runner with the README's generic wrapper hands its agents both rule text
     async writeDiff() { writeFileSync(join(dir, "diff.txt"), "+x\n"); return { file: join(dir, "diff.txt") }; },
     verdictPath: () => verdict, readVerdict: () => readFileSync(verdict, "utf8"),
     async harness(argv, cwd) { return execute(argv, { cwd, env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } }); },
+    async identityRefusals() { return []; },
     async removeBrief() {}, removeDiff: () => {},
   };
   mkdirSync(workspace);

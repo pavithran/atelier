@@ -31,6 +31,14 @@
 // as the runner has done since runner tokens (t444); a server at 21 refused
 // it, so a runner's skip never reached the landing (t353).
 // 23: function areas, task assignments and the shared board snapshot (t456).
-// 24: the ledger takes the land step triage and its binding, so atelier land
+// 24: a project's policy carries its commit identity, which every claim,
+// runner and landing reads, and init takes commitName, commitEmail,
+// agentEmails, privateEmails and publicMirrors (t451).
+// 25: the owner admits, withdraws and lists outside reviewers (PUT, DELETE
+// and GET /projects/:p/reviewers), which an older server answers 404 (t492).
+
+// 26: review-renew and five-minute leases; release and verdicts name the
+// exact request generation, and expired requests are reoffered (t351).
+// 27: the ledger takes the land step triage and its binding, so atelier land
 // records a triage, a --no-triage bypass and an --override-triage (t475).
-export const ROUTE_LEVEL = 24;
+export const ROUTE_LEVEL = 27;
