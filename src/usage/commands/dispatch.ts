@@ -13,13 +13,13 @@ const spec: CommandSpec = {
   help: {
     flags: {
       "--to home|cloud|any": "the kind of runner; any unless given",
-      "--agent A": "the agent the runner must run; unless given, the server suggests a builder from the model pool and the models' records and prints which and why",
-      "--model M": "the model the runner must use",
+      "--agent A": 'the agent the runner must run; --agent "" clears this restriction. Unless given, the server suggests a builder, except when --overlap-ok updates an existing dispatch',
+      "--model M": 'the model the runner must use; --model "" clears this restriction independently of agent',
       "--note TEXT": "a note the agent reads with the task, up to 2000 characters (UTF-16 code units); a longer note is refused, never cut",
       "--note-file PATH": "the note is the text of the UTF-8 file at PATH, read relative to the current directory with its line breaks kept; not with --note; an unreadable or non-UTF-8 file is refused before anything is sent, and an empty file is an empty note",
       "--job merge-main": "sends the task to its builder to merge main into its workspace and resolve the conflicts of a landing that stopped on them",
       "--head H": "with --job merge-main, the full hash recorded as dispatch context; defaults to main's head as the baseline holds it at dispatch. It does not pin the merge target: the runner fetches and merges the baseline's current main head at claim time",
-      "--overlap-ok": "offers the dispatch to a runner although its scope overlaps a live item's within a core file; kept with this dispatch only",
+      "--overlap-ok": "records a core-file hold override and names the hold released, if any; preserves omitted fields of an existing dispatch without suggesting a builder. Does not bypass refuseOverlap; kept with this dispatch only",
     },
     example: 'atelier dispatch t3 --to home --agent codex --note "Keep it small" --project demo',
   },
