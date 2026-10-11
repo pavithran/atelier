@@ -1,6 +1,8 @@
 // The text a reviewer is given. It says exactly what to review (the head, the
 // base, the changed files and the scope), carries the task's brief and
-// acceptance criteria, the plan's account of the part when there is one, the observed checks, the builder's summary and any
+// acceptance criteria, the plan's account of the part when there is one, the
+// observed checks, every run recorded at the head (ad-hoc checks apart from the
+// required ones, t490), the builder's summary and any
 // earlier reviews with the project owner's verdicts on their findings, states
 // the project's review bar and the rules for blocking, and ends with
 // REPLY_FORMAT, the format parseVerdict reads. When the task or the part has
@@ -31,7 +33,7 @@
 import { submission } from "../brief.ts";
 import type { LedgerEvent } from "../ledger.ts";
 import type { PlanPart } from "../plans/schema.ts";
-import { DEFAULT_OWNER, type ChangeClass, type Item } from "../rules.ts";
+import { DEFAULT_OWNER, type ChangeClass, type Evidence, type Item } from "../rules.ts";
 import type { LargeRef } from "../large.ts";
 import { DIFF_INLINE_MAX, TEXT_CONTROLS } from "../text.ts";
 import { DECISIONS_HEADING, DECISIONS_RULE, NO_DECISIONS, decisionLines, type Decision } from "../decisions.ts";
@@ -92,7 +94,30 @@ export interface BriefInput {
   criteriaReviews?: readonly CriteriaReview[] | null;
   criteriaResolutions?: readonly CriteriaResolution[] | null;
   criteriaRev?: number | null;
+  // The item's evidence (t490): every run Atelier recorded, observed or
+  // reported, and the project's required checks, so the brief can tell a
+  // required check's run from a supplemental one. The brief shows only the
+  // runs at the head under review. Absent or null, the caller sent none (an
+  // older server's claim), and the brief says so rather than "none ran".
+  evidence?: ReviewEvidence | null;
 }
+
+export interface ReviewEvidence {
+  runs: readonly RecordedEvidence[];
+  required: readonly string[];
+}
+
+// A run with its place in the ledger's recording sequence: the evidence row's
+// id, written in the same step as the run's evidence event, so it orders runs
+// as they were recorded. Two runs recorded in the same millisecond are told
+// apart by it, never by their outcome or the order they were read in. A
+// claim from an older server carries none, and such runs fall back to an
+// order of their own fields.
+export type RecordedEvidence = Evidence & { seq?: number };
+
+// The most of one run's output a brief carries (t490): its last 2,000
+// characters, where a failure says what it is.
+export const EVIDENCE_OUTPUT_MAX = 2000;
 
 // The rules every review brief carries, whatever runs the reviewer (t376).
 // They lived only in the local wrappers (atelier-claude, atelier-codex,
@@ -259,6 +284,8 @@ export function reviewBrief(input: BriefInput): string {
       ? ["Every required check was observed passing at this head:", ...need.checks.map((c) => `- ${code(c.claim)}, ${WHERE_LABEL[c.where ?? "runner"]}`)]
       : ["The project requires no checks."]),
   );
+
+  section("## Observed evidence", "", ...evidenceLines(input.evidence ?? null, head));
 
   const summary = submission([...input.events], item.id, head)?.summary;
   section("## The builder's summary", "", summary ? block(summary) : "The builder gave no summary with this submission.");
@@ -450,6 +477,137 @@ function earlier(previous: readonly ReviewRecord[], head: string, owner: string,
       return v ? [`- finding ${i + 1}: ${inline(v.verdict)}${v.note.trim() ? `, noting ${code(v.note.trim())}` : ""}`] : [];
     });
     if (answered.length) lines.push("The project owner's verdicts on these findings:", ...answered);
+  }
+  return lines;
+}
+
+// The evidence at the head under review (t490), as evidenceGroups reads it.
+// The required checks above alone gate the change; this shows every run
+// Atelier recorded at this head, ad-hoc `atelier check -- CMD` runs among
+// them, so a criterion that names a command outside the required checks can
+// be judged on its observed result. A reviewer cannot run Atelier commands,
+// so without this a run recorded in the ledger was invisible to the review
+// (ikon-weblog t21, 2026-10-10). Reports are listed apart and labelled
+// Reported: they are the sender's word, never an observed result.
+export interface EvidenceGroup {
+  claim: string;
+  required: boolean;
+  where: "sandbox" | "runner";
+  merged: string | null;       // the main head a merged run merged with; null for a run on the head alone
+  latest: Evidence;
+  superseded: Evidence[];      // earlier runs in this context whose outcome differs from the latest, newest first
+  same: number;                // earlier runs in this context with the latest's outcome
+}
+
+type Outcome = "passed" | "failed" | "not applicable";
+const outcomeOf = (e: Evidence): Outcome => (e.notApplicable ? "not applicable" : e.passed ? "passed" : "failed");
+const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+// The order of two runs, oldest first: by time, then by the ledger's
+// recording sequence, so a failure recorded after a pass in the same
+// millisecond is the later run. Runs without a sequence (an older server's
+// claim) are ordered by all their fields, so the brief is the same whatever
+// order they were read in.
+const bySeq = (a: RecordedEvidence, b: RecordedEvidence) =>
+  a.seq !== undefined && b.seq !== undefined ? a.seq - b.seq : Number(a.seq === undefined) - Number(b.seq === undefined);
+const byTime = (a: RecordedEvidence, b: RecordedEvidence) =>
+  cmp(a.at, b.at) || bySeq(a, b) || cmp(canonical(a), canonical(b));
+function canonical(e: RecordedEvidence): string {
+  const sorted = (v: unknown): unknown => Array.isArray(v) ? v.map(sorted)
+    : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sorted((v as Record<string, unknown>)[k])])) : v;
+  return JSON.stringify(sorted(e));
+}
+
+export function evidenceGroups(evidence: ReviewEvidence, head: string): { groups: EvidenceGroup[]; reports: RecordedEvidence[]; elsewhere: number } {
+  const required = new Set(evidence.required);
+  const atHead = evidence.runs.filter((e) => e.head === head);
+  const groups = new Map<string, RecordedEvidence[]>();
+  for (const e of atHead) {
+    if (e.grade !== "observed") continue;
+    const key = JSON.stringify([e.claim, e.merged ? 1 : 0, e.merged ? e.mainHead ?? "" : "", e.where ?? "runner"]);
+    groups.set(key, [...(groups.get(key) ?? []), e]);
+  }
+  const out = [...groups.values()].map((runs): EvidenceGroup => {
+    const sorted = [...runs].sort(byTime);
+    const latest = sorted.at(-1)!;
+    const earlier = sorted.slice(0, -1).reverse();
+    return {
+      claim: latest.claim, required: required.has(latest.claim), where: latest.where ?? "runner",
+      merged: latest.merged ? latest.mainHead ?? "" : null, latest,
+      superseded: earlier.filter((e) => outcomeOf(e) !== outcomeOf(latest)),
+      same: earlier.filter((e) => outcomeOf(e) === outcomeOf(latest)).length,
+    };
+  }).sort((a, b) =>
+    Number(a.required === false) - Number(b.required === false) || cmp(a.claim, b.claim)
+    || Number(a.merged !== null) - Number(b.merged !== null) || cmp(a.merged ?? "", b.merged ?? "")
+    || Number(a.where !== "sandbox") - Number(b.where !== "sandbox"));
+  return {
+    groups: out,
+    reports: atHead.filter((e) => e.grade === "reported").sort(byTime),
+    elsewhere: evidence.runs.length - atHead.length,
+  };
+}
+
+const RUN_WHERE = { sandbox: "in a Cloudflare container Atelier started", runner: "on the recorder's machine, by Atelier's CLI" } as const;
+
+function context(g: EvidenceGroup, head: string): string {
+  return g.merged !== null
+    ? `on the merge of ${short(head)} with main at ${g.merged ? inline(short(g.merged)) : "a main head not recorded"}`
+    : `on ${short(head)} itself`;
+}
+
+function provenance(e: Evidence): string {
+  return `${inline(e.at)}, recorded by ${code(e.by)}${e.load !== undefined ? `, load ${inline(String(e.load))}` : ""}`;
+}
+
+// A run's output: its last EVIDENCE_OUTPUT_MAX characters, with the cut
+// said, never inside a surrogate pair; the whole output's R2 reference when
+// Atelier kept one, as the route the review runner reads it from.
+function outputLines(e: Evidence): string[] {
+  const ref = e.log ? logRef(e.log) : [];
+  if (e.notApplicable) return ["No output: a record that the check does not apply carries no result.", ...ref];
+  const text = (e.outputTail ?? "").replace(/\r\n/g, "\n");
+  if (!text.trim()) return ["Output unavailable: no output was recorded for this run.", ...ref];
+  let kept = text.length > EVIDENCE_OUTPUT_MAX ? text.slice(-EVIDENCE_OUTPUT_MAX) : text;
+  if (kept.length < text.length && /^[\udc00-\udfff]/.test(kept)) kept = kept.slice(1);
+  const cut = kept.length < text.length
+    ? [`The output is cut: these are its last ${kept.length} of the ${text.length} characters recorded${e.log ? "" : ", and Atelier kept no whole copy"}.`]
+    : e.log ? ["This is the end of the output Atelier recorded inline."] : [];
+  return [...cut, ...ref, block(kept, "text")];
+}
+
+function logRef(ref: LargeRef): string[] {
+  const [, project, item, sha] = ref.key.split("/");
+  const route = project && item && sha ? `GET /projects/${project}/items/${item}/logs/${sha}` : null;
+  return [`The whole output is kept in R2 by reference — ${ref.bytes} bytes, sha256 ${inline(ref.sha256.slice(0, 12))}, key ${code(ref.key)}${route ? `; the review runner reads it with ${code(route)}` : ""}.`];
+}
+
+function evidenceLines(evidence: ReviewEvidence | null, head: string): string[] {
+  if (!evidence) return ["Atelier sent no evidence with this review, so none is shown here; that says nothing of what was run."];
+  const { groups, reports, elsewhere } = evidenceGroups(evidence, head);
+  const lines = [
+    `These are the runs Atelier recorded for this item at exact head ${head}. The required checks under "Checks" alone gate the change, and this section does not change that. A run marked Observed was run by Atelier or its CLI and its result recorded; use it to judge an acceptance criterion that names the command. Each command is shown once per place it ran and tree it ran on, with its latest result; an earlier run there with another result is listed as superseded.`,
+  ];
+  if (elsewhere) lines.push(`${elsewhere} record${elsewhere === 1 ? "" : "s"} at other heads ${elsewhere === 1 ? "is" : "are"} left out: ${elsewhere === 1 ? "it does" : "they do"} not speak for this head.`);
+  const render = (g: EvidenceGroup) => {
+    const e = g.latest;
+    const out = [
+      "",
+      `- ${code(g.claim)}: ${outcomeOf(e)}. Observed, ${context(g, head)}, ${RUN_WHERE[g.where]}, at ${provenance(e)}.${g.same ? ` ${g.same} earlier run${g.same === 1 ? "" : "s"} here had the same result.` : ""}`,
+      ...outputLines(e),
+    ];
+    for (const s of g.superseded) out.push(`- Superseded: ${code(s.claim)} ${outcomeOf(s)} here at ${provenance(s)}; the later run above replaces it, and its output is not shown.`);
+    return out;
+  };
+  const required = groups.filter((g) => g.required), supplemental = groups.filter((g) => !g.required);
+  lines.push("", "### Required checks' runs", ...(required.length ? required.flatMap(render) : ["", "No run of a required check is recorded at this head."]));
+  lines.push(
+    "", "### Supplemental runs",
+    "", "Commands outside the project's required checks, run ad hoc with atelier check -- CMD. They are evidence for the criteria, not checks the gate requires.",
+    ...(supplemental.length ? supplemental.flatMap(render) : ["", "No supplemental run is recorded at this head."]),
+  );
+  if (reports.length) {
+    lines.push("", "### Reports", "", "Reported, not Observed: each is its sender's word, and Atelier ran nothing to record it. A report proves no criterion by itself.");
+    for (const r of reports) lines.push("", `- Reported at ${provenance(r)}:`, block(r.claim));
   }
   return lines;
 }

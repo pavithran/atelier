@@ -113,3 +113,21 @@ export function runnerRoute(method: string, parts: string[], body: Record<string
 export function runnerDenied(token: AgentToken): RuleError {
   return new RuleError("runner_forbidden", `runner ${token.runner} (token ${token.id}) is not authorized for this operation`, 403);
 }
+
+// Dedicated CLI exits carry the exact state through nested finish steps.
+// Neither accepted, integrated nor blocked means the task is terminal.
+export const TERMINAL_TASK_EXITS = { merged: 5, abandoned: 6 } as const;
+
+export function runnerTaskTerminal(id: string, state: keyof typeof TERMINAL_TASK_EXITS): RuleError {
+  return new RuleError("task_terminal", `${id} is ${state === "abandoned" ? "closed" : state} (state: ${state})`, 409);
+}
+
+// The exit a CLI command ends with when the server's answer is task_terminal:
+// the exact state's exit, read back from the detail runnerTaskTerminal wrote,
+// so claim, push and every step of finish carry the state to the runner. Null
+// for any other answer, which keeps its own exit (1, or 3 for a refused claim).
+export function terminalTaskExit(answer: { error?: unknown; detail?: unknown }): number | null {
+  if (answer.error !== "task_terminal") return null;
+  const state = /\(state: ([a-z]+)\)$/.exec(String(answer.detail ?? ""))?.[1];
+  return state && Object.hasOwn(TERMINAL_TASK_EXITS, state) ? TERMINAL_TASK_EXITS[state as keyof typeof TERMINAL_TASK_EXITS] : null;
+}
