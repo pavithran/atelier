@@ -480,6 +480,13 @@ test("ls --json and status --json print each item with its times, for Observator
       { id: "t2", title: "Task t2", state: "submitted", owner: "codex/test", head: f.head, ...TIMES },
     ],
     overlaps: [],
+    // The waiting rule's placement (src/attention.ts): nothing waits on the
+    // owner, and both submitted tasks are in review.
+    attention: {
+      owner: [],
+      pipeline: [{ id: "t1", title: "Task t1", stage: "submitted", notices: [] }, { id: "t2", title: "Task t2", stage: "submitted", notices: [] }],
+      unknown: [],
+    },
     mergedByOverride: [],
   }]);
 
