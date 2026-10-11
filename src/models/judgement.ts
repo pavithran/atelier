@@ -29,8 +29,8 @@
 // contradicts: refuted says the finding was wrong, confirmed and fixed both
 // say it was right, so confirmed then fixed agree (verdictSide). The same
 // finding is the one finding itself (findingKey, sameReview): the task, the
-// review's revision, its reviewer, the review (its time, recorded since this
-// change), the finding's position and its content, so a later review's
+// review's revision, its reviewer, the review (its event's sequence, recorded
+// since t486), the finding's position and its content, so a later review's
 // different finding at the same position is another finding. It is upheld
 // when a later verdict on the same finding by another named model agrees;
 // a verdict with no acting model is no other hand, since it may be the
@@ -152,10 +152,11 @@ function findingKey(e: LedgerEvent): string {
   return JSON.stringify([e.itemId, str(e.data.head), str(e.data.by).toLowerCase(), e.data.index, str(f.file), typeof f.line === "number" ? f.line : null, str(f.severity), str(f.text)]);
 }
 
-// Whether two verdicts judged the same review. A verdict recorded before the
-// review's time was kept beside it names no review, and is read as the same
-// one when everything else about the finding matches.
-const sameReview = (a: LedgerEvent, b: LedgerEvent) => !str(a.data.review) || !str(b.data.review) || str(a.data.review) === str(b.data.review);
+// Whether two verdicts judged the same review. A verdict names its review by
+// the review event's sequence (t486); one recorded before names none, and is
+// read as the same review when everything else about the finding matches.
+const reviewOf = (e: LedgerEvent) => (typeof e.data.review === "number" ? String(e.data.review) : str(e.data.review));
+const sameReview = (a: LedgerEvent, b: LedgerEvent) => !reviewOf(a) || !reviewOf(b) || reviewOf(a) === reviewOf(b);
 
 export type VerdictOutcome = "upheld" | "contradicted" | "unresolved";
 
