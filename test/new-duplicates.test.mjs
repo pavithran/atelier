@@ -102,6 +102,29 @@ test("a task sent with only a brief, or as one long text, is checked under the t
   assert.deepEqual(f.requests().filter((q) => q.method === "POST"), []);
 });
 
+test("a whitespace-only title is checked under the title derived from its brief", (t) => {
+  const f = fixture(t);
+  const r = f.run(["new", " \t ", "--brief", "Fix the parser", "--scope", "src/parser/**", "--project", "demo"]);
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /^ {2}t12 {2}Fix the parser {2}\(claimed, codex\/test\)$/m);
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST"), []);
+});
+
+test("a close title and nested scope warn unless the override is true", (t) => {
+  const f = fixture(t);
+  const r = f.run(["new", "FIX parser!", "--scope", "src/parser/tokens.ts", "--duplicate-ok=false", "--project", "demo"]);
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /^ {2}t12 {2}Fix the parser {2}\(claimed, codex\/test\)$/m);
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST"), []);
+});
+
+test("unfinished tasks count as duplicates, including unowned and unscoped tasks", () => {
+  const states = ["open", "claimed", "submitted", "accepted", "integrated", "blocked", "merged", "abandoned"];
+  const items = states.map((state) => item(state, "Fix the parser", [], state, null));
+  assert.deepEqual(liveDuplicates("Fix parser", ["src/parser/**"], items).map((i) => i.id), states.slice(0, -2));
+  assert.deepEqual(liveDuplicates("Fix parser", [], ITEMS).map((i) => i.id), ["t12"]);
+});
+
 test("--duplicate-ok files the task it names, the title still the words given", (t) => {
   const f = fixture(t);
   const r = f.run(["new", "Fix the parser", "--duplicate-ok", "--scope", "src/parser/**", "--project", "demo"]);
