@@ -1,3 +1,4 @@
+import { postMergeArgs } from "../post-merge-policy.mjs";
 // atelier init. Its forms, flags and help are declared in src/usage/commands/init.ts.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -53,6 +54,12 @@ export default async function initCommand() {
   const reset = args.reset === true;
   const protect = given ?? (reset ? [] : cfg.projects?.[name]?.protect ?? []);
   const policy = {};
+  const postMerge = postMergeArgs(args);
+  if (postMerge !== undefined && args.multi?.["post-merge"]) {
+    // The server's support is land.post-merge.v1, which init declares and
+    // the CLI checked before this handler ran (t458).
+    policy.postMerge = postMerge;
+  }
   if (args.multi.check || reset) policy.checks = checks;
   // Each check must be read-only (src/checks.ts). One that is never
   // read-only is refused here, before any request. The ControlPlane
@@ -222,6 +229,8 @@ export default async function initCommand() {
   cfg.projects[name] = { ...cfg.projects[name], path: top, branch, protect, ...(since || fresh ? { fresh: true } : {}) };
   saveConfig(cfg);
   const pol = r.project.policy;
+  if (postMerge && !pol.postMerge) die("server did not record post-merge policy; stop and upgrade the server");
+  if (pol.postMerge) console.log(`Post-merge: ${pol.postMerge.steps.map(s => `${s.name} (${s.class})`).join(" → ")}; owner approval recorded`);
   console.log(fresh
     ? `${r.project.title ? `${r.project.title} (${name})` : name}: policy updated; the baseline was not pushed (it holds part of the history; atelier sync carries new commits).`
     : `${r.project.title ? `${r.project.title} (${name})` : name}: baseline ${r.project.repo} now holds ${branch} @ ${short(git(["rev-parse", pushed], { cwd: top }))}.`);
@@ -250,7 +259,7 @@ export default async function initCommand() {
   console.log(`Criteria:   ${pol.requireCriteria ? "required on every task" : "optional"}`);
   // A server older than the criteria requirement ignores it and answers without one.
   if (args["require-criteria"] === true && !pol.requireCriteria) console.log("Warning: the server did not record the criteria requirement; deploy the server, then run atelier init --require-criteria again.");
-  console.log(`Core files: ${pol.coreFiles?.length ? `${pol.coreFiles.join(", ")}; the queue holds a dispatch whose scope overlaps a live item's in one` : "none; the queue holds no dispatch for its scope"}`);
+  console.log(`Core files: ${pol.coreFiles?.length ? `${pol.coreFiles.join(", ")}; the queue holds a dispatch whose scope overlaps a claimed or landing item's in one` : "none; the queue holds no dispatch for its scope"}`);
   // A server older than core files ignores them and answers without any.
   if (core?.length && !pol.coreFiles?.length) console.log("Warning: the server did not record the core files; deploy the server, then run atelier init --core again.");
   const ci = pol.commitIdentity;

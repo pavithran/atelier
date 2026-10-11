@@ -24,7 +24,7 @@ test("lists decisions with the next command, work in progress and tasks waiting 
     inbox: [entry("t1", "accept"), entry("t5", "merge"), entry("t2", "overlap")],
   }]).split("\n");
   assert.equal(out[0], "Demo project (demo)");
-  assert.ok(out.includes("      next: atelier accept t1 --project demo"));
+  assert.ok(out.includes("      next: atelier land t1 --reviewer H/M --project demo"));
   assert.ok(out.includes("      next: atelier merge t5 --project demo"));
   assert.ok(out.includes("    t1  submitted  held by claude-code/opus-5.5  Task t1"));
   assert.ok(out.includes("    t2  claimed  held by codex/gpt-6  Task t2"));
@@ -131,12 +131,12 @@ test("three live tasks where t1 overlaps t2 and t3 print two pair lines, each pa
     ],
   }]).split("\n");
   assert.ok(out.includes("    t4  accept  Task t4"), "the owner's waits stay where they are");
-  assert.ok(out.includes("      next: atelier accept t4 --project demo"));
+  assert.ok(out.includes("      next: atelier land t4 --reviewer H/M --project demo"));
   assert.equal(out.filter((l) => l.includes("name overlapping paths")).length, 2, "one line per pair");
   assert.ok(out.includes("    t1 and t2 name overlapping paths"));
   assert.ok(out.includes("    t1 and t3 name overlapping paths"));
   const heading = out.indexOf("  Overlapping scopes");
-  const lastWait = out.indexOf("      next: atelier accept t4 --project demo");
+  const lastWait = out.indexOf("      next: atelier land t4 --reviewer H/M --project demo");
   assert.ok(heading > lastWait, "the pairs print after every wait that needs the owner");
   assert.ok(out.includes("    Expect a merge conflict when the second lands; nothing waits on you."));
 });
@@ -505,7 +505,24 @@ test("a queued task the core files hold says what it waits on and how to let it 
     { project: "demo", item: item("t4", "open", { dispatch: d }) },
     { project: "other", item: { ...item("t4", "open", { dispatch: d }), held } },
   ] }).split("\n");
-  assert.ok(out.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned, or at once with atelier dispatch t2 --overlap-ok."), out.join("\n"));
-  assert.ok(out.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned."));
+  assert.ok(out.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 submits or is released, or at once with atelier dispatch t2 --overlap-ok."), out.join("\n"));
+  assert.ok(out.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 submits or is released."));
   assert.equal(out.filter((l) => l.includes("Held:")).length, 2, "t4 is not held here, only in another project");
+});
+
+// A hold lifts when every blocker stops holding: a claimed one when it submits
+// or is released, the landing one when that landing ends. Each is named.
+test("a held task names every blocker and when each stops holding, claimed or landing", () => {
+  const d = { to: "home", agent: "codex", model: "gpt-6" };
+  const claimed = (id) => ({ id, owner: "codex/gpt-6", state: "claimed", title: `Task ${id}`, core: "src/ledger.ts" });
+  const landing = (id) => ({ id, owner: "claude-code/opus-5.5", state: "accepted", title: `Task ${id}`, core: "src/ledger.ts" });
+  const line = (blockers) => formatStatus([{ name: "demo", items: [item("t2", "open", { dispatch: d })], inbox: [] }],
+    { queue: [{ project: "demo", item: { ...item("t2", "open", { dispatch: d }), held: { ...blockers[0], blockers } } }] })
+    .split("\n").find((l) => l.includes("Held:"));
+  const reach = "both scopes reach core file src/ledger.ts";
+  const override = ", or at once with atelier dispatch t2 --overlap-ok.";
+  assert.equal(line([claimed("t1")]), `      Held: waits on t1 (claimed by codex/gpt-6): ${reach}; offered once t1 submits or is released${override}`);
+  assert.equal(line([landing("t5")]), `      Held: waits on t5 (accepted by claude-code/opus-5.5): ${reach}; offered once the landing of t5 ends${override}`);
+  assert.equal(line([claimed("t1"), claimed("t3")]), `      Held: waits on t1 (claimed by codex/gpt-6): ${reach}; t3 (claimed by codex/gpt-6): ${reach}; offered once t1 submits or is released and t3 submits or is released${override}`);
+  assert.equal(line([claimed("t1"), claimed("t3"), landing("t5")]), `      Held: waits on t1 (claimed by codex/gpt-6): ${reach}; t3 (claimed by codex/gpt-6): ${reach}; t5 (accepted by claude-code/opus-5.5): ${reach}; offered once t1 submits or is released, t3 submits or is released and the landing of t5 ends${override}`);
 });

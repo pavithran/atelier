@@ -27,14 +27,16 @@ import { commitRefusals, IDENTITY_LOG_FORMAT, NO_IDENTITY, parseIdentityLog } fr
 import { controlPlaneChanges, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
 import { cleanSummary } from "../src/brief.ts";
 import { recordedText } from "../src/rules.ts";
-import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { ROUTE_LEVEL, checkCapabilities, requiredForCommand } from "../src/route-level.ts";
+import { terminalTaskExit } from "../src/tokens.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
 import { hooksOff, landingDir, landingJournalFile, oldLandingJournalFile, RECEIPT_TEMPLATE, RECEIPTS_DIR } from "./landing.mjs";
 import { loadPairs } from "./fresh.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { markerPath } from "./gc.mjs";
-import { taskLink } from "./status.mjs";
+import { formatProcesses, liveProcesses, parseLsof, parsePs } from "./procs.mjs";
+import { nextCommand, taskLink } from "./status.mjs";
 import { findStrays } from "./strays.mjs";
 import { formatTokenExpiryWarnings, parseExpiryDay, readTokenExpiries, recordTokenExpiryDay, TOKEN_EXPIRY_WARN_DAYS } from "./token-expiry.mjs";
 import { runnerCredential, readSecret } from "./credentials.mjs";
@@ -42,7 +44,7 @@ import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
 import { slotInvocation } from "./load.mjs";
 export { checkEnv } from "./check-env.mjs";
-import { COMMANDS, COMMAND_USAGE, commandFor } from "./help.mjs";
+import { COMMANDS, COMMAND_USAGE, commandFor, OWNER_LANDING } from "./help.mjs";
 import { HANDLER_MODULES } from "./commands/index.mjs";
 import { decisionLines } from "../src/decisions.ts";
 import { shipPolicy } from "./ship.mjs";
@@ -312,6 +314,37 @@ function checkFlags(cmd) {
   for (const problem of args.problems) die(problem);
 }
 
+// The server's answer to GET /api/version, which needs no token, or null
+// when it gave none: unreachable, an error status, or a body that is not
+// JSON. checkCapabilities tells that null apart from a malformed answer.
+export async function serverVersion() {
+  try {
+    const res = await fetch(server() + "/api/version", { signal: AbortSignal.timeout(30_000) });
+    return res.ok ? await res.json() : null;
+  } catch { return null; }
+}
+
+// The server's capabilities against the ones the command declares in its
+// module (src/usage/commands/NAME.ts, `capabilities`, and the subcommand's
+// own when the word after the command names one), asked before the handler
+// runs, so a server short of them refuses the command before its first
+// dependent request and names the missing set, the revision the server runs
+// and the deploy to run. A command that declares none asks nothing, which
+// keeps help, --version and the local commands usable without a server. A
+// command whose module says `capabilityCheck: "handler"` (land, whose
+// --release-lease must free a stuck lease while the server is behind) makes
+// the same check itself, before its first dependent request. The exit code
+// is 4, as for a request the server could not answer, when the version could
+// not be read, and 1 for a refusal.
+export async function requireCapabilities(cmd, word = args._[1]) {
+  if (cmd === "init" && args["rename-local"] === true) return;
+  if (COMMANDS[cmd]?.capabilityCheck === "handler") return;
+  const required = requiredForCommand(cmd, word, args);
+  if (!required.length) return;
+  const check = checkCapabilities(await serverVersion(), required);
+  if (!check.ok) die(`${check.message}, then run atelier ${cmd} again`, check.kind === "unavailable" ? 4 : 1);
+}
+
 const isMain = process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
 
 // Portfolio operations (surveys, devices and shipping, backups, Observatory,
@@ -450,7 +483,7 @@ export const AGENTS_SECTION = `## Working through Atelier
 
 Before driving this project's tasks by hand, run \`atelier guide --role orchestrate\`; it prints the whole orchestrator guide.
 
-Review path: a finished task is reviewed before it merges. \`atelier land ID --reviewer HARNESS/MODEL\` lands it with that model's review; do not merge around the review.
+Review path: ${OWNER_LANDING}
 `;
 
 export function agentsMdOffer(markdown) {
@@ -712,6 +745,15 @@ export async function resolveTokenActor() {
   if (tokenActor && args._[0] !== "token" && declared !== undefined && declared !== tokenActor) die("--as and ATELIER_ACTOR must match the agent token actor");
 }
 
+// The harness/model acting for the owner on a judgement the owner's token
+// records (src/models/judgement.ts): a finding's verdict, a decision, an
+// override. It is --as, or ATELIER_ACTOR, sent beside the owner's actor; the
+// server refuses a name that is not a harness/model, and with none the event
+// records no acting model.
+export function actingHeaders(as = args.as ?? process.env.ATELIER_ACTOR) {
+  return typeof as === "string" && as.trim() ? { "x-atelier-acting": as.trim() } : {};
+}
+
 export async function call(method, path, body, as, extra = {}) {
   try { return await request(method, path, body, as, extra); } catch (error) { if (error instanceof RequestError) die(error.message, error.code); throw error; }
 }
@@ -724,14 +766,14 @@ export class RequestError extends Error {
 
 // `call` without ending the command: a failure throws a RequestError, so a
 // caller can retry it or name the step that failed.
-export async function request(method, path, body, as, extra = {}) {
+export async function request(method, path, body, as, extra = {}, signal) {
   const die = (message, code = 1) => { throw new RequestError(message, code); };
   if (path !== "/config") await resolveTokenActor();
   if (tokenActor) as = args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
   let res, text;
   try {
     res = await fetch(server() + "/api" + path, {
-      method,
+      method, signal,
       headers: { authorization: `Bearer ${apiToken()}`, ...(as ? { "x-atelier-actor": as } : {}), "content-type": "application/json", ...extra },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -741,9 +783,13 @@ export async function request(method, path, body, as, extra = {}) {
   try { data = JSON.parse(text); } catch { data = { error: "bad_response", detail: text.slice(0, 300) }; }
   if (!res.ok) {
     // 4 for a server that cannot answer, 3 for a refused claim (the runner
-    // reads it), 1 otherwise, whatever the message says.
-    const code = res.status >= 500 || res.status === 408 || res.status === 429 ? 4 :
-      method === "POST" && path.endsWith("/claim") && res.status >= 400 && res.status < 500 ? 3 : 1;
+    // reads it), 1 otherwise, whatever the message says. A task_terminal
+    // answer, which a runner's task merged or abandoned under it gets
+    // (assertRunnerJob in src/ledger.ts), ends with the state's own exit
+    // (TERMINAL_TASK_EXITS), a claim's included: the runner reads the state
+    // from it and stops the job, where a refusal would be retried.
+    const code = terminalTaskExit(data) ?? (res.status >= 500 || res.status === 408 || res.status === 429 ? 4 :
+      method === "POST" && path.endsWith("/claim") && res.status >= 400 && res.status < 500 ? 3 : 1);
     // A project the server does not know, asked for by name: the answer
     // names what this Mac knows instead of the server's "run atelier init",
     // which an agent would obey in whatever folder it stands in.
@@ -998,12 +1044,12 @@ export function mergeWithMain(dir, id) {
 // test-slot wrapper (cli/load.mjs), so the check holds one host-wide slot
 // for as long as its tree runs.
 export async function runCheck(cmd, dir, secrets, metadata, graceMs = 5000) {
-  process.stderr.write(`atelier: running \`${cmd}\` in a clean clone…\n`);
+  process.stderr.write(`atelier: running \`${redact(cmd, secrets)}\` in a clean clone…\n`);
   const record = JSON.parse(readFileSync(markerPath(dir), "utf8"));
   const r = await runGroupedCheck(cmd, { cwd: dir, metadata, graceMs, onSpawn: (pid) => writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: pid })) });
   writeFileSync(markerPath(dir), JSON.stringify(record));
   const output = redact(`${r.stdout}${r.stderr}${r.error ? `\n[atelier] check ${r.error.message}` : ""}`, secrets);
-  return { passed: r.status === 0 && !r.error, output, sha: createHash("sha256").update(output).digest("hex") };
+  return { passed: r.status === 0 && !r.error, status: r.status, signal: r.signal, timedOut: r.timedOut, output, sha: createHash("sha256").update(output).digest("hex") };
 }
 
 // One registered check through runGroup, bounded by CHECK_TIMEOUT_MS, under
@@ -1229,7 +1275,7 @@ export function formatStanding(s, ownerName = "the project owner", origin = "") 
   const lines = [`${flat(s.project.title)} (${flat(s.project.name)})${mode} as of ${at(s.generatedAt)}, from Atelier's record`];
   const group = (title, rows) => { if (rows.length) lines.push("", `${title}:`, ...rows.map((r) => `  ${r}`)); };
   group("Held now", s.live.map((i) => `${i.id}  ${i.state}  held by ${flat(i.owner ?? "nobody")}${i.since ? ` since ${at(i.since)}` : ", since when is not shown"}  ${flat(i.title)}`));
-  group(`Waiting on ${flat(ownerName)}`, s.waiting.map((w) => `${w.id}  ${w.kind}  ${flat(w.title)}  ${flat(w.reason)}${w.brief ? `  brief, ${flat(w.brief.verdict)}: ${flat(w.brief.line)}` : ""}`));
+  group(`Waiting on ${flat(ownerName)}`, s.waiting.map((w) => `${w.id}  ${w.kind}  ${flat(w.title)}  ${flat(w.reason)}${w.brief ? `  brief, ${flat(w.brief.verdict)}: ${flat(w.brief.line)}` : ""}${nextCommand({ ...w, itemId: w.id }, s.project.name) ? `  next: ${flat(nextCommand({ ...w, itemId: w.id }, s.project.name))}` : ""}`));
   group("Queued for a runner", s.queued.map((q) => `${q.id}  for ${flat(runner(q))}  ${flat(q.title)}${q.note ? `  note: ${flat(q.note)}` : ""}`));
   group("Last merges", s.merged.map((m) => `${m.id}  ${at(m.at)}${m.commit ? `  ${m.commit.slice(0, 8)}` : ""}  ${flat(m.title)}${m.line ? `  summary: ${flat(m.line)}` : ""}`));
   // Every merge by override, counted in the heading and one per line under
@@ -1535,6 +1581,17 @@ export async function localStanding(name, as) {
   return { project: name, tasks, leftover, landing: { lock: landingRunning(name), lease: await landingLease(name, as) } };
 }
 
+// The runners and agent processes live on this machine, read as columns from
+// ps and the working directories from lsof (cli/procs.mjs): no command line
+// is kept. null when either tool could not be run.
+export function liveHere(project = null) {
+  const ps = spawnSync("ps", ["-axo", "pid=,ppid=,etime=,args="], { encoding: "utf8", maxBuffer: 64 << 20 });
+  const lsof = spawnSync("lsof", ["-a", "-d", "cwd", "-Fpcn"], { encoding: "utf8", maxBuffer: 64 << 20 });
+  if (ps.error || ps.status !== 0 || !lsof.stdout) return null;
+  return liveProcesses({ ps: parsePs(ps.stdout), lsof: parseLsof(lsof.stdout), work: join(CACHE, "work"), skip: [process.pid, ps.pid, lsof.pid], project });
+}
+export const liveText = (live) => (live ? formatProcesses(live) : "Live on this Mac:\n  the process table could not be read");
+
 // One line per remote of the local checkout: where the registered branch
 // stands against that remote's tracking ref, as it was last fetched or
 // pushed. Nothing is fetched and no call takes a lock, so unwrap leaves the
@@ -1759,5 +1816,8 @@ if (isMain) {
     process.exit(0);
   }
   checkFlags(cmd);
+  // The flags are checked first, so a misuse is refused without a request;
+  // then the server's capabilities, before the handler's first request.
+  await requireCapabilities(cmd);
   await fn();
 }

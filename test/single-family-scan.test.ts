@@ -65,10 +65,15 @@ test("a dispatch is stored only through setDispatch, which judges the model it n
 });
 
 test("a task's owner is set only by a claim or a handoff, both passing assertEligible", () => {
-  assert.deepEqual([...new Set(sites(/this\.update\([^)]*\{ owner: (?!null)/))].sort(), ["claim", "handoff"], "a new path sets a task's owner; check it with assertEligible and list it here");
+  assert.deepEqual([...new Set(sites(/this\.update\([^)]*\{ owner: (?!null)/))].sort(), ["claim", "handoff", "unclaim"], "a new path sets a task's owner; check it with assertEligible and list it here");
   passes("claim", "assertClaimAllowed(");
   passes("handoffAllowed", "assertEligible(");
   passes("handoff", "this.handoffAllowed(");
+  // unclaim (from main, 639ffa5) assigns no one: a claim that failed late is
+  // rolled back to the owner saved before it, which a claim or a handoff
+  // already judged. It must restore only that saved owner.
+  assert.deepEqual(body.get("unclaim")?.match(/\{ owner: [^,]+/g), ["{ owner: prior.owner"], "unclaim sets an owner other than the one saved before the failed claim");
+  passes("unclaim", "`claim-rollback:${id}`");
 });
 
 test("a plan's planner and a part's builder are named only through namedActor, which passes assertEligible", () => {
