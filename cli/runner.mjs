@@ -11,6 +11,7 @@ import { killTree, treeGroups } from "./group.mjs";
 import { SLOT_WRAPPER } from "./load.mjs";
 import { runnerChildEnv, envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
+import { REVIEW_RENEW_MS } from "../src/rules.ts";
 import { reviewBrief, BRIEF_LIMITS, criteriaCount } from "../src/review/brief.ts";
 import { submission } from "../src/brief.ts";
 import { parseVerdict, VERDICT_LIMITS } from "../src/review/verdict.ts";
@@ -1054,10 +1055,11 @@ export function jobOf(task) {
 // request, so another reviewer may take it.
 export async function runReview(assignment, config, name, runnerIO) {
   const { project, item, agent, model, actor } = assignment;
-  let brief, diffFile, workspace, verdictFile, claimedRequest = false, released = false, io = runnerIO;
+  let brief, diffFile, workspace, verdictFile, request, renewal, renewing = false, renewalFailure, claimedRequest = false, released = false, io = runnerIO;
+  const generation = () => request === undefined ? [] : ["--request", String(request)];
   const release = async (reason) => {
     released = true;
-    try { await io.cli(["review-release", item.id, "--project", project, "--as", actor, "--note", reason]); }
+    try { await io.cli(["review-release", item.id, "--project", project, "--as", actor, "--note", reason, ...generation()]); }
     catch (error) { io.log(`review release failed: ${error.message}`); }
   };
   try {
@@ -1076,9 +1078,24 @@ export async function runReview(assignment, config, name, runnerIO) {
     // Claim the request; the server returns the part, the brief's inputs and a
     // read token for the fork, so the part can be cloned read-only.
     // From the claim on, any error releases the request (see the catch), so a
-    // failed review never holds the task for the claim's two hours.
-    const claimed = JSON.parse(await io.cli(["review-claim", item.id, "--project", project, "--as", actor, "--runner", name])
-      .then((output) => { claimedRequest = true; return output; }));
+    // failed review need not wait for its five-minute lease to expire.
+    const claimed = JSON.parse(await io.cli(["review-claim", item.id, "--project", project, "--as", actor, "--runner", name]));
+    request = claimed.request;
+    claimedRequest = request !== undefined;
+    if (request !== undefined) {
+      // One renewal in flight; network failures recover on the next interval.
+      // A refused generation must never post a verdict, even for this actor.
+      renewal = setInterval(async () => {
+        if (renewing || io.stopped()) return;
+        renewing = true;
+        try { await io.cli(["review-renew", item.id, "--project", project, "--as", actor, ...generation()]); }
+        catch (error) {
+          io.log(`review renewal failed: ${error.message}`);
+          if (error.status === 409) renewalFailure = error;
+        } finally { renewing = false; }
+      }, REVIEW_RENEW_MS);
+      renewal.unref?.();
+    }
     // A review clones into a folder of its own beside the task's workspace,
     // never into the builder's, and the folder is removed when the job ends.
     workspace = `${io.workspacePath(project, item.id)}-review-${randomUUID().slice(0, 8)}`;
@@ -1171,7 +1188,7 @@ export async function runReview(assignment, config, name, runnerIO) {
       // workspace, removed once the call ends whatever it answered.
       const kept = await io.brief(workspace, reply.slice(-VERDICT_LIMITS.reply));
       try {
-        await io.cli(["review-unparsable", item.id, "--project", project, "--as", actor, "--head", claimed.head, "--note", parsed.error, "--reply-file", kept.file]);
+        await io.cli(["review-unparsable", item.id, "--project", project, "--as", actor, "--head", claimed.head, "--note", parsed.error, "--reply-file", kept.file, ...generation()]);
         io.log(`review released: ${parsed.error}`);
       } catch (error) {
         io.log(`could not keep the unparsable reply on the task: ${error.message}`);
@@ -1188,6 +1205,7 @@ export async function runReview(assignment, config, name, runnerIO) {
     if (claimed.criteria) argv.push("--criteria", claimed.criteria);
     if (claimed.request !== undefined && claimed.request !== null) argv.push("--request", String(claimed.request));
     if (parsed.findings.length) argv.push("--findings", JSON.stringify(parsed.findings));
+    if (renewalFailure) throw renewalFailure;
     await io.cli(argv);
     io.log(`reviewed${claimed.tier ? " as the tier review" : ""}: ${parsed.verdict}`);
     return { phase: "reviewed", verdict: parsed.verdict };
@@ -1196,6 +1214,7 @@ export async function runReview(assignment, config, name, runnerIO) {
     if (claimedRequest && !released) await release(error.message);
     return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
   } finally {
+    clearInterval(renewal);
     if (brief) await io.removeBrief(brief);
     if (diffFile) io.removeDiff(diffFile);
     if (verdictFile) io.removeFile?.(verdictFile);
@@ -1764,10 +1783,29 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // call authenticates with, handed to the CLI as ATELIER_TOKEN in the
     // child's environment, which wins over the owner's stored token; it is
     // never an argument, which any local user could read.
-    cli: (argv, cwd, options = {}) => checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, capture: readsOutput(argv), claim: argv[0] === "claim",
-      env: runnerChildEnv(process.env, offer.runner, credential, options.token),
-      step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
-      ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild),
+    cli: async (argv, cwd, options = {}) => {
+      // Lease control calls stay in the runner so shutdown can give each
+      // request its own deadline, independent of the aborted child signal.
+      if (["review-renew", "review-release", "review-unparsable"].includes(argv[0]) && argv.includes("--request")) {
+        const { server, I } = await import("./atelier.mjs");
+        const value = (flag) => argv[argv.indexOf(flag) + 1];
+        const body = { request: Number(value("--request")), note: argv.includes("--note") ? value("--note") : "" };
+        if (argv[0] === "review-unparsable") {
+          body.head = value("--head");
+          body.reply = readFileSync(value("--reply-file"), "utf8");
+        }
+        const response = await fetch(`${server()}/api${I(value("--project"), argv[1])}/${argv[0]}`, {
+          method: "POST", redirect: "error", headers: { authorization: `Bearer ${options.token}`, "x-atelier-actor": value("--as"), "content-type": "application/json" },
+          body: JSON.stringify(body), signal: AbortSignal.timeout(5000),
+        });
+        if (!response.ok) throw Object.assign(new Error(`${argv[0]}: ${response.status}`), { status: response.status });
+        return response.text();
+      }
+      return checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, capture: readsOutput(argv), claim: argv[0] === "claim",
+        env: runnerChildEnv(process.env, offer.runner, credential, options.token),
+        step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
+        ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild);
+    },
     head: (cwd, { cleanup = false, ref = "HEAD" } = {}) => checked(["git", "rev-parse", "--verify", `${ref}^{commit}`],
       { cwd, capture: true, ...(cleanup ? cleanupOptions() : { signal: controller.signal }) }, executeChild),
     // Every build, plan and merge job's workspace keeps .scratch/ out of Git
