@@ -221,6 +221,34 @@ test("an inline tail is labelled a tail only when the output was longer than wha
   assert.equal(cut.label, "inline tail only (a check run on a machine keeps its last 3,500 characters inline, and this output was longer)");
   const container = await readCheckLog({ outputTail: `${"y".repeat(SANDBOX_OUTPUT_TAIL)}\n[atelier] ran in a Cloudflare container in 9s, exit 1`, where: "sandbox" }, none);
   assert.equal(container.label, "inline tail only (a container keeps its last 4,000 characters inline, and this output was longer)");
+  // A whole output that ends in a recorder's line of its own, written before
+  // any cut, is measured with that line and stays whole.
+  const stopped = await readCheckLog({ outputTail: `line 1\nline 2\n[atelier] check exceeded its time limit of 600 s${sha}`, where: "runner" }, none);
+  assert.deepEqual([stopped.whole, stopped.label], [true, "whole output, inline"]);
+});
+
+test("a cut tail that ends in the recorder's time-limit line is still a tail: the lines written before the cut count as output", async () => {
+  const sha = `\n[sha256 of full output: ${"0".repeat(64)}]`;
+  // As atelier check records a local check that timed out (cli/atelier.mjs
+  // runCheck): the `[atelier] check …` line is appended to the output, the
+  // last LOCAL_OUTPUT_TAIL characters are kept, and the sha256 line follows.
+  // A 12,336-character output read as whole once the [atelier] line was
+  // dropped before measuring; it is a tail.
+  const lines = Array.from({ length: 650 }, (_, i) => `✔ test ${i} (1.2ms)`).join("\n");
+  const output = `${lines}\n[atelier] check exceeded its time limit of 600 s`;
+  assert.ok(output.length > 12_000, String(output.length));
+  const local = await readCheckLog({ outputTail: `${output.slice(-LOCAL_OUTPUT_TAIL)}${sha}`, where: "runner" }, none);
+  assert.deepEqual([local.whole, local.source], [false, "inline"]);
+  assert.equal(local.label, "inline tail only (a check run on a machine keeps its last 3,500 characters inline, and this output was longer)");
+  // The same in a container: its `stopped after` line comes before the cut,
+  // its `ran in` line after.
+  const inContainer = `${lines}\n[atelier] stopped after 900s`;
+  const container = await readCheckLog({ outputTail: `${inContainer.slice(-SANDBOX_OUTPUT_TAIL)}\n[atelier] ran in a Cloudflare container in 900s, exit 124`, where: "sandbox" }, none);
+  assert.deepEqual([container.whole, container.source], [false, "inline"]);
+  assert.equal(container.label, "inline tail only (a container keeps its last 4,000 characters inline, and this output was longer)");
+  // The summary then says the names were read from a tail, not that the check failed for another reason.
+  const [f] = await resolveFailures(effectiveFailures(policy, [ev({ passed: false, outputTail: `${output.slice(-LOCAL_OUTPUT_TAIL)}${sha}` })], H1), none);
+  assert.ok(failureSummary("t1", H1, [f]).includes("read from a tail of the output") || failureSummary("t1", H1, [f]).includes("in the tail of the output that was kept"), failureSummary("t1", H1, [f]));
   // A stored log that was itself capped says so.
   const capped = await readCheckLog({ outputTail: "t", log: ref({ bytes: LARGE_MAX }), where: "sandbox" }, async () => "the end");
   assert.deepEqual([capped.whole, capped.source], [false, "stored"]);

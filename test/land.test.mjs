@@ -1684,6 +1684,7 @@ test("land --workflow runs the required checks here in a clean clone after the p
 });
 
 test("a landing whose check fails ends with the failure summary every landing prints: the run the gate reads, its tests and its log tail", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   f.box.checks = ["printf 'not ok 1 - the cap is enforced\\n# fail 1\\n'; exit 3"];
   const r = await f.run(f.checkout, "land", "t1");
