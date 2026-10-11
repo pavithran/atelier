@@ -132,8 +132,8 @@ field-notes 70, open-tool 40), plus `blank-slate` (no tasks) and
 | `project` | `/p/ledger-core` | owner | Dense overview (200 tasks) |
 | `project-empty` | `/p/blank-slate` | owner | A project with no tasks |
 | `project-unavailable` | `/p/cold-storage` | owner | A project whose Ledger cannot be read (503) |
-| `tasks` | `/p/ledger-core/tasks` | owner | All 200 tasks in one list |
-| `tasks-empty` | `/p/blank-slate/tasks` | owner | Task list with no tasks |
+| `tasks` | `/p/ledger-core/tasks` | owner | All 200 tasks on the area board, in one Unsorted area |
+| `tasks-empty` | `/p/blank-slate/tasks` | owner | Task board with no tasks: one empty Unsorted area |
 | `project-flow` | `/p/ledger-core/flow` | owner | One project's flow |
 | `plans` | `/p/ledger-core/plans` | owner | No plans |
 | `ship` | `/p/ledger-core/ship` | owner | No protected action approved |
