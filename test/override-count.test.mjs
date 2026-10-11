@@ -58,3 +58,15 @@ test("the standing's text counts the merges by override in its heading and links
     assert.ok(lines.every((l) => !l.startsWith("Merged by override")), lines.join("\n"));
   }
 });
+
+test("atelier status --project names single-family mode and its company in its heading (t394)", () => {
+  const standing = {
+    project: { name: "demo", title: "Demo project", repo: "demo" }, generatedAt: T,
+    live: [], waiting: [], queued: [], merged: [], handoffs: [], controlPlane: null, checks: [], partial: [], overrides: [],
+  };
+  const single = formatStanding({ ...standing, familyMode: { single: "anthropic" } }).split("\n")[0];
+  assert.match(single, /^Demo project \(demo\) \(single-family: anthropic\) as of /);
+  for (const familyMode of [undefined, null, {}]) {
+    assert.doesNotMatch(formatStanding({ ...standing, familyMode }).split("\n")[0], /single-family/);
+  }
+});

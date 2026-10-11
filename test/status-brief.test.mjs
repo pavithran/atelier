@@ -88,3 +88,9 @@ test("a partial brief labels its counts, retains known owner calls and all read 
   assert.match(out, /Waiting on the owner: t2 accept; next: .*; more may be waiting\./);
   assert.ok(out.split("\n").length < 20);
 });
+
+test("the brief includes the single-family mode if set", () => {
+  const standing = { ...brief().standing, familyMode: { single: "anthropic" } };
+  const out = formatStatusBrief(brief({ standing }));
+  assert.match(out, /single-family: anthropic/);
+});

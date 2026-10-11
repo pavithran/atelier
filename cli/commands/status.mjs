@@ -57,7 +57,9 @@ export default async function statusCommand() {
   // as `atelier inbox` lists it, and the others are still shown.
   const views = await Promise.all(chosen.map(async (p) => {
     const read = await request("GET", P(p.name), undefined, OWNER).catch(() => null);
-    return { name: p.name, title: p.title, items: Array.isArray(read?.items) ? read.items : null, inbox: projectInbox(notices, p.name) };
+    // The policy comes along so the listing can say a project runs in
+    // single-family mode (formatStatus).
+    return { name: p.name, title: p.title, items: Array.isArray(read?.items) ? read.items : null, inbox: projectInbox(notices, p.name), policy: p.policy ?? null };
   }));
   if (args.json) return console.log(JSON.stringify(statusJson(views, server(), Array.isArray(offers) ? offers : null), null, 2));
   const strays = formatStrays(localStrays());

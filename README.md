@@ -1,5 +1,14 @@
 # Atelier
 
+The cross-company rules below describe the default policy. With
+`atelier init --single-family COMPANY`, building and reviewing use only that
+company's models: a reviewer must be a different model from every contributor,
+never a contributor under another harness. This exception also applies to
+criteria review, handoffs and conflict contributors. Only that company's tier
+models qualify; if none qualifies, no separate tier review is requested.
+`atelier init --cross-family` restores the default; both switches record who
+made them and when. See [Single-family mode](docs/gate.md#single-family-mode).
+
 Atelier is a multi-agent system for software work, built on Git: a planner
 splits a goal into parts, builders of several model families work them at
 the same time, each in its own fork, reviewers of another family check each
@@ -413,7 +422,7 @@ or fails to fix while claiming to, a behaviour change without a test that
 covers it, docs or help that now contradict the code, a breaking change to a
 command, route or API field without a migration, or a visible regression on a
 user-facing page; anything else is a follow-up. `atelier init --review-tier
-H/M,H/M` names a top tier of reviewers that reviews every protected change.
+H/M,H/M` names a top tier of reviewers that reviews protected changes when a tier model qualifies under the family policy.
 
 The owner records a verdict on each finding with `atelier finding ID --head
 SHA --index N --verdict confirmed|refuted|fixed`. A later review of the task
