@@ -23,11 +23,17 @@
 //
 // A verdict's outcome is read from what the ledger says explicitly, never
 // from silence. It is contradicted when a later verdict on the same finding
-// says otherwise (the correction is its own verdict, and the corrected one
+// reverses it (the correction is its own verdict, and the corrected one
 // stays in the record), or when a defect names it with `contradicts`
-// (cleanContradicts; atelier defect ID --contradicts SEQ#N). It is upheld
-// when a later verdict on the same finding by another named model says the
-// same; a verdict with no acting model is no other hand, since it may be the
+// (cleanContradicts; atelier defect ID --contradicts SEQ#N). Only a reversal
+// contradicts: refuted says the finding was wrong, confirmed and fixed both
+// say it was right, so confirmed then fixed agree (verdictSide). The same
+// finding is the one finding itself (findingKey, sameReview): the task, the
+// review's revision, its reviewer, the review (its time, recorded since this
+// change), the finding's position and its content, so a later review's
+// different finding at the same position is another finding. It is upheld
+// when a later verdict on the same finding by another named model agrees;
+// a verdict with no acting model is no other hand, since it may be the
 // same model unnamed. Any
 // other verdict is unresolved: a verdict no defect has named is not shown to
 // be right. Decisions and overrides are counted beside the verdicts, by the
@@ -121,6 +127,21 @@ export function linkVerdict(link: Contradicts, verdict: LedgerEvent | undefined,
 
 // ── the measure ────────────────────────────────────────────────────────────
 
+// What a verdict says of the finding: right (confirmed, fixed) or wrong (refuted).
+const verdictSide = (e: LedgerEvent) => (str(e.data.verdict) === "refuted" ? "wrong" : "right");
+
+// The finding a verdict judged, by everything the verdict records of it: two
+// verdicts are on the same finding only when every part matches.
+function findingKey(e: LedgerEvent): string {
+  const f = (e.data.finding ?? {}) as Record<string, unknown>;
+  return JSON.stringify([e.itemId, str(e.data.head), str(e.data.by).toLowerCase(), e.data.index, str(f.file), typeof f.line === "number" ? f.line : null, str(f.severity), str(f.text)]);
+}
+
+// Whether two verdicts judged the same review. A verdict recorded before the
+// review's time was kept beside it names no review, and is read as the same
+// one when everything else about the finding matches.
+const sameReview = (a: LedgerEvent, b: LedgerEvent) => !str(a.data.review) || !str(b.data.review) || str(a.data.review) === str(b.data.review);
+
 export type VerdictOutcome = "upheld" | "contradicted" | "unresolved";
 
 export interface JudgementWindow { from: string; to: string; days: number }
@@ -174,7 +195,7 @@ export function buildJudgement(projects: readonly { project: string; events: rea
       if (e.kind !== "review.finding" || e.itemId === null) continue;
       const v = str(e.data.verdict);
       if (v !== "confirmed" && v !== "refuted" && v !== "fixed") continue;
-      const key = JSON.stringify([e.itemId, str(e.data.head), str(e.data.by).toLowerCase(), e.data.index]);
+      const key = findingKey(e);
       byFinding.set(key, [...(byFinding.get(key) ?? []), e]);
       bySeq.set(e.seq, e);
     }
@@ -196,8 +217,8 @@ export function buildJudgement(projects: readonly { project: string; events: rea
         const acting = actingOf(v, owner);
         const r = of(acting);
         r.verdicts++;
-        const later = list.slice(i + 1);
-        const correction = later.find((w) => str(w.data.verdict) !== str(v.data.verdict));
+        const later = list.slice(i + 1).filter((w) => sameReview(v, w));
+        const correction = later.find((w) => verdictSide(w) !== verdictSide(v));
         const defect = named.get(v.seq);
         if (correction || defect) {
           r.contradicted++;
@@ -215,7 +236,7 @@ export function buildJudgement(projects: readonly { project: string; events: rea
           const a = actingOf(w, owner);
           return acting !== null && a !== null && modelKey(a) !== modelKey(acting);
         };
-        if (later.some((w) => str(w.data.verdict) === str(v.data.verdict) && other(w))) r.upheld++;
+        if (later.some((w) => verdictSide(w) === verdictSide(v) && other(w))) r.upheld++;
         else r.unresolved++;
       });
     }
