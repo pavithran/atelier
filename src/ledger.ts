@@ -38,7 +38,7 @@ import { integrationBlockers, nextToIntegrate, planGate, type Integration, type 
 import type { PlanPartReview, PlanView } from "./plans/show.ts";
 import { actionRuns, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { listDecisions, recordDecision, standingDecisions, withdrawDecision, type Decision, type DecisionStore, type DecisionView } from "./decisions.ts";
-import { reviewBrief } from "./review/brief.ts";
+import { reviewBrief, type ReviewEvidence } from "./review/brief.ts";
 import { VERDICT_LIMITS } from "./review/verdict.ts";
 import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type ReviewRequestView } from "./review/needed.ts";
 import type { SuggestionRecords } from "./models/suggest.ts";
@@ -80,6 +80,9 @@ export interface ReviewClaim {
   owner: string;
   reviewBar: string | null;
   decisions: Decision[];
+  // The item's evidence at the head, for the brief's Observed evidence
+  // section (t490).
+  evidence: ReviewEvidence;
   tier: boolean;          // the claimed request is a tier review (src/review/tier.ts)
   // The review's diff, kept in R2 by reference when the change is too large
   // for a brief to carry (t284): the claim route stores it and names it here,
@@ -3491,6 +3494,7 @@ export class Ledger extends DurableObject<Env> {
         need, item: p, events: this.briefEvents(p.id),
         plan: { goal: plan.goal, part }, diff: null, owner: this.owner, bar: policy.reviewBar ?? null,
         decisions: standingDecisions(this.decisionStore),
+        evidence: this.reviewEvidence(p.id, need.head, policy),
       });
       const briefHash = briefFingerprint(brief);
       const topTier = this.gateIsTier(p, need, reviewer);
@@ -3719,8 +3723,17 @@ export class Ledger extends DurableObject<Env> {
       plan: part && plan ? { goal: plan.goal, part } : null,
       events: this.briefEvents(itemId), owner: this.owner, reviewBar: policy.reviewBar ?? null, tier,
       decisions: standingDecisions(this.decisionStore),
+      evidence: this.reviewEvidence(itemId, head, policy),
       criteria, request: row.id as number,
     };
+  }
+
+  // The evidence a review brief shows (t490): the item's records at the head
+  // under review, observed and reported, with the project's required checks,
+  // so the brief can show ad-hoc runs apart from the required ones. Records
+  // at other heads stay in the ledger; the brief would leave them out anyway.
+  private reviewEvidence(id: string, head: string, policy: ProjectPolicy): ReviewEvidence {
+    return { runs: this.evidenceFor(id).filter((e) => e.head === head), required: [...policy.checks] };
   }
 
   // The events a review brief reads: the item's latest, for the builder's
