@@ -63,6 +63,9 @@ export function resolveIdentity(dir, env, run = spawnSync) {
       name: name.set === null ? null : (m?.[1] ?? name.set) || null,
       email: email.set === null ? null : (m?.[2] ?? email.set) || null,
       nameFrom: name.from, emailFrom: email.from,
+      // Git could not form this identity from its settings (an empty or
+      // disallowed name, say): what Git said, so the refusal names it.
+      ...(ident.status !== 0 ? { unusable: String(ident.stderr ?? "").trim().split("\n")[0] || `git var exited ${ident.status}` } : {}),
     };
   }
   return out;
