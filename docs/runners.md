@@ -647,10 +647,12 @@ as the last line of standard error, `ATELIER_PROVIDER_LIMIT {json}` naming the
 harness, the reason and the reset instant. A runner config's own command is
 judged by its exit status alone; only these adapters emit it.
 
-A limit is the provider's own message, not text in an answer: a phrase quoted in
-prose, in a code block or mid-sentence, an authentication error and a timeout
-are no limit, and a zero exit counts only when the whole short answer is the
-provider's limit wording ("Rate limit headers added" is an answer).
+Only a nonzero exit can report a limit. The adapters request structured output
+and inspect Claude's `result` with `is_error: true`, Codex's `error` event,
+opencode's `error` event with an `APIError`, or antigravity's provider error
+with code 429 or status `RESOURCE_EXHAUSTED`. Answer text, generic JSON error
+examples, plain diagnostics, authentication errors and timeouts are not limits.
+A zero exit never pauses the runner, regardless of its output.
 
 For build, merge-main, plan and review jobs the runner records an infrastructure
 event, changes no model reliability and neither failure counter, keeps the

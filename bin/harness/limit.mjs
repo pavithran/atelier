@@ -9,10 +9,9 @@
 // resetAt instead of counting a failure. Only these adapters emit it: a runner
 // config's own command is judged by its exit status alone.
 //
-// Only provider error envelopes and harness-specific stderr diagnostics count.
-// Plain stdout is answer text, even when short or the process exits nonzero;
-// response/result/content fields never supply evidence of a provider limit.
-// Exit zero does not suppress a diagnostic on stderr.
+// Only harness-specific structured failure channels on nonzero exits count.
+// Successful output is always an answer, even if it looks like an error.
+// No plain text diagnostics or nested answer strings supply limit evidence.
 //
 // The reset instant, read from the message (parseReset), is one of:
 //   - an epoch after a bar or under resets_at ("usage limit reached|1760000000");
@@ -155,7 +154,7 @@ export function parseReset(text, { now = Date.now(), timeZone } = {}) {
 
 // ── the limit ───────────────────────────────────────────────────────────────
 
-// How each provider says it. All are matched at the start of a message.
+// How each provider says it inside its structured failure message.
 const LIMIT = [
   /usage limit (?:reached|exceeded|hit)/i,
   /(?:\d+-hour|weekly|daily|monthly|session|opus|sonnet)\s+limit (?:reached|exceeded|hit)/i,
@@ -172,16 +171,27 @@ const LIMIT = [
 ];
 const AUTH = /\b(?:401|403)\b|unauthori[sz]ed|forbidden|invalid[_ ](?:x-)?api[_ -]?key|incorrect api key|authentication[_ ](?:failed|error|required)|not (?:logged|signed) in|please (?:run )?\/?log ?in|(?:token|credentials?|session) (?:has )?expired|invalid (?:token|credentials?)/i;
 const TIMEOUT = /timed? ?out|ETIMEDOUT|deadline exceeded|request aborted/i;
-// Extract only error fields, never recursively search an answer's strings.
-function errorMessage(line) {
-  let value;
-  try { value = JSON.parse(line); } catch { return null; }
+// Decode the transport before inspecting error fields. In particular, a JSON
+// example in an assistant message is never parsed again as a provider event.
+function errorMessage(value, harness) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  if (value.response !== undefined || value.result !== undefined || value.content !== undefined) return null;
-  const error = value.error ?? (value.type === "error" ? value : null);
-  if (!error) return null;
-  if (typeof error === "string") return error;
-  if (typeof error !== "object" || Array.isArray(error)) return null;
+  let error;
+  if (harness === "claude-code") {
+    if (value.type !== "result" || value.is_error !== true) return null;
+    return [value.result, ...(Array.isArray(value.errors) ? value.errors : [])]
+      .filter((x) => typeof x === "string").join(" ");
+  }
+  if (harness === "codex") {
+    if (value.type !== "error") return null;
+    error = value;
+  } else if (harness === "opencode") {
+    if (value.type !== "error" || value.error?.name !== "APIError") return null;
+    error = value.error;
+  } else if (harness === "antigravity") {
+    if (value.response !== undefined || !value.error || typeof value.error !== "object") return null;
+    error = value.error;
+    if (error.code !== 429 && error.status !== "RESOURCE_EXHAUSTED") return null;
+  } else return null;
   const detail = error.data && typeof error.data === "object" ? error.data : error;
   return [error.type, error.code, error.status, error.message, detail === error ? "" : detail.message,
     detail.statusCode, detail.resets_at == null ? "" : `resets_at: ${detail.resets_at}`,
@@ -190,43 +200,50 @@ function errorMessage(line) {
   ].filter((x) => typeof x === "string" || typeof x === "number").join(" ");
 }
 
-// Text diagnostics are accepted only on stderr and in the harness's own
-// error forms. Plain stdout (including agy's JSON response) is always prose.
-const STDERR_SIGNATURE = {
-  "claude-code": /^(?:(?:Error: )?Claude(?: AI)? usage limit (?:reached|exceeded)|(?:Error: )?(?:5-hour|weekly|daily|session) limit reached\b|You've hit your limit\b|Error: usage limit reached\b)/i,
-  codex: /^(?:(?:ERROR: |stream error: )(?:You've hit your usage limit\b|usage limit reached\b)|You've hit your usage limit\b)/i,
-  opencode: /^Error: (?:429\b|rate limit exceeded\b|insufficient_quota\b|You exceeded your current quota\b)/i,
-  antigravity: /^(?:RESOURCE_EXHAUSTED:|Error 429: RESOURCE_EXHAUSTED\b)/,
-};
+function records(text, harness) {
+  // Claude and agy return one JSON document. Never scan their answer lines.
+  if (harness === "claude-code" || harness === "antigravity") {
+    try { return [JSON.parse(text)]; } catch { return []; }
+  }
+  return String(text ?? "").split("\n").flatMap((line) => {
+    try { return [JSON.parse(line)]; } catch { return []; }
+  });
+}
 
 export function detectLimit(run, { now = Date.now(), timeZone, harness } = {}) {
-  if (run.error || run.status === null || run.status === undefined || run.signal) return null;
-  const signature = STDERR_SIGNATURE[harness];
-  if (!signature) return null;
+  if (run.error || !Number.isInteger(run.status) || run.status <= 0 || run.signal) return null;
   for (const stream of ["stderr", "stdout"]) {
-    let fenced = false;
-    const lines = String(run[stream] ?? "").replace(/\r/g, "").split("\n");
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (line.startsWith("```")) { fenced = !fenced; continue; }
-      if (fenced) continue;
-      const structured = errorMessage(line);
-      const diagnostic = stream === "stderr" && signature.test(line);
-      if (!structured && !diagnostic) continue;
-      const message = structured ?? line;
-      if (AUTH.test(message) || TIMEOUT.test(message)) continue;
+    for (const value of records(run[stream], harness)) {
+      const message = errorMessage(value, harness);
+      if (!message || AUTH.test(message) || TIMEOUT.test(message)) continue;
       if (!LIMIT.some((pattern) => pattern.test(message))) continue;
-      // Only adjacent reset diagnostics can extend a plain error message.
-      const hints = structured ? "" : lines.slice(i + 1, i + 3)
-        .filter((text) => /^\s*(?:Retry-After:|resets?\b|try again (?:in|at)\b)/i.test(text)).join(" ");
-      const source = `${message} ${hints}`.trim();
-      const at = parseReset(source, { now, timeZone });
+      const at = parseReset(message, { now, timeZone });
       return { reason: message.replace(/\s+/g, " ").slice(0, 300),
         resetAt: at === null ? null : new Date(at).toISOString(),
-        resetText: source.replace(/\s+/g, " ").slice(0, 300) };
+        resetText: message.replace(/\s+/g, " ").slice(0, 300) };
     }
   }
   return null;
+}
+
+// Request a transport that separates provider failures from model answers.
+function structuredArgs(harness, argv) {
+  const args = [...argv];
+  if (harness === "claude-code") args[args.indexOf("--output-format") + 1] = "json";
+  if (harness === "codex") args.splice(args.length - 1, 0, "--json");
+  if (harness === "opencode") args.push("--format", "json");
+  return args;
+}
+
+function answerOutput(harness, stdout) {
+  if (harness === "claude-code") {
+    const result = records(stdout, harness).find((v) => v?.type === "result" && v.is_error === false);
+    return typeof result?.result === "string" ? result.result : "";
+  }
+  if (harness === "opencode") return records(stdout, harness)
+    .filter((v) => v?.type === "text" && typeof v.part?.text === "string")
+    .map((v) => v.part.text).join("\n");
+  return stdout;
 }
 
 // ── the adapter's spawn ─────────────────────────────────────────────────────
@@ -243,13 +260,14 @@ export function limitSpawn(harness, io = {}) {
   return (exe, argv, options) => {
     if (options?.input === undefined) return spawn(exe, argv, options);
     const inheritsStdout = options.stdio?.[1] === "inherit";
-    const run = spawn(exe, argv, { ...options, stdio: ["pipe", "pipe", "pipe"] });
+    const run = spawn(exe, structuredArgs(harness, argv), { ...options, stdio: ["pipe", "pipe", "pipe"] });
     const limit = detectLimit(run, { now: io.now?.() ?? Date.now(), timeZone: io.timeZone, harness });
     // A marker line a harness printed itself is not the adapter's.
     const stderr = String(run.stderr ?? "").split("\n").filter((l) => !l.startsWith(LIMIT_MARKER)).join("\n");
-    if (inheritsStdout && run.stdout) out(String(run.stdout));
+    const stdout = run.status === 0 ? answerOutput(harness, run.stdout) : run.stdout;
+    if (inheritsStdout && stdout) out(String(stdout));
     if (stderr) err(stderr.endsWith("\n") ? stderr : `${stderr}\n`);
-    if (!limit) return run;
+    if (!limit) return run.status === 0 ? { ...run, stdout } : run;
     err(`${LIMIT_MARKER} ${JSON.stringify({ harness, ...limit })}\n`);
     return { ...run, status: PROVIDER_LIMIT_EXIT, stdout: "" };
   };
