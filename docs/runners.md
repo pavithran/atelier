@@ -372,7 +372,12 @@ task for the rest of the process. A separate counter skips it after three consec
 including claim errors other than refusals, workspace preparation errors,
 HEAD read errors after successful harness exits, and finish exit 4. This
 counter resets on a task failure, success, claim refusal or validation skip. Claim refusals and validation skips do not
-increase either counter. Interruptions stop the runner without updating either
+increase either counter. A task merged or abandoned under the runner's job is
+answered `task_terminal` with its state, and the CLI ends with exit 5 (merged)
+or 6 (abandoned, shown as closed) from claim, push and every step of finish:
+the runner logs the state, keeps the workspace and its commits, releases
+nothing, never offers the task to a harness again in that process, and charges
+neither counter. Interruptions stop the runner without updating either
 counter. An infrastructure failure moves on to the next offered task in the
 same poll; `--once` still handles at most one task.
 Reaching either cap logs that the task needs the owner's attention; the
