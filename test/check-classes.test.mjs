@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 // The CLI's side of check classes (src/checks.ts): init refuses a check that
 // is never read-only before any request, sends the declarations the
@@ -40,6 +41,7 @@ function initFixture(t, { adapter = null, registered = null } = {}) {
 import { appendFileSync } from "node:fs";
 globalThis.fetch = async (url, options = {}) => {
   const path = new URL(url).pathname, method = options.method ?? "GET";
+  if (path === "/api/version") return Response.json({ capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
   const body = options.body ? JSON.parse(options.body) : undefined;
   appendFileSync(${JSON.stringify(log)}, JSON.stringify({ method, path, body }) + "\\n");
   let data = {};
@@ -191,4 +193,45 @@ test("check runs nothing, and clones nothing, when a registered check or the com
   assert.equal(given.status, 1);
   assert.match(given.stderr, /`git push origin main` is not a check: it pushes/);
   assert.doesNotMatch(given.stderr, /replace the check/);
+});
+
+const PREPARE = "npm ci --prefer-offline --no-audit --no-fund && npm run types";
+test("init sends preparation alongside commit identity, omits it on re-init and clears it only when named", (t) => {
+  const f = initFixture(t);
+  const r = f.run("init", "--prepare", PREPARE, "--prepare-input", "package.json", "--prepare-input", "package-lock.json", "--prepare-output", "node_modules", "--prepare-output", "worker-configuration.d.ts", "--commit-name", "Test Owner", "--commit-email", "owner@example.test");
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(f.requests().find((q) => q.method === "PUT").body.prepare, {
+    command: PREPARE, inputs: ["package.json", "package-lock.json"], outputs: ["node_modules", "worker-configuration.d.ts"],
+  });
+  const policy = f.requests().find((q) => q.method === "PUT").body;
+  assert.equal(policy.commitName, "Test Owner");
+  assert.equal(policy.commitEmail, "owner@example.test");
+  f.clear();
+  assert.equal(f.run("init").status, 0);
+  assert.equal(f.requests().find((q) => q.method === "PUT").body.prepare, undefined);
+  f.clear();
+  assert.equal(f.run("init", "--prepare", "").status, 0);
+  assert.equal(f.requests().find((q) => q.method === "PUT").body.prepare, null);
+});
+
+test("init applies owner and adapter declarations to preparation and refuses unsafe commands and paths", (t) => {
+  const f = initFixture(t, { adapter: ADAPTER });
+  const paths = ["--prepare-input", "package.json", "--prepare-output", "node_modules", "--approval", "Pavi, today"];
+  for (const [command, extra, by] of [["bin/build.sh --release", [], "adapter"], ["./setup.sh", ["--declare-read-only", "writes only in the clone"], "owner"]]) {
+    f.clear();
+    const r = f.run("init", "--prepare", command, ...paths, ...extra);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(f.requests().find((q) => q.method === "PUT").body.prepare.declaration.by, by);
+  }
+  for (const args of [
+    ["--prepare", "npm ci && git push", ...paths],
+    ["--prepare", "bin/delivery.sh install", ...paths, "--declare-read-only", "trust me"],
+    ["--prepare", PREPARE],
+    ["--prepare", PREPARE, ...paths, "--prepare-input", "../escape"],
+    ["--prepare-input", "package.json"],
+  ]) {
+    f.clear();
+    assert.equal(f.run("init", ...args).status, 1);
+    assert.equal(f.requests().some((q) => q.method === "PUT"), false);
+  }
 });

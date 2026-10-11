@@ -5,6 +5,8 @@ import { briefFor } from "../src/brief.ts";
 import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
 import { Ledger, type CriteriaChange, type LedgerEvent, type ReviewClaim } from "../src/ledger.ts";
 import { parseRuleError, type Evidence, type Item, type ProjectPolicy, type Review } from "../src/rules.ts";
+import type { Detail } from "../src/ui.ts";
+import { signIn } from "./signin.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { taskProgress } from "../src/ui.ts";
 
@@ -268,11 +270,24 @@ it("decision 2026-10-06: only the owner overrides a missing review, with a reaso
   await L.addEvidence(observed("t1", H2, ["AGENTS.md"]));
   await L.submit("t1", A);
   await refusal(L.accept("t1", "owner", H2), "not_ready", /protected path/);
+  // t371: the owner token alone does not override. Without the owner's
+  // permission from the task's page the override is refused, naming the page
+  // and the button, and nothing is recorded; with it, given for this head
+  // with a factor no agent holds, the override goes through and spends it.
+  await refusal(L.accept("t1", "owner", H2, reason), "override_unconfirmed", /needs the owner's confirmation: open \/p\/override\/t1 as the owner, press "Allow an override from the command line" confirming as the owner, then run the command again within 15 minutes; the owner token alone does not confirm it/);
+  expect(kinds(await L.events("t1"))).not.toContain("review.overridden");
+  await refusal(L.confirmOverride("t1", B, H2, "secret"), "not_project_owner", /only the project owner allows an override/);
+  await refusal(L.confirmOverride("t1", "owner", H2, "session" as never), "override_unconfirmed", /only with the owner's Access identity or the confirmation secret/);
+  const allowed = await L.confirmOverride("t1", "owner", H2, "secret");
+  expect(allowed.overrideConfirmation).toMatchObject({ head: H2, by: "owner", factor: "secret" });
+  expect(Date.parse(allowed.overrideConfirmation!.until) - Date.parse(allowed.overrideConfirmation!.at)).toBe(15 * 60 * 1000);
+  expect(kinds(await L.events("t1"))[0]).toBe("override.allowed");
   const accepted = await L.accept("t1", "owner", H2, `  ${reason}  `);
-  expect(accepted).toMatchObject({ state: "accepted", acceptedHead: H2, reviewOverride: { head: H2, by: "owner", reason } });
+  expect(accepted).toMatchObject({ state: "accepted", acceptedHead: H2, reviewOverride: { head: H2, by: "owner", reason, confirmedAt: allowed.overrideConfirmation!.at } });
+  expect(accepted.overrideConfirmation).toBeUndefined();
   const events = await L.events("t1") as unknown as LedgerEvent[];
   expect(events.slice(0, 2).map((e) => [e.kind, e.actor])).toEqual([["item.accepted", "owner"], ["review.overridden", "owner"]]);
-  expect(events[1].data).toEqual({ head: H2, reason, waived: "touches a protected path; needs approval from a model of another family than every contributor", contributors: [A] });
+  expect(events[1].data).toEqual({ head: H2, reason, waived: "touches a protected path; needs approval from a model of another family than every contributor", contributors: [A], confirmed: "command line", confirmedAt: allowed.overrideConfirmation!.at, factor: "secret" });
   expect(events[0].data).toMatchObject({ head: H2, reviewOverridden: true });
   // It is not a review: none was recorded for it.
   expect((await L.reviewsFor("t1")).filter((r) => r.head === H2)).toEqual([]);
@@ -346,7 +361,8 @@ it("decision 2026-10-09: the inbox names the reviewer a land would use for an as
   // Only the contributor's own model is available: the entry names no reviewer.
   const none = await L.inbox(T, [entry("opus-5.5", { harness: "claude-code" })]);
   expect(none[0].reviewer).toBeNull();
-  expect((await L.inbox(T)).map((e) => [e.kind, e.reviewer])).toEqual([["assess", null]]);
+  // With no pool given the reviewer is left unset: not read, never "none qualifies".
+  expect((await L.inbox(T)).map((e) => [e.kind, e.reviewer])).toEqual([["assess", undefined]]);
 });
 
 it("the holder under another letter case, profile or registered name cannot review, and that model's approval does not count", async () => {
@@ -592,20 +608,126 @@ it("push events read the authoritative branch head and ignore duplicate or unrel
   expect(kinds(await L.events('t1')).filter(k=>k==='push.observed')).toHaveLength(1);
 });
 
+// t371: the permission for a command-line override is given on one head, is
+// spent by the override, and goes with a change of criteria; a new head needs
+// a new one. A project that forbids overrides refuses the permission and the
+// override alike, with the reason unread.
+it("t371: a permission for an override is spent by one override, lapses with the head or the criteria, and is refused where overrides are forbidden", async () => {
+  const L = await setup("override-permission");
+  await L.newItem("Touch a protected path", ["src/**", "AGENTS.md"], "owner", { accept: ["Keeps the prompts"] });
+  await L.claim("t1", A);
+  await L.setFork("t1", "override-permission--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
+  // Not submitted yet: nothing to allow.
+  await refusal(L.confirmOverride("t1", "owner", undefined, "access"), "not_submitted", /t1 is claimed; an override is allowed only on a submitted revision/);
+  await L.submit("t1", A);
+  await refusal(L.confirmOverride("t1", "owner", H2, "access"), "stale_head", /this task changed since you opened it/);
+  await L.confirmOverride("t1", "owner", H1, "access");
+  // A change of the criteria takes the permission with it; the task stays submitted.
+  await L.editItem("t1", "owner", { accept: ["Keeps the prompts", "And the README"] });
+  expect((await L.item("t1")).state).toBe("submitted");
+  expect((await L.item("t1")).overrideConfirmation).toBeUndefined();
+  await refusal(L.accept("t1", "owner", H1, "No other family"), "override_unconfirmed", /needs the owner's confirmation/);
+  // Given again, then the head moves: the permission names the old head.
+  await L.confirmOverride("t1", "owner", H1, "access");
+  await L.recordPush("t1", A, H2, H2);
+  await L.addEvidence(observed("t1", H2, ["AGENTS.md"]));
+  await L.submit("t1", A);
+  expect((await L.item("t1")).overrideConfirmation).toMatchObject({ head: H1 });
+  await refusal(L.accept("t1", "owner", H2, "No other family"), "override_unconfirmed", /needs the owner's confirmation/);
+  // Where another family has approved there is nothing to allow an override of.
+  await L.newItem("Touch another protected path", ["AGENTS.md"], "owner");
+  await L.claim("t2", A);
+  await L.setFork("t2", "override-permission--t2", H0, A);
+  await L.recordPush("t2", A, H1, H1);
+  await L.addEvidence(observed("t2", H1, ["AGENTS.md"]));
+  await L.submit("t2", A);
+  await L.addReview(review("t2", B, H1, true), undefined, true);
+  await refusal(L.confirmOverride("t2", "owner", H1, "access"), "override_unneeded", /nothing to allow an override of/);
+
+  // A project that forbids overrides.
+  const F = await setup("override-forbidden", { ...policy, noOverride: true });
+  await F.newItem("Touch a protected path", ["AGENTS.md"], "owner");
+  await F.claim("t1", A);
+  await F.setFork("t1", "override-forbidden--t1", H0, A);
+  await F.recordPush("t1", A, H1, H1);
+  await F.addEvidence(observed("t1", H1, ["AGENTS.md"]));
+  await F.submit("t1", A);
+  expect((await F.project()).policy.noOverride).toBe(true);
+  await refusal(F.confirmOverride("t1", "owner", H1, "access"), "override_forbidden", /this project forbids overrides of the independent review \(atelier init --no-override\)/);
+  await refusal(F.accept("t1", "owner", H1, "No other family"), "override_forbidden", /forbids overrides/);
+  await refusal(F.accept("t1", "owner", H1, ""), "override_forbidden", /forbids overrides/);
+  expect((await F.inbox(new Date().toISOString())).map((e) => e.reason)).toEqual([expect.stringMatching(/ask a reviewer with atelier land t1 --reviewer H\/M; this project forbids overrides$/)]);
+  expect((await F.item("t1")).state).toBe("submitted");
+  // Another family's approval still lands it.
+  await F.addReview(review("t1", B, H1, true), undefined, true);
+  expect((await F.accept("t1", "owner", H1)).state).toBe("accepted");
+});
+
+// t371, round 2: an override recorded before the project forbade overrides
+// counts for nothing once it does. The gate reads the stored override no
+// more, so an acceptance that would rest on it is refused for the missing
+// review, and the inbox and the detail ask for that review; allowing
+// overrides again restores it.
+it("t371: an override recorded earlier is ignored once the project forbids overrides", async () => {
+  const L = await setup("override-then-forbidden");
+  await L.newItem("Touch a protected path", ["AGENTS.md"], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", "override-then-forbidden--t1", H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
+  await L.submit("t1", A);
+  await L.confirmOverride("t1", "owner", H1, "secret");
+  await L.accept("t1", "owner", H1, "No other family");
+  expect((await L.item("t1")).reviewOverride).toMatchObject({ head: H1 });
+  // Accepted again on the standing override: the override carries it, and
+  // the gate (which also says the item is accepted, not submitted) asks for
+  // no assessor.
+  expect((await L.accept("t1", "owner", H1)).state).toBe("accepted");
+  const gateOf = async () => ((await L.detail("t1")) as Detail).gate;
+  expect(await gateOf()).toMatchObject({ needsAssessor: false, overridden: { head: H1 } });
+  // Then the project forbids overrides: the one on record is ignored.
+  await L.initProject({ name: "override-then-forbidden", repo: "override-then-forbidden", reset: false, noOverride: true }, "owner");
+  const g = await gateOf();
+  expect(g.needsAssessor).toBe(true);
+  expect(g.overridden).toBeUndefined();
+  expect(g.blockers).toContainEqual(expect.stringMatching(/protected path/));
+  await refusal(L.accept("t1", "owner", H1), "not_ready", /protected path/);
+  await refusal(L.accept("t1", "owner", H1, "No other family"), "override_forbidden", /forbids overrides/);
+  expect((await L.item("t1")).reviewOverride).toMatchObject({ head: H1 });
+  // Allowed again, the recorded override stands as before.
+  await L.initProject({ name: "override-then-forbidden", repo: "override-then-forbidden", reset: false, noOverride: false }, "owner");
+  expect(await gateOf()).toMatchObject({ needsAssessor: false, overridden: { head: H1 } });
+  expect((await L.accept("t1", "owner", H1)).state).toBe("accepted");
+});
+
 it("HTTP review and acceptance preserve the displayed revision through successful form posts",async()=>{
  const {default:worker}=await import('../src/index');
  const L=await setup('http-success');await L.newItem('Approve safely',[],'owner');await L.claim('t1',A);await L.setFork('t1','http-success--t1',H0,A);await L.recordPush('t1',A,H1,H1);await L.addEvidence(observed('t1',H1,['AGENTS.md']));await L.submit('t1',A);
  const artifacts={get:async()=>({log:async()=>[{hash:H1}],[Symbol.dispose](){}})} as unknown as Artifacts;
- const bindings={...env,ARTIFACTS:artifacts,ATELIER_TOKEN:'fixture-token'};
- const post=(action:string,note:string)=>worker.fetch(new Request(`https://atelier.test/ui/http-success/t1/${action}`,{method:'POST',headers:{authorization:'Bearer fixture-token',origin:'https://atelier.test'},body:new URLSearchParams({head:H1,criteria:NO_CRITERIA,note})}),bindings);
+ // A server whose owner factor is the confirmation secret (t371); every form here carries it.
+ const bindings={...env,ARTIFACTS:artifacts,ATELIER_TOKEN:'fixture-token',OVERRIDE_SECRET:'fixture-word'};
+ const post=(action:string,note:string,headers:Record<string,string>={authorization:'Bearer fixture-token'})=>worker.fetch(new Request(`https://atelier.test/ui/http-success/t1/${action}`,{method:'POST',headers:{...headers,origin:'https://atelier.test'},body:new URLSearchParams({head:H1,criteria:NO_CRITERIA,note,confirmation:'fixture-word'})}),bindings);
  // The owner's approval is recorded at the displayed revision, but it is not
  // the independent review AGENTS.md needs, so Accept is refused; the
- // override form, with its reason, accepts at the same revision.
+ // override form, with its reason, accepts at the same revision — under the
+ // owner's own sign-in and with the confirmation secret (t371): posted with
+ // the owner token as a bearer, as an agent session could, the override
+ // forms are refused even with the secret, and nothing is recorded.
  expect((await post('approve','Reviewed')).status).toBe(303);
  expect((await post('accept','')).status).toBe(409);
- expect((await post('override','')).status).toBe(400);
- expect((await post('override','No model of another family is available')).status).toBe(303);
+ const bearer=await post('override','No model of another family is available');
+ expect(bearer.status).toBe(403);
+ expect(await bearer.text()).toMatch(/needs the owner(&#39;|'|&#x27;)s own sign-in, not the owner token/);
+ expect((await post('allow-override','')).status).toBe(403);
+ expect((await L.item('t1')).state).toBe('submitted');
+ const cookie={cookie:await signIn('fixture-token',bindings)};
+ expect((await post('override','',cookie)).status).toBe(400);
+ expect((await post('override','No model of another family is available',cookie)).status).toBe(303);
  expect(await L.item('t1')).toMatchObject({state:'accepted',acceptedHead:H1,reviewOverride:{head:H1,by:'owner',reason:'No model of another family is available'}});
+ const overridden=(await L.events('t1') as unknown as LedgerEvent[]).find((e)=>e.kind==='review.overridden');
+ expect(overridden?.data).toMatchObject({confirmed:'page'});
  expect((await L.reviewsFor('t1')).map((r)=>[r.by,r.head,r.approve])).toEqual([['owner',H1,true]]);
 });
 
@@ -643,6 +765,32 @@ it("dispatch queues an open task for a kind of runner, and only a matching runne
   const { item: byHand } = await L.claim(item.id, A);
   expect(byHand.owner).toBe(A);
   expect(kinds(await L.events(item.id))).toEqual(expect.arrayContaining(["item.dispatched", "item.undispatched", "item.released"]));
+});
+
+it("a dispatch refuses the claim rules ahead of the claim: role under a governed policy and refused overlap", async () => {
+  const governed: ProjectPolicy = {
+    checks: [], protected: [],
+    agents: { claude: { available: true, eligible_roles: ["executor"] }, codex: { available: true, eligible_roles: ["assessor"] } },
+  };
+  const L = await setup("dispatch-claim-rules", governed);
+  const t1 = (await L.newItem("Build it", ["src/**"], "owner")).id;
+  // The named actor has no executor role, so the claim would refuse it; the
+  // dispatch refuses now, naming the agent that would be eligible.
+  await refusal(L.dispatch(t1, "owner", { to: "home", agent: "codex", model: "gpt-5.5" }), "ineligible", /codex\/gpt-5\.5 needs an available agent with the executor role; available agents with the executor role: claude/);
+  expect((await L.item(t1)).dispatch).toBeNull();
+  const queued = await L.dispatch(t1, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
+  expect(queued.dispatch).toMatchObject({ agent: "claude-code", model: "opus-5.5" });
+
+  const strict: ProjectPolicy = { checks: [], protected: [], refuseOverlap: true };
+  const S = await setup("dispatch-claim-overlap", strict);
+  await S.newItem("Live", ["relay/test/**"], "owner");
+  await S.claim("t1", A);
+  const t2 = (await S.newItem("Queued", ["relay/test/foo.ts"], "owner")).id;
+  await refusal(S.dispatch(t2, "owner", { to: "home" }), "overlap", /t2's scope overlaps live t1 \(claude-code\/opus-5\.5\); this project refuses overlapping claims/);
+  expect((await S.item(t2)).dispatch).toBeNull();
+  // The holder of the overlapping item is not refused when named.
+  const overlapped = await S.dispatch(t2, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
+  expect(overlapped.dispatch).toMatchObject({ agent: "claude-code", model: "opus-5.5" });
 });
 
 it("the owner can dispatch a held task, which releases its holder and queues it for rework", async () => {
@@ -751,7 +899,7 @@ it("a dispatch is withdrawn only from an open task, and a refusal says why and w
   await refusal(L.undispatch(item.id, "owner"), "not_dispatched",
     new RegExp(`^${item.id} is claimed by opencode/glm-5.3-flash; its dispatch applies again only if it is released, so withdraw it then$`));
   await L.abandon(item.id, "owner", "not needed");
-  await refusal(L.undispatch(item.id, "owner"), "not_dispatched", new RegExp(`^${item.id} is abandoned, so its dispatch no longer applies and there is nothing to withdraw$`));
+  await refusal(L.undispatch(item.id, "owner"), "not_dispatched", new RegExp(`^${item.id} is not queued for a runner, so there is no dispatch to withdraw$`));
 });
 
 // t235: a runner's dead run leaves its claims behind. The jobs the queue can
@@ -863,6 +1011,15 @@ it("an init is merged into the project in one step and keeps every field it does
   expect(mergeProject(tiered, { ...base, title: "V" }, "later").policy.reviewTier).toEqual(["claude-code/opus-5.5", "codex/gpt-6.1-sol"]);
   expect(mergeProject(tiered, { ...base, reviewTier: [] }, "later").policy).not.toHaveProperty("reviewTier");
   expect(mergeProject(tiered, { ...base, reset: true }, "later").policy).not.toHaveProperty("reviewTier");
+  // t394: the model policy is unset by default; a switch is stamped with the
+  // init's time and who made it, kept by an init that does not name it, and
+  // a return to cross-family review is recorded the same way, not dropped.
+  expect(full.policy).not.toHaveProperty("familyMode");
+  const single = mergeProject(full, { ...base, familyMode: { single: "anthropic", by: "pavi" } }, "2026-10-09T10:00:00Z");
+  expect(single.policy.familyMode).toEqual({ single: "anthropic", by: "pavi", at: "2026-10-09T10:00:00Z" });
+  expect(mergeProject(single, { ...base, title: "V" }, "later").policy.familyMode).toEqual({ single: "anthropic", by: "pavi", at: "2026-10-09T10:00:00Z" });
+  expect(mergeProject(single, { ...base, familyMode: { single: null, by: "pavi" } }, "2026-10-10T10:00:00Z").policy.familyMode).toEqual({ single: null, by: "pavi", at: "2026-10-10T10:00:00Z" });
+  expect(mergeProject(single, { ...base, reset: true }, "later").policy).not.toHaveProperty("familyMode");
   // reset starts the policy over and keeps the project's identity.
   const reset = mergeProject(full, { ...base, reset: true }, "later");
   expect(reset.policy).toEqual({ checks: [], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*", ".atelier/prompts/**"], eligible: [], refuseOverlap: false, sandboxOnly: false });
@@ -1032,6 +1189,7 @@ it("one Ledger change takes one timestamp: the item's times and the change's eve
       L.recordPush("t4", A, H1, H1);
       L.addEvidence(observed("t4", H1, ["AGENTS.md"]));
       L.submit("t4", A);
+      L.confirmOverride("t4", "owner", H1, "access");
       L.accept("t4", "owner", H1, "No reviewer of another family is available");
       expect(stamped("t4", 2).reviewOverride?.at).toBe(L.item("t4").updatedAt);
 
@@ -1322,6 +1480,7 @@ it("a task sent back for rework gets the rejecting review's findings in its job 
 // ── t326: reviews bound to the acceptance criteria ───────────────────────
 
 const GPT = "codex/gpt-6-astra", GLM = "zcode/glm-5.3";
+const REVIEW_POOL: ModelEntry[] = [{ id: "gpt-6-astra", harness: "codex", where: "home", provider: "subscription", aliases: [], family: "openai", note: "", addedBy: "owner", addedAt: new Date().toISOString() }];
 const RUNNER = { runner: "home:studio", kind: "home" } as const;
 const ONE = ["Nested lists parse"];
 const TWO = ["Nested lists parse", "Errors name the line"];
@@ -1365,7 +1524,7 @@ it("changing criteria withdraws every standing review and live request, keeps th
   // An approval by another family, the owner asks GPT by name, the tier asks
   // GLM beside it; GLM claims the tier review and rejects; GPT claims the gate's.
   await L.addReview(bound(review("t1", B, H1, true, "fine"), one), undefined, true);
-  await L.requestReview("t1", "owner", GPT, [], true);
+  await L.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
   const tier = await L.claimReview("t1", GLM, RUNNER) as unknown as ReviewClaim;
   expect(tier).toMatchObject({ tier: true, criteria: one });
   await L.addReview(bound(review("t1", GLM, H1, false, "unsafe"), one, tier.request), undefined, true);
@@ -1413,7 +1572,7 @@ it("edits that leave the stored criteria as they are change no binding, review o
   await submittedWith(L, TWO);
   const two = criteriaHash(TWO);
   await L.addReview(bound(review("t1", B, H1, true), two), undefined, true);
-  await L.requestReview("t1", "owner", GPT, [], true);
+  await L.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
   const before = { reviews: await L.reviewsFor("t1"), requests: await L.reviewRequests("t1") };
   for (const fields of [{ title: "Parse lists" }, { brief: "The whole task." }, { nonGoals: ["No new syntax"] }, { stopWhen: ["The grammar changes"] }, { nextGate: "Owner review" }, { accept: [...TWO] }, { title: "Again", accept: TWO }]) {
     const edited = await L.editItem("t1", "owner", fields) as unknown as Item & { criteriaChange?: CriteriaChange };
@@ -1516,6 +1675,7 @@ it("changing criteria takes back an acceptance and an override, the task claimed
 
   // Accepted with the owner's override: the override goes with the acceptance.
   await submittedWith(L, ONE, "t2");
+  await L.confirmOverride("t2", "owner", H1, "access");
   await L.accept("t2", "owner", H1, "No reviewer of another family is available");
   expect((await L.item("t2")).reviewOverride).toBeDefined();
   const overridden = await L.editItem("t2", "owner", { accept: TWO }) as unknown as Item & { criteriaChange: CriteriaChange };
@@ -1544,7 +1704,7 @@ const liveTier = async (L: Awaited<ReturnType<typeof setup>>, id = "t1") => (awa
 it("criteria changed A to B and back to A at one head: the tier is asked again each time, and a live tier request stands", async () => {
   const L = await setup("criteria-tier-aba", { ...policy, reviewTier: [GLM] });
   await submittedWith(L, ONE);
-  await L.requestReview("t1", "owner", GPT, [], true);
+  await L.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
   expect((await liveTier(L)).length).toBe(1);
   await L.editItem("t1", "owner", { accept: TWO });
   expect((await liveTier(L)).length).toBe(1);
@@ -1568,7 +1728,7 @@ it("requests and reviews made before reviews were bound stop counting as already
     L.recordPush("t1", A, H1, H1);
     L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
     L.submit("t1", A);
-    L.requestReview("t1", "owner", GPT, [], true);
+    L.requestReview("t1", "owner", GPT, REVIEW_POOL, true);
     // As a ledger before t326 left them: requests with no criteria, and a
     // tier review with no binding at the head.
     state.storage.sql.exec(`UPDATE review_requests SET criteria = NULL`);
@@ -1589,7 +1749,7 @@ it("requests and reviews made before reviews were bound stop counting as already
 it("a gate request the criteria change withdrew is carried at the same head once the gate needs the review", async () => {
   const L = await setup("criteria-carry");
   await submittedWith(L, ONE);
-  await L.requestReview("t1", "owner", GPT, []);
+  await L.requestReview("t1", "owner", GPT, REVIEW_POOL);
   // The check fails at the head while the criteria change, so no review is needed and none is asked yet.
   await L.addEvidence({ ...observed("t1", H1, ["AGENTS.md"]), passed: false });
   const change = await L.editItem("t1", "owner", { accept: TWO }) as unknown as Item & { criteriaChange: CriteriaChange };
@@ -1599,4 +1759,62 @@ it("a gate request the criteria change withdrew is carried at the same head once
   await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
   expect(await live(L)).toEqual([expect.objectContaining({ head: H1, state: "open" })]);
   expect(((await L.events("t1")) as unknown as LedgerEvent[]).find((e) => e.kind === "review.requested")!.data).toMatchObject({ reviewer: GPT, via: "head-moved" });
+});
+
+for (const terminal of ["abandoned", "merged"] as const) {
+  it(`${terminal} clears dispatch and every live review, and refuses all claims`, async () => {
+    const L = await setup(`terminal-${terminal}`);
+    await L.newItem("Closed work", [], "owner");
+    await L.dispatch("t1", "owner", { to: "home" });
+    expect(await L.waiting()).toHaveLength(1);
+    await runInDurableObject(L, async (_instance, state) => {
+      for (const status of ["open", "claimed"]) {
+        for (const tier of [null, 1]) {
+          state.storage.sql.exec(`INSERT INTO review_requests (item, head, dispatch, state, tier) VALUES (?, ?, ?, ?, ?)`,
+            "t1", H1, JSON.stringify({ to: "home", agent: "codex", model: "gpt-5.5" }), status, tier);
+        }
+      }
+      if (terminal === "merged") state.storage.sql.exec(`UPDATE items SET state = 'accepted', accepted_head = ? WHERE id = 't1'`, H1);
+    });
+    if (terminal === "abandoned") await L.abandon("t1", "owner", "Stop");
+    else await L.merged("t1", "owner", H2, true);
+    expect(await L.item("t1")).toMatchObject({ state: terminal, dispatch: null });
+    expect(await L.waiting()).toEqual([]);
+    expect(await L.reviewWaiting()).toEqual([]);
+    await runInDurableObject(L, async (_instance, state) => {
+      expect(state.storage.sql.exec(`SELECT state FROM review_requests`).toArray().map(r => r.state)).toEqual(Array(4).fill("withdrawn"));
+    });
+    for (const actor of [A, "atelier/integrator"]) await refusal(L.claim("t1", actor, null, true), "closed", new RegExp(terminal));
+    await refusal(L.claimReview("t1", B, null), "closed", new RegExp(terminal));
+    await refusal(L.dispatch("t1", "owner", { to: "home" }), "closed", new RegExp(terminal));
+    await L.unclaim("t1", A, "not_ready");
+    expect((await L.item("t1")).state).toBe(terminal);
+  });
+}
+
+it("claim rollback preserves closure, newer claims, and a holder's retry", async () => {
+  const L = await setup("rollback-reservation");
+  await L.newItem("One", [], "owner");
+  const first = await L.claim("t1", A);
+  await L.release("t1", A, "Retry elsewhere");
+  const second = await L.claim("t1", A);
+  await L.unclaim("t1", A, "not_ready", false, first.generation);
+  expect((await L.item("t1")).state).toBe("claimed");
+  const retry = await L.claim("t1", A);
+  await L.unclaim("t1", A, "not_ready", false, retry.generation);
+  expect((await L.item("t1")).owner).toBe(A);
+  await L.abandon("t1", "owner", "Stop during fork");
+  await L.unclaim("t1", A, "not_ready", false, second.generation);
+  expect((await L.item("t1")).state).toBe("abandoned");
+});
+
+it("failed claim restores its prior state instead of assuming it was open", async () => {
+  const L = await setup("rollback-prior-state");
+  await L.newItem("Submitted without a holder", [], "owner");
+  await runInDurableObject(L, async (_instance, state) => {
+    state.storage.sql.exec(`UPDATE items SET state = 'submitted' WHERE id = 't1'`);
+  });
+  const claim = await L.claim("t1", A);
+  await L.unclaim("t1", A, "not_ready", false, claim.generation);
+  expect(await L.item("t1")).toMatchObject({ state: "submitted", owner: null, runner: null });
 });

@@ -1,9 +1,11 @@
+import { parseRunner } from "./dispatch/rules.ts";
 import { RuleError, validActor } from "./rules.ts";
 
 export interface AgentToken {
   id: string;
   hash: string;
   actor: string;
+  runner?: string;
   projects?: string[];
   createdAt: string;
   expiresAt: string;
@@ -30,7 +32,12 @@ export async function sha256(value: string): Promise<string> {
 }
 
 export function tokenOptions(input: Record<string, unknown>, owner: string, now: number) {
-  const actor = input.actor;
+  if (input.runner !== undefined && typeof input.runner !== "string") throw new RuleError("bad_runner", "runner must be a name", 400);
+  const runner = input.runner === undefined ? null : parseRunner(String(input.runner).includes(":") ? String(input.runner) : `home:${input.runner}`);
+  const actor = runner ? `runner/${runner.runner.split(":")[1]}` : input.actor;
+  if (runner && (input.actor !== undefined || !Array.isArray(input.projects) || input.projects.length !== 1)) {
+    throw new RuleError("bad_runner_token", "a runner token needs exactly one project and no actor", 400);
+  }
   if (typeof actor !== "string" || !validActor(actor) || !/^[^/]+\/[^/]+$/.test(actor) || actor === owner) {
     throw new RuleError("bad_actor", "an agent token needs harness/model and cannot name the project owner", 400);
   }
@@ -45,7 +52,7 @@ export function tokenOptions(input: Record<string, unknown>, owner: string, now:
   if (input.label !== undefined && (typeof input.label !== "string" || input.label.length > 200)) {
     throw new RuleError("bad_label", "label must be text of at most 200 characters", 400);
   }
-  return { actor, ...(projects !== undefined ? { projects: [...new Set(projects as string[])] } : {}),
+  return { actor, ...(runner ? { runner: runner.runner } : {}), ...(projects !== undefined ? { projects: [...new Set(projects as string[])] } : {}),
     createdAt: new Date(now).toISOString(), expiresAt: new Date(now + days * 86400000).toISOString(),
     ...(input.label !== undefined ? { label: input.label as string } : {}) };
 }
@@ -75,10 +82,48 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
     // agent may mint already exposes; status and unwrap read it.
     // decisions are the owner's standing decisions, which every agent of
     // the project is to know (src/decisions.ts); only the owner writes them.
-    if (method === "GET") return ["owners", "standing", "items", "baseline-head", "decisions"].includes(section);
+    if (method === "GET") return ["owners", "standing", "items", "baseline-head", "decisions", "board", "areas"].includes(section);
     return section === "baseline-token" && method === "POST" && body.scope !== "write";
   }
   if (section !== "items" || !id) return false;
   if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "diff", "job-brief"].includes(verb) || parts.length === 6 && ["sandbox", "logs", "diffs"].includes(verb);
-  return method === "POST" && parts.length === 5 && ["claim", "read-token", "base-token", "push", "evidence", "sandbox", "review", "review-claim", "review-release", "review-unparsable", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "block", "unblock"].includes(verb);
+  return method === "POST" && parts.length === 5 && ["claim", "read-token", "base-token", "push", "evidence", "sandbox", "review", "review-claim", "review-renew", "review-release", "review-unparsable", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "block", "unblock"].includes(verb);
+}
+
+// A separate allowlist: runner credentials never inherit an agent's review,
+// integration, handoff or owner privileges. review-skip is a runner's own
+// word, not a review: it says the runner will not serve a review job it was
+// offered (t353), and the gateway takes it only for such a job, as it takes
+// a run report (assertRunnerReport).
+export function runnerRoute(method: string, parts: string[], body: Record<string, unknown> = {}): boolean {
+  if (parts.length === 1) return method === "GET" && parts[0] === "config" || method === "POST" && ["queue", "runs"].includes(parts[0]);
+  if (parts[0] !== "projects" || !parts[1]) return false;
+  if (parts.length === 2) return method === "GET";
+  if (parts.length === 3) return method === "GET" && ["decisions", "baseline-head"].includes(parts[2]) || method === "POST" && parts[2] === "baseline-token" && body.scope !== "write";
+  if (parts[2] !== "items" || !/^t[0-9]+$/.test(parts[3])) return false;
+  if (["read-token", "base-token"].includes(parts[4]) && body.scope === "write") return false;
+  if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "job-brief", "diff"].includes(parts[4]) || parts.length === 6 && ["sandbox", "logs", "diffs"].includes(parts[4]);
+  return method === "POST" && parts.length === 5 && ["claim", "read-token", "base-token", "push", "evidence", "sandbox", "submit", "plan", "release", "review-skip"].includes(parts[4]);
+}
+
+export function runnerDenied(token: AgentToken): RuleError {
+  return new RuleError("runner_forbidden", `runner ${token.runner} (token ${token.id}) is not authorized for this operation`, 403);
+}
+
+// Dedicated CLI exits carry the exact state through nested finish steps.
+// Neither accepted, integrated nor blocked means the task is terminal.
+export const TERMINAL_TASK_EXITS = { merged: 5, abandoned: 6 } as const;
+
+export function runnerTaskTerminal(id: string, state: keyof typeof TERMINAL_TASK_EXITS): RuleError {
+  return new RuleError("task_terminal", `${id} is ${state === "abandoned" ? "closed" : state} (state: ${state})`, 409);
+}
+
+// The exit a CLI command ends with when the server's answer is task_terminal:
+// the exact state's exit, read back from the detail runnerTaskTerminal wrote,
+// so claim, push and every step of finish carry the state to the runner. Null
+// for any other answer, which keeps its own exit (1, or 3 for a refused claim).
+export function terminalTaskExit(answer: { error?: unknown; detail?: unknown }): number | null {
+  if (answer.error !== "task_terminal") return null;
+  const state = /\(state: ([a-z]+)\)$/.exec(String(answer.detail ?? ""))?.[1];
+  return state && Object.hasOwn(TERMINAL_TASK_EXITS, state) ? TERMINAL_TASK_EXITS[state as keyof typeof TERMINAL_TASK_EXITS] : null;
 }

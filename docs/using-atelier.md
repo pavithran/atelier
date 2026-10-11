@@ -1,5 +1,14 @@
 # Using Atelier well
 
+The cross-company rules below describe the default policy. With
+`atelier init --single-family COMPANY`, building and reviewing use only that
+company's models: a reviewer must be a different model from every contributor,
+never a contributor under another harness. This exception also applies to
+criteria review, handoffs and conflict contributors. Only that company's tier
+models qualify; if none qualifies, no separate tier review is requested.
+`atelier init --cross-family` restores the default; both switches record who
+made them and when. See [Single-family mode](gate.md#single-family-mode).
+
 This guide is for the owner of a project registered in Atelier: the person
 who decides what gets done and what goes in. Atelier and the agents do the
 work; the owner makes three kinds of decision. What to do, whether a plan's
@@ -156,7 +165,8 @@ that is how Atelier improves.
 ## Habits that save trouble
 
 - Run one home runner per machine (`atelier runner --name home:NAME`), and
-  check for one before starting another: `pgrep -f "atelier.mjs runner"`.
+  check for one before starting another: `atelier status` lists the runners
+  live on this Mac by name, and to wait on a task use `atelier wait ID`.
 - Deploy a project between landings, after its full test suite passes, not
   while another task's checks run.
 - `atelier gc --project NAME` previews the workspaces of finished tasks that
@@ -184,3 +194,5 @@ that is how Atelier improves.
 | close a session of direct edits | `atelier wrap "summary"` |
 | clear finished workspaces | `atelier gc --project NAME` |
 | see spend and windows | `atelier runner --usage` |
+
+See [Function areas and the project board](areas.md) for owner commands to create, rename and remove areas, assign tasks and read their stages.

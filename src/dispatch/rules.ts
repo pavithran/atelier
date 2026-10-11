@@ -1,11 +1,12 @@
+import { landingLeaseLapsed, type LandingLease } from "../landing-lease.ts";
 // Dispatch: the project owner (and, later, an orchestrator holding an approved
 // plan) puts an open task in a queue for a kind of runner. Runners do not get
 // work pushed to them; they ask for it, describing what they can run, and then
 // claim it through the ordinary atomic claim. A runner at home therefore only
 // ever makes outgoing requests, and every runner's work is judged the same way.
 
-import { RuleError, samePlan, scopesOverlapWithin, validActor, type Item, type ItemState } from "../rules.ts";
-import { assertLength, OWNER_TEXT_MAX } from "../text.ts";
+import { assertSingleFamily, DEFAULT_OWNER, harnessRefusal, overlappingRefusal, roleRefusal, RuleError, samePlan, scopesOverlapWithin, validActor, type Item, type ItemState, type ProjectPolicy } from "../rules.ts";
+import { assertLength, DISPATCH_NOTE_MAX } from "../text.ts";
 
 export type RunnerKind = "cloud" | "home";
 export const RUNNER_KINDS: RunnerKind[] = ["cloud", "home"];
@@ -30,7 +31,9 @@ export interface Dispatch {
   job?: "plan" | "review" | "integrate" | "refresh" | "merge-main";
   // For an integrate job: the part key to merge, its verified head, and the
   // part's item id, so the integrator can fetch the head to merge. For a
-  // refresh or merge-main job, `head` is the main head to merge.
+  // refresh job, `head` is the main head to merge. For merge-main it is
+  // the dispatch-time head; the runner resolves the baseline branch after
+  // claiming and records the actual target in its submission summary.
   part?: string;
   head?: string;
   partId?: string;
@@ -124,61 +127,186 @@ export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unk
     throw new RuleError("bad_dispatch", `head names the main head a merge-main job merges; give it with --job merge-main, not alone`, 400);
   }
   // The note is the owner's and is stored with the dispatch for every runner
-  // to read, so one over its limit is refused, never cut.
+  // to read, so one over its limit is refused, never cut. The text is checked
+  // and stored as given, line breaks included, whether it came by the API,
+  // the CLI or a file; only the browser form folds its CRLF to LF, at the
+  // form handler (src/index.ts), before it gets here.
   const note = String(input.note ?? "");
-  assertLength(note, OWNER_TEXT_MAX, "the dispatch note");
+  assertLength(note, DISPATCH_NOTE_MAX, "the dispatch note");
   if (input.overlapOk !== undefined && input.overlapOk !== null && typeof input.overlapOk !== "boolean") {
     throw new RuleError("bad_dispatch", "overlapOk must be true or false", 400);
   }
   return { to: to as Dispatch["to"], agent, model, by, at, note, ...(job ? { job, head: head!, task: true as const } : {}), ...(input.overlapOk === true ? { overlapOk: true as const } : {}) };
 }
 
-// The live item a held dispatch waits on: its id, holder, state and title,
-// and the core-file glob both scopes reach.
-export interface CoreHold {
+// An overlap override sent as an ordinary dispatch (with a destination, note
+// or job, or for a task a runner holds) edits the existing offer (t491).
+// Undefined means omitted; empty strings deliberately remove the
+// corresponding builder restriction. Ordinary redispatch still starts with
+// makeDispatch's fresh defaults. The hold-only release keeps the offer's
+// place in the queue as well: retainDispatch below.
+export function overrideDispatch(input: Record<string, unknown>, previous: Dispatch | null | undefined, by: string, at: string): Dispatch {
+  if (input.overlapOk !== true || !previous) return makeDispatch(input, by, at);
+  const merged = { ...previous, ...Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)) };
+  const keepJob = input.job === undefined && input.head === undefined;
+  const validated = makeDispatch(keepJob ? { ...merged, job: undefined, head: undefined } : merged, by, at);
+  if (keepJob) {
+    // Validate the retained merge target too, before any holder is released.
+    if (previous.job === "merge-main") makeDispatch(merged, by, at);
+    return { ...previous, ...validated };
+  }
+  return validated;
+}
+
+// The owner's release of an overlap-held dispatch (atelier dispatch ID
+// --overlap-ok on a task already waiting): the dispatch stays as it is, with
+// its builder, destination, job, head, note and queue position (`at`), and
+// gains only the overlap override. An agent or model given replaces just that
+// field, and one given as "" clears that restriction alone (t491); the pair
+// that results is validated as a dispatch's own is, before anything is
+// written. Releasing a dispatch already released changes nothing.
+export function retainDispatch(item: Item, input: { agent?: unknown; model?: unknown; retainAt?: unknown }, items: readonly Item[], policy: ProjectPolicy, owner = DEFAULT_OWNER): Dispatch {
+  if (item.owner || item.state !== "open") {
+    throw new RuleError("not_open", `${item.id} is ${item.owner ? `owned by ${item.owner}` : item.state}, so it has no waiting dispatch to release; dispatch it again instead`, 409);
+  }
+  const d = item.dispatch;
+  if (!d) throw new RuleError("not_dispatched", `${item.id} is not queued for a runner, so there is no dispatch to release`, 409);
+  if (input.retainAt !== undefined && input.retainAt !== d.at) {
+    throw new RuleError("stale_dispatch", `${item.id}'s dispatch has changed; read it again before releasing its hold`, 409);
+  }
+  // undefined: keep the dispatch's own; null: clear it; else the name given.
+  const given = (v: unknown, what: string): string | null | undefined => {
+    if (v === undefined || v === null) return undefined;
+    if (v === "") return null;
+    const s = String(v);
+    if (!NAME.test(s)) throw new RuleError("bad_dispatch", `"${s}" is not a valid ${what}`, 400);
+    return s;
+  };
+  const a = given(input.agent, "agent"), m = given(input.model, "model");
+  const agent = a === undefined ? d.agent : a, model = m === undefined ? d.model : m;
+  if (agent && !AGENT.test(agent)) throw new RuleError("bad_dispatch", `"${agent}" is not a valid agent`, 400);
+  if (model && !claimable(agent ?? "agent", model)) throw new RuleError("bad_dispatch", `no runner could claim as "${agent ?? "agent"}/${model}"`, 400);
+  const next: Dispatch = { ...d, agent, model, overlapOk: true };
+  if (next.agent !== d.agent || next.model !== d.model) assertDispatchClaimable(item, items, policy, next, owner);
+  // The model kept may have been dispatched before the project switched to
+  // single-family mode (t394), so its company is judged even when unchanged.
+  if (next.model) assertSingleFamily(`${next.agent ?? "agent"}/${next.model}`, policy, next.model);
+  return next;
+}
+
+// Keep the first blocker fields for older queue consumers; diagnostics include
+// every current blocker and every dependency path.
+export interface CoreBlocker {
   id: string;
   owner: string | null;
   state: ItemState;
   title: string;
   core: string;
 }
+export interface CoreHold extends CoreBlocker {
+  blockers?: CoreBlocker[];
+  since?: string;
+  elapsedMs?: number;
+  warning?: boolean;
+  chains?: { path: string[]; deadlock: boolean }[];
+  claimRefusal?: string;
+}
+export const CORE_HOLD_WARNING_MS = 30 * 60_000;
 
-// Why the queue does not offer a dispatch yet, or null when it may. A
-// dispatch that builds — a task's or a part's, the merge-main job and a
-// part's merge of the plan's branch included — is held while its scope
-// overlaps, within one of the project's core files (policy.coreFiles), the
-// scope of a live item: one claimed, submitted or accepted, so its changes
-// have not reached main. The oldest such item is named. A plan item claimed
-// by its planner or the integrator writes the plan or merges a part onto the
-// plan's branch, neither of which changes main, so it holds nothing; its
-// parts do. Items of one plan never hold each other: a plan's parts whose
-// scopes overlap are ordered by their dependencies (src/plans/validate.ts),
-// which already serialises them. The plan, integrate, refresh and review
-// jobs change no workspace of their own and are never held, and the owner's
-// override (overlapOk) lets a dispatch through.
-export function coreHold(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined): CoreHold | null {
+// Claimed builders and the holder of a live landing lease serialize core
+// edits. Submission alone holds nothing. Plan jobs, same-plan work and the
+// owner's overlap override keep their existing exemptions.
+export function coreBlockers(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null = null, now = Date.now()): CoreBlocker[] {
   const d = item.dispatch;
-  if (!d || d.overlapOk || !coreFiles?.length || item.kind === "plan") return null;
-  if (d.job !== undefined && d.job !== "merge-main") return null;
-  for (const o of items) {
-    if (o.id === item.id || samePlan(item, o)) continue;
-    if (o.state !== "claimed" && o.state !== "submitted" && o.state !== "accepted") continue;
-    if (o.kind === "plan" && o.state === "claimed") continue;
+  if (!d || d.overlapOk || !coreFiles?.length || item.kind === "plan") return [];
+  if (d.job !== undefined && d.job !== "merge-main") return [];
+  return items.flatMap((o) => {
+    if (o.id === item.id || samePlan(item, o)) return [];
+    const landing = lease?.item === o.id && !landingLeaseLapsed(lease, now) && o.state !== "merged" && o.state !== "abandoned";
+    if (o.state !== "claimed" && !landing) return [];
+    if (o.kind === "plan" && o.state === "claimed") return [];
     const core = scopesOverlapWithin(item.scope, o.scope, [...coreFiles]);
-    if (core) return { id: o.id, owner: o.owner, state: o.state, title: o.title, core };
-  }
-  return null;
+    return core ? [{ id: o.id, owner: o.owner, state: o.state, title: o.title, core }] : [];
+  });
 }
 
-// What a held dispatch waits on, in words: the item, its holder and state,
-// and the core-file glob both scopes reach.
+export function coreHold(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null = null, now = Date.now()): CoreHold | null {
+  return coreBlockers(item, items, coreFiles, lease, now)[0] ?? null;
+}
+
+// Active builders do not wait on other builders merely because their scopes
+// intersect. Follow their declared part dependencies; queued work also waits
+// on its core blockers. Completed dependencies no longer obstruct a path.
+export function holdGraph(items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null, now = Date.now()): Map<string, string[]> {
+  const done = (i: Item) => ["integrated", "merged", "abandoned"].includes(i.state);
+  return new Map(items.filter((i) => !done(i)).map((i) => {
+    const deps = i.plan ? items.filter((p) => p.plan === i.plan && p.partKey && i.deps?.includes(p.partKey) && !done(p)).map((p) => p.id) : [];
+    const core = i.state === "open" && !i.owner ? coreBlockers(i, items, coreFiles, lease, now).map((b) => b.id) : [];
+    return [i.id, [...new Set([...core, ...deps])]];
+  }));
+}
+
+// A shared descendant is not a cycle: only repetition on this path is.
+export function blockerChains(id: string, graph: ReadonlyMap<string, readonly string[]>): { path: string[]; deadlock: boolean }[] {
+  const paths: { path: string[]; deadlock: boolean }[] = [];
+  const visit = (path: string[]) => {
+    const next = graph.get(path[path.length - 1]) ?? [];
+    if (!next.length) paths.push({ path, deadlock: false });
+    for (const blocker of next) {
+      if (path.includes(blocker)) paths.push({ path: [...path, blocker], deadlock: true });
+      else visit([...path, blocker]);
+    }
+  };
+  visit([id]);
+  return paths;
+}
+
 export function holdText(h: CoreHold): string {
-  return `waits on ${h.id} (${h.state}${h.owner ? ` by ${h.owner}` : ""}): both scopes reach core file ${h.core}`;
+  const blockers = (h.blockers ?? [h]).map((b) => `${b.id} (${b.state}${b.owner ? ` by ${b.owner}` : ""}): both scopes reach core file ${b.core}`).join("; ");
+  const age = h.elapsedMs === undefined ? "" : `; held for ${Math.floor(h.elapsedMs / 60_000)}m ${Math.floor(h.elapsedMs / 1000) % 60}s`;
+  const chains = (h.chains ?? []).filter((c) => c.deadlock || c.path.length > 2).map((c) => `; ${c.deadlock ? "deadlock" : "blocked chain"}: ${c.path.join(" -> ")}`).join("");
+  return `${h.warning ? "WARNING: core-file hold; " : ""}waits on ${blockers}${age}${chains}${h.claimRefusal ? `; separate claim refusal: ${h.claimRefusal}` : ""}`;
+}
+
+// When the hold lifts: once every blocker stops holding. A claimed item stops
+// when it submits or is released; the item named by the landing lease stops
+// when that landing ends (it merges, is cancelled, or its lease expires).
+export function holdRelease(h: CoreHold): string {
+  const ends = (h.blockers ?? [h]).map((b) => b.state === "claimed" ? `${b.id} submits or is released` : `the landing of ${b.id} ends`);
+  return `offered once ${ends.length > 1 ? `${ends.slice(0, -1).join(", ")} and ${ends[ends.length - 1]}` : ends[0]}`;
 }
 
 export function assertDispatchable(item: Item): void {
   if (item.state !== "open" || item.owner) {
     throw new RuleError("not_open", `${item.id} is ${item.owner ? `owned by ${item.owner}` : item.state}; only an open task can be sent to a runner`);
+  }
+}
+
+// The claim rules a dispatch names ahead of the claim, so the owner is told
+// a dispatch no runner could claim is refused now rather than costing a
+// runner attempt (t405). A dispatch that names both agent and model is
+// checked against the project's policy exactly as a claim by that actor
+// would be: the executor role under a governed policy, or the eligible
+// harnesses otherwise. A dispatch that names only a harness is checked for
+// the restrictions that harness alone decides (harnessRefusal). A dispatch
+// whose scope overlaps a live item's under a refuseOverlap policy is refused
+// with the claim's own reason, naming the live item: no runner that does not
+// already hold the overlapping item could claim it, and the named actor is
+// used where one is named so a runner that does hold it is not refused.
+export function assertDispatchClaimable(item: Item, items: readonly Item[], policy: ProjectPolicy, d: Dispatch, owner = DEFAULT_OWNER): void {
+  // Said first, in the mode's own words, as the claim would refuse it (t394).
+  if (d.model) assertSingleFamily(`${d.agent ?? "agent"}/${d.model}`, policy, d.model);
+  if (d.agent && d.model) {
+    const refusal = roleRefusal(`${d.agent}/${d.model}`, policy, "executor", owner);
+    if (refusal) throw new RuleError("ineligible", refusal, 403);
+  } else if (d.agent) {
+    const refusal = harnessRefusal(d.agent, policy, "executor", owner);
+    if (refusal) throw new RuleError("ineligible", refusal, 403);
+  }
+  if (policy.refuseOverlap) {
+    const claimant = d.agent && d.model ? `${d.agent}/${d.model}` : "\u0000dispatch";
+    const refusal = overlappingRefusal(item, items, claimant);
+    if (refusal) throw new RuleError("overlap", refusal);
   }
 }
 

@@ -33,7 +33,7 @@ response names it in the `X-Atelier-Incomplete` header and `atelier queue` says 
 `atelier undispatch` withdraws a dispatch while the task is open; a claimed
 or submitted task keeps its dispatch, which applies again if it is released.
 
-A runner's name is declared independently of its actor token; what a dispatch guarantees
+An owner or model-bound agent token can declare a runner name; a runner token binds that name at issue time. What a dispatch guarantees
 is that the task goes to the first matching runner that asks, and to no one
 else, while it waits. Names are matched and stored in lower case, so
 `home:Studio` and `home:studio` are one runner. A claim belongs to the runner
@@ -56,7 +56,132 @@ merged, and the landing picks up from the push. Without this a conflicted
 task dead-ended outside a plan (t234): a plain rework dispatch resets the
 workspace to the task's head, where the builder cannot reach main.
 
+## Build and plan runners without an owner token
+
+Projects can declare a workspace preparation command with `init --prepare`
+and its input and output paths. The runner runs it after workspace reset and
+automatic merges, before build or plan harnesses and harness-free merge
+finishes. Reviews, integrate and refresh jobs do not run preparation. Manual
+claims print the command and workspace directory for the caller to run.
+
+Local and container checks also run this command once in each clean checked
+tree, after merging for `--merged`, before any checks or not-applicable
+results. This includes both Workflow check modes. Clean-clone preparation is
+not cached between attempts and uses the same command safety policy and
+execution deadline as checks (`ATELIER_CHECK_TIMEOUT`, default 20 minutes,
+locally; 30 minutes in the container). A failure stops the attempt without
+adding check evidence; earlier evidence remains. Its report names the command,
+exit status or signal and a redacted output tail of at most 4,000 characters.
+
+`ATELIER_PREPARE_TIMEOUT` sets the preparation deadline in positive integer
+milliseconds, from `1` through `2147483647`; it defaults to `600000` (ten
+minutes). Invalid values stop runner startup. Timeout or cancellation
+terminates and cleans up the preparation process group before claim handling.
+Failed preparation is an infrastructure failure and is never cached.
+
+Issue a runner credential **on the owner's machine**:
+
+```sh
+atelier token issue --runner home:studio --project demo --days 30
+```
+
+`Studio` also means `home:studio`; names are normalized to lower case.
+`atelier token issue --help` and `atelier token store --help` describe these
+subcommands. Exactly one existing project is required. Renaming that project preserves
+access through both its old and new names. The token cannot act as the
+owner or choose an actor independently of the current dispatched job.
+
+On the runner machine, install Node and the harness, copy the runner config
+prepared on the owner's machine, and configure the server. Do not run owner
+login on this machine. Store the issued value at the hidden prompt:
+
+```sh
+export ATELIER_SERVER=https://YOUR-WORKER-ADDRESS
+atelier token store --runner home:studio
+atelier runner --name home:studio --config ./runner.json --once
+```
+
+The secret entry is `runner.home:studio` and contains its server binding.
+`ATELIER_RUNNER_TOKEN` overrides that entry for polling, direct API calls and
+child CLI commands. An empty, invalid, expired or revoked explicit credential
+fails without trying the owner credential. A stored entry is never sent to a
+different server. For direct CLI work using the stored entry, set
+`ATELIER_RUNNER_NAME=home:studio`; an explicit environment token needs no
+store or owner login. The runner passes credentials to its CLI children,
+never to harness environments or logs. As with existing runner isolation,
+the harness is trusted local code; environment filtering is not an OS sandbox
+that prevents it reading the user's credential store.
+
+For example, this config offers builds and plans with a local wrapper:
+
+```json
+{
+  "jobs": ["build", "plan"],
+  "agents": [{
+    "agent": "codex",
+    "models": ["gpt-6-astra"],
+    "command": ["/absolute/path/to/wrapper", "{model}", "{brief_file}", "{workspace}", "{plan_file}"]
+  }]
+}
+```
+
+The wrapper follows the contract below: for a build it edits and commits;
+for a plan it writes an `atelier.plan.v1` document to `{plan_file}`. With a
+build dispatched by the owner, `runner --once` claims, runs the wrapper,
+pushes, checks and submits. With a plan job queued by the owner, the same
+command claims, reads the job brief, runs the wrapper, posts the document
+and releases. Neither completion needs an owner token. A restart polls and
+resumes jobs held by the same runner before taking new jobs.
+
+Only polling, configuration/base reads, authorized job reads, claiming,
+Git push, checks/evidence, submission, plan posting, release, job reports
+and review skips (a runner's word that it will not serve a review job its
+poll was offered, posted as that job's actor) are permitted. Owner acceptance, merge/land, overrides, criteria edits,
+decisions, token administration, policy changes and browser access return
+403 with the runner name and token ID, never the secret. Invalid, expired or
+revoked API credentials return 401. Reviews still use the model's own agent
+token from `tokens`; integration still uses its dedicated integrator token.
+Owner-only setup/discovery and usage administration stay on the owner's
+machine.
+
+### Revocable Git access and deployment smoke check
+
+Runner workspace remotes use `/git/runner/PROJECT/ITEM.git`. Each Git HTTP
+request validates a separate opaque Git credential, its parent runner token
+and the current claim before forwarding to Artifacts. Expiry/revocation,
+release, reassignment and a later claim invalidate old write access even for
+plain `git push`. The upstream Artifacts write credential stays inside the
+Worker, lasts 60 seconds and is revoked after the response is read. Requests
+already authorized may finish; subsequent requests must authenticate again.
+
+This depends on deployed Workers forwarding Artifacts smart HTTP correctly.
+The gateway currently buffers a Git request/response, so Worker memory and
+request-size limits also apply; local Artifacts doubles cannot reproduce
+those platform limits. **Before and after deploying this change**, the owner
+must run this remote smoke check on a disposable project using a runner
+machine with no owner token:
+
+1. Dispatch one build and one plan on the owner machine. Run the runner to
+   submission and plan posting, including a restart with held work.
+2. Clone the returned gateway remote and make a real Git commit/push through
+   its Git credential. Check a representative maximum-size repository too.
+3. Revoke the parent token on the owner machine. Verify both polling and
+   plain Git push fail. Repeat with expiration, release and reassignment;
+   the baseline and another job must never accept this credential.
+4. Try an owner action and a mismatched runner/actor; verify 403 includes
+   only the runner name/token ID. Try the model review and dedicated
+   integration credentials separately to confirm those flows still work.
+
+Do not promote the deployment if this smoke check fails. Local validation:
+`npm test`, `npm run typecheck`, `node --test cli/runner-token.test.mjs cli/runner-git.test.mjs` and
+`npx vitest run src/runner-token.spec.mjs` (it runs under `npm test` too). The task-specific
+tests live in `src/` and `cli/` to stay within this task's scope.
+
 ## Setting up a runner
+
+Prepare configuration and provider keys on the owner machine using the steps
+below. For a build/plan machine without owner credentials, use the preceding
+section and copy the prepared runner config there.
 
 Everything a runner needs to start agents ships in this repository: the four
 harness adapters in `bin/harness/`, the agent rules they give every agent,
@@ -66,7 +191,7 @@ harnesses themselves and the credentials, which live in the credential store
 (the macOS Keychain, the Linux Secret Service or the file `atelier login
 --store` names) and never in a file this repository or setup writes.
 
-### On a fresh machine
+### Owner machine setup (legacy owner-backed setup)
 
 1. Install Node 22 or newer and clone this repository; `npm ci` in it. Put
    `cli/atelier.mjs` on the PATH as `atelier` (`npm link`, or an alias).
@@ -244,7 +369,7 @@ uses; that folder serves an opencode entry with a custom `command`.
 
 ## Home runner
 
-`atelier runner --name home:NAME [--once] [--config PATH] [--integrate]` polls the queue every 30 seconds, claims one eligible job, and runs its configured harness. A runner offers `build`, `plan`, `merge-main`, `merge-main-task` and `merge-plan` jobs for every harness in its config, and `review` when its config lists it. A build or plan job runs the harness in the claimed workspace; a review job clones the head into a folder of its own, reads the diff and writes a verdict. The task brief is kept outside the workspace. A runner with `--integrate` runs no harness and takes no config: it offers only the `integrate` and `refresh` jobs, merging each part onto its plan's branch as `atelier/integrator`. The runner gives each opencode run a data folder of
+`atelier runner --name home:NAME [--once] [--config PATH] [--integrate]` polls the queue every 30 seconds, claims one eligible job, and runs its configured harness. A runner offers `build`, `plan`, `merge-main`, `merge-main-task` and `merge-plan` jobs for every harness in its config, and `review` when its config lists it. A build or plan job runs the harness in the claimed workspace; a review job clones the head into a folder of its own, reads the diff and writes a verdict. The task brief is kept outside the workspace. A runner with `--integrate` runs no harness and takes no config: it offers only the `integrate` and `refresh` jobs, merging each part onto its plan's branch as `atelier/integrator`. Before its first poll every runner reads `GET /api/version` and refuses to start while the server lacks a capability one of the jobs it offers declares (`JOB_CAPABILITIES`, `src/route-level.ts`; the integrator's jobs need `projects.commit-identity.v1`, `plans.integration.v1` and `runners.scoped-token.v1`; the review job needs the review skip, `reviews.skip.v1` and `reviews.skip-as-runner.v1`, beside the binding and the unparsable route), naming the missing capabilities and the deploy to run, so a runner that would fail its calls one by one stops at once instead. The runner gives each opencode run a data folder of
 its own (`XDG_DATA_HOME`) beside the workspace, removed as the harness ends,
 however it ends: opencode processes sharing
 `~/.local/share/opencode/opencode.db` deadlock on it. The shipped
@@ -269,8 +394,21 @@ task for the rest of the process. A separate counter skips it after three consec
 including claim errors other than refusals, workspace preparation errors,
 HEAD read errors after successful harness exits, and finish exit 4. This
 counter resets on a task failure, success, claim refusal or validation skip. Claim refusals and validation skips do not
-increase either counter. Interruptions stop the runner without updating either
-counter. An infrastructure failure moves on to the next offered task in the
+increase either counter. A task merged or abandoned under the runner's job is
+answered `task_terminal` with its state, and the CLI ends with exit 5 (merged)
+or 6 (abandoned, shown as closed) from claim, push and every step of finish:
+the runner logs the state, keeps the workspace and its commits, releases
+nothing, never offers the task to a harness again in that process, and charges
+neither counter. The state is told only to the runner whose claim still held
+the job when it closed, or to one a poll offered it to while no claim ever
+took it; a runner that was
+offered a job someone then claimed, under a runner token or an owner's or
+agent's credential with or without a runner name, stays `runner_forbidden`
+once that task closes. Release, handoff, re-dispatch that releases a claim,
+and every successful replacement claim (including an owner-credential claim)
+retire the previous runner hold. A former holder stays `runner_forbidden`
+unless a new assignment authorizes it. Interruptions stop the runner without
+updating either counter. An infrastructure failure moves on to the next offered task in the
 same poll; `--once` still handles at most one task.
 Reaching either cap logs that the task needs the owner's attention; the
 infrastructure message includes the reason. Project names rejected by runner
@@ -326,13 +464,12 @@ deadline from 45 minutes, and `finishTimeoutMs` to change the whole finish
 deadline from 60 minutes. Expiry ends the process group as above. A finish
 timeout leaves the claim held.
 
-A runner takes a new job only while the machine's load average is under a
-limit, so a saturated machine is not handed another harness to run on top of
-the rest (t403). The limit is the core count by default; set `loadLimit` to a
-number to change it, and the runner holds off while the load is at or above
-it, saying so on each poll it skips. The reading is the one-minute load
-average, and it is checked again before each job in a poll, so finishing a
-heavy job lets the load fall before another begins.
+Runner admission no longer uses load average. Individual test commands share
+[the host test-slot pool](test-slots.md), including commands an agent runs
+through the documented wrapper. Review harnesses inherit review priority;
+build and plan harnesses inherit ordinary priority. The runner includes the
+wrapper's absolute path in build, plan and review briefs. The old `loadLimit`
+setting is ignored.
 
 ```sh
 atelier runner --name home:studio
@@ -490,3 +627,34 @@ server's: 0 success, 1 a refusal or failure of the command, 2 a required
 check that failed, 3 a claim the server refused, 4 the server unavailable or
 a request that failed in transit (retry later). `atelier ops` has exit codes
 of its own (see [Operations](owner.md#operations)).
+
+
+### Build validation blocked by the harness
+
+Codex build commands must explicitly establish unrestricted check execution:
+`codex exec --sandbox danger-full-access` (or the explicit sandbox bypass).
+The runner refuses restricted defaults, `--full-auto`, `workspace-write`,
+`read-only`, and opaque wrappers before claiming, naming localhost listening,
+the npm cache and network access as the unavailable check capabilities. This
+is a refusal, not a request to silently weaken an adapter's confinement.
+
+Build stdout is captured while it streams. A final report that required checks
+could not run records `validation_blocked` rather than a model test failure.
+The build brief asks for a `validation_blocked: why` line; a report that says
+it unasked counts only when it names the checks beside the failure to run them
+("could not run npm test", "the tests could not be run") or an environment
+error beside a failed check ("npm test failed: listen EPERM"). Mentioning
+`validation_blocked` or "did not run any atelier command" in passing does not.
+This outcome is excluded from the model reliability penalty.
+The runner does not call `finish`, so it does not push that build. The task page
+shows the report above clean-clone results, with the actor, runner and reason.
+Structured Codex transcripts use the final agent message, excluding tool logs.
+
+Committed work remains local. A `.git/atelier-validation-blocked` marker,
+naming the actor and the unverified head, stops a restarted runner from
+automatically finishing it as an interrupted build. It holds back only that
+actor at that head: another builder dispatched to the task, or the same one
+after the head moved, runs its harness and the checks as usual.
+After fixing the harness and running the required checks successfully, the
+operator can remove this marker to resume. Changing the command configuration
+alone does not clear a blocked validation report or prove that checks passed.
