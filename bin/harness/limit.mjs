@@ -15,8 +15,9 @@
 // open its line (after a short prefix such as "Error:" or a log level, and no
 // quotation mark or markdown), so an answer that quotes "usage limit reached"
 // is no limit. A zero exit is a limit only when the harness's whole answer is
-// that one short message (some harnesses print the limit and exit 0); any
-// other zero exit is an answer. A line that is an authentication error or a
+// that one short message and it is in a provider's own wording (STRONG; some
+// harnesses print the limit and exit 0), never short prose that merely
+// mentions a rate limit; any other zero exit is an answer. A line that is an authentication error or a
 // timeout is none of them.
 //
 // The reset instant, read from the message (parseReset), is one of:
@@ -106,6 +107,9 @@ function namedZone(text) {
 export function parseReset(text, { now = Date.now(), timeZone } = {}) {
   const nowMs = +now;
   const zone = namedZone(text) ?? timeZone ?? runnerZone();
+  // A zone Intl does not know (a bad TZ, a message's "(Foo/Bar)") reads no
+  // zoned time; the reset is then the fallback's.
+  const knownZone = (() => { try { offsetAt(nowMs, zone); return true; } catch { return false; } })();
   const future = (ms) => (Number.isFinite(ms) && ms > nowMs ? ms : null);
 
   const epoch = /\|\s*(\d{9,13})\b/.exec(text) ?? /resets?_?at["']?\s*[:=]\s*["']?(\d{9,13})\b/i.exec(text);
@@ -127,6 +131,7 @@ export function parseReset(text, { now = Date.now(), timeZone } = {}) {
   const seconds = /(?:resets?_in_seconds|retry[\s_-]*after(?:_seconds)?|retry-after)["']?\s*[:=]?\s*["']?(\d+(?:\.\d+)?)\b/i.exec(text);
   if (seconds) return future(nowMs + Number(seconds[1]) * 1000);
 
+  if (!knownZone) return null;
   const day = /(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/.exec(text);
   if (day) {
     const [, y, mo, d, h, mi, s] = day;
@@ -176,6 +181,18 @@ const TIMEOUT = /timed? ?out|ETIMEDOUT|deadline exceeded|request aborted/i;
 // as "stream error:", a bracketed time, the harness's name, a status code.
 const PREFIX = /^(?:(?:\[[^\]]{0,40}\]|[A-Za-z][\w .-]{0,24}:|\d{4}-\d\d-\d\d[T\d:.Z+-]*|(?:ERROR|WARN(?:ING)?|FATAL|Error|Claude(?: AI)?|Codex|opencode|agy)(?![\w])|\d{3})\s*)*$/;
 
+// What a provider says on a zero exit, where the line stands for an answer:
+// the phrase names a limit that was reached, not a topic ("rate limit headers").
+const STRONG = [
+  /usage limit (?:reached|exceeded|hit)/i,
+  /(?:\d+-hour|weekly|daily|monthly|session|opus|sonnet)\s+limit (?:reached|exceeded|hit)/i,
+  /(?:you(?:'|’)ve|you have) (?:hit|reached|exceeded) (?:your|the) (?:\w+ )?(?:usage |rate |request )?limit/i,
+  /usage_limit_reached|insufficient_quota|rate_limit_exceeded|resource[_ ]exhausted/i,
+  /rate[ _-]?limit(?:ed)? (?:exceeded|reached|hit)/i,
+  /(?:you(?:'|’)ve |you have )?(?:exceeded|exhausted) your (?:current )?(?:capacity|quota|usage|credits?)/i,
+  /quota (?:exceeded|has been exhausted)/i,
+];
+
 // The strings a JSON line carries, and the reset hints in its numbers.
 function jsonLines(text) {
   let value;
@@ -217,7 +234,7 @@ function messages(text, source) {
 // Whether `message` opens with a limit phrase: { reason } or null.
 function limitIn(message) {
   if (message.text.length > 600) return null;
-  for (const pattern of LIMIT) {
+  for (const pattern of message.strong ? STRONG : LIMIT) {
     const m = pattern.exec(message.text);
     if (!m) continue;
     const prefix = message.text.slice(0, m.index);
@@ -241,7 +258,9 @@ export function detectLimit(run, { now = Date.now(), timeZone, harness } = {}) {
     // The whole answer is one short message, or it is an answer.
     const whole = answer.trim();
     if (!whole || whole.length > 400 || whole.split("\n").filter((l) => l.trim()).length > 3) return null;
-    stdout = messages(whole, "stdout");
+    // Short prose such as "Rate limit headers added" is the model's. Only a
+    // provider's own wording counts here (STRONG), or a JSON error object.
+    stdout = messages(whole, "stdout").map((m) => ({ ...m, strong: true }));
   } else stdout = messages(answer, "stdout").slice(-10);
   const all = run.status === 0 ? stdout : [...stderr, ...stdout];
   const found = all.map((message) => ({ message, limit: limitIn(message) })).find((x) => x.limit);
