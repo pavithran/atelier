@@ -1,5 +1,14 @@
 # Using Atelier well
 
+The cross-company rules below describe the default policy. With
+`atelier init --single-family COMPANY`, building and reviewing use only that
+company's models: a reviewer must be a different model from every contributor,
+never a contributor under another harness. This exception also applies to
+criteria review, handoffs and conflict contributors. Only that company's tier
+models qualify; if none qualifies, no separate tier review is requested.
+`atelier init --cross-family` restores the default; both switches record who
+made them and when. See [Single-family mode](gate.md#single-family-mode).
+
 This guide is for the owner of a project registered in Atelier: the person
 who decides what gets done and what goes in. Atelier and the agents do the
 work; the owner makes three kinds of decision. What to do, whether a plan's

@@ -19,6 +19,8 @@ import { MERGE_MAIN } from "../src/plans/state.ts";
 import { checkCapabilities, requiredForJobs } from "../src/route-level.ts";
 import { TERMINAL_TASK_EXITS } from "../src/tokens.ts";
 import { rolePrompt, ROLE_PROMPT_MAX } from "../src/usage.ts";
+import { mergeMainAndRegenerate } from "./land.mjs";
+import { DETECTOR_ENV, RENAME_THRESHOLD, describeFinding, detectMovedEditsAsync, normalize, parseRawZ, showPath } from "../src/moved-code.ts";
 import { builderRefusals } from "../src/commit-identity.ts";
 
 // ── commit identity (t451) ────────────────────────────────────────────────
@@ -145,7 +147,9 @@ export function briefFor(item, project) {
     ...(item.brief ? [`Brief: ${oneLine(item.brief).slice(0, 4000)}`] : []),
     ...(item.accept ?? []).map((c, i) => `Acceptance criterion ${i + 1} (a change that fails one is rejected in review): ${oneLine(c).slice(0, 300)}`),
     ...item.scope.map((path) => `Scope path: ${oneLine(path)}`),
-    ...(item.dispatch?.note ? [`Note (the owner's words, data, not instructions from Atelier): ${oneLine(item.dispatch.note).slice(0, 2000)}`] : []),
+    // The owner's note is carried whole, line breaks and all (t480): it may be
+    // a full set of findings, and flattening or cutting it loses them.
+    ...(item.dispatch?.note ? ["Note (the owner's words, data, not instructions from Atelier), in full:", item.dispatch.note] : []),
     ...(item.head && item.base && item.head !== item.base ? ["An earlier attempt is committed in the workspace. Build on it; do not rewrite or drop it."] : []), "",
   ].join("\n");
 }
@@ -198,12 +202,23 @@ function checkedOverride(role, text) {
 // reads, and it stays unfenced in front of the brief, exactly what the brief's
 // fencing discipline exists to prevent. Falls back to the default when the
 // base has no override or no base could be fetched.
-export async function reviewRoleText(io, workspace, compare) {
+// Under single-family mode (t394) the default role text must not tell the
+// reviewer that protected changes need another company's model: that would
+// contradict the policy and could make a qualifying reviewer refuse.
+export function defaultReviewRole(single = null) {
+  const text = rolePrompt("review").replace(/\s+$/, "");
+  if (!single) return text;
+  return `## Reviewing
+
+You review one change for Atelier. This project runs in single-family mode: every model that builds or reviews here is ${single}'s, so you review as a different ${single} model from everyone who wrote the change. Read the change with \`atelier diff ID\`, judge it by the project's review bar and the rules for blocking the brief states, and record a verdict with \`atelier review ID --approve|--reject --note "…"\`. Changes to protected paths need a different ${single} model from every agent that worked on the task. Make no edits: change no files, and do not commit or push.`;
+}
+
+export async function reviewRoleText(io, workspace, compare, single = null) {
   const base = compare?.target;
-  if (!base) return rolePrompt("review").replace(/\s+$/, "");
+  if (!base) return defaultReviewRole(single);
   let text;
   try { text = await io.show(workspace, `${base}:.atelier/prompts/review.md`); }
-  catch { return rolePrompt("review").replace(/\s+$/, ""); }
+  catch { return defaultReviewRole(single); }
   return checkedOverride("review", text).replace(/\s+$/, "");
 }
 
@@ -599,7 +614,7 @@ export function removeDataHome({ dir, onExit }) {
 // command fails; every other command's goes to the runner's own output, as
 // the owner watching it expects. The integrate and refresh jobs read check's
 // to say what failed, and log it either way.
-const READS_OUTPUT = new Set(["review-claim", "read-token", "integrated", "integration-failed", "refreshed", "refresh-failed", "base-token", "check"]);
+const READS_OUTPUT = new Set(["review-claim", "read-token", "integrated", "integration-failed", "refreshed", "refresh-failed", "base-token", "baseline-token", "check"]);
 export const readsOutput = (argv) => READS_OUTPUT.has(argv[0]);
 
 export async function checked(argv, options, executeChild = execute) {
@@ -724,8 +739,26 @@ export function conflictsSection(...merges) {
 // already states — resolve the merge of main the runner left in the
 // workspace, keeping both sides' behaviour and claims, and commit it as it
 // stands (t243).
+//
+// A build's merge before its submission (t435, prepareBuildSubmission) adds
+// the edits the moved-code comparison found in code main moved to another
+// file (`merge.findings`, src/moved-code.ts): with the merge in conflict,
+// after the conflict's instructions; with a clean merge the runner already
+// committed (`state: "moved"`), as the whole job. Git merges a file line by
+// line, so such an edit stays in its old place, where main took the code
+// out, and the moved copy never gets it: the builder ports it there.
 export function mergeMainSection(merge) {
   const short = merge.mainHead.slice(0, 8);
+  const findings = Array.isArray(merge.findings) ? merge.findings : [];
+  if (merge.state === "moved") {
+    return [
+      "## Port this task's edits to the code main moved",
+      "",
+      `The runner has merged main at ${short} into this workspace before you start, and committed the merge: Git made it cleanly, so no conflict is left to resolve. But main moved code this task edited into another file, and Git merges a file line by line: each edit below stayed in its old place, in code main took out of that file, and the moved copy never got it.`,
+      "",
+      ...movedCodeLines(findings),
+    ].join("\n");
+  }
   return [
     "## Resolve the merge of main",
     "",
@@ -734,7 +767,188 @@ export function mergeMainSection(merge) {
     "- Resolve each conflict keeping both sides' behaviour: what the task does and what main does must both still hold. Where the conflict is prose, keep both sides' claims and merge their meaning; do not pick one side.",
     "- Remove every conflict marker, stage each resolved file with git add, and fix what the merge broke so the checks pass.",
     "- Commit the merge with git commit, keeping the merge message as it stands; it already ends with your Agent line. Do not start the merge again, abort it, rebase or reset it.",
+    ...(findings.length ? [
+      "",
+      "### Port this task's edits to the code main moved",
+      "",
+      "Besides the conflicts, main moved code this task edited into another file. Git merges a file line by line, so each edit below is in its old place, in code main took out of that file (a conflict there, or merged where it no longer runs), and the moved copy never got it.",
+      "",
+      ...movedCodeLines(findings),
+    ] : []),
   ].join("\n");
+}
+
+// The findings of the moved-code comparison as the brief lists them, with
+// how to port each: source lines are the merge base's, the task's own lines
+// its head's before the merge, and destination lines main's.
+function movedCodeLines(findings) {
+  return [
+    ...findings.map((f) => `- ${oneLine(describeFinding(f))}`),
+    "",
+    "Line numbers name the files before the merge: the source's lines are the merge base's, \"its lines\" the task's head's, and the destination's main's.",
+    "",
+    "- Make each edit again at its destination, in the moved code, so the task's behaviour holds there where that code now runs.",
+    "- Where the merge left the edit in the source file, in code main took out, remove it there: the source should hold what main has, plus whatever of the task's work belongs there still.",
+    "- Fix what else the move broke so the checks pass, stage with git add, and commit with the final Agent line the rules above ask for. Do not rebase or reset.",
+  ];
+}
+
+// A build job merges main as it is then into the workspace before it
+// submits (t435): a first build, a fix after findings, a dead run's commit
+// resumed, and a merge-main job's own finish alike, so what is submitted is
+// measured against current main and the checks run on the merged tree. The
+// merge is the landing's (mergeMainAndRegenerate in cli/land.mjs): no-ff,
+// settling conflicts that lie only in files the project's regenerate
+// command rewrites, raising the merged route level where both sides raised
+// it, and regenerating and committing what the merge made stale, so the
+// generated files a landing would rewrite are not submitted stale. Main is
+// read through the project's baseline-token route, which a runner token
+// may call for any project it serves; the item's base-token answers a
+// runner only for the job it holds, so a part's runner cannot read main
+// through its plan's (403, assertRunnerJob in src/ledger.ts). A token is
+// read for every fetch, since a resolver can outlive one.
+//
+// A merge that conflicts elsewhere is left in the workspace, markers and
+// all, and `resolve` runs the same harness in the same run with a brief
+// naming the files. A harness exit alone is no evidence it committed the
+// resolution: the workspace must hold no conflict and no merge in
+// progress, and HEAD's history must hold both main's head and the head the
+// build had, so a resolver cannot submit main by discarding the build.
+// Main may have moved while the resolver ran, so it is read and merged
+// once more before the submission. A baseline that cannot be fetched is an
+// infrastructure failure, the network's or the server's, not the model's
+// (the error carries `infrastructure`; runTask reads it). Answers main's
+// head as merged and the workspace's head.
+//
+// The merge runs the landing's moved-code comparison first (t471,
+// compareMoved in cli/land.mjs): the build's head and main's from their
+// merge base, for an edit of the build's lying in code main moved to
+// another file, which Git's merge would leave in its old place. Where the
+// landing stops, the runner's merge goes on (`moved.port` takes the
+// findings), clean or in conflict, and the findings go back to the same
+// harness in the same run, as a conflict does, with a brief naming each
+// source and destination (mergeMainSection): the builder ports the edits
+// and commits, and a finding is never counted as the model's failure. The
+// port is verified as a resolution is — no merge left in progress, main and
+// the build's head both held — and then as a port: the comparison is made
+// again at the revisions it compared, and each finding's edit is required
+// at its destination in HEAD (unportedEdits), since a harness exit alone is
+// no evidence it ported, and main read once more, which finds it merged,
+// compares nothing. An edit not at its destination is the model's failure,
+// as an unresolved conflict is, and nothing is submitted.
+export async function prepareBuildSubmission(assignment, workspace, io, resolve) {
+  const { project, item, actor } = assignment;
+  const guard = () => { if (io.stopped()) throw new Error("interrupted"); };
+  const git = (args, options = {}) => io.git(args, { cwd: workspace, ...options });
+  const verify = async (mainHead, workHead, findings = []) => {
+    if ((await io.conflicts(workspace)).length || (await git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], { allowFail: true })).status === 0) throw new Error("the merge of main is still unresolved or uncommitted");
+    if (!await io.isAncestor(workspace, mainHead, "HEAD")) throw new Error(`the build does not hold main at ${mainHead.slice(0, 8)}`);
+    if (!await io.isAncestor(workspace, workHead, "HEAD")) throw new Error("the merge of main discarded the build's committed work");
+    if (!findings.length) return;
+    const unported = await unportedEdits(git, { task: workHead, main: mainHead });
+    if (unported.length) throw new Error(`${unported.length === 1 ? "an edit of the build's" : `${unported.length} edits of the build's`} in code main moved to another file ${unported.length === 1 ? "was" : "were"} not ported to ${unported.length === 1 ? "its" : "their"} destination: ${unported.map(({ finding, why }) => `${describeFinding(finding)}; ${why}`).join("; ")}`);
+    io.log(`the port is verified: ${findings.length === 1 ? "the edit is" : `all ${findings.length} edits are`} at ${findings.length === 1 ? "its" : "their"} destination`);
+  };
+  const count = (findings) => `${findings.length} of the build's edits ${findings.length === 1 ? "lies" : "lie"} in code main moved to another file`;
+  for (;;) {
+    guard();
+    const base = JSON.parse(await io.cli(["baseline-token", "--project", project, "--as", actor]));
+    if (!base.remote || !base.token || !base.defaultBranch) throw new Error("the baseline token names no repository, token or branch");
+    const regenerate = typeof base.regenerate === "string" && base.regenerate.trim() ? base.regenerate : null;
+    const workHead = (await io.head(workspace)).trim();
+    const landing = { git: io.git, print: io.log, redact: (text) => redactSecrets(text, [base.token]), secrets: () => [base.token] };
+    // The comparison's findings, taken instead of a stop; the merge goes on.
+    let findings = [];
+    const moved = { ok: false, approved: null, again: `atelier land ${item.id}`, resolver: actor, port: async (found) => { findings = found; } };
+    let merged;
+    try {
+      merged = await mergeMainAndRegenerate(landing, { dir: workspace, id: item.id, name: project, regenerate, record: async () => {}, guard, d0: null, base, moved,
+        message: (mainHead) => `Merge main at ${mainHead.slice(0, 8)} into ${item.id}\n\nAgent: ${actor}` });
+    } catch (error) {
+      const files = error.data?.conflicts ?? [];
+      if (!files.length) throw error;
+      guard();
+      const { mainHead } = error.data;
+      io.log(`main at ${mainHead.slice(0, 8)} merged with conflicts in ${files.join(", ")}${findings.length ? `, and ${count(findings)}` : ""}; ${actor} resolves them in this run`);
+      await resolve({ mainHead, state: "conflicts", files, findings });
+      await verify(mainHead, workHead, findings);
+      continue;
+    }
+    if (findings.length) {
+      guard();
+      io.log(`main at ${merged.mainHead.slice(0, 8)} merged cleanly as ${merged.head.slice(0, 8)}, but ${count(findings)}; ${actor} ports them in this run`);
+      await resolve({ mainHead: merged.mainHead, state: "moved", files: [], findings });
+      await verify(merged.mainHead, workHead, findings);
+      continue;
+    }
+    await verify(merged.mainHead, workHead);
+    return { mainHead: merged.mainHead, head: merged.head };
+  }
+}
+
+// The port the harness made, checked (t435): the moved-code comparison is
+// made again after the harness, at the revisions it compared before the
+// merge — the build's head then (`task`), main's (`main`) and their merge
+// base, none of which the merge or the port changed — and each finding's
+// edit is required at its destination in `head`. A harness exit alone is
+// no evidence of the port, as it is none of a resolution: one that exits 0
+// without porting would otherwise submit, and a landing, which compares
+// nothing once main is merged, could not tell. What is required: the
+// destination file holds the moved block as the task's edit leaves it — the
+// block's base text with the task's lines in place of the lines it changed,
+// or between the lines it inserted among, read without blank lines and with
+// each line's leading and trailing whitespace ignored, as the comparison
+// reads text — and holds the block as main had it nowhere outside that, so
+// an edit that only removes lines is found ported only where the removed
+// lines are gone from the destination, and a copy the builder left beside
+// its port is found too. A file the task deleted leaves an empty edit, so
+// its block is required gone from the destination; a destination the
+// builder deleted holds nothing. The task's lines are read at the task's
+// path of the source file, the same file where main renamed it. `git` is
+// the runner's, bound to the workspace. Answers the findings whose edit is
+// not at its destination, each with why.
+export async function unportedEdits(git, { task, main, head = "HEAD" }) {
+  const mergeBase = await git(["merge-base", task, main]);
+  const report = await detectMovedEditsAsync((args) => git(args, { raw: true, env: DETECTOR_ENV }), { task, main, mergeBase });
+  if (!report.findings.length) return [];
+  const taskPaths = new Map(parseRawZ(await git(["diff-tree", "-r", "-z", "--no-commit-id", `--find-renames=${RENAME_THRESHOLD}`, mergeBase, task], { raw: true }))
+    .map((e) => [e.from ?? e.path, e.status === "D" ? null : e.path]));
+  const lines = (text) => { const l = text.split("\n"); if (l.at(-1) === "") l.pop(); return l; };
+  const read = async (rev, path) => {
+    const r = await git(["cat-file", "blob", `${rev}:${path}`], { raw: true, allowFail: true });
+    return r.status === 0 ? lines(r.stdout ?? "") : null;
+  };
+  // Lines `from` to `to`, 1-indexed and inclusive; none where from > to.
+  const slice = (l, from, to) => l.slice(Math.max(from, 1) - 1, Math.max(to, 0));
+  const text = (l) => l.map(normalize).filter(Boolean);
+  const starts = (haystack, needle) => {
+    const found = [];
+    for (let i = 0; i + needle.length <= haystack.length; i++) if (needle.every((line, k) => haystack[i + k] === line)) found.push(i);
+    return found;
+  };
+  const unported = [];
+  for (const f of report.findings) {
+    const { source, destination, edit } = f;
+    const base = await read(mergeBase, source.path) ?? [];
+    const taskPath = taskPaths.get(source.path);
+    const taskLines = taskPath && edit.taskEnd >= edit.taskStart ? slice(await read(task, taskPath) ?? [], edit.taskStart, edit.taskEnd) : [];
+    const original = text(slice(base, source.start, source.end));
+    const expected = edit.kind === "change"
+      ? text([...slice(base, source.start, Math.min(edit.start - 1, source.end)), ...taskLines, ...slice(base, Math.max(edit.end + 1, source.start), source.end)])
+      : text([...slice(base, source.start, edit.start), ...taskLines, ...slice(base, edit.start + 1, source.end)]);
+    const dest = text(await read(head, destination.path) ?? []);
+    const ported = expected.length ? starts(dest, expected) : [];
+    if (expected.length && !ported.length) { unported.push({ finding: f, why: `${showPath(destination.path)} at the build's head does not hold the moved code with the task's edit made` }); continue; }
+    const stale = starts(dest, original).filter((j) => !ported.some((i) => i <= j && j + original.length <= i + expected.length));
+    if (stale.length) unported.push({ finding: f, why: `${showPath(destination.path)} at the build's head still holds the moved code as main had it${expected.length ? ", beside the port" : ", without the task's edit"}` });
+  }
+  return unported;
+}
+
+// Each secret cut from a text, longest first, as the CLI's redact does.
+function redactSecrets(text, secrets) {
+  for (const secret of [...new Set(secrets)].filter(Boolean).sort((a, b) => b.length - a.length)) text = text.split(secret).join("[redacted]");
+  return text;
 }
 
 // Dependencies keep the task lifecycle testable without a server or a harness.
@@ -827,8 +1041,41 @@ export async function runTask(assignment, config, name, io) {
   // The merges the run started (startMergeMain, startMergePlan), kept for
   // the exit: a head is not complete while one is in progress (alreadyComplete).
   const merges = [];
-  const finishArgs = () => ["finish", item.id, "--project", project, "--as", actor,
-    ...(mergedMain ? ["--summary", `Merged main at ${mergedMain}`] : [])];
+  const checkValidationReport = async (result) => {
+    const blocked = validationBlockedReport(result?.output);
+    if (!blocked) return;
+    // Keep the marker for both the builder and a main-conflict resolver, so
+    // a later run cannot resume committed but unverified work as a success.
+    const head = await io.head(workspace).catch(() => null);
+    await io.writeValidationBlock?.(workspace, { actor, head, detail: blocked, prepared: !!preparation && !preparation.deferred, ...(preparation?.key ? { prepareKey: preparation.key } : {}) });
+    throw Object.assign(new Error(blocked), { validationBlocked: true });
+  };
+  const finish = async () => {
+    const merged = io.prepareSubmission ? await io.prepareSubmission(assignment, workspace, async (merge) => {
+      const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
+      const context = io.jobBrief ? await io.jobBrief(project, item.id, actor) : null;
+      const resolution = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${briefFor({ ...item, owner: actor }, project)}\n${context?.text ?? ""}\n${mergeMainSection(merge)}\n\n${conflictsSection(merge)}\n`);
+      let dataHome;
+      try {
+        const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
+        dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
+        const result = await io.harness(commandFor(entry, { model, briefFile: resolution.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name, project, actor), { capture: true, stream: true });
+        await checkValidationReport(result);
+        if (result.timedOut) throw new Error("harness timed out resolving main");
+        if (result.code !== 0) throw new Error(`harness exited ${result.code} resolving main`);
+      } finally {
+        if (dataHome) await io.removeDataHome(dataHome);
+        await io.removeBrief(resolution);
+      }
+    }) : null;
+    if (io.stopped()) throw new Error("interrupted");
+    if (merged) state = { ...state, ...merged };
+    const summary = item.dispatch?.job === "merge-main"
+      ? (merged?.mainHead ?? mergedMain) && `Merged main at ${merged?.mainHead ?? mergedMain}`
+      : merged && `Built ${item.id} with main at ${merged.mainHead} merged`;
+    await io.cli(["finish", item.id, "--project", project, "--as", actor,
+      ...(summary ? ["--summary", summary] : [])], workspace);
+  };
   try {
     const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
     if (!entry || actor !== `${agent}/${model}`) throw new Error("queue returned an unsupported assignment");
@@ -873,11 +1120,10 @@ export async function runTask(assignment, config, name, io) {
     // and the run ended — a stop, a crash — before finish could push and
     // submit. The commit is the model's completed work, its last step under
     // the brief, so this run finishes it (push, checks, submit) and starts
-    // no harness of its own, and merges nothing again either: the dead run
-    // already merged what the job asked — main for a merge-main job, the
-    // plan's branch — and committed the resolution. A workspace at the
-    // recorded head means the dead run committed nothing, and the harness
-    // runs as for any other claim.
+    // no build harness of its own. Submission still refreshes current main.
+    // The dead run already committed the job's requested resolution. A
+    // workspace at the recorded head means the dead run committed nothing,
+    // and the harness runs as for any other claim.
     resumed = item.state === "claimed" && item.owner === actor && !!item.head && before !== item.head;
     let result = null;
     const prepare = async () => {
@@ -920,7 +1166,7 @@ export async function runTask(assignment, config, name, io) {
         advance({ type: "start" });
         taskFailure = true;
         advance({ type: "exit", code: 0, before, head });
-        await io.cli(finishArgs(), workspace);
+        await finish();
         advance({ type: "finish" });
         return state;
       }
@@ -966,14 +1212,7 @@ export async function runTask(assignment, config, name, io) {
         }
       }
     }
-    const blocked = validationBlockedReport(result?.output);
-    if (blocked) {
-      // Persist outside the reset's tracked/untracked tree: a later runner
-      // must not mistake this committed but unverified work for a dead run.
-      const head = await io.head(workspace).catch(() => null);
-      await io.writeValidationBlock?.(workspace, { actor, head, detail: blocked, prepared: !!preparation && !preparation.deferred, ...(preparation?.key ? { prepareKey: preparation.key } : {}) });
-      throw Object.assign(new Error(blocked), { validationBlocked: true });
-    }
+    await checkValidationReport(result);
     if (result?.timedOut) throw new Error("harness timed out");
     if (io.stopped()) throw new Error("interrupted");
     taskFailure = result !== null && result.code !== 0;
@@ -994,7 +1233,7 @@ export async function runTask(assignment, config, name, io) {
     taskFailure = true;
     advance(io.stopped() ? { error: "interrupted" } : { type: "exit", code: result?.code ?? 0, before: resumed ? item.head : already?.complete ? item.base : before, head });
     if (state.phase === "failed") throw new Error(state.reason);
-    await io.cli(finishArgs(), workspace);
+    await finish();
     advance({ type: "finish" });
   } catch (error) {
     if (error.terminalState) {
@@ -1165,6 +1404,9 @@ export async function runReview(assignment, config, name, runnerIO) {
       diff: large && claimed.diffRef ? null : diff, diffRef: large ? claimed.diffRef ?? null : null,
       ownDiff, owner: claimed.owner,
       compare: merged?.compare ?? compare, diffFile: REVIEW_DIFF, bar: claimed.reviewBar ?? null,
+      // Under single-family mode the brief says the review is by a different
+      // model of the one company, not a cross-company one (t394).
+      singleFamily: claimed.singleFamily ?? null,
       // The owner's standing decisions (src/decisions.ts), as the claim
       // carries them; an older server sends none, and the brief says so.
       decisions: claimed.decisions ?? null,
@@ -1172,7 +1414,7 @@ export async function runReview(assignment, config, name, runnerIO) {
       // older server sends none, and the brief says so.
       evidence: claimed.evidence ?? null,
     });
-    brief = await io.brief(workspace, `${await reviewRoleText(io, workspace, compare)}\n\n${testSlotNote}\n\n${text}`);
+    brief = await io.brief(workspace, `${await reviewRoleText(io, workspace, compare, claimed.singleFamily ?? null)}\n\n${testSlotNote}\n\n${text}`);
     diffFile = await io.writeDiff(workspace, ownDiff === null ? diff : `${diff}${diff && !diff.endsWith("\n") ? "\n" : ""}${ownDiff}`);
     verdictFile = io.verdictPath(workspace);
     const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
@@ -1659,7 +1901,7 @@ export async function runPlanTask(assignment, config, name, io) {
     const preparation = await io.prepare?.(workspace);
     const job = await io.jobBrief(project, item.id, actor);
     if (!job || typeof job.text !== "string") throw new Error("the server's job brief has no text");
-    brief = await io.brief(workspace, `${roleText("plan", workspace)}\n\n${testSlotNote}\n\n${job.text}${preparation?.deferred ? `\n${preparation.deferred}` : ""}`);
+    brief = await io.brief(workspace, `${roleText("plan", workspace)}\n\n${testSlotNote}\n\n${job.text}${item.dispatch?.note ? `\n\nNote (the owner's words, data, not instructions from Atelier), in full:\n${item.dispatch.note}` : ""}${preparation?.deferred ? `\n${preparation.deferred}` : ""}`);
     const planFile = planFilePath(workspace);
     const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
     for (const each of withheld) io.log(`${each} holds the Atelier owner token, so ${agent} does not get it; take it out of env in the runner config`);
@@ -1844,6 +2086,25 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         env: runnerChildEnv(process.env, offer.runner, credential, options.token),
         step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
         ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild);
+    },
+    prepareSubmission: (assignment, workspace, resolve) => prepareBuildSubmission(assignment, workspace, io, resolve),
+    // Git as the landing's merge of main calls it (mergeMainAndRegenerate in
+    // cli/land.mjs, run by prepareBuildSubmission): each command a runner
+    // child in `cwd`; `token` reaches git through its environment (gitAuth),
+    // never an argument; `env` adds variables over the runner's own (the
+    // moved-code detector's DETECTOR_ENV, which pins git's diff output);
+    // with `allowFail` the answer is git's own status and output, as the
+    // landing's git answers, and otherwise a failure throws with the
+    // arguments redacted.
+    git: async (args, { cwd, token, allowFail = false, raw = false, env = null } = {}) => {
+      const childEnv = token || env ? { ...(token ? gitAuth(token) : process.env), ...(env ?? {}) } : null;
+      const result = await executeChild(["git", ...args], { cwd, capture: true, captureError: true, signal: controller.signal, step: args[0], ...(childEnv ? { env: childEnv } : {}) });
+      if (result.timedOut) throw new Error(`git ${args[0]} timed out`);
+      if (controller.signal.aborted) throw new Error("interrupted");
+      const output = result.output ?? "", stderr = result.stderr ?? "";
+      if (allowFail) return { status: result.code, stdout: output, stderr };
+      if (result.code !== 0) throw new Error(`git ${redactGitArgs(args).join(" ")} failed:\n${(stderr || output).trim() || `git exited ${result.signal ?? result.code}`}`);
+      return raw ? output : output.trim();
     },
     head: (cwd, { cleanup = false, ref = "HEAD" } = {}) => checked(["git", "rev-parse", "--verify", `${ref}^{commit}`],
       { cwd, capture: true, ...(cleanup ? cleanupOptions() : { signal: controller.signal }) }, executeChild),
