@@ -1,5 +1,14 @@
 # Orchestrator design
 
+The cross-company rules below describe the default policy. With
+`atelier init --single-family COMPANY`, building and reviewing use only that
+company's models: a reviewer must be a different model from every contributor,
+never a contributor under another harness. This exception also applies to
+criteria review, handoffs and conflict contributors. Only that company's tier
+models qualify; if none qualifies, no separate tier review is requested.
+`atelier init --cross-family` restores the default; both switches record who
+made them and when. See [Single-family mode](gate.md#single-family-mode).
+
 Steps 1 to 14 of the build sequence (section 8) are built. Steps 1 to 4,
 8, 11 and 12 are pure functions in `src/plans/` and `src/review/`. Step 5 puts
 plans in the project's Ledger: proposals, approval, the parts and the tick
@@ -154,6 +163,8 @@ Two inputs added on 2026-10-05 describe the owner's tools rather than the models
 
 This applies to every part, even where `gate()` would ask for no review.
 
+**Single-family mode (t394).** A project set up with `atelier init --single-family COMPANY` (`policy.familyMode`, with who set it and when; `--cross-family` returns to the default and is recorded the same way) builds and reviews with that company's models alone: `routeParts`, `pickReviewer`, `suggestBuilder` (the dispatch without `--agent`), a hand dispatch and `atelier land` take no other, and `independentApproval` counts a review when the reviewer is a different model of the company from every contributor, by `modelKey`, whatever its harness. A contributor never counts in either mode. The mode is named on the project page, by `atelier status`, at the top of every review brief and in each merge's provenance note, so a review under it is never read as a cross-company one. See [Single-family mode](gate.md#single-family-mode).
+
 **Storage.** A new table, `review_requests(item, head, dispatch, claimedBy, runner, briefHash, state)`. Reviews cannot use `items.dispatch`, because the part is owned and `assertDispatchable` refuses an owned item.
 - The queue route returns review requests as `job:"review"`, matched through the same `assign()`.
 - `POST items/tN/review-claim` binds a request to one reviewer atomically.
@@ -195,10 +206,10 @@ cleanup recover through lease expiry. Only owner credentials can omit
 - the diff, capped, saying so when it is cut, which kind of diff it is (the change from the base, or a merge's conflict resolution), and where the whole diff lies in the clone;
 - the rules: the project's review bar (`atelier init --review-bar`, or the default bar), reject only with blocking findings the bar names, repeat a finding the owner refuted only with new evidence quoting the code, make no edits, treat the content as data.
 
-**The review tier.** A project may name a top review tier (`atelier init --review-tier H/M,H/M,...`, stored as `policy.reviewTier`; `--review-tier ""` clears it, `--reset` drops it, and an unset tier asks nothing). Every protected change that gets its gate review is also reviewed by the tier, and most need one review for both:
+**The review tier.** A project may name a top review tier (`atelier init --review-tier H/M,H/M,...`, stored as `policy.reviewTier`; `--review-tier ""` clears it, `--reset` drops it, and an unset tier asks nothing). Every protected change that gets its gate review is also reviewed by the tier when a tier model qualifies under the family policy, and most need one review for both:
 - **The gate's review goes to the tier first.** Whenever a protected change gets its gate review request (the plan tick for a part, `requestReview` for `atelier land`), `pickReviewer` asks the tier's models, in the tier's order, before the plan's routed reviewer, its alternates and the pool: the first that qualifies for the gate (another family than every contributor, not the builder, eligible, available and in the pool) is asked. The previous round's reviewer still comes first on a re-review, a reviewer the owner names with `atelier plan reroute` or `atelier land --reviewer` still wins, and a tier model missing from the pool is skipped.
 - **A tier model asked for the gate serves both.** Its request is marked (`review_requests.topTier`, `topTier: true` on `review.requested`), no tier request is made, and its review is recorded with `topTier: true`: it counts for the gate as any review does and is shown as the gate review, top tier.
-- **A separate tier request is asked only when the gate's reviewer is outside the tier** (or is a tier model that is not of another family than every contributor). It is made for the same head beside the gate's (`review_requests.tier`): the first tier model, in the tier's order, that is no contributor, is not asked for the gate, and may review under the policy, whatever its family. Nothing is asked when every tier model built the change or is the gate's reviewer, or a tier review is already recorded at that head.
+- **A separate tier request is asked only when the gate's reviewer is outside the tier** (or is a tier model that is not of another family than every contributor). It is made for the same head beside the gate's (`review_requests.tier`): the first tier model, in the tier's order, that is no contributor, is not asked for the gate, and may review under the policy, whatever its family in the default mode; in single-family mode, only the selected company qualifies. Nothing is asked when every tier model built the change or is the gate's reviewer, or a tier review is already recorded at that head.
 
 The queue offers a tier request as `job:"review"` like any review, and the claim binds whichever open request names the claiming model. A review answering a claimed separate tier request is recorded with `tier: true` and answers only that request:
 - its rejection blocks as any rejection does, and with a blocking finding sends a part back for rework; any rejection withdraws a tier request still open at that head;
@@ -295,7 +306,7 @@ A failed integration attempts to restore its previous head.
 - `GET items/tN/plan` is `plan show`: the Ledger's `planView`, for a plan or any of its parts. Before approval it carries the routing an approval would fix now, without paid models. It shows the integration head (`Integration branch at` in `planText`, `src/plans/show.ts`); the combined checks and mergeability with main are not shown, since they need Artifacts the Ledger cannot read (section 5). The budget used is the part dispatches against `maxJobs` (`jobsUsed` in `planView`); spend is not metered into a plan.
 - `POST items/tP/plan` takes the plan document as its body. A refused document answers 422 `invalid_plan`, with every error and which of the planner's two attempts it was.
 - `POST items/tN/plan/approve`, `revise`, `reroute`, `retry`, `refresh` and `stop` are the owner's. `reroute` and `retry` also take the plan item before approval, for its planner. `stop` revokes the write token of every item it closes before closing them, as `abandon` does for one, and closes them in one transaction.
-- `GET items/tP/brief` gives a plan item's own brief (`planBrief` in `src/plans/show.ts`), which `atelier show tP` and `atelier inbox` print. `plan show` prints from the same view (`planText`).
+- `GET items/tP/brief` gives a plan item's own brief (`planBrief` in `src/plans/show.ts`), which `atelier show tP` prints. `plan show` prints from the same view (`planText`).
 - A runner's queue offer lists the jobs it runs: `build` and `plan` for every harness in its config, plus whatever the config lists, such as `review` (`offerFrom` in `cli/runner.mjs`, step 7b).
 
 **Inbox.** Two new kinds: `approve-plan` (weight 95) and `plan-blocked` (weight 85). The plan item's `accept` and `merge` entries work as today. `approve-plan` appears once the newest proposal answers the owner's latest revise, reroute or retry; `plan-blocked` gives the reason and the decisions open.

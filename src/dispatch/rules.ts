@@ -5,7 +5,7 @@ import { landingLeaseLapsed, type LandingLease } from "../landing-lease.ts";
 // claim it through the ordinary atomic claim. A runner at home therefore only
 // ever makes outgoing requests, and every runner's work is judged the same way.
 
-import { DEFAULT_OWNER, harnessRefusal, overlappingRefusal, roleRefusal, RuleError, samePlan, scopesOverlapWithin, validActor, type Item, type ItemState, type ProjectPolicy } from "../rules.ts";
+import { assertSingleFamily, DEFAULT_OWNER, harnessRefusal, overlappingRefusal, roleRefusal, RuleError, samePlan, scopesOverlapWithin, validActor, type Item, type ItemState, type ProjectPolicy } from "../rules.ts";
 import { assertLength, DISPATCH_NOTE_MAX } from "../text.ts";
 
 export type RunnerKind = "cloud" | "home";
@@ -188,6 +188,9 @@ export function retainDispatch(item: Item, input: { agent?: unknown; model?: unk
   if (model && !claimable(agent ?? "agent", model)) throw new RuleError("bad_dispatch", `no runner could claim as "${agent ?? "agent"}/${model}"`, 400);
   const next: Dispatch = { ...d, agent, model, overlapOk: true };
   if (next.agent !== d.agent || next.model !== d.model) assertDispatchClaimable(item, items, policy, next, owner);
+  // The model kept may have been dispatched before the project switched to
+  // single-family mode (t394), so its company is judged even when unchanged.
+  if (next.model) assertSingleFamily(`${next.agent ?? "agent"}/${next.model}`, policy, next.model);
   return next;
 }
 
@@ -291,6 +294,8 @@ export function assertDispatchable(item: Item): void {
 // already hold the overlapping item could claim it, and the named actor is
 // used where one is named so a runner that does hold it is not refused.
 export function assertDispatchClaimable(item: Item, items: readonly Item[], policy: ProjectPolicy, d: Dispatch, owner = DEFAULT_OWNER): void {
+  // Said first, in the mode's own words, as the claim would refuse it (t394).
+  if (d.model) assertSingleFamily(`${d.agent ?? "agent"}/${d.model}`, policy, d.model);
   if (d.agent && d.model) {
     const refusal = roleRefusal(`${d.agent}/${d.model}`, policy, "executor", owner);
     if (refusal) throw new RuleError("ineligible", refusal, 403);

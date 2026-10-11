@@ -88,6 +88,23 @@ test('constraints and refused providers fail closed', () => {
   assert.throws(() => suggestBuilder({ ...input, pool: [{ ...pool[0], status: { state: 'refused' } }] }), /provider refused/);
 });
 
+// t394: under single-family mode the dispatch suggestion picks within the
+// company, whatever the ranking, and says so; with none of the company's
+// models in the pool it refuses rather than proposing another company's.
+test('single-family mode keeps the suggested builder within the company', () => {
+  // A merge ranks codex/gpt-6.1-sol first; the mode passes it over all the same.
+  const sources = [{ project: 'p', events: [event(1, 'item.claimed', item.owner), event(2, 'item.merged', 'owner')] }];
+  const single = { ...input, sources, policy: { ...input.policy, familyMode: { single: 'anthropic', by: 'owner', at: '2026-10-09T10:00:00Z' } } };
+  assert.equal(suggestBuilder({ ...input, sources }).actor, item.owner);
+  const pick = suggestBuilder(single);
+  assert.equal(pick.actor, 'claude-code/fable-5');
+  assert.match(pick.reasons[0], /single-family mode \(anthropic\), so only anthropic's models are considered/);
+  assert.ok(pick.reasons.some((r) => r === "Passed over codex/gpt-6.1-sol: not one of anthropic's models (single-family mode)."));
+  assert.ok(pick.reasons.every((r) => !/Passed over claude-code/.test(r)));
+  assert.throws(() => suggestBuilder({ ...single, pool: pool.filter((m) => m.harness !== 'claude-code') }), /No eligible builder in the pool.*gemini-cli\/gemini-3: not one of anthropic's models \(single-family mode\)/);
+  assert.equal(suggestBuilder({ ...single, policy: { ...single.policy, familyMode: { single: null, by: 'owner', at: '2026-10-09T11:00:00Z' } } }).actor, item.owner);
+});
+
 test('stall history spans projects, harnesses and registered aliases', () => {
   const aliased = { ...pool[0], aliases: ['sol-alias'] };
   const runs = [run(1), { ...run(2), actor: 'opencode/sol-alias', project: 'another-project' }];
