@@ -1748,22 +1748,9 @@ export interface InboxEntry {
   reviewer?: string | null;
 }
 
-// The inbox kinds that are the lead developer's own decisions — the calls only
-// the human makes: approve a plan, accept, override or assess, approve a
-// protected action, a block marked as a decision. Everything else the waiting
-// list holds (merging, a stale claim, an out-of-scope change, failing checks,
-// overlapping work) is what the orchestrator and the runners handle, and the
-// waiting lists on Home, Decisions and `atelier status` split on this line
-// (src/ui.ts, cli/status.mjs).
-export const OWN_CALL_KINDS: ReadonlySet<InboxEntry["kind"]> = new Set([
-  "approve-plan", "plan-blocked", "accept", "assess", "ship", "blocked",
-]);
-
-// Whether an inbox entry is the lead developer's own decision, not work the
-// orchestrator or the runners handle.
-export function isOwnCall(kind: InboxEntry["kind"]): boolean {
-  return OWN_CALL_KINDS.has(kind);
-}
+// Which of these notices make a task the owner's own call, and which leave it
+// at its pipeline stage for the orchestrator and reviewers, is one rule:
+// attentionFor in src/attention.ts (t504), which every waiting list reads.
 
 // The weights of a plan's own entries, which the Ledger adds beside
 // inboxFor's (src/plans/state.ts): approving a proposed split, and deciding

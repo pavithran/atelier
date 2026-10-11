@@ -8,10 +8,11 @@ import { pathToFileURL } from "node:url";
 import { createServer } from "node:http";
 
 const dir = mkdtempSync(join(tmpdir(), "atelier-preview-"));
-await build({ entryPoints: ["src/ui.ts", "src/floor.ts", "src/how.ts"], bundle: true, platform: "node", format: "esm", loader: { ".css": "text" }, outdir: dir });
+await build({ entryPoints: ["src/ui.ts", "src/floor.ts", "src/how.ts", "src/attention.ts"], bundle: true, platform: "node", format: "esm", loader: { ".css": "text" }, outdir: dir });
 const ui = await import(pathToFileURL(join(dir, "ui.js")));
 const { buildFloor } = await import(pathToFileURL(join(dir, "floor.js")));
 const { renderHow } = await import(pathToFileURL(join(dir, "how.js")));
+const { attentionFor } = await import(pathToFileURL(join(dir, "attention.js")));
 
 // Fixed revisions that look like real ones, so screenshots never show placeholders.
 const HEAD = "9621fac2436196a267f96ec81225c2cc3181512d";
@@ -103,7 +104,7 @@ const server = createServer((req, res) => {
   else if (url.pathname === "/p/atelier") html = ui.renderProject(project, items, events.slice(-8).reverse(), "PAVI");
   else if (url.pathname.startsWith("/p/")) html = ui.renderItem(project, d, "PAVI", state === "unavailable" ? "unavailable" : diff);
   else if (url.pathname === "/error") html = ui.renderError("This task changed since you opened it. Refresh and review the new revision.");
-  else html = ui.renderInbox(state === "empty" ? [] : entries, [project], "PAVI", state === "empty" ? undefined : { project, detail: d, diff }, [{ project, items }], state === "empty" ? undefined : floor, now);
+  else html = ui.renderInbox(state === "empty" ? [] : [attentionFor(project.name, items, entries, [], now)], [project], "PAVI", state === "empty" ? undefined : { project, detail: d, diff }, [{ project, items }], state === "empty" ? undefined : floor, now);
   html = html.replace('<meta http-equiv="refresh" content="15">', "");
   res.writeHead(req.method === "GET" ? 200 : 405, { "content-type": "text/html" });
   res.end(req.method === "GET" ? html : "Read-only preview; no live action was taken.");
