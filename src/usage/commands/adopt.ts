@@ -2,6 +2,7 @@ import type { CommandSpec } from "../command.ts";
 
 const spec: CommandSpec = {
   name: "adopt",
+  capabilities: ["projects.commit-identity.v1"],
   forms: [
     {
       group: "Projects", line: 3, slot: 10, apart: true,

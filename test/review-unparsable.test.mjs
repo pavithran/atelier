@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { VERDICT_LIMITS } from "../src/review/verdict.ts";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 // t407: `atelier review-unparsable` keeps a reviewer's reply that no verdict
 // could be read from on the task, sending the server its last 100 KB with the
@@ -26,8 +27,10 @@ async function server(t) {
     let body = "";
     req.on("data", (chunk) => { body += chunk; });
     req.on("end", () => {
-      posts.push({ method: req.method, path: req.url, body: body ? JSON.parse(body) : null });
       res.writeHead(200, { "content-type": "application/json" });
+      // The capability check before the command (t458) reads the version.
+      if (req.url === "/api/version") return res.end(JSON.stringify({ capabilities: SERVER_CAPABILITIES }));
+      posts.push({ method: req.method, path: req.url, body: body ? JSON.parse(body) : null });
       res.end(JSON.stringify({ kept: true, released: posts.length === 1 }));
     });
   });

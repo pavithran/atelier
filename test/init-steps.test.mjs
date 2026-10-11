@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PUSH_STEP, pushHistory, refusedForSize } from "../cli/push-steps.mjs";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 // atelier init pushes a project's history to its new baseline. When Artifacts
 // refuses the push for size or time, the history goes in steps of about 700
@@ -299,6 +300,7 @@ globalThis.fetch = async (url, options = {}) => {
   const path = new URL(url).pathname, method = options.method ?? "GET";
   const project = { name: "demo", title: null, repo: "demo", policy: { checks: [], protected: [], eligible: [], refuseOverlap: false, sandboxOnly: false } };
   const data = path === "/api/config" ? { ownerActor: "owner", ownerName: "Pavi" }
+    : path === "/api/version" ? { capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} }
     : method === "PUT" ? { project, baseline: { remote: ${JSON.stringify(s.baseline)}, token: "fake-baseline-token", defaultBranch: "main" } } : {};
   return new Response(JSON.stringify(data), { status: 200, headers: { "content-type": "application/json" } });
 };
