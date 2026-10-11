@@ -812,9 +812,20 @@ export function assertClaimable(item: Item, actor: string): void {
 
 // Role policy takes precedence over legacy harness eligibility. Taking work
 // needs the executor role; planning a plan needs the planner role.
+//
+// Single-family mode (t394) is judged here first, before any role, admission
+// or harness rule can let an actor through: this is the one rule every
+// assignment passes (a claim, a handoff, a dispatch or a released hold
+// naming a model, a plan's planner named or picked, a part's builder or
+// reviewer rerouted, routing's builders and reviewers), so another company's
+// model is refused on all of them alike. test/single-family-scan.test.ts
+// fails on a new write of an assignment that does not pass it.
 export function assertEligible(actor: string, policy: ProjectPolicy, owner = DEFAULT_OWNER, role: AgentRole = "executor"): void {
+  // An admitted reviewer is judged as the model it was admitted as, which
+  // may be named by an alias of no recognised family.
+  const admission = role === "assessor" ? reviewerAdmission(actor, policy) : undefined;
+  if (actor !== owner) assertSingleFamily(admission?.active ? admissionActor(actor, admission) : actor, policy, actor);
   if (role === "assessor") {
-    const admission = reviewerAdmission(actor, policy);
     if (admission?.active) return;
     if (admission) throw new RuleError("ineligible", `${admission.id}'s reviewer admission was withdrawn; use atelier models admit`, 403);
   }
@@ -879,6 +890,8 @@ export function eligibleAgents(policy: ProjectPolicy, role: AgentRole): string[]
 // claim would apply.
 export function roleRefusal(actor: string, policy: ProjectPolicy, role: AgentRole, owner = DEFAULT_OWNER): string | null {
   if (policy.agents) {
+    const foreign = actor === owner ? null : companyRefusal(actor, singleFamily(policy));
+    if (foreign) return `${foreign}: use one of ${singleFamily(policy)}'s models, or return to cross-family review with atelier init --cross-family`;
     if (hasRole(actor, policy, role)) return null;
     const names = eligibleAgents(policy, role);
     return `${actor} needs an available agent with the ${role} role${names.length ? `; available agents with the ${role} role: ${names.join(", ")}` : `; no agent is available with the ${role} role`}`;
@@ -925,7 +938,9 @@ export function harnessRefusal(harness: string, policy: ProjectPolicy, role: Age
     return `${harness} needs an available agent with the ${role} role${names.length ? `; available agents with the ${role} role: ${names.join(", ")}` : `; no agent is available with the ${role} role`}`;
   }
   try {
-    assertEligible(`${harness}/x`, policy, owner, role);
+    // A harness names no model, so no company: the claim judges the model
+    // the runner names (assertEligible).
+    assertEligible(`${harness}/x`, { ...policy, familyMode: undefined }, owner, role);
     return null;
   } catch (err) {
     const rule = parseRuleError(err);
@@ -1257,12 +1272,12 @@ export function overlappingLive(item: Item, items: readonly Item[], actor: strin
   );
 }
 
-// Under single-family mode only the company's models build (t394), whatever
-// named them: a dispatch that names no model leaves the runner to choose,
-// and the claim is where its choice is first known, so the claim and a
-// handoff's target are refused here as a dispatch naming another company's
-// model is. An actor that is not harness/model, the owner working by hand,
-// is no model and is not judged.
+// Under single-family mode only the company's models build, plan or review
+// (t394), whatever named them. assertEligible calls this first, so every
+// assignment is judged by it; a dispatch or released hold naming only a
+// model calls it directly, and one naming no model leaves the runner to
+// choose and is judged at the claim. An actor that is not harness/model, the
+// owner working by hand, is no model and is not judged.
 export function assertSingleFamily(actor: string, policy: Pick<ProjectPolicy, "familyMode">, what = actor): void {
   const single = singleFamily(policy);
   if (!single || !actor.includes("/") || actorFamily(actor) === single) return;
@@ -1283,7 +1298,6 @@ export function overlappingRefusal(item: Item, items: readonly Item[], actor: st
 export function assertClaimAllowed(item: Item, items: Item[], policy: ProjectPolicy, actor: string, owner = DEFAULT_OWNER, role: AgentRole = "executor"): void {
   assertClaimable(item, actor);
   assertEligible(actor, policy, owner, role);
-  assertSingleFamily(actor, policy);
   if (policy.refuseOverlap && item.owner !== actor) {
     const refusal = overlappingRefusal(item, items, actor);
     if (refusal) throw new RuleError("overlap", refusal);

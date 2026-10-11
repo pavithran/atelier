@@ -180,7 +180,17 @@ model reviews under the mode, by any path: the gate counts its approval for
 neither a protected nor a coordinated change, a review it submits directly
 is refused, and so is its claim of a review request, whatever the policy was
 when the request was made. The switch to the mode withdraws every open or
-claimed review request another company's model holds or is asked to give.
+claimed review request another company's model holds or is asked to give,
+and every waiting dispatch that names another company's model; a plan whose
+planner, or a part whose routed builder, is of another company is blocked
+until the owner reroutes it with `atelier plan reroute`. The company is
+judged where every assignment passes, the project's eligibility rule
+(`assertEligible` in [`src/rules.ts`](../src/rules.ts)), so a claim, a
+handoff, a released hold, a plan's planner named or picked and a part's
+builder or reviewer rerouted are all refused alike; every dispatch the
+Ledger stores is judged again as it is written. A scan test
+(`test/single-family-scan.test.ts`) fails on a new path that assigns work
+without passing these checks.
 The mode is shown under the project's title on every tab of its page
 and on its Settings tab, by `atelier status` and `atelier status --project`,
 at the top of every review brief, and in each merge's provenance note, so
