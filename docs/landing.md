@@ -174,8 +174,9 @@ The steps in between:
    The identity consumers (`adopt`, `revert`, `claim`, `start`, `wrap`, `init`, `merge`,
    `land` and runner jobs) require `projects.commit-identity.v1`;
    `models admit`, `withdraw` and `reviewers` require `reviews.admission.v1`;
-   `init` and `land` require the landing's triage step, `land.triage.v1`
-   (t475). The home runner checks the
+   `init` and `land` require the durable post-merge runs, `land.post-merge.v1`
+   (t477), and `land --post-merge` asks for that one alone; they also
+   require the landing's triage step, `land.triage.v1` (t475). The home runner checks the
    union of its jobs' (`JOB_CAPABILITIES`, `src/route-level.ts`) before its
    first poll, the integrator's `integrate` and `refresh` jobs included;
    the review job's include the review claim leases (`reviews.lease.v1`) and the review skip (`reviews.skip.v1`,
@@ -194,7 +195,8 @@ The steps in between:
    `projects.require-criteria.v1`, 20 `runners.scoped-token.v1`, 21
    `reviews.skip.v1`, 22 `reviews.skip-as-runner.v1`, 23 `areas.manage.v1`
    and `areas.board.v1`, 24 `projects.commit-identity.v1`, 25
-   `reviews.admission.v1`, 26 `reviews.lease.v1`, 27 `land.triage.v1`)
+   `reviews.admission.v1`, 26 `reviews.lease.v1`, 27 `land.post-merge.v1`,
+   28 `land.triage.v1`)
    and nothing else; a capability added later has no
    level, so a legacy server is refused for it. While the migration lasts
    the number still rises by one with each such change and gates legacy

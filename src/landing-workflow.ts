@@ -347,6 +347,9 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
             const held: LandingLease | null = await L.liveProjectLanding();
             return { took: false as const, why: parsed.detail, at: new Date().toISOString(), holder: held ? { item: held.item, holder: held.holder, since: held.at } : null };
           }
+          // Unfinished post-merge work blocks the take; no landing holds the
+          // lease then, so the refusal names the run instead of a holder.
+          if (parsed?.code === "post_merge_blocked") return { took: false as const, why: parsed.detail, at: new Date().toISOString() };
           if (parsed && parsed.status >= 400 && parsed.status < 500) throw new NonRetryableError(parsed.detail);
           throw error;
         }
@@ -470,7 +473,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       if (item.head !== head) throw new NonRetryableError(`${p.item}'s head moved to ${short(item.head)}; start the landing again`);
       if (!project.policy.checks.length) return { none: true as const, t0: Date.now(), runId: "", seconds: 0 };
       if (!item.fork || !item.head) throw new NonRetryableError(`${p.item} has nothing pushed to check`);
-      const refused = project.policy.checks.flatMap((claim) => { const why = refusalOf(claim); return why ? [refusalText(claim, why)] : []; });
+      const refused = [...(project.policy.prepare ? [project.policy.prepare.command] : []), ...project.policy.checks].flatMap((claim) => { const why = refusalOf(claim); return why ? [refusalText(claim, why)] : []; });
       if (refused.length) throw new NonRetryableError(`${refused.join(". ")}. The project owner replaces it with atelier init --check; until then land ${p.item} without --workflow.`);
       const planFork = item.kind === "part" && item.plan ? (await L.item(item.plan)).fork : null;
       const runId = `${p.key}:${p.item}:${head.slice(0, 12)}:wf-${p.instance}`;
@@ -478,11 +481,12 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         runId, project: p.key, itemId: p.item,
         baselineRepo: baseRepoOf(item, project.repo, planFork),
         fork: item.fork, head, checks: [...project.policy.checks], requestedBy: p.actor,
+        ...(project.policy.prepare ? { prepare: project.policy.prepare } : {}),
         ...(project.policy.checkPaths?.length ? { checkPaths: project.policy.checkPaths } : {}),
       };
       if (p.origin) await L.setNotificationOrigin(p.item, p.origin);
       await this.env.RUNNER.get(this.env.RUNNER.idFromName(runId)).start(request);
-      return { none: false as const, t0: Date.now(), runId, seconds: project.policy.checks.length * 600 + 120 };
+      return { none: false as const, t0: Date.now(), runId, seconds: (project.policy.checks.length + (project.policy.prepare ? 1 : 0)) * 1800 + 120 };
     });
     if (started.none) {
       await step.do("record the check step", RETRIES, async () => { await this.note(L, p, "check", Date.now() - started.t0, { skipped: true }); return {}; });
@@ -634,10 +638,17 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
   private async waitForMerge(step: WorkflowStep, L: LedgerStub, p: Landing): Promise<void> {
     const maxPolls = Math.max(1, Math.floor(p.merge / p.mergePoll));
     for (let i = 0; ; i++) {
-      const done = await step.do(`wait for the merge #${i}`, RETRIES, async () => (await L.item(p.item)).state === "merged");
+      const done = await step.do(`wait for the merge #${i}`, RETRIES, async () => {
+        if ((await L.item(p.item)).state !== "merged") return false;
+        const run = await L.postMergeRun(p.item);
+        return !run || run.state === "complete";
+      });
       if (done) return;
       if (i + 1 >= maxPolls) {
-        throw new NonRetryableError(`${p.item}'s merge was not recorded within ${span(p.merge)}; it stays accepted. Merge it by hand: atelier merge ${p.item}`);
+        const run = await L.postMergeRun(p.item);
+        throw new NonRetryableError(run && run.state !== "complete"
+          ? `${p.item} has unresolved post-merge run ${run.id} (${run.state}); later merges remain blocked. Inspect with atelier land ${p.item} --post-merge status`
+          : `${p.item}'s merge was not recorded within ${span(p.merge)}; it stays accepted. Merge it by hand: atelier merge ${p.item}`);
       }
       await step.sleep(`wait for the merge to record #${i}`, p.mergePoll);
     }

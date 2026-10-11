@@ -6,12 +6,17 @@ const spec: CommandSpec = {
   // the binding the review it waits for names, the criteria requirement
   // the project may hold, and the request number the review request's answer
   // carries, by which the landing counts the runners that skipped it (t353).
-  capabilities: ["projects.commit-identity.v1", "land.workflow.v1", "items.brief-criteria.v1", "reviews.criteria-binding.v1", "projects.require-criteria.v1", "reviews.skip.v1", "land.triage.v1"],
+  capabilities: ["projects.commit-identity.v1", "land.workflow.v1", "items.brief-criteria.v1", "reviews.criteria-binding.v1", "projects.require-criteria.v1", "reviews.skip.v1", "land.post-merge.v1", "land.triage.v1"],
   // cli/land.mjs checks them itself, after --release-lease (the lease route
   // alone, which every server has, so a stuck lease is freed even while the
   // server is behind) and before the lease is read.
   capabilityCheck: "handler",
   forms: [
+    {
+      group: "Owner", line: 1, slot: 41,
+      form: "land ID --post-merge status|resume|retry|skip|reconcile [--reason TEXT] [--resolution no-effect|completed]",
+      about: "Inspect or resolve a durable post-merge run. Status shows the policy, SHAs, ordered steps and attempts. Resume runs pending work; retry resumes a failed step; skip records an owner waiver and continues. Retry, skip and reconcile require a reason. Running or uncertain attempts require the owner to stop the executor and reconcile its external effect before retry or skip. Completed steps never replay and unresolved work blocks later merges.",
+    },
     {
       group: "Owner", line: 1, slot: 40,
       form: "land ID [--reviewer H/M] [--no-review] [--triage H/M | --no-triage REASON] [--override-triage REASON] [--wait] [--dry-run] [--release-lease] [--moved-ok] [--workflow [--checks local|container]]",
@@ -19,6 +24,9 @@ const spec: CommandSpec = {
     },
   ],
   flags: {
+    "post-merge": "--post-merge takes status|resume|retry|skip|reconcile",
+    reason: "--reason needs the owner’s explanation",
+    resolution: "--resolution takes no-effect|completed, after stopping the executor",
     reviewer: false,
     "no-review": true,
     triage: "--triage needs harness/model: atelier land ID --triage H/M",
@@ -33,6 +41,9 @@ const spec: CommandSpec = {
   },
   help: {
     flags: {
+      "--reason TEXT": "the owner’s explanation for retry, skip or reconciliation, recorded in history",
+      "--resolution no-effect|completed": "with reconcile, record the observed external effect after stopping the executor; a deployment still requires independent version verification or a waiver",
+      "--post-merge ACTION": "status shows the durable run and attempts; resume executes pending work; retry resumes a failed step; skip --reason records a waiver; reconcile --reason --resolution no-effect|completed settles uncertain effects after stopping the executor",
       "--reviewer H/M": "names the reviewer the request goes to, and the review is asked for even where the gate needs none; otherwise, when the gate needs a review, the server suggests a model of another company than every contributor from the pool and the models' records, and the landing prints which and why",
       "--no-review": "skips waiting: the task is left submitted for the owner to settle the review by hand",
       "--triage H/M": "names the model that triages the merged diff against the task's acceptance criteria before the review is asked for, in place of the project's triage setting; same-company models may triage, and the pool's access and cost rules apply",

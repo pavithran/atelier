@@ -214,7 +214,9 @@ export function checkCapabilities(version: unknown, required: readonly string[])
 
 // 26: review-renew and five-minute leases; release and verdicts name the
 // exact request generation, and expired requests are reoffered (t351).
-// 27: the ledger takes the land step triage and its binding, so atelier land
+// 27: durable owner-approved post-merge steps and recovery (t477,
+// land.post-merge.v1).
+// 28: the ledger takes the land step triage and its binding, so atelier land
 // records a triage, a --no-triage bypass and an --override-triage (t475,
 // land.triage.v1).
-export const ROUTE_LEVEL = 27;
+export const ROUTE_LEVEL = 28;

@@ -64,6 +64,15 @@ automatic merges, before build or plan harnesses and harness-free merge
 finishes. Reviews, integrate and refresh jobs do not run preparation. Manual
 claims print the command and workspace directory for the caller to run.
 
+Local and container checks also run this command once in each clean checked
+tree, after merging for `--merged`, before any checks or not-applicable
+results. This includes both Workflow check modes. Clean-clone preparation is
+not cached between attempts and uses the same command safety policy and
+execution deadline as checks (`ATELIER_CHECK_TIMEOUT`, default 20 minutes,
+locally; 30 minutes in the container). A failure stops the attempt without
+adding check evidence; earlier evidence remains. Its report names the command,
+exit status or signal and a redacted output tail of at most 4,000 characters.
+
 `ATELIER_PREPARE_TIMEOUT` sets the preparation deadline in positive integer
 milliseconds, from `1` through `2147483647`; it defaults to `600000` (ten
 minutes). Invalid values stop runner startup. Timeout or cancellation
@@ -385,8 +394,21 @@ task for the rest of the process. A separate counter skips it after three consec
 including claim errors other than refusals, workspace preparation errors,
 HEAD read errors after successful harness exits, and finish exit 4. This
 counter resets on a task failure, success, claim refusal or validation skip. Claim refusals and validation skips do not
-increase either counter. Interruptions stop the runner without updating either
-counter. An infrastructure failure moves on to the next offered task in the
+increase either counter. A task merged or abandoned under the runner's job is
+answered `task_terminal` with its state, and the CLI ends with exit 5 (merged)
+or 6 (abandoned, shown as closed) from claim, push and every step of finish:
+the runner logs the state, keeps the workspace and its commits, releases
+nothing, never offers the task to a harness again in that process, and charges
+neither counter. The state is told only to the runner whose claim still held
+the job when it closed, or to one a poll offered it to while no claim ever
+took it; a runner that was
+offered a job someone then claimed, under a runner token or an owner's or
+agent's credential with or without a runner name, stays `runner_forbidden`
+once that task closes. Release, handoff, re-dispatch that releases a claim,
+and every successful replacement claim (including an owner-credential claim)
+retire the previous runner hold. A former holder stays `runner_forbidden`
+unless a new assignment authorizes it. Interruptions stop the runner without
+updating either counter. An infrastructure failure moves on to the next offered task in the
 same poll; `--once` still handles at most one task.
 Reaching either cap logs that the task needs the owner's attention; the
 infrastructure message includes the reason. Project names rejected by runner
