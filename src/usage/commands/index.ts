@@ -11,6 +11,7 @@ import command_baseline_token from "./baseline-token.ts";
 import command_block from "./block.ts";
 import command_board from "./board.ts";
 import command_check from "./check.ts";
+import command_check_log from "./check-log.ts";
 import command_claim from "./claim.ts";
 import command_decide from "./decide.ts";
 import command_decisions from "./decisions.ts";
@@ -86,6 +87,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/block.ts", spec: command_block },
   { path: "src/usage/commands/board.ts", spec: command_board },
   { path: "src/usage/commands/check.ts", spec: command_check },
+  { path: "src/usage/commands/check-log.ts", spec: command_check_log },
   { path: "src/usage/commands/claim.ts", spec: command_claim },
   { path: "src/usage/commands/decide.ts", spec: command_decide },
   { path: "src/usage/commands/decisions.ts", spec: command_decisions },
