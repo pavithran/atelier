@@ -25,6 +25,7 @@ const entry = (id: string, harness: ModelEntry["harness"]): ModelEntry => ({
   id, harness, where: "cloud", provider: "subscription", aliases: [], family: familyOf(id), note: "", addedBy: "owner", addedAt: AT,
 });
 const POOL = [entry("opus-5.5", "claude-code"), entry("gpt-6-astra", "codex")];
+const NAMED_POOL = [...POOL, entry("gemini-3.1-pro", "antigravity")];
 
 function ledger(project: string) {
   return env.LEDGER.get(env.LEDGER.idFromName(`project:${project}`));
@@ -139,7 +140,7 @@ it("the owner naming another reviewer at the new head replaces the carried reque
   await submittedAt(L, id, A);
   await L.requestReview(id, "owner", GPT, POOL, true);
   await landingMerge(L, id, B);
-  expect(await L.requestReview(id, "owner", GEMINI, POOL, true)).toMatchObject({ requested: true, head: B, reviewer: GEMINI });
+  expect(await L.requestReview(id, "owner", GEMINI, NAMED_POOL, true)).toMatchObject({ requested: true, head: B, reviewer: GEMINI });
   expect((await L.reviewWaiting()).map((i) => `${i.dispatch!.agent}/${i.dispatch!.model}@${i.head!.slice(0, 1)}`)).toEqual([`${GEMINI}@b`]);
 });
 

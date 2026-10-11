@@ -1040,6 +1040,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   const project = ref.name;
   const L = ledger(env, ref.key);
 
+  if (parts[2] === "reviewers") {
+    requireOwner(env, actor);
+    if (parts.length === 3 && m === "GET") return json(await L.reviewerAdmissions());
+    if (parts.length === 4 && (m === "PUT" || m === "DELETE")) {
+      return json(await L.admitReviewer(parts[3], m === "PUT", body.reason, actor, await index(env).models()));
+    }
+    throw new RuleError("not_found", "no such reviewer admission route", 404);
+  }
+
   if (parts.length === 2 && m === "PUT") {
     requireOwner(env, actor);
     // A name is new when no project is registered under it and no Ledger,
