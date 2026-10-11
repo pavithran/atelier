@@ -12,7 +12,8 @@ export default async function publishCommand() {
   if (args._[1] === undefined) return publishBaseline();
   const name = project();
   const p = cfg.projects?.[name] ?? die(`${name} is not registered on this Mac; run atelier init in it`);
-  const r = publishMirror({ git, dir: p.path, branch: p.branch, remote: args._[1], say: console.log });
+  const { project: record } = await call("GET", P(name), undefined, OWNER);
+  const r = publishMirror({ git, dir: p.path, branch: p.branch, remote: args._[1], say: console.log, identity: record.policy.commitIdentity });
   if (!r.ok) process.exit(1);
 }
 
