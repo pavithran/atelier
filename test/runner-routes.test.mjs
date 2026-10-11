@@ -87,6 +87,9 @@ test("each declared call is allowed for the credential it declares, and refused 
     assert.equal(call.via === "cli", call.command !== undefined, `${call.name}: a cli call names its command, a runner call none`);
     if (call.via === "cli") assert.ok(RUNNER_COMMANDS.has(call.command));
     if (call.method === "GET") assert.deepEqual(call.body, [], `${call.name}: a GET sends no body`);
+    // The config read alone names no actor: an agent token is refused when
+    // the header names anyone but itself, and the read asks who it is.
+    assert.equal(call.actor === "none", call.name === "config", `${call.name}: only the config read names no actor`);
   }
   // A write token is never a runner's to ask for, whatever route asks.
   for (const name of ["read-token", "base-token"]) assert.equal(runnerRoute("POST", callParts(declaredCall(name)), { scope: "write" }), false, name);
@@ -136,9 +139,26 @@ test("the transport sends a declared call as declared, and refuses an undeclared
   await assert.rejects(t.send("queue", {}, { body: offer }), /queue needs the actor/);
   await assert.rejects(t.send("plan", { project: "p", item: "t3" }, { actor: ACTOR, body: {} }), /plan sends a document as text/);
   assert.equal(sent.length, 4);
-  // The identity is read once, from GET /config.
-  const id = runnerTransport({ server: "https://atelier.test", credential: "atl_secret", runner: RUNNER, fetch: async () => Response.json({ ownerActor: "owner", runner: RUNNER, tokenId: "id" }) });
+  // The identity is read once, from GET /config, with the token and no
+  // actor header: an agent token's read names anyone else at its peril
+  // (actor_mismatch, 403), and the config call refuses an actor outright.
+  await t.send("config");
+  assert.deepEqual([sent[4].url, sent[4].init.method, sent[4].init.headers, sent[4].init.body],
+    ["https://atelier.test/api/config", "GET", { authorization: "Bearer atl_secret", "x-atelier-runner": RUNNER, "content-type": "application/json" }, undefined]);
+  await assert.rejects(t.send("config", {}, { actor: "owner" }), /config names no actor/);
+  await assert.rejects(t.send("config", {}, { actor: ACTOR }), /config names no actor/);
+  assert.equal(sent.length, 5);
+  const reads = [];
+  const id = runnerTransport({ server: "https://atelier.test", credential: "atl_secret", runner: RUNNER, fetch: async (url, init) => { reads.push({ url, init }); return Response.json({ ownerActor: "owner", runner: RUNNER, tokenId: "id" }); } });
   assert.deepEqual(await id.identity(), { runner: RUNNER, actor: null });
+  assert.deepEqual(await id.identity(), { runner: RUNNER, actor: null });
+  assert.equal(reads.length, 1, "the identity is read once");
+  assert.equal(reads[0].init.headers["x-atelier-actor"], undefined, "the identity read names an actor");
+  // An agent token answers with its actor; a transport with no runner name
+  // sends no runner header.
+  const agent = runnerTransport({ server: "https://atelier.test", credential: "atl_agent", fetch: async (url, init) => { reads.push({ url, init }); return Response.json({ ownerActor: "owner", actor: ACTOR }); } });
+  assert.deepEqual(await agent.identity(), { runner: null, actor: ACTOR });
+  assert.deepEqual(reads[1].init.headers, { authorization: "Bearer atl_agent", "content-type": "application/json" });
   const refused = runnerTransport({ server: "https://atelier.test", credential: "bad", runner: RUNNER, fetch: async () => Response.json({ error: "unauthorised" }, { status: 401 }) });
   await assert.rejects(refused.identity(), (error) => error.status === 401 && /config: 401/.test(error.message));
   assert.equal(helperCommand(["claim", "t1"]), "claim");
@@ -267,8 +287,9 @@ after(async () => { await mf?.dispose(); });
 
 // A request to the gateway, as the CLI sends one: a bearer token, the actor
 // and the runner in their headers, a JSON body.
+// An actor of null sends no X-Atelier-Actor, as the runner's config read does.
 const call = (method, path, { token = OWNER_TOKEN, actor = "owner", runner, body } = {}) => mf.dispatchFetch(`https://atelier.test/api${path}`, {
-  method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, ...(runner ? { "x-atelier-runner": runner } : {}), "content-type": "application/json" },
+  method, headers: { authorization: `Bearer ${token}`, ...(actor === null ? {} : { "x-atelier-actor": actor }), ...(runner ? { "x-atelier-runner": runner } : {}), "content-type": "application/json" },
   ...(body === undefined ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) }),
 });
 // The same under a runner token, as the runner's actor unless another is named.
@@ -333,8 +354,9 @@ test("idle polling: an empty queue answers [], records the offer, and GET /queue
   assert.ok(offers.some((o) => o.runner === RUNNER && o.jobs.includes("build")), "the idle poll recorded the offer");
   await denied(api("GET", "/queue"), token, "GET /queue");
   assert.equal(runnerRoute("GET", ["queue"]), false);
-  const config = await expect(api("GET", "/config"), 200, "config");
+  const config = await expect(api("GET", "/config", { actor: null }), 200, "config");
   assert.deepEqual([config.ownerActor, config.runner, config.tokenId, config.actor], ["owner", RUNNER, token.id, undefined], "a runner token names its runner, no actor");
+  assert.deepEqual(await expect(api("GET", "/config"), 200, "config as the actor"), config, "a runner token's config read is the same whatever actor it names");
   const version = await expect(mf.dispatchFetch("https://atelier.test/api/version"), 200, "version");
   assert.equal(version.routeLevel, ROUTE_LEVEL);
   // The capability check every spawned command makes first (t458) reads the
@@ -612,6 +634,28 @@ test("owner-only operations and write-token requests are refused by runnerRoute 
   assert.ok(!(await page.text()).includes(token.token));
 });
 
+test("an agent token's config read names no actor: naming the owner is refused, naming none answers the token's actor, and the poll follows", async () => {
+  const p = await project();
+  const agent = await expect(call("POST", "/tokens", { body: { actor: ACTOR, projects: [p.name] } }), 201, "agent token");
+  // The refusal the runner died on before this fix: an agent token whose
+  // config read named the owner (cli/runner.mjs identity, pre-review block).
+  const refused = await expect(call("GET", "/config", { token: agent.token, actor: "owner" }), 403, "config as the owner");
+  assert.equal(refused.error, "actor_mismatch");
+  assert.equal((await expect(call("GET", "/config", { token: agent.token, actor: "codex/other" }), 403, "config as another actor")).error, "actor_mismatch");
+  // The read as the transport makes it: the token, no actor.
+  const config = await expect(call("GET", "/config", { token: agent.token, actor: null }), 200, "config");
+  assert.deepEqual([config.ownerActor, config.actor, config.runner, config.tokenId], ["owner", ACTOR, undefined, undefined], "an agent token names its actor, no runner");
+  assert.deepEqual(await expect(call("GET", "/config", { token: agent.token, actor: ACTOR }), 200, "config as itself"), config);
+  // The poll that follows goes as the actor the read answered, under the
+  // runner name the offer declares (docs/runners.md: an agent token can
+  // declare a runner name).
+  assert.deepEqual(await expect(call("POST", "/queue", { token: agent.token, actor: ACTOR, body: OFFER }), 200, "poll"), []);
+  const offers = await expect(call("GET", "/runners"), 200, "runners");
+  assert.ok(offers.some((o) => o.runner === RUNNER), "the agent token's poll recorded the offer");
+  assert.equal((await expect(call("POST", "/queue", { token: agent.token, actor: "owner", body: OFFER }), 403, "poll as the owner")).error, "actor_mismatch");
+  cover("config", "queue");
+});
+
 // ── the CLI, over the port ─────────────────────────────────────────────────
 
 const CLI = resolve("cli/atelier.mjs");
@@ -645,6 +689,21 @@ test("atelier runner polls the real server under its runner token and exits 0 wh
   assert.equal(other.status, 1, other.stdout + other.stderr);
   assert.match(other.stdout, /runner: failed: (queue|config): 403/);
   assert.ok(!(other.stdout + other.stderr).includes(token.token));
+});
+
+test("atelier runner polls the real server under an agent token and exits 0 when idle", async (t) => {
+  const p = await project();
+  const agent = await expect(call("POST", "/tokens", { body: { actor: ACTOR, projects: [p.name] } }), 201, "agent token");
+  const dir = scratch(t);
+  const config = join(dir, "runner.json");
+  writeFileSync(config, JSON.stringify({ jobs: ["build"], agents: [{ agent: "codex", models: ["gpt-6-astra"], command: ["true", "{model}", "{brief_file}", "{workspace}"] }] }));
+  const idle = cli(["runner", "--name", RUNNER, "--once", "--config", config], cliEnv(agent, dir));
+  assert.equal(idle.status, 0, idle.stdout + idle.stderr);
+  assert.doesNotMatch(idle.stdout + idle.stderr, /failed|actor_mismatch|403/);
+  const offers = await expect(call("GET", "/runners"), 200, "runners");
+  assert.deepEqual(offers.find((o) => o.runner === RUNNER)?.jobs, ["build"], "the agent token's poll recorded its offer");
+  assert.ok(!(idle.stdout + idle.stderr).includes(agent.token), "the token reached the output");
+  cover("config", "queue", "version");
 });
 
 test("atelier runner reports a review skip through the real route under its runner token", async (t) => {
