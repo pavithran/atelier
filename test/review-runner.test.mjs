@@ -57,6 +57,7 @@ function fixture(options = {}) {
   const proofs = Array.from({ length: criteria }, (_, i) => `CRITERION ${i + 1}: met — Ran the clone's tests; test ${i + 1} fails without the change.`);
   const verdict = options.verdict ?? ["VERDICT: APPROVE", "SUMMARY: Checked the diff.", ...proofs].join("\n");
   const io = {
+    prepare: () => assert.fail("this job must not prepare"),
     log: (s) => logs.push(s), stopped: () => false,
     env: {}, ownerTokens: () => [],
     readSecret: () => FAKE_TOKEN,

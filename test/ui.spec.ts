@@ -1,3 +1,4 @@
+import { taskPage } from "../src/task-page.ts";
 import {expect,it} from 'vitest';
 import { NO_CRITERIA } from "../src/criteria.ts";
 import {renderInbox,renderItem,renderProject,renderProjectTasks,renderProjectSettings,renderProjectFlow,renderProjectShip,renderHome,renderHistory,renderProjectPlans,renderModels,renderError,type Detail} from '../src/ui';
@@ -1110,7 +1111,7 @@ it('a blocked task shows who blocked it and why, offers unblock and close only, 
  const d=detail();d.item.state='blocked';d.item.blocked={reason:'waiting on <keys>',by:'codex/gpt-6',at:time,from:'submitted'};d.gate={ready:false,needsAssessor:false,blockers:['state is blocked, not submitted'],outOfScope:[]};
  const html=renderItem(project,d,'PAVI',diff);
  expect(html).toContain('Blocked by codex/gpt-6');expect(html).toContain('waiting on &lt;keys&gt;');expect(html).not.toContain('waiting on <keys>');
- expect(html).toContain('action="/ui/example/t1/unblock"');expect(html).toContain('returns it to in review');expect(html).toContain('example · t1 · Blocked');
+ expect(html).toContain('action="/ui/example/t1/unblock"');expect(html).toContain('returns it to in review');expect(html).toContain('<strong>Blocked</strong>');expect(html).not.toContain('example · t1 · Blocked');
  expect(html).toContain('Decide t1 at');expect(html).toContain('Clear that, then run atelier unblock t1');
  expect(html).not.toContain('Approve revision');expect(html).not.toContain('Request changes');expect(html).not.toContain('Release task');expect(html).not.toContain('Block this task');
  expect(html).toContain('Close task without merging');
@@ -1512,4 +1513,73 @@ it('shows the blocked build report before clean-clone check results and escapes 
  expect(html).toContain('Validation blocked');
  expect(html).toContain('listen EPERM &lt;script&gt;');
  expect(html.indexOf('Validation blocked')).toBeLessThan(html.indexOf('Runner, clean clone'));
+});
+
+function historyFixture() {
+ const d=detail();
+ const at=(n:number)=>`2026-10-03T12:${String(n).padStart(2,'0')}:00Z`;
+ const ev=(seq:number,kind:string,data:Record<string,unknown>={})=>({seq,kind,data,itemId:'t1',actor:'codex/gpt-6',at:at(seq)});
+ d.events=[ev(1,'item.created'),ev(2,'item.claimed',{criteria:'criteria-a'}),ev(3,'push.observed',{head}),ev(4,'item.submitted',{head}),ev(5,'review.rejected',{head,criteria:'criteria-a',note:'Fix the race',findings:[{file:'src/a.ts',line:3,severity:'blocking',text:'Race <unsafe>'}]}),ev(6,'item.released',{note:'Triage returned round 5'})];
+ d.evidence=[];
+ d.runs=[7,8].map(n=>({actor:'codex/gpt-6',role:'build' as const,outcome:'validation_blocked' as const,project:project.name,item:'t1',runner:`home:${n}`,at:at(n),detail:'npm test: listen EPERM'}));
+ return {d,at,ev};
+}
+it('derives one open-again headline from the ledger and keeps actions',()=>{
+ const {d,ev}=historyFixture();d.item.state='open';
+ d.events.push(ev(7,'item.dispatched',{note:'Triage returned round 5: fix the race'}));
+ const html=renderItem(project,d,'PAVI',null);
+ const header=html.slice(html.indexOf('<header class="review-header">'),html.indexOf('</header>',html.indexOf('<header class="review-header">')));
+ expect(header).toContain('Open again · awaiting rework');expect(header).toContain('Triage returned round 5');
+ expect(header).not.toContain('Ready to start');expect(header).not.toContain('Checks passed');
+ expect((header.match(/decision-status/g)||[]).length).toBe(1);
+ expect(html).toContain('Race &lt;unsafe&gt;');
+});
+it('shares board stage precedence for blocked and terminal tasks with returned history',()=>{
+ const {d,at}=historyFixture();d.item.state='open';
+ d.item.blocked={reason:'Waiting for owner input',by:'pavi',at:at(9),from:'open'};
+ expect(taskPage(d).title).toBe('Blocked');
+ expect(taskPage(d).detail).toBe('Waiting for owner input');
+ d.item.state='merged';
+ expect(taskPage(d).title).toBe('Merged into the project');
+ d.item.state='abandoned';
+ expect(taskPage(d).title).toBe('Task closed');
+});
+it('groups blocked reports and supersedes only covering observed passes',()=>{
+ const {d,at,ev}=historyFixture();
+ expect(taskPage(d).notices).toHaveLength(1);
+ expect(taskPage(d).notices[0].originals).toHaveLength(2);
+ const pass={itemId:'t1',claim:'other check',grade:'observed' as const,head,passed:true,by:'runner',at:at(9)};
+ d.evidence=[pass];expect(taskPage(d).notices[0].originals.every(r=>!r.superseded)).toBe(true);
+ d.evidence=[{...pass,claim:'npm test'}];expect(taskPage(d).notices[0].originals.every(r=>r.superseded)).toBe(true);
+ d.evidence=[{...pass,claim:'npm test',head:'new-head'}];expect(taskPage(d).notices[0].originals.some(r=>r.superseded)).toBe(false);
+ d.events.push(ev(10,'item.submitted',{head:'new-head'}));expect(taskPage(d).notices[0].originals.every(r=>r.superseded)).toBe(true);
+ d.events.push(ev(9,'item.criteria_changed',{to:'criteria-b'}));expect(taskPage(d).notices[0].originals.some(r=>r.superseded)).toBe(false);
+ d.runs!.push({...d.runs![0],at:at(11)});expect(taskPage(d).notices).toHaveLength(2);
+});
+it('does not substitute reports, merged checks, earlier passes or unknown bindings for coverage',()=>{
+ const {d,at}=historyFixture();
+ const pass={itemId:'t1',claim:'npm test',grade:'observed' as const,head,passed:true,by:'runner',at:at(9)};
+ for(const evidence of [{...pass,grade:'reported' as const},{...pass,merged:true},{...pass,notApplicable:true},{...pass,at:at(6)}]) {
+  d.evidence=[evidence];expect(taskPage(d).notices[0].originals.some(r=>r.superseded)).toBe(false);
+ }
+ d.evidence=[pass];d.events=[];
+ expect(taskPage(d).notices[0].originals.some(r=>r.superseded)).toBe(false);
+ expect(renderItem(project,d)).toContain('Earlier task history is unavailable.');
+ expect(renderItem(project,d)).toContain('Submission history is unavailable.');
+});
+it('keeps same-head submissions distinct, newest first, and says when verdicts are missing',()=>{
+ const {d,ev}=historyFixture();d.events.push(ev(9,'item.submitted',{head,summary:'Retry at same head'}));
+ const model=taskPage(d);expect(model.rounds).toHaveLength(2);
+ expect(model.rounds[0].verdicts).toHaveLength(0);expect(model.rounds[1].verdicts).toHaveLength(1);
+ const html=renderItem(project,d);expect(html.indexOf('Submission · event 9')).toBeLessThan(html.indexOf('Submission · event 4'));
+ expect(html).toContain('No triage or review verdict recorded for this submission.');
+ expect(html).toContain('2 reports');expect(html).toContain('home:7');expect(html).toContain('home:8');
+});
+
+it('a first dispatch remains ready to start; a cleared head retains reports and returned history',()=>{
+ const {d,ev}=historyFixture();d.item.state='open';d.item.head=null;
+ d.events=[ev(1,'item.created'),ev(2,'item.dispatched',{note:'Please build this'})];
+ expect(taskPage(d).title).toBe('Ready to start');
+ d.events.push(ev(3,'item.released',{note:'Returned to the queue'}));
+ const html=renderItem(project,d);expect(html).toContain('Open again');expect(html).toContain('2 reports');
 });

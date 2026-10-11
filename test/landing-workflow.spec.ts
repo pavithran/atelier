@@ -494,35 +494,49 @@ function workflowRequest(project: string, id: string, method = "POST") {
   });
 }
 
-it("does not remember a failed create and can retry the landing", async () => {
+it("remembers a failed create and reconciles the landing after the grace period", async () => {
   const project = "wf-create-retry";
   const { L, id } = await pushedTask(project, "expired-before-create");
+  await L.setLandingWorkflowStage(id, "expired-before-create", "failed", 0);
   let creates = 0;
   const binding = {
     ...workflowBinding(),
     get: async () => { throw new Error("instance.not_found"); },
     create: async (options: Parameters<typeof env.LANDING_WORKFLOW.create>[0]) => {
       creates++;
-      // Neither a stale record nor the new id may be recorded before success.
-      expect(await L.landingWorkflowOf(id)).toBeNull();
+      // The new ID is claimed before create and retained on failure,
+      // so retry reconciles the same claim rather than a new successor.
+      expect((await L.landingWorkflowOf(id))?.instance).toBe(options?.id);
       if (creates === 1) throw new Error("internal error");
       return env.LANDING_WORKFLOW.create(options);
     },
   };
   const testEnv = { ...env, ATELIER_TOKEN: TOKEN, LANDING_WORKFLOW: binding } as typeof env;
   expect((await worker.fetch(workflowRequest(project, id), testEnv)).status).toBe(500);
-  expect(await L.landingWorkflowOf(id)).toBeNull();
+  const claim = await L.landingWorkflowOf(id);
+  expect(claim).toMatchObject({ checks: "local", stage: "lease" });
+  expect((await worker.fetch(workflowRequest(project, id), testEnv)).status).toBe(503);
+  expect(creates).toBe(1);
+  await runInDurableObject(L, async (_instance, state) => {
+    const key = `landing-workflow:${id}`;
+    const record = JSON.parse(state.storage.sql.exec(`SELECT value FROM meta WHERE key = ?`, key).one().value as string);
+    state.storage.sql.exec(`UPDATE meta SET value = ? WHERE key = ?`, JSON.stringify({ ...record, at: new Date(Date.now() - 120_000).toISOString() }), key);
+  });
   const response = await worker.fetch(workflowRequest(project, id), testEnv);
-  expect(response.status).toBe(201);
+  expect(response.status).toBe(200);
   const result = await response.json() as { instance: string };
+  expect(result.instance).toBe(claim!.instance);
   expect(await L.landingWorkflowOf(id)).toMatchObject({ instance: result.instance, checks: "local" });
   await until(() => L.landingWorkflowOf(id), (r) => r?.stage === "workspace");
   expect(creates).toBe(2);
 });
 
-it("replaces an instance missing from the real binding while keeping its queue place", async () => {
-  const project = "wf-expired-restart";
-  const { L, id } = await pushedTask(project, "wf-expired-missing");
+it.each(["failed", "done"] as const)("replaces a missing instance at %s without an observed status, keeping its queue place", async (stage) => {
+  const project = `wf-expired-restart-${stage}`;
+  const old = `wf-expired-missing-${stage}`;
+  const { L, id } = await pushedTask(project, old);
+  await L.setLandingWorkflowStage(id, old, stage, 0);
+  expect((await L.landingWorkflowOf(id))?.lastStatus).toBeUndefined();
   const blocker = (await L.newItem("Hold lease", [], "owner")).id;
   await L.beginProjectLanding(blocker, "owner");
   await L.queueProjectLanding(id, "owner");
@@ -530,7 +544,7 @@ it("replaces an instance missing from the real binding while keeping its queue p
   const response = await worker.fetch(workflowRequest(project, id), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
   expect(response.status).toBe(201);
   const result = await response.json() as { instance: string };
-  expect(result.instance).not.toBe("wf-expired-missing");
+  expect(result.instance).not.toBe(old);
   expect(await L.landingWorkflowOf(id)).toMatchObject({ instance: result.instance });
   expect((await L.readLandingQueue()).map((row) => ({ item: row.item, at: row.at })))
     .toEqual(before.map((row) => ({ item: row.item, at: row.at })));
@@ -577,9 +591,10 @@ it("twelve multi-hour lease waiters remain readable at the stretched poll cadenc
   expect(await L.readLandingQueue()).toHaveLength(12);
 });
 
-it("does not replace an existing handle when status fails, even with a missing-instance error", async () => {
-  const project = "wf-status-failure";
+it.each(["lease", "failed", "done"] as const)("does not replace an existing handle at %s when status fails, even with a missing-instance error", async (stage) => {
+  const project = `wf-status-failure-${stage}`;
   const { L, id } = await pushedTask(project, "wf-status-existing");
+  await L.setLandingWorkflowStage(id, "wf-status-existing", stage, 0);
   let creates = 0;
   const testEnv = { ...env, ATELIER_TOKEN: TOKEN, LANDING_WORKFLOW: {
     ...workflowBinding(),
@@ -603,7 +618,7 @@ it("fences stale-record clearing to the owner and the instance read", async () =
   expect(await L.landingWorkflowOf(id)).toBeNull();
 });
 
-it("retries its first stage when execution starts before create returns and replaces a terminal record", async () => {
+it("runs its first stage when execution starts before create returns and replaces a terminal record", async () => {
   const project = "wf-create-race";
   const { L, id } = await pushedTask(project, "wf-old-terminal");
   const testEnv = { ...env, ATELIER_TOKEN: TOKEN, LANDING_WORKFLOW: {
@@ -611,10 +626,10 @@ it("retries its first stage when execution starts before create returns and repl
     get: async () => statusHandle(async () => ({ status: "errored" })),
     create: async (options: Parameters<typeof env.LANDING_WORKFLOW.create>[0]) => {
       const instance = await env.LANDING_WORKFLOW.create(options);
-      // Let the new Workflow reach its first stage before recording its id.
+      // Let the new Workflow reach its first stage before create returns;
+      // its id was claimed before the create (t430).
       await new Promise((r) => setTimeout(r, 200));
-      expect((await L.landingWorkflowOf(id))?.instance).toBe("wf-old-terminal");
-      expect(await L.readProjectLanding()).toBeNull();
+      expect((await L.landingWorkflowOf(id))?.instance).toBe(options?.id);
       return instance;
     },
   } } as typeof env;
