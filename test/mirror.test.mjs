@@ -2,10 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { commitPatch, globMatcher, headerPath, publishMirror } from "../cli/mirror.mjs";
+import { commitPatch, globMatcher, headerPath, lfsObject, lfsPointer, PRIVATE_ADDRESS, publishMirror } from "../cli/mirror.mjs";
 
 // atelier publish REMOTE (t433), against a real checkout and a bare mirror on
 // disk. The keys below are assembled at run time so this file holds none.
@@ -352,4 +353,139 @@ test("atelier publish REMOTE runs through the CLI and refuses without a policy; 
   assert.notEqual(bare.status, 0);
   assert.doesNotMatch(bare.stdout, /Not published/);
   assert.equal(run("publish", "a", "b").status, 1);
+});
+
+// A Git LFS pointer at `path` naming `content`, with the object itself placed
+// in the checkout's LFS storage unless `store` is false (what git-lfs leaves
+// after `git add` of a tracked file). Returns the pointer's oid.
+function lfs(f, path, content, { store = true, as = content } = {}) {
+  const oid = createHash("sha256").update(content).digest("hex");
+  f.put(path, `version https://git-lfs.github.com/spec/v1\noid sha256:${oid}\nsize ${Buffer.byteLength(content)}\n`);
+  if (store) f.put(join(".git", "lfs", "objects", oid.slice(0, 2), oid.slice(2, 4), oid), as);
+  return oid;
+}
+
+test("an LFS pointer publishes the object it names: the object is scanned, by place and never by value", (t) => {
+  const f = fixture(t);
+  lfs(f, "data/clean.txt", "one\ntwo\n"); f.commit("Clean");
+  let r = f.publish();
+  assert.equal(r.ok, true, r.text);
+  assert.match(r.text, /2 commits checked/);
+  const oid = lfs(f, "data/model.txt", `weights\ntoken = ${KEY}\nhost fd12:3456::\n`);
+  const c = f.commit("Model").slice(0, 12);
+  r = f.publish();
+  assert.equal(r.ok, false);
+  assert.ok(r.text.includes(`${c} data/model.txt (LFS object ${oid.slice(0, 12)}):2: secret`), r.text);
+  assert.ok(r.text.includes(`${c} data/model.txt (LFS object ${oid.slice(0, 12)}):3: private-ipv6`), r.text);
+  assert.ok(!r.text.includes(KEY));
+  assert.ok(!r.text.includes("fd12:3456"));
+  assert.deepEqual(f.refs(), ["refs/heads/main"]);
+  // A pointer whose oid changes publishes a new object: that one is scanned too.
+  assert.equal(f.head(), f.git(f.checkout, "rev-parse", "main~1"));
+  f.put("data/model.txt", "x\n"); f.commit("Plain again");
+  lfs(f, "data/clean.txt", `three\nkey = ${KEY}\n`);
+  const changed = f.commit("Change object").slice(0, 12);
+  r = f.publish();
+  assert.equal(r.ok, false);
+  assert.ok(r.text.includes(`${changed} data/clean.txt (LFS object`), r.text);
+  assert.ok(!r.text.includes(`${changed} data/model.txt`), r.text);
+});
+
+test("an LFS object that is missing, binary, oversized or not what its pointer says is refused before the push", (t) => {
+  const f = fixture(t);
+  // The reviewer's probe: a pointer declaring a 9,000,000-byte payload the checkout does not hold.
+  const absent = createHash("sha256").update("absent").digest("hex");
+  f.put("data/absent.bin", `version https://git-lfs.github.com/spec/v1\noid sha256:${absent}\nsize 9000000\n`);
+  const missing = f.commit("Absent").slice(0, 12);
+  lfs(f, "data/image.bin", "ab\0cd");
+  const binary = f.commit("Binary").slice(0, 12);
+  lfs(f, "data/big.txt", "x".repeat(8 * 1024 * 1024 + 1));
+  const big = f.commit("Big").slice(0, 12);
+  lfs(f, "data/swapped.txt", "honest\n", { as: "forged\n" });
+  const swapped = f.commit("Swapped").slice(0, 12);
+  const r = f.publish();
+  assert.equal(r.ok, false);
+  assert.match(r.text, new RegExp(`cannot scan ${missing} data/absent\\.bin: LFS object ${absent.slice(0, 12)} is not in the checkout's LFS storage`));
+  assert.match(r.text, new RegExp(`cannot scan ${binary} data/image\\.bin: LFS object [0-9a-f]{12} is binary content`));
+  assert.match(r.text, new RegExp(`cannot scan ${big} data/big\\.txt: LFS object [0-9a-f]{12} is 8388609 bytes, over the`));
+  assert.match(r.text, new RegExp(`cannot scan ${swapped} data/swapped\\.txt: LFS object [0-9a-f]{12} does not match its pointer's oid`));
+  assert.deepEqual(f.refs(), []);
+  // A text file that merely holds a line shaped like a pointer's is not a pointer.
+  const g = fixture(t);
+  g.put("docs/lfs.md", `An LFS pointer begins with\nversion https://git-lfs.github.com/spec/v1\nand names its object.\n`);
+  g.commit("Doc");
+  const ok = g.publish();
+  assert.equal(ok.ok, true, ok.text);
+});
+
+test("lfsPointer and lfsObject read the spec's pointer and check the object against it", (t) => {
+  const oid = createHash("sha256").update("payload\n").digest("hex");
+  assert.deepEqual(lfsPointer(`version https://git-lfs.github.com/spec/v1\noid sha256:${oid}\nsize 8\n`), { oid, size: 8 });
+  assert.deepEqual(lfsPointer(`version https://hawser.github.com/spec/v1\noid sha256:${oid}\nsize 8`), { oid, size: 8 });
+  assert.equal(lfsPointer(`oid sha256:${oid}\nsize 8\n`), null, "the version line comes first");
+  assert.equal(lfsPointer(`version https://git-lfs.github.com/spec/v1\noid sha256:${oid}\n`), null, "no size");
+  assert.equal(lfsPointer(`version https://git-lfs.github.com/spec/v1\noid sha256:${oid}\nsize 8\ngarbage\n`), null, "a line that is no key and value");
+  assert.equal(lfsPointer(`version https://git-lfs.github.com/spec/v1\noid sha256:${oid}\nsize 8\n${"x".repeat(1100)}\n`), null, "over the pointer size");
+  const storage = mkdtempSync(join(tmpdir(), "atelier-lfs-"));
+  t.after(() => rmSync(storage, { recursive: true, force: true }));
+  assert.match(lfsObject(storage, { oid, size: 8 }).why, /is not in the checkout's LFS storage/);
+  assert.match(lfsObject(null, { oid, size: 8 }).why, /cannot be located/);
+  mkdirSync(join(storage, "objects", oid.slice(0, 2), oid.slice(2, 4)), { recursive: true });
+  writeFileSync(join(storage, "objects", oid.slice(0, 2), oid.slice(2, 4), oid), "payload\n");
+  assert.deepEqual(lfsObject(storage, { oid, size: 8 }), { ok: true, lines: ["payload"] });
+  assert.match(lfsObject(storage, { oid, size: 9 }).why, /is 8 bytes, not the 9 its pointer says/);
+});
+
+test("a submodule is refused: its content is in another repository", (t) => {
+  const f = fixture(t);
+  const sub = join(f.checkout, "vendor", "lib");
+  mkdirSync(sub, { recursive: true });
+  f.git(sub, "init", "-q", "-b", "main");
+  f.put("vendor/lib/inner.txt", `key = ${KEY}\n`);
+  f.git(sub, "add", "-A");
+  f.git(sub, "-c", `user.email=${PUBLIC}`, "-c", "user.name=S", "commit", "-qm", "Inner");
+  f.put("ok.txt", "fine\n");
+  const c = f.commit("Submodule").slice(0, 12);
+  assert.equal(f.git(f.checkout, "ls-files", "-s", "vendor/lib").split(" ")[0], "160000");
+  const r = f.publish();
+  assert.equal(r.ok, false);
+  assert.ok(r.text.includes(`cannot scan ${c} vendor/lib: a submodule, whose content is in another repository`), r.text);
+  assert.ok(!r.text.includes("ok.txt"), r.text);
+  assert.ok(!r.text.includes(KEY));
+  assert.deepEqual(f.refs(), []);
+});
+
+test("a blob the checkout is missing, or holds corrupt, is refused with its path", (t) => {
+  const f = fixture(t);
+  const loose = (path) => { const sha = f.git(f.checkout, "rev-parse", `HEAD:${path}`); return [sha, join(f.checkout, ".git", "objects", sha.slice(0, 2), sha.slice(2))]; };
+  f.put("data/gone.txt", "gone\n");
+  const missing = f.commit("Gone").slice(0, 12);
+  f.put("data/broken.txt", "broken\n");
+  const corrupt = f.commit("Broken").slice(0, 12);
+  // Both commits are made before either object is touched: a later `git add`
+  // would write a missing blob back.
+  const [goneSha, goneFile] = loose("data/gone.txt");
+  rmSync(goneFile);
+  const [brokenSha, brokenFile] = loose("data/broken.txt");
+  chmodSync(brokenFile, 0o644); writeFileSync(brokenFile, "junk");
+  const r = f.publish();
+  assert.equal(r.ok, false);
+  assert.ok(r.text.includes(`cannot scan ${missing} data/gone.txt: unreadable (object ${goneSha.slice(0, 12)} is missing or corrupt)`), r.text);
+  assert.ok(r.text.includes(`cannot scan ${corrupt} data/broken.txt: unreadable (object ${brokenSha.slice(0, 12)} is missing or corrupt)`), r.text);
+  assert.deepEqual(f.refs(), []);
+});
+
+test("private IPv6 addresses are caught with compressed endings", (t) => {
+  const ipv6 = PRIVATE_ADDRESS.find(([name]) => name === "private-ipv6")[1];
+  for (const yes of ["fe80::", "fd12:3456::", "fd12:3456::1", "FE80::1%en0", "[fd00::]:8080", "fc00:1:2:3:4:5:6:7", "url http://[fe80::]/x"]) assert.ok(ipv6.test(yes), yes);
+  for (const no of ["fe80:1", "feed:beef::", "2001:db8::1", "deadfe80::", "fe80", "fd12:3456"]) assert.ok(!ipv6.test(no), no);
+  const f = fixture(t);
+  f.put("docs/net.md", "link fe80::\nsite fd12:3456::\nfine 2001:db8::1\n");
+  const c = f.commit("Addresses").slice(0, 12);
+  const r = f.publish();
+  assert.equal(r.ok, false);
+  assert.ok(r.text.includes(`${c} docs/net.md:1: private-ipv6`), r.text);
+  assert.ok(r.text.includes(`${c} docs/net.md:2: private-ipv6`), r.text);
+  assert.ok(!r.text.includes("docs/net.md:3"), r.text);
+  assert.ok(!r.text.includes("fe80"), r.text);
 });

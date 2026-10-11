@@ -18,21 +18,33 @@
 // rules of the push scan (src/secret-scan.ts: provider keys, private key
 // blocks, bearer tokens, `.env`-style secret assignments) and the private
 // addresses in PRIVATE_ADDRESS below.
+//
+// Git LFS: the push to a mirror uploads the project's LFS objects (gitEnv's
+// ownerRemote), so a pointer file a commit adds or changes publishes the
+// object it names, and the pointer alone proves nothing about that object.
+// The object is read from the checkout's LFS storage and scanned as a file of
+// its own (its lines, under every rule), and the commit is refused when it is
+// not there, does not match the pointer, is binary or is over the scan size.
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
 import { scanLine } from "../src/secret-scan.ts";
 
 export const POLICY_PATH = ".atelier/publication.json";
 const SCAN_BYTES = 8 * 1024 * 1024;
+const LFS_POINTER_BYTES = 1024; // the spec's upper bound on a pointer file
 
 // Private addresses: RFC 1918 and carrier-grade NAT IPv4, link-local IPv4,
 // IPv6 unique-local and link-local, and hostnames in a private suffix.
-// Loopback is not private to anyone and is left alone.
+// Loopback is not private to anyone and is left alone. An IPv6 address is a
+// private first group followed by at least two more colons, so a compressed
+// ending (`fe80::`, `fd12:3456::`) is an address as much as `fd12:3456::1`;
+// `fe80:1` alone is no address and is not one.
 const OCTET = "(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)";
 export const PRIVATE_ADDRESS = [
   ["private-ipv4", new RegExp(`(?<![\\d.])(?:10\\.${OCTET}\\.${OCTET}\\.${OCTET}|192\\.168\\.${OCTET}\\.${OCTET}|172\\.(?:1[6-9]|2\\d|3[01])\\.${OCTET}\\.${OCTET}|100\\.(?:6[4-9]|[7-9]\\d|1[01]\\d|12[0-7])\\.${OCTET}\\.${OCTET}|169\\.254\\.${OCTET}\\.${OCTET})(?![\\d])`)],
-  ["private-ipv6", /(?<![0-9a-f:])(?:f[cd][0-9a-f]{2}|fe[89ab][0-9a-f]):[0-9a-f:]*:[0-9a-f]+(?![0-9a-f:])/i],
+  ["private-ipv6", /(?<![0-9a-f:])(?:f[cd][0-9a-f]{2}|fe[89ab][0-9a-f]):[0-9a-f:]*:[0-9a-f]*(?![0-9a-f:])/i],
   ["private-hostname", /\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.(?:internal|local|lan|corp|intranet|home\.arpa)\b/i],
 ];
 
@@ -201,6 +213,62 @@ export function commitPatch(raw, commit) {
   return { ok: true, files: [...files.values()] };
 }
 
+// A Git LFS pointer, or null when the text is not one: the spec's `version`
+// line first, then `oid sha256:HEX` and `size N`, one key per line.
+const LFS_VERSIONS = ["https://git-lfs.github.com/spec/v1", "https://hawser.github.com/spec/v1"];
+export function lfsPointer(text) {
+  if (typeof text !== "string" || Buffer.byteLength(text) > LFS_POINTER_BYTES) return null;
+  const lines = text.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  const version = lines[0]?.match(/^version (\S+)$/);
+  if (!version || !LFS_VERSIONS.includes(version[1])) return null;
+  let oid = null, size = null;
+  for (const line of lines.slice(1)) {
+    const kv = line.match(/^([a-z0-9.-]+) (.+)$/i);
+    if (!kv) return null;
+    if (kv[1] === "oid") { const m = kv[2].match(/^sha256:([0-9a-f]{64})$/); if (!m) return null; oid = m[1]; }
+    if (kv[1] === "size") { if (!/^\d+$/.test(kv[2])) return null; size = Number(kv[2]); }
+  }
+  return oid !== null && size !== null ? { oid, size } : null;
+}
+
+// Whether a line a commit adds could belong to an LFS pointer: a pointer that
+// is new has its version line added; one that names a new object has its oid
+// line added. Only a path with such a line has its blob read as a pointer.
+const lfsLine = (text) => /^version https:\/\/(?:git-lfs|hawser)\.github\.com\/spec\/v1$/.test(text) || /^oid sha256:[0-9a-f]{64}$/.test(text);
+
+// Where the checkout keeps its LFS objects: lfs.storage when set (relative to
+// the git directory), else `lfs` in the common git directory, as git-lfs does.
+function lfsStorage(raw, dir) {
+  const common = raw(["rev-parse", "--git-common-dir"]);
+  if (common.status !== 0) return null;
+  const gitDir = resolve(dir, common.stdout.trim());
+  const configured = raw(["config", "--get", "lfs.storage"]);
+  const storage = configured.status === 0 && configured.stdout.trim() ? configured.stdout.trim() : "lfs";
+  return isAbsolute(storage) ? storage : resolve(gitDir, storage);
+}
+
+// The LFS object a pointer names, read from the checkout's storage and checked
+// against the pointer: { ok, lines } with each line of the object, or { ok:
+// false, why } when the object is not there, is not what the pointer says,
+// is binary (a NUL in its first 8000 bytes, as git decides) or too large.
+export function lfsObject(storage, { oid, size }) {
+  if (!storage) return fail("the checkout's LFS storage cannot be located");
+  const file = join(storage, "objects", oid.slice(0, 2), oid.slice(2, 4), oid);
+  let stat;
+  try { stat = statSync(file); } catch (error) { return fail(`LFS object ${oid.slice(0, 12)} is not in the checkout's LFS storage (${error.code ?? error.message})`); }
+  if (!stat.isFile()) return fail(`LFS object ${oid.slice(0, 12)} is not a file in the checkout's LFS storage`);
+  if (stat.size !== size) return fail(`LFS object ${oid.slice(0, 12)} is ${stat.size} bytes, not the ${size} its pointer says`);
+  if (stat.size > SCAN_BYTES) return fail(`LFS object ${oid.slice(0, 12)} is ${stat.size} bytes, over the ${SCAN_BYTES} the scan reads`);
+  let bytes;
+  try { bytes = readFileSync(file); } catch (error) { return fail(`LFS object ${oid.slice(0, 12)} cannot be read (${error.code ?? error.message})`); }
+  if (createHash("sha256").update(bytes).digest("hex") !== oid) return fail(`LFS object ${oid.slice(0, 12)} does not match its pointer's oid`);
+  if (bytes.subarray(0, 8000).includes(0)) return fail(`LFS object ${oid.slice(0, 12)} is binary content`);
+  const lines = bytes.toString("utf8").split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  return { ok: true, lines };
+}
+
 // Publishes. `git(args, opts)` is atelier's runner; `say` prints. It returns
 // { ok } and never exits itself, so the caller chooses the status.
 export function publishMirror({ git, dir, branch, remote, say }) {
@@ -268,38 +336,59 @@ export function publishMirror({ git, dir, branch, remote, say }) {
   // their line numbers in the commit. A merge is read as a combined diff:
   // what it holds that no parent held, and the parents are read as commits
   // of their own, published or outgoing.
+  const rulesFor = (text) => {
+    const rules = [];
+    if (scanLine(text)) rules.push("secret");
+    for (const [name, rx] of PRIVATE_ADDRESS) if (rx.test(text)) rules.push(name);
+    if (policy.patterns.some((rx) => rx.test(text))) rules.push("private-pattern");
+    return rules;
+  };
+  let storage;
   for (const c of commits) {
     const files = changedFiles(raw, c);
     if (!files.ok) { refusals.push(`${c.slice(0, 12)}: the commit's file list cannot be read (${files.why})`); continue; }
-    const scan = new Set();
+    const scan = new Map(); // path -> blob
     for (const { path, mode, sha, size } of files.list) {
       if (/^0+$/.test(mode)) continue; // a deletion adds nothing; the commit that added the path is scanned
       const at = `${c.slice(0, 12)} ${path}`;
       if (policy.paths.some((m) => m(path))) findings.push(`${at}: the path matches a private path glob`);
       if (mode === "160000") { refusals.push(`${at}: a submodule, whose content is in another repository`); continue; }
-      if (size === null) { refusals.push(`${at}: unreadable (object ${sha.slice(0, 12)} is missing)`); continue; }
+      if (size === null) { refusals.push(`${at}: unreadable (object ${sha.slice(0, 12)} is missing or corrupt)`); continue; }
       if (size > SCAN_BYTES) { refusals.push(`${at}: ${size} bytes, over the ${SCAN_BYTES} the scan reads`); continue; }
-      scan.add(path);
+      scan.set(path, { sha, size });
     }
     if (!scan.size) continue;
     const patch = commitPatch(raw, c);
     if (!patch.ok) { refusals.push(`${c.slice(0, 12)}: the commit's patch cannot be read (${patch.why})`); continue; }
     for (const file of patch.files) {
       if (!scan.has(file.path)) continue;
+      const blob = scan.get(file.path);
       scan.delete(file.path);
       const at = `${c.slice(0, 12)} ${file.path}`;
       if (file.binary) { refusals.push(`${at}: binary content`); continue; }
       for (const { line, text } of file.added) {
-        const rules = [];
-        if (scanLine(text)) rules.push("secret");
-        for (const [name, rx] of PRIVATE_ADDRESS) if (rx.test(text)) rules.push(name);
-        if (policy.patterns.some((rx) => rx.test(text))) rules.push("private-pattern");
+        const rules = rulesFor(text);
         if (rules.length) findings.push(`${at}:${line}: ${rules.join(", ")}`);
       }
+      // An LFS pointer publishes the object it names: that object is read
+      // from the checkout's LFS storage and scanned, or the commit is refused.
+      if (blob.size > LFS_POINTER_BYTES || !file.added.some((a) => lfsLine(a.text))) continue;
+      const shown = raw(["cat-file", "blob", blob.sha]);
+      if (shown.status !== 0) { refusals.push(`${at}: unreadable (${firstLine(shown.stderr) || "git cat-file failed"})`); continue; }
+      const pointer = lfsPointer(shown.stdout);
+      if (!pointer) continue; // a text file with a line shaped like a pointer's, not a pointer
+      storage ??= lfsStorage(raw, dir);
+      const object = lfsObject(storage, pointer);
+      if (!object.ok) { refusals.push(`${at}: ${object.why}`); continue; }
+      const where = `${at} (LFS object ${pointer.oid.slice(0, 12)})`;
+      object.lines.forEach((text, i) => {
+        const rules = rulesFor(text);
+        if (rules.length) findings.push(`${where}:${i + 1}: ${rules.join(", ")}`);
+      });
     }
     // A path the file list names whose patch did not come back is not
     // stepped over: nothing was read for it.
-    for (const path of scan) refusals.push(`${c.slice(0, 12)} ${path}: no patch for the path in the commit's diff`);
+    for (const path of scan.keys()) refusals.push(`${c.slice(0, 12)} ${path}: no patch for the path in the commit's diff`);
   }
 
   const problems = findings.length + refusals.length;
