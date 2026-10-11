@@ -121,6 +121,9 @@ test('withdrawn and superseded review give-ups disappear; active jobs suppress s
   const s = snapshot({ items: [item({ state: 'submitted' })], openReviewItems: ['t1'] });
   assert.deepEqual(kinds(report(s, [], [run])), ['runner-give-up']);
   assert.deepEqual(kinds(report(s, [], [run], ['home:review'])), []);
+  s.events.push(event(1, 'review.claimed', 500));
+  assert.deepEqual(kinds(report(s, [], [run])), []);
+  s.events = [];
   s.openReviewItems = [];
   assert.deepEqual(kinds(report(s, [], [run])), []);
 });
@@ -152,6 +155,12 @@ test('core holds have an independent limit and recover the held dispatch without
   assert.deepEqual(kinds(report(s)), []);
   s.events[1].at = at(1800001);
   assert.deepEqual(kinds(report(s)), ['core-hold']);
+  s.items[0].state = 'accepted';
+  const accepted = report(s).entries[0];
+  assert.equal(accepted.recovery, 'Land the blocker with atelier merge t1 --project "demo"; or, if the overlap is harmless, atelier dispatch t2 --overlap-ok --project "demo"');
+  assert.equal(accepted.since, s.events[1].at);
+  assert.equal(accepted.evidence, entry.evidence);
+  assert.match(commandUsage('stuck'), /merge if already accepted/);
   s.items[0].state = 'merged';
   assert.deepEqual(kinds(report(s)), []);
 });

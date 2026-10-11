@@ -14,7 +14,7 @@ const spec: CommandSpec = {
       "--unanswered-hours N": "positive limit for unanswered changes requests; default 24 hours",
       "--lease-wait-minutes N": "positive limit for lease-stage Workflows; default 30 minutes",
       "--conflict-wait-minutes N": "positive limit for Workflows paused at conflict; default 30 minutes; resolve and commit conflicts, then rerun land ID --workflow",
-      "--core-hold-minutes N": "positive limit for core blockers since their current claim/handoff or later push; default 30 minutes; land the blocker or dispatch the held task with --overlap-ok if harmless",
+      "--core-hold-minutes N": "positive limit for core blockers since their current claim/handoff or later push; default 30 minutes; land the blocker (merge if already accepted) or dispatch the held task with --overlap-ok if harmless",
       "--runner-poll-minutes N": "positive idle-poll limit; default 5 minutes, plus one minute of offer timestamp coarsening; active jobs are excluded",
       "--review-answer-hours N": "positive limit for current claimed reviews; default 2 hours; renewed claims reset the clock",
     },
