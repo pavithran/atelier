@@ -1,3 +1,4 @@
+import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync,spawn} from 'node:child_process';
@@ -7,6 +8,8 @@ import {dirname,join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {adoptOldLanding,landingDir,landingJournal,landingJournalFile,landingLock,oldLandingJournalFile,oldLandingLockDir} from '../cli/landing.mjs';
 const git=(cwd,...args)=>execFileSync('git',args,{cwd,encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
+// The commit identity the fixtures' commits carry (t451), which a landing checks.
+const IDENTITY={name:'Fixture',email:'fixture@example.invalid',agentEmails:[]};
 
 function root(t){const p=mkdtempSync(join(tmpdir(),'atelier-land-'));t.after(()=>rmSync(p,{recursive:true,force:true}));return p;}
 test('landing journals survive restarts and refuse another revision or live lock',t=>{
@@ -89,7 +92,7 @@ async function mergeFixture(t){
  const server=createServer(async(req,res)=>{
   let raw='';for await(const chunk of req)raw+=chunk;const body=raw?JSON.parse(raw):{};box.requests.push({path:req.url,body});
   const item={id:'t1',title:'Fixture task',state:box.state,owner:'codex/test',head,acceptedHead:box.state==='accepted'||box.state==='merged'?head:null};
-  let answer={item,policy:{checks:[box.failChecks?'exit 9':'exit 0'],protected:[]},gate:{ready:true,outOfScope:[],blockers:[]},evidence:[],reviews:[],events:[]};
+  let answer={item,policy:{checks:[box.failChecks?'exit 9':'exit 0'],protected:[],commitIdentity:IDENTITY},gate:{ready:true,outOfScope:[],blockers:[]},evidence:[],reviews:[],events:[]};
   const failOnce=()=>{res.writeHead(503,{'content-type':'application/json'});res.end(JSON.stringify({error:'temporary',detail:'retry'}));};
   if(req.url.endsWith('/review'))assert.equal(body.head,head);
   else if(req.url.endsWith('/accept')){assert.equal(body.head,head);box.state='accepted';answer={...item,state:box.state,acceptedHead:head};}
@@ -127,6 +130,7 @@ test('an accepted task merge conflict names both owner paths back to building',a
 });
 
 test('merge --head resumes after ledger failure without a second merge; finish stops on failed checks',async t=>{
+  if (!canInspectSlots(t)) return;
  const {p,baseline,checkout,workspace,head,box,run,journalFile}=await mergeFixture(t);
  // The ledger's temporary failure is a server error: exit 4, the merge journal kept for the retry.
  box.failMerge=true;const first=await run(checkout,'merge','t1','--head',head,'--approve');assert.equal(first.status,4,first.output);const mergedHead=git(checkout,'rev-parse','HEAD');assert.notEqual(mergedHead,head);assert.ok(existsSync(journalFile));
@@ -197,7 +201,7 @@ async function caseFixture(t,{files,advance,paths}){
  const head=git(workspace,'rev-parse','HEAD'),before=git(checkout,'rev-parse','HEAD'),requests=[];
  const server=createServer(async(req,res)=>{
   for await(const chunk of req);requests.push(req.url);
-  let answer={item:{id:'t1',title:'Fixture task',state:'accepted',owner:'codex/test',head,acceptedHead:head},policy:{checks:[],protected:[]},acceptanceProtected:[],gate:{ready:true,outOfScope:[],blockers:[]},evidence:[],reviews:[],events:[]};
+  let answer={item:{id:'t1',title:'Fixture task',state:'accepted',owner:'codex/test',head,acceptedHead:head},policy:{checks:[],protected:[],commitIdentity:IDENTITY},acceptanceProtected:[],gate:{ready:true,outOfScope:[],blockers:[]},evidence:[],reviews:[],events:[]};
   if(req.url.endsWith('/baseline-token')||req.url.endsWith('/base-token'))answer={remote:baseline,token:'fixture',defaultBranch:'main'};
   else if(req.url.endsWith('/read-token'))answer={remote:fork,token:'fixture',head,defaultBranch:'main'};
   else if(req.method!=='GET')answer={};
@@ -242,4 +246,43 @@ test('merge refuses when the merge, not the accepted tree, would hold two names 
  const r=await caseFixture(t,{files:['CLAUDE.md'],advance:'Notes.md',paths:['notes.md']});
  assert.match(r.output,/Notes\.md and notes\.md/);
  assertUntouched(r,{'Notes.md':'Merged earlier.\n','CLAUDE.md':OWNER_TEXT});
+});
+
+test('provenance notes carry the project identity, and notes commits that do not are never pushed (t451)',async t=>{
+ // The checkout's own Git identity is a private address; the landing's notes must not carry it.
+ const {p,baseline,checkout,box,run}=await mergeFixture(t);
+ git(checkout,'config','user.email','owner@personal.example');git(checkout,'config','user.name','Private Owner');
+ box.state='accepted';
+ const landed=await run(checkout,'merge','t1');assert.equal(landed.status,0,landed.output);
+ const ids=git(p,'--git-dir',baseline,'log','refs/notes/atelier','--format=%an <%ae> %cn <%ce>').split('\n');
+ assert.ok(ids.length>0&&ids.every(l=>l==='Fixture <fixture@example.invalid> Fixture <fixture@example.invalid>'),ids.join('\n'));
+});
+
+test('a landing refuses to push a local notes commit whose identity the policy refuses (t451)',async t=>{
+ const {p,baseline,checkout,box,run}=await mergeFixture(t);
+ // An earlier notes commit made by hand with a private address, never published.
+ execFileSync('git',['-c','user.name=Private Owner','-c','user.email=owner@personal.example','notes','--ref=atelier','add','-m','hand note','HEAD'],{cwd:checkout});
+ box.state='accepted';
+ const refused=await run(checkout,'merge','t1');
+ assert.notEqual(refused.status,0,refused.output);
+ assert.match(refused.output,/provenance notes whose identity the project's policy refuses/);
+ assert.match(refused.output,/owner@personal\.example/);
+ assert.equal(execFileSync('git',['--git-dir',baseline,'for-each-ref','refs/notes/atelier'],{encoding:'utf8'}).trim(),'');
+ assert.ok(!box.requests.some(r=>r.path.endsWith('/merged')));
+});
+
+test('notes go to a notes remote the policy declares a public mirror only under the public rule: an agent address is held back (t451)',async t=>{
+ const saved={agentEmails:IDENTITY.agentEmails,publicMirrors:IDENTITY.publicMirrors};
+ IDENTITY.agentEmails=['agent@example.invalid'];IDENTITY.publicMirrors=['github'];
+ t.after(()=>{IDENTITY.agentEmails=saved.agentEmails;if(saved.publicMirrors===undefined)delete IDENTITY.publicMirrors;else IDENTITY.publicMirrors=saved.publicMirrors;});
+ const {p,checkout,box,run}=await mergeFixture(t);
+ const pub=join(p,'public.git');git(p,'init','--bare','-q',pub);git(checkout,'remote','add','github',pub);
+ const configFile=join(p,'config','config.json');const cfg=JSON.parse(readFileSync(configFile,'utf8'));cfg.projects.proj.notesRemote='github';writeFileSync(configFile,JSON.stringify(cfg));
+ // A notes commit an agent made: allowed on the baseline, not on a public mirror.
+ execFileSync('git',['-c','user.name=Agent','-c','user.email=agent@example.invalid','notes','--ref=atelier','add','-m','agent note','HEAD'],{cwd:checkout});
+ box.state='accepted';
+ const landed=await run(checkout,'merge','t1');assert.equal(landed.status,0,landed.output);
+ assert.match(landed.output,/Provenance notes were not pushed to github/);
+ assert.match(landed.output,/agent@example\.invalid/);
+ assert.equal(execFileSync('git',['--git-dir',pub,'for-each-ref','refs/notes/atelier'],{encoding:'utf8'}).trim(),'');
 });

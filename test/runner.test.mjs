@@ -7,16 +7,10 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, jobsLine, gatewayMetadata, harnessRunEnv, codexBuildRefusal, validationBlockedReport, alreadyComplete } from "../cli/runner.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, failureKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, skipRefusedForGood, skipRetryPolls, jobsLine, gatewayMetadata, harnessRunEnv, codexBuildRefusal, validationBlockedReport, alreadyComplete } from "../cli/runner.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
 import { helpText, ROLE_PROMPTS } from "../src/usage.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
-
-// The runner's load gate (t403) reads the load through envLoad, which honours
-// ATELIER_LOAD. Pin it under the limit here, so a test that dispatches a job
-// is never held back by this machine's real load; the gate itself is tested
-// with an injected load below.
-process.env.ATELIER_LOAD = "0";
 
 const entry = { agent: "opencode", models: ["GLM-5.3-Flash-4_8bit", "glm:fast"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{workspace}"] };
 const config = { agents: [entry] };
@@ -189,6 +183,8 @@ function fixture(options = {}) {
       return { code: options.code ?? 0, timedOut: options.timedOut };
     },
     async removeBrief(brief) { calls.push({ removed: brief.file }); },
+    // The builder's commit identity (t451): allowed unless the test says otherwise.
+    async identityRefusals() { return options.identityRefusals ?? []; },
     async dataHome(workspace) {
       const dir = `${dirname(workspace)}/.atelier-${basename(workspace)}-opencode-data-x`;
       homes.push({ made: dir });
@@ -436,6 +432,9 @@ function gitWorkspace(t) {
   git("init", "--quiet");
   git("config", "user.name", "Runner test");
   git("config", "user.email", "runner@example.test");
+  // The policy a claim keeps beside that identity (t451), which the runner
+  // checks the builder's identity against.
+  writeFileSync(join(workspace, ".git", "atelier-identity.json"), JSON.stringify({ name: "Runner test", email: "runner@example.test", agentEmails: [] }));
   writeFileSync(join(workspace, "tracked"), "original");
   git("add", ".");
   git("commit", "--quiet", "-m", "initial");
@@ -645,6 +644,17 @@ test("transientQueueError takes timeouts, 5xx, 429 and marked errors, not a 4xx 
   for (const message of ["queue: 401", "queue: 404", "queue did not return an array"]) assert.equal(transientQueueError(new Error(message)), false);
   assert.equal(transientQueueError(Object.assign(new Error("queue: 403"), { transient: false })), false);
   assert.deepEqual([1, 2, 3, 4, 5, 10].map(queueBackoffMs), [30_000, 60_000, 120_000, 240_000, 300_000, 300_000]);
+});
+
+// t353: a skip report is dropped only on a 4xx no retry would change. A 408
+// (the server timed the request out) and a 429 (it was busy) are as temporary
+// as a 5xx, and the report is kept; the retry waits the queue backoff, in
+// polls, so a busy server is not asked every 30 seconds.
+test("skipRefusedForGood drops a 4xx other than 408 and 429, and skipRetryPolls follows the queue backoff in polls", () => {
+  for (const message of ["400 bad head", "401", "403", "404 no review request 1 of t21", "422 bad request"]) assert.equal(skipRefusedForGood(new Error(message)), true, message);
+  for (const message of ["408", "429 slow down", "500", "503", "fetch failed", "The operation was aborted due to timeout"]) assert.equal(skipRefusedForGood(new Error(message)), false, message);
+  assert.equal(skipRefusedForGood(Object.assign(new Error("x"), { name: "TimeoutError" })), false);
+  assert.deepEqual([1, 2, 3, 4, 5, 10].map(skipRetryPolls), [1, 2, 4, 8, 10, 10]);
 });
 
 test("versionRefusal names both levels and says to deploy, and clears a current server", () => {
@@ -1022,6 +1032,21 @@ test("failure counts use task identity and exclude refusals and skipped tasks", 
   // t273: a failure the job recorded on the item (refresh-failed) is the
   // server's to handle, so it is no task failure for the cap.
   assert.equal(failureCount(1, { phase: "failed", recorded: true }), 1);
+});
+
+test("a review's failure cap is keyed by the review it answered, so a new request or head starts it fresh (t353)", () => {
+  const review = { ...assignment, item: { ...assignment.item, id: "t339", head: "a".repeat(40), request: 1, dispatch: { job: "review" } } };
+  // A build's failures still count against the task alone.
+  assert.equal(failureKey(assignment), taskKey(assignment));
+  assert.equal(failureKey({ ...assignment, item: { ...assignment.item, head: "b".repeat(40) } }), failureKey(assignment));
+  // A review's count on its head and request: a new head or a new request is
+  // a fresh count, so an earlier landing's two failures never strand the next.
+  assert.equal(failureKey(review), failureKey({ ...review, item: { ...review.item, head: "a".repeat(40), request: 1 } }));
+  assert.notEqual(failureKey(review), failureKey({ ...review, item: { ...review.item, head: "b".repeat(40), request: 1 } }));
+  assert.notEqual(failureKey(review), failureKey({ ...review, item: { ...review.item, head: "a".repeat(40), request: 2 } }));
+  // The refusal key ends on a new review request too, at the same head.
+  assert.notEqual(refusedKey(review), refusedKey({ ...review, item: { ...review.item, request: 2 } }));
+  assert.equal(refusedKey(review), refusedKey({ ...review, item: { ...review.item, request: 1 } }));
 });
 
 test("runner remembers unsupported project names and claims the task behind them", async (t) => {
@@ -1452,6 +1477,7 @@ test("real runner caps reset, claim and finish failures while serving the next t
     execFileSync("git", ["clone", "--quiet", workspace, healthy]);
     execFileSync("git", ["config", "user.name", "Runner test"], { cwd: healthy });
     execFileSync("git", ["config", "user.email", "runner@example.test"], { cwd: healthy });
+    writeFileSync(join(healthy, ".git", "atelier-identity.json"), readFileSync(join(workspace, ".git", "atelier-identity.json")));
     if (failure === "reset") writeFileSync(join(workspace, ".git", "index.lock"), "stale");
     const claims = [], releases = [], runs = [], finishes = [], logs = [];
     let polls = 0;
@@ -1527,7 +1553,7 @@ test("an opencode run gets a data folder beside the workspace, removed as the ha
     // Made after the claim, given to the harness alone, and removed before anything else runs.
     assert.deepEqual(homes.slice(0, 4), [{ cli: "claim" }, { made: home }, { ran: home }, { removed: home }], JSON.stringify(options));
     assert.equal(homes.filter((h) => h.made || h.removed).length, 2);
-    assert.deepEqual(calls.find((c) => c.harness).env, { XDG_DATA_HOME: home, CF_AIG_METADATA: '{"task":"t13","role":"build","runner":"home:studio"}' });
+    assert.deepEqual(calls.find((c) => c.harness).env, { XDG_DATA_HOME: home, ATELIER_TEST_TASK: "t13", ATELIER_TEST_ACTOR: assignment.actor, ATELIER_TEST_PROJECT: assignment.project, ATELIER_TEST_PRIORITY: "ordinary", CF_AIG_METADATA: '{"task":"t13","role":"build","runner":"home:studio"}' });
   }
 });
 
@@ -1537,7 +1563,7 @@ test("other harnesses run with no data folder", async () => {
   const state = await runTask({ ...assignment, agent: "claude-code", actor: `claude-code/${entry.models[0]}` }, { agents: [claude] }, "home:studio", io);
   assert.equal(state.phase, "submitted");
   assert.deepEqual(homes, [{ ran: undefined }]);
-  assert.deepEqual(calls.find((c) => c.harness).env, { PATH: "/bin", CF_AIG_METADATA: '{"task":"t13","role":"build","runner":"home:studio"}' });
+  assert.deepEqual(calls.find((c) => c.harness).env, { PATH: "/bin", ATELIER_TEST_TASK: "t13", ATELIER_TEST_ACTOR: `claude-code/${entry.models[0]}`, ATELIER_TEST_PROJECT: assignment.project, ATELIER_TEST_PRIORITY: "ordinary", CF_AIG_METADATA: '{"task":"t13","role":"build","runner":"home:studio"}' });
 });
 
 // The variables of a runner's environment on the owner's Mac, with dummy values.
@@ -1580,13 +1606,13 @@ test("runTask hands the harness the filtered environment, and reads the owner's 
   const { io, calls, logs } = fixture({ env: base, ownerTokens: [RUNNER_ENV.ATELIER_TOKEN] });
   assert.equal((await runTask(assignment, { agents: [named] }, "home:studio", io)).phase, "submitted");
   const home = "/cache/work/atelier/.atelier-t13-opencode-data-x";
-  assert.deepEqual(calls.find((c) => c.harness).env, { ...checkEnv(RUNNER_ENV), ZAI_API_KEY: "DUMMY-zai", XDG_DATA_HOME: home, CF_AIG_METADATA: '{"task":"t13","role":"build","runner":"home:studio"}' });
+  assert.deepEqual(calls.find((c) => c.harness).env, { ...checkEnv(RUNNER_ENV), ZAI_API_KEY: "DUMMY-zai", XDG_DATA_HOME: home, ATELIER_TEST_TASK: "t13", ATELIER_TEST_ACTOR: assignment.actor, ATELIER_TEST_PROJECT: assignment.project, ATELIER_TEST_PRIORITY: "ordinary", CF_AIG_METADATA: '{"task":"t13","role":"build","runner":"home:studio"}' });
   assert.ok(logs.includes("OWNER_COPY holds the Atelier owner token, so opencode does not get it; take it out of env in the runner config"));
   assert.equal(calls.filter((c) => c.ownerTokens).length, 1);
 
   const plain = fixture({ env: base });
   await runTask(assignment, config, "home:studio", plain.io);
-  assert.deepEqual(plain.calls.find((c) => c.harness).env, { ...checkEnv(RUNNER_ENV), XDG_DATA_HOME: home, CF_AIG_METADATA: '{"task":"t13","role":"build","runner":"home:studio"}' });
+  assert.deepEqual(plain.calls.find((c) => c.harness).env, { ...checkEnv(RUNNER_ENV), XDG_DATA_HOME: home, ATELIER_TEST_TASK: "t13", ATELIER_TEST_ACTOR: assignment.actor, ATELIER_TEST_PROJECT: assignment.project, ATELIER_TEST_PRIORITY: "ordinary", CF_AIG_METADATA: '{"task":"t13","role":"build","runner":"home:studio"}' });
   assert.equal(plain.calls.filter((c) => c.ownerTokens).length, 0, "no token is read when no variable is named");
 });
 
@@ -1594,8 +1620,8 @@ test("gatewayMetadata names the run the gateway's figures count, and harnessRunE
   assert.equal(gatewayMetadata("t13", "build", "home:studio"), '{"task":"t13","role":"build","runner":"home:studio"}');
   // A run with no task (a hand dispatch whose brief names none) sends the rest.
   assert.equal(gatewayMetadata("", "review", "home:mbp"), '{"role":"review","runner":"home:mbp"}');
-  assert.deepEqual(harnessRunEnv({ PATH: "/bin" }, null, "t7", "plan", "home:mbp"), { PATH: "/bin", CF_AIG_METADATA: '{"task":"t7","role":"plan","runner":"home:mbp"}' });
-  assert.deepEqual(harnessRunEnv({}, { dir: "/data" }, "t21", "review", "home:mbp"), { XDG_DATA_HOME: "/data", CF_AIG_METADATA: '{"task":"t21","role":"review","runner":"home:mbp"}' });
+  assert.deepEqual(harnessRunEnv({ PATH: "/bin" }, null, "t7", "plan", "home:mbp"), { PATH: "/bin", ATELIER_TEST_TASK: "t7", ATELIER_TEST_ACTOR: "home:mbp", ATELIER_TEST_PRIORITY: "ordinary", CF_AIG_METADATA: '{"task":"t7","role":"plan","runner":"home:mbp"}' });
+  assert.deepEqual(harnessRunEnv({}, { dir: "/data" }, "t21", "review", "home:mbp"), { XDG_DATA_HOME: "/data", ATELIER_TEST_TASK: "t21", ATELIER_TEST_ACTOR: "home:mbp", ATELIER_TEST_PRIORITY: "review", CF_AIG_METADATA: '{"task":"t21","role":"review","runner":"home:mbp"}' });
 });
 
 test("a real harness gets neither Atelier's credentials nor the owner's other keys, only what its entry names", async (t) => {
@@ -1885,80 +1911,85 @@ test("runner records blocked validation as a harness limitation", async (t) => {
   assert.ok(!calls.some((c) => c.argv?.[0] === "finish"));
 });
 
-// t403: a saturated machine takes no new job. The runner holds back while the
-// load average is at or above the limit (the config's `loadLimit`, else the
-// core count), says so, and the next poll tries again.
-test("parseConfig accepts a positive loadLimit and refuses one that is not", () => {
-  assert.equal(parseConfig({ ...config, loadLimit: 4 }).loadLimit, 4);
-  assert.equal(parseConfig({ ...config, loadLimit: 1.5 }).loadLimit, 1.5, "a load average is a real number, so a fractional limit is allowed");
-  assert.equal("loadLimit" in parseConfig(config), false, "no loadLimit means the default, the core count");
-  for (const loadLimit of [0, -1, "4", Infinity, Number.NaN]) {
-    assert.match(parseConfig({ ...config, loadLimit }).errors.join(" "), /loadLimit/, String(loadLimit));
+// Test-slot admission replaces the retired runner load gate.
+test("retired loadLimit never gates runner admission", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-retired-load-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify({ ...config, loadLimit: 0 }));
+  assert.equal("loadLimit" in parseConfig({ ...config, loadLimit: "retired" }), false);
+  const { io, calls, logs } = fixture();
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    load: () => { throw new Error("must not consult load"); },
+    queue: async () => [assignment],
+  });
+  assert.ok(calls.some((c) => c.argv?.[0] === "claim"));
+  assert.ok(!logs.some((s) => s.includes("waiting before taking a job")));
+});
+test('build preparation runs after reset and before its harness, and failures use commit preservation', async () => {
+  const f = fixture();
+  const order = [];
+  f.io.reset = async () => order.push('reset');
+  f.io.prepare = async () => { order.push('prepare'); return { key: 'ready' }; };
+  const harness = f.io.harness;
+  f.io.harness = async (...args) => { order.push('harness'); return harness(...args); };
+  assert.equal((await runTask(assignment, config, 'home:studio', f.io)).phase, 'submitted');
+  assert.deepEqual(order, ['reset', 'prepare', 'harness']);
+  for (const releaseFails of [false, true]) {
+    const failed = fixture({ head: 'before', ...(releaseFails ? { failCommand: 'release' } : {}) });
+    failed.io.prepare = async () => { throw Object.assign(new Error('preparation exited 1: stderr tail'), { infrastructure: true }); };
+    const state = await runTask(assignment, config, 'home:studio', failed.io);
+    assert.equal(state.taskFailure, false);
+    assert.ok(!failed.calls.some((c) => c.harness || c.argv?.[0] === 'finish'));
+    assert.ok(failed.calls.some((c) => c.argv?.[0] === 'release'));
+    if (releaseFails) assert.ok(failed.logs.some((l) => l.includes('claim preserved: release failed')));
   }
 });
 
-test("a runner holds back while the load is at or above its limit and says so", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "atelier-load-gate-test-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const path = join(dir, "runner.json");
-  writeFileSync(path, JSON.stringify({ ...config, loadLimit: 2 }));
-  const { io, calls, logs } = fixture();
-  let polls = 0;
-  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
-    load: () => 5,
-    async queue() { polls++; return [assignment]; },
-  });
-  assert.equal(polls, 1);
-  assert.ok(!calls.some((c) => c.argv?.[0] === "claim"), "no job is claimed under load");
-  assert.ok(logs.some((s) => /load 5 is at or above the limit 2; waiting before taking a job/.test(s)), logs.join("\n"));
+test('resumed work prepares before finishing, and retains its claim if preparation fails', async () => {
+  const job = { ...assignment, item: { ...assignment.item, state: 'claimed', owner: assignment.actor, head: 'recorded' } };
+  for (const fails of [false, true]) {
+    const f = fixture({ head: 'before' });
+    let prepared = false;
+    f.io.prepare = async () => { prepared = true; if (fails) throw new Error('preparation failed'); return { key: 'ready' }; };
+    const state = await runTask(job, config, 'home:studio', f.io);
+    assert.ok(prepared);
+    assert.equal(state.phase, fails ? 'failed' : 'submitted');
+    assert.ok(!f.calls.some((c) => c.harness || c.argv?.[0] === 'release'));
+    assert.equal(f.calls.some((c) => c.argv?.[0] === 'finish'), !fails);
+  }
 });
 
-test("a runner takes a job while the load is under its limit", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "atelier-load-under-test-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const path = join(dir, "runner.json");
-  writeFileSync(path, JSON.stringify({ ...config, loadLimit: 2 }));
-  const { io, calls, logs } = fixture();
-  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
-    load: () => 1,
-    queue: async () => [assignment],
-  });
-  assert.ok(calls.some((c) => c.argv?.[0] === "claim"), "the job is claimed under the limit");
-  assert.ok(!logs.some((s) => s.includes("waiting before taking a job")));
+test('a project without preparation keeps the validation-block skip before claiming even when the runner has a prepare method', async () => {
+  const f = fixture();
+  f.io.readValidationBlock = async () => ({ actor: assignment.actor, head: 'before', detail: 'validation_blocked: unchanged environment' });
+  f.io.hasPreparation = async () => false;
+  f.io.prepare = async () => assert.fail('must not prepare');
+  const state = await runTask(assignment, config, 'home:test', f.io);
+  assert.equal(state.validationBlocked, true);
+  assert.equal(f.calls.some((c) => c.argv?.[0] === 'claim' || c.harness), false);
 });
 
-test("a runner with no loadLimit holds back at the core count, and the reading is per job", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "atelier-load-default-test-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const path = join(dir, "runner.json");
-  writeFileSync(path, JSON.stringify(config));
-  const { io, calls } = fixture();
-  const readings = [];
-  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
-    load: () => { const v = 99; readings.push(v); return v; },
-    cores: () => 4,
-    queue: async () => [assignment],
-  });
-  assert.ok(!calls.some((c) => c.argv?.[0] === "claim"), "99 is above the 4 cores");
-  assert.deepEqual(readings, [99], "the load is read once for the offered job");
+test('successful preparation clears a pre-preparation validation blocker but keeps a blocker from that same preparation', async () => {
+  for (const prepared of [false, true]) {
+    const f = fixture();
+    let cleared = false;
+    f.io.readValidationBlock = async () => ({ actor: assignment.actor, head: 'before', detail: 'validation_blocked: old environment', prepared, ...(prepared ? { prepareKey: 'ready' } : {}) });
+    f.io.prepare = async () => ({ key: 'ready' });
+    f.io.clearValidationBlock = async () => { cleared = true; };
+    const state = await runTask(assignment, config, 'home:studio', f.io);
+    assert.equal(cleared, !prepared);
+    assert.equal(state.validationBlocked === true, prepared);
+    assert.equal(f.calls.some((c) => c.harness), !prepared);
+  }
 });
 
-test("the runner's own load reader holds back under load, not just an injected one", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "atelier-load-default-reader-test-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const path = join(dir, "runner.json");
-  writeFileSync(path, JSON.stringify({ ...config, loadLimit: 2 }));
-  const previous = process.env.ATELIER_LOAD;
-  t.after(() => { if (previous === undefined) delete process.env.ATELIER_LOAD; else process.env.ATELIER_LOAD = previous; });
-  process.env.ATELIER_LOAD = "5";
-  const { io, calls, logs } = fixture();
-  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
-    queue: async () => [assignment],
-  });
-  assert.ok(!calls.some((c) => c.argv?.[0] === "claim"), "no job is claimed while the runner's own reader reports load 5");
-  assert.ok(logs.some((s) => /load 5 is at or above the limit 2; waiting before taking a job/.test(s)), logs.join("\n"));
+test('conflicted preparation goes to the resolving harness, even with an old validation blocker', async () => {
+  const f = fixture();
+  f.io.readValidationBlock = async () => ({ actor: assignment.actor, head: 'before', detail: 'old blocker' });
+  f.io.prepare = async () => ({ deferred: 'Resolve input then run npm ci && npm run types' });
+  assert.equal((await runTask(assignment, config, 'home:studio', f.io)).phase, 'submitted');
+  assert.match(f.calls.find((c) => c.brief).brief, /Resolve input then run npm ci && npm run types/);
+  assert.match(f.calls.find((c) => c.brief).brief, /host slot wrapper:.*load\.mjs/);
 });

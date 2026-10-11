@@ -2,7 +2,6 @@
 import { join } from "node:path";
 import { checkApplies } from "../../src/rules.ts";
 import { appliesText, refusalOf, refusalText } from "../../src/checks.ts";
-import { coreCount, envLoad, formatLoad, loadLimitOf, waitForLoad } from "../load.mjs";
 import { CLEAN_CLONE, I, OWNER_NAME, actor, apiToken, args, at, call, checkInSandbox, cleanClone, cliState, die, doneChecks, itemArg, mergeWithMain, postEvidence, project, removeClone, runCheck, short, workspacePath, workspaceTokens } from "../atelier.mjs";
 
 // Observed evidence: run each required check (or the given command) in a
@@ -39,15 +38,6 @@ export default async function checkCommand() {
     // Worker refuses a main head that is not on main's line.
     if (args.merged) mainHead = mergeWithMain(dir, id);
     const on = mainHead ? ` merged with main ${short(mainHead)}` : "";
-    // A landing's required checks compete with the home runners for this
-    // machine (t403): while the load average is at or above the limit they
-    // wait, saying so, and each result records the load it started at. The
-    // limit is ATELIER_LOAD_LIMIT when set, else the core count.
-    const configuredLimit = process.env.ATELIER_LOAD_LIMIT;
-    const limit = loadLimitOf(configuredLimit !== undefined && Number(configuredLimit) > 0 ? Number(configuredLimit) : undefined, coreCount());
-    // One reader for the whole command, so a sequence of readings (a test's
-    // ATELIER_LOAD) advances across the checks and each records its own.
-    const readLoad = envLoad();
     for (const cmd of cmds) {
       // A registered check whose paths this change does not touch is not
       // run. It is recorded as not applicable, which the Worker accepts only
@@ -60,14 +50,7 @@ export default async function checkCommand() {
         console.log(`N/A   ${cmd}  @ ${short(ws.head)}  (it ${appliesText(policy, cmd)}; this change touches none of them)`);
         continue;
       }
-      // The wait is per check (t403): a check that starts later must wait on
-      // the load as the earlier one did, and its own starting load is what
-      // its result records, not the first check's.
-      const startLoad = await waitForLoad(limit, {
-        readLoad,
-        report: (current) => process.stderr.write(`atelier: load ${formatLoad(current)} is at or above the limit ${formatLoad(limit)}; waiting for it to fall before running the checks\n`),
-      });
-      const r = await runCheck(cmd, dir, secrets);
+      const r = await runCheck(cmd, dir, secrets, { project: name, task: id, actor: as });
       // The Worker measures the changed paths from Artifacts and ignores this
       // list, which is sent only so a deployment without that measurement
       // still records one. The list printed below is the one the Worker
@@ -76,7 +59,6 @@ export default async function checkCommand() {
       const d = await postEvidence(`${I(name, id)}/evidence`, {
         kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed,
         outputTail: `${r.output.slice(-3500)}\n[sha256 of full output: ${r.sha}]`,
-        load: startLoad,
         ...(mainHead ? { merged: true, mainHead } : {}),
       }, as);
       const row = d?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd && !e.merged).at(-1);

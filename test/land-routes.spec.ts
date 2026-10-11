@@ -5,7 +5,7 @@ import worker from "../src/index.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { LANDING_LEASE_EXPIRY_MS } from "../src/landing-lease.ts";
 import { LAND_JSON_MAX } from "../src/ledger.ts";
-import type { Ledger, LedgerEvent } from "../src/ledger.ts";
+import type { ReviewClaim, Ledger, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.ts";
 
@@ -29,6 +29,7 @@ const entry = (id: string, harness: ModelEntry["harness"]): ModelEntry => ({
   id, harness, where: "cloud", provider: "subscription", aliases: [], family: familyOf(id), note: "", addedBy: "owner", addedAt: AT,
 });
 const POOL = [entry("opus-5.5", "claude-code"), entry("gpt-6-astra", "codex")];
+const NAMED_POOL = [...POOL, entry("gemini-3.1-pro", "antigravity")];
 
 function ledger(project: string) {
   return env.LEDGER.get(env.LEDGER.idFromName(`project:${project}`));
@@ -267,32 +268,108 @@ it("a submitted task with a protected change gets a review request, named or pic
   expect(asked).toMatchObject({ needed: true, requested: true, reviewer: GPT, head });
   expect(asked.at).toBeTruthy();
   expect((await events(L, id)).find((e) => e.kind === "review.requested")).toMatchObject({ actor: "owner", data: { head, reviewer: GPT, via: "land" } });
-  // The request is open in the queue, routed to the named reviewer.
+  // The request is open in the queue, routed to the named reviewer, under the
+  // request number the ask returned (t353): the landing and the runner name
+  // the same request, so a skip of it is counted against it alone.
   const [waiting] = await L.reviewWaiting();
   expect(waiting).toMatchObject({ id, dispatch: { job: "review", agent: "codex", model: "gpt-6-astra" } });
+  expect(asked.request).toBe(waiting.request);
+  expect(typeof asked.request).toBe("number");
   // A contributor cannot be named; the owner alone asks.
   await refusal(L.requestReview(id, "owner", OPUS, POOL), "self_review", /contributed to/);
   await refusal(L.requestReview(id, OPUS, null, POOL), "not_project_owner", /only the project owner asks/);
   // A runner claims it: the claim carries the need as the gate reads it, with
   // no plan account, and a review at the head answers the request.
-  const claim = await L.claimReview(id, GPT, RUNNER) as unknown as { head: string; need: { basis: string; changeClass: string }; plan: null };
+  const claim = await L.claimReview(id, GPT, RUNNER) as unknown as { request: number; head: string; need: { basis: string; changeClass: string }; plan: null };
   expect(claim.head).toBe(head);
   expect(claim.need).toMatchObject({ basis: "protected", changeClass: "protected" });
   expect(claim.plan).toBeNull();
   // Asking again while the request is live returns it as it stands, not duplicated.
   const again = await L.requestReview(id, "owner", null, POOL);
-  expect(again).toMatchObject({ needed: true, requested: false, reviewer: GPT, head });
+  expect(again).toMatchObject({ needed: true, requested: false, reviewer: GPT, head, request: asked.request });
   // Naming another reviewer while that request stands is refused, not ignored.
-  await refusal(L.requestReview(id, "owner", "antigravity/gemini-3.1-pro", POOL), "review_requested", /already requested from codex\/gpt-6-astra/);
+  await refusal(L.requestReview(id, "owner", "antigravity/gemini-3.1-pro", NAMED_POOL), "review_requested", /already requested from codex\/gpt-6-astra/);
   expect(await L.requestReview(id, "owner", GPT, POOL)).toMatchObject({ requested: false, reviewer: GPT });
   expect(await L.reviewWaiting()).toEqual([]);
   expect((await L.reviewRequests(id)).at(-1)).toMatchObject({ head, state: "claimed", claimedBy: GPT });
-  await L.addReview({ itemId: id, criteria: await L.criteria(id), by: GPT, head, approve: true, note: "Independently reviewed", at: new Date().toISOString() });
+  await L.addReview({ request: claim.request, itemId: id, criteria: await L.criteria(id), by: GPT, head, approve: true, note: "Independently reviewed", at: new Date().toISOString() });
   expect(await L.reviewWaiting()).toEqual([]);
   // With the independent approval counted, no review is needed.
   const after = await L.requestReview(id, "owner", null, POOL);
   expect(after).toMatchObject({ needed: false });
   expect(after.reason).toMatch(/the gate already counts an independent approval/);
+});
+
+// t353: a review request every live runner that offers its reviewer has
+// skipped will never be claimed, since each runner keeps its skip until the
+// request changes. The owner asking again, with the live offers, withdraws
+// it and asks anew under a fresh number, which the runners serve again;
+// without the offers, with a runner left to serve it, or once a runner has
+// claimed it, the request stands as it was.
+it("asking again for a review every runner that offers the reviewer has skipped withdraws the request and asks it anew under a new number", async () => {
+  const name = "land-reask-skipped";
+  const L = await setup(name);
+  const index = env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  await index.registerProject({ name, repo: `${name}--baseline`, policy, createdAt: new Date().toISOString() });
+  await index.putModel(POOL[1]);
+  const id = (await L.newItem("Landing", [], "owner")).id;
+  const head = "a".repeat(40);
+  await submittedTask(L, id, head);
+  const offer = (runner: string) => ({ runner, kind: "home" as const, jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() });
+  const offers = [offer("home:studio"), offer("home:desk")];
+  const first = await L.requestReview(id, "owner", GPT, POOL, false, false, undefined, offers);
+  expect(first).toMatchObject({ needed: true, requested: true, reviewer: GPT, head });
+  // With no skip recorded, asking again returns the request as it stands.
+  expect(await L.requestReview(id, "owner", GPT, POOL, false, false, undefined, offers)).toMatchObject({ requested: false, request: first.request });
+  // One runner's skip leaves the other to serve it: the request stands.
+  await L.recordReviewSkip(id, first.request!, head, "home:studio", "owner", "no agent token");
+  expect(await L.requestReview(id, "owner", GPT, POOL, false, false, undefined, offers)).toMatchObject({ requested: false, request: first.request });
+  await L.recordReviewSkip(id, first.request!, head, "home:desk", "owner", "wrong agent");
+  // Without the live offers nothing is known to have skipped: the request stands.
+  expect(await L.requestReview(id, "owner", GPT, POOL)).toMatchObject({ requested: false, request: first.request });
+  // With them, every runner that offers the reviewer has skipped: the request
+  // is withdrawn, which is said by runner name, and asked anew under a new
+  // number the runners have not skipped.
+  const again = await L.requestReview(id, "owner", GPT, POOL, false, false, undefined, offers);
+  expect(again).toMatchObject({ needed: true, requested: true, reviewer: GPT, head });
+  expect(again.request).toBeGreaterThan(first.request!);
+  expect(again.reason).toMatch(new RegExp(`The earlier request at this head \\(${first.request}\\) was withdrawn: every runner that offers codex/gpt-6-astra had skipped it \\(home:studio, home:desk\\)`));
+  expect((await L.reviewRequests(id)).map((r) => r.state)).toEqual(["withdrawn", "open"]);
+  expect((await events(L, id)).find((e) => e.kind === "review.withdrawn")).toMatchObject({
+    actor: "owner",
+    data: { head, reviewer: GPT, request: first.request, runners: ["home:studio", "home:desk"], reason: expect.stringMatching(/^every runner that offers codex\/gpt-6-astra skipped review request \d+ \(home:studio, home:desk\)/) },
+  });
+  // The queue offers the new request alone, and the earlier skips count for nothing against it.
+  expect((await L.reviewWaiting()).map((w) => w.request)).toEqual([again.request]);
+  expect(await L.reviewSkips(id, again.request!)).toEqual([]);
+  // A request a runner has claimed is being served: skips of it, reported
+  // late, renew nothing.
+  await L.claimReview(id, GPT, RUNNER);
+  await L.recordReviewSkip(id, again.request!, head, "home:studio", "owner", "late");
+  await L.recordReviewSkip(id, again.request!, head, "home:desk", "owner", "late");
+  expect(await L.requestReview(id, "owner", GPT, POOL, false, false, undefined, offers)).toMatchObject({ requested: false, request: again.request });
+  expect((await L.reviewRequests(id)).map((r) => r.state)).toEqual(["withdrawn", "claimed"]);
+
+  // The review-request route asks with the live offers the index holds, so a
+  // landing run again over it renews a skipped request the same way.
+  const b = (await L.newItem("Landing again", [], "owner")).id;
+  const headB = "b".repeat(40);
+  await submittedTask(L, b, headB);
+  await index.putRunnerOffer({ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }] }, new Date().toISOString());
+  const ownerToken = "land-routes-token";
+  const token = { ...env, ATELIER_TOKEN: ownerToken } as typeof env;
+  const ask = async () => (await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${b}/review-request`, {
+    method: "POST", headers: { authorization: `Bearer ${ownerToken}`, "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify({ reviewer: GPT, wanted: true }),
+  }), token)).json() as Promise<{ requested: boolean; request: number; reason: string }>;
+  const asked = await ask();
+  expect(asked).toMatchObject({ requested: true });
+  expect(await ask()).toMatchObject({ requested: false, request: asked.request });
+  await L.recordReviewSkip(b, asked.request, headB, "home:studio", "owner", "no agent token");
+  const renewed = await ask();
+  expect(renewed).toMatchObject({ requested: true });
+  expect(renewed.request).toBeGreaterThan(asked.request);
+  expect(renewed.reason).toMatch(/every runner that offers codex\/gpt-6-astra had skipped it \(home:studio\)/);
+  expect((await L.reviewWaiting()).map((w) => [w.id, w.request])).toEqual([[b, renewed.request]]);
 });
 
 it("a wanted review is requested for the named reviewer though the gate needs none, and the gate's own refusals stand", async () => {
@@ -314,10 +391,10 @@ it("a wanted review is requested for the named reviewer though the gate needs no
   expect((await events(L, id)).find((e) => e.kind === "review.requested")).toMatchObject({ data: { head, reviewer: GPT, via: "land", wanted: true } });
   expect(await L.requestReview(id, "owner", GPT, POOL, true)).toMatchObject({ needed: true, requested: false, reviewer: GPT, head });
   // The reviewer's claim carries a need, so its runner reviews rather than releases the request.
-  const claim = await L.claimReview(id, GPT, RUNNER) as unknown as { need: { basis: string } | null };
+  const claim = await L.claimReview(id, GPT, RUNNER) as unknown as { request: number; need: { basis: string } | null };
   expect(claim.need).toMatchObject({ basis: "requested" });
   // A rejection at this head stops the gate, and a wanted review is refused with that reason.
-  await L.addReview({ itemId: id, criteria: await L.criteria(id), by: GPT, head, approve: false, note: "Wrong.", findings: [{ file: "docs/note.md", line: 1, severity: "blocking" as const, text: "It is wrong." }], at: new Date().toISOString() });
+  await L.addReview({ request: claim.request, itemId: id, criteria: await L.criteria(id), by: GPT, head, approve: false, note: "Wrong.", findings: [{ file: "docs/note.md", line: 1, severity: "blocking" as const, text: "It is wrong." }], at: new Date().toISOString() });
   await refusal(L.requestReview(id, "owner", GPT, POOL, true), "review_blocked", /rejected dddddddd/);
   // t240: once the owner has refuted every blocking finding of that rejection,
   // the same head is asked for a second opinion rather than refused — no
@@ -329,20 +406,33 @@ it("a wanted review is requested for the named reviewer though the gate needs no
   expect((await events(L, id)).find((e) => e.kind === "review.requested")).toMatchObject({ data: { head, reviewer: GPT, round: 2, via: "land", wanted: true } });
 });
 
-it("after a review claim lapses and a new reviewer is asked, a retry naming that reviewer finds the new request", async () => {
+it("a standalone expired claim is reoffered within one queue poll with its routing intact", async () => {
+  const GEMINI = "antigravity/gemini-3.1-pro";
   const L = await setup("land-lapse");
   const id = (await L.newItem("Landing", [], "owner")).id;
   const head = "c".repeat(40);
   await submittedTask(L, id, head);
-  const GEMINI = "antigravity/gemini-3.1-pro";
   await L.requestReview(id, "owner", GPT, POOL);
-  await L.claimReview(id, GPT, RUNNER);
+  const reviewClaim2 = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
   // The claim lapses: it was taken two days ago.
   await runInDurableObject(L, async (_instance: Ledger, state: DurableObjectState) => {
     state.storage.sql.exec(`UPDATE review_requests SET claimedAt = ? WHERE item = ?`, new Date(Date.now() - 2 * 86_400_000).toISOString(), id);
   });
-  expect(await L.requestReview(id, "owner", GEMINI, POOL)).toMatchObject({ requested: true, reviewer: GEMINI });
-  expect(await L.requestReview(id, "owner", GEMINI, POOL)).toMatchObject({ requested: false, reviewer: GEMINI, head });
+  const [offered] = await L.reviewWaiting();
+  expect(offered.request).not.toBe(reviewClaim2.request);
+  expect(offered.head).toBe(head);
+  expect(offered.dispatch).toMatchObject({ agent: "codex", model: "gpt-6-astra" });
+  expect(await L.requestReview(id, "owner", GPT, POOL)).toMatchObject({ requested: false, reviewer: GPT, request: offered.request });
+  const successor = await L.claimReview(id, GPT, { runner: "home:replacement", kind: "home" }) as unknown as ReviewClaim;
+  expect(successor.request).toBe(offered.request);
+  expect(successor.criteria).toBe(reviewClaim2.criteria);
+  // Once that replacement also expires, an explicit request may name a
+  // different eligible reviewer, retaining main's named-reviewer behavior.
+  await runInDurableObject(L, async (_instance: Ledger, state: DurableObjectState) => {
+    state.storage.sql.exec(`UPDATE review_requests SET claimedAt = ? WHERE id = ?`, new Date(Date.now() - 2 * 86_400_000).toISOString(), successor.request);
+  });
+  expect(await L.requestReview(id, "owner", GEMINI, NAMED_POOL)).toMatchObject({ requested: true, reviewer: GEMINI });
+  expect(await L.requestReview(id, "owner", GEMINI, NAMED_POOL)).toMatchObject({ requested: false, reviewer: GEMINI, head });
   await refusal(L.requestReview(id, "owner", GPT, POOL), "review_requested", /already requested from antigravity\/gemini-3.1-pro/);
 });
 
@@ -406,20 +496,20 @@ it("a landing's review request with an explicit --reviewer outside the tier asks
   expect((await L.reviewRequests(id)).filter((r) => r.tier)).toHaveLength(1);
   // The tier review is claimed; the gate's approval comes in and the task is
   // accepted at once, without waiting for it: its request is withdrawn.
-  await L.claimReview(id, SONNET, RUNNER);
-  await L.claimReview(id, GPT, RUNNER);
-  await L.addReview({ itemId: id, criteria: await L.criteria(id), by: GPT, head, approve: true, note: "Gate: fine.", at: new Date().toISOString() });
+  const reviewClaim3 = await L.claimReview(id, SONNET, RUNNER) as unknown as ReviewClaim;
+  const reviewClaim4 = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
+  await L.addReview({ request: reviewClaim4.request, itemId: id, criteria: await L.criteria(id), by: GPT, head, approve: true, note: "Gate: fine.", at: new Date().toISOString() });
   await L.accept(id, "owner", head);
   expect((await L.reviewRequests(id)).find((r) => r.tier)).toMatchObject({ state: "withdrawn" });
   expect((await events(L, id)).find((e) => e.kind === "review.withdrawn")).toMatchObject({ data: { reviewer: SONNET, tier: true } });
   // The tier verdict arriving late is refused and does not reopen the accepted task.
-  await refusal(L.addReview({ itemId: id, criteria: await L.criteria(id), by: SONNET, head, approve: false, note: "Late.", at: new Date().toISOString() }), "tier_withdrawn", /no longer asked for/);
+  await refusal(L.addReview({ request: reviewClaim3.request, itemId: id, criteria: await L.criteria(id), by: SONNET, head, approve: false, note: "Late.", at: new Date().toISOString() }), "stale_request", /withdrawn or replaced/);
   expect(await L.item(id)).toMatchObject({ state: "accepted" });
   // Where every tier model built the change or reviews it for the gate, no tier review is asked.
   const solo = await setup("land-tier-none", { ...policy, reviewTier: [OPUS, GEMINI] });
   const t = (await solo.newItem("Solo", [], "owner")).id;
   await submittedTask(solo, t, head);
-  await solo.requestReview(t, "owner", GEMINI, POOL);
+  await solo.requestReview(t, "owner", GEMINI, NAMED_POOL);
   expect((await solo.reviewRequests(t)).filter((r) => r.tier)).toEqual([]);
 });
 
@@ -429,8 +519,8 @@ it("a tier approval alone does not let the task be accepted", async () => {
   const head = "b".repeat(40);
   await submittedTask(L, id, head);
   await L.requestReview(id, "owner", GPT, POOL);
-  await L.claimReview(id, "claude-code/sonnet-5.5", RUNNER);
-  await L.addReview({ itemId: id, criteria: await L.criteria(id), by: "claude-code/sonnet-5.5", head, approve: true, note: "Tier: fine.", at: new Date().toISOString() });
+  const reviewClaim5 = await L.claimReview(id, "claude-code/sonnet-5.5", RUNNER) as unknown as ReviewClaim;
+  await L.addReview({ request: reviewClaim5.request, itemId: id, criteria: await L.criteria(id), by: "claude-code/sonnet-5.5", head, approve: true, note: "Tier: fine.", at: new Date().toISOString() });
   await refusal(L.accept(id, "owner", head), "not_ready", /another family/);
   // The gate's request still stands for GPT.
   expect((await L.reviewRequests(id)).find((r) => !r.tier)).toMatchObject({ state: "open" });
@@ -449,8 +539,8 @@ it("a landing's review goes to a tier model of another family first, and its one
   expect((await L.reviewWaiting()).map((i) => `${i.dispatch!.agent}/${i.dispatch!.model}`)).toEqual([GPT]);
   expect((await L.reviewRequests(id)).filter((r) => r.tier)).toEqual([]);
   expect((await events(L, id)).find((e) => e.kind === "review.requested")).toMatchObject({ data: { reviewer: GPT, topTier: true } });
-  await L.claimReview(id, GPT, RUNNER);
-  await L.addReview({ itemId: id, criteria: await L.criteria(id), by: GPT, head, approve: true, note: "Gate and tier: fine.", at: new Date().toISOString() });
+  const reviewClaim6 = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;
+  await L.addReview({ request: reviewClaim6.request, itemId: id, criteria: await L.criteria(id), by: GPT, head, approve: true, note: "Gate and tier: fine.", at: new Date().toISOString() });
   expect((await L.reviewsFor(id))[0]).toMatchObject({ by: GPT, topTier: true });
   expect((await L.reviewsFor(id))[0].tier).toBeUndefined();
   await L.accept(id, "owner", head);

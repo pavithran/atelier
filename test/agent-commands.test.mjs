@@ -1,3 +1,4 @@
+import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
@@ -60,7 +61,7 @@ test("pure output keeps the brief and gate wording", () => {
 // `forkBranch` is the branch the fork's HEAD names, and `branch.claim` the
 // one the claim route gives; the test may change it between claims. The
 // push route reports the fork's HEAD, as headOf reads it in Artifacts.
-async function fixture(t, { failed = false, dirtyWorkspace = false, blockers = [], failStep, sandbox = false, forkBranch = "main", claimBranch = forkBranch } = {}) {
+async function fixture(t, { failed = false, dirtyWorkspace = false, blockers = [], failStep, sandbox = false, forkBranch = "main", claimBranch = forkBranch, prepare = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), "atelier-agent-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, "cache", "work", "proj", "t1");
@@ -82,7 +83,8 @@ async function fixture(t, { failed = false, dirtyWorkspace = false, blockers = [
     if (req.method === "POST") posts.push({ path, body: JSON.parse(raw) });
     if (req.method === "POST" && path.endsWith("/submit")) item.state = "submitted";
     let data = { item, gate, policy: { checks: [command], sandboxOnly: sandbox } };
-    if (path.endsWith("/claim")) data = { item, workspace: { token: "fake", remote, defaultBranch: branch.claim, expiresAt: "tomorrow" } };
+    if (path === "/api/projects/proj") data = { project: { policy: { prepare } } };
+    if (path.endsWith("/claim")) data = { item, workspace: { token: "fake", remote, defaultBranch: branch.claim, expiresAt: "tomorrow" }, commitIdentity: { name: "Test Owner", email: "owner@example.test", agentEmails: [] } };
     if (path.endsWith("/push")) data = { ...item, head: git(remote, "rev-parse", "HEAD") };
     if (path.endsWith("/read-token") || path.endsWith("/baseline-token") || path.endsWith("/base-token")) data = { remote, token: "fake", head, defaultBranch: "main" };
     if (path.endsWith("/brief")) data = brief;
@@ -119,6 +121,7 @@ test("start claims and prepares a clone with task instructions", async (t) => {
 });
 
 for (const sandbox of [false, true]) test(`done ends with failed checks, exit 2, nothing submitted (${sandbox ? "sandbox" : "local"})`, async (t) => {
+  if (!sandbox && !canInspectSlots(t)) return;
   const f = await fixture(t, { failed: true, sandbox });
   assert.equal((await f.run(["start", "t1"])).status, 0);
   const r = await f.run(["done", "Edited docs"], f.workspace);
@@ -131,6 +134,7 @@ for (const sandbox of [false, true]) test(`done ends with failed checks, exit 2,
 });
 
 test("done reports a failed check before a changed workspace, naming the files the check left", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await fixture(t, { dirtyWorkspace: true });
   assert.equal((await f.run(["start", "t1"])).status, 0);
   const r = await f.run(["done", "Edited docs"], f.workspace);
@@ -148,6 +152,7 @@ test("done's failed-checks line names the files a failed check left in the works
 });
 
 for (const blockers of [[], ["protected paths need an independent approval", "rejected by zcode/glm-5.3: fix the cap"]]) test(`done ends with one outcome: ${blockers.length ? "checked but blocked" : "submitted"}`, async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await fixture(t, { blockers });
   await f.run(["start", "t1"]);
   const r = await f.run(["done", "Edited docs"], f.workspace);
@@ -164,6 +169,7 @@ for (const blockers of [[], ["protected paths need an independent approval", "re
 });
 
 test("done --json prints the outcome as one object, with progress on stderr", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await fixture(t, { blockers: ["protected paths need an independent approval"] });
   await f.run(["start", "t1"]);
   const r = await f.run(["done", "Edited docs", "--json"], f.workspace);
@@ -188,6 +194,7 @@ test("done's help names each outcome, its exit code and --json", async (t) => {
 });
 
 for (const failStep of ["push", "submit"]) test(`done names a failed ${failStep} and keeps the infrastructure exit code`, async (t) => {
+  if (failStep === "submit" && !canInspectSlots(t)) return;
   const f = await fixture(t, { failStep });
   await f.run(["start", "t1"]);
   const r = await f.run(["done", "Edited docs"], f.workspace);
@@ -259,6 +266,7 @@ test("show displays both ledger revert links without claiming the undo has merge
 });
 
 test("finish keeps its existing output and exit codes", async (t) => {
+  if (!canInspectSlots(t)) return;
   for (const failed of [false, true]) {
     const f = await fixture(t, { failed });
     await f.run(["start", "t1"]);
@@ -344,4 +352,16 @@ test("the task an agent starts and the brief it reads carry the owner's framing,
   const text = formatBrief("proj", "t1", { ...brief, ...framed, summary: null }, "https://atelier.test");
   assert.deepEqual(text.split("\n").slice(1, 5), [brief.decided, "Non-goals: no CSS changes; no routes", "Stop when: a check fails twice", "Next gate: design review"]);
   assert.ok(!text.includes("\x1b"));
+});
+
+test("manual claim prints the preparation command and directory without executing it", async (t) => {
+  const prepare = { command: "printf prepared > prepared.txt && printf ready", inputs: ["package.json"], outputs: ["prepared.txt"] };
+  const f = await fixture(t, { prepare });
+  const result = await f.run(["claim", "t1", "--as", actor]);
+  assert.equal(result.status, 0, result.output);
+  assert.ok(result.output.includes(`Preparation (run in ${JSON.stringify(f.workspace)}): ${prepare.command}`));
+  assert.equal(git(f.workspace, "status", "--porcelain"), "");
+  assert.deepEqual(JSON.parse(git(f.workspace, "config", "atelier.prepare")), prepare);
+  assert.equal(git(f.workspace, "config", "user.name"), "Test Owner");
+  assert.equal(git(f.workspace, "config", "user.email"), "owner@example.test");
 });

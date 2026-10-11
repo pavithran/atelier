@@ -8,6 +8,8 @@
 // --allow-failing is given. Wrap commits and updates the baseline; checkout
 // remote pushes are opt-in.
 
+import { areaField } from "../src/area-commands.ts";
+
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { accessSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -20,7 +22,8 @@ import { stateFile, sessionText, WRAP_MARKERS, unmergedPaths, wrapRefusal } from
 
 import { contextBudget, evaluateCeilings, policyNotice, CONTEXT_BUDGET_PATH } from "../src/context-budget.ts";
 
-import { redactGitArgs } from "./runner.mjs";
+import { redactGitArgs, IDENTITY_FILE, identityRefusals } from "./runner.mjs";
+import { commitRefusals, IDENTITY_LOG_FORMAT, NO_IDENTITY, parseIdentityLog } from "../src/commit-identity.ts";
 import { controlPlaneChanges, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
 import { cleanSummary } from "../src/brief.ts";
 import { recordedText } from "../src/rules.ts";
@@ -37,6 +40,7 @@ import { formatTokenExpiryWarnings, parseExpiryDay, readTokenExpiries, recordTok
 import { runnerCredential, readSecret } from "./credentials.mjs";
 import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
+import { slotInvocation } from "./load.mjs";
 export { checkEnv } from "./check-env.mjs";
 import { COMMANDS, COMMAND_USAGE, commandFor } from "./help.mjs";
 import { HANDLER_MODULES } from "./commands/index.mjs";
@@ -86,6 +90,7 @@ export const trimSlash = (url) => String(url).replace(/\/$/, "");
 // together, so that server is the one the stored token belongs to, and the
 // token goes nowhere else: with ATELIER_SERVER naming another server it is
 // not sent, and the command says what to do instead.
+let ownerNoticeGiven = false;
 export function apiToken() {
   if (cliState.loginToken) return cliState.loginToken;
   try {
@@ -94,6 +99,10 @@ export function apiToken() {
     if (!name && ["claim", "start"].includes(args._[0])) name = args.runner;
     const runner = runnerCredential(server(), name);
     if (runner) return runner;
+    if (name && !ownerNoticeGiven) {
+      ownerNoticeGiven = true;
+      process.stderr.write(`runner ${name} has no runner token: running with the owner's credential\n`);
+    }
   } catch (error) { die(error.message); }
   const fromEnv = process.env.ATELIER_TOKEN?.trim();
   if (fromEnv) return fromEnv;
@@ -627,7 +636,8 @@ export function coreArg() {
 // empty value clears the field (the title cannot be cleared); for new, an
 // empty value is refused as a bare flag is, with the flag table's wording.
 export function fieldsArg(cmd) {
-  const out = {};
+  let out;
+  try { out = areaField(args, cmd); } catch (error) { die(error.message); }
   if (args.title !== undefined) {
     if (typeof args.title !== "string" || !args.title.trim()) die(FLAGS[cmd].title);
     out.title = args.title.trim();
@@ -816,9 +826,57 @@ export async function claimWorkspace(name, id, as, runner) {
   if (!fresh) takeForkHead(dir, id, branch);
   const reads = forkBranch(dir);
   if (reads && reads !== branch) console.log(`Warning: ${id}'s fork reads its head from ${reads}, but the project's branch is ${branch}, so atelier push will refuse. To register ${reads}, ${OWNER_NAME} runs atelier init in the project's checkout with ${reads} checked out.`);
-  // Commit as the project's checkout does, not as this machine's global identity.
-  const identity = applyIdentity(cfg.projects?.[name]?.path, dir);
-  return { item: r.item, workspace: r.workspace, dir, identity };
+  const preparation = (await call("GET", P(name), undefined, as)).project?.policy?.prepare ?? null;
+  git(["config", "--local", "atelier.prepare", JSON.stringify(preparation)], { cwd: dir });
+  if (preparation?.command) console.log(`Preparation (run in ${JSON.stringify(dir)}): ${preparation.command}`);
+  const identity = setWorkspaceIdentity(dir, r.commitIdentity, cfg.projects?.[name]?.path, name);
+  // An agent claiming for itself is the builder, and commits in this
+  // environment; a runner checks its builder's own (cli/runner.mjs runTask).
+  if (!runner && r.commitIdentity) {
+    const refused = identityRefusals(dir, process.env, name);
+    if (refused.length) die(`${id} is claimed, but a commit made in ${dir} would carry an identity the project's policy refuses:\n  ${refused.join("\n  ")}\nFix that, then run atelier claim ${id} again.`);
+  }
+  return { item: r.item, workspace: r.workspace, dir, identity, fromPolicy: !!r.commitIdentity };
+}
+
+// The environment that makes a commit's author and committer the project's
+// own, over any GIT_AUTHOR_* or GIT_COMMITTER_* the caller's holds.
+export const identityEnv = (identity) => ({ GIT_AUTHOR_NAME: identity.name, GIT_AUTHOR_EMAIL: identity.email, GIT_COMMITTER_NAME: identity.name, GIT_COMMITTER_EMAIL: identity.email });
+
+// The commits `to` holds and `from` does not, each author and committer
+// field checked against the policy (t451): `from` is the history already
+// published there, which the check leaves alone.
+export function identityRangeRefusals(gitIn, cwd, identity, from, to) {
+  // With no FROM (nothing published there yet), every commit TO holds is new.
+  const log = gitIn(["log", `--format=${IDENTITY_LOG_FORMAT}`, from ? `${from}..${to}` : to], { cwd, raw: true });
+  return commitRefusals(identity, parseIdentityLog(log));
+}
+
+// Every claim, of a new clone or a reused one, on any machine, writes the
+// project's commit identity from the server's policy into the workspace's
+// own Git config, so no commit falls back to this machine's global identity
+// (t451), and keeps the policy beside it for the runner's check. A write
+// that does not read back as written fails the claim's setup. A project
+// whose policy names no identity yet (docs/setup.md, "Commit identity")
+// keeps the old way: what the registered checkout sets, if this machine has
+// one.
+function setWorkspaceIdentity(dir, policy, checkout, name) {
+  const file = join(dir, ".git", IDENTITY_FILE);
+  if (!policy) {
+    rmSync(file, { force: true });
+    console.log(`Warning: ${NO_IDENTITY(name)}. Until then this workspace commits as the registered checkout does, if this machine has one, and runners refuse to start a builder.`);
+    return applyIdentity(checkout, dir);
+  }
+  for (const [key, value] of [["user.name", policy.name], ["user.email", policy.email]]) {
+    const set = git(["config", "--local", key, value], { cwd: dir, allowFail: true });
+    const read = git(["config", "--local", "--get", key], { cwd: dir, allowFail: true });
+    if (set.status !== 0 || read.status !== 0 || read.stdout.trim() !== value) {
+      die(`the claim could not set ${key} to ${JSON.stringify(value)} in ${dir}/.git/config: ${(set.stderr || read.stderr || `it reads ${JSON.stringify(read.stdout.trim())}`).trim()}`);
+    }
+  }
+  try { writeFileSync(file, `${JSON.stringify(policy)}\n`); }
+  catch (error) { die(`the claim could not record the project's commit identity in ${file}: ${error.message}`); }
+  return { name: policy.name, email: policy.email };
 }
 
 // The branch a fork's HEAD names, as its Git remote reports it. Atelier
@@ -936,24 +994,29 @@ export function mergeWithMain(dir, id) {
 // when its shell exits, when its time limit passes or when its output
 // overruns, every process left in the group is ended, and the result comes
 // back only once the group is gone, so nothing the check started still
-// writes in the clone when it is removed.
-export async function runCheck(cmd, dir, secrets, graceMs = 5000) {
+// writes in the clone when it is removed. The group's leader is the
+// test-slot wrapper (cli/load.mjs), so the check holds one host-wide slot
+// for as long as its tree runs.
+export async function runCheck(cmd, dir, secrets, metadata, graceMs = 5000) {
   process.stderr.write(`atelier: running \`${cmd}\` in a clean clone…\n`);
   const record = JSON.parse(readFileSync(markerPath(dir), "utf8"));
-  const r = await runGroupedCheck(cmd, { cwd: dir, graceMs, onSpawn: (pid) => writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: pid })) });
+  const r = await runGroupedCheck(cmd, { cwd: dir, metadata, graceMs, onSpawn: (pid) => writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: pid })) });
   writeFileSync(markerPath(dir), JSON.stringify(record));
   const output = redact(`${r.stdout}${r.stderr}${r.error ? `\n[atelier] check ${r.error.message}` : ""}`, secrets);
   return { passed: r.status === 0 && !r.error, output, sha: createHash("sha256").update(output).digest("hex") };
 }
 
-// One registered check through runGroup, bounded by CHECK_TIMEOUT_MS. An
+// One registered check through runGroup, bounded by CHECK_TIMEOUT_MS, under
+// the test-slot wrapper with `metadata` (its class, project, task, actor). An
 // interrupt, a terminal hang-up or a SIGTERM of this command does not reach
 // the check's group, so each ends this process, and runGroup ends the group
-// on the way out.
-export async function runGroupedCheck(cmd, { cwd, env = checkEnv(), graceMs, onSpawn, maxBytes }) {
+// on the way out; a slot whose wrapper died that way is reclaimed at the
+// next admission or status read.
+export async function runGroupedCheck(cmd, { cwd, env = checkEnv(), metadata, graceMs, onSpawn, maxBytes }) {
   const onInt = interrupted("SIGINT"), onTerm = interrupted("SIGTERM"), onHup = interrupted("SIGHUP");
   process.once("SIGINT", onInt).once("SIGTERM", onTerm).once("SIGHUP", onHup);
-  try { return await runGroup(["/bin/sh", "-c", cmd], { cwd, env, timeoutMs: CHECK_TIMEOUT_MS, graceMs, maxBytes, onSpawn }); }
+  const invocation = slotInvocation(["/bin/sh", "-c", cmd], metadata, env);
+  try { return await runGroup(invocation.argv, { cwd, env: invocation.env, timeoutMs: CHECK_TIMEOUT_MS, graceMs, maxBytes, onSpawn }); }
   finally { process.off("SIGINT", onInt).off("SIGTERM", onTerm).off("SIGHUP", onHup); }
 }
 
@@ -1270,6 +1333,7 @@ export function formatFields(fields) {
     fields.nonGoals?.length ? `Non-goals: ${fields.nonGoals.map(flat).join("; ")}` : null,
     fields.stopWhen?.length ? `Stop when: ${fields.stopWhen.map(flat).join("; ")}` : null,
     fields.nextGate ? `Next gate: ${flat(fields.nextGate)}` : null,
+    fields.area ? `Area: ${flat(fields.area)}` : null,
   ].filter(Boolean);
 }
 
@@ -1576,10 +1640,13 @@ export function wrapReady(name, cwd, report) {
 
 // A report a runner makes under its name: a model's status, a tool's usage.
 // The answer is the server's JSON; a refusal is an error naming its detail.
-export async function postAsRunner(path, body, runner, signal) {
+// The report goes as the owner, whose token the runner holds, unless `as`
+// names another actor: a runner token cannot act as the owner, so its
+// review skip goes as the review job's actor (t353).
+export async function postAsRunner(path, body, runner, signal, as = OWNER) {
   const res = await fetch(`${server()}/api${path}`, {
     method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
-    headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": OWNER, "x-atelier-runner": runner, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "x-atelier-runner": runner, "content-type": "application/json" },
     body: JSON.stringify(body),
   });
   let data = null;

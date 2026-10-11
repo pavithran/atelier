@@ -26,6 +26,7 @@ const command = ["opencode", "run", "--model", "{model}", "--file", "{brief_file
 const agents = [{ agent: "opencode", models: [model], command, env: ["ZAI_API_KEY"] }];
 const assignment = { project: "atelier", item: { id: "t21", dispatch: { job: "review" } }, agent: "opencode", model, actor };
 const claimed = {
+  request: 1,
   item: { id: "t21", title: "Review rules", base: H0, scope: ["src/review/**"], fork: "p--t21", head: H1 },
   head: H1,
   need: { needed: true, reason: "every part is reviewed", head: H1, kind: "review", basis: "part", changeClass: "coordinated", changedPaths: ["src/review/needed.ts"], outOfScope: [], checks: [], round: 1, previous: [], previousReviewer: null, lapsed: [] },
@@ -144,7 +145,9 @@ test("a review job makes every CLI call with the model's own token, and the toke
   const harness = calls.find((c) => c.harness);
   assert.equal(harness.env.ZAI_API_KEY, "provider-key");
   assert.ok(!Object.values(harness.env).some((v) => String(v).includes(FAKE) || String(v).includes("atl_owner")));
-  assert.ok(!Object.keys(harness.env).some((k) => /^ATELIER_/i.test(k)));
+  const coordination = new Set(["ATELIER_TEST_PRIORITY", "ATELIER_TEST_TASK", "ATELIER_TEST_ACTOR", "ATELIER_TEST_PROJECT", "ATELIER_TEST_SLOTS"]);
+  assert.ok(Object.keys(harness.env).filter((k) => /^ATELIER_/i.test(k)).every((k) => coordination.has(k)));
+  assert.equal(harness.env.ATELIER_TEST_PRIORITY, "review");
   // Nothing printed, logged or passed as an argument holds the token.
   const shown = everything(calls.map(({ opts, ...rest }) => rest), logs);
   assert.ok(!shown.includes(FAKE), "the token value appears nowhere but the call's own credential");
