@@ -1,0 +1,162 @@
+[
+  {
+    "sourceSHA": "ffb4a5e",
+    "fixture": "seeded",
+    "url": "https://atelier.test/home",
+    "viewport": 1440,
+    "browserVersion": "156.0.8078.4",
+    "filename": "home-1440.png"
+  },
+  {
+    "sourceSHA": "ffb4a5e",
+    "fixture": "seeded",
+    "url": "https://atelier.test/home",
+    "viewport": 390,
+    "browserVersion": "156.0.8078.4",
+    "filename": "home-390.png"
+  },
+  {
+    "sourceSHA": "ffb4a5e",
+    "fixture": "seeded",
+    "url": "https://atelier.test/decisions",
+    "viewport": 1440,
+    "browserVersion": "156.0.8078.4",
+    "filename": "decisions-1440.png"
+  },
+  {
+    "sourceSHA": "ffb4a5e",
+    "fixture": "seeded",
+    "url": "https://atelier.test/decisions",
+    "viewport": 390,
+    "browserVersion": "156.0.8078.4",
+    "filename": "decisions-390.png"
+  },
+  {
+    "sourceSHA": "ffb4a5e",
+    "fixture": "seeded",
+    "url": "https://atelier.test/studio",
+    "viewport": 1440,
+    "browserVersion": "156.0.8078.4",
+    "filename": "studio-1440.png"
+  },
+  {
+    "sourceSHA": "ffb4a5e",
+    "fixture": "seeded",
+    "url": "https://atelier.test/studio",
+    "viewport": 390,
+    "browserVersion": "156.0.8078.4",
+    "filename": "studio-390.png"
+  },
+  {
+    "sourceSHA": "ffb4a5e",
+    "fixture": "seeded",
+    "url": "https://atelier.test/p/empty-proj",
+    "viewport": 1440,
+    "browserVersion": "156.0.8078.4",
+    "filename": "proj-empty-1440.png"
+  },
+  {
+    "sourceSHA": "ffb4a5e",
+    "fixture": "seeded",
+    "url": "https://atelier.test/p/empty-proj",
+    "viewport": 390,
+    "browserVersion": "156.0.8078.4",
+    "filename": "proj-empty-390.png"
+  },
+  {
+    "sourceSHA": "ffb4a5e",
+    "fixture": "seeded",
+    "url": "https://atelier.test/p/dense-proj",
+    "viewport": 1440,
+    "browserVersion": "156.0.8078.4",
+    "filename": "proj-dense-1440.png"
+  },
+  {
+    "sourceSHA": "ffb4a5e",
+    "fixture": "seeded",
+    "url": "https://atelier.test/p/dense-proj",
+    "viewport": 390,
+    "browserVersion": "156.0.8078.4",
+    "filename": "proj-dense-390.png"
+  },
+  {
+    "sourceSHA": "ffb4a5e",
+    "fixture": "seeded",
+    "url": "https://atelier.test/p/states-proj",
+    "viewport": 1440,
+    "browserVersion": "156.0.8078.4",
+    "filename": "proj-states-1440.png"
+  },
+  {
+    "sourceSHA": "ffb4a5e",
+    "fixture": "seeded",
+    "url": "https://atelier.test/p/states-proj",
+    "viewport": 390,
+    "browserVersion": "156.0.8078.4",
+    "filename": "proj-states-390.png"
+  },
+  {
+    "sourceSHA": "ffb4a5e",
+    "fixture": "seeded",
+    "url": "https://atelier.test/p/states-proj/tasks",
+    "viewport": 1440,
+    "browserVersion": "156.0.8078.4",
+    "filename": "proj-states-tasks-1440.png"
+  },
+  {
+    "sourceSHA": "ffb4a5e",
+    "fixture": "seeded",
+    "url": "https://atelier.test/p/states-proj/tasks",
+    "viewport": 390,
+    "browserVersion": "156.0.8078.4",
+    "filename": "proj-states-tasks-390.png"
+  },
+  {
+    "sourceSHA": "ffb4a5e",
+    "fixture": "seeded",
+    "url": "https://atelier.test/p/states-proj/t3",
+    "viewport": 1440,
+    "browserVersion": "156.0.8078.4",
+    "filename": "proj-states-t3-1440.png"
+  },
+  {
+    "sourceSHA": "ffb4a5e",
+    "fixture": "seeded",
+    "url": "https://atelier.test/p/states-proj/t3",
+    "viewport": 390,
+    "browserVersion": "156.0.8078.4",
+    "filename": "proj-states-t3-390.png"
+  },
+  {
+    "sourceSHA": "ffb4a5e",
+    "fixture": "seeded",
+    "url": "https://atelier.test/",
+    "viewport": 1440,
+    "browserVersion": "156.0.8078.4",
+    "filename": "public-showcase-1440.png"
+  },
+  {
+    "sourceSHA": "ffb4a5e",
+    "fixture": "seeded",
+    "url": "https://atelier.test/",
+    "viewport": 390,
+    "browserVersion": "156.0.8078.4",
+    "filename": "public-showcase-390.png"
+  },
+  {
+    "sourceSHA": "ffb4a5e",
+    "fixture": "seeded",
+    "url": "https://atelier.test/p/states-proj",
+    "viewport": 1440,
+    "browserVersion": "156.0.8078.4",
+    "filename": "public-proj-1440.png"
+  },
+  {
+    "sourceSHA": "ffb4a5e",
+    "fixture": "seeded",
+    "url": "https://atelier.test/p/states-proj",
+    "viewport": 390,
+    "browserVersion": "156.0.8078.4",
+    "filename": "public-proj-390.png"
+  }
+]
