@@ -185,7 +185,10 @@ Measured ([contrast.md](contrast.md)): `--m-anthropic` 4.15, `--m-openai`
 strong`, `.journey .n` and the legends. Every role token passes in both
 schemes. → **P14**. Palette B (brief §1.1, t367 at 7d64b297) sets new
 light family colours that measure 5.30 or more on every light surface, so
-P14 is met by t367 for these five families once it merges.
+its contrast half is met by t367 for these five families once it merges. Standing
+decision d9 goes further: company colours only inside charts, so the
+redesign drops the family swatches, lane edges and file-list stripes and
+names agents in text colour; the mockups follow it.
 
 ### F18. The live state is hidden — Low
 The "Live" note sits in the rail's foot; when it refreshes is shown only on

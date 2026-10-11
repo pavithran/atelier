@@ -6,14 +6,35 @@
 <title>Mockup: Code — Atelier</title>
 <link rel="stylesheet" href="mockup.css">
 <style>
-  .tree > li { grid-template-columns: 6px 260px 1fr auto; gap: 12px; padding: 8px 4px; }
-  .tree .stripe { width: 6px; height: 22px; border-radius: 2px; background: var(--fam); }
+  .tree > li { grid-template-columns: 260px 1fr auto; gap: 12px; padding: 8px 4px; }
   .tree a { color: var(--text); font-family: var(--mono); font-size: 14px; text-decoration: none; }
-  .log > li { grid-template-columns: 6px 90px 1fr auto auto; }
-  .phone .tree > li { grid-template-columns: 6px 1fr auto; }
+  .log > li { grid-template-columns: 90px 1fr auto auto; }
+  .phone .tree > li { grid-template-columns: 1fr auto; }
   .phone .tree .msg { display: none; }
-  .phone .log > li { grid-template-columns: 6px 1fr auto; }
-  .phone .tree .meta { grid-column: 3; }
+  .phone .log > li { grid-template-columns: 1fr auto; }
+  .phone .tree .meta { grid-column: 2; }
+  .phone .log .who { grid-column: 1; font-size: 13px; color: var(--text-muted); }
+  .phone .log .meta { grid-row: 1; grid-column: 2; }
+  .facts { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0 0 12px; color: var(--text-muted); font-size: 14px; }
+  .lines { margin: 0; padding: 8px 0; list-style: none; font: 14px/1.6 var(--mono); counter-reset: ln; overflow-x: auto; }
+  .lines li { display: grid; grid-template-columns: 48px 1fr; white-space: pre; }
+  .lines li::before { counter-increment: ln; content: counter(ln); text-align: right; padding-right: 14px; color: var(--text-dim); }
+  .phone .lines { font-size: 13px; }
+  .phone .lines li { grid-template-columns: 34px 1fr; }
+  .phone .lines li::before { padding-right: 8px; }
+  .files-changed { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 4px; }
+  .files-changed li { display: flex; gap: 10px; align-items: baseline; font: 14px/1.5 var(--mono); }
+  .files-changed .n { margin-left: auto; color: var(--text-muted); }
+  .diff { border: 1px solid var(--line); border-radius: 8px; margin: 0 0 12px; overflow: hidden; }
+  .diff > summary { display: flex; gap: 10px; align-items: center; padding: 8px 12px; background: var(--surface-raised); font: 600 14px/1.4 var(--mono); list-style: none; }
+  .diff > summary::-webkit-details-marker { display: none; }
+  .diff > summary .n { margin-left: auto; color: var(--text-muted); font-weight: 400; }
+  .diff pre { margin: 0; padding: 8px 0; font: 14px/1.6 var(--mono); overflow-x: auto; background: var(--inset); }
+  .diff pre span { display: block; padding: 0 12px; white-space: pre; }
+  .diff .hunk { color: var(--text-dim); }
+  .diff .add { box-shadow: inset 3px 0 0 var(--text-muted); font-weight: 600; color: var(--text-bright); }
+  .diff .del { color: var(--fault); }
+  .phone .diff pre { font-size: 12.5px; }
   .phone .log a.commit { display: inline-flex; align-items: center; min-height: 24px; padding: 0 2px; }
 </style>
 </head>
@@ -21,7 +42,7 @@
 <div class="mock-head">
   <p class="mock-back"><a href="index.html">All mockups</a></p>
   <p class="mock-title">Project: Code</p>
-  <p class="mock-routes">Covers <code>/p/NAME/code/PATH</code>, <code>/p/NAME/log</code>, <code>/p/NAME/commit/HASH</code>, <code>/p/NAME/history/PATH</code>, and a task's workspace under <code>/p/NAME/tN/code</code>. Drawn, each at desktop and phone width: <code>/p/ledger-core/code</code> (Files) and <code>/p/ledger-core/log</code> (Log).</p>
+  <p class="mock-routes">Covers <code>/p/NAME/code/PATH</code>, <code>/p/NAME/log</code>, <code>/p/NAME/commit/HASH</code>, <code>/p/NAME/history/PATH</code>, and a task's workspace under <code>/p/NAME/tN/code</code>. Drawn, each at desktop and phone width: <code>/p/ledger-core/code</code> (Files), <code>/p/ledger-core/log</code> (Log), <code>/p/ledger-core/code/src/money.ts</code> (a file), <code>/p/ledger-core/commit/7e21b04</code> (a commit) and <code>/p/ledger-core/history/src/money.ts</code> (a path's history).</p>
 </div>
 
 <div class="frames">
@@ -59,15 +80,15 @@
   </div>
   <p class="lede"><span class="mono">/</span> · 7 entries · last change t156 by codex/gpt-6-astra, 2 h ago</p>
   <ul class="rows tree">
-    <li class="f-zai"><span class="stripe"></span><a href="/p/ledger-core/code/migrations">migrations/</a><span class="muted msg">Fix off-by-one in statement ranges (t153)</span><span class="meta">9 h</span></li>
-    <li class="f-openai"><span class="stripe"></span><a href="/p/ledger-core/code/src">src/</a><span class="muted msg">Validate ISO 4217 codes on import (t156)</span><span class="meta">2 h</span></li>
-    <li class="f-google"><span class="stripe"></span><a href="/p/ledger-core/code/test">test/</a><span class="muted msg">Seed chart of accounts for tests (t151)</span><span class="meta">1 d</span></li>
-    <li class="f-anthropic"><span class="stripe"></span><a href="/p/ledger-core/code/DESIGN.md">DESIGN.md</a><span class="muted msg">Show closing balance per period (t155)</span><span class="meta">5 h</span></li>
-    <li class="f-qwen"><span class="stripe"></span><a href="/p/ledger-core/code/package.json">package.json</a><span class="muted msg">Rename Txn to Entry in the API (t150)</span><span class="meta">1 d</span></li>
-    <li class="f-anthropic"><span class="stripe"></span><a href="/p/ledger-core/code/README.md">README.md</a><span class="muted msg">Initial double-entry posting model (t1)</span><span class="meta">38 d</span></li>
-    <li class="f-zai"><span class="stripe"></span><a href="/p/ledger-core/code/tsconfig.json">tsconfig.json</a><span class="muted msg">Migrate tests to node:test (t40)</span><span class="meta">30 d</span></li>
+    <li><a href="/p/ledger-core/code/migrations">migrations/</a><span class="muted msg">Fix off-by-one in statement ranges (t153)</span><span class="meta">9 h</span></li>
+    <li><a href="/p/ledger-core/code/src">src/</a><span class="muted msg">Validate ISO 4217 codes on import (t156)</span><span class="meta">2 h</span></li>
+    <li><a href="/p/ledger-core/code/test">test/</a><span class="muted msg">Seed chart of accounts for tests (t151)</span><span class="meta">1 d</span></li>
+    <li><a href="/p/ledger-core/code/DESIGN.md">DESIGN.md</a><span class="muted msg">Show closing balance per period (t155)</span><span class="meta">5 h</span></li>
+    <li><a href="/p/ledger-core/code/package.json">package.json</a><span class="muted msg">Rename Txn to Entry in the API (t150)</span><span class="meta">1 d</span></li>
+    <li><a href="/p/ledger-core/code/README.md">README.md</a><span class="muted msg">Initial double-entry posting model (t1)</span><span class="meta">38 d</span></li>
+    <li><a href="/p/ledger-core/code/tsconfig.json">tsconfig.json</a><span class="muted msg">Migrate tests to node:test (t40)</span><span class="meta">30 d</span></li>
   </ul>
-  <p class="muted" style="font-size:14px">The stripe is the family of the last change; the message names it in words. <a class="mk" href="#n3">3</a></p>
+  <p class="muted" style="font-size:14px">Each entry names the last change that touched it, in words. <a class="mk" href="#n3">3</a></p>
   <h2>README.md</h2>
   <div class="inset" tabindex="0" style="font-family:var(--mono);font-size:14px;white-space:pre-wrap">Ledger Core — double-entry posting, statements and exports.
 npm test   runs the suite (418 tests)</div><a class="mk" href="#n4">4</a>
@@ -96,11 +117,11 @@ npm test   runs the suite (418 tests)</div><a class="mk" href="#n4">4</a>
   <nav aria-label="Code views" class="switch"><a href="/p/ledger-core/code" aria-current="page">Files</a><a href="/p/ledger-core/log">Log</a></nav>
   <p class="muted mono" style="font-size:13px">main @ 7e21b04 · /</p>
   <ul class="rows tree">
-    <li class="f-zai"><span class="stripe"></span><a href="/p/ledger-core/code/migrations">migrations/</a><span class="meta">9 h</span></li>
-    <li class="f-openai"><span class="stripe"></span><a href="/p/ledger-core/code/src">src/</a><span class="meta">2 h</span></li>
-    <li class="f-google"><span class="stripe"></span><a href="/p/ledger-core/code/test">test/</a><span class="meta">1 d</span></li>
-    <li class="f-anthropic"><span class="stripe"></span><a href="/p/ledger-core/code/DESIGN.md">DESIGN.md</a><span class="meta">5 h</span></li>
-    <li class="f-qwen"><span class="stripe"></span><a href="/p/ledger-core/code/package.json">package.json</a><span class="meta">1 d</span></li>
+    <li><a href="/p/ledger-core/code/migrations">migrations/</a><span class="meta">9 h</span></li>
+    <li><a href="/p/ledger-core/code/src">src/</a><span class="meta">2 h</span></li>
+    <li><a href="/p/ledger-core/code/test">test/</a><span class="meta">1 d</span></li>
+    <li><a href="/p/ledger-core/code/DESIGN.md">DESIGN.md</a><span class="meta">5 h</span></li>
+    <li><a href="/p/ledger-core/code/package.json">package.json</a><span class="meta">1 d</span></li>
   </ul>
 </main>
 </div>
@@ -117,10 +138,10 @@ npm test   runs the suite (418 tests)</div><a class="mk" href="#n4">4</a>
 <main class="app-main">
   <div class="row-flex"><h1>Log · 157 commits</h1><nav aria-label="Code views" class="switch"><a href="/p/ledger-core/code">Files</a><a href="/p/ledger-core/log" aria-current="page">Log</a></nav></div>
   <ul class="rows tree log">
-    <li class="f-openai"><span class="stripe"></span><a href="/p/ledger-core/commit/7e21b04">7e21b04</a><span>Validate ISO 4217 codes on import <span class="muted">(t156)</span></span><span class="who">codex/gpt-6-astra</span><span class="meta">2 h</span></li>
-    <li class="f-anthropic"><span class="stripe"></span><a href="/p/ledger-core/commit/c09d1e2">c09d1e2</a><span>Show closing balance per period <span class="muted">(t155)</span></span><span class="who">claude-code/opus-5.5</span><span class="meta">5 h</span></li>
-    <li class="f-zai"><span class="stripe"></span><a href="/p/ledger-core/commit/41aa8f0">41aa8f0</a><span>Fix off-by-one in statement ranges <span class="muted">(t153)</span></span><span class="who">zcode/glm-5.3</span><span class="meta">9 h</span></li>
-    <li class="f-google"><span class="stripe"></span><a href="/p/ledger-core/commit/9b3c771">9b3c771</a><span>Seed chart of accounts for tests <span class="muted">(t151)</span></span><span class="who">antigravity/gemini-3.1-pro</span><span class="meta">1 d</span></li>
+    <li><a href="/p/ledger-core/commit/7e21b04">7e21b04</a><span>Validate ISO 4217 codes on import <span class="muted">(t156)</span></span><span class="who">codex/gpt-6-astra</span><span class="meta">2 h</span></li>
+    <li><a href="/p/ledger-core/commit/c09d1e2">c09d1e2</a><span>Show closing balance per period <span class="muted">(t155)</span></span><span class="who">claude-code/opus-5.5</span><span class="meta">5 h</span></li>
+    <li><a href="/p/ledger-core/commit/41aa8f0">41aa8f0</a><span>Fix off-by-one in statement ranges <span class="muted">(t153)</span></span><span class="who">zcode/glm-5.3</span><span class="meta">9 h</span></li>
+    <li><a href="/p/ledger-core/commit/9b3c771">9b3c771</a><span>Seed chart of accounts for tests <span class="muted">(t151)</span></span><span class="who">antigravity/gemini-3.1-pro</span><span class="meta">1 d</span></li>
   </ul>
   <nav class="pager" aria-label="Pages"><span>Commits 1–50 of 157 <a class="mk" href="#n5">5</a></span><span class="row-flex"><span class="btn small" aria-disabled="true">← Newer</span><a class="btn small" href="?page=1">Older →</a></span></nav>
 </main>
@@ -146,12 +167,146 @@ npm test   runs the suite (418 tests)</div><a class="mk" href="#n4">4</a>
   <h1>Log · 157 commits</h1>
   <nav aria-label="Code views" class="switch"><a href="/p/ledger-core/code">Files</a><a href="/p/ledger-core/log" aria-current="page">Log</a></nav>
   <ul class="rows tree log" style="margin-top:12px">
-    <li class="f-openai"><span class="stripe"></span><span><a href="/p/ledger-core/commit/7e21b04" class="commit">7e21b04</a> Validate ISO 4217 codes on import <span class="muted">(t156)</span></span><span class="meta">2 h</span></li>
-    <li class="f-anthropic"><span class="stripe"></span><span><a href="/p/ledger-core/commit/c09d1e2" class="commit">c09d1e2</a> Show closing balance per period <span class="muted">(t155)</span></span><span class="meta">5 h</span></li>
-    <li class="f-zai"><span class="stripe"></span><span><a href="/p/ledger-core/commit/41aa8f0" class="commit">41aa8f0</a> Fix off-by-one in statement ranges <span class="muted">(t153)</span></span><span class="meta">9 h</span></li>
-    <li class="f-google"><span class="stripe"></span><span><a href="/p/ledger-core/commit/9b3c771" class="commit">9b3c771</a> Seed chart of accounts for tests <span class="muted">(t151)</span></span><span class="meta">1 d</span></li>
+    <li><span><a href="/p/ledger-core/commit/7e21b04" class="commit">7e21b04</a> Validate ISO 4217 codes on import <span class="muted">(t156)</span></span><span class="meta">2 h</span><span class="who">codex/gpt-6-astra</span></li>
+    <li><span><a href="/p/ledger-core/commit/c09d1e2" class="commit">c09d1e2</a> Show closing balance per period <span class="muted">(t155)</span></span><span class="meta">5 h</span><span class="who">claude-code/opus-5.5</span></li>
+    <li><span><a href="/p/ledger-core/commit/41aa8f0" class="commit">41aa8f0</a> Fix off-by-one in statement ranges <span class="muted">(t153)</span></span><span class="meta">9 h</span><span class="who">zcode/glm-5.3</span></li>
+    <li><span><a href="/p/ledger-core/commit/9b3c771" class="commit">9b3c771</a> Seed chart of accounts for tests <span class="muted">(t151)</span></span><span class="meta">1 d</span><span class="who">antigravity/gemini-3.1-pro</span></li>
   </ul>
   <nav class="pager" aria-label="Pages"><span>1–50 of 157 <a class="mk" href="#n6">6</a></span><span class="row-flex"><span class="btn small" aria-disabled="true">← Newer</span><a class="btn small" href="?page=1">Older →</a></span></nav>
+</main>
+</div>
+</figure>
+
+<figure class="frame desktop">
+<figcaption>Desktop · 1440 · /p/ledger-core/code/src/money.ts (a file)</figcaption>
+<div class="screen">
+<header class="ob">
+  <a class="skip" href="#df-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier"><a class="brand" href="/decisions">Atelier</a><ul><li><a href="/decisions">Decisions <span class="count">(14)</span></a></li><li><a href="/home" aria-current="true">Projects</a></li><li><a href="/studio">Activity</a></li></ul><span class="spacer"></span><details><summary>Ledger Core ▾</summary></details><details><summary>Owner ▾</summary></details></nav>
+  <nav class="r2" aria-label="Project"><p class="loc"><a href="/p/ledger-core">Ledger Core</a><span class="sep">›</span><a href="/p/ledger-core/code">Code</a><span class="sep">›</span><a href="/p/ledger-core/code/src">src</a><span class="sep">›</span><span aria-current="page">money.ts</span></p>
+    <ul class="tabs"><li><a href="/p/ledger-core">Overview</a></li><li><a href="/p/ledger-core/tasks">Tasks <span class="count">(200)</span></a></li><li><a href="/p/ledger-core/code" aria-current="page">Code</a></li><li><a href="/p/ledger-core/flow">Activity</a></li><li><a href="/p/ledger-core/settings">Settings</a></li></ul></nav>
+</header>
+<main id="df-main" class="app-main">
+  <div class="row-flex"><h1 class="mono">src/money.ts <a class="mk" href="#n7">7</a></h1><nav aria-label="Code views" class="switch"><a href="/p/ledger-core/code" aria-current="page">Files</a><a href="/p/ledger-core/log">Log</a></nav></div>
+  <p class="facts"><span>main @ 7e21b04</span><span>15 lines · 425 bytes</span><span>last changed by <a href="/p/ledger-core/commit/7e21b04">7e21b04</a> (t156, codex/gpt-6-astra), 2 h ago</span><a href="/p/ledger-core/history/src/money.ts">History of this file</a><a class="mk" href="#n8">8</a></p>
+  <ol class="lines inset" tabindex="0" aria-label="src/money.ts, 15 lines"><li>import { isCurrency } from &quot;./iso4217&quot;;</li><li></li><li>export type Money = { cents: bigint; currency: string };</li><li></li><li>export function money(cents: bigint, currency: string): Money {</li><li>  if (!isCurrency(currency)) {</li><li>    throw new RangeError(`unknown currency ${currency}`);</li><li>  }</li><li>  return { cents, currency };</li><li>}</li><li></li><li>export function add(a: Money, b: Money): Money {</li><li>  if (a.currency !== b.currency) throw new RangeError(&quot;mixed currencies&quot;);</li><li>  return money(a.cents + b.cents, a.currency);</li><li>}</li></ol>
+</main>
+</div>
+</figure>
+<figure class="frame phone">
+<figcaption>Phone · 390 · /p/ledger-core/code/src/money.ts (a file)</figcaption>
+<div class="screen">
+<header class="ob phone">
+  <a class="skip" href="#pf-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <a href="/decisions">Decisions <span class="count">(14)</span></a>
+    <span class="spacer"></span>
+    <details><summary>Menu ▾</summary><div class="menu-panel"><a href="/home">Projects</a><a href="/studio">Activity</a><hr><a href="/models">Models</a><a href="/usage">Usage</a><a href="/logout">Sign out</a></div></details>
+  </nav>
+  <nav class="r2" aria-label="Project">
+    <p class="loc"><a href="/p/ledger-core">Ledger Core</a><span class="sep">›</span><a href="/p/ledger-core/code">Code</a><span class="sep">›</span><a href="/p/ledger-core/code/src">src</a><span class="sep">›</span><span aria-current="page">money.ts</span></p>
+    <ul class="tabs"><li><a href="/p/ledger-core">Overview</a></li><li><a href="/p/ledger-core/tasks">Tasks (200)</a></li><li><a href="/p/ledger-core/code" aria-current="page">Code</a></li><li><a href="/p/ledger-core/flow">Activity</a></li><li><a href="/p/ledger-core/settings">Settings</a></li></ul>
+  </nav>
+</header>
+<main id="pf-main" class="app-main">
+  <h1 class="mono" style="font-size:20px">money.ts</h1>
+  <nav aria-label="Code views" class="switch"><a href="/p/ledger-core/code" aria-current="page">Files</a><a href="/p/ledger-core/log">Log</a></nav>
+  <p class="facts" style="font-size:13px;margin-top:10px"><span>main @ 7e21b04 · 15 lines</span><span>last: t156, 2 h ago</span><a href="/p/ledger-core/history/src/money.ts">History of this file</a></p>
+  <ol class="lines inset" tabindex="0" aria-label="src/money.ts, 15 lines"><li>import { isCurrency } from &quot;./iso4217&quot;;</li><li></li><li>export type Money = { cents: bigint; currency: string };</li><li></li><li>export function money(cents: bigint, currency: string): Money {</li><li>  if (!isCurrency(currency)) {</li><li>    throw new RangeError(`unknown currency ${currency}`);</li><li>  }</li><li>  return { cents, currency };</li><li>}</li></ol>
+  <p class="muted" style="font-size:13px">Long lines scroll inside the code box; the page itself never scrolls sideways. <a class="mk" href="#n9">9</a></p>
+</main>
+</div>
+</figure>
+
+<figure class="frame desktop">
+<figcaption>Desktop · 1440 · /p/ledger-core/commit/7e21b04 (a commit)</figcaption>
+<div class="screen">
+<header class="ob">
+  <a class="skip" href="#dc-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier"><a class="brand" href="/decisions">Atelier</a><ul><li><a href="/decisions">Decisions <span class="count">(14)</span></a></li><li><a href="/home" aria-current="true">Projects</a></li><li><a href="/studio">Activity</a></li></ul><span class="spacer"></span><details><summary>Ledger Core ▾</summary></details><details><summary>Owner ▾</summary></details></nav>
+  <nav class="r2" aria-label="Project"><p class="loc"><a href="/p/ledger-core">Ledger Core</a><span class="sep">›</span><a href="/p/ledger-core/log">Log</a><span class="sep">›</span><span aria-current="page">7e21b04</span></p>
+    <ul class="tabs"><li><a href="/p/ledger-core">Overview</a></li><li><a href="/p/ledger-core/tasks">Tasks <span class="count">(200)</span></a></li><li><a href="/p/ledger-core/code" aria-current="page">Code</a></li><li><a href="/p/ledger-core/flow">Activity</a></li><li><a href="/p/ledger-core/settings">Settings</a></li></ul></nav>
+</header>
+<main id="dc-main" class="app-main">
+  <div class="row-flex"><h1>Validate ISO 4217 codes on import <a class="mk" href="#n10">10</a></h1><nav aria-label="Code views" class="switch"><a href="/p/ledger-core/code">Files</a><a href="/p/ledger-core/log" aria-current="page">Log</a></nav></div>
+  <p class="facts"><span class="mono">7e21b04</span><span>merged by the owner from <a href="/p/ledger-core/t156">t156</a></span><span>written by codex/gpt-6-astra</span><span>2026-10-11 09:58 UTC</span><span>parent <a class="mono" href="/p/ledger-core/commit/c09d1e2">c09d1e2</a></span><a href="/p/ledger-core/code?at=7e21b04">Browse files at this commit</a></p>
+  <h2>3 files changed · +206 −0</h2>
+  <ul class="files-changed"><li><a href="#d-money">src/money.ts</a><span class="n">+3 −0</span></li><li><a href="#d-iso">src/iso4217.ts</a><span class="n">+182 −0</span></li><li><a href="#d-test">test/money.test.ts</a><span class="n">+21 −0</span></li></ul>
+  <details class="diff" id="d-money" open><summary><span class="tag neutral">Changed</span>src/money.ts<span class="n">+3 −0</span></summary><pre><span class="hunk">@@ -1,6 +1,10 @@</span><span class="add">+import { isCurrency } from "./iso4217";</span><span> </span><span> export type Money = { cents: bigint; currency: string };</span><span> </span><span> export function money(cents: bigint, currency: string): Money {</span><span class="add">+  if (!isCurrency(currency)) {</span><span class="add">+    throw new RangeError(`unknown currency ${currency}`);</span><span class="add">+  }</span><span>   return { cents, currency };</span><span class="del">−  // TODO: validate the currency code</span></pre></details>
+  <details class="diff" id="d-iso"><summary><span class="tag neutral">Added</span>src/iso4217.ts<span class="n">+182 −0</span></summary></details>
+  <details class="diff" id="d-test"><summary><span class="tag neutral">Changed</span>test/money.test.ts<span class="n">+21 −0</span></summary></details>
+  <p class="muted" style="font-size:14px">Added lines carry a + and a left rule (green is kept for checks); removed lines a − in the failure red t367 allows for deletions. Large files start folded. <a class="mk" href="#n11">11</a></p>
+</main>
+</div>
+</figure>
+<figure class="frame phone">
+<figcaption>Phone · 390 · /p/ledger-core/commit/7e21b04 (a commit)</figcaption>
+<div class="screen">
+<header class="ob phone">
+  <a class="skip" href="#pc-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <a href="/decisions">Decisions <span class="count">(14)</span></a>
+    <span class="spacer"></span>
+    <details><summary>Menu ▾</summary><div class="menu-panel"><a href="/home">Projects</a><a href="/studio">Activity</a><hr><a href="/models">Models</a><a href="/usage">Usage</a><a href="/logout">Sign out</a></div></details>
+  </nav>
+  <nav class="r2" aria-label="Project">
+    <p class="loc"><a href="/p/ledger-core">Ledger Core</a><span class="sep">›</span><a href="/p/ledger-core/log">Log</a><span class="sep">›</span><span aria-current="page">7e21b04</span></p>
+    <ul class="tabs"><li><a href="/p/ledger-core">Overview</a></li><li><a href="/p/ledger-core/tasks">Tasks (200)</a></li><li><a href="/p/ledger-core/code" aria-current="page">Code</a></li><li><a href="/p/ledger-core/flow">Activity</a></li><li><a href="/p/ledger-core/settings">Settings</a></li></ul>
+  </nav>
+</header>
+<main id="pc-main" class="app-main">
+  <h1>Validate ISO 4217 codes on import</h1>
+  <nav aria-label="Code views" class="switch"><a href="/p/ledger-core/code">Files</a><a href="/p/ledger-core/log" aria-current="page">Log</a></nav>
+  <p class="facts" style="font-size:13px;margin-top:10px"><span class="mono">7e21b04</span><span>from <a href="/p/ledger-core/t156">t156</a> · codex/gpt-6-astra</span><span>11 Oct 09:58 UTC</span><a href="/p/ledger-core/code?at=7e21b04">Browse files here</a></p>
+  <h2>3 files · +206 −0</h2>
+  <details class="diff"><summary><span class="tag neutral">Changed</span>src/money.ts<span class="n">+3</span></summary></details>
+  <details class="diff"><summary><span class="tag neutral">Added</span>src/iso4217.ts<span class="n">+182</span></summary></details>
+  <details class="diff"><summary><span class="tag neutral">Changed</span>test/money.test.ts<span class="n">+21</span></summary></details>
+  <p class="muted" style="font-size:13px">On a phone every file starts folded, so the summary and the file list come first; a diff opens in place and scrolls inside its box. <a class="mk" href="#n12">12</a></p>
+</main>
+</div>
+</figure>
+
+<figure class="frame desktop">
+<figcaption>Desktop · 1440 · /p/ledger-core/history/src/money.ts (a path's history)</figcaption>
+<div class="screen">
+<header class="ob">
+  <a class="skip" href="#dh-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier"><a class="brand" href="/decisions">Atelier</a><ul><li><a href="/decisions">Decisions <span class="count">(14)</span></a></li><li><a href="/home" aria-current="true">Projects</a></li><li><a href="/studio">Activity</a></li></ul><span class="spacer"></span><details><summary>Ledger Core ▾</summary></details><details><summary>Owner ▾</summary></details></nav>
+  <nav class="r2" aria-label="Project"><p class="loc"><a href="/p/ledger-core">Ledger Core</a><span class="sep">›</span><a href="/p/ledger-core/code">Code</a><span class="sep">›</span><a href="/p/ledger-core/code/src">src</a><span class="sep">›</span><a href="/p/ledger-core/code/src/money.ts">money.ts</a><span class="sep">›</span><span aria-current="page">History</span></p>
+    <ul class="tabs"><li><a href="/p/ledger-core">Overview</a></li><li><a href="/p/ledger-core/tasks">Tasks <span class="count">(200)</span></a></li><li><a href="/p/ledger-core/code" aria-current="page">Code</a></li><li><a href="/p/ledger-core/flow">Activity</a></li><li><a href="/p/ledger-core/settings">Settings</a></li></ul></nav>
+</header>
+<main id="dh-main" class="app-main">
+  <div class="row-flex"><h1>History of <span class="mono">src/money.ts</span> <a class="mk" href="#n13">13</a></h1><nav aria-label="Code views" class="switch"><a href="/p/ledger-core/code">Files</a><a href="/p/ledger-core/log" aria-current="page">Log</a></nav></div>
+  <p class="facts"><span>4 commits changed it, newest first</span><span>searched the latest 100 merges on main</span><a href="/p/ledger-core/code/src/money.ts">View the file</a></p>
+  <ul class="rows tree log"><li><a href="/p/ledger-core/commit/7e21b04">7e21b04</a><span>Validate ISO 4217 codes on import <span class="muted">(t156)</span></span><span class="who">codex/gpt-6-astra</span><span class="meta">2 h</span></li><li><a href="/p/ledger-core/commit/e5d0a19">e5d0a19</a><span>Round half-even in money() <span class="muted">(t149)</span></span><span class="who">claude-code/opus-5.5</span><span class="meta">4 d</span></li><li><a href="/p/ledger-core/commit/b80c3f2">b80c3f2</a><span>Store amounts as integer cents <span class="muted">(t131)</span></span><span class="who">zcode/glm-5.3</span><span class="meta">9 d</span></li><li><a href="/p/ledger-core/commit/3a17c6e">3a17c6e</a><span>Add Money type and add() <span class="muted">(t12)</span></span><span class="who">antigravity/gemini-3.1-pro</span><span class="meta">35 d</span></li></ul>
+  <nav class="pager" aria-label="Pages"><span>4 of 4</span><span class="row-flex"><span class="btn small" aria-disabled="true">← Newer</span><span class="btn small" aria-disabled="true">Older →</span></span></nav>
+</main>
+</div>
+</figure>
+<figure class="frame phone">
+<figcaption>Phone · 390 · /p/ledger-core/history/src/money.ts (a path's history)</figcaption>
+<div class="screen">
+<header class="ob phone">
+  <a class="skip" href="#ph-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <a href="/decisions">Decisions <span class="count">(14)</span></a>
+    <span class="spacer"></span>
+    <details><summary>Menu ▾</summary><div class="menu-panel"><a href="/home">Projects</a><a href="/studio">Activity</a><hr><a href="/models">Models</a><a href="/usage">Usage</a><a href="/logout">Sign out</a></div></details>
+  </nav>
+  <nav class="r2" aria-label="Project">
+    <p class="loc"><a href="/p/ledger-core">Ledger Core</a><span class="sep">›</span><a href="/p/ledger-core/code">Code</a><span class="sep">›</span><a href="/p/ledger-core/code/src">src</a><span class="sep">›</span><a href="/p/ledger-core/code/src/money.ts">money.ts</a><span class="sep">›</span><span aria-current="page">History</span></p>
+    <ul class="tabs"><li><a href="/p/ledger-core">Overview</a></li><li><a href="/p/ledger-core/tasks">Tasks (200)</a></li><li><a href="/p/ledger-core/code" aria-current="page">Code</a></li><li><a href="/p/ledger-core/flow">Activity</a></li><li><a href="/p/ledger-core/settings">Settings</a></li></ul>
+  </nav>
+</header>
+<main id="ph-main" class="app-main">
+  <h1>History of <span class="mono">money.ts</span></h1>
+  <nav aria-label="Code views" class="switch"><a href="/p/ledger-core/code">Files</a><a href="/p/ledger-core/log" aria-current="page">Log</a></nav>
+  <p class="facts" style="font-size:13px;margin-top:10px"><span>4 commits, newest first</span><a href="/p/ledger-core/code/src/money.ts">View the file</a></p>
+  <ul class="rows tree log"><li><span><a href="/p/ledger-core/commit/7e21b04" class="commit">7e21b04</a> Validate ISO 4217 codes on import <span class="muted">(t156)</span></span><span class="meta">2 h</span><span class="who">codex/gpt-6-astra</span></li><li><span><a href="/p/ledger-core/commit/e5d0a19" class="commit">e5d0a19</a> Round half-even in money() <span class="muted">(t149)</span></span><span class="meta">4 d</span><span class="who">claude-code/opus-5.5</span></li><li><span><a href="/p/ledger-core/commit/b80c3f2" class="commit">b80c3f2</a> Store amounts as integer cents <span class="muted">(t131)</span></span><span class="meta">9 d</span><span class="who">zcode/glm-5.3</span></li><li><span><a href="/p/ledger-core/commit/3a17c6e" class="commit">3a17c6e</a> Add Money type and add() <span class="muted">(t12)</span></span><span class="meta">35 d</span><span class="who">antigravity/gemini-3.1-pro</span></li></ul>
 </main>
 </div>
 </figure>
@@ -162,10 +317,17 @@ npm test   runs the suite (418 tests)</div><a class="mk" href="#n4">4</a>
   <ol>
     <li id="n1"><span class="num">1</span><div>One location row, "Ledger Core › Code", replaces the breadcrumb + tabs + rail; deeper paths extend it (Ledger Core › Code › src › ui.ts). <span class="cite">F1 → P1</span></div></li>
     <li id="n2"><span class="num">2</span><div>Files · Log is a switch inside Code, so Log no longer competes with "History" in the rail; commit and path-history pages sit under the same tab. <span class="cite">F1 → P1</span></div></li>
-    <li id="n3"><span class="num">3</span><div>The family stripe is kept (a strength) and the last change is also written in words, so colour never carries it alone. <span class="cite">F20, F17 → P14</span></div></li>
+    <li id="n3"><span class="num">3</span><div>Today's family stripes are dropped: standing decision d9 keeps company colours inside charts only. The last change is written in words (task, message, age), and the Log names the author as text. <span class="cite">F17 → P14</span></div></li>
     <li id="n4"><span class="num">4</span><div>File views and code lines (<code>tabindex="0"</code>) get the same 2 px focus ring as links. <span class="cite">F16 → P13</span></div></li>
     <li id="n5"><span class="num">5</span><div>The Log keeps its 50-a-page paging with Newer/Older; "no commits yet" and "no workspace" become in-shell messages that keep this row. <span class="cite">F6, F14 → P2</span></div></li>
-    <li id="n6"><span class="num">6</span><div>The Log on a phone: the author moves into the family stripe, the hash leads the message on one line that wraps, and each commit link is at least 24 px high (the live Log's are 21 px at 390). Commit and path-history pages use this same phone frame. <span class="cite">F6, F17 → P1, P16</span></div></li>
+    <li id="n6"><span class="num">6</span><div>The Log on a phone: the hash leads the message, which wraps; the author drops to a muted second line in text, and each commit link is at least 24 px high (the live Log's are 21 px at 390). <span class="cite">F6, F17 → P1, P16</span></div></li>
+    <li id="n7"><span class="num">7</span><div>A file: the location row grows to Ledger Core › Code › src › money.ts, each step a link, replacing today's breadcrumb, the "Head of the baseline" line and the repeated project title. The path is the heading. Files stays the current view. <span class="cite">F1 → P1</span></div></li>
+    <li id="n8"><span class="num">8</span><div>One facts line: revision, size, the last change as a link to its commit with its task and author in words, and "History of this file" (today a muted link beside the byte count). <span class="cite">F1, F17 → P1, P14</span></div></li>
+    <li id="n9"><span class="num">9</span><div>The code box is one focus stop (<code>tabindex="0"</code>) with the 2 px ring, so a keyboard user can scroll it; line numbers are drawn by CSS and not copied. At 390 long lines scroll inside the box (WCAG 1.4.10 allows two-dimensional scrolling for code), never the page. <span class="cite">F16, F23 → P13, P16</span></div></li>
+    <li id="n10"><span class="num">10</span><div>A commit: the message is the heading (today the project name is, and the message sits in a box under it), the location row is Ledger Core › Log › 7e21b04, and Log is the current view. The facts line says who merged it, from which task, who wrote it, its parent, and links to the files at that commit. <span class="cite">F1 → P1</span></div></li>
+    <li id="n11"><span class="num">11</span><div>A file list with counts links to each diff. Diffs mark added lines by sign, weight and a neutral rule, not green, which palette B keeps for an observed pass; removed lines take a − and the red t367 allows for deletions. The Added/Changed word is a neutral tag. Files over 100 changed lines start folded. <span class="cite">F17, F6 → P1, P14</span></div></li>
+    <li id="n12"><span class="num">12</span><div>The commit on a phone: the facts wrap to short lines and every diff starts folded behind a <code>&lt;summary&gt;</code> of at least 24 px, so the page opens on what changed rather than 1,000 px of hunks. <span class="cite">F6, F23 → P16</span></div></li>
+    <li id="n13"><span class="num">13</span><div>A path's history: "History of src/money.ts" is the heading, the facts line says how far back it searched (today a lone sentence) and links back to the file. Rows are the Log's rows, so the hash, the message, the task and the author read the same in both; it pages like the Log when it passes 50. The same three frames serve a task's workspace under <code>/p/NAME/tN/code|commit|history/…</code>, whose location row reads Ledger Core › t192 › Code. <span class="cite">F1, F6 → P1</span></div></li>
   </ol>
 </section>
 </body>
