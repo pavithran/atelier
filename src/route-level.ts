@@ -23,8 +23,14 @@
 // (t406).
 // 19: a project that requires criteria refuses a task filed or cleared
 // without them, and init takes --require-criteria (t397).
-// 20: runner-scoped API credentials and revocable Git gateway (t444).
-// 21: the criteria-review routes, which the runner's criteria-review job
+// Runner-scoped API credentials and revocable Git gateway (t444).
+// 21: a runner reports a review it will not serve to review-skip, the
+// queue's review tasks and the review request's answer name the request's
+// number, and the landing counts skips by it (t353). 22: a runner token
+// posts review-skip for a review job it was offered, under the job's actor,
+// as the runner has done since runner tokens (t444); a server at 21 refused
+// it, so a runner's skip never reached the landing (t353).
+// 23: the criteria-review routes, which the runner's criteria-review job
 // calls to claim a review of a task's acceptance criteria and record its
 // verdict or failure, and init takes --require-criteria-review (t438).
-export const ROUTE_LEVEL = 21;
+export const ROUTE_LEVEL = 23;

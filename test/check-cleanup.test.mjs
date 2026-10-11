@@ -1,3 +1,4 @@
+import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
@@ -45,6 +46,7 @@ async function fixture(t, check) {
     const env = { ...process.env, ATELIER_ACTOR: actor, ATELIER_CONFIG_DIR: root, ATELIER_CACHE: cache, ATELIER_TOKEN: "api",
       ATELIER_SERVER: `http://127.0.0.1:${server.address().port}` };
     const child = spawn(process.execPath, [cli, "check", "t1", "--project", "proj"], { cwd: root, env });
+    t.after(() => child.kill("SIGKILL"));
     let stdout = "", stderr = ""; child.stdout.on("data", (s) => stdout += s); child.stderr.on("data", (s) => stderr += s);
     const status = await new Promise((done) => child.on("close", done));
     return { status, stdout, stderr };
@@ -54,6 +56,7 @@ async function fixture(t, check) {
 }
 
 for (const exit of [0, 1]) test(`a clone that cannot be removed is a warning, and a ${exit ? "failing" : "passing"} check keeps its own result`, async (t) => {
+  if (!canInspectSlots(t)) return;
   // The check leaves a file in a folder it may not write, so removing the
   // clone fails (ENOTEMPTY on macOS) however often it is tried.
   const f = await fixture(t, () => `mkdir locked && touch locked/f && chmod 500 locked; exit ${exit}`);
@@ -68,18 +71,37 @@ for (const exit of [0, 1]) test(`a clone that cannot be removed is a warning, an
   assert.doesNotMatch(r.stderr, /\n\s+at |Node\.js v/, "no stack is printed");
 });
 
-test("a process the check leaves behind is ended, and the clone is removed", { timeout: 60_000 }, async (t) => {
-  // A loop in the background, still writing into the clone after the check
+// The test waits on what happens (the CLI exiting, the process gone, the clone
+// removed), never on a fixed sleep. Its timeout is only a ceiling for a machine
+// under load: alone it takes a few seconds, but it clones and starts a node
+// process and a shell, and on a host at several times its cores that took over
+// 60 s (t371's landing, 2026-10-10), so the ceiling is five minutes.
+const CEILING_MS = 300_000;
+const gone = async (pid) => {
+  for (const t0 = Date.now();;) {
+    try { process.kill(pid, 0); } catch (e) { if (e.code === "ESRCH") return true; throw e; }
+    if (Date.now() - t0 > CEILING_MS / 2) return false;
+    await new Promise((ok) => setTimeout(ok, 25));
+  }
+};
+
+test("a process the check leaves behind is ended, and the clone is removed", { timeout: CEILING_MS }, async (t) => {
+  if (!canInspectSlots(t)) return;
+  // A loop in the background that never ends by itself, so only the check's
+  // cleanup can end it (a finite loop would end inside the wait and pass
+  // without cleanup). It is still writing into the clone after the check
   // has exited, as a test runner's worker or a watcher can. Its output goes
   // elsewhere, so the check's own output closes when the check exits.
-  const f = await fixture(t, (root) => `(for i in $(seq 1 600); do date > "$PWD/bg-$i.txt"; sleep 0.05; done) >/dev/null 2>&1 & echo $! > '${join(root, "bg.pid")}'; exit 0`);
-  t.after(() => { try { process.kill(Number(readFileSync(join(f.root, "bg.pid"), "utf8")), "SIGKILL"); } catch { /* It has ended. */ } });
+  const f = await fixture(t, (root) => `(while :; do date > "$PWD/bg.txt"; sleep 0.05; done) >/dev/null 2>&1 & echo $! > '${join(root, "bg.pid")}'; exit 0`);
+  // Keep the PID in memory: fixture teardown removes bg.pid before this hook.
+  let pid;
+  t.after(() => { if (pid) { try { process.kill(pid, "SIGKILL"); } catch { /* It has ended. */ } } });
   const r = await f.run();
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /^PASS {2}/m);
-  const pid = Number(readFileSync(join(f.root, "bg.pid"), "utf8"));
+  pid = Number(readFileSync(join(f.root, "bg.pid"), "utf8"));
   assert.ok(pid > 0);
-  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" }, "the background process has ended");
+  assert.ok(await gone(pid), "the background process has ended");
   assert.deepEqual(f.clones(), [], "the clone is removed");
   assert.doesNotMatch(r.stderr, /warning|\n\s+at /, r.stderr);
 });
