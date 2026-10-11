@@ -27,7 +27,7 @@ test("lists what waits on the owner with the next command and link, work in prog
   assert.equal(out[0], "Demo project (demo)");
   assert.ok(out.includes("  Waiting for you"));
   assert.ok(out.includes("    t1  Accept  Task t1"));
-  assert.ok(out.includes("      next: atelier accept t1 --project demo"));
+  assert.ok(out.includes("      next: atelier land t1 --reviewer H/M --project demo"));
   assert.ok(out.includes("      https://a.test/p/demo/t1"));
   assert.ok(!out.includes("    t1  submitted  held by claude-code/opus-5.5  Task t1"), "a task waiting on the owner is said once");
   assert.ok(out.includes("    t2  claimed  held by codex/gpt-6  Task t2"));
@@ -100,7 +100,7 @@ test("overlapping scopes are counted on one line after the owner's waits, each p
   assert.ok(out.includes("    t4  Accept  Task t4"), "the owner's waits stay where they are");
   const line = out.findIndex((l) => l.startsWith("  Overlapping scopes: "));
   assert.equal(out[line], "  Overlapping scopes: 2 pairs; expect a merge conflict when the second lands; nothing waits on you. atelier status --json lists them.");
-  assert.ok(line > out.indexOf("      next: atelier accept t4 --project demo"), "after every wait that needs the owner");
+  assert.ok(line > out.indexOf("      next: atelier land t4 --reviewer H/M --project demo"), "after every wait that needs the owner");
   assert.ok(!out.some((l) => l.includes("name overlapping paths")));
 });
 

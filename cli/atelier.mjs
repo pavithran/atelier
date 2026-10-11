@@ -34,8 +34,9 @@ import { hooksOff, landingDir, landingJournalFile, oldLandingJournalFile, RECEIP
 import { loadPairs } from "./fresh.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { markerPath } from "./gc.mjs";
-import { absolute, taskLink } from "./status.mjs";
+import { absolute, taskLink, waitingCommand } from "./status.mjs";
 import { STAGE_LABEL } from "../src/attention.ts";
+import { formatProcesses, liveProcesses, parseLsof, parsePs } from "./procs.mjs";
 import { findStrays } from "./strays.mjs";
 import { formatTokenExpiryWarnings, parseExpiryDay, readTokenExpiries, recordTokenExpiryDay, TOKEN_EXPIRY_WARN_DAYS } from "./token-expiry.mjs";
 import { runnerCredential, readSecret } from "./credentials.mjs";
@@ -43,7 +44,7 @@ import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
 import { slotInvocation } from "./load.mjs";
 export { checkEnv } from "./check-env.mjs";
-import { COMMANDS, COMMAND_USAGE, commandFor } from "./help.mjs";
+import { COMMANDS, COMMAND_USAGE, commandFor, OWNER_LANDING } from "./help.mjs";
 import { HANDLER_MODULES } from "./commands/index.mjs";
 import { decisionLines } from "../src/decisions.ts";
 import { shipPolicy } from "./ship.mjs";
@@ -451,7 +452,7 @@ export const AGENTS_SECTION = `## Working through Atelier
 
 Before driving this project's tasks by hand, run \`atelier guide --role orchestrate\`; it prints the whole orchestrator guide.
 
-Review path: a finished task is reviewed before it merges. \`atelier land ID --reviewer HARNESS/MODEL\` lands it with that model's review; do not merge around the review.
+Review path: ${OWNER_LANDING}
 `;
 
 export function agentsMdOffer(markdown) {
@@ -725,14 +726,14 @@ export class RequestError extends Error {
 
 // `call` without ending the command: a failure throws a RequestError, so a
 // caller can retry it or name the step that failed.
-export async function request(method, path, body, as, extra = {}) {
+export async function request(method, path, body, as, extra = {}, signal) {
   const die = (message, code = 1) => { throw new RequestError(message, code); };
   if (path !== "/config") await resolveTokenActor();
   if (tokenActor) as = args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
   let res, text;
   try {
     res = await fetch(server() + "/api" + path, {
-      method,
+      method, signal,
       headers: { authorization: `Bearer ${apiToken()}`, ...(as ? { "x-atelier-actor": as } : {}), "content-type": "application/json", ...extra },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -1230,8 +1231,17 @@ export function formatStanding(s, ownerName = "the project owner", origin = "") 
   const group = (title, rows) => { if (rows.length) lines.push("", `${title}:`, ...rows.map((r) => `  ${r}`)); };
   group("Held now", s.live.map((i) => `${i.id}  ${i.state}  held by ${flat(i.owner ?? "nobody")}${i.since ? ` since ${at(i.since)}` : ", since when is not shown"}  ${flat(i.title)}`));
   // One line per task waiting on the owner, as attentionFor places it
-  // (src/attention.ts): the call, what to do, the link, then the notice and brief.
-  group(`Waiting on ${flat(ownerName)}`, s.waiting.map((w) => `${w.id}  ${w.call}  ${flat(w.title)}  ${flat(w.sentence)}  ${absolute(origin, w.href)}  why: ${flat(w.why)}${w.brief ? `  brief, ${flat(w.brief.verdict)}: ${flat(w.brief.line)}` : ""}`));
+  // (src/attention.ts): the call, what to do, the link, then the notice and
+  // brief, and the command that answers it (t495). A standing from a server
+  // before t504 carries only kind and reason, and reads as it did.
+  group(`Waiting on ${flat(ownerName)}`, s.waiting.map((w) => {
+    const brief = w.brief ? `  brief, ${flat(w.brief.verdict)}: ${flat(w.brief.line)}` : "";
+    const next = waitingCommand(w, s.project.name);
+    const tail = `${brief}${next ? `  next: ${flat(next)}` : ""}`;
+    return w.call
+      ? `${w.id}  ${w.call}  ${flat(w.title)}  ${flat(w.sentence)}  ${absolute(origin, w.href)}  why: ${flat(w.why)}${tail}`
+      : `${w.id}  ${w.kind}  ${flat(w.title)}  ${flat(w.reason)}${tail}`;
+  }));
   if (s.pipeline?.length) lines.push("", `In the pipeline: ${s.pipeline.reduce((n, x) => n + x.count, 0)} tasks: ${s.pipeline.map((x) => `${x.count} ${STAGE_LABEL[x.stage]}`).join(", ")}; none waits on ${flat(ownerName)}.`);
   if (s.overlaps?.length) lines.push("", `Overlapping scopes: ${s.overlaps.length} ${s.overlaps.length === 1 ? "pair" : "pairs"}; nothing waits on ${flat(ownerName)}. The JSON lists them.`);
   group("Queued for a runner", s.queued.map((q) => `${q.id}  for ${flat(runner(q))}  ${flat(q.title)}${q.note ? `  note: ${flat(q.note)}` : ""}`));
@@ -1538,6 +1548,17 @@ export async function localStanding(name, as) {
   const leftover = items.filter((i) => here.has(i.id) && closed(i)).length;
   return { project: name, tasks, leftover, landing: { lock: landingRunning(name), lease: await landingLease(name, as) } };
 }
+
+// The runners and agent processes live on this machine, read as columns from
+// ps and the working directories from lsof (cli/procs.mjs): no command line
+// is kept. null when either tool could not be run.
+export function liveHere(project = null) {
+  const ps = spawnSync("ps", ["-axo", "pid=,ppid=,etime=,args="], { encoding: "utf8", maxBuffer: 64 << 20 });
+  const lsof = spawnSync("lsof", ["-a", "-d", "cwd", "-Fpcn"], { encoding: "utf8", maxBuffer: 64 << 20 });
+  if (ps.error || ps.status !== 0 || !lsof.stdout) return null;
+  return liveProcesses({ ps: parsePs(ps.stdout), lsof: parseLsof(lsof.stdout), work: join(CACHE, "work"), skip: [process.pid, ps.pid, lsof.pid], project });
+}
+export const liveText = (live) => (live ? formatProcesses(live) : "Live on this Mac:\n  the process table could not be read");
 
 // One line per remote of the local checkout: where the registered branch
 // stands against that remote's tracking ref, as it was last fetched or

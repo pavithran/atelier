@@ -112,7 +112,8 @@ is in Atelier, the repository and this handbook. Before dispatching anything:
 2. For each claimed task, look at its workspace: uncommitted changes, a
    `COMMIT_MSG.txt` an agent left, a merge in progress, or an agent's log in
    `.scratch/`. Check whether the agent's process still runs before starting
-   the same work again.
+   the same work again: `atelier status` ends with the runners and agent
+   processes live on this Mac, by task, with no command lines.
 3. Check that main type-checks and that the deployed server holds main's
    routes.
 4. Read the owner's standing decisions where the project keeps them, and
@@ -270,7 +271,17 @@ accepts and merges. Each step and how long it took are recorded on the
 task as `land.*` events, and a landing stopped partway is resumed by
 running the same command again, which takes its lease back. The same
 lease guards every merge, a plan's included (`POST items/tP/landing` in
-`cli/atelier.mjs`). `bin/orchestrate/queue.sh` and `land.sh` are the
+`cli/atelier.mjs`). To wait on a landing, a runner's build or an agent, use
+`atelier wait ID` (`cli/wait.mjs`), never a hand-written `pgrep` or `lsof`
+loop, which matches its own command line and cannot see a death:
+`--for merged` (the default) ends when the task merges, `--for submitted`
+when its agent submits, `--for reviewed` when a review is recorded at its
+head and current acceptance criteria, and `--for any-change` at the first
+change of state, head, owner or review count. It prints one line and exits 0 when reached, 1 when the task
+failed (abandoned, blocked, or rejected in review), 3 at `--timeout`, 4 when
+the task cannot be read. A task whose agent died stays claimed, so pair a
+long wait with `--timeout` and look at `atelier status` when it ends.
+`bin/orchestrate/queue.sh` and `land.sh` are the
 fallback for a session without a runner to serve the review. When the
 review waits because the runners are busy (one runner works one job at a
 time), the session can start a second runner (`atelier runner --name
@@ -420,12 +431,14 @@ with every task that landed before it. Within that, put first the tasks that
 another piece of work waits on. To reorder it, hold the lock while you edit the queue file:
 `mkdir "$ATELIER_CACHE/land-queue/atelier.queue.lock"`, edit, then `rmdir` it.
 
-Do not chain landings by having a shell wait on `pgrep -f "… tN"`: the
-waiting shell's own command line contains the pattern, so `pgrep` finds the
-waiter itself and it waits forever. On 10 October two landings sat for fifty
-minutes that way. If a wait on a process is unavoidable, write the pattern so
-it cannot match itself (`pgrep -f "land-queue.sh t40[5]"`). t408 replaces
-these waits with a command.
+Wait for a landing with `atelier wait tN --project atelier --for merged`.
+For a runner's build use `--for submitted`, for an agent's review use
+`--for reviewed`, and to observe the next task change use `--for any-change`.
+Add `--timeout 600` to bound the wait, including a stalled server read.
+The command prints the outcome and exits 0 when reached, 1 when the task
+fails, 3 on timeout, or 4 when it cannot read the task. Check that outcome
+before starting dependent work. A merge does not confirm deployment or
+publishing; check the landing queue's post-merge outcome separately.
 
 A failed post-merge step prints `LANDQ tN: post-merge blocked` and exits
 nonzero. Read `$ATELIER_CACHE/land-queue/atelier.queue.post-merge` for the

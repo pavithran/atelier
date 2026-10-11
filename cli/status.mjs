@@ -101,6 +101,25 @@ export function formatLocal(local) {
   return ["On this Mac:", ...local.tasks.map((t) => `  ${localTaskLine(t)}`), ...leftover, `  Landing: ${lockText}; ${leaseText}.`].join("\n");
 }
 
+// The command that answers an inbox entry, where there is one: the owner's
+// path for a submitted task is atelier land, an accepted one merges (t495).
+// It words a waiting entry from a server that sends no command of its own.
+export function nextCommand(entry, project) {
+  const flag = ` --project ${project}`;
+  if (entry.kind === "accept" || entry.kind === "assess") return `atelier land ${entry.itemId} --reviewer ${entry.reviewer ?? "H/M"}${flag}`;
+  if (entry.kind === "merge") return `atelier merge ${entry.itemId}${flag}`;
+  if (entry.kind === "ship") return `atelier ship --dry-run${flag}`;
+  if (entry.kind === "stale") return `atelier release ${entry.itemId}${flag}`;
+  // A plan's entries are answered from what the plan shows.
+  if (entry.kind === "approve-plan" || entry.kind === "plan-blocked") return `atelier plan show ${entry.itemId}${flag}`;
+  return null;
+}
+
+// The command for a standing's waiting entry: the one attentionFor gave it
+// (null where the call has none), else, from a server before t504 that sends
+// only kind and reason, the one nextCommand words.
+export const waitingCommand = (w, project) => (w.command !== undefined ? w.command : nextCommand({ ...w, itemId: w.id }, project));
+
 // The lines for the tasks waiting on the owner: each task's id, call and
 // title, the one sentence saying what to do, the notice behind it, the
 // command where there is one and the link to where the call is made.
@@ -313,7 +332,7 @@ export function formatStatusBrief(b) {
   lines.push(!lease ? "Landing: none running."
     : lease.unreadable ? `Landing: the lease could not be read (${oneLine(lease.unreadable)}).`
       : `Landing: ${lease.item} held by ${lease.holder} since ${lease.since}.`);
-  lines.push(`Waiting on the owner: ${s.waiting.length ? named(s.waiting.map((w) => `${w.id} ${w.call}`)) : "nothing"}.`);
+  lines.push(`Waiting on the owner: ${s.waiting.length ? named(s.waiting.map((w) => { const next = waitingCommand(w, s.project.name); return `${w.id} ${w.call ?? w.kind}${next ? `; next: ${oneLine(next)}` : ""}`; })) : "nothing"}.`);
   lines.push(spendLine(b.usage));
   return lines.join("\n");
 }
