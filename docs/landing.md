@@ -175,7 +175,9 @@ The steps in between:
    offline commands work with no server at all, including `init --rename-local`.
    The identity consumers (`adopt`, `revert`, `claim`, `start`, `wrap`, `init`, `merge`,
    `land` and runner jobs) require `projects.commit-identity.v1`;
-   `models admit`, `withdraw` and `reviewers` require `reviews.admission.v1`. The home runner checks the
+   `models admit`, `withdraw` and `reviewers` require `reviews.admission.v1`;
+   `init` and `land` require the durable post-merge runs, `land.post-merge.v1`
+   (t477), and `land --post-merge` asks for that one alone. The home runner checks the
    union of its jobs' (`JOB_CAPABILITIES`, `src/route-level.ts`) before its
    first poll, the integrator's `integrate` and `refresh` jobs included;
    the review job's include the review claim leases (`reviews.lease.v1`) and the review skip (`reviews.skip.v1`,
@@ -194,9 +196,9 @@ The steps in between:
    `projects.require-criteria.v1`, 20 `runners.scoped-token.v1`, 21
    `reviews.skip.v1`, 22 `reviews.skip-as-runner.v1`, 23 `areas.manage.v1`
    and `areas.board.v1`, 24 `projects.commit-identity.v1`, 25
-   `reviews.admission.v1`, 26 `reviews.lease.v1`, 27
-   `reviews.criteria-review.v1`) and nothing else; a capability added later has no
-   level, so a legacy server is refused for it. While the migration lasts
+   `reviews.admission.v1`, 26 `reviews.lease.v1`, 27 `land.post-merge.v1`,
+   32 `reviews.criteria-review.v1`) and nothing else; a capability added
+   later has no level, so a legacy server is refused for it. While the migration lasts
    the number still rises by one with each such change and gates legacy
    clients: the change declares the capability it stands for with the
    level it raised the number to, one declaration per line in

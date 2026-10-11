@@ -216,8 +216,10 @@ export function checkCapabilities(version: unknown, required: readonly string[])
 // and GET /projects/:p/reviewers), which an older server answers 404 (t492).
 // 26: review-renew and five-minute leases; release and verdicts name the
 // exact request generation, and expired requests are reoffered (t351).
-// 27: the criteria-review routes, which the runner's criteria-review job
+// 27: durable owner-approved post-merge steps and recovery (t477,
+// land.post-merge.v1).
+// 32: the criteria-review routes, which the runner's criteria-review job
 // calls to claim a review of a task's acceptance criteria and record its
 // verdict or failure, and init takes --require-criteria-review (t438,
 // reviews.criteria-review.v1).
-export const ROUTE_LEVEL = 27;
+export const ROUTE_LEVEL = 32;
