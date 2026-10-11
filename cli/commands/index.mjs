@@ -4,8 +4,10 @@ import command_accept from "./accept.mjs";
 import command_adopt from "./adopt.mjs";
 import command_approvals from "./approvals.mjs";
 import command_approve from "./approve.mjs";
+import command_area from "./area.mjs";
 import command_base_token from "./base-token.mjs";
 import command_block from "./block.mjs";
+import command_board from "./board.mjs";
 import command_check from "./check.mjs";
 import command_claim from "./claim.mjs";
 import command_decide from "./decide.mjs";
@@ -57,6 +59,7 @@ import command_served from "./served.mjs";
 import command_ship from "./ship.mjs";
 import command_show from "./show.mjs";
 import command_showcase from "./showcase.mjs";
+import command_slots from "./slots.mjs";
 import command_start from "./start.mjs";
 import command_status from "./status.mjs";
 import command_submit from "./submit.mjs";
@@ -66,6 +69,7 @@ import command_unblock from "./unblock.mjs";
 import command_undispatch from "./undispatch.mjs";
 import command_unwrap from "./unwrap.mjs";
 import command_update from "./update.mjs";
+import command_wait from "./wait.mjs";
 import command_wrap from "./wrap.mjs";
 
 export const HANDLER_MODULES = [
@@ -74,8 +78,10 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/adopt.mjs", run: command_adopt },
   { path: "cli/commands/approvals.mjs", run: command_approvals },
   { path: "cli/commands/approve.mjs", run: command_approve },
+  { path: "cli/commands/area.mjs", run: command_area },
   { path: "cli/commands/base-token.mjs", run: command_base_token },
   { path: "cli/commands/block.mjs", run: command_block },
+  { path: "cli/commands/board.mjs", run: command_board },
   { path: "cli/commands/check.mjs", run: command_check },
   { path: "cli/commands/claim.mjs", run: command_claim },
   { path: "cli/commands/decide.mjs", run: command_decide },
@@ -127,6 +133,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/ship.mjs", run: command_ship },
   { path: "cli/commands/show.mjs", run: command_show },
   { path: "cli/commands/showcase.mjs", run: command_showcase },
+  { path: "cli/commands/slots.mjs", run: command_slots },
   { path: "cli/commands/start.mjs", run: command_start },
   { path: "cli/commands/status.mjs", run: command_status },
   { path: "cli/commands/submit.mjs", run: command_submit },
@@ -136,5 +143,6 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/undispatch.mjs", run: command_undispatch },
   { path: "cli/commands/unwrap.mjs", run: command_unwrap },
   { path: "cli/commands/update.mjs", run: command_update },
+  { path: "cli/commands/wait.mjs", run: command_wait },
   { path: "cli/commands/wrap.mjs", run: command_wrap },
 ];

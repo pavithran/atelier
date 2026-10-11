@@ -4,15 +4,92 @@ import worker from "../src/index.ts";
 import type { Dispatch, CoreHold } from "../src/dispatch/rules.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 
-const TOKEN = "retain-dispatch-test";
+// --overlap-ok on a waiting dispatch, driven through the Worker's routes: the
+// hold-only release (t447) and the override sent as a dispatch (t491).
+
+const TOKEN = "retain-dispatch-test-token";
+const A = "codex/gpt-6-astra";
+const H0 = "0".repeat(40);
 const revoked: string[] = [];
-const artifacts = { get: async () => ({ revokeToken: async (id: string) => { revoked.push(id); return true; }, [Symbol.dispose]() {} }) } as unknown as Artifacts;
+
+const artifacts = {
+  create: async () => ({}),
+  get: async () => ({
+    info: async () => ({ remote: "https://git.test/repo", defaultBranch: "main" }),
+    createToken: async () => ({ plaintext: "token", id: "id", expiresAt: "soon" }),
+    revokeToken: async (id: string) => { revoked.push(id); return true; },
+    [Symbol.dispose]() {},
+  }),
+} as unknown as Artifacts;
+
 function call(method: string, path: string, body?: unknown) {
-  return worker.fetch(new Request(`https://atelier.test/api${path}`, { method,
+  return worker.fetch(new Request(`https://atelier.test/api${path}`, {
+    method,
     headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts } as typeof env);
 }
+
+it("--overlap-ok on a held dispatch keeps its builder and place, is idempotent, and is refused once a runner has claimed it", async () => {
+  const name = "core-retain";
+  const record = { name, repo: name, policy: { checks: ["npm test"], protected: [], coreFiles: ["src/ledger.ts"] }, createdAt: new Date().toISOString() };
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.setProject(record, "owner");
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
+  const live = await L.newItem("Live work", ["src/**"], "owner");
+  await L.claim(live.id, A);
+  await L.setFork(live.id, `${name}--${live.id}`, H0, A);
+
+  const make = async () => ((await (await call("POST", `/projects/${name}/items`, { title: "Core edit", scope: ["src/ledger.ts"] })).json()) as { id: string }).id;
+  const dispatchOf = async (id: string, body: unknown) => {
+    const res = await call("POST", `/projects/${name}/items/${id}/dispatch`, body);
+    return { status: res.status, body: (await res.json()) as { dispatch?: Record<string, unknown>; suggestion?: unknown } };
+  };
+  const id = await make();
+  const first = await dispatchOf(id, { to: "home", agent: "opencode", model: "glm-5.3-flash", note: "keep" });
+  const at = first.body.dispatch!.at;
+
+  const released = await dispatchOf(id, { retain: true, overlapOk: true, suggest: true });
+  expect(released.status).toBe(200);
+  expect(released.body.suggestion).toBeUndefined();
+  expect(released.body.dispatch).toMatchObject({ to: "home", agent: "opencode", model: "glm-5.3-flash", note: "keep", at, overlapOk: true });
+  // It names the hold it released (t491), and only while one held it.
+  expect(released.body).toMatchObject({ retainedDispatch: true, releasedCoreHold: { id: live.id, core: "src/ledger.ts" } });
+  const again = await dispatchOf(id, { retain: true, overlapOk: true, suggest: true });
+  expect(again.body.dispatch).toEqual(released.body.dispatch);
+  expect((again.body as { releasedCoreHold?: unknown }).releasedCoreHold).toBeUndefined();
+  const partial = await dispatchOf(id, { retain: true, overlapOk: true, model: "qwen3-coder-next" });
+  expect(partial.body.dispatch).toMatchObject({ agent: "opencode", model: "qwen3-coder-next", at });
+  // An empty agent clears that restriction alone, keeping the place (t491).
+  const cleared = await dispatchOf(id, { retain: true, overlapOk: true, agent: "" });
+  expect(cleared.status).toBe(200);
+  expect(cleared.body.dispatch).toMatchObject({ agent: null, model: "qwen3-coder-next", note: "keep", at });
+
+  // With no dispatch, the request dispatches as usual.
+  const none = await make();
+  const fresh = await dispatchOf(none, { retain: true, overlapOk: true, agent: "opencode" });
+  expect(fresh.status).toBe(200);
+  expect(fresh.body.dispatch).toMatchObject({ agent: "opencode", overlapOk: true });
+
+  // A runner claims it first: the hold-only release is refused, not redispatched.
+  const claimed = await make();
+  const pending = await dispatchOf(claimed, { to: "home", agent: "opencode" });
+  await L.claim(claimed, "opencode/glm-5.3-flash", { runner: "home:studio", kind: "home" });
+  const late = await dispatchOf(claimed, { retain: true, retainAt: pending.body.dispatch!.at, overlapOk: true });
+  expect(late.status).toBe(409);
+  const after = (await L.item(claimed)) as { owner: string | null; dispatch: { overlapOk?: boolean } };
+  expect(after.owner).toBe("opencode/glm-5.3-flash");
+  expect(after.dispatch.overlapOk).toBeUndefined();
+
+  // Already-owned work follows ordinary redispatch, even with the legacy
+  // retain hint. Its workspace survives and its owner is released.
+  await L.setFork(claimed, `${name}--${claimed}`, H0, "opencode/glm-5.3-flash");
+  const requeued = await dispatchOf(claimed, { retain: true, overlapOk: true, agent: "codex", model: "gpt-6-astra" });
+  expect(requeued.status).toBe(200);
+  expect(requeued.body.dispatch).toMatchObject({ agent: "codex", model: "gpt-6-astra", overlapOk: true });
+  expect(await L.item(claimed)).toMatchObject({ state: "open", owner: null, fork: `${name}--${claimed}` });
+});
+
 // A pool that could suggest a builder, as other dispatch specs seed it, so a
 // retained dispatch is accepted and its suppressed suggestion is observable.
 const POOL: ModelEntry[] = ["shared", "new"].map((id) => ({

@@ -17,7 +17,17 @@ export default async function dispatchCommand() {
   const body = { to: args.to, agent: args.agent, model: args.model, note: args.note, ...(args.job !== undefined ? { job: args.job, ...(args.head !== undefined ? { head: args.head } : {}) } : {}), ...(args["overlap-ok"] === true ? { overlapOk: true } : {}) };
   // With no --agent the server chooses the builder from the pool and the
   // models' records (t370), and says which and why.
-  const suggest = args.agent === undefined && args.job === undefined;
+  // --overlap-ok with no destination, note or job releases a waiting
+  // dispatch's hold and keeps its builder, job and place in the queue; the
+  // server dispatches it as usual when none is waiting.
+  if (args["overlap-ok"] === true && args.to === undefined && args.note === undefined && args.job === undefined) {
+    const { item: before } = await call("GET", I(name, id), undefined, OWNER);
+    if (before.state === "open" && !before.owner && before.dispatch) {
+      body.retain = true;
+      body.retainAt = before.dispatch.at;
+    }
+  }
+  const suggest = !body.retain && args.agent === undefined && args.job === undefined;
   if (suggest) body.suggest = true;
   const item = await call("POST", `${I(name, id)}/dispatch`, body, OWNER);
   const d = item.dispatch;
@@ -27,8 +37,14 @@ export default async function dispatchCommand() {
   // A server older than the override ignores it and answers without it.
   if (args["overlap-ok"] === true && !d.overlapOk) console.log("Warning: the server did not record --overlap-ok; deploy the server, then dispatch again.");
   else if (args["overlap-ok"] === true) {
+    // The hold is named only when one held the dispatch (t491).
     if (item.releasedCoreHold) console.log(`${id}: released core-file hold waiting on ${item.releasedCoreHold.id}; both scopes reach core pattern ${item.releasedCoreHold.core}.`);
     else console.log(`${id}: overlap override recorded.`);
+    // A hold-only release keeps the waiting dispatch (t447).
+    if (body.retain && !item.suggestion) {
+      const who = d.agent ? `${d.agent}${d.model ? `/${d.model}` : " (any model)"}` : d.model ? `any agent / ${d.model}` : "any agent and model";
+      console.log(`${id} keeps its dispatch; builder: ${who}; job: ${d.job ?? "build"}.`);
+    }
   }
   if (d.job === "merge-main") {
     console.log(`${id} goes back to its builder to merge main at ${d.head.slice(0, 8)} into its workspace and resolve the conflicts: a runner that offers the merge-main job claims it, merges main there and leaves the conflicts for the harness to resolve and commit${d.agent ? ` (built by ${d.agent}${d.model ? ` with ${d.model}` : ""})` : ""}. Then run atelier land ${id} again.`);
