@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { checked, runTask, runPlanTask, runRunner, failureCount, infrastructureFailureCount, runOutcome } from "../cli/runner.mjs";
 import { runnerDenied, runnerTaskTerminal, terminalTaskExit, TERMINAL_TASK_EXITS } from "../src/tokens.ts";
 import { parseRuleError, RuleError } from "../src/rules.ts";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 const assignment = { project: "demo", actor: "claude-code/model", agent: "claude-code", model: "model",
   item: { id: "t1", title: "Build", accept: ["works"], scope: [] } };
@@ -130,7 +131,9 @@ function cliExit(t, argv, answer) {
   const cli = resolve("cli/atelier.mjs");
   const script = `
     process.argv = [process.execPath, ${JSON.stringify(cli)}, ...${JSON.stringify(argv)}];
-    globalThis.fetch = async () => Response.json(${JSON.stringify(answer.body)}, { status: ${answer.status} });
+    // The server declares every capability (t458), so claim's preflight passes and the answer under test decides the exit.
+    globalThis.fetch = async (url) => String(url).endsWith("/api/version") ? Response.json({ capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} }) :
+      Response.json(${JSON.stringify(answer.body)}, { status: ${answer.status} });
     await import(${JSON.stringify(cli)});
   `;
   return spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", env: {

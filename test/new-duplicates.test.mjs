@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { liveDuplicates, titlesMatch } from "../cli/commands/new.mjs";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 // atelier new refuses to file a task that a live task already covers: one
 // whose scope overlaps and whose title closely matches. --duplicate-ok files
@@ -33,6 +34,8 @@ import { appendFileSync } from "node:fs";
 const ITEMS = ${JSON.stringify(items)};
 globalThis.fetch = async (url, options = {}) => {
   const path = new URL(url).pathname, method = options.method ?? "GET";
+  // The capability check before the command (t458) reads the version, as the real server answers it; it is not one of the requests the tests count.
+  if (path === "/api/version") return Response.json({ capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
   const body = options.body ? JSON.parse(options.body) : undefined;
   appendFileSync(${JSON.stringify(log)}, JSON.stringify({ method, path, body }) + "\\n");
   let data = {}, status = 200;

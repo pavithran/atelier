@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 const cli = resolve("cli/atelier.mjs");
 function run(args, token = "owner-test-token", config = resolve(".cache/token-cli-config")) {
@@ -10,6 +11,8 @@ function run(args, token = "owner-test-token", config = resolve(".cache/token-cl
     process.argv = [process.execPath, ${JSON.stringify(cli)}, ...${JSON.stringify(args)}];
     globalThis.fetch = async (url, options = {}) => {
       const path = new URL(url).pathname;
+      // The capability check before token issue and store (t458) reads the version.
+      if (path === "/api/version") return Response.json({ capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
       const body = options.body ? JSON.parse(options.body) : undefined;
       console.error(JSON.stringify({ path, actor: options.headers?.["x-atelier-actor"], method: options.method, body }));
       const data = path === "/api/config" ? { actor: "codex/gpt-6-astra" }
