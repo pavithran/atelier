@@ -1,5 +1,6 @@
 // atelier dispatch. Its forms, flags and help are declared in src/usage/commands/dispatch.ts.
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { I, OWNER, actor, args, call, die, itemArg, project } from "../atelier.mjs";
 
 // The project owner queues an open task for a kind of runner. A held task
@@ -14,7 +15,8 @@ export default async function dispatchCommand() {
   const name = project(), id = itemArg();
   if (args.job !== undefined && args.job !== "merge-main") die(`--job names the job the runner runs; only merge-main is dispatched by hand: atelier dispatch ${id} --job merge-main`);
   if (args.head !== undefined && args.job === undefined) die(`--head names the main head a merge-main job merges; give it with --job merge-main: atelier dispatch ${id} --job merge-main --head FULL_HASH`);
-  const body = { to: args.to, agent: args.agent, model: args.model, note: args.note, ...(args.job !== undefined ? { job: args.job, ...(args.head !== undefined ? { head: args.head } : {}) } : {}), ...(args["overlap-ok"] === true ? { overlapOk: true } : {}) };
+  const note = noteFromFile(id) ?? args.note;
+  const body = { to: args.to, agent: args.agent, model: args.model, note, ...(args.job !== undefined ? { job: args.job, ...(args.head !== undefined ? { head: args.head } : {}) } : {}), ...(args["overlap-ok"] === true ? { overlapOk: true } : {}) };
   // With no --agent the server chooses the builder from the pool and the
   // models' records (t370), and says which and why.
   const suggest = args.agent === undefined && args.job === undefined;
@@ -32,4 +34,20 @@ export default async function dispatchCommand() {
     return;
   }
   console.log(`${id} is waiting for ${d.to === "any" ? "any runner" : `a ${d.to} runner`}${d.agent ? `, ${d.agent}` : ""}${d.model ? ` with ${d.model}` : ""}.`);
+}
+
+// --note-file PATH: the note is the file's text, read as UTF-8 relative to the
+// current directory with its newlines kept (t480). It is refused before any
+// request when --note is also given, when the file cannot be read, or when it
+// is not valid UTF-8; an empty file is an empty note.
+function noteFromFile(id) {
+  const path = args["note-file"];
+  if (path === undefined) return undefined;
+  if (args.note !== undefined) die(`give the note with --note or --note-file, not both: atelier dispatch ${id} --note-file PATH`);
+  if (typeof path !== "string" || path === "") die("--note-file names the file that holds the note: atelier dispatch ID --note-file PATH");
+  let bytes;
+  try { bytes = readFileSync(resolve(process.cwd(), path)); }
+  catch (error) { die(`cannot read the note file ${path}: ${error.code ?? error.message}`); }
+  try { return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
+  catch { die(`the note file ${path} is not valid UTF-8`); }
 }
