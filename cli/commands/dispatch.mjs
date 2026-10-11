@@ -19,10 +19,24 @@ export default async function dispatchCommand() {
   const body = { to: args.to, agent: args.agent, model: args.model, note, ...(args.job !== undefined ? { job: args.job, ...(args.head !== undefined ? { head: args.head } : {}) } : {}), ...(args["overlap-ok"] === true ? { overlapOk: true } : {}) };
   // With no --agent the server chooses the builder from the pool and the
   // models' records (t370), and says which and why.
-  const suggest = args.agent === undefined && args.job === undefined;
+  // --overlap-ok with no destination, note or job releases a waiting
+  // dispatch's hold and keeps its builder, job and place in the queue; the
+  // server dispatches it as usual when none is waiting.
+  if (args["overlap-ok"] === true && args.to === undefined && args.note === undefined && args.job === undefined) {
+    const { item: before } = await call("GET", I(name, id), undefined, OWNER);
+    if (before.state === "open" && !before.owner && before.dispatch) {
+      body.retain = true;
+      body.retainAt = before.dispatch.at;
+    }
+  }
+  const suggest = !body.retain && args.agent === undefined && args.job === undefined;
   if (suggest) body.suggest = true;
   const item = await call("POST", `${I(name, id)}/dispatch`, body, OWNER);
   const d = item.dispatch;
+  if (body.retain && !item.suggestion && d.overlapOk) {
+    const who = d.agent ? `${d.agent}${d.model ? `/${d.model}` : " (any model)"}` : d.model ? `any agent / ${d.model}` : "any agent and model";
+    console.log(`${id} is released from the core-file hold; builder: ${who}; job: ${d.job ?? "build"}.`);
+  }
   if (item.suggestion) console.log(`Builder: ${item.suggestion.actor}. ${item.suggestion.reasons.join(" ")}`);
   // A server older than the suggestion ignores the ask and leaves the dispatch open.
   else if (suggest && !d.agent) console.log("Warning: the server chose no builder; deploy the server, then dispatch again, or name one with --agent.");
