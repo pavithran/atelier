@@ -315,6 +315,67 @@ What this protects against, and what it does not:
 - Timeouts: a workspace that never reports ends the Workflow after 24 hours,
   a review after one hour, a merge after 24 hours, all with the lease
   released and the by-hand command named.
+- The lease wait has a limit, `LANDING_LEASE_WAIT_LIMIT_MS` in
+  `src/landing/lease-wait.ts`: three hours, measured from the time the
+  server recorded the instance entering the stage `lease` (`stageAt` of its
+  landing-workflow record; the same stage written again in a round keeps
+  it), never from the instance's own clock. The Workflow's own wait
+  (`waitTimeoutMs`) is capped at it. Its timeout names the holder the final
+  ask found, read on the server at that ask, or says that no landing held
+  the lease (the queue ahead stood in the way), with the server's refusal.
+- An instance the server records at `lease` for the limit or longer (the
+  boundary included) is not attached to: `atelier land t9 --workflow`
+  terminates it, reads its status back until it has ended, and only then
+  starts a replacement, which keeps the task's place in the queue (t430).
+  What counts is the status read after the terminate, not the terminate's
+  own answer: a terminate that throws still allows the replacement when
+  the status read back afterwards confirms the instance ended (terminated,
+  errored or complete), and the failed terminate is ignored. A status that
+  cannot be read, or one still live after the reads, is refused with a 503
+  and nothing is started, whether the terminate succeeded or failed.
+- Who starts the next instance is decided in the Ledger before anything
+  is created (`claimLandingWorkflow`). The instance that follows a
+  remembered one, whether that one was replaced or found already ended,
+  has an id derived from it, and the claim is made only while the record
+  still names the old instance. So of runs at once (two replacing it, or
+  one replacing it and one that finds it already terminated) exactly one
+  records the successor with its review options and creates it with those
+  options; the others answer that record (`created: false`), so the
+  options recorded are always those of the instance created. A missing
+  instance never clears a pending claim: replacement after a missing read
+  requires a previously recorded ended status or a recorded terminal stage
+  (`done` or `failed`). This lets purged instances recover even when no
+  status was observed, including older records. Only `instance.not_found`
+  from `get()` permits this recovery; an unreadable `status()` still fails
+  closed. Without that evidence the request leaves the claim intact. If
+  the record has no observed status, remains at `lease`, and is at least
+  60 seconds old (from its server-recorded `at`), a confirmed
+  `instance.not_found` from `get()` allows reconciliation: create the same
+  claimed ID using its recorded checks and review options. Concurrent
+  retries and a delayed original creator use that same ID; an existing-ID
+  error requires a readable status before attaching. Recovery uses default
+  Workflow timeouts, since custom timeouts are not recorded. Other missing
+  or unreadable instances return 503. A failed create keeps the claim for
+  retry, including when creation may have succeeded before the error. The
+  answer and the command name the reason and the old and new instances (`replaced`), and the record keeps them.
+- The record keeps the review options an instance was started with
+  (`reviewer`, `noReview`), and a replacement that names none keeps them.
+  Before acceptance, a run naming an eligible reviewer (another family than
+  every contributor) while the remembered one is no longer eligible
+  replaces the instance the same safe way; a named reviewer who is not
+  eligible replaces nothing and is reported. A record with no remembered
+  reviewer is not ineligible, so naming one alone does not restart it.
+  Successors of already-ended instances inherit unnamed review options and
+  do not inherit a historical replacement reason. A fresh start reports a
+  replacement only when that request's predecessor qualifies for one.
+- A replaced instance, and the command attached to it, are fenced: the
+  Workflow's lease calls and the command's lease renewals name their
+  instance, and the Ledger refuses them (`stale_landing`) once the record
+  names another, so neither can release, renew or take the replacement's
+  lease; events must name the instance they answer, and one naming a
+  replaced instance is refused, so a stale report cannot advance the
+  replacement. The Workflow renews (and so checks the fence) before it
+  submits, requests the review and accepts.
 
 The routes the command calls (`landing-workflow`, GET and POST) raised the
 route level to 14. The Workflow is tested in workerd with the Workflows test
@@ -325,6 +386,13 @@ arriving late, missing or untrusted, and failing, and the routes), and the
 command against a stand-in server (`test/land.test.mjs`, including the
 local mode's checks run after the push and before the report). No test yet drives the command
 against a running Workflow, and none has run on Cloudflare itself.
+Claim reconciliation relies on Cloudflare rejecting duplicate Workflow IDs.
+The remote smoke check before and after deploy must also leave a recorded
+claim without creating its instance, wait 60 seconds, then retry concurrently
+with different review options: verify one instance with the claimed ID and
+recorded options, and that a delayed original create cannot clear its record.
+Local tests cover these races with a binding double; they do not establish
+production create visibility or duplicate-ID behavior.
 
 ## Integration basis
 

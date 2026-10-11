@@ -1,3 +1,4 @@
+import { taskPage } from "./task-page.ts";
 import { renderBoard } from "./board-html.ts";
 import type { BoardSnapshot } from "./board.ts";
 import { layersFigure } from "./diagrams.ts";
@@ -41,7 +42,7 @@ import type { PartRoute } from "./plans/route.ts";
 export interface Live { nonce: string; refresh?: number }
 import {
   bindingOf, confirmationAt, DEFAULT_OWNER, decisionFor, evidenceAt, isOwnCall, latestReviews, mergedByOverride, mergedChecksAt, NO_OWNER_FACTOR, OVERRIDE_CONFIRMATION_MS, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey, singleFamily,
-  type Evidence, type FamilyMode, type Gate, type InboxEntry, type Item, type MergedCheckView, type OwnerFactor, type ProjectPolicy, type Review, type UnparsableReply,
+  type Finding, type Evidence, type FamilyMode, type Gate, type InboxEntry, type Item, type MergedCheckView, type OwnerFactor, type ProjectPolicy, type Review, type UnparsableReply,
 } from "./rules";
 
 // What a page calls a project: its title when it has one, else its name. Links,
@@ -210,13 +211,6 @@ const WHERE: Record<"sandbox" | "runner", [string, string]> = {
 function whereChip(where: "sandbox" | "runner" | undefined): string {
   const [label, glyph] = WHERE[where ?? "runner"];
   return `<span class="where ${where === "sandbox" ? "cloud" : "local"}">${icon(glyph)}${e(where === "sandbox" ? "Cloudflare container" : "Runner, clean clone")}<span class="visually-hidden"> (${e(label)})</span></span>`;
-}
-
-function trustLine(checks: { grade: string; passed: boolean | null; where?: "sandbox" | "runner" }[]): string {
-  if (!checks.length || !checks.every((c) => c.grade === "observed" && c.passed)) return "";
-  const places = new Set(checks.map((c) => c.where ?? "runner"));
-  const where = places.size > 1 ? "partly in a Cloudflare container, partly on a runner, in a clean clone" : WHERE[[...places][0]][0];
-  return `${icon("check")}<span>Checks passed ${e(where)}</span><span aria-hidden="true">·</span>`;
 }
 
 // ── sign in ────────────────────────────────────────────────────────────────
@@ -579,7 +573,7 @@ function flowParts(stories: Story[], t: Tally, owner: string, href?: (s: Story) 
     ["Claimed", "One agent takes it and gets its own fork in Cloudflare Artifacts. Nobody else can write there.", `${plural(t.claims, "claim")}, ${plural(t.handoffs, "handoff")}`, "var(--m-anthropic)"],
     ["Worked", `The agent commits and pushes to its fork, never to ${yours} checkout.`, `${plural(t.pushes, "push", "pushes")}`, "var(--m-openai)"],
     ["Checked", "The project's checks run in a fresh clone of exactly the pushed head, on the machine that asks for them; in a Cloudflare container only with --sandbox, or where the project requires it.", `${plural(t.checks, "check")} observed${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}`, "var(--observed)"],
-    ["Reviewed", `Changes to protected files need an approval from a model of another family than every contributor; ${yours} own approval does not count. Without one, ${who === "You" ? "you" : who} can accept only by recording an override with its reason.`, `${plural(t.approvals, "approval")}, ${t.sentBack} sent back`, "var(--m-zai)"],
+    ["Reviewed", `Changes to protected files need an approval from a model of another family than every contributor by default, or a different model of the selected company from every contributor in single-family mode; ${yours} own approval does not count. Without one, ${who === "You" ? "you" : who} can accept only by recording an override with its reason.`, `${plural(t.approvals, "approval")}, ${t.sentBack} sent back`, "var(--m-zai)"],
     ["Decided", `${cap(who)} ${who === "You" ? "see" : "sees"} the diff, the evidence and the reviews, and ${who === "You" ? "accept" : "accepts"} one revision.`, `${plural(t.accepts, "acceptance")}`, "var(--m-owner)"],
     ["Merged", `It merges into main on ${yours} machine, with its whole history attached as a git note.`, `${t.merges} merged`, "var(--main-line)"],
   ].map(([b, p, n, c]) => `<li style="--c:${c}"><b>${e(b)}</b><p>${e(p)}</p><span class="n">${e(n)}</span></li>`).join("");
@@ -809,7 +803,7 @@ export function precisionSection(p: PrecisionRecord): string {
     <td class="num">${r.ranked ? `${Math.round(r.precision! * 100)}%<span class="meta">routing term ${precisionTerm(r).toFixed(2)}</span>` : `<span class="meta">n=${r.judged}, too few to rank</span>`}</td></tr>`;
   return `<section class="precision" aria-label="Review precision by reviewer">
   <h2 class="section-title">Review precision · ${e(from)} to ${e(to)}</h2>
-  <p class="meta">Of each reviewer's blocking findings the owner judged with <code>atelier finding</code> from ${e(from)} to ${e(to)} (the last ${p.window.days} days, every project), the share that held up: confirmed or fixed, over all judged. Each finding counts once, by its newest verdict. Routing asks qualifying reviewers in order of this precision, smoothed by one held and one refuted, and only after every rule has passed: another family than every contributor, available and allowed. With fewer than ${PRECISION_MIN_JUDGED} judged a reviewer is too few to rank and orders as neutral.</p>
+  <p class="meta">Of each reviewer's blocking findings the owner judged with <code>atelier finding</code> from ${e(from)} to ${e(to)} (the last ${p.window.days} days, every project), the share that held up: confirmed or fixed, over all judged. Each finding counts once, by its newest verdict. Routing asks qualifying reviewers in order of this precision, smoothed by one held and one refuted, and only after every rule has passed: another family than every contributor by default, or a different model of the selected company from every contributor in single-family mode, available and allowed. With fewer than ${PRECISION_MIN_JUDGED} judged a reviewer is too few to rank and orders as neutral.</p>
   ${rows.length ? `<table class="usage-table">
     <thead><tr><th scope="col">Reviewer</th><th scope="col">Judged blocking findings</th><th scope="col">Held up</th><th scope="col">Refuted</th><th scope="col">Precision</th></tr></thead>
     <tbody>${rows.map(row).join("")}</tbody>
@@ -1500,7 +1494,7 @@ export function renderProjectFlow(p: ProjectRecord, story: Story, owner: string,
 // Plans (task t17): each plan as one unit, with its parts, each part's state
 // and why it went to the agent that holds it, read from the same view as
 // `atelier plan show` (GET items/tN/plan).
-function routeLines(route: PartRoute | null | undefined, preview: boolean): string[] {
+function routeLines(route: PartRoute | null | undefined, preview: boolean, policy: ProjectPolicy): string[] {
   if (!route) return [];
   const lead = preview ? "would be built by" : "built by";
   const lines: string[] = [];
@@ -1510,7 +1504,7 @@ function routeLines(route: PartRoute | null | undefined, preview: boolean): stri
     // A reviewer the plan picked in place of the routed one says whom it
     // replaced and why.
     const change = route.reviewerChange;
-    lines.push(`reviewer ${route.reviewer.actor}, of another family${change ? `, in place of ${change.from ?? "no reviewer"}: ${change.reason}` : ""}`);
+    lines.push(`reviewer ${route.reviewer.actor}, ${singleFamily(policy) ? `a different ${singleFamily(policy)} model from every contributor (single-family mode)` : "of another family"}${change ? `, in place of ${change.from ?? "no reviewer"}: ${change.reason}` : ""}`);
   }
   if (route.unrouted) lines.push(`unrouted: ${route.unrouted}`);
   return lines;
@@ -1525,7 +1519,7 @@ function planPartRow(p: ProjectRecord, v: PlanView, part: PlanPartView): string 
     : `${stateLabel[part.state]}${part.owner && part.state !== "open" ? ` · ${e(part.owner)}` : ""}`;
   const deps = part.dependsOn.length ? `depends on ${part.dependsOn.map((d) => `${d.key} (${d.id ?? "?"})`).join(", ")}` : "";
   const lines = [
-    ...routeLines(part.route, false),
+    ...routeLines(part.route, false, p.policy),
     part.attempts.length ? `attempts: ${part.attempts.map((a) => `${a.actor} ${ATTEMPT_WORDS[a.outcome]}`).join("; ")}` : "",
     part.state === "integrated" && part.integration ? `integrated as ${part.integration.mergeCommit.slice(0, 8)}` : "",
     deps,
@@ -1540,7 +1534,7 @@ function planUnit(p: ProjectRecord, v: PlanView): string {
   const proposal = v.proposal && v.plan && !a
     ? `<p class="meta">Proposal ${v.proposal.count}, by ${e(v.proposal.by)} at ${e(when(v.proposal.at))}: ${plural(v.plan.parts.length, "part")}. Hash <code>${e(v.proposal.hash.slice(0, 12))}</code>${v.proposal.answered ? "" : ", not yet answered"}.</p>
     <ul class="plan-parts">${v.plan.parts.map((part) => {
-      const lines = routeLines(v.preview?.find((r) => r.key === part.key), true);
+      const lines = routeLines(v.preview?.find((r) => r.key === part.key), true, p.policy);
       return `<li class="plan-part"><div class="plan-part-head">${e(part.key)} <strong>${e(part.title)}</strong>${tag(`${part.taskKind}, size ${part.size}`)}</div>
       <p class="meta">${e(part.brief.replace(/\s+/g, " ").trim())}</p>
       ${lines.length ? `<ul class="plan-lines">${lines.map((l) => `<li>${e(l)}</li>`).join("")}</ul>` : ""}</li>`;
@@ -1692,11 +1686,25 @@ function threadBlock(p: ProjectRecord, d: Detail): string {
 
 const shell = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
 
+function submissionRounds(d: Detail): string {
+  const { rounds } = taskPage(d);
+  return `<section class="review-section" aria-label="Submission rounds"><h3>Submission rounds</h3>
+    ${rounds.length ? rounds.map(({ submission: s, verdicts }, i) => `<details class="disclosure"${i === 0 ? " open" : ""}><summary>Submission · event ${e(String(s.seq))} · Head ${e(String(s.data.head ?? "unknown"))} · ${when(s.at)}</summary>
+      <p>${e(String(s.data.summary ?? "No submission summary recorded."))}</p>
+      ${verdicts.length ? verdicts.map(v => `<article><h4>${e(v.kind === "review.rejected" ? "Changes requested" : v.kind === "review.approved" ? "Approved" : v.kind)} · ${e(v.actor)}</h4><p>${e(String(v.data.note ?? v.data.reason ?? "No verdict reason recorded."))}</p>
+        ${Array.isArray(v.data.findings) ? `<ul>${v.data.findings.filter((f): f is Finding => !!f && typeof f.file === "string" && typeof f.text === "string" && typeof f.severity === "string" && (f.line === null || typeof f.line === "number")).map(f => `<li>${e(f.file)}${f.line ? `:${f.line}` : ""} · ${e(f.severity)} · ${e(f.text)}</li>`).join("")}</ul>` : ""}</article>`).join("") : "<p>No triage or review verdict recorded for this submission.</p>"}
+      </details>`).join("") : "<p>Submission history is unavailable.</p>"}</section>`;
+}
+
 function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext): string {
   const { item, gate } = d;
   // The company the project runs on alone (t394), named wherever the page
   // says what review the change needs, so the ask is never a cross-company one.
   const single = singleFamily(d.policy);
+  const presentation = taskPage(d);
+  const notices = presentation.notices.map(n => `<details class="disclosure"><summary>${e(n.kind)} · ${n.originals.length} reports · ${e(n.check || "check unknown")} · ${n.originals.every(r => r.superseded) ? "Superseded" : `${n.originals.filter(r => !r.superseded).length} unresolved`}</summary>
+    <p class="meta">Criteria binding: ${e(n.criteria || "unknown")}. A reported limitation is superseded only by an observed pass covering the same check and binding.</p>
+    ${n.originals.map(r => `<article><p>${e(r.detail)}</p><p class="meta">${e(r.actor)} · ${e(r.runner)} · ${e(r.at)} · Head ${e(r.head || "unknown")} · ${r.superseded ? "Superseded by an observed pass" : "Coverage unconfirmed"}</p></article>`).join("")}</details>`).join("");
   const view = evidenceAt(d.policy, d.evidence, item.head);
   const decision = decisionFor(item, d.policy, d.evidence, d.reviews, d.ownerActor);
   const live = item.state === "claimed" || item.state === "submitted";
@@ -1752,7 +1760,7 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
     ? "Your Cloudflare Access sign-in is the confirmation an override needs; the owner token alone cannot give it."
     : "The confirmation secret is the confirmation an override needs: the server's own OVERRIDE_SECRET, which no session is given, so the owner token alone cannot give it.";
   const override = overridable && d.policy.noOverride
-    ? `<p class="meta">This project forbids overrides of the independent review (<code>atelier init --no-override</code>): the revision lands only with an approval from a model of another family than every contributor.</p>`
+    ? `<p class="meta">This project forbids overrides of the independent review (<code>atelier init --no-override</code>): the revision lands only with an approval from ${single ? `a different ${single} model from every contributor (single-family mode)` : "a model of another family than every contributor"}.</p>`
     : overridable && factor === null
     ? `<p class="meta">An override of the independent review needs the owner's own confirmation, which ${e(NO_OWNER_FACTOR)}; then reopen this page. The owner token alone, and the session it signs in, cannot confirm one.</p>`
     : overridable
@@ -1848,16 +1856,14 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
         </form></details>`
       : "";
 
-  // The brief below the header already says what is decided and why, so the
-  // header's own description line is drawn only when there is no brief
-  // (finding 7): one status line and one brief, never both twice.
-  const hasBrief = ["claimed", "submitted", "accepted", "blocked"].includes(item.state);
+  // One task headline; check outcomes stay with their evidence below.
   const header = `<header class="review-header">
-  <p class="context">${e(titleOf(p))} · ${e(item.id)} · ${e(stateLabel[item.state])}</p>
+  <p class="context">${e(titleOf(p))} · ${e(item.id)}</p>
   <h2>${e(item.title)}</h2>
   ${full ? taskText(item) : ""}
-  ${hasBrief ? "" : `<p class="review-description">${e(decision.detail)}</p>`}
-  <p class="decision-status ${decision.tone}">${trustLine(view.checks)}<strong>${e(decision.title)}</strong></p>
+  <p class="decision-status ${decision.tone}"><strong>${e(presentation.title)}</strong></p>
+  <p class="review-description">${e(presentation.detail)}</p>
+  ${presentation.unknowns.map(x => `<p class="meta">${e(x)}</p>`).join("")}
   ${evidenceNotice}
   <div class="actions">${approve}${accept}${override}${reject}${dispatchBox}${blockBox}</div>
   ${secretBox}
@@ -1905,6 +1911,8 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
       <p class="meta">${item.owner ? `${e(item.owner)} holds it; nothing is pushed for review yet.` : "Any eligible agent can claim it; until then nothing is pushed for review."}</p></section>`;
     return `${header}
 ${framing}${openScope}
+${notices}
+${submissionRounds(d)}
 <details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>
 <details class="disclosure"><summary>Technical details${live ? " and ownership" : ""}</summary>${technical}${ownership}${close}</details>`;
   }
@@ -1978,9 +1986,10 @@ ${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 <section id="changes" class="review-section"><h3>Changes</h3>${renderDiff(diff, item.head, mergedChecks)}${scope}${protectedNote}</section>
 <section id="checks" class="review-section"><h3>Checks and reviews</h3>
   <p class="meta">${view.checks.length ? `${decision.passed} of ${view.checks.length} required checks passed at this revision.` : view.notApplicable.length ? "No required check applies to this revision." : "This project requires no checks."}${view.checks.length && view.notApplicable.length ? ` ${view.notApplicable.length} more ${view.notApplicable.length === 1 ? "does" : "do"} not apply to it.` : ""}${d.policy.sandboxOnly ? " Only checks run in a Cloudflare container count for this project." : ""}</p>
-  ${(d.runs ?? []).filter((r) => r.outcome === "validation_blocked").map((r) => `<aside class="callout"><strong>Validation blocked</strong><p>The build harness could not run the required checks. This is a reported limitation, separate from clean-clone check results.</p><p>${e(r.detail)}</p><p class="meta">${e(r.actor)} · ${e(r.runner)} · ${e(r.at)}</p></aside>`).join("")}
+  ${notices}
   ${checkRows}${notApplicableRows}${reports}${reviews}${overrideNote}${blockers}
 </section>
+${submissionRounds(d)}
 <details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>
 <details class="disclosure"><summary>Technical details${live ? " and ownership" : ""}</summary>${technical}${ownership}${close}</details>`;
 }
