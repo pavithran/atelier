@@ -91,7 +91,7 @@ test("the checkout line for each way a checkout can be in or out of step", () =>
   assert.match(checkoutLine({ ...base, registered: false }), /^Checkout: none is registered on this machine for demo/);
   assert.match(checkoutLine({ ...base, fresh: false, contains: true }), /^Checkout: in step\. main @ aaaaaaaa holds the baseline's head aaaaaaaa\.$/);
   assert.match(checkoutLine({ ...base, fresh: false, contains: false, head: B }), /^Checkout: out of step\. main @ bbbbbbbb does not hold the baseline's head aaaaaaaa/);
-  assert.match(checkoutLine({ ...base, fresh: true, paired: B, head: B }), /^Checkout: in step\. main @ bbbbbbbb is the commit the baseline's head aaaaaaaa matches\.\s*$/);
+  assert.match(checkoutLine({ ...base, fresh: true, paired: B, head: B }), /^Checkout: in step\. main @ bbbbbbbb is the commit the baseline's head aaaaaaaa matches\.(?:\n|$)/);
   assert.match(checkoutLine({ ...base, fresh: true, paired: B, head: C, ahead: true }), /out of step\. main has commits the baseline lacks; run atelier sync --project demo/);
   assert.match(checkoutLine({ ...base, fresh: true, paired: B, head: C, ahead: false }), /out of step\. main @ cccccccc is not the commit .* \(bbbbbbbb\)/);
   assert.match(checkoutLine({ ...base, fresh: true, paired: null }), /out of step\. The baseline's head aaaaaaaa has no pair in this checkout/);
@@ -108,6 +108,7 @@ async function run(t, setup, argv, env = {}) {
   mkdirSync(checkout);
   git(checkout, "init", "-q", "-b", "main");
   writeFileSync(join(checkout, "a.txt"), "one\n");
+  writeFileSync(join(checkout, "AGENTS.md"), "Land with `atelier land ID --reviewer H/M`.\n");
   git(checkout, "add", "."); git(checkout, "commit", "-q", "-m", "one");
   git(dir, "clone", "-q", "--bare", checkout, bare);
   const state = setup({ checkout, bare, dir }) ?? {};
@@ -133,7 +134,7 @@ async function run(t, setup, argv, env = {}) {
   t.after(() => server.close());
   writeFileSync(join(dir, "config.json"), JSON.stringify({ server: "x", owner: "owner", projects: { demo: { path: checkout, branch: "main", ...state.project } } }));
   const child = spawn(process.execPath, [cli, ...(argv ?? ["status", "--project", "demo"])], {
-    cwd: dir, env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_TOKEN: "test-token", ATELIER_ACTOR: "owner", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}`, ...env },
+    cwd: dir, env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: join(dir, "cache"), ATELIER_TOKEN: "test-token", ATELIER_ACTOR: "owner", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}`, ...state.env, ...env },
   });
   let output = ""; child.stdout.on("data", (s) => output += s); child.stderr.on("data", (s) => output += s);
   const status = await new Promise((done) => child.on("close", done));
@@ -155,8 +156,9 @@ test("status --project prints where it stands and says the checkout is in step, 
   const r = await run(t, () => null);
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /^Demo project \(demo\) as of /);
+  assert.match(r.output, /Test slots: \d+\/\d+ on [^\n]+/);
   assert.match(r.output, /Waiting on /);
-  assert.match(r.output, /\nCheckout: in step\. main @ [0-9a-f]{8} holds the baseline's head [0-9a-f]{8}\.\s*(\n\nLive on this Mac:[\s\S]*)?$/);
+  assert.match(r.output, /\nCheckout: in step\. main @ [0-9a-f]{8} holds the baseline's head [0-9a-f]{8}\.(?:\n|$)/);
   // The baseline's head is read from the server; no read token is minted.
   assert.deepEqual(r.seen, ["GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head"]);
 });
@@ -164,7 +166,7 @@ test("status --project prints where it stands and says the checkout is in step, 
 test("status --project with an agent token reads the baseline's head through a route the allowlist admits", async (t) => {
   const r = await run(t, () => null, undefined, { ATELIER_TOKEN: "atl_agent-token", ATELIER_ACTOR: "codex/gpt-6-astra" });
   assert.equal(r.status, 0, r.output);
-  assert.match(r.output, /\nCheckout: in step\. main @ [0-9a-f]{8} holds the baseline's head [0-9a-f]{8}\.\s*(\n\nLive on this Mac:[\s\S]*)?$/);
+  assert.match(r.output, /\nCheckout: in step\. main @ [0-9a-f]{8} holds the baseline's head [0-9a-f]{8}\.(?:\n|$)/);
   assert.deepEqual(r.seen, ["GET /api/config", "GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head"]);
 });
 
@@ -218,7 +220,7 @@ test("a project set up with --history-since is compared through its pairs", asyn
     Object.assign(seenHashes, { head, baselineHead });
     return { project: { fresh: true } };
   });
-  assert.match(inStep.output, /\nCheckout: in step\. main @ [0-9a-f]{8} is the commit the baseline's head [0-9a-f]{8} matches\.\s*(\n\nLive on this Mac:[\s\S]*)?$/);
+  assert.match(inStep.output, /\nCheckout: in step\. main @ [0-9a-f]{8} is the commit the baseline's head [0-9a-f]{8} matches\.(?:\n|$)/);
   assert.ok(inStep.output.includes(`main @ ${seenHashes.head.slice(0, 8)} is the commit the baseline's head ${seenHashes.baselineHead.slice(0, 8)} matches`));
   // The checkout has moved past the commit the baseline's head is paired with.
   const behind = await run(t, ({ checkout, bare, dir }) => {
@@ -229,7 +231,7 @@ test("a project set up with --history-since is compared through its pairs", asyn
     git(checkout, "add", "."); git(checkout, "commit", "-q", "-m", "three");
     return { project: { fresh: true } };
   });
-  assert.match(behind.output, /\nCheckout: out of step\. main has commits the baseline lacks; run atelier sync --project demo\.\s*(\n\nLive on this Mac:[\s\S]*)?$/);
+  assert.match(behind.output, /\nCheckout: out of step\. main has commits the baseline lacks; run atelier sync --project demo\.(?:\n|$)/);
   // The checkout is the baseline's own commit, which is not a project commit: the pair names another.
   const wrong = await run(t, ({ checkout, bare, dir }) => {
     const baselineHead = rebuilt(bare, dir, "c");
@@ -262,4 +264,34 @@ test("each check is one line with its class and the paths it applies to, flatten
     "  xcodebuild build  read-only, from ControlPlane: capability app-build is local-read-only; applies only when the change touches App/**, project.yml",
     "  ./check.sh forged  undeclared: still run",
   ]);
+});
+
+
+test("status includes local runners and task processes in text and project JSON without arguments", async (t) => {
+  const setup = ({ dir }) => {
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    const ps = "100 1 01:00 /usr/bin/node /x/cli/atelier.mjs runner --name home:test --config PRIVATE\n101 100 00:30 codex exec SECRET PROMPT\n";
+    const lsof = `p101\nccodex\nn${dir}/cache/work/demo/t7\n`;
+    for (const [name, output] of [["ps", ps], ["lsof", lsof]]) {
+      const expected = name === "ps" ? ["-axo", "pid=,ppid=,etime=,args="] : ["-a", "-d", "cwd", "-Fpcn"];
+      const real = name === "ps" ? "/bin/ps" : "/usr/sbin/lsof";
+      writeFileSync(join(bin, name), `#!${process.execPath}
+const args = process.argv.slice(2);
+if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expected))}) process.stdout.write(${JSON.stringify(output)});
+else process.exit(require("node:child_process").spawnSync(${JSON.stringify(real)}, args, { stdio: "inherit" }).status ?? 1);
+`, { mode: 0o755 });
+    }
+    return { env: { PATH: `${bin}:${process.env.PATH}` } };
+  };
+  const text = await run(t, setup);
+  assert.equal(text.status, 0, text.output);
+  assert.match(text.output, /runner home:test  pid 100  up 1m  working on t7/);
+  assert.match(text.output, /demo\/t7  codex pid 101 up 30s/);
+  const json = await run(t, setup, ["status", "--project", "demo", "--json"]);
+  assert.equal(json.status, 0, json.output);
+  const processes = JSON.parse(json.output).processes;
+  assert.deepEqual(processes.runners, [{ pid: 100, name: "home:test", age: "1m", tasks: ["t7"] }]);
+  assert.deepEqual(processes.agents, [{ pid: 101, command: "codex", age: "30s", project: "demo", id: "t7" }]);
+  for (const output of [text.output, json.output]) assert.doesNotMatch(output, /PRIVATE|SECRET|--config|codex exec/);
 });

@@ -120,6 +120,11 @@ and say nothing about the merge. Every observed
 check also records main's head as Atelier read it when the check was
 recorded, which is how the gate knows main moved.
 
+Each applicable local check command takes one [host test slot](test-slots.md).
+Local landings and release checks have first priority, then review commands,
+then ordinary checks. N/A checks never enter the pool. `ATELIER_LOAD_LIMIT`
+and `ATELIER_LOAD` are retired; no load-average gate remains.
+
 The project owner's approval is never the independent review: the owner
 decides by accepting, and that decision is not also the second opinion. When
 no reviewer qualifies, because no model of another family is available or a

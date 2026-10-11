@@ -8,8 +8,10 @@ import { join, resolve } from "node:path";
 import { judge, waitFor } from "../cli/wait.mjs";
 import { formatProcesses, liveProcesses, parseLsof, parsePs } from "../cli/procs.mjs";
 
+import { criteriaOf } from "../src/criteria.ts";
+
 const detail = (state, over = {}, reviews = []) => ({ item: { id: "t5", state, head: "a".repeat(40), owner: "codex/gpt-6", ...over }, reviews });
-const review = (by, approve, head = "a".repeat(40)) => ({ by, approve, head, at: "2026-10-09T10:00:00Z" });
+const review = (by, approve, head = "a".repeat(40)) => ({ by, approve, head, criteria: criteriaOf({}), at: "2026-10-09T10:00:00Z" });
 
 test("merged: reached on merge, failed on abandoned or blocked, otherwise waiting", () => {
   assert.deepEqual(judge("merged", detail("merged")), { ok: true, text: "t5 merged" });
@@ -207,4 +209,36 @@ test("atelier wait prints the outcome and exits by it", async (t) => {
   const bad = await runWait(t, [], ["t5", "--for", "soon", "--project", "demo"]);
   assert.equal(bad.code, 1);
   assert.match(bad.output, /--for needs one of merged, submitted, reviewed, any-change/);
+});
+
+
+test("reviewed ignores withdrawn, unbound and stale-criteria verdicts", () => {
+  for (const r of [
+    { ...review("a/b", false), withdrawn: { at: "now", reason: "obsolete" } },
+    { ...review("a/b", true), criteria: undefined },
+    { ...review("a/b", false), criteria: criteriaOf({ accept: ["old requirement"] }) },
+  ]) assert.equal(judge("reviewed", detail("submitted", {}, [r])), null);
+});
+
+test("processes absent from the current table disappear, and root ancestry terminates", () => {
+  const ps = parsePs(PS + "\n  0 0 01:00 kernel_task\n  1 0 01:00 launchd");
+  const live = liveProcesses({ ps, lsof: parseLsof(LSOF), work: "/cache/work" });
+  assert.equal(live.runners.length, 2);
+  const dead = liveProcesses({ ps: ps.filter((p) => ![100, 102, 300].includes(p.pid)), lsof: parseLsof(LSOF), work: "/cache/work", skip: [400] });
+  assert.deepEqual(dead.agents, []);
+  assert.deepEqual(dead.runners.map((r) => r.pid), [200]);
+});
+
+test("wait CLI covers submission, both review verdicts, blocking and any-change", async (t) => {
+  for (const [target, reads, code, text] of [
+    ["submitted", [detail("claimed"), detail("submitted")], 0, /is submitted/],
+    ["reviewed", [detail("submitted"), detail("submitted", {}, [review("a/b", true)])], 0, /approved by a\/b/],
+    ["reviewed", [detail("submitted", {}, [review("a/b", false)])], 1, /rejected by a\/b/],
+    ["merged", [detail("blocked")], 1, /is blocked/],
+    ["any-change", [detail("claimed"), detail("claimed", { owner: "a/b" })], 0, /changed/],
+  ]) {
+    const r = await runWait(t, reads, ["t5", "--project", "demo", "--for", target, "--interval", "0.01"]);
+    assert.equal(r.code, code, r.output);
+    assert.match(r.output, text);
+  }
 });

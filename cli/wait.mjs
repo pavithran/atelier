@@ -1,3 +1,5 @@
+import { bindingOf, latestReviews } from "../src/rules.ts";
+
 // `atelier wait ID`: block until a task reaches a state, or fails. Pure
 // judgement, plus a loop whose reads and clock the caller supplies, so every
 // outcome is testable without a server or a real wait.
@@ -42,9 +44,7 @@ export function judge(target, d, first = d) {
   if (gone) return { ok: false, text: `${id} is ${state}; it will not be reviewed` };
   // Each reviewer's latest standing review: a rejection a later approval
   // superseded does not count (rules.ts latestReviews).
-  const latest = new Map();
-  for (const r of (d.reviews ?? []).filter((r) => r.head === d.item.head && !r.withdrawn).sort((a, b) => String(a.at).localeCompare(String(b.at)))) latest.set(r.by, r);
-  const here = [...latest.values()];
+  const here = latestReviews(d.reviews ?? [], bindingOf(d.item));
   const rejected = here.filter((r) => !r.approve);
   if (rejected.length) return { ok: false, text: `${id} was rejected by ${rejected.map((r) => r.by).join(", ")} at ${short(d.item.head)}` };
   if (here.length) return { ok: true, text: `${id} was approved by ${here.map((r) => r.by).join(", ")} at ${short(d.item.head)}` };
