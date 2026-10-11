@@ -75,7 +75,7 @@ export interface Instructions { file: string; text: string }
 // with. A heuristic on wording, so it names the line for a person to settle.
 export function reviewDisagreements(policy: ProjectPolicy, instructions: readonly Instructions[]): string[] {
   const requires: string[] = [];
-  const protectedGlobs = [...new Set([...policy.protected, ...(policy.execution?.protected_path_patterns ?? [])])];
+  const protectedGlobs = [...new Set([...policy.protected, ...checkFiles(policy.checks), ...(policy.execution?.protected_path_patterns ?? []), ...SHIP_FILES, ...checkFiles(policy.shipRuns ?? [])])];
   if (protectedGlobs.length) requires.push(`a protected change (${protectedGlobs.slice(0, 4).join(", ")}${protectedGlobs.length > 4 ? ", …" : ""}) needs a review from another model family`);
   if (policy.execution?.allowed_classes.includes("coordinated")) requires.push("a coordinated change needs another agent's review");
   if (!requires.length) return [];

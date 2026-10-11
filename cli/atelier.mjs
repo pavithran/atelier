@@ -38,7 +38,7 @@ import { buildHistory, carryTask, loadPairs, rebuild, savePairs, syncHistory } f
 import { pushHistory } from "./push-steps.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { collectCache, markerPath } from "./gc.mjs";
-import { formatLocal, formatStatus, itemJson, statusJson } from "./status.mjs";
+import { formatLocal, formatPolicyDisagreements, formatStatus, itemJson, statusJson } from "./status.mjs";
 import { readInstructions, workspaceNotice } from "./review-notice.mjs";
 import { reviewDisagreements } from "../src/review-notice.ts";
 import { receiptJson, receiptText } from "./receipt.mjs";
@@ -3527,8 +3527,12 @@ const commands = {
       const standing = await call("GET", `${P(name)}/standing`, undefined, as);
       const checkout = await checkoutStatus(name, as);
       const local = await localStanding(name, as);
-      if (args.json) return console.log(JSON.stringify({ project: standing, checkout, ...(local ? { local } : {}) }, null, 2));
-      console.log(formatStanding(standing, OWNER_NAME) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : ""));
+      const path = cfg.projects?.[name]?.path;
+      const instructions = path ? readInstructions(path) : [];
+      const record = instructions.length ? await call("GET", P(name), undefined, as) : null;
+      const mismatches = record?.project?.policy ? reviewDisagreements(record.project.policy, instructions) : [];
+      if (args.json) return console.log(JSON.stringify({ project: standing, checkout, ...(local ? { local } : {}), ...(mismatches.length ? { mismatches } : {}) }, null, 2));
+      console.log(formatStanding(standing, OWNER_NAME) + "\n\n" + checkout + (local ? "\n\n" + formatLocal(local) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : ""));
       return;
     }
     const known = await call("GET", "/projects", undefined, OWNER);

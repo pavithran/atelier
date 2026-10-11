@@ -112,6 +112,18 @@ test("an execution policy's protected paths count in the disagreement", () => {
   assert.match(found[0], /src\/\*\*/);
 });
 
+test("implicit protections still disagree with instructions making all review optional", () => {
+  const policy: ProjectPolicy = { checks: ["node test/check.mjs"], protected: [], shipRuns: ["node bin/deploy.mjs"] };
+  for (const path of ["test/check.mjs", "bin/deploy.mjs", "docs/atelier/ship.json"]) {
+    assert.equal(controllingRule([path], policy)?.kind, "protected");
+  }
+  const found = reviewDisagreements(policy, [{ file: "AGENTS.md", text: "Review is optional." }]);
+  assert.equal(found.length, 1);
+  assert.match(found[0], /test\/check\.mjs/);
+  assert.match(found[0], /bin\/deploy\.mjs/);
+  assert.match(found[0], /docs\/atelier\/\*\*/);
+});
+
 test("the notice measures against the project baseline, not the fork's origin/main", (t) => {
   const root = mkdtempSync(join(tmpdir(), "atelier-notice-base-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
