@@ -29,5 +29,7 @@
 // number, and the landing counts skips by it (t353). 22: a runner token
 // posts review-skip for a review job it was offered, under the job's actor,
 // as the runner has done since runner tokens (t444); a server at 21 refused
-// it, so a runner's skip never reached the landing (t353).
-export const ROUTE_LEVEL = 22;
+// it, so a runner's skip never reached the landing (t353). 23: the owner
+// admits, withdraws and lists outside reviewers (PUT, DELETE and GET
+// /projects/:p/reviewers), which a server at 22 answers 404 (t492).
+export const ROUTE_LEVEL = 23;
