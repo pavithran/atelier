@@ -120,7 +120,11 @@ export function runnerDenied(token: AgentToken): RuleError {
 // cli/atelier.mjs, and runRunner spawns no command this table does not
 // name. test/runner-routes.test.mjs holds one authorization case for each
 // name, exercised through the real gateway and Ledger, and a source check
-// that finds a call made outside the transport or a name not declared.
+// that finds a call made outside the transport or a name not declared;
+// test/runner-routes-helpers.test.mjs reads the spawned commands and the
+// helpers they import, and fails one that calls an undeclared route, sends
+// an undeclared field, bypasses the CLI's transport or calls a route its
+// credential kind may not.
 //
 // The credential kinds are kept apart on purpose: a `runner` call is made
 // with the runner's own token (cli/credentials.mjs), which runnerRoute above
