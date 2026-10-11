@@ -1,4 +1,5 @@
 import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
+import { WORKSPACE_REASON_MAX } from "../src/check-failure.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
@@ -78,6 +79,9 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     states: {}, reviews: { t1: [], t2: [] }, lease: null, waiting: [], version: null, routeLevel: ROUTE_LEVEL, policy: {},
     review: { needed: true, reviewer: "codex/gpt-6-astra", approve: true, pending: false, at: null, approveAfter: 0, claimed: false, skips: [] },
     requests: [], regen: "echo generated > gen-fixtures.txt", checks: ["exit 0"], items: [], queue: [], runners: null, renewFails: false, kinds: {},
+    // The evidence each check posts, as the server records it (t436): the
+    // landing's failure summary reads the failed checks from it.
+    evidence: { t1: [], t2: [] }, evidenceId: 0,
     wf: { instance: null, stage: null, round: 0, checks: null, status: null, files: null, error: null, output: null, events: [], started: [], reads: 0, baseTokenAt: [], tick: null, onEvent: null },
   };
   // The tasks fork from the baseline before main moves, so a landing has
@@ -116,7 +120,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     return {
       item: { id, title: `Fixture ${id}`, state, owner: "codex/test", ...(box.pushActors ? { pushActors: box.pushActors } : {}), head, ...(box.kinds[id] ? { kind: box.kinds[id] } : {}), acceptedHead: state === "accepted" || state === "merged" ? head : null },
       policy: { reviewerAdmissions: box.reviewerAdmissions, checks: box.checks, protected: ["work.txt"], regenerate: box.regen, commitIdentity: { name: "Fixture", email: "fixture@example.invalid", agentEmails: [] }, ...(box.agents ? { agents: box.agents } : {}), ...(box.eligible ? { eligible: box.eligible } : {}), ...box.policy },
-      gate: { ready: true, outOfScope: [], blockers: [] }, evidence: [], reviews, events,
+      gate: { ready: true, outOfScope: [], blockers: [] }, evidence: box.evidence[id] ?? [], reviews, events,
     };
   };
   const server = createServer(async (req, res) => {
@@ -209,7 +213,10 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     else if (url.endsWith("/base-token") || url === "/api/projects/proj/baseline-token") (box.wf.baseTokenAt.push(box.wf.stage), answer = { remote: baseline, token: "fixture", defaultBranch: "main" });
     else if (url.endsWith("/read-token")) answer = { remote: join(p, `fork-${item}.git`), token: "fixture", head, defaultBranch: "main" };
     else if (url.endsWith("/push")) { box.states[item] = "claimed"; answer = { ...answer.item, head }; }
-    else if (url.endsWith("/evidence")) answer = item ? { ...detail(item), evidence: [] } : {};
+    else if (url.endsWith("/evidence")) {
+      if (item) (box.evidence[item] ??= []).push({ itemId: item, claim: body.claim, grade: body.kind === "check" ? "observed" : "reported", head: body.head, passed: body.kind === "check" ? body.passed === true : null, by: "codex/test", at: new Date().toISOString(), where: "runner", changedPaths: body.changedPaths ?? null, outputTail: body.outputTail ?? "", id: ++box.evidenceId });
+      answer = item ? detail(item) : {};
+    }
     else if (url.endsWith("/submit")) { box.states[item] = "submitted"; answer = detail(item); }
     else if (url.endsWith("/review-request")) {
       if (!box.review.needed && !(body.wanted === true && body.reviewer)) answer = { needed: false, reason: box.review.reason ?? "the gate counts an independent approval already" };
@@ -1630,6 +1637,30 @@ test("land --workflow pauses the Workflow on a conflict, and the rerun after the
   assert.equal(f.box.states.t1, "merged");
 });
 
+test("land --workflow tells the Workflow a conflict regeneration did not settle by its whole message, not the merge step's note", async (t) => {
+  if (!canInspectSlots(t)) return;
+  // The same conflict as the plain landing's: one file the regenerate
+  // command rewrites, one it does not, so taking either side and
+  // regenerating leaves work.txt and the merge stops. That stop's error
+  // data carries the note the ledger's merge step records (`reason`); the
+  // Workflow's conflict record gets the message the owner read.
+  const f = await landFixture(t, { mainChange: { file: "work.txt", text: "from main\n", message: "Main edits work" } });
+  const wf = scriptWorkflow(f);
+  writeFileSync(join(f.checkout, "gen-fixtures.txt"), "from main\n");
+  git(f.checkout, "add", "."); git(f.checkout, "commit", "-m", "Main regenerates the fixture"); git(f.checkout, "push", "-q", "origin", "main");
+  writeFileSync(join(f.workspace("t1"), "gen-fixtures.txt"), "from task\n");
+  git(f.workspace("t1"), "add", "."); git(f.workspace("t1"), "commit", "-m", "Task regenerates the fixture"); git(f.workspace("t1"), "push", "-q", "origin", "main");
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /stops on conflicts in:\ngen-fixtures\.txt\nwork\.txt/);
+  assert.equal(wf.events.length, 1);
+  const { payload } = wf.events[0];
+  assert.deepEqual({ ...payload, reason: undefined }, { round: 0, conflict: true, files: ["gen-fixtures.txt", "work.txt"], reason: undefined });
+  assert.match(payload.reason, /^the merge of main at [0-9a-f]{8} into t1's workspace stops on conflicts in:\ngen-fixtures\.txt\nwork\.txt\nTaking either side and regenerating did not settle them: the regenerate command left work\.txt as either side had it\. /);
+  const merge = f.posts("/land").find((x) => x.body.step === "merge");
+  assert.equal(merge.body.reason, "the regenerate command left work.txt as either side had it");
+});
+
 test("land --workflow ends with the Workflow's own reason when the Workflow fails", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
@@ -1725,7 +1756,23 @@ test("land --workflow runs the required checks here in a clean clone after the p
   assert.equal(f.box.states.t1, "merged");
 });
 
-test("land --workflow with a failing local check reports the workspace failed, never the head, and ends with the check's failure", async (t) => {
+test("a landing whose check fails ends with the failure summary every landing prints: the run the gate reads, its tests and its log tail", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  f.box.checks = ["printf 'not ok 1 - the cap is enforced\\n# fail 1\\n'; exit 3"];
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 1, r.output);
+  const head = git(f.workspace("t1"), "rev-parse", "HEAD");
+  assert.ok(r.output.includes(`atelier check failed (exit 2):\nFailed checks at ${head.slice(0, 8)}, as the gate reads them (the latest counting run of each required check at this head):`), r.output);
+  assert.match(r.output, /\n {2}`printf 'not ok 1 - the cap is enforced\\n# fail 1\\n'; exit 3` failed on a runner, in a clean clone at \d{4}-\d\d-\d\d \d\d:\d\d UTC: evidence #1, attempt 1 of 1 at this head\n {4}failing tests \(tap\): the cap is enforced\n {4}log: whole output, inline; 3 lines, whole:\n {6}not ok 1 - the cap is enforced\n/, r.output);
+  assert.match(r.output, /\n {2}Whole logs of every attempt at this head: atelier check-log t1\n/);
+  // The step is recorded as failed, nothing is submitted, and the lease is released.
+  assert.equal(f.posts("/land").find((x) => x.body.step === "check")?.body.failed, true);
+  assert.deepEqual(f.posts("/submit"), []);
+  assert.equal(f.box.lease, null);
+});
+
+test("land --workflow with a failing local check reports the workspace failed, never the head, and ends with the check's failure summary", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   const wf = scriptWorkflow(f);
@@ -1733,13 +1780,48 @@ test("land --workflow with a failing local check reports the workspace failed, n
   const r = await f.run(f.checkout, "land", "t1", "--workflow");
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /atelier check failed/);
+  // The same summary as the plain landing's; a check that names no test says so.
+  assert.match(r.output, /atelier check failed \(exit 2\):\nFailed checks at [0-9a-f]{8}, as the gate reads them/);
+  assert.match(r.output, /`exit 3` failed on a runner, in a clean clone at .*: evidence #1, attempt 1 of 1 at this head\n {4}failing tests: names unavailable \(no test reporter format this summary reads was recognised in the output\)\n {4}log: whole output, inline; 1 line, whole:\n {6}\[sha256 of full output: [0-9a-f]{64}\]/, r.output);
   assert.equal(wf.events.length, 1);
   assert.equal(wf.events[0].payload.failed, true);
   assert.equal(wf.events[0].payload.head, undefined);
   assert.match(wf.events[0].payload.reason, /atelier check failed/);
+  assert.match(wf.events[0].payload.reason, /Failed checks at [0-9a-f]{8}, as the gate reads them/);
   const check = f.posts("/land").find((x) => x.body.step === "check");
   assert.equal(check?.body.failed, true);
   assert.deepEqual(f.posts("/merged"), []);
+});
+
+test("land --workflow fits a long local-check failure to what the Workflow records, keeping every failed check and the check-log line", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  const wf = scriptWorkflow(f);
+  // The first check's output runs long (60 lines of some 100 characters,
+  // past what the summary shows and what the recorder keeps inline), and
+  // the second check fails after it.
+  const line = `not ok 1 - the long check ${"x".repeat(70)}`;
+  f.box.checks = [`yes '${line}' | head -n 60; exit 3`, "exit 4"];
+  const r = await f.run(f.checkout, "land", "t1", "--workflow");
+  assert.equal(r.status, 1, r.output);
+  const pointer = "  Whole logs of every attempt at this head: atelier check-log t1";
+  // The terminal prints the summary whole: both checks, the first's 20-line tail, then the pointer.
+  const printed = r.output.slice(r.output.indexOf("Failed checks at"), r.output.indexOf(pointer) + pointer.length);
+  assert.ok(printed.length > WORKSPACE_REASON_MAX, String(printed.length));
+  assert.match(printed, /\n {2}`yes 'not ok 1 - the long check x+' \| head -n 60; exit 3` failed on a runner, in a clean clone at .*: evidence #1, attempt 1 of 1 at this head\n {4}failing tests \(tap, read from a tail of the output, so names cut with the rest are not listed\): the long check x+\n {4}log: inline tail only \(a check run on a machine keeps its last 3,500 characters inline, and this output was longer\); last 20 of \d+ lines:\n/, printed);
+  assert.match(printed, /\n {2}`exit 4` failed on a runner, in a clean clone at .*: evidence #2, attempt 1 of 1 at this head\n/, printed);
+  // The 20-line tail: 19 of the output's lines, then the sha256 line the recorder appends.
+  assert.equal(printed.split("\n").filter((l) => l.startsWith(`      ${line}`)).length, 19, printed);
+  // The Workflow is sent the same failure fitted to its record's size, not
+  // cut at it: the first line, both checks, and the check-log line survive.
+  assert.equal(wf.events.length, 1);
+  assert.equal(wf.events[0].payload.failed, true);
+  const reason = wf.events[0].payload.reason;
+  assert.ok(reason.length <= WORKSPACE_REASON_MAX, String(reason.length));
+  assert.ok(reason.startsWith("atelier check failed (exit 2):\nFailed checks at "), reason);
+  assert.ok(reason.includes("`exit 4`"), reason);
+  assert.ok(reason.endsWith(`\n${pointer}`), reason);
+  assert.ok(!reason.includes("…\n" + pointer), reason);
 });
 
 test("land --workflow --checks container runs no check here; --checks is refused without --workflow or with another mode; a server with no modes is warned of", async (t) => {
