@@ -28,7 +28,11 @@ points at it and states the review path (it does not edit the file).
 - Never override a review, a check or a block, except on the owner's own
   confirmation. Ask, and cite the owner's words; never infer them.
 - Judge each review finding against the code before acting, and record every
-  verdict with `atelier finding`.
+  verdict with `atelier finding ... --as H/M`, naming yourself, as you name
+  yourself on `atelier decide`, `atelier decisions withdraw` and on an
+  override: the Models page measures your verdicts as it measures a
+  reviewer's. Without `--as` the record cannot tell you from the owner, and
+  the page counts the judgement as unknown.
 - File every task with its acceptance criteria, written before the build. A
   review judges the change against them, so a task without them gives the
   review nothing to bind to. Write with each criterion the edge cases it
@@ -302,6 +306,24 @@ server has the new behaviour too. Each such merge raises `ROUTE_LEVEL`
 before they start while the server's route level (`GET /api/version`) is
 older than the CLI's, naming both levels and saying to deploy. Deploy after
 such merges, before landing the next task or starting a runner.
+
+Since t458 they check named capabilities instead: each command declares what
+it needs in its module (`capabilities` in `src/usage/commands/NAME.ts`, or
+under one of its `subcommands`), each runner job in `JOB_CAPABILITIES`
+(`src/route-level.ts`), the server lists what it supports in `capabilities`
+beside `routeLevel`, and every command that declares some is refused before
+its first request while the server lacks one, naming the missing
+capabilities, the server's revision and the deploy to run; the runner
+refuses the same way before its first poll, for the jobs it offers. A change
+that adds API behaviour a command relies on declares a new capability on a
+line of its own under its family in `src/route-level.ts` and names it in
+that command's module, or in the job's row; a command that names one the
+file does not declare fails to load, naming the module. An incompatible
+change takes a new name (`…v2`). Keep raising `ROUTE_LEVEL` for now, as
+the migration in [Landing](landing.md) says, since servers that predate
+capabilities are read through it, and give the new declaration the level
+the raise reaches: the number gates nothing on its own, and
+`test/capabilities.test.mjs` fails a raise that declares no capability.
 
 **Keep the machine's load down.** Checks run the whole suite. A dozen agents
 and checks at once pushed the load average past 100 and made timing tests
@@ -649,6 +671,13 @@ owner it read as a defect. The other half were real, and some were serious.
   reviewers are right, and how often, is the most useful thing Atelier can
   measure about them. The next review brief shows each verdict and its note,
   so put the file and line that answer a refuted finding in the note.
+- Pass `--as H/M` with every verdict, naming the harness/model you are; it
+  must be a model in the pool. Your verdicts are measured too (task t440):
+  the Models page counts each upheld when another named model later agrees,
+  contradicted when a later verdict corrects it or a defect names it, and
+  unresolved otherwise. `atelier finding` prints the verdict's event number;
+  a defect that shows a refuted or fixed verdict wrong names it with
+  `atelier defect ID --note "…" --contradicts SEQ#N`.
 
 ## Keeping the record honest
 

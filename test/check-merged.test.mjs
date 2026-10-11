@@ -19,7 +19,7 @@ const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8",
 
 // `mainChange` and `taskChange` write each side's commit; `onMain` builds the
 // task's commit on top of main's newer commit instead of the fork point.
-async function fixture(t, { mainChange, taskChange, onMain = false, check }) {
+async function fixture(t, { mainChange, taskChange, onMain = false, check, prepare }) {
   const root = mkdtempSync(join(tmpdir(), "atelier-merged-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const identity = (cwd) => { git(cwd, "config", "user.name", "Test"); git(cwd, "config", "user.email", "test@example.invalid"); };
@@ -58,7 +58,7 @@ async function fixture(t, { mainChange, taskChange, onMain = false, check }) {
     let raw = ""; for await (const chunk of req) raw += chunk;
     const path = req.url;
     if (req.method === "POST") posts.push({ path, body: JSON.parse(raw) });
-    let data = { item, gate: { ready: true, blockers: [] }, policy: { checks: [check], protected: [], sandboxOnly: false }, evidence: posts.filter((p) => p.path.endsWith("/evidence")).map((p) => p.body), reviews: [], events: [] };
+    let data = { item, gate: { ready: true, blockers: [] }, policy: { checks: Array.isArray(check) ? check : [check], prepare, protected: [], sandboxOnly: false }, evidence: posts.filter((p) => p.path.endsWith("/evidence")).map((p) => p.body), reviews: [], events: [] };
     if (path.endsWith("/read-token")) data = { remote: fork, token: "fake-fork-token", head, defaultBranch: "main" };
     if (path.endsWith("/baseline-token")) data = { remote: baseline, token: "fake-baseline-token", defaultBranch: "main" };
     // A task with no plan is measured against the baseline, so its base token names it.
@@ -72,8 +72,8 @@ async function fixture(t, { mainChange, taskChange, onMain = false, check }) {
   t.after(() => server.close());
   await new Promise((done, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", done); });
   writeFileSync(join(root, "config.json"), JSON.stringify({ projects: { proj: { path: source } } }));
-  async function run(argv) {
-    const child = spawn(process.execPath, [cli, ...argv], { cwd: source, env: { ...process.env, ATELIER_ACTOR: actor, ATELIER_CONFIG_DIR: root, ATELIER_CACHE: join(root, "cache"), ATELIER_TOKEN: "fake", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}`, GIT_CONFIG_NOSYSTEM: "1" } });
+  async function run(argv, env = {}) {
+    const child = spawn(process.execPath, [cli, ...argv], { cwd: source, env: { ...process.env, ATELIER_ACTOR: actor, ATELIER_CONFIG_DIR: root, ATELIER_CACHE: join(root, "cache"), ATELIER_TOKEN: "fake", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}`, GIT_CONFIG_NOSYSTEM: "1", ...env } });
     let stdout = "", stderr = "";
     child.stdout.on("data", (s) => stdout += s);
     child.stderr.on("data", (s) => stderr += s);
@@ -140,4 +140,47 @@ test("check --merged --sandbox asks the Worker for a merged run and reports it a
   // Without --merged the request asks for a plain run.
   await f.run(["check", "t1", "--project", "proj", "--sandbox"]);
   assert.deepEqual(f.posts.filter((p) => p.path.endsWith("/sandbox")).map((p) => p.body), [{ merged: true }, {}]);
+});
+
+
+test("preparation runs once in the merged tree before multiple checks, and runs again on retry", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const prepare = { command: "test -f main.txt && test ! -f ready && touch ready", inputs: ["main.txt"], outputs: ["ready"] };
+  const f = await fixture(t, { mainChange: addFile("main.txt"), taskChange: addFile("task.txt"), prepare, check: ["test -f ready", "test -f ready && test -f task.txt"] });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const r = await f.run(["check", "t1", "--project", "proj", "--merged"]);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+  }
+  assert.equal(f.evidence().length, 4);
+  assert.ok(f.evidence().every((e) => e.passed && e.merged));
+  // The same preparation fails on the unmerged tree. Prior evidence stays.
+  const failed = await f.run(["check", "t1", "--project", "proj"]);
+  assert.equal(failed.status, 2);
+  assert.match(failed.stderr, /Preparation .*failed: exit 1/);
+  assert.equal(f.evidence().length, 4);
+});
+
+test("preparation failure reports its command, status and bounded redacted output without check evidence", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const command = "printf 'fake-fork-token'; exit 7";
+  const f = await fixture(t, { mainChange: addFile("main.txt"), taskChange: addFile("task.txt"), prepare: { command, inputs: ["STATE.md"], outputs: ["ready"] }, check: "true" });
+  const r = await f.run(["check", "t1", "--project", "proj"]);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /failed: exit 7/);
+  assert.match(r.stderr, /last 4000 characters, redacted/);
+  // The failure report redacts both the command and its output.
+  const report = r.stderr.slice(r.stderr.indexOf("Preparation"));
+  assert.ok(!report.includes("fake-fork-token"));
+  assert.match(report, /\[redacted\]/);
+  assert.deepEqual(f.evidence(), []);
+});
+
+test("preparation timeout stops checks and names the signal", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await fixture(t, { mainChange: addFile("main.txt"), taskChange: addFile("task.txt"), prepare: { command: "sleep 30", inputs: ["STATE.md"], outputs: ["ready"] }, check: "true" });
+  const r = await f.run(["check", "t1", "--project", "proj"], { ATELIER_CHECK_TIMEOUT: "200" });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /Preparation `sleep 30` failed: (signal|exit)/);
+  assert.match(r.stderr, /timed out/);
+  assert.deepEqual(f.evidence(), []);
 });
