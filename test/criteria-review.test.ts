@@ -329,3 +329,29 @@ test("the findings section tells the builder and the code reviewer which criteri
   assert.ok(brief.includes("Criteria 1, 2 were flagged by the review of the acceptance criteria as checks after deploy"));
   assert.ok(!reviewBrief(input(2)).includes("deferred"), "checks of an earlier revision offer no deferral");
 });
+
+test("a part's own criteria and the plan's are numbered as one list, so a check names the criterion the brief showed under that number", () => {
+  const brief = criteriaReviewBrief({
+    item: { id: "t8", title: "Part a", scope: ["src/a/**"], accept: ["The log names the user"], partAccept: ["It works", "It is fast"] },
+    rev: 2, authors: [OPUS, "owner"], plan: { goal: "Ship it", part: { key: "a", title: "Part a", brief: "Build it", acceptance: ["It works", "It is fast"] } }, previous: [], resolutions: [], round: 1,
+  });
+  assert.ok(brief.includes("The task's own criteria, numbered as a finding names them (criterion-1, criterion-2, ...):\n```\n1. The log names the user\n```"), brief);
+  assert.ok(brief.includes("The plan's criteria for this part, numbered after the task's (criterion-2 onward):\n```\n2. It works\n3. It is fast\n```"), brief);
+  // The reviewer defers the criterion it saw as 3, "It is fast": the check
+  // stands for criterion 3, which the code review's numbering, the task's
+  // first, then the plan's, also reads as "It is fast".
+  const read = parseVerdict("VERDICT: APPROVE\nSUMMARY: Clear.\nCHECK: criterion-3 orchestrator Speed is measured against the deployed worker.", 0, { checks: true });
+  assert.equal(read.ok, true);
+  if (!read.ok) return;
+  assert.deepEqual(read.checks?.map((c) => c.criterion), [3]);
+  const shown = new Map([...brief.matchAll(/^(\d+)\. (.+)$/gm)].map((m) => [Number(m[1]), m[2]]));
+  assert.equal(shown.get(3), "It is fast");
+  const codeReviewOrder = ["The log names the user", "It works", "It is fast"];
+  assert.equal(codeReviewOrder[read.checks![0].criterion - 1], shown.get(read.checks![0].criterion));
+  const approved = review(1, { rev: 2, checks: read.checks });
+  assert.deepEqual(deferredCriteria([approved], 2), [3]);
+  const format = replyFormat(3, 1, deferredCriteria([approved], 2));
+  assert.ok(format.includes("the plan's acceptance criteria for this part follow as criteria 2 to 3"));
+  assert.ok(format.includes("Criterion 3 was flagged"));
+  assert.equal(parseVerdict("VERDICT: APPROVE\nSUMMARY: Fine.\nCRITERION 1: met — Ran it.\nCRITERION 2: met — Ran it.\nCRITERION 3: deferred — The timing is checked after deploy.", 3, { deferred: [3] }).ok, true);
+});

@@ -364,7 +364,9 @@ function block(text: string): string {
   const fence = "`".repeat(Math.max(3, longestTicks(body) + 1));
   return `${fence}\n${body}\n${fence}`;
 }
-const numbered = (criteria: readonly string[]) => criteria.map((c, i) => `${i + 1}. ${c}`).join("\n");
+// Numbered from `from` + 1, so the plan's criteria for a part continue the
+// task's own list, as the ledger stores and counts them (criteriaCountOf).
+const numbered = (criteria: readonly string[], from = 0) => criteria.map((c, i) => `${from + i + 1}. ${c}`).join("\n");
 
 // What a criteria review may block for, stated in every criteria brief.
 export const CRITERIA_REVIEW_BAR = "Block only for a criterion that cannot be observed or tested by anyone (it names no behaviour, output, state or measurement a reviewer could check), one that contradicts the task's brief or another criterion, one outside the task's scope, one so open that two reasonable readings would judge the same change differently, or a set that leaves out what the brief plainly requires, so that a change meeting every criterion could still fail the task. A criterion that can be observed, but not by the builder in its workspace (it needs a signed-in browser, production data, a deployed service or a human step), is not a defect: flag it as a check after deploy with a CHECK line, the project owner's for a step a person makes or the orchestrator's for one a script runs against the deployed project, and do not block for it. Wording, order and style are follow-ups.";
@@ -420,7 +422,7 @@ export function criteriaReviewBrief(input: CriteriaBriefInput): string {
     "## The acceptance criteria",
     "",
     ...(accept.length ? ["The task's own criteria, numbered as a finding names them (criterion-1, criterion-2, ...):", block(numbered(accept))] : ["The task's own list is empty."]),
-    ...(partAccept.length ? [`The plan's criteria for this part, numbered after the task's (criterion-${accept.length + 1} onward):`, block(numbered(partAccept))] : []),
+    ...(partAccept.length ? [`The plan's criteria for this part, numbered after the task's (criterion-${accept.length + 1} onward):`, block(numbered(partAccept, accept.length))] : []),
   );
   if (input.previous.length) section("## Earlier criteria reviews", "", ...earlierCriteriaReviews(input.previous, input.resolutions, input.rev));
   section(
