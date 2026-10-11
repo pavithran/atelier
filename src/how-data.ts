@@ -29,7 +29,7 @@ export const LOOP: Step[] = [
   {
     name: "Task", lane: "owner", command: "new", moves: "a new task",
     records: ["Task and scope", "recorded; the", "task is open"],
-    detail: "The project owner creates the task with `atelier new \"title\" --scope 'src/**'`. The scope is the paths the task intends to touch. Overlapping live scopes are flagged in the inbox, and a project whose policy says so refuses a claim that overlaps another. A project that names core files holds a dispatch in the queue while its scope overlaps a live item's within one.",
+    detail: "The project owner creates the task with `atelier new \"title\" --scope 'src/**'`. The scope is the paths the task intends to touch. Overlapping live scopes are flagged in the inbox, and a project whose policy says so refuses a claim that overlaps another. A project that names core files holds a dispatch in the queue while its scope overlaps, within one, the scope of a claimed item or of the item a live landing lease names.",
   },
   {
     name: "Claim", lane: "agent", command: "start", moves: "a claim",
@@ -150,9 +150,9 @@ export const RULES: Rule[] = [
   },
   {
     title: "Core files are built one change at a time",
-    enforced: "A project's policy may name core files (`atelier init --core GLOB`). While a queued dispatch's scope overlaps, within a core file, the scope of a live item (claimed, submitted or accepted), the queue offers it to no runner and the owner's listing names the item it waits on; it is offered once that item merges or is abandoned. Items of one plan never hold each other, since the plan orders overlapping parts by their dependencies. The owner lets one task's dispatch through with `atelier dispatch ID --overlap-ok`. With no core files, nothing is held.",
+    enforced: "A project's policy may name core files (`atelier init --core GLOB`). While a queued dispatch's scope overlaps, within a core file, the scope of a claimed item or of the item named by a live landing lease (unexpired, its item not yet merged or abandoned), the queue offers it to no runner and the owner's listing names every item it waits on. A submitted or accepted item that is not landing holds nothing. The dispatch is offered once each claimed blocker submits or is released and each landing ends. Items of one plan never hold each other, since the plan orders overlapping parts by their dependencies; a claimed plan item holds nothing, and the plan, integrate, refresh and review jobs are never held. The owner lets one task's dispatch through with `atelier dispatch ID --overlap-ok`. With no core files, nothing is held.",
     why: "Tasks built at once on the same hot files stop each other's landings on merge conflicts.",
-    where: [{ file: "src/dispatch/rules.ts", symbol: "coreHold" }, { file: "src/ledger.ts", symbol: "waiting" }],
+    where: [{ file: "src/dispatch/rules.ts", symbol: "coreBlockers" }, { file: "src/ledger.ts", symbol: "waiting" }],
   },
 ];
 
