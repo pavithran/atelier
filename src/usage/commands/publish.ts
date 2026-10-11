@@ -2,6 +2,9 @@ import type { CommandSpec } from "../command.ts";
 
 const spec: CommandSpec = {
   name: "publish",
+  // publish REMOTE reads the mirror policy's destinations and privacy rules;
+  // bare publish pushes the baseline and needs nothing (requiredForCommand).
+  capabilities: ["projects.publication-policy.v1"],
   forms: [
     {
       group: "Setup", line: 1, slot: 50,

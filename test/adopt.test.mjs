@@ -1,3 +1,4 @@
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -365,6 +366,7 @@ async function fixture(t, { registered = true, paste = true, agents = AGENTS, fi
   // workspace, cloned from the branch as it stands then.
   let minted = 0, latest = null;
   const server = createServer(async (req, res) => {
+    if (req.url === "/api/version") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ capabilities: SERVER_CAPABILITIES })); }
     let raw = ""; for await (const chunk of req) raw += chunk;
     posts.push({ url: req.url, method: req.method, as: req.headers["x-atelier-actor"], body: raw ? JSON.parse(raw) : null });
     let data = {};

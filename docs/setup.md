@@ -276,10 +276,12 @@ The fields travel in `PUT /api/projects/NAME` as `commitName`, `commitEmail`,
 `privatePaths` and `privatePatterns`, and are stored as
 `policy.commitIdentity`. The identity fields (`commitName`, `commitEmail`,
 `agentEmails`, `privateEmails`, `publicMirrors`) came with route level 24
-(t451); `publicMirrorDestinations`, `privatePaths` and `privatePatterns` with
-route level 27 (t433, `src/route-level.ts`). `atelier land` and the runner
-refuse a server below the CLI's level, since an older server would not
-record or return these fields.
+(t451, capability `projects.commit-identity.v1`); `publicMirrorDestinations`,
+`privatePaths` and `privatePatterns` with route level 28 (t433, capability
+`projects.publication-policy.v1`, `src/route-level.ts`). `init` requires both
+and `publish REMOTE` the second, so either refuses a server that lacks them,
+since an older server would not record or return these fields; bare
+`publish` needs neither.
 
 Where the identity is enforced:
 

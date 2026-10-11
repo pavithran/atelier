@@ -303,6 +303,24 @@ before they start while the server's route level (`GET /api/version`) is
 older than the CLI's, naming both levels and saying to deploy. Deploy after
 such merges, before landing the next task or starting a runner.
 
+Since t458 they check named capabilities instead: each command declares what
+it needs in its module (`capabilities` in `src/usage/commands/NAME.ts`, or
+under one of its `subcommands`), each runner job in `JOB_CAPABILITIES`
+(`src/route-level.ts`), the server lists what it supports in `capabilities`
+beside `routeLevel`, and every command that declares some is refused before
+its first request while the server lacks one, naming the missing
+capabilities, the server's revision and the deploy to run; the runner
+refuses the same way before its first poll, for the jobs it offers. A change
+that adds API behaviour a command relies on declares a new capability on a
+line of its own under its family in `src/route-level.ts` and names it in
+that command's module, or in the job's row; a command that names one the
+file does not declare fails to load, naming the module. An incompatible
+change takes a new name (`…v2`). Keep raising `ROUTE_LEVEL` for now, as
+the migration in [Landing](landing.md) says, since servers that predate
+capabilities are read through it, and give the new declaration the level
+the raise reaches: the number gates nothing on its own, and
+`test/capabilities.test.mjs` fails a raise that declares no capability.
+
 **Keep the machine's load down.** Checks run the whole suite. A dozen agents
 and checks at once pushed the load average past 100 and made timing tests
 fail at random; run checks one after another when the machine is busy.
