@@ -57,7 +57,9 @@ export async function runnerGitRequest(req: Request, url: URL, runtime: RunnerGi
     target.search = url.search;
     const headers = new Headers({ authorization: `Bearer ${upstream.plaintext}` });
     for (const key of ["content-type", "content-encoding", "git-protocol"]) { const value = req.headers.get(key); if (value) headers.set(key, value); }
-    response = await fetch(target, { method: req.method, headers, body: req.method === "POST" ? req.body : undefined, redirect: "manual" });
+    // A streamed request body needs duplex "half" in Node's fetch (the
+    // runner-git test serves this route from Node); Workers accept it too.
+    response = await fetch(target, { method: req.method, headers, body: req.method === "POST" ? req.body : undefined, redirect: "manual", ...(req.method === "POST" ? { duplex: "half" } : {}) } as RequestInit);
   } catch (error) { await release(); throw error; }
   const result = new Headers({ "cache-control": "no-store" });
   result.set("content-type", response.headers.get("content-type") ?? "application/octet-stream");
