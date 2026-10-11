@@ -23,13 +23,34 @@ read error as evidence that the instance ended.
 3. Release the blocker and let the disposable landings finish through their
    normal executor reports. Verify all fourteen finish in queue order, with
    no unaccounted instance or leftover queue entry.
-4. In the smoke project, remove a disposable queued instance using the
-   platform's instance deletion operation, preserving its Ledger record.
-   Confirm that `get()` reports `instance.not_found`, then POST the task's
-   `landing-workflow` route again. Verify a fresh readable instance is
-   recorded and its queue position is preserved. Finish the disposable
+4. In the smoke project, let a disposable instance fail and verify that its
+   Ledger stage is `failed`, without reading its status through the API
+   (leave `lastStatus` absent or nonterminal). Queue the task for a retry,
+   then remove the ended instance using the platform's instance deletion
+   operation, preserving its Ledger record. Confirm that `get()` reports
+   `instance.not_found`, then POST the task's `landing-workflow` route again.
+   Verify a fresh readable instance is recorded and its queue position is
+   preserved. A missing instance whose record still has a nonterminal stage
+   and no ended status must instead return 503 without changing the record,
+   since it may be a successor claimed before create. Finish the disposable
    landing and clean up the smoke project.
 
 A local passing suite is not a receipt for this remote check. Do not deploy
 when the before-deploy run has an unexplained loss; preserve diagnostics and
 stop the release if the after-deploy run does.
+
+
+## Review runner restart (t351 / t485)
+
+Before and after deploy, keep one standalone landing and one plan part waiting
+on real review runners. SIGTERM a runner during its review and verify its child
+exits before the claim is released. Repeat with SIGKILL and a network outage:
+a queue poll at five minutes without renewal must offer the review again.
+Restart under the same runner name and then take over on another eligible
+runner serving the same actor. Verify the original landing instance approves
+and advances, with no owner release or new landing. Replay the old request's
+release, renewal and verdict: all must be refused without changing its successor.
+Keep a review running for more than five minutes and verify thirty-second
+renewals retain it. Record request numbers and server timestamps. Local tests
+cover the clock and fencing; this smoke verifies hosted alarms, Workflow replay
+and real process/network interruption across deployment.

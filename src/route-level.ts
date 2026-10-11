@@ -34,4 +34,9 @@
 // 24: a project's policy carries its commit identity, which every claim,
 // runner and landing reads, and init takes commitName, commitEmail,
 // agentEmails, privateEmails and publicMirrors (t451).
-export const ROUTE_LEVEL = 24;
+// 25: the owner admits, withdraws and lists outside reviewers (PUT, DELETE
+// and GET /projects/:p/reviewers), which an older server answers 404 (t492).
+
+// 26: review-renew and five-minute leases; release and verdicts name the
+// exact request generation, and expired requests are reoffered (t351).
+export const ROUTE_LEVEL = 26;
