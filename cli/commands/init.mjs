@@ -250,7 +250,7 @@ export default async function initCommand() {
   if (args["require-criteria"] === true && !pol.requireCriteria) console.log("Warning: the server did not record the criteria requirement; deploy the server, then run atelier init --require-criteria again.");
   console.log(`Criteria review: ${pol.requireCriteriaReview ? "required before a build is dispatched or claimed" : "not required"}`);
   if (args["require-criteria-review"] === true && !pol.requireCriteriaReview) console.log("Warning: the server did not record the criteria review requirement; deploy the server, then run atelier init --require-criteria-review again.");
-  console.log(`Core files: ${pol.coreFiles?.length ? `${pol.coreFiles.join(", ")}; the queue holds a dispatch whose scope overlaps a live item's in one` : "none; the queue holds no dispatch for its scope"}`);
+  console.log(`Core files: ${pol.coreFiles?.length ? `${pol.coreFiles.join(", ")}; the queue holds a dispatch whose scope overlaps a claimed or landing item's in one` : "none; the queue holds no dispatch for its scope"}`);
   // A server older than core files ignores them and answers without any.
   if (core?.length && !pol.coreFiles?.length) console.log("Warning: the server did not record the core files; deploy the server, then run atelier init --core again.");
   const ci = pol.commitIdentity;
