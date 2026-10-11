@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 
 import { HARNESSES } from "../cli/harness/adapter.mjs";
 import { SLOT_WRAPPER } from "../cli/load.mjs";
-import { quoteShell, requireNode, slotNote, testSlotNote } from "../cli/runner.mjs";
+import { quoteShell, requireNode, slotNote, startHarness, testSlotNote } from "../cli/runner.mjs";
 import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 
 // t479: a brief names the slot wrapper as `node 'WRAPPER' -- COMMAND`, which
@@ -57,6 +57,59 @@ test("requireNode refuses a PATH without node and accepts one with it", (t) => {
   chmodSync(join(dir, "node"), 0o755);
   requireNode({ PATH: `/nonexistent:${dir}` });
   requireNode({ PATH: dirname(process.execPath) });
+});
+
+// A harness starts in its workspace, so its relative and empty PATH entries
+// name directories there, not in the runner's own current directory.
+const nodeIn = (dir) => { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, "node"), "#!/bin/sh\n"); chmodSync(join(dir, "node"), 0o755); };
+const twoDirs = (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "atelier-node-cwd-")));
+  const workspace = join(root, "workspace"), runner = join(root, "runner");
+  mkdirSync(workspace); mkdirSync(runner);
+  const before = process.cwd();
+  process.chdir(runner);
+  t.after(() => { process.chdir(before); rmSync(root, { recursive: true, force: true }); });
+  return { workspace, runner };
+};
+
+test("a relative PATH entry finds node in the harness workspace", (t) => {
+  const { workspace } = twoDirs(t);
+  nodeIn(join(workspace, "bin"));
+  requireNode({ PATH: "./bin" }, workspace);
+  requireNode({ PATH: "bin" }, workspace);
+});
+
+test("a relative PATH entry does not find node in the runner's directory", (t) => {
+  const { workspace, runner } = twoDirs(t);
+  nodeIn(join(runner, "bin"));
+  assert.throws(() => requireNode({ PATH: "./bin" }, workspace), /node is not on the harness PATH/);
+});
+
+test("an empty PATH entry names the harness workspace, as execvp has it", { skip: process.platform === "win32" }, (t) => {
+  const { workspace, runner } = twoDirs(t);
+  nodeIn(runner);
+  for (const PATH of ["::", ":/nonexistent", "/nonexistent:", ""]) {
+    assert.throws(() => requireNode({ PATH }, workspace), /node is not on the harness PATH/, `${JSON.stringify(PATH)} with node only in the runner's directory`);
+  }
+  nodeIn(workspace);
+  for (const PATH of ["::", ":/nonexistent", "/nonexistent:", ""]) requireNode({ PATH }, workspace);
+});
+
+test("absolute PATH entries do not depend on the workspace", (t) => {
+  const { workspace, runner } = twoDirs(t);
+  nodeIn(join(runner, "abs"));
+  requireNode({ PATH: join(runner, "abs") }, workspace);
+  assert.throws(() => requireNode({ PATH: join(workspace, "abs") }, runner), /node is not on the harness PATH/);
+});
+
+test("startHarness checks node from the cwd it starts the harness in", async (t) => {
+  const { workspace, runner } = twoDirs(t);
+  nodeIn(join(workspace, "bin"));
+  const started = [];
+  const child = async (argv, options) => { started.push(options.cwd); return { code: 0 }; };
+  await startHarness(["harness"], workspace, { PATH: "./bin" }, {}, child);
+  await assert.rejects(startHarness(["harness"], runner, { PATH: "./bin" }, {}, child), /node is not on the harness PATH/);
+  assert.deepEqual(started, [workspace]);
 });
 
 test("the generated command runs from another workspace: slot held, nested reuse, priority, cwd and exit status", { timeout: 60000 }, (t) => {
