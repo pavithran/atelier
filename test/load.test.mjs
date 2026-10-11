@@ -206,7 +206,7 @@ test("environment is advisory after creation and invalid initial values use the 
     const owner = f.owner();
     await acquireSlot(owner, { ...options, env: { ATELIER_TEST_SLOTS: value } });
     assert.equal((await slotStatus({ ...options, env: {} })).capacity, 3);
-    assert.match(warnings.pop(), /warning:.*using stored capacity 3/);
+    assert.equal(warnings.length, 0, "this caller already warned for this pool");
     await releaseSlot(owner.lease, options, owner.pid);
   }
 });
@@ -283,4 +283,18 @@ test("concurrent setters and admissions retain every lease and enqueue sequence"
   assert.ok(status.capacity >= 20 && status.capacity <= 31);
   assert.deepEqual(new Set(status.active.map((e) => e.lease)), new Set(owners.map((e) => e.lease)));
   assert.deepEqual(status.active.map((e) => e.sequence), Array.from({ length: 12 }, (_, i) => i + 1));
+});
+
+test("a waiting caller warns only once across polls, admission and release", async (t) => {
+  const f = fixture(t), held = f.owner(), waiting = f.owner(), warnings = [];
+  await acquireSlot(held, f.options);
+  let polls = 0;
+  const options = { ...f.options, env: { ATELIER_TEST_SLOTS: "2" }, warn: (message) => warnings.push(message),
+    wait: async () => { if (++polls === 4) await releaseSlot(held.lease, f.options, held.pid); } };
+  await acquireSlot(waiting, options);
+  await slotStatus(options);
+  await releaseSlot(waiting.lease, options, waiting.pid);
+  assert.equal(polls, 4);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /requests 2; using stored capacity 1/);
 });

@@ -23,16 +23,19 @@ On first pool creation a valid `ATELIER_TEST_SLOTS` sets capacity; otherwise
 capacity is `max(1, floor(coreCount()/4))`. Capacity is recorded atomically in
 `/tmp/atelier-test-slots-v1.sqlite`; it does not depend on the project,
 `ATELIER_CACHE`, `ATELIER_CONFIG_DIR`, HOME, or the runner name. After creation,
-stored capacity wins. An invalid or disagreeing environment value warns but
-cannot prevent admission; an absent value silently uses stored capacity.
+stored capacity wins. An invalid or disagreeing environment value warns once
+per caller but cannot prevent admission; an absent value silently uses stored
+capacity.
 
-Change capacity with `node cli/load.mjs --set N`. Only positive safe integers
-are accepted. The change shares admission's SQLite transaction lock and
+Change capacity with `atelier slots set N` (or `node cli/load.mjs --set N`).
+Only positive safe integers are accepted. The change shares admission's SQLite transaction lock and
 preserves live leases and the priority/FIFO queue. Raising capacity lets
 waiting work enter on its next poll. Lowering capacity leaves running and
 nested work alone and admits nothing while active usage is at or above the
 new limit. No database reset or runner restart is needed for callers using
-the updated implementation. Never remove a live pool.
+the updated implementation. Every runner must run the new code before capacity
+is changed: older callers can still reject a capacity disagreement. Never
+remove a live pool.
 The pool is intended for the machine's shared Atelier service account;
 different runner identities and project directories do not partition it.
 
@@ -53,7 +56,8 @@ briefs give the installed wrapper path, so the project's checkout need not
 contain Atelier's source. Supply project, task and actor through the wrapper
 flags when running manually; runners supply them through their environment.
 
-`--status` works locally without server credentials. It reports capacity,
+`atelier slots status [--json]` (or the wrapper's `--status [--json]`)
+works locally without server credentials. It reports capacity,
 active usage, draining excess (usage above capacity), host, project/task, actor, supervisor PID, random launch identity, start time,
 and waiters in admission order. JSON also lists the live processes belonging
 to each active tree, plus numeric `usage` and `draining` counts. Project status includes this pool, and ordinary text

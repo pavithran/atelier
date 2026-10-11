@@ -11,6 +11,9 @@ export const SLOT_WRAPPER = fileURLToPath(import.meta.url);
 const MARKER = "ATELIER_TEST_LEASE";
 const classes = { release: 0, landing: 0, review: 1, ordinary: 2 };
 const delay = (ms) => new Promise((done) => setTimeout(done, ms));
+// A long-lived caller may poll admissions or status repeatedly. Warn once
+// per pool in this process, including when capacity changes during its wait.
+const warnedPools = new Set();
 export const coreCount = () => cpus().length || 1;
 
 export function slotCapacity(env = process.env, cores = coreCount()) {
@@ -73,7 +76,9 @@ export async function poolTransaction(options = {}, update = () => {}) {
       try { requested = slotCapacity(env); }
       catch { /* Invalid environment is advisory, including first creation. */ }
       const state = stored ? JSON.parse(stored.data) : { capacity: requested ?? slotCapacity({}), host: hostname(), sequence: 0, entries: [] };
-      if (env.ATELIER_TEST_SLOTS !== undefined && requested !== state.capacity) {
+      const poolPath = resolve(options.path ?? HOST_POOL);
+      if (env.ATELIER_TEST_SLOTS !== undefined && requested !== state.capacity && !warnedPools.has(poolPath)) {
+        warnedPools.add(poolPath);
         (options.warn ?? console.warn)(`test slots: warning: ATELIER_TEST_SLOTS ${requested === undefined ? "is invalid" : `requests ${requested}`}; using stored capacity ${state.capacity}`);
       }
       const processes = options.skipEmpty && !state.entries.length ? [] : (options.processes ?? slotProcesses)();

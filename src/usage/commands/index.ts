@@ -58,6 +58,7 @@ import command_served from "./served.ts";
 import command_ship from "./ship.ts";
 import command_show from "./show.ts";
 import command_showcase from "./showcase.ts";
+import command_slots from "./slots.ts";
 import command_start from "./start.ts";
 import command_status from "./status.ts";
 import command_submit from "./submit.ts";
@@ -128,6 +129,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/ship.ts", spec: command_ship },
   { path: "src/usage/commands/show.ts", spec: command_show },
   { path: "src/usage/commands/showcase.ts", spec: command_showcase },
+  { path: "src/usage/commands/slots.ts", spec: command_slots },
   { path: "src/usage/commands/start.ts", spec: command_start },
   { path: "src/usage/commands/status.ts", spec: command_status },
   { path: "src/usage/commands/submit.ts", spec: command_submit },
