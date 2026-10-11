@@ -1,6 +1,6 @@
 {
   "generatedBy": "scripts/design/capture.ts",
-  "source": "dcdd9bc19ea9c3f67d640d0e0e062c1798d9094b",
+  "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
   "sourceDirty": false,
   "browser": {
     "name": "chromium",
@@ -235,7 +235,7 @@
             },
             {
               "tag": "g",
-              "label": "2026-09-12 13:03 UTC, accepted: Pavi accepted",
+              "label": "2026-09-12 13:03 UTC, accepted: Owner accepted",
               "href": null,
               "indicator": null,
               "onScreen": true,
@@ -271,7 +271,7 @@
             },
             {
               "tag": "g",
-              "label": "2026-09-12 15:46 UTC, accepted: Pavi accepted c656",
+              "label": "2026-09-12 15:46 UTC, accepted: Owner accepted c65",
               "href": null,
               "indicator": null,
               "onScreen": true,
@@ -7541,7 +7541,7 @@
     "log": {
       "390": {
         "structure": {
-          "height": 4774,
+          "height": 4976,
           "navs": [
             {
               "label": "Main navigation",
@@ -8044,7 +8044,7 @@
     "log-page-2": {
       "390": {
         "structure": {
-          "height": 4774,
+          "height": 4976,
           "navs": [
             {
               "label": "Main navigation",
@@ -8680,7 +8680,7 @@
     "path-history": {
       "390": {
         "structure": {
-          "height": 1925,
+          "height": 1985,
           "navs": [
             {
               "label": "Main navigation",
@@ -10394,7 +10394,7 @@
       "status": 200,
       "audience": "owner"
     },
-    "task-ready-unavailable": {
+    "task-unreadable": {
       "390": {
         "structure": {
           "height": 2749,
