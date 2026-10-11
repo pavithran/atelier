@@ -220,3 +220,28 @@ it("the section says an empty window totals nothing, and names the unknown actin
   expect(renderModels([], new Map(), null, "", undefined, new Map(), null, null, null, legacy)).toContain('aria-label="Judgements by acting model"');
   expect(renderModels([], new Map())).not.toContain("Judgements by acting model");
 });
+
+it("through the Ledger, confirmed then fixed agree, and a re-review's different finding at the same index is unrelated", async () => {
+  const name = "judge-rereview";
+  await project(name);
+  const { id } = await L(name).newItem("Fix the parser", ["docs/**"], "owner");
+  await L(name).claim(id, OPUS);
+  await L(name).setFork(id, `${name}--${id}`, H0, OPUS);
+  await L(name).recordPush(id, OPUS, H1, H1);
+  await L(name).submit(id, OPUS);
+  const review = (at: string, text: string) => L(name).addReview({ itemId: id, by: GLM, head: H1, criteria: NO_CRITERIA, approve: false, note: "no", at, findings: [{ file: "a.ts", line: 1, severity: "blocking", text }] });
+  await review("2026-10-01T00:00:00.000Z", "drops rows");
+  await L(name).addFinding(id, "owner", H1, 1, "confirmed", "", OPUS);
+  await L(name).addFinding(id, "owner", H1, 1, "fixed", "", GPT);
+  // The same reviewer reviews the same revision again; its first finding is another one.
+  await review("2026-10-02T00:00:00.000Z", "loses the header");
+  await L(name).addFinding(id, "owner", H1, 1, "refuted", "", GPT);
+  const verdicts = (await events(name, id)).filter((e) => e.kind === "review.finding").sort((a, b) => a.seq - b.seq);
+  expect(verdicts.map((e) => e.data.review)).toEqual(["2026-10-01T00:00:00.000Z", "2026-10-01T00:00:00.000Z", "2026-10-02T00:00:00.000Z"]);
+  const record = buildJudgement([{ project: name, events: await events(name) }], judgementWindow(new Date()), "owner");
+  const opus = record.models.find((m) => m.model === "opus-5.5")!;
+  const gpt = record.models.find((m) => m.model === "gpt-6-astra")!;
+  expect([opus.verdicts, opus.upheld, opus.contradicted, opus.unresolved]).toEqual([1, 1, 0, 0]);
+  expect([gpt.verdicts, gpt.upheld, gpt.contradicted, gpt.unresolved]).toEqual([2, 0, 0, 2]);
+  expect([...opus.contradictions, ...gpt.contradictions]).toEqual([]);
+});

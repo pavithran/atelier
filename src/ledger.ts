@@ -2479,7 +2479,7 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("no_finding", `${id}'s review at ${at.slice(0, 8)} has ${findings.length} ${findings.length === 1 ? "finding" : "findings"}; --index ${index} is outside it`, 409);
     }
     const finding = findings[index - 1];
-    this.log(id, actor, "review.finding", { head: at, index, verdict, note, by: review.by, finding: { file: finding.file, line: finding.line, severity: finding.severity, text: finding.text }, ...(acting ? { acting } : {}) }, new Date().toISOString());
+    this.log(id, actor, "review.finding", { head: at, index, verdict, note, by: review.by, review: review.at, finding: { file: finding.file, line: finding.line, severity: finding.severity, text: finding.text }, ...(acting ? { acting } : {}) }, new Date().toISOString());
     return this.sql.exec(`SELECT MAX(seq) AS seq FROM events WHERE item_id = ? AND kind = 'review.finding'`, id).one().seq as number;
   }
 
