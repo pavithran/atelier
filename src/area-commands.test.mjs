@@ -1,8 +1,36 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { COMMANDS, COMMAND_USAGE } from '../cli/help.mjs';
 import { areaField } from './area-commands.ts';
-import { args, areaCommand, boardCommand, fieldsArg, parseArgs } from '../cli/atelier.mjs';
+import { args, fieldsArg, parseArgs } from '../cli/atelier.mjs';
+import areaCommand from '../cli/commands/area.mjs';
+import boardCommand from '../cli/commands/board.mjs';
 import { boardText } from './board.ts';
+
+test('board and area use the shared registry, help and flag validation with leading --project', () => {
+  const cli = fileURLToPath(new URL('../cli/atelier.mjs', import.meta.url));
+  for (const command of ['board', 'area']) {
+    assert.equal(COMMANDS[command].name, command);
+    const run = words => spawnSync(process.execPath, [cli, '--project', 'demo', command, ...words], {
+      encoding: 'utf8', env: { ...process.env, ATELIER_SERVER: 'https://area-test.invalid', ATELIER_TOKEN: 'test-only' },
+    });
+    const help = run(['--help']);
+    assert.equal(help.status, 0, help.stderr);
+    assert.equal(help.stdout, `${COMMAND_USAGE[command]}\n`);
+    for (const [words, message] of [
+      [['--unknown'], /does not take --unknown/],
+      [['--project'], /--project needs a value/],
+      [['--', 'extra'], /does not take "--"/],
+      [command === 'board' ? ['--json=wrong'] : ['create', 'Core', '--purpose'], command === 'board' ? /--json takes no value/ : /--purpose needs a value/],
+    ]) {
+      const result = run(words);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, message);
+    }
+  }
+});
 
 test('new and edit parse --area, explicit clearing, omission and conflicts', () => {
   assert.deepEqual(areaField(parseArgs(['new', 'Title', '--area', 'a1']), 'new'), { area: 'a1' });
