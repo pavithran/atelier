@@ -16,7 +16,8 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { againstMain, changedPaths, pairReader, repoReader, type Reader } from "../diff";
 import { mergePatch, mergeTrees, type Patch } from "../preview/merge";
 import { refusalOf, refusalText } from "../checks.ts";
-import { checkApplies, type CheckPaths } from "../rules.ts";
+import { prepareChecks } from "../check-preparation.ts";
+import { checkApplies, type ProjectPolicy, type CheckPaths } from "../rules.ts";
 import { MAX_RENDERS, renderGateway, RENDER_HOST } from "../render-check.ts";
 import { capLarge, putLarge, LARGE_MAX, type LargeRef } from "../large.ts";
 import { SANDBOX_OUTPUT_TAIL } from "../check-failure.ts";
@@ -57,6 +58,7 @@ export interface RunRequest {
   fork: string;
   head: string;            // the head the caller asked about; the run refuses any other
   checks: string[];
+  prepare?: ProjectPolicy["prepare"];
   checkPaths?: CheckPaths[];  // checks that apply only when the change touches these paths
   requestedBy: string;
   merged?: boolean;        // run on the merge of the head with main's head, not on the head alone
@@ -164,14 +166,14 @@ export class CheckRunner extends DurableObject<Env> {
     }
     state.status = "running";
     state.startedAt = new Date().toISOString();
-    await this.ctx.storage.setAlarm(Date.now() + (state.request.checks.length * STEP_SECONDS + 120) * 1000);
+    await this.ctx.storage.setAlarm(Date.now() + ((state.request.checks.length + (state.request.prepare ? 1 : 0)) * STEP_SECONDS + 120) * 1000);
     await this.ctx.storage.put("state", state);
     try {
       await this.run(state);
       state.status = "done";
     } catch (err) {
       state.status = "failed";
-      state.error = String((err as Error)?.message ?? err).slice(0, 1000);
+      state.error = String((err as Error)?.message ?? err).slice(0, 12000);
     } finally {
       state.finishedAt = new Date().toISOString();
       await this.ctx.storage.deleteAlarm();
@@ -184,7 +186,7 @@ export class CheckRunner extends DurableObject<Env> {
   private async run(state: RunState): Promise<void> {
     const req = state.request;
     // A check that is never read-only is not run here, however the run was asked for.
-    for (const claim of req.checks) {
+    for (const claim of [...(req.prepare ? [req.prepare.command] : []), ...req.checks]) {
       const why = refusalOf(claim);
       if (why) throw new Error(`${refusalText(claim, why)}.`);
     }
@@ -199,12 +201,13 @@ export class CheckRunner extends DurableObject<Env> {
     state.changedPaths = await changedPaths(pairReader(fork, baseline), m.mainTree, m.headTree);
     state.mainHead = m.main;
     const applies = (claim: string) => checkApplies({ checkPaths: req.checkPaths }, claim, state.changedPaths ?? null) !== false;
-    state.results = req.checks.filter((claim) => !applies(claim)).map((claim) => ({ claim, passed: null, exitCode: null, seconds: 0, outputTail: "", notApplicable: true }));
+    state.results = [];
+    const skipped: CheckResult[] = req.checks.filter((claim) => !applies(claim)).map((claim) => ({ claim, passed: null, exitCode: null, seconds: 0, outputTail: "", notApplicable: true }));
     await this.ctx.storage.put("state", state);
-    // When no check applies, no container is started; the results record the
-    // paths measured. A merged run needs no merge tree then either, since a
-    // check that does not apply to the change is not needed on the merge.
-    if (!req.checks.some(applies)) return this.record(state, m.head, fork);
+    // Without preparation, a run with no applicable checks needs no
+    // container or merge tree. Otherwise prepare before publishing even
+    // not-applicable results.
+    if (!req.prepare && !req.checks.some(applies)) { state.results = skipped; return this.record(state, m.head, fork); }
     // The tree the container checks is the head's, whose objects are in the
     // fork. A merged run checks the would-be merge instead: the head's tree
     // with main's changes since the fork point laid over it, as the preview
@@ -256,6 +259,28 @@ export class CheckRunner extends DurableObject<Env> {
     const [unpacked] = await Promise.all([unpack.output(), written]);
     if (unpacked.exitCode !== 0) throw new Error(`tar failed: ${new TextDecoder().decode(unpacked.stderr).slice(0, 500)}`);
 
+    await prepareChecks(req.prepare, async (command) => {
+      const proc = await container.exec(["timeout", "--kill-after=5", String(STEP_SECONDS), "sh", "-c", command], { cwd: WORKDIR, stderr: "combined", env: ENV });
+      // Keep a bounded full capture, then redact before taking the report tail.
+      const decoder = new TextDecoder();
+      let output = "";
+      const read = async () => {
+        const stream = proc.stdout?.getReader();
+        if (!stream) return;
+        try {
+          while (true) {
+            const chunk = await stream.read();
+            if (chunk.done) break;
+            output += decoder.decode(chunk.value, { stream: true });
+            if (output.length > 2 * LARGE_MAX) output = capLarge(output);
+          }
+          output += decoder.decode();
+        } finally { stream.releaseLock(); }
+      };
+      const [status] = await Promise.all([proc.exitCode, read()]);
+      return { passed: status === 0, status, timedOut: status === 124 || status === 137, output };
+    });
+    state.results = skipped;
     for (const claim of req.checks.filter(applies)) {
       const t0 = Date.now();
       const proc = await container.exec(["timeout", "--kill-after=5", String(STEP_SECONDS), "sh", "-c", claim], { cwd: WORKDIR, stderr: "combined", env: ENV });

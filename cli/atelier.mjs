@@ -27,7 +27,8 @@ import { commitRefusals, IDENTITY_LOG_FORMAT, NO_IDENTITY, parseIdentityLog } fr
 import { controlPlaneChanges, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
 import { cleanSummary } from "../src/brief.ts";
 import { recordedText } from "../src/rules.ts";
-import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { ROUTE_LEVEL, checkCapabilities, requiredForCommand } from "../src/route-level.ts";
+import { terminalTaskExit } from "../src/tokens.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
 import { hooksOff, landingDir, landingJournalFile, oldLandingJournalFile, RECEIPT_TEMPLATE, RECEIPTS_DIR } from "./landing.mjs";
@@ -311,6 +312,37 @@ function checkFlags(cmd) {
   if (args.rest && !REST.has(cmd)) die(`${cmd} does not take "--" and the words after it; see ${see}`);
   for (const flag of args.bare) die(typeof row[flag] === "string" ? row[flag] : `--${flag} needs a value: --${flag} VALUE or --${flag}=VALUE`);
   for (const problem of args.problems) die(problem);
+}
+
+// The server's answer to GET /api/version, which needs no token, or null
+// when it gave none: unreachable, an error status, or a body that is not
+// JSON. checkCapabilities tells that null apart from a malformed answer.
+export async function serverVersion() {
+  try {
+    const res = await fetch(server() + "/api/version", { signal: AbortSignal.timeout(30_000) });
+    return res.ok ? await res.json() : null;
+  } catch { return null; }
+}
+
+// The server's capabilities against the ones the command declares in its
+// module (src/usage/commands/NAME.ts, `capabilities`, and the subcommand's
+// own when the word after the command names one), asked before the handler
+// runs, so a server short of them refuses the command before its first
+// dependent request and names the missing set, the revision the server runs
+// and the deploy to run. A command that declares none asks nothing, which
+// keeps help, --version and the local commands usable without a server. A
+// command whose module says `capabilityCheck: "handler"` (land, whose
+// --release-lease must free a stuck lease while the server is behind) makes
+// the same check itself, before its first dependent request. The exit code
+// is 4, as for a request the server could not answer, when the version could
+// not be read, and 1 for a refusal.
+export async function requireCapabilities(cmd, word = args._[1]) {
+  if (cmd === "init" && args["rename-local"] === true) return;
+  if (COMMANDS[cmd]?.capabilityCheck === "handler") return;
+  const required = requiredForCommand(cmd, word, args);
+  if (!required.length) return;
+  const check = checkCapabilities(await serverVersion(), required);
+  if (!check.ok) die(`${check.message}, then run atelier ${cmd} again`, check.kind === "unavailable" ? 4 : 1);
 }
 
 const isMain = process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
@@ -742,9 +774,13 @@ export async function request(method, path, body, as, extra = {}, signal) {
   try { data = JSON.parse(text); } catch { data = { error: "bad_response", detail: text.slice(0, 300) }; }
   if (!res.ok) {
     // 4 for a server that cannot answer, 3 for a refused claim (the runner
-    // reads it), 1 otherwise, whatever the message says.
-    const code = res.status >= 500 || res.status === 408 || res.status === 429 ? 4 :
-      method === "POST" && path.endsWith("/claim") && res.status >= 400 && res.status < 500 ? 3 : 1;
+    // reads it), 1 otherwise, whatever the message says. A task_terminal
+    // answer, which a runner's task merged or abandoned under it gets
+    // (assertRunnerJob in src/ledger.ts), ends with the state's own exit
+    // (TERMINAL_TASK_EXITS), a claim's included: the runner reads the state
+    // from it and stops the job, where a refusal would be retried.
+    const code = terminalTaskExit(data) ?? (res.status >= 500 || res.status === 408 || res.status === 429 ? 4 :
+      method === "POST" && path.endsWith("/claim") && res.status >= 400 && res.status < 500 ? 3 : 1);
     // A project the server does not know, asked for by name: the answer
     // names what this Mac knows instead of the server's "run atelier init",
     // which an agent would obey in whatever folder it stands in.
@@ -1026,12 +1062,12 @@ export function mergeWithMain(dir, id) {
 // test-slot wrapper (cli/load.mjs), so the check holds one host-wide slot
 // for as long as its tree runs.
 export async function runCheck(cmd, dir, secrets, metadata, graceMs = 5000) {
-  process.stderr.write(`atelier: running \`${cmd}\` in a clean clone…\n`);
+  process.stderr.write(`atelier: running \`${redact(cmd, secrets)}\` in a clean clone…\n`);
   const record = JSON.parse(readFileSync(markerPath(dir), "utf8"));
   const r = await runGroupedCheck(cmd, { cwd: dir, metadata, graceMs, onSpawn: (pid) => writeFileSync(markerPath(dir), JSON.stringify({ ...record, childPid: pid })) });
   writeFileSync(markerPath(dir), JSON.stringify(record));
   const output = redact(`${r.stdout}${r.stderr}${r.error ? `\n[atelier] check ${r.error.message}` : ""}`, secrets);
-  return { passed: r.status === 0 && !r.error, output, sha: createHash("sha256").update(output).digest("hex") };
+  return { passed: r.status === 0 && !r.error, status: r.status, signal: r.signal, timedOut: r.timedOut, output, sha: createHash("sha256").update(output).digest("hex") };
 }
 
 // One registered check through runGroup, bounded by CHECK_TIMEOUT_MS, under
@@ -1797,5 +1833,8 @@ if (isMain) {
     process.exit(0);
   }
   checkFlags(cmd);
+  // The flags are checked first, so a misuse is refused without a request;
+  // then the server's capabilities, before the handler's first request.
+  await requireCapabilities(cmd);
   await fn();
 }
