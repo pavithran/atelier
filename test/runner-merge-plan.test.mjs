@@ -75,6 +75,7 @@ function fixture(t, { conflict, harness, dispatch = {}, setup }) {
     async jobBrief() { calls.push({ jobBrief: true }); return { job: "rework", text: "SERVER BRIEF", hash: "h" }; },
     async brief(workspace, text) { calls.push({ brief: text }); return { file: join(r.root, "brief.txt") }; },
     async harness(argv, cwd) { calls.push({ harness: argv }); return harness(cwd); },
+    async identityRefusals() { return []; },
     async removeBrief() {},
   };
   return { r, job, io, calls, logs };
