@@ -1,3 +1,6 @@
+import { taskPage } from "./task-page.ts";
+import { renderBoard } from "./board-html.ts";
+import type { BoardSnapshot } from "./board.ts";
 import { layersFigure } from "./diagrams.ts";
 import { sessionNoteText, type SessionNote } from "./sessions.ts";
 // Server-rendered pages. Every action is a plain form post and every page
@@ -39,7 +42,7 @@ import type { PartRoute } from "./plans/route.ts";
 export interface Live { nonce: string; refresh?: number }
 import {
   bindingOf, confirmationAt, DEFAULT_OWNER, decisionFor, evidenceAt, isOwnCall, latestReviews, mergedByOverride, mergedChecksAt, NO_OWNER_FACTOR, OVERRIDE_CONFIRMATION_MS, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey,
-  type Evidence, type Gate, type InboxEntry, type Item, type MergedCheckView, type OwnerFactor, type ProjectPolicy, type Review, type UnparsableReply,
+  type Finding, type Evidence, type Gate, type InboxEntry, type Item, type MergedCheckView, type OwnerFactor, type ProjectPolicy, type Review, type UnparsableReply,
 } from "./rules";
 
 // What a page calls a project: its title when it has one, else its name. Links,
@@ -208,13 +211,6 @@ const WHERE: Record<"sandbox" | "runner", [string, string]> = {
 function whereChip(where: "sandbox" | "runner" | undefined): string {
   const [label, glyph] = WHERE[where ?? "runner"];
   return `<span class="where ${where === "sandbox" ? "cloud" : "local"}">${icon(glyph)}${e(where === "sandbox" ? "Cloudflare container" : "Runner, clean clone")}<span class="visually-hidden"> (${e(label)})</span></span>`;
-}
-
-function trustLine(checks: { grade: string; passed: boolean | null; where?: "sandbox" | "runner" }[]): string {
-  if (!checks.length || !checks.every((c) => c.grade === "observed" && c.passed)) return "";
-  const places = new Set(checks.map((c) => c.where ?? "runner"));
-  const where = places.size > 1 ? "partly in a Cloudflare container, partly on a runner, in a clean clone" : WHERE[[...places][0]][0];
-  return `${icon("check")}<span>Checks passed ${e(where)}</span><span aria-hidden="true">·</span>`;
 }
 
 // ── sign in ────────────────────────────────────────────────────────────────
@@ -1447,18 +1443,19 @@ const newTaskForm = (p: ProjectRecord) => `<details class="new-task"><summary>+ 
 // Overview: where the project stands and what waits on the owner there, with
 // Atelier's own record of it under a disclosure named for what it is (finding
 // 19).
-export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEvent[], ownerName: string | null = null, standing?: Standing): string {
+export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEvent[], ownerName: string | null = null, standing?: Standing, board?: BoardSnapshot): string {
   return projectPage(p, "Overview", `
   ${standing ? standingSection(p, standing) : ""}
+  ${board ? renderBoard(p.name, board) : ""}
   <details class="disclosure"><summary>Ledger events</summary>${eventTable(events, true)}</details>
   `, ownerName);
 }
 
 // Tasks: the one list, with the form that starts a task.
-export function renderProjectTasks(p: ProjectRecord, items: Item[], ownerName: string | null = null): string {
+export function renderProjectTasks(p: ProjectRecord, items: Item[], ownerName: string | null = null, board?: BoardSnapshot): string {
   return projectPage(p, "Tasks", `
   ${newTaskForm(p)}
-  ${items.length ? taskRows(p, items) : '<p class="empty">No tasks yet. Create one above.</p>'}
+  ${board ? renderBoard(p.name, board) : items.length ? taskRows(p, items) : '<p class="empty">No tasks yet. Create one above.</p>'}
   `, ownerName);
 }
 
@@ -1667,8 +1664,22 @@ function threadBlock(p: ProjectRecord, d: Detail): string {
 
 const shell = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
 
+function submissionRounds(d: Detail): string {
+  const { rounds } = taskPage(d);
+  return `<section class="review-section" aria-label="Submission rounds"><h3>Submission rounds</h3>
+    ${rounds.length ? rounds.map(({ submission: s, verdicts }, i) => `<details class="disclosure"${i === 0 ? " open" : ""}><summary>Submission · event ${e(String(s.seq))} · Head ${e(String(s.data.head ?? "unknown"))} · ${when(s.at)}</summary>
+      <p>${e(String(s.data.summary ?? "No submission summary recorded."))}</p>
+      ${verdicts.length ? verdicts.map(v => `<article><h4>${e(v.kind === "review.rejected" ? "Changes requested" : v.kind === "review.approved" ? "Approved" : v.kind)} · ${e(v.actor)}</h4><p>${e(String(v.data.note ?? v.data.reason ?? "No verdict reason recorded."))}</p>
+        ${Array.isArray(v.data.findings) ? `<ul>${v.data.findings.filter((f): f is Finding => !!f && typeof f.file === "string" && typeof f.text === "string" && typeof f.severity === "string" && (f.line === null || typeof f.line === "number")).map(f => `<li>${e(f.file)}${f.line ? `:${f.line}` : ""} · ${e(f.severity)} · ${e(f.text)}</li>`).join("")}</ul>` : ""}</article>`).join("") : "<p>No triage or review verdict recorded for this submission.</p>"}
+      </details>`).join("") : "<p>Submission history is unavailable.</p>"}</section>`;
+}
+
 function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext): string {
   const { item, gate } = d;
+  const presentation = taskPage(d);
+  const notices = presentation.notices.map(n => `<details class="disclosure"><summary>${e(n.kind)} · ${n.originals.length} reports · ${e(n.check || "check unknown")} · ${n.originals.every(r => r.superseded) ? "Superseded" : `${n.originals.filter(r => !r.superseded).length} unresolved`}</summary>
+    <p class="meta">Criteria binding: ${e(n.criteria || "unknown")}. A reported limitation is superseded only by an observed pass covering the same check and binding.</p>
+    ${n.originals.map(r => `<article><p>${e(r.detail)}</p><p class="meta">${e(r.actor)} · ${e(r.runner)} · ${e(r.at)} · Head ${e(r.head || "unknown")} · ${r.superseded ? "Superseded by an observed pass" : "Coverage unconfirmed"}</p></article>`).join("")}</details>`).join("");
   const view = evidenceAt(d.policy, d.evidence, item.head);
   const decision = decisionFor(item, d.policy, d.evidence, d.reviews, d.ownerActor);
   const live = item.state === "claimed" || item.state === "submitted";
@@ -1820,16 +1831,14 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
         </form></details>`
       : "";
 
-  // The brief below the header already says what is decided and why, so the
-  // header's own description line is drawn only when there is no brief
-  // (finding 7): one status line and one brief, never both twice.
-  const hasBrief = ["claimed", "submitted", "accepted", "blocked"].includes(item.state);
+  // One task headline; check outcomes stay with their evidence below.
   const header = `<header class="review-header">
-  <p class="context">${e(titleOf(p))} · ${e(item.id)} · ${e(stateLabel[item.state])}</p>
+  <p class="context">${e(titleOf(p))} · ${e(item.id)}</p>
   <h2>${e(item.title)}</h2>
   ${full ? taskText(item) : ""}
-  ${hasBrief ? "" : `<p class="review-description">${e(decision.detail)}</p>`}
-  <p class="decision-status ${decision.tone}">${trustLine(view.checks)}<strong>${e(decision.title)}</strong></p>
+  <p class="decision-status ${decision.tone}"><strong>${e(presentation.title)}</strong></p>
+  <p class="review-description">${e(presentation.detail)}</p>
+  ${presentation.unknowns.map(x => `<p class="meta">${e(x)}</p>`).join("")}
   ${evidenceNotice}
   <div class="actions">${approve}${accept}${override}${reject}${dispatchBox}${blockBox}</div>
   ${secretBox}
@@ -1877,6 +1886,8 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
       <p class="meta">${item.owner ? `${e(item.owner)} holds it; nothing is pushed for review yet.` : "Any eligible agent can claim it; until then nothing is pushed for review."}</p></section>`;
     return `${header}
 ${framing}${openScope}
+${notices}
+${submissionRounds(d)}
 <details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>
 <details class="disclosure"><summary>Technical details${live ? " and ownership" : ""}</summary>${technical}${ownership}${close}</details>`;
   }
@@ -1950,9 +1961,10 @@ ${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 <section id="changes" class="review-section"><h3>Changes</h3>${renderDiff(diff, item.head, mergedChecks)}${scope}${protectedNote}</section>
 <section id="checks" class="review-section"><h3>Checks and reviews</h3>
   <p class="meta">${view.checks.length ? `${decision.passed} of ${view.checks.length} required checks passed at this revision.` : view.notApplicable.length ? "No required check applies to this revision." : "This project requires no checks."}${view.checks.length && view.notApplicable.length ? ` ${view.notApplicable.length} more ${view.notApplicable.length === 1 ? "does" : "do"} not apply to it.` : ""}${d.policy.sandboxOnly ? " Only checks run in a Cloudflare container count for this project." : ""}</p>
-  ${(d.runs ?? []).filter((r) => r.outcome === "validation_blocked").map((r) => `<aside class="callout"><strong>Validation blocked</strong><p>The build harness could not run the required checks. This is a reported limitation, separate from clean-clone check results.</p><p>${e(r.detail)}</p><p class="meta">${e(r.actor)} · ${e(r.runner)} · ${e(r.at)}</p></aside>`).join("")}
+  ${notices}
   ${checkRows}${notApplicableRows}${reports}${reviews}${overrideNote}${blockers}
 </section>
+${submissionRounds(d)}
 <details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>
 <details class="disclosure"><summary>Technical details${live ? " and ownership" : ""}</summary>${technical}${ownership}${close}</details>`;
 }
