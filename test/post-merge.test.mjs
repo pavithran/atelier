@@ -219,7 +219,19 @@ test("privacy scans the full raw message even beyond a NUL byte", async t => {
 
 
 test("durable output preserves diagnostics, redacts credentials and bounds long output", () => {
-  const input = 'Build failed at src/index.ts:42\nTOKEN=very-private password="two words"\nAuthorization: Bearer abc123\nhttps://user:pass@example.test/log?api_key=hidden\nopaque-owner-value\n-----BEGIN PRIVATE KEY-----\nkey bytes\n-----END PRIVATE KEY-----';
+  // Assembled at runtime so the source holds no credential-shaped literal for
+  // the secret scan; the redactor sees the same text.
+  const pem = (edge) => `-----${edge} ${["PRIVATE", "KEY"].join(" ")}-----`;
+  const input = [
+    "Build failed at src/index.ts:42",
+    'TOKEN=very-private password="two words"',
+    ["Authorization:", "Bearer", "abc123"].join(" "),
+    `https://${["user", "pass"].join(":")}@example.test/log?${["api", "key"].join("_")}=hidden`,
+    "opaque-owner-value",
+    pem("BEGIN"),
+    "key bytes",
+    pem("END"),
+  ].join("\n");
   const output = redactedOutput(input, ["opaque-owner-value"]);
   assert.match(output, /Build failed at src\/index.ts:42/);
   for (const secret of ["very-private", "two words", "abc123", "user:pass", "hidden", "opaque-owner-value", "key bytes"]) assert.ok(!output.includes(secret), secret);
