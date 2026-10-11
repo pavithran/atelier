@@ -1,3 +1,4 @@
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -39,6 +40,7 @@ async function fixture(t, check) {
   const item = { id: "t1", title: "Edit", scope: [], owner: actor, state: "claimed", head };
   const evidence = [];
   const server = createServer(async (req, res) => {
+    if (req.url === "/api/version") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ capabilities: SERVER_CAPABILITIES })); }
     let raw = ""; for await (const chunk of req) raw += chunk;
     const path = req.url;
     let data = { item, gate: { ready: false, blockers: [] }, policy: { checks: [command], sandboxOnly: false } };
