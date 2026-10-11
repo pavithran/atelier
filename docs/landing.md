@@ -142,12 +142,8 @@ The steps in between:
    it) and its route level, and a landing whose server is older refuses
    before it starts, naming both levels and saying to deploy, since the
    server may lack the routes the landing needs, or answer one the landing
-   asks in a way it no longer expects. The route level
-   (`src/route-level.ts`) rises by one only when a change makes the CLI
-   start calling a route the server did not have, or changes the meaning of
-   a route the CLI already calls; the waiting queue the landing's `--wait`
-   asks about (`{ item, queued: true }` on the landing-lease route) raised
-   it to 10 (main had already reached 9 with another route change).
+   asks in a way it no longer expects. `ROUTE_LEVEL` is frozen at 28 (t522);
+   new routes require named capabilities, never a numeric raise.
 
    The landing now checks named capabilities rather than that number (t458):
    `GET /api/version` also lists `capabilities`, names like
@@ -192,37 +188,29 @@ The steps in between:
    `reviews.skip-as-runner.v1`), so a reviewer against a server from before
    t353 refuses to start instead of losing its skips.
 
-   **Migration.** The server publishes `routeLevel` beside `capabilities`
-   and the merge arithmetic on `ROUTE_LEVEL` stays, so a server that
-   predates capabilities still works: a reply with only `routeLevel` N
-   guarantees the capabilities declared with level N or lower
-   (`src/route-level.ts`: 6 `plans.integration.v1`, the integrate and
-   refresh job routes the commits named there added, and `plans.refresh.v1`,
-   the owner's plan refresh route from the same raise; 14 `land.workflow.v1`,
-   15 `items.brief-criteria.v1`, 16 `reviews.criteria-binding.v1`, 17
-   `reviews.unparsable.v1`, 18 `models.note.v1`, 19
-   `projects.require-criteria.v1`, 20 `runners.scoped-token.v1`, 21
-   `reviews.skip.v1`, 22 `reviews.skip-as-runner.v1`, 23 `areas.manage.v1`
-   and `areas.board.v1`, 24 `projects.commit-identity.v1`, 25
-   `reviews.admission.v1`, 26 `reviews.lease.v1`, 27 `land.post-merge.v1`,
-   28 `land.triage.v1`, 29 `runners.run-skip.v1`)
-   and nothing else; a capability added later has no
-   level, so a legacy server is refused for it. While the migration lasts
-   the number still rises by one with each such change and gates legacy
-   clients: the change declares the capability it stands for with the
-   level it raised the number to, one declaration per line in
-   `src/capability-declarations.ts`. Its `merge=union` attribute in
-   `.gitattributes` retains independent additions, including two in the same
-   family or two new families. `buildCapabilities` refuses duplicate names
-   after merging; validate legacy levels as well. Landing refuses automatic
-   numeric raises
-   when named declarations are present: move the task's new declaration
-   levels above main's level along with ROUTE_LEVEL, keeping main's
-   published mappings unchanged, then commit and rerun; `test/capabilities.test.mjs` fails a
-   raise that declares nothing, and merges the file three ways to keep that
-   shape. The route level, its raise by a change, and atelier land's merge
-   arithmetic may be removed once no server this CLI supports answers with
-   a route level alone, and the owner has said so.
+   **Adding a route.** Add one unique `family.behaviour.vN` declaration,
+   with a summary and no `level`, to `src/capability-declarations.ts`, and
+   name it in the consuming command or runner job's requirements. The server
+   publishes it automatically. Do not raise `ROUTE_LEVEL`. Independent
+   declarations merge in either order through the file's `merge=union`
+   attribute; the capabilities test refuses duplicate names after merging.
+   A server missing the name is refused with the same deploy-first remedy,
+   even if it reports a higher route level.
+
+   **Legacy compatibility.** The server still publishes `routeLevel` for old
+   clients. A server that publishes only a level guarantees existing
+   declarations up to that level, capped at the frozen boundary of 28.
+   Keep historical mappings unchanged. New declarations have no legacy
+   guarantee. Queued tasks carrying a `level` above 28 may keep that metadata,
+   but must drop their `ROUTE_LEVEL` raise; their capabilities work through
+   the published names, never through that metadata. There is no contiguous
+   level requirement or renumbering step. The capabilities test pins the
+   frozen number and checks independent additions in both merge orders.
+
+   The run skip, `runners.run-skip.v1` (t420), is one such name: every
+   runner job but the review requires it, so a runner refuses a server that
+   reports only a route level and starts on one that publishes the name.
+
 2. Main is fetched into the task's workspace and merged with `--no-ff`. On
    conflicts the landing stops, leaves the merge in the workspace for the
    owner to resolve, and names the files. After resolving and committing,
