@@ -147,6 +147,9 @@ async function main() {
         at.contrast = [];
         for (const scheme of ["light", "dark"] as const) {
           await page.emulateMedia({ colorScheme: scheme });
+          // Buttons transition their background (layout.css), and reduced motion does not stop
+          // that; measured mid-switch, a dark button reads as its light colour under dark text.
+          await page.evaluate(() => { for (const a of document.getAnimations()) a.finish(); });
           (at.contrast as unknown[]).push(await page.evaluate(contrastInPage));
         }
         await page.emulateMedia({ colorScheme: "light" });
