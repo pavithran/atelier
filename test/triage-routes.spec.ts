@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { introspectWorkflow, introspectWorkflowInstance } from "cloudflare:test";
+import { introspectWorkflow, introspectWorkflowInstance, runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import { criteriaOf } from "../src/criteria.ts";
@@ -213,6 +213,52 @@ it("the landing-workflow route starts a triaging Workflow only when the landing 
   await until(async () => (await env.LANDING_WORKFLOW.get(instance)).status(), (st) => st.status === "errored");
   expect((await L.landingWorkflowOf(id))?.detail).toMatch(/the workspace reported no triage binding/);
   expect((await L.item(id)).state).toBe("claimed");
+});
+
+it("a landing instance recreated for a claimant that died before creating it keeps the triage and stops at it (t475 after t430)", async () => {
+  const { L, id } = await pushedTask("triage-wf-reconciled", null);
+  await using introspector = await introspectWorkflow(env.LANDING_WORKFLOW);
+  await introspector.modifyAll(async (m) => { await m.disableSleeps(); await m.disableRetryDelays(); });
+  const post = (body: unknown, testEnv: typeof env) => worker.fetch(new Request(`https://atelier.test/api/projects/triage-wf-reconciled/items/${id}/landing-workflow`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }), { ...testEnv, ATELIER_TOKEN: TOKEN } as typeof env);
+  // The landing that triages claims its instance and dies before creating it.
+  const dead = { ...env, LANDING_WORKFLOW: {
+    get: async () => { throw new Error("instance.not_found"); },
+    create: async () => { throw new Error("the claimant died"); },
+  } } as unknown as typeof env;
+  expect((await post({ triage: true }, dead)).status).toBeGreaterThanOrEqual(500);
+  const claimed = await L.landingWorkflowOf(id);
+  expect(claimed).toMatchObject({ stage: "lease", triage: true });
+  // Past the reconcile limit, a later request that names no triage recreates
+  // the claimed instance from its record, which keeps the triage.
+  await runInDurableObject(L, async (_instance, state) => {
+    const key = `landing-workflow:${id}`;
+    const record = JSON.parse(state.storage.sql.exec(`SELECT value FROM meta WHERE key = ?`, key).one().value as string);
+    state.storage.sql.exec(`UPDATE meta SET value = ? WHERE key = ?`, JSON.stringify({ ...record, at: new Date(Date.now() - 120_000).toISOString() }), key);
+  });
+  const created: { id: string; params: Record<string, unknown> }[] = [];
+  const recovering = { ...env, LANDING_WORKFLOW: {
+    get: async (instance: string) => {
+      if (!created.some((c) => c.id === instance)) throw new Error("instance.not_found");
+      return env.LANDING_WORKFLOW.get(instance);
+    },
+    create: async (options: { id: string; params: Record<string, unknown> }) => {
+      created.push(options);
+      return env.LANDING_WORKFLOW.create(options as never);
+    },
+  } } as unknown as typeof env;
+  expect((await post({}, recovering)).status).toBe(200);
+  expect(created).toHaveLength(1);
+  expect(created[0]).toMatchObject({ id: claimed!.instance, params: { triage: true } });
+  await until(() => L.landingWorkflowOf(id), (r) => r?.stage === "workspace");
+  await send(claimed!.instance, { round: 0, head: H1, mainHead: null, mergedIn: false });
+  await until(async () => (await env.LANDING_WORKFLOW.get(claimed!.instance)).status(), (st) => st.status === "errored");
+  expect((await L.landingWorkflowOf(id))?.detail).toMatch(/the workspace reported no triage binding/);
+  expect((await L.item(id)).state).toBe("claimed");
+  expect(await landKinds(L, id)).not.toContain("item.submitted");
 });
 
 async function until<T>(read: () => Promise<T>, ok: (v: T) => boolean): Promise<T> {
