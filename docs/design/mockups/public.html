@@ -21,7 +21,7 @@
 <div class="mock-head">
   <p class="mock-back"><a href="index.html">All mockups</a></p>
   <p class="mock-title">Public pages</p>
-  <p class="mock-routes">Covers <code>/</code> (and <code>/showcase</code>), <code>/how</code> and <code>/login</code>. Drawn: the showcase with Open Tool named and Field Notes anonymised as "An iOS app"; sign-in; the explainer's header. Ledger Core is not shown publicly.</p>
+  <p class="mock-routes">Covers <code>/</code> (and <code>/showcase</code>), <code>/how</code> and <code>/login</code>. Drawn, each at desktop and phone width: the showcase with Open Tool named and Field Notes anonymised as "An iOS app"; sign-in; the explainer's header. Ledger Core is not shown publicly.</p>
 </div>
 
 <div class="frames">
@@ -104,6 +104,23 @@
 </main>
 </div>
 </figure>
+<figure class="frame phone">
+<figcaption>Phone · 390 · /login</figcaption>
+<div class="screen">
+<header class="pb">
+  <a class="skip" href="#pl-main">Skip to content</a>
+  <nav aria-label="Atelier"><a class="brand" href="/">Atelier</a><ul><li><a href="/how">How it works</a></li><li><a href="https://github.com/">Source</a></li></ul></nav>
+</header>
+<main id="pl-main" class="app-main">
+  <div class="card signin" style="margin:16px 0">
+    <h1>Sign in to Atelier <a class="mk" href="#n7">7</a></h1>
+    <p class="muted" style="margin:0">For the owner of this Atelier.</p>
+    <form><label for="sp-pass">Passphrase</label><input id="sp-pass" type="password" autocomplete="current-password">
+    <p><button class="btn primary" type="button" style="width:100%;justify-content:center;min-height:44px">Sign in</button></p></form>
+  </div>
+</main>
+</div>
+</figure>
 <figure class="frame desktop small">
 <figcaption>Desktop · 1440 · /how (header)</figcaption>
 <div class="screen">
@@ -118,6 +135,21 @@
 </main>
 </div>
 </figure>
+<figure class="frame phone">
+<figcaption>Phone · 390 · /how (header)</figcaption>
+<div class="screen">
+<header class="pb">
+  <a class="skip" href="#ph-main">Skip to content</a>
+  <nav aria-label="Atelier"><a class="brand" href="/">Atelier</a><ul><li><a href="/how" aria-current="page">How it works</a></li><li><a href="https://github.com/">Source</a></li><li><a href="/login">Sign in</a></li></ul></nav>
+</header>
+<main id="ph-main" class="app-main">
+  <h1>How Atelier works</h1>
+  <p class="lede">Agents claim tasks, push work and run checks; the owner accepts, sends back or blocks.</p>
+  <nav aria-label="On this page" class="chips"><a class="chip" href="#tasks">Tasks and states</a><a class="chip" href="#checks">Checks</a><a class="chip" href="#policy">Policy</a><a class="chip" href="#models">Models</a><a class="chip" href="#usage">Usage</a><a class="chip" href="#showcase">The showcase</a></nav>
+  <p><a href="/">← Back to the showcase</a> <a class="mk" href="#n8">8</a></p>
+</main>
+</div>
+</figure>
 </div>
 
 <section class="notes" aria-labelledby="notes-h">
@@ -129,6 +161,8 @@
     <li id="n4"><span class="num">4</span><div>Sign-in on a plain card with no decorative backdrop behind the form, so the text contrast is measurable. Its bar omits Sign in, since this is that page. <span class="cite">F8 → P11, P16</span></div></li>
     <li id="n5"><span class="num">5</span><div>/how keeps every explanation moved off other pages, under section links, with a way back to <code>/</code> besides the brand. <span class="cite">F8 → P11</span></div></li>
     <li id="n6"><span class="num">6</span><div>Every public page, like every owner page, starts with "Skip to content", and the showcase's story beads draw the shared focus ring. <span class="cite">F22 → P13</span></div></li>
+    <li id="n7"><span class="num">7</span><div>Sign-in on a phone: the card fills the width, the passphrase field and a full-width 44 px button sit inside the first screen, and the bar keeps How it works and Source. <span class="cite">F8 → P11, P16</span></div></li>
+    <li id="n8"><span class="num">8</span><div>/how on a phone: the section links wrap as chips rather than scrolling, so every section is one tap from the top; the public bar keeps all three links at 390 px. <span class="cite">F8, F22 → P11, P13</span></div></li>
   </ol>
 </section>
 </body>
