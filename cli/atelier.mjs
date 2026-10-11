@@ -35,7 +35,7 @@ import { loadPairs } from "./fresh.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { markerPath } from "./gc.mjs";
 import { formatProcesses, liveProcesses, parseLsof, parsePs } from "./procs.mjs";
-import { taskLink } from "./status.mjs";
+import { nextCommand, taskLink } from "./status.mjs";
 import { findStrays } from "./strays.mjs";
 import { formatTokenExpiryWarnings, parseExpiryDay, readTokenExpiries, recordTokenExpiryDay, TOKEN_EXPIRY_WARN_DAYS } from "./token-expiry.mjs";
 import { runnerCredential, readSecret } from "./credentials.mjs";
@@ -43,7 +43,7 @@ import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
 import { slotInvocation } from "./load.mjs";
 export { checkEnv } from "./check-env.mjs";
-import { COMMANDS, COMMAND_USAGE, commandFor } from "./help.mjs";
+import { COMMANDS, COMMAND_USAGE, commandFor, OWNER_LANDING } from "./help.mjs";
 import { HANDLER_MODULES } from "./commands/index.mjs";
 import { decisionLines } from "../src/decisions.ts";
 import { shipPolicy } from "./ship.mjs";
@@ -451,7 +451,7 @@ export const AGENTS_SECTION = `## Working through Atelier
 
 Before driving this project's tasks by hand, run \`atelier guide --role orchestrate\`; it prints the whole orchestrator guide.
 
-Review path: a finished task is reviewed before it merges. \`atelier land ID --reviewer HARNESS/MODEL\` lands it with that model's review; do not merge around the review.
+Review path: ${OWNER_LANDING}
 `;
 
 export function agentsMdOffer(markdown) {
@@ -1229,7 +1229,7 @@ export function formatStanding(s, ownerName = "the project owner", origin = "") 
   const lines = [`${flat(s.project.title)} (${flat(s.project.name)}) as of ${at(s.generatedAt)}, from Atelier's record`];
   const group = (title, rows) => { if (rows.length) lines.push("", `${title}:`, ...rows.map((r) => `  ${r}`)); };
   group("Held now", s.live.map((i) => `${i.id}  ${i.state}  held by ${flat(i.owner ?? "nobody")}${i.since ? ` since ${at(i.since)}` : ", since when is not shown"}  ${flat(i.title)}`));
-  group(`Waiting on ${flat(ownerName)}`, s.waiting.map((w) => `${w.id}  ${w.kind}  ${flat(w.title)}  ${flat(w.reason)}${w.brief ? `  brief, ${flat(w.brief.verdict)}: ${flat(w.brief.line)}` : ""}`));
+  group(`Waiting on ${flat(ownerName)}`, s.waiting.map((w) => `${w.id}  ${w.kind}  ${flat(w.title)}  ${flat(w.reason)}${w.brief ? `  brief, ${flat(w.brief.verdict)}: ${flat(w.brief.line)}` : ""}${nextCommand({ ...w, itemId: w.id }, s.project.name) ? `  next: ${flat(nextCommand({ ...w, itemId: w.id }, s.project.name))}` : ""}`));
   group("Queued for a runner", s.queued.map((q) => `${q.id}  for ${flat(runner(q))}  ${flat(q.title)}${q.note ? `  note: ${flat(q.note)}` : ""}`));
   group("Last merges", s.merged.map((m) => `${m.id}  ${at(m.at)}${m.commit ? `  ${m.commit.slice(0, 8)}` : ""}  ${flat(m.title)}${m.line ? `  summary: ${flat(m.line)}` : ""}`));
   // Every merge by override, counted in the heading and one per line under
