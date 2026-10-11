@@ -406,12 +406,14 @@ with every task that landed before it. Within that, put first the tasks that
 another piece of work waits on. To reorder it, hold the lock while you edit the queue file:
 `mkdir "$ATELIER_CACHE/land-queue/atelier.queue.lock"`, edit, then `rmdir` it.
 
-Do not chain landings by having a shell wait on `pgrep -f "… tN"`: the
-waiting shell's own command line contains the pattern, so `pgrep` finds the
-waiter itself and it waits forever. On 10 October two landings sat for fifty
-minutes that way. If a wait on a process is unavoidable, write the pattern so
-it cannot match itself (`pgrep -f "land-queue.sh t40[5]"`). t408 replaces
-these waits with a command.
+Wait for a landing with `atelier wait tN --project atelier --for merged`.
+For a runner's build use `--for submitted`, for an agent's review use
+`--for reviewed`, and to observe the next task change use `--for any-change`.
+Add `--timeout 600` to bound the wait, including a stalled server read.
+The command prints the outcome and exits 0 when reached, 1 when the task
+fails, 3 on timeout, or 4 when it cannot read the task. Check that outcome
+before starting dependent work. A merge does not confirm deployment or
+publishing; check the landing queue's post-merge outcome separately.
 
 A failed post-merge step prints `LANDQ tN: post-merge blocked` and exits
 nonzero. Read `$ATELIER_CACHE/land-queue/atelier.queue.post-merge` for the

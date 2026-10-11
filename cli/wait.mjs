@@ -53,8 +53,8 @@ export function judge(target, d, first = d) {
 }
 
 // Reads until judge answers, the deadline passes or a read keeps failing.
-// `read` returns the detail; `sleep` and `now` default to the real ones. A
-// read that throws is tried again up to `retries` times in a row (a server
+// `read(signal)` returns the detail and honours cancellation. `sleep` and
+// `now` default to the real ones. A read that throws is tried again up to `retries` times in a row (a server
 // restart is not the task's failure), then the error is the outcome. The
 // result carries the exit code: 0 reached, 1 failed, 3 timed out, 4 unread.
 export async function waitFor(target, read, { intervalMs = 5000, timeoutMs = Infinity, retries = 5, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = Date.now } = {}) {
@@ -66,18 +66,34 @@ export async function waitFor(target, read, { intervalMs = 5000, timeoutMs = Inf
     // Once a read has been made, the deadline is checked before the next one.
     if (last && now() >= deadline) return { ok: false, code: 3, text: `${last.item.id} is still ${last.item.state}; gave up waiting for ${target}` };
     if (lastError && now() >= deadline) return { ok: false, code: 3, text: `gave up waiting for ${target}; the last read failed: ${lastError.message}` };
-    let d;
-    try { d = await read(); failed = 0; lastError = null; }
+    let d, timer;
+    const controller = new AbortController();
+    try {
+      const expired = new Promise((_, reject) => {
+        const arm = () => {
+          timer = setTimeout(() => {
+            if (now() < deadline) return arm();
+            controller.abort();
+            reject(new Error("read exceeded the wait deadline"));
+          }, Math.max(0, Math.min(2 ** 31 - 1, deadline - now())));
+        };
+        if (Number.isFinite(deadline)) arm();
+      });
+      d = await Promise.race([read(controller.signal), expired]);
+      failed = 0; lastError = null;
+    }
     catch (error) {
+      if (controller.signal.aborted || now() >= deadline) return { ok: false, code: 3, text: `gave up waiting for ${target}; the last read failed: ${error.message}` };
       // Only a server that cannot be reached (code 4) is worth another try;
       // a refusal or a missing task will not change.
       if (error.code !== undefined && error.code !== 4) return { ok: false, code: 4, text: `the task could not be read: ${error.message}` };
-      if (now() >= deadline) return { ok: false, code: 3, text: `gave up waiting for ${target}; the last read failed: ${error.message}` };
       if (++failed > retries) return { ok: false, code: 4, text: `the task could not be read: ${error.message}` };
       lastError = error;
       await nap();
       continue;
     }
+    finally { clearTimeout(timer); }
+    if (now() >= deadline) return { ok: false, code: 3, text: `gave up waiting for ${target}; the read finished after the deadline` };
     first ??= d; last = d;
     const done = judge(target, d, first);
     if (done) return { ...done, code: done.ok ? 0 : 1 };

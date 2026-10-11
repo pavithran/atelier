@@ -2,8 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { judge, waitFor } from "../cli/wait.mjs";
 import { formatProcesses, liveProcesses, parseLsof, parsePs } from "../cli/procs.mjs";
@@ -176,22 +175,24 @@ test("a runner whose script path holds spaces is still a runner", () => {
 
 // `atelier wait` end to end against a stand-in server.
 const cli = resolve("cli/atelier.mjs");
-async function runWait(t, details, argv) {
-  const dir = mkdtempSync(join(tmpdir(), "atelier-wait-"));
+async function runWait(t, details, argv, { command = "wait", handle, setup = () => ({}) } = {}) {
+  const dir = mkdtempSync(resolve(".test-wait-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const queue = [...details];
   const server = createServer((req, res) => {
+    if (handle) return handle(req, res);
     const ok = req.url === "/api/projects/demo/items/t5";
     const d = ok ? (queue.length > 1 ? queue.shift() : queue[0]) : { error: "not_found", detail: "no such task" };
     res.writeHead(ok ? 200 : 404, { "content-type": "application/json" });
     res.end(JSON.stringify(d));
   });
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
-  t.after(() => server.close());
+  t.after(() => { server.closeAllConnections(); server.close(); });
   writeFileSync(join(dir, "config.json"), JSON.stringify({ server: "x", owner: "owner", projects: {} }));
-  const child = spawn(process.execPath, [cli, "wait", ...argv], {
-    cwd: dir, env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: join(dir, "cache"), ATELIER_TOKEN: "test-token", ATELIER_ACTOR: "owner", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}` },
+  const child = spawn(process.execPath, [cli, command, ...argv], {
+    cwd: dir, env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: join(dir, "cache"), ATELIER_TOKEN: "test-token", ATELIER_ACTOR: "owner", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}`, ...setup(dir) },
   });
+  t.after(() => child.kill("SIGKILL"));
   let output = ""; child.stdout.on("data", (s) => output += s); child.stderr.on("data", (s) => output += s);
   const code = await new Promise((done) => child.on("close", done));
   return { code, output: output.trim() };
@@ -240,5 +241,75 @@ test("wait CLI covers submission, both review verdicts, blocking and any-change"
     const r = await runWait(t, reads, ["t5", "--project", "demo", "--for", target, "--interval", "0.01"]);
     assert.equal(r.code, code, r.output);
     assert.match(r.output, text);
+  }
+});
+
+
+test("wait deadline aborts stalled headers and stalled response bodies", { timeout: 10000 }, async (t) => {
+  for (const body of [false, true]) {
+    let closed;
+    const disconnected = new Promise((resolve) => { closed = resolve; });
+    let reads = 0;
+    const result = await runWait(t, [], ["t5", "--project", "demo", "--timeout", "0.15"], {
+      handle(req, res) {
+        reads++;
+        res.on("close", closed);
+        if (body) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.write('{"item":');
+        }
+      },
+    });
+    assert.equal(result.code, 3, result.output);
+    assert.match(result.output, /gave up waiting for merged/);
+    await disconnected;
+    assert.equal(reads, 1, "deadline cancellation must not retry");
+  }
+});
+
+test("wait deadline cancels a later read and rejects a late success", async () => {
+  let calls = 0, signal;
+  const result = await waitFor("merged", async (s) => {
+    if (++calls === 1) return detail("claimed");
+    signal = s;
+    return new Promise(() => {});
+  }, { timeoutMs: 50, intervalMs: 1 });
+  assert.equal(result.code, 3);
+  assert.equal(signal.aborted, true);
+  const c = clock();
+  const late = await waitFor("merged", async () => {
+    await c.sleep(100);
+    return detail("merged");
+  }, { ...c, timeoutMs: 50 });
+  assert.equal(late.code, 3);
+});
+
+test("plain status prints this machine's runners and agents by task without command lines", async (t) => {
+  const result = await runWait(t, [], [], {
+    command: "status",
+    handle(req, res) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("[]");
+    },
+    setup(dir) {
+      const bin = join(dir, "bin");
+      mkdirSync(bin);
+      for (const [name, output] of [["ps", PS], ["lsof", LSOF.replaceAll("/cache/work", join(dir, "cache/work"))]]) {
+        const script = name === "ps"
+          ? `import { execFileSync } from "node:child_process";
+process.stdout.write(process.argv.includes("pid=,ppid=,etime=,args=") ? ${JSON.stringify(output)} : execFileSync("/bin/ps", process.argv.slice(2)));`
+          : `process.stdout.write(${JSON.stringify(output)});`;
+        writeFileSync(join(bin, name), `#!${process.execPath}\n${script}\n`, { mode: 0o755 });
+      }
+      return { PATH: `${bin}:${process.env.PATH}` };
+    },
+  });
+  assert.equal(result.code, 0, result.output);
+  assert.match(result.output, /Live on this Mac:/);
+  assert.match(result.output, /runner home:mac  pid 100  up 2h3m  working on t7/);
+  assert.match(result.output, /demo\/t7  claude pid 102/);
+  assert.match(result.output, /demo\/t9  codex pid 300/);
+  for (const secret of ["SECRETPROMPT", "/secret/cfg.json", "--config", "the brief"]) {
+    assert.ok(!result.output.includes(secret), result.output);
   }
 });
