@@ -56,8 +56,10 @@ passes count.
 
 ### Review
 
-**Another company reviews.** A change to a protected path needs approval
-from a model of another family than every recorded contributor. The project
+**Another company reviews, or in single-family mode another model.** A
+change to a protected path needs approval from a model of another family than
+every recorded contributor by default; in single-family mode, a different
+model of the project's one company from every contributor. The project
 owner's approval is not that review; without one, the owner can accept only
 by recording an override with its reason.
 
