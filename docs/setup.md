@@ -264,7 +264,7 @@ or `--public-mirror ""` alone clears the list, and `--reset` drops the
 identity with the rest of the policy. The fields travel in
 `PUT /api/projects/NAME` as `commitName`, `commitEmail`, `agentEmails`,
 `privateEmails` and `publicMirrors`, and are stored as
-`policy.commitIdentity`. They raise the route level to 21
+`policy.commitIdentity`. They raise the route level to 23
 (`src/route-level.ts`): `atelier land` and the runner refuse a server below
 it, since one would not record or return the identity.
 

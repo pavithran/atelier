@@ -117,6 +117,10 @@ test("the claim's local identity passes; a conflicting environment value is refu
     "the author email me@personal.example is neither the project's commit address (123+owner@users.noreply.github.com) nor an agent address the policy allows (agentEmails); fix GIT_AUTHOR_EMAIL in the environment",
     "the committer email owner@personal.example is declared private in the project's policy (privateEmails); fix GIT_COMMITTER_EMAIL in the environment",
   ]);
+  // A name Git refuses to use (only spaces) is refused with Git's reason, not
+  // passed on from the raw value (gpt-6-astra at dd559d7e).
+  const blank = identityRefusals(dir, { ...env, GIT_AUTHOR_NAME: "   " }, "demo");
+  assert.match(blank.join("\n"), /Git cannot use the author identity \(.+\); fix GIT_AUTHOR_NAME in the environment/);
   // An empty variable is a missing field, not the config's.
   assert.match(identityRefusals(dir, { ...env, GIT_COMMITTER_NAME: "" }, "demo").join("\n"), /the committer name is not set, so Git would guess one; set GIT_COMMITTER_NAME in the environment/);
   // committer.email in a global config beats user.email, and is named by its file.

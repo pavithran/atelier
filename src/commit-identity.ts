@@ -166,7 +166,7 @@ export const NO_IDENTITY = (project: string) =>
 // One side of an identity Git resolves (git var GIT_AUTHOR_IDENT): the name
 // and address, null for one Git would not give without guessing, and the
 // setting each comes from, as a person would fix it.
-export interface ResolvedIdent {
+export interface ResolvedIdent { unusable?: string;
   name: string | null;
   email: string | null;
   nameFrom: string;
@@ -180,6 +180,7 @@ export function builderRefusals(policy: CommitIdentityPolicy | undefined | null,
   const out: string[] = [];
   for (const role of ["author", "committer"] as const) {
     const id = resolved[role];
+    if (id.unusable && id.name && id.email) { out.push(`Git cannot use the ${role} identity (${id.unusable}); fix ${id.nameFrom} and ${id.emailFrom}`); continue; }
     if (!id.name) out.push(`the ${role} name is not set, so Git would guess one; set ${id.nameFrom}`);
     const why = addressRefusal(policy, id.email);
     if (why) out.push(`the ${role} email ${id.email ? `${id.email} ` : ""}${why}; ${id.email ? "fix" : "set"} ${id.emailFrom}${id.email ? "" : ` to ${policy.email}`}`);
