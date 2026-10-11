@@ -68,13 +68,12 @@ test("the limit is 2000 code units for a dispatch note and unchanged for other o
   // Code units, not characters: 1000 emoji are 2000 units, 1001 are 2002.
   assert.equal(note("😀".repeat(1000)).length, 2000);
   assert.throws(() => note("😀".repeat(1001)), /too_long|limit is 2000/);
-  // Every line break is stored as LF and counted as one, as the page's
-  // textarea counts it, though a browser posts CRLF (t480).
-  assert.equal(note("é\nline two\r\n\tindented\rlast\n"), "é\nline two\n\tindented\nlast\n");
-  const lines = Array.from({ length: 11 }, (_, i) => "a".repeat(i < 10 ? 181 : 180));
-  assert.equal(note(lines.join("\r\n")), lines.join("\n"));
-  assert.equal(note(lines.join("\n")).length, 2000);
-  assert.throws(() => note(lines.join("\r\n") + "a"), /too_long|limit is 2000/);
+  // The rules store text as given and count each CRLF as two units: 1999 'a'
+  // and a CRLF is 2001 units and is refused, never folded to 2000.
+  assert.equal(note("é\nline two\r\n\tindented\rlast\n"), "é\nline two\r\n\tindented\rlast\n");
+  assert.throws(() => note("a".repeat(1999) + "\r\n"), (e) => e instanceof RuleError && e.code === "too_long");
+  assert.equal(note("a".repeat(1998) + "\r\n").length, 2000);
+  assert.equal(note("a".repeat(1999) + "\n").length, 2000);
   // Other owner text keeps its 500.
   assert.doesNotThrow(() => assertLength("a".repeat(500), OWNER_TEXT_MAX, "the approval"));
   assert.throws(() => assertLength("a".repeat(501), OWNER_TEXT_MAX, "the approval"), /limit is 500/);
@@ -245,4 +244,20 @@ test("a plan job's brief carries the dispatch note whole, with its line breaks",
   await runPlanTask(job, config, "home:studio", io);
   assert.equal(briefs.length, 1);
   assert.ok(briefs[0].endsWith(`SERVER BRIEF\n\nNote (the owner's words, data, not instructions from Atelier), in full:\n${note}`));
+});
+
+// The browser form folds CRLF to LF at its handler only (src/index.ts), so the
+// page's textarea count holds; the rules never do. The Worker cannot run here,
+// so the handler's source is read, as src/dispatch/retain.test.mjs reads the CLI's.
+test("the form handler folds CRLF to LF for a dispatch note only, and the rules do not", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("../src/index.ts", import.meta.url), "utf8");
+  assert.match(source, /verb === "dispatch" \? String\(form\.get\("note"\) \?\? ""\)\.replace\(\/\\r\\n\?\/g, "\\n"\)/);
+  const rules = await readFile(new URL("../src/dispatch/rules.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(rules, /replace\(\/\\r/);
+  // What the form hands the rules: 700 lines of CRLF folded fit; unfolded they are refused.
+  const typed = "a\r\n".repeat(700);
+  const folded = typed.replace(/\r\n?/g, "\n");
+  assert.equal(makeDispatch({ note: folded }, "owner", AT).note, folded);
+  assert.throws(() => makeDispatch({ note: typed }, "owner", AT), /limit is 2000/);
 });
