@@ -1173,7 +1173,8 @@ export const at = (iso) => `${String(iso).slice(0, 16).replace("T", " ")} UTC`;
 // `origin` is the server in use, for the link to each merge by override.
 export function formatStanding(s, ownerName = "the project owner", origin = "") {
   const runner = (q) => `${q.to}${q.agent ? ` ${q.agent}` : ""}${q.model ? `/${q.model}` : ""}`;
-  const lines = [`${flat(s.project.title)} (${flat(s.project.name)}) as of ${at(s.generatedAt)}, from Atelier's record`];
+  const mode = s.familyMode?.single ? ` (single-family: ${flat(s.familyMode.single)})` : "";
+  const lines = [`${flat(s.project.title)} (${flat(s.project.name)})${mode} as of ${at(s.generatedAt)}, from Atelier's record`];
   const group = (title, rows) => { if (rows.length) lines.push("", `${title}:`, ...rows.map((r) => `  ${r}`)); };
   group("Held now", s.live.map((i) => `${i.id}  ${i.state}  held by ${flat(i.owner ?? "nobody")}${i.since ? ` since ${at(i.since)}` : ", since when is not shown"}  ${flat(i.title)}`));
   group(`Waiting on ${flat(ownerName)}`, s.waiting.map((w) => `${w.id}  ${w.kind}  ${flat(w.title)}  ${flat(w.reason)}${w.brief ? `  brief, ${flat(w.brief.verdict)}: ${flat(w.brief.line)}` : ""}`));
