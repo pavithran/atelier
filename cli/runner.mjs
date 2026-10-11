@@ -17,6 +17,71 @@ import { parseVerdict, VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { rolePrompt, ROLE_PROMPT_MAX } from "../src/usage.ts";
+import { callPath, declaredCall, RUNNER_COMMANDS } from "../src/tokens.ts";
+
+// The runner's one way to the server (t478): every call the runner process
+// makes itself goes through `send`, under a name RUNNER_CALLS in
+// src/tokens.ts declares, with the method and path the declaration gives
+// and no body field it does not name. A public call (the version) carries
+// no credential; every other carries the runner's token, the actor the
+// caller names and the runner's own name, so a runner token is checked
+// against the name it was issued for on every call. The answer is the
+// status, the parsed JSON (null when the body is not JSON) and the
+// X-Atelier-Incomplete header; a server that cannot be reached throws, and
+// the caller decides what either means. `identity` reads GET /config once:
+// a runner token answers with its runner, an agent token with its actor,
+// the owner's token with neither. cli/commands/runner.mjs wires it.
+export function runnerTransport({ server, credential, runner, fetch = globalThis.fetch }) {
+  const base = String(server).replace(/\/$/, "");
+  let identity;
+  const send = async (name, params = {}, { body, actor, signal, timeoutMs = 30_000 } = {}) => {
+    const call = declaredCall(name);
+    if (call.via !== "runner") throw new Error(`${name} is a call atelier ${call.command} makes for the runner, not one the runner sends itself`);
+    if (call.method === "GET" && body !== undefined) throw new Error(`${name} is a GET and sends no body`);
+    if (call.method === "POST") {
+      if (call.body === "document") { if (typeof body !== "string") throw new Error(`${name} sends a document as text`); }
+      else {
+        if (typeof body !== "object" || body === null || Array.isArray(body)) throw new Error(`${name} sends an object`);
+        const undeclared = Object.keys(body).filter((key) => !call.body.includes(key));
+        if (undeclared.length) throw new Error(`${name} does not send ${undeclared.join(", ")}`);
+      }
+    }
+    if (call.credential !== "public" && (typeof actor !== "string" || !actor)) throw new Error(`${name} needs the actor it is sent as`);
+    const headers = call.credential === "public" ? {}
+      : { authorization: `Bearer ${credential}`, "x-atelier-actor": actor, ...(runner ? { "x-atelier-runner": runner } : {}), "content-type": "application/json" };
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const res = await fetch(`${base}/api${callPath(call, params)}`, {
+      method: call.method, headers, signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      ...(call.method === "POST" ? { body: typeof body === "string" ? body : JSON.stringify(body) } : {}),
+    });
+    let data = null;
+    try { data = await res.json(); } catch { /* an answer that is not JSON carries no detail */ }
+    return { status: res.status, ok: res.ok, data, incomplete: res.headers.get("x-atelier-incomplete") };
+  };
+  return {
+    send,
+    async identity(signal) {
+      if (identity) return identity;
+      const res = await send("config", {}, { actor: "owner", signal });
+      // A refused credential throws with its status, so the caller can tell
+      // a token the server refuses from a server it cannot reach.
+      if (!res.ok) throw Object.assign(new Error(`config: ${res.status}${res.data?.detail ? ` ${res.data.detail}` : ""}`), { status: res.status });
+      identity = { runner: typeof res.data?.runner === "string" ? res.data.runner : null, actor: typeof res.data?.actor === "string" ? res.data.actor : null };
+      return identity;
+    },
+  };
+}
+
+// The atelier command a job helper runs, checked against the commands
+// RUNNER_CALLS declares: the runner spawns no command the table does not
+// name, so a helper added without a declared call is refused here before it
+// runs, as the source check in test/runner-routes.test.mjs refuses it
+// before it is committed.
+export function helperCommand(argv) {
+  const command = argv[0];
+  if (!RUNNER_COMMANDS.has(command)) throw new Error(`atelier ${command} is not a command the runner declares (RUNNER_CALLS in src/tokens.ts)`);
+  return command;
+}
 
 export function offerFrom(config, name) {
   if (typeof name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(name)) throw new Error("use --name home:NAME");
@@ -1609,7 +1674,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // call authenticates with, handed to the CLI as ATELIER_TOKEN in the
     // child's environment, which wins over the owner's stored token; it is
     // never an argument, which any local user could read.
-    cli: (argv, cwd, options = {}) => checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, capture: readsOutput(argv), claim: argv[0] === "claim",
+    cli: (argv, cwd, options = {}) => checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, capture: readsOutput(argv), claim: helperCommand(argv) === "claim",
       env: runnerChildEnv(process.env, offer.runner, credential, options.token),
       step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
       ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild),

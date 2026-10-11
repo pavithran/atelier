@@ -109,3 +109,109 @@ export function runnerRoute(method: string, parts: string[], body: Record<string
 export function runnerDenied(token: AgentToken): RuleError {
   return new RuleError("runner_forbidden", `runner ${token.runner} (token ${token.id}) is not authorized for this operation`, 403);
 }
+
+// Every HTTP call the home runner makes against the server, declared once
+// (t478): its method, its path, the body fields it may send and the kind of
+// credential it goes with. The runner's own calls (`via: "runner"`) go
+// through runnerTransport in cli/runner.mjs, which refuses a name not
+// declared here and a body field the call does not declare; the calls an
+// atelier command makes for the runner (`via: "cli"`: claim, finish and the
+// rest, which the runner spawns as children) go through request() in
+// cli/atelier.mjs, and runRunner spawns no command this table does not
+// name. test/runner-routes.test.mjs holds one authorization case for each
+// name, exercised through the real gateway and Ledger, and a source check
+// that finds a call made outside the transport or a name not declared.
+//
+// The credential kinds are kept apart on purpose: a `runner` call is made
+// with the runner's own token (cli/credentials.mjs), which runnerRoute above
+// must allow; an `agent` call is made with a model's own agent token (a
+// review job records its verdict as the reviewer, t346) or the integrator's
+// (`--integrate` runs the integrate and refresh jobs under the reserved
+// actor's token), which agentRoute must allow and runnerRoute refuses; a
+// `public` call needs no token at all. `integrator: true` marks a runner
+// call the integrate and refresh jobs make too, under the integrator's
+// token. `jobs` says which jobs make the call.
+export type CallCredential = "runner" | "agent" | "public";
+export type RunnerJob = "build" | "plan" | "review" | "integrate" | "refresh";
+export interface RunnerCall {
+  name: string;
+  method: "GET" | "POST";
+  // A path under /api, with {project}, {item} and {run} standing for the
+  // encoded path parameters (callPath).
+  path: string;
+  credential: CallCredential;
+  // The body fields a POST may carry; "document" when the body is a whole
+  // plan document rather than fields; [] for no body, as every GET.
+  body: readonly string[] | "document";
+  via: "runner" | "cli";
+  // The atelier command that makes a `cli` call.
+  command?: string;
+  jobs: readonly RunnerJob[];
+  integrator?: true;
+}
+
+const ITEM = "/projects/{project}/items/{item}";
+const PLAN: readonly RunnerJob[] = ["plan"], REVIEW: readonly RunnerJob[] = ["review"];
+const INTEGRATE: readonly RunnerJob[] = ["integrate", "refresh"];
+
+export const RUNNER_CALLS: readonly RunnerCall[] = [
+  // The runner's own calls, before and between jobs.
+  { name: "version", method: "GET", path: "/version", credential: "public", body: [], via: "runner", jobs: [] },
+  { name: "config", method: "GET", path: "/config", credential: "runner", body: [], via: "runner", jobs: [] },
+  { name: "queue", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents"], via: "runner", jobs: [] },
+  { name: "runs", method: "POST", path: "/runs", credential: "runner", body: ["actor", "role", "outcome", "project", "item", "detail"], via: "runner", jobs: ["build", "plan", "review"] },
+  { name: "review-skip", method: "POST", path: `${ITEM}/review-skip`, credential: "runner", body: ["head", "request", "note"], via: "runner", jobs: REVIEW },
+  // The plan job's own calls: the brief it reads, the document it posts. A
+  // part reads its brief the same way, as a build.
+  { name: "job-brief", method: "GET", path: `${ITEM}/job-brief`, credential: "runner", body: [], via: "runner", jobs: ["build", "plan"] },
+  { name: "plan", method: "POST", path: `${ITEM}/plan`, credential: "runner", body: "document", via: "runner", jobs: PLAN },
+  // The build and plan jobs' helpers: the atelier commands the runner spawns.
+  { name: "claim", method: "POST", path: `${ITEM}/claim`, credential: "runner", body: [], via: "cli", command: "claim", jobs: ["build", "plan", "integrate", "refresh"], integrator: true },
+  { name: "release", method: "POST", path: `${ITEM}/release`, credential: "runner", body: ["note"], via: "cli", command: "release", jobs: ["build", "plan", "integrate", "refresh"], integrator: true },
+  { name: "item", method: "GET", path: ITEM, credential: "runner", body: [], via: "cli", command: "finish", jobs: ["build", "integrate", "refresh"], integrator: true },
+  { name: "push", method: "POST", path: `${ITEM}/push`, credential: "runner", body: ["head", "rebasedFrom"], via: "cli", command: "push", jobs: ["build", "integrate", "refresh"], integrator: true },
+  { name: "read-token", method: "POST", path: `${ITEM}/read-token`, credential: "runner", body: [], via: "cli", command: "read-token", jobs: ["build", "integrate"], integrator: true },
+  { name: "base-token", method: "POST", path: `${ITEM}/base-token`, credential: "runner", body: ["scope"], via: "cli", command: "base-token", jobs: ["build", "refresh"], integrator: true },
+  { name: "evidence", method: "POST", path: `${ITEM}/evidence`, credential: "runner", body: ["kind", "claim", "head", "passed", "changedPaths", "outputTail", "merged", "mainHead", "notApplicable", "load"], via: "cli", command: "check", jobs: ["build", "integrate", "refresh"], integrator: true },
+  { name: "sandbox", method: "POST", path: `${ITEM}/sandbox`, credential: "runner", body: ["merged"], via: "cli", command: "check", jobs: ["build", "integrate", "refresh"], integrator: true },
+  { name: "sandbox-run", method: "GET", path: `${ITEM}/sandbox/{run}`, credential: "runner", body: [], via: "cli", command: "check", jobs: ["build", "integrate", "refresh"], integrator: true },
+  { name: "submit", method: "POST", path: `${ITEM}/submit`, credential: "runner", body: ["summary"], via: "cli", command: "submit", jobs: ["build", "integrate", "refresh"], integrator: true },
+  // The review job's helpers, under the reviewer's own agent token.
+  { name: "review-claim", method: "POST", path: `${ITEM}/review-claim`, credential: "agent", body: [], via: "cli", command: "review-claim", jobs: REVIEW },
+  { name: "review-release", method: "POST", path: `${ITEM}/review-release`, credential: "agent", body: ["note"], via: "cli", command: "review-release", jobs: REVIEW },
+  { name: "review-unparsable", method: "POST", path: `${ITEM}/review-unparsable`, credential: "agent", body: ["head", "note", "reply"], via: "cli", command: "review-unparsable", jobs: REVIEW },
+  { name: "review", method: "POST", path: `${ITEM}/review`, credential: "agent", body: ["head", "criteria", "request", "approve", "note", "findings"], via: "cli", command: "review", jobs: REVIEW },
+  // The integrate and refresh jobs' own helpers, under the integrator's token.
+  { name: "integrated", method: "POST", path: `${ITEM}/integrated`, credential: "agent", body: ["part", "mergeCommit"], via: "cli", command: "integrated", jobs: ["integrate"] },
+  { name: "integration-failed", method: "POST", path: `${ITEM}/integration-failed`, credential: "agent", body: ["part", "reason", "kind"], via: "cli", command: "integration-failed", jobs: ["integrate"] },
+  { name: "refreshed", method: "POST", path: `${ITEM}/refreshed`, credential: "agent", body: ["mainHead", "mergeCommit"], via: "cli", command: "refreshed", jobs: ["refresh"] },
+  { name: "refresh-failed", method: "POST", path: `${ITEM}/refresh-failed`, credential: "agent", body: ["mainHead", "reason", "kind"], via: "cli", command: "refresh-failed", jobs: INTEGRATE },
+];
+
+// The declared call under `name`, or an error naming it: a call nobody
+// declared is made nowhere.
+export function declaredCall(name: string): RunnerCall {
+  const call = RUNNER_CALLS.find((c) => c.name === name);
+  if (!call) throw new Error(`${name} is not a call the runner declares (RUNNER_CALLS in src/tokens.ts)`);
+  return call;
+}
+
+// The atelier commands the runner spawns for its `cli` calls.
+export const RUNNER_COMMANDS: ReadonlySet<string> = new Set(RUNNER_CALLS.flatMap((c) => c.command ? [c.command] : []));
+
+// A declared call's path under /api with its parameters filled in, each
+// encoded as a path segment; a parameter the path names and the caller
+// leaves out is an error, never an empty segment.
+export function callPath(call: RunnerCall, params: Record<string, string> = {}): string {
+  return call.path.replace(/\{(project|item|run)\}/g, (_, key: string) => {
+    const value = params[key];
+    if (typeof value !== "string" || !value) throw new Error(`${call.name} needs ${key}`);
+    return encodeURIComponent(value);
+  });
+}
+
+// The path's segments as the gateway splits them, for runnerRoute and
+// agentRoute: the declared path with sample parameters.
+export function callParts(call: RunnerCall, params: Record<string, string> = { project: "p", item: "t1", run: "p:t1:abc:1" }): string[] {
+  return callPath(call, params).split("/").filter(Boolean).map((s) => decodeURIComponent(s));
+}
