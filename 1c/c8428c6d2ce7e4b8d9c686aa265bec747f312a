@@ -1,0 +1,50 @@
+atelier atelier/t488 "atelier land works on a workspace a runner claimed with its runner token"
+accepted head da708ce2fa5d83853fa48b2ab8f4bc57c65d62af
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/fable-5.1 2026-10-11T11:21:42.374Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/fable-5.1 2026-10-11T11:21:46.507Z
+REVIEW approve by codex/gpt-6-astra at da708ce2fa5d83853fa48b2ab8f4bc57c65d62af, recorded by codex/gpt-6-astra
+2026-10-11T00:56:24.507Z pavi item.created
+2026-10-11T02:40:25.300Z pavi item.edited
+2026-10-11T02:40:25.300Z pavi item.criteria_changed
+2026-10-11T02:40:25.785Z pavi item.dispatched
+2026-10-11T02:52:06.305Z claude-code/fable-5.1 item.claimed
+2026-10-11T02:52:12.904Z claude-code/fable-5.1 fork.created
+2026-10-11T03:07:24.846Z claude-code/fable-5.1 push.observed
+2026-10-11T03:12:00.508Z claude-code/fable-5.1 evidence.observed
+2026-10-11T03:12:03.383Z claude-code/fable-5.1 evidence.observed
+2026-10-11T03:12:03.846Z claude-code/fable-5.1 item.submitted
+2026-10-11T06:04:05.569Z pavi land.lease
+2026-10-11T06:04:15.164Z pavi land.merge
+2026-10-11T06:04:25.514Z pavi land.regenerate
+2026-10-11T06:04:28.131Z claude-code/fable-5.1 push.observed
+2026-10-11T06:04:28.470Z pavi land.push
+2026-10-11T06:08:51.862Z claude-code/fable-5.1 evidence.observed
+2026-10-11T06:08:55.063Z claude-code/fable-5.1 evidence.observed
+2026-10-11T06:08:55.542Z pavi land.check
+2026-10-11T06:08:56.416Z pavi review.requested
+2026-10-11T06:09:24.429Z codex/gpt-6-astra review.claimed
+2026-10-11T06:10:57.130Z codex/gpt-6-astra review.rejected
+2026-10-11T06:10:58.201Z pavi land.review
+2026-10-11T06:11:14.475Z pavi item.released
+2026-10-11T06:11:14.475Z pavi item.dispatched
+2026-10-11T08:29:35.423Z claude-code/fable-5.1 item.claimed
+2026-10-11T08:41:08.682Z claude-code/fable-5.1 push.observed
+2026-10-11T08:45:13.006Z claude-code/fable-5.1 evidence.observed
+2026-10-11T08:45:15.822Z claude-code/fable-5.1 evidence.observed
+2026-10-11T08:45:16.269Z claude-code/fable-5.1 item.submitted
+2026-10-11T11:15:59.226Z pavi land.lease
+2026-10-11T11:16:06.426Z pavi land.merge
+2026-10-11T11:16:19.310Z pavi land.regenerate
+2026-10-11T11:16:20.172Z pavi land.push
+2026-10-11T11:16:25.060Z claude-code/fable-5.1 push.observed
+2026-10-11T11:16:25.440Z pavi land.push
+2026-10-11T11:21:43.170Z claude-code/fable-5.1 evidence.observed
+2026-10-11T11:21:46.590Z claude-code/fable-5.1 evidence.observed
+2026-10-11T11:21:47.051Z pavi land.check
+2026-10-11T11:21:49.585Z pavi review.requested
+2026-10-11T11:39:47.038Z codex/gpt-6-astra review.claimed
+2026-10-11T11:39:47.921Z codex/gpt-6-astra review.diff
+2026-10-11T11:41:07.587Z codex/gpt-6-astra review.approved
+2026-10-11T11:41:17.825Z pavi land.review
+2026-10-11T11:41:18.208Z pavi item.accepted
+2026-10-11T11:41:18.232Z pavi land.accept
