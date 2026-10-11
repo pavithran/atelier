@@ -19,14 +19,20 @@ check commands so higher priority waiters can enter between them. Nested
 wrappers reuse their outer slot. Commands run directly in a shell are outside
 enforcement. This is cooperative scheduling, not isolation of untrusted code.
 
-`ATELIER_TEST_SLOTS` must be a positive integer. Without it, capacity is
-`max(1, floor(coreCount()/4))`. Capacity is recorded atomically in
+On first pool creation a valid `ATELIER_TEST_SLOTS` sets capacity; otherwise
+capacity is `max(1, floor(coreCount()/4))`. Capacity is recorded atomically in
 `/tmp/atelier-test-slots-v1.sqlite`; it does not depend on the project,
-`ATELIER_CACHE`, `ATELIER_CONFIG_DIR`, HOME, or the runner name. All callers
-must agree with the recorded capacity, including callers using the default.
-A mismatch is refused even while idle. To change capacity, stop all callers,
-verify that status has no active commands or waiters, remove this database,
-then restart every caller with the new value. Never remove a live pool.
+`ATELIER_CACHE`, `ATELIER_CONFIG_DIR`, HOME, or the runner name. After creation,
+stored capacity wins. An invalid or disagreeing environment value warns but
+cannot prevent admission; an absent value silently uses stored capacity.
+
+Change capacity with `node cli/load.mjs --set N`. Only positive safe integers
+are accepted. The change shares admission's SQLite transaction lock and
+preserves live leases and the priority/FIFO queue. Raising capacity lets
+waiting work enter on its next poll. Lowering capacity leaves running and
+nested work alone and admits nothing while active usage is at or above the
+new limit. No database reset or runner restart is needed for callers using
+the updated implementation. Never remove a live pool.
 The pool is intended for the machine's shared Atelier service account;
 different runner identities and project directories do not partition it.
 
@@ -48,9 +54,9 @@ contain Atelier's source. Supply project, task and actor through the wrapper
 flags when running manually; runners supply them through their environment.
 
 `--status` works locally without server credentials. It reports capacity,
-host, project/task, actor, supervisor PID, random launch identity, start time,
+active usage, draining excess (usage above capacity), host, project/task, actor, supervisor PID, random launch identity, start time,
 and waiters in admission order. JSON also lists the live processes belonging
-to each active tree. Project status includes this pool, and ordinary text
+to each active tree, plus numeric `usage` and `draining` counts. Project status includes this pool, and ordinary text
 status prints it. N/A checks bypass the pool entirely.
 
 A fresh random `ATELIER_TEST_LEASE` is installed in the supervisor's launch
