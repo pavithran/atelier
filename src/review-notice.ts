@@ -4,7 +4,7 @@
 // controllingRule follows changeClass in src/rules.ts, which decides the
 // class; this names the rule that decided it.
 
-import { protectedRuleGroups, classRequirement, matchesFolded, matchesAny, type ChangeClass, type ProjectPolicy } from "./rules.ts";
+import { protectedRuleGroups, classRequirement, matchesFolded, matchesAny, singleFamily, type ChangeClass, type ProjectPolicy } from "./rules.ts";
 
 export interface ControllingRule {
   kind: ChangeClass;
@@ -48,15 +48,17 @@ export function reviewNotice(paths: readonly string[], policy: ProjectPolicy, so
   if (!rule) return null;
   if (!part && (rule.kind === "direct" || (rule.kind === "coordinated" && !policy.execution))) return null;
   const resolved = typeof source === "function" ? source(rule) : rule.origin.includes("execution policy") ? source : null;
-  const controlling = part ? "Atelier's plan-part review rule (src/rules.ts: reviewNeeded)" : resolved ? `${resolved.file}${resolved.version ? ` (version ${resolved.version})` : ""}` : rule.origin === "the ship files" ? "Atelier's built-in SHIP_FILES rule (src/rules.ts)" : `the project's recorded policy, as stored on the server (${rule.origin})`;
+  const controlling = part ? "Atelier's plan-part review rule (src/review/needed.ts: reviewNeeded)" : resolved ? `${resolved.file}${resolved.version ? ` (version ${resolved.version})` : ""}` : rule.origin === "the ship files" ? "Atelier's built-in SHIP_FILES rule (src/rules.ts)" : `the project's recorded policy, as stored on the server (${rule.origin})`;
   const classWhy = rule.glob !== null
     ? `${rule.path} matches the protected glob ${rule.glob}, from ${rule.origin}`
     : rule.kind === "direct"
       ? `every changed path is within ${rule.origin}`
-      : `${rule.path ?? "this change"} is not within the execution policy's direct paths`;
-  const why = part ? `this task is a part of a plan, and every part of a plan is reviewed by another family than its contributors (${classWhy})` : classWhy;
+      : policy.execution
+        ? `${rule.path ?? "this change"} is not within the execution policy's direct paths`
+        : `${rule.path ?? "this change"} is outside the project's protected paths, and the project has no execution policy`;
+  const why = part ? `this task is a part of a plan, and every part of a plan is reviewed by ${singleFamily(policy) ? `a different ${singleFamily(policy)} model than its contributors (single-family mode)` : "another family than its contributors"} (${classWhy})` : classWhy;
   return [
-    `A review will be needed before this lands: ${part ? classRequirement("protected") : rule.requirement}.`,
+    `A review will be needed before this lands: ${part ? classRequirement("protected", singleFamily(policy)) : rule.requirement}.`,
     `  Controlling policy: ${controlling}`,
     `  Rule: ${why}; class ${rule.kind}`,
   ];
