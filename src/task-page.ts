@@ -1,6 +1,7 @@
 import type { Detail } from "./ui.ts";
 import type { LedgerEvent } from "./ledger.ts";
 import { bindingOf, decisionFor } from "./rules.ts";
+import { taskStage } from "./board.ts";
 
 const text = (v: unknown): string => typeof v === "string" ? v : "";
 const reason = (e: LedgerEvent) => text(e.data.note) || text(e.data.reason) || text(e.data.summary);
@@ -19,15 +20,19 @@ export function taskPage(d: Detail) {
   if (!events.some(e => e.kind === "item.created")) unknowns.push("Earlier task history is unavailable.");
   if (d.item.head && !submissions.length) unknowns.push("Submission history is unavailable.");
   const decision = decisionFor(d.item, d.policy, d.evidence, d.reviews, d.ownerActor);
+  const stage = taskStage(d.item, { ready: d.gate.ready });
   let title = decision.title, detail = decision.detail;
-  if (d.item.state === "open") {
+  if (stage === "blocked") {
+    title = "Blocked";
+    if (d.item.state !== "blocked") detail = d.item.blocked?.reason || "The blocking reason is unavailable in the recorded history.";
+  } else if (d.item.state === "open") {
     const last = [...events].reverse().find(e => (e.kind === "item.dispatched" && !!reason(e)) || e.kind === "item.released" || e.kind === "review.rework" || verdict(e));
     const returned = events.some(e => e.kind === "item.released" || e.kind === "review.rework" || verdict(e));
     if (returned || submissions.length || d.item.head) {
       title = "Open again · awaiting rework";
       detail = last && reason(last) || "The task is open again; the reason is unavailable in the recorded history.";
     }
-  } else if (d.item.state === "claimed" || d.item.state === "submitted") {
+  } else if (stage === "building" || stage === "submitted" || (stage === "ready" && d.item.state === "submitted")) {
     const last = [...events].reverse().find(e => verdict(e) && e.data.head === d.item.head && e.data.criteria === bindingOf(d.item).criteria);
     if (last && (last.kind === "review.rejected" || last.kind === "triage.rejected")) {
       title = "Changes requested";
