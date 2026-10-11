@@ -92,7 +92,10 @@ it("queued reads the waiting tasks, their push actors and their core-file holds 
   const expected = items
     .filter((i) => i.state === "open" && !i.owner && i.dispatch)
     .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at))
-    .map((i) => { const h = coreHold(i, items, coreFiles); return h ? { ...i, held: h } : i; });
+    .map((i) => {
+      const h = coreHold(i, items, coreFiles);
+      return h ? { ...i, held: { ...h, blockers: [h], chains: [{ path: [i.id, h.id], deadlock: false }], since: expect.any(String), elapsedMs: expect.any(Number), warning: false } } : i;
+    });
   const { waiting, reviews } = await L.queued();
   expect(waiting).toEqual(expected);
   expect(reviews).toEqual([]);
@@ -155,7 +158,7 @@ it("the queue attaches, in words, why a dispatch is held, refused an overlap or 
   expect(line(nobody.id, "unoffered")).toMatch(new RegExp(`^No live runner can take it: .*atelier dispatch ${nobody.id} --agent H --model M`));
   expect(line(refused.id, "overlap")).toMatch(new RegExp(`^Overlap refused: ${live.id} \\(claimed by ${A}\\) holds a scope`));
   const heldLine = (all.find((q) => q.project === name && q.item.id === held.id)?.item.why ?? []).find((r) => r.kind === "held")?.line ?? "";
-  expect(heldLine).toMatch(/^Held: waits on .*; offered once .* merges or is abandoned, or at once with atelier dispatch .* --overlap-ok\.$/);
+  expect(heldLine).toMatch(/^Held: waits on .*; offered once .* submits or is released, or at once with atelier dispatch .* --overlap-ok\.$/);
 
   // A runner on the owner's token names itself; its refused claim is kept
   // with the refusal's own code and words.

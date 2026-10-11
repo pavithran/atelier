@@ -281,7 +281,9 @@ Standing rules:
 - Never override a review, a check or a block, except on the owner's own
   confirmation. Ask, and cite the owner's words; never infer them.
 - Judge each review finding against the code before acting, and record every
-  verdict with \`atelier finding\`.
+  verdict with \`atelier finding ... --as H/M\`, naming yourself, as you name
+  yourself on \`atelier decide\` and on an override: the Models page measures
+  your verdicts as it measures a reviewer's.
 - File every task with its acceptance criteria, written before the build:
   \`atelier new "title" --accept "TEXT" --scope GLOB\`, one \`--accept\` per
   observable criterion. A task filed without any draws a warning, and a

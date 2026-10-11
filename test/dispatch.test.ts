@@ -161,13 +161,12 @@ test("the core files hold a building dispatch whose scope overlaps a live item's
   assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [live], []), null);
   assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [live], undefined), null);
   // Two scopes that each reach a core glob, but not the same path, hold nothing.
-  const both = item({ id: "t1", scope: ["src/index.ts"], state: "submitted", owner: "x/y" });
+  const both = item({ id: "t1", scope: ["src/index.ts"], state: "claimed", owner: "x/y" });
   assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [both], ["src/**"]), null);
   // An unscoped item reaches every core file.
   assert.equal(coreHold(waiting({ scope: [] }), [live], core)?.core, "src/ledger.ts");
-  // Submitted and accepted items hold; merged, abandoned, open and integrated ones do not.
-  for (const state of ["submitted", "accepted"]) assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...live, state }], core)?.id, "t1", state);
-  for (const state of ["merged", "abandoned", "open", "integrated"]) assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...live, state }], core), null, state);
+  // Without a live landing lease, only claimed items hold core files.
+  for (const state of ["submitted", "accepted", "merged", "abandoned", "open", "integrated"]) assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...live, state }], core), null, state);
   // The owner's override, and the jobs that build nothing, are never held; merge-main is.
   assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"], dispatch: makeDispatch({ overlapOk: true }, "pavi", T) }), [live], core), null);
   for (const job of ["plan", "integrate", "refresh", "review"]) assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"], dispatch: { ...d, job } }), [live], core), null, job);
@@ -177,10 +176,11 @@ test("the core files hold a building dispatch whose scope overlaps a live item's
   const queuedPart = waiting({ scope: ["src/ledger.ts"], kind: "part", plan: "t4" });
   assert.equal(coreHold(queuedPart, [sibling], core), null);
   assert.equal(coreHold(queuedPart, [sibling, live], core)?.id, "t1");
-  // A plan item its planner or the integrator holds changes no main; a submitted one does.
+  // A claimed plan does not hold core files; a submitted plan holds only while landing.
   const planItem = item({ id: "t6", scope: ["src/**"], state: "claimed", owner: "atelier/integrator", kind: "plan" });
   assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [planItem], core), null);
-  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...planItem, state: "submitted" }], core)?.id, "t6");
+  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...planItem, state: "submitted" }], core), null);
+  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...planItem, state: "submitted" }], core, { item: "t6", holder: "pavi", at: T }, Date.parse(T))?.id, "t6");
 });
 
 test("a dispatch keeps the owner's overlap override only when it is asked for", () => {
@@ -337,7 +337,7 @@ test("unclaimed says each reason in words, with the command that releases it, in
   const offers: SeenOffer[] = [{ runner: "home:studio", kind: "home", jobs: [], agents: [{ agent: "opencode", models: ["glm-5.3-flash"] }], at: T }];
   const reasons = unclaimed(d, { held, overlap: { id: "t1", owner: "codex/gpt-6", title: "Work", state: "claimed" }, runs: [{ project: "demo", item: "t9", role: "build", outcome: "refused", runner: "home:studio", at: T }, { project: "demo", item: "t9", role: "build", outcome: "stalled", runner: "home:studio", at: T }], project: "demo", offers: [{ ...offers[0], agents: [{ agent: "opencode", models: ["qwen3-coder-next"] }] }], now: new Date(T) });
   assert.deepEqual(reasons.map((r) => r.kind), ["held", "overlap", "skipped", "unoffered"]);
-  assert.equal(reasons[0].line, "Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/index.ts; offered once t1 merges or is abandoned, or at once with atelier dispatch t9 --overlap-ok.");
+  assert.equal(reasons[0].line, "Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/index.ts; offered once t1 submits or is released, or at once with atelier dispatch t9 --overlap-ok.");
   assert.match(reasons[1].line, /^Overlap refused: t1 \(claimed by codex\/gpt-6\) holds a scope that overlaps this one.*atelier init --refuse-overlap=false\.$/);
   assert.equal(reasons[2].line, "Skipped by home:studio after 2 failed runs under this dispatch (the last refused); that runner passes it by until it is dispatched again or the runner restarts: fix the cause, then atelier dispatch t9 --to home --agent opencode --model glm-5.3-flash.");
   assert.match(reasons[3].line, /^No live runner can take it:/);
@@ -345,7 +345,7 @@ test("unclaimed says each reason in words, with the command that releases it, in
   // With nothing holding it and a live runner offering it, nothing is said.
   assert.deepEqual(unclaimed(dispatched({ scope: ["docs/**"] }), { offers, project: "demo", now: new Date(T) }), []);
   // A held part takes no owner override, and a task under SKIP_AFTER is not yet skipped.
-  assert.match(unclaimed(dispatched({ scope: ["src/index.ts"], kind: "part", plan: "t2" }), { held, project: "demo" })[0].line, /offered once t1 merges or is abandoned\.$/);
+  assert.match(unclaimed(dispatched({ scope: ["src/index.ts"], kind: "part", plan: "t2" }), { held, project: "demo" })[0].line, /offered once t1 submits or is released\.$/);
   assert.deepEqual(unclaimed(d, { runs: [{ project: "demo", item: "t9", role: "build", outcome: "stalled", runner: "home:studio", at: T }], project: "demo" }), []);
 });
 

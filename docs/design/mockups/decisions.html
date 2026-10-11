@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockup: Decisions — Atelier</title>
+<link rel="stylesheet" href="mockup.css">
+<style>
+  .desk { display: grid; grid-template-columns: 520px 1fr; gap: 28px; align-items: start; }
+  .pick > li { grid-template-columns: 56px 1fr auto; }
+  .pick > li[aria-current] { background: var(--inset); box-shadow: inset 3px 0 0 var(--signal); }
+  .pick .why { grid-column: 2 / -1; color: var(--text-muted); font-size: 14px; }
+  .grp { margin: 18px 0 6px; font: 600 14px/1 var(--sans); color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; }
+</style>
+</head>
+<body>
+<div class="mock-head">
+  <p class="mock-back"><a href="index.html">All mockups</a></p>
+  <p class="mock-title">Decisions</p>
+  <p class="mock-routes">Covers <code>/decisions</code> and <code>/decisions?project=&amp;task=</code> (selected decision). Drawn: 14 waiting across three projects, t195 selected.</p>
+</div>
+
+<div class="frames">
+<figure class="frame desktop">
+<figcaption>Desktop · 1440 · /decisions</figcaption>
+<div class="screen">
+<header class="ob">
+  <a class="skip" href="#d-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <ul>
+      <li><a href="/decisions" aria-current="page">Decisions <span class="count">(14)</span></a><a class="mk" href="#n1">1</a></li>
+      <li><a href="/home">Projects</a></li>
+      <li><a href="/studio">Activity</a></li>
+    </ul>
+    <span class="spacer"></span>
+    <details><summary>Project ▾</summary><div class="menu-panel"><a href="/p/ledger-core">Ledger Core <span>9</span></a><a href="/p/field-notes">Field Notes <span>4</span></a><a href="/p/open-tool">Open Tool <span>1</span></a></div></details>
+    <details><summary>Owner ▾</summary><div class="menu-panel"><a href="/models">Models</a><a href="/usage">Usage</a><hr><a href="/logout">Sign out</a></div></details>
+  </nav>
+</header>
+<main id="d-main" class="app-main">
+  <h1>Decisions · 14</h1>
+  <p class="lede">Waiting on your call, oldest first within each project. <a class="mk" href="#n5">5</a></p>
+  <div class="desk">
+    <nav aria-label="Decisions">
+      <p class="grp">Ledger Core · 9</p>
+      <ul class="rows pick">
+        <li aria-current="true"><span class="id">t195</span><a class="title" href="?project=ledger-core&amp;task=t195">Rotate the signing key for audit exports</a><span class="tag ask">Needs review</span><span class="why">Protected path: an independent review is required.</span></li>
+        <li><span class="id">t200</span><a class="title" href="?project=ledger-core&amp;task=t200">Paginate account statements</a><span class="tag ask">Needs review</span><span class="why">1 file outside its scope.</span></li>
+        <li><span class="id">t191</span><a class="title" href="?project=ledger-core&amp;task=t191">Stream CSV export for large ledgers</a><span class="tag caution">Ready to accept · diff unreadable</span><span class="why">No declared scope. Overlaps t192, t193, t194 and 4 more. <a class="mk" href="#n2">2</a></span></li>
+        <li><span class="id">t192</span><a class="title" href="?project=ledger-core&amp;task=t192">Add idempotency keys to the posting API</a><span class="tag go">Ready to accept</span><span class="why">Checks passed on a runner, in a clean clone.</span></li>
+        <li><span class="id">t166</span><a class="title" href="?project=ledger-core&amp;task=t166">Reconcile bank feed timestamps</a><span class="tag caution">Blocked</span><span class="why">Waits on bank sandbox keys: unblock or close.</span></li>
+        <li><span class="id">t163</span><a class="title" href="?project=ledger-core&amp;task=t163">Migrate balances to integer cents</a><span class="tag caution">Working · stale 2 d</span><span class="why">Nothing pushed since 8 Oct: hand off or release.</span></li>
+        <li><span class="id dim">+3</span><a class="title" href="?project=ledger-core">t193, t194, t190 · Ready to accept</a><span></span></li>
+      </ul>
+      <p class="grp">Field Notes · 4</p>
+      <ul class="rows pick">
+        <li><span class="id">t64</span><a class="title" href="?project=field-notes&amp;task=t64">Store sync token in the keychain</a><span class="tag ask">Needs review</span></li>
+        <li><span class="id dim">+3</span><a class="title" href="?project=field-notes">t61, t66, t67 · Ready to accept</a><span></span></li>
+      </ul>
+      <p class="grp">Open Tool · 1</p>
+      <ul class="rows pick">
+        <li><span class="id">t38</span><a class="title" href="?project=open-tool&amp;task=t38">Publish the 0.4.0 changelog</a><span class="tag go">Ready to accept</span></li>
+      </ul>
+      <details style="margin-top:16px"><summary>Handled by the orchestrator · 5 <span class="muted">(3 checks failed, 1 sent back, 1 ready to merge)</span></summary></details><a class="mk" href="#n3">3</a>
+    </nav>
+
+    <section aria-labelledby="d-sel" class="card">
+      <p class="dim mono" style="margin:0">Ledger Core · t195 · <span class="who">claude-code/opus-5.5</span></p>
+      <h2 id="d-sel" style="margin-top:4px">Rotate the signing key for audit exports</h2>
+      <div class="decision r-ask">
+        <span class="tag ask big">Needs review</span>
+        <p class="why">It changes <span class="mono">src/audit/sign.ts</span>, a protected path; checks passed on a runner, in a clean clone, at e41c7a0.</p>
+        <div class="row-flex"><a class="btn primary" href="/p/ledger-core/t195#diff">Review the diff</a><a href="/p/ledger-core/t195">Open the task</a><a class="mk" href="#n4">4</a></div>
+      </div>
+      <h3>Evidence</h3>
+      <ul class="plain" style="line-height:1.9">
+        <li><span class="tag go">Passed</span> <span class="mono">npm test</span> <span class="muted">runner mac-mini-2, clean clone · 11:41 UTC</span></li>
+        <li><strong>3 files</strong> <span class="muted">+64 −12 · 1 protected</span></li>
+        <li><span class="muted">Independent review: none yet</span></li>
+      </ul>
+    </section>
+  </div>
+</main>
+</div>
+</figure>
+
+<figure class="frame phone">
+<figcaption>Phone · 390 · /decisions (list view)</figcaption>
+<div class="screen">
+<header class="ob phone">
+  <a class="skip" href="#p-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <a href="/decisions" aria-current="page">Decisions <span class="count">(14)</span></a>
+    <span class="spacer"></span>
+    <details><summary>Menu ▾</summary><div class="menu-panel"><a href="/home">Projects</a><a href="/studio">Activity</a><hr><a href="/models">Models</a><a href="/usage">Usage</a><a href="/logout">Sign out</a></div></details>
+  </nav>
+</header>
+<main id="p-main" class="app-main">
+  <h1>Decisions · 14</h1>
+  <p class="grp">Ledger Core · 9</p>
+  <ul class="rows">
+    <li><span class="id">t195</span><span class="tag ask">Needs review</span><a class="title" href="?project=ledger-core&amp;task=t195">Rotate the signing key for audit exports</a><span class="meta">Protected path</span></li>
+    <li><span class="id">t200</span><span class="tag ask">Needs review</span><a class="title" href="?project=ledger-core&amp;task=t200">Paginate account statements</a><span class="meta">1 file outside its scope</span></li>
+    <li><span class="id">t191</span><span class="tag caution">Ready to accept · diff unreadable</span><a class="title" href="?project=ledger-core&amp;task=t191">Stream CSV export for large ledgers</a><span class="meta">No scope · overlaps 7</span></li>
+    <li><span class="id">t192</span><span class="tag go">Ready to accept</span><a class="title" href="?project=ledger-core&amp;task=t192">Add idempotency keys to the posting API</a><span class="meta">Checks passed, runner</span></li>
+  </ul>
+  <p><a href="?project=ledger-core">5 more in Ledger Core</a></p>
+  <p class="grp">Field Notes · 4 · Open Tool · 1</p>
+  <p><a href="?project=field-notes">Field Notes</a> · <a href="?project=open-tool">Open Tool</a></p>
+  <details><summary>Handled by the orchestrator · 5</summary></details>
+</main>
+</div>
+</figure>
+</div>
+
+<section class="notes" aria-labelledby="notes-h">
+  <h2 id="notes-h">Notes</h2>
+  <ol>
+    <li id="n1"><span class="num">1</span><div>One count, 14: distinct tasks needing the owner's call. The bar, the heading and the per-project groups (9 + 4 + 1) agree with the Projects cards and each Overview. <span class="cite">F7 → P6</span></div></li>
+    <li id="n2"><span class="num">2</span><div>Overlaps are one line per task naming at most three others and "n more"; a task without a scope says so once rather than once per pair. <span class="cite">F9 → P6</span></div></li>
+    <li id="n3"><span class="num">3</span><div>The orchestrator's list is folded to its count; it was most of the 5,881 px page. <span class="cite">F6 → P6</span></div></li>
+    <li id="n4"><span class="num">4</span><div>The selected decision uses the task page's header: one state word, why, one primary action, then evidence that says where it ran. <span class="cite">F3, F5 → P3</span></div></li>
+    <li id="n5"><span class="num">5</span><div>Each row's reason is one short clause instead of a 30-word sentence; the page's lead is 9 words. <span class="cite">F8, F19 → P11</span></div></li>
+  </ol>
+</section>
+</body>
+</html>

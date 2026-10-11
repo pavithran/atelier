@@ -474,8 +474,8 @@ test("the runners section lists live runners first, and formatStatus appends it 
 
 test("a queued task the core files hold says what it waits on and how to let it through; a held part takes no override", () => {
   const d = { to: "home", agent: "codex", model: "gpt-6" };
-  const taskHeld = { kind: "held", line: "Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned, or at once with atelier dispatch t2 --overlap-ok." };
-  const partHeld = { kind: "held", line: "Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned." };
+  const taskHeld = { kind: "held", line: "Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 submits or is released, or at once with atelier dispatch t2 --overlap-ok." };
+  const partHeld = { kind: "held", line: "Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 submits or is released." };
   const out = formatStatus([{
     name: "demo",
     items: [item("t1", "claimed", { owner: "codex/gpt-6" }), item("t2", "open", { dispatch: d }), item("t3", "open", { dispatch: d, kind: "part", plan: "t8" }), item("t4", "open", { dispatch: d })],
@@ -486,8 +486,8 @@ test("a queued task the core files hold says what it waits on and how to let it 
     { project: "demo", item: item("t4", "open", { dispatch: d }) },
     { project: "other", item: { ...item("t4", "open", { dispatch: d }), why: [taskHeld] } },
   ] }).split("\n");
-  assert.ok(out.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned, or at once with atelier dispatch t2 --overlap-ok."), out.join("\n"));
-  assert.ok(out.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned."));
+  assert.ok(out.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 submits or is released, or at once with atelier dispatch t2 --overlap-ok."), out.join("\n"));
+  assert.ok(out.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 submits or is released."));
   assert.equal(out.filter((l) => l.includes("Held:")).length, 2, "t4 is not held here, only in another project");
 });
 
@@ -496,7 +496,7 @@ test("a queued task the core files hold says what it waits on and how to let it 
 test("each reason a queued task is not taken prints with the command that releases it", () => {
   const d = { to: "home", agent: "codex", model: "gpt-6" };
   const why = (id) => [
-    { kind: "held", line: `Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned, or at once with atelier dispatch ${id} --overlap-ok.` },
+    { kind: "held", line: `Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 submits or is released, or at once with atelier dispatch ${id} --overlap-ok.` },
     { kind: "overlap", line: `Overlap refused: t1 (claimed by codex/gpt-6) holds a scope that overlaps this one, and the project refuses overlapping claims; a runner can take it once t1 merges or is abandoned, or the owner narrows a scope with atelier edit t2 --scope GLOB (or atelier edit t1 --scope GLOB), or allows overlaps with atelier init --refuse-overlap=false.` },
     { kind: "refused", line: `Claim refused: home:studio claimed it as codex/gpt-6 and was refused (runner_forbidden: its offer does not cover this dispatch); that runner passes it by until it changes, so once that is fixed, dispatch it again with atelier dispatch ${id} --to home --agent codex --model gpt-6.` },
     { kind: "skipped", line: `Skipped by home:studio after 2 failed runs under this dispatch (the last stalled); that runner passes it by until it is dispatched again or the runner restarts: fix the cause, then atelier dispatch ${id} --to home --agent codex --model gpt-6.` },
@@ -529,7 +529,7 @@ test("against an older server's queue, status falls back to the hold and the off
     { project: "demo", item: { ...item("t2", "open", { dispatch: d }), held } },
     { project: "demo", item: item("t3", "open", { dispatch: d }) },
   ], offers, now }).split("\n");
-  assert.ok(old.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned, or at once with atelier dispatch t2 --overlap-ok."), old.join("\n"));
+  assert.ok(old.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 submits or is released, or at once with atelier dispatch t2 --overlap-ok."), old.join("\n"));
   assert.equal(old.filter((l) => l.startsWith("      No live runner can take it:")).length, 2, old.join("\n"));
   // A newer server's empty `why` means nothing holds it: no fallback.
   const fresh = formatStatus(views, { queue: [
@@ -537,4 +537,21 @@ test("against an older server's queue, status falls back to the hold and the off
     { project: "demo", item: { ...item("t3", "open", { dispatch: d }), why: [] } },
   ], offers, now }).split("\n");
   assert.ok(!fresh.some((l) => l.includes("Held:") || l.includes("No live runner")), fresh.join("\n"));
+});
+
+// A hold lifts when every blocker stops holding: a claimed one when it submits
+// or is released, the landing one when that landing ends. Each is named.
+test("a held task names every blocker and when each stops holding, claimed or landing", () => {
+  const d = { to: "home", agent: "codex", model: "gpt-6" };
+  const claimed = (id) => ({ id, owner: "codex/gpt-6", state: "claimed", title: `Task ${id}`, core: "src/ledger.ts" });
+  const landing = (id) => ({ id, owner: "claude-code/opus-5.5", state: "accepted", title: `Task ${id}`, core: "src/ledger.ts" });
+  const line = (blockers) => formatStatus([{ name: "demo", items: [item("t2", "open", { dispatch: d })], inbox: [] }],
+    { queue: [{ project: "demo", item: { ...item("t2", "open", { dispatch: d }), held: { ...blockers[0], blockers } } }] })
+    .split("\n").find((l) => l.includes("Held:"));
+  const reach = "both scopes reach core file src/ledger.ts";
+  const override = ", or at once with atelier dispatch t2 --overlap-ok.";
+  assert.equal(line([claimed("t1")]), `      Held: waits on t1 (claimed by codex/gpt-6): ${reach}; offered once t1 submits or is released${override}`);
+  assert.equal(line([landing("t5")]), `      Held: waits on t5 (accepted by claude-code/opus-5.5): ${reach}; offered once the landing of t5 ends${override}`);
+  assert.equal(line([claimed("t1"), claimed("t3")]), `      Held: waits on t1 (claimed by codex/gpt-6): ${reach}; t3 (claimed by codex/gpt-6): ${reach}; offered once t1 submits or is released and t3 submits or is released${override}`);
+  assert.equal(line([claimed("t1"), claimed("t3"), landing("t5")]), `      Held: waits on t1 (claimed by codex/gpt-6): ${reach}; t3 (claimed by codex/gpt-6): ${reach}; t5 (accepted by claude-code/opus-5.5): ${reach}; offered once t1 submits or is released, t3 submits or is released and the landing of t5 ends${override}`);
 });
