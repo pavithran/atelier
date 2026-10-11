@@ -82,12 +82,12 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
     // agent may mint already exposes; status and unwrap read it.
     // decisions are the owner's standing decisions, which every agent of
     // the project is to know (src/decisions.ts); only the owner writes them.
-    if (method === "GET") return ["owners", "standing", "items", "baseline-head", "decisions"].includes(section);
+    if (method === "GET") return ["owners", "standing", "items", "baseline-head", "decisions", "board", "areas"].includes(section);
     return section === "baseline-token" && method === "POST" && body.scope !== "write";
   }
   if (section !== "items" || !id) return false;
   if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "diff", "job-brief"].includes(verb) || parts.length === 6 && ["sandbox", "logs", "diffs"].includes(verb);
-  return method === "POST" && parts.length === 5 && ["claim", "read-token", "base-token", "push", "evidence", "sandbox", "review", "review-claim", "review-release", "review-unparsable", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "block", "unblock"].includes(verb);
+  return method === "POST" && parts.length === 5 && ["claim", "read-token", "base-token", "push", "evidence", "sandbox", "review", "review-claim", "review-renew", "review-release", "review-unparsable", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "block", "unblock"].includes(verb);
 }
 
 // A separate allowlist: runner credentials never inherit an agent's review,
