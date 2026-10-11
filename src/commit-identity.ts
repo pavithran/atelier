@@ -55,6 +55,9 @@ export const sameEmail = (a: string, b: string) => a.toLowerCase() === b.toLower
 export function emailProblem(email: string | null | undefined): string | null {
   if (!email) return "is not set";
   // A control character (NUL, say) is not \s and cannot reach Git as an argument.
+  // Git strips "crud" (whitespace and .,:;<>"'\\) from the ends of an
+  // identity, so such an address would not be the one the commits carry.
+  if (/^[\s.,:;<>"'\\]|[\s.,:;<>"'\\]$/.test(email)) return "is not an email address Git keeps as written";
   if (email.length > EMAIL_MAX || /[\x00-\x1f\x7f]/.test(email) || !/^[^\s<>@]+@[^\s<>@]+$/.test(email)) return "is not an email address";
   // A bare host name (user@macbook) is a guess as surely as user@host.local.
   const domain = email.slice(email.lastIndexOf("@") + 1);
