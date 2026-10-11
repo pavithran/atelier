@@ -63,10 +63,12 @@ import { NonRetryableError } from "cloudflare:workflows";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
 import { refusalOf, refusalText } from "./checks";
 import { baseRepoOf } from "./plans/integrate";
-import { evidenceAt, parseRuleError } from "./rules";
+import { evidenceAt, parseRuleError, type Evidence } from "./rules";
+import { WORKSPACE_REASON_MAX, effectiveFailures, failureDetail, resolveFailures } from "./check-failure.ts";
+import { getLarge } from "./large.ts";
 import { landingLeasePollMs, type LandingLease } from "./landing-lease.ts";
 import { LANDING_LEASE_WAIT_LIMIT_MS, leaseTimeout } from "./landing/lease-wait.ts";
-import type { LandingWorkflowStage } from "./ledger.ts";
+import { LANDING_DETAIL_MAX, type LandingWorkflowStage } from "./ledger.ts";
 import { landingVerdict, allSkipped, type LandingReview } from "./landing-verdict.ts";
 import type { RunRequest } from "./sandbox/runner";
 
@@ -398,10 +400,10 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         payload = got.payload as WorkspaceReport;
       } catch { /* nothing in this chunk; the next chunk waits on */ }
       if (payload && payload.round === round) {
-        if (payload.failed === true) throw new NonRetryableError(String(payload.reason ?? "a workspace step of the landing failed").slice(0, 2000));
+        if (payload.failed === true) throw new NonRetryableError(String(payload.reason ?? "a workspace step of the landing failed").slice(0, WORKSPACE_REASON_MAX));
         if (payload.conflict === true) {
           const files = Array.isArray(payload.files) ? payload.files.map(String) : [];
-          return { conflict: true, files, reason: String(payload.reason ?? `the merge of main stopped on conflicts in ${files.join(", ")}`).slice(0, 2000) };
+          return { conflict: true, files, reason: String(payload.reason ?? `the merge of main stopped on conflicts in ${files.join(", ")}`).slice(0, WORKSPACE_REASON_MAX) };
         }
         const head = String(payload.head ?? "");
         if (!HASH.test(head)) throw new NonRetryableError(`the workspace report is malformed (its head is not a commit hash); run atelier land ${p.item} --workflow again`);
@@ -487,15 +489,16 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       });
       if (state?.status === "done") {
         const failed = state.results.filter((r) => r.passed === false);
-        await step.do("record the check step", RETRIES, async () => {
+        // The failure is said as every landing says it (failureText): from
+        // the evidence the run recorded, read as the gate reads it, after
+        // the line that names the checks, within the record's size.
+        const why = `the required checks failed at ${short(head)} in the Cloudflare container: ${failed.map((r) => r.claim).join("; ")}. The merge of main stays in the workspace; fix the failures, commit, and run atelier land ${p.item} --workflow again.`;
+        const { detail } = await step.do("record the check step", RETRIES, async () => {
           await this.note(L, p, "check", Date.now() - started.t0, failed.length ? { failed: true, reason: failed.map((r) => r.claim).join(", ").slice(0, 500) } : {});
-          return {};
+          return { detail: failed.length && state.recorded ? await this.failureText(L, p, head, why) : "" };
         });
         if (!state.recorded) throw new NonRetryableError(`the checks ran but the ledger did not record them; run atelier land ${p.item} --workflow again`);
-        if (failed.length) {
-          const why = failed.map((r) => `${r.claim} (${r.outputTail.split("\n").filter(Boolean).slice(-2).join(" | ").slice(0, 200)})`).join("; ");
-          throw new NonRetryableError(`the required checks failed at ${short(head)} in the Cloudflare container: ${why}. The merge of main stays in the workspace; fix the failures, commit, and run atelier land ${p.item} --workflow again`);
-        }
+        if (failed.length) throw new NonRetryableError(detail || why);
         return;
       }
       if (state?.status === "failed") throw new NonRetryableError(`the check run failed: ${state.error || "unknown error"}. Run atelier land ${p.item} --workflow again`);
@@ -529,8 +532,12 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       });
       const failed = seen.checks.filter((c) => c.observed && !c.passed);
       if (failed.length) {
-        await step.do("record the failed observed checks", RETRIES, async () => { await this.note(L, p, "check", Date.now() - t0, { failed: true, head, reason: failed.map((c) => c.claim).join(", ").slice(0, 500) }); return {}; });
-        throw new NonRetryableError(`the required checks failed at ${short(head)} in a clean clone on the machine holding the workspace: ${failed.map((c) => c.claim).join("; ")}. The merge of main stays in the workspace; fix the failures, commit, and run atelier land ${p.item} --workflow again`);
+        const why = `the required checks failed at ${short(head)} in a clean clone on the machine holding the workspace: ${failed.map((c) => c.claim).join("; ")}. The merge of main stays in the workspace; fix the failures, commit, and run atelier land ${p.item} --workflow again.`;
+        const { detail } = await step.do("record the failed observed checks", RETRIES, async () => {
+          await this.note(L, p, "check", Date.now() - t0, { failed: true, head, reason: failed.map((c) => c.claim).join(", ").slice(0, 500) });
+          return { detail: await this.failureText(L, p, head, why) };
+        });
+        throw new NonRetryableError(detail || why);
       }
       const pending = seen.checks.filter((c) => !c.observed);
       if (!pending.length) return;
@@ -641,6 +648,27 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
   private refusal(error: unknown): string {
     const parsed = parseRuleError(error);
     return parsed ? parsed.detail : String((error as Error)?.message ?? error);
+  }
+
+  // The failure summary every landing prints (src/check-failure.ts, t436):
+  // the failed checks as the gate reads them at the head, from the Ledger's
+  // evidence, each stored log read from R2 by its reference. It returns the
+  // whole error that ends the instance: `why`, the line naming the failed
+  // checks, then the summary. The Ledger keeps that error as the stage's
+  // detail, cut at LANDING_DETAIL_MAX characters, so failureDetail fits it
+  // to that size (cutting a `why` too long to leave the summary its
+  // check-log line), and the cut never drops a failed check or that line.
+  // A summary that cannot be read says so; the failure itself is already
+  // known.
+  private async failureText(L: LedgerStub, p: Landing, head: string, why: string): Promise<string> {
+    try {
+      const { policy } = await L.project();
+      const failures = effectiveFailures(policy, (await L.evidenceFor(p.item)) as Evidence[], head);
+      const resolved = await resolveFailures(failures, (ref) => getLarge(this.env.LARGE, ref.key));
+      return failureDetail(why, p.item, head, resolved, LANDING_DETAIL_MAX);
+    } catch (error) {
+      return `${why}\nThe failure summary could not be read: ${String((error as Error)?.message ?? error).slice(0, 300)}`;
+    }
   }
 
   // A land.* event, recorded as the CLI records it: a ledger that cannot

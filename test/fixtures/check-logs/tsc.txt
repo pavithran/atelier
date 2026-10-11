@@ -1,0 +1,7 @@
+
+> atelier@1.0.0 typecheck
+> tsc -p . && tsc -p test
+
+src/check-failure.ts(12,7): error TS2322: Type 'string' is not assignable to type 'number'.
+src/rules.ts(1191,3): error TS2304: Cannot find name 'countingRunsAt'.
+[sha256 of full output: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef]
