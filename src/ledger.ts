@@ -1,3 +1,4 @@
+import type { Area, BoardSnapshot, StageFacts } from "./board.ts";
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
 import { runnerDenied, sha256, type AgentToken, type BrowserSession } from "./tokens.ts";
@@ -5,6 +6,7 @@ import { OBSERVED_UNDER, type ModelEntry, type ModelNote, type ModelStatus } fro
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
+  reviewerAdmission, admissionActor, actorFamily, familyRefusal, modelKey, type ReviewerAdmission,
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
   assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, RuleError, sameActor, validActor,
   type OverrideConfirmation, type OwnerFactor,
@@ -15,9 +17,11 @@ import {
 import { cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, sameCriteria } from "./criteria.ts";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
+import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
 import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, makeDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
+import { allSkipped } from "./landing-verdict";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
 import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
@@ -183,6 +187,8 @@ export interface ProjectInit {
   sandboxOnly?: boolean;
   noOverride?: boolean;       // overrides of the independent review are refused (see ProjectPolicy.noOverride)
   approval?: string | null;
+  // The project's commit identity, field by field (see ProjectPolicy.commitIdentity).
+  commitIdentity?: CommitIdentityInit;
 }
 
 // A project's role prompts (`atelier guide --role`, docs in the README) live
@@ -224,6 +230,7 @@ const LAND_DATA: Record<string, "string" | "boolean" | "strings"> = {
   head: "string", mergeCommit: "string", fromMain: "strings", conflicts: "strings",
   resolvedBy: "string", reviewer: "string", verdict: "string", command: "string",
   reason: "string", changed: "boolean", failed: "boolean", skipped: "boolean", requested: "boolean",
+  runners: "strings",
 };
 export const LAND_JSON_MAX = 4000;
 
@@ -348,6 +355,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   const reviewBar = i.reviewBar === undefined ? p?.reviewBar : i.reviewBar ?? undefined;
   const reviewTier = i.reviewTier ?? p?.reviewTier ?? [];
   const coreFiles = i.coreFiles ?? p?.coreFiles ?? [];
+  const commitIdentity = settleCommitIdentity(i.commitIdentity ?? {}, p?.commitIdentity);
   return {
     revision: (current?.revision ?? 0) + 1,
     name: i.name,
@@ -374,6 +382,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       // Carried only when set, so a project that allows overrides records nothing new.
       ...((i.noOverride ?? p?.noOverride) ? { noOverride: true } : {}),
       ...(approval ? { approval } : {}),
+      ...(commitIdentity ? { commitIdentity } : {}),
     },
     createdAt: current?.createdAt ?? at,
   };
@@ -435,6 +444,7 @@ export class Ledger extends DurableObject<Env> {
     // and each routing, and a reply of up to 100 KB there would bloat them
     // all; the event says the rest.
     this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS areas (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, purpose TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS projects (name TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS names (name TEXT PRIMARY KEY, key TEXT NOT NULL);
@@ -477,6 +487,7 @@ export class Ledger extends DurableObject<Env> {
     if (!eventColumns.includes("proved")) this.sql.exec(`ALTER TABLE events ADD COLUMN proved INTEGER`);
     // Added after the first deploy; existing ledgers gain the column once.
     const columns = this.sql.exec(`PRAGMA table_info(items)`).toArray().map((c) => c.name);
+    if (!columns.includes("area")) this.sql.exec(`ALTER TABLE items ADD COLUMN area TEXT`);
     if (!columns.includes("dispatch")) this.sql.exec(`ALTER TABLE items ADD COLUMN dispatch TEXT`);
     if (!columns.includes("runner")) this.sql.exec(`ALTER TABLE items ADD COLUMN runner TEXT`);
     if (!columns.includes("review_override")) this.sql.exec(`ALTER TABLE items ADD COLUMN review_override TEXT`);
@@ -956,7 +967,58 @@ export class Ledger extends DurableObject<Env> {
   project(): ProjectRecord {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'project'`).toArray()[0];
     if (!row) throw new RuleError("no_project", "project not initialised; run `atelier init`", 404);
-    return JSON.parse(row.value as string);
+    const record = JSON.parse(row.value as string) as ProjectRecord;
+    const admissions = this.reviewerAdmissions();
+    record.policy = { ...record.policy, reviewerAdmissions: admissions.length ? admissions : undefined };
+    return record;
+  }
+
+  reviewerAdmissions(): ReviewerAdmission[] {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'reviewer-admissions'`).toArray()[0];
+    return row ? JSON.parse(row.value as string) : [];
+  }
+
+  admitReviewer(name: string, active: boolean, reason: string, actor: string, pool: ModelEntry[]): ReviewerAdmission {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner admits or withdraws reviewers", 403);
+    this.project();
+    if (typeof reason !== "string" || !reason.trim()) throw new RuleError("bad_reason", "say why this reviewer is admitted or withdrawn", 400);
+    assertLength(reason, REASON_MAX, "the admission reason");
+    const admissions = this.reviewerAdmissions();
+    const matches = (id: string, aliases: string[]) => [id, ...aliases].some((n) => modelKey(`model/${n}`) === modelKey(`model/${name}`));
+    const prior = admissions.find((a) => matches(a.id, a.aliases));
+    const entries = pool.filter((m) => matches(m.id, m.aliases));
+    if (entries.length > 1) throw new RuleError("ambiguous_model", `${name} names multiple registered models`, 409);
+    const entry = entries[0];
+    if (active && !entry) throw new RuleError("no_model", `${name} is not registered; use atelier models add before atelier models admit`, 404);
+    if (!active && !prior) throw new RuleError("no_admission", `${name} has no reviewer admission in this project`, 404);
+    const id = active ? entry!.id : prior!.id;
+    const aliases = active ? entry!.aliases : prior!.aliases;
+    if (active && actorFamily(`model/${id}`) === "other") throw new RuleError("unknown_family", `${id}'s family is not recognised from its name`, 403);
+    // An alias must not disguise a different known family or registered model.
+    if (active && aliases.some((alias) => {
+      const family = actorFamily(`model/${alias}`);
+      return family !== "other" && family !== actorFamily(`model/${id}`) || pool.some((m) => m.id !== id && [m.id, ...m.aliases].some((n) => modelKey(`model/${n}`) === modelKey(`model/${alias}`)));
+    })) throw new RuleError("ambiguous_model", `${id} has an alias of another model family`, 409);
+    if (active && admissions.some((a) => modelKey(`model/${a.id}`) !== modelKey(`model/${id}`)
+      && [a.id, ...a.aliases].some((n) => [id, ...aliases].some((alias) => modelKey(`model/${n}`) === modelKey(`model/${alias}`))))) {
+      throw new RuleError("ambiguous_model", `${id} shares a name with another reviewer admission in this project`, 409);
+    }
+    const record: ReviewerAdmission = { id, aliases: [...aliases], by: actor, reason: reason.trim(), at: new Date().toISOString(), active };
+    const next = admissions.filter((a) => a !== prior && a.id !== id);
+    next.push(record);
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('reviewer-admissions', ?)`, JSON.stringify(next));
+      this.log(null, actor, active ? "reviewer.admitted" : "reviewer.withdrawn", { ...record }, record.at);
+      if (!active) {
+        for (const row of this.sql.exec(`SELECT id, item, dispatch FROM review_requests WHERE state IN ('open', 'claimed')`).toArray()) {
+          const d = JSON.parse(row.dispatch as string) as Dispatch;
+          if (!d.model || ![record.id, ...record.aliases].some((n) => modelKey(`model/${n}`) === modelKey(`model/${d.model}`))) continue;
+          this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, row.id);
+          this.log(row.item as string, actor, "review.withdrawn", { reviewer: `${d.agent}/${d.model}`, reason: `reviewer admission withdrawn: ${record.reason}`, request: row.id }, record.at);
+        }
+      }
+    });
+    return record;
   }
 
   // The record's name follows a rename decided at the index: links and
@@ -968,6 +1030,76 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('project', ?)`, JSON.stringify(record));
     this.log(null, actor, "project.renamed", { from: current.name, to }, new Date().toISOString());
     return record;
+  }
+
+  areas(): Area[] {
+    return this.sql.exec(`SELECT id, name, purpose FROM areas ORDER BY name, id`).toArray().map((r) => ({ id: r.id as string, name: r.name as string, purpose: r.purpose as string }));
+  }
+
+  private assertArea(id: string | null | undefined): void {
+    if (id != null && !this.areas().some((a) => a.id === id)) throw new RuleError("bad_area", `unknown area ID: ${id}`, 400);
+  }
+
+  saveArea(actor: string, name: unknown, purpose: unknown, id?: string): Area {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner changes areas", 403);
+    const clean = (v: unknown, max: number) => {
+      if (typeof v !== "string" || !v.trim() || v.trim().length > max || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(v)) throw new RuleError("bad_area", `area name and purpose must be single lines of at most ${max} characters`, 400);
+      return v.trim();
+    };
+    const label = clean(name, 80), why = clean(purpose, 300);
+    if (label.toLowerCase() === "unsorted" || this.areas().some((a) => a.id !== id && a.name.toLowerCase() === label.toLowerCase())) throw new RuleError("duplicate_area", "area names must be unique; Unsorted is reserved", 409);
+    if (id !== undefined) this.assertArea(id);
+    return this.ctx.storage.transactionSync(() => {
+      if (id === undefined) {
+        const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'area-sequence'`).toArray()[0];
+        const next = Number(row?.value ?? 0) + 1;
+        this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('area-sequence', ?)`, String(next));
+        id = `a${next}`;
+      }
+      this.sql.exec(`INSERT INTO areas (id, name, purpose) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, purpose = excluded.purpose`, id, label, why);
+      this.log(null, actor, "area.saved", { id, name: label, purpose: why }, new Date().toISOString());
+      return { id, name: label, purpose: why };
+    });
+  }
+
+  removeArea(id: string, actor: string): void {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner removes areas", 403);
+    this.assertArea(id);
+    this.ctx.storage.transactionSync(() => {
+      const at = new Date().toISOString();
+      this.sql.exec(`UPDATE items SET area = NULL, updated_at = ? WHERE area = ?`, at, id);
+      this.sql.exec(`DELETE FROM areas WHERE id = ?`, id);
+      this.log(null, actor, "area.removed", { id }, at);
+    });
+  }
+
+  board(): BoardSnapshot {
+    const items = this.items(), policy = this.project().policy;
+    const held = this.readProjectLanding();
+    const lease = held && !landingLeaseLapsed(held, Date.now()) ? held : null;
+    const facts: Record<string, StageFacts> = {};
+    for (const item of items) {
+      const record = item.kind === "plan" ? this.planRecord(item.id) : null;
+      const fact: StageFacts = {
+        ready: false, landing: !!this.landing(item.id) || lease?.item === item.id,
+        planBlocked: !!record?.blocked,
+      };
+      facts[item.id] = fact;
+      // Only a submission or acceptance can be ready. Historical rows need
+      // no evidence/review scans just to show their terminal state.
+      if (item.state !== "submitted" && item.state !== "accepted") continue;
+      const current: Item = item.state === "accepted" ? { ...item, state: "submitted" } : item;
+      const parts = record ? this.planParts(item.id) : [];
+      const evidence = this.evidenceFor(item.id), reviews = this.reviewsFor(item.id);
+      const g = record ? planGate({
+        plan: current, parts: this.integrationViews(parts), integrationHead: record.integrationHead ?? null,
+        policy, evidence, reviews: [...reviews, ...parts.flatMap((p) => this.reviewsFor(p.id))], owner: this.owner,
+      }) : gate(current, policy, evidence, reviews, this.owner);
+      const siblings = item.kind === "part" && item.plan ? this.integrationViews(this.planParts(item.plan)) : [];
+      const part = siblings.find((p) => p.id === item.id);
+      fact.ready = g.ready && (!part || integrationBlockers(part, siblings, reviews, policy, this.owner).length === 0);
+    }
+    return { areas: this.areas(), items, facts };
   }
 
   // `title` is what the creator sent as the title, and `fields.brief` the
@@ -993,6 +1125,7 @@ export class Ledger extends DurableObject<Env> {
         return { ...item, revert };
       });
     }
+    this.assertArea(fields.area);
     const text = itemText(title, fields.brief);
     const n = this.sql.exec(`SELECT COUNT(*) AS n FROM items`).one().n as number;
     const id = `t${n + 1}`;
@@ -1022,7 +1155,9 @@ export class Ledger extends DurableObject<Env> {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner edits a task's fields", 403);
     if (fields.revertOf !== undefined) throw new RuleError("bad_field", "revertOf is set only when creating a task", 400);
     const item = this.item(id);
-    if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; its fields stay as they were`);
+    const areaOnly = fields.area !== undefined && Object.keys(fields).every((key) => key === "area") && scope === undefined;
+    if ((item.state === "merged" || item.state === "abandoned") && !areaOnly) throw new RuleError("closed", `${id} is ${item.state}; its fields stay as they were`);
+    this.assertArea(fields.area);
     const set = fieldColumns(fields);
     if (fields.title !== undefined) {
       const title = titleLine(fields.title);
@@ -1414,7 +1549,7 @@ export class Ledger extends DurableObject<Env> {
   // Both halves of the queue in one call, as a runner's poll reads them:
   // the open tasks waiting (waiting) and the open review requests
   // (reviewWaiting).
-  queued(): { waiting: (Item & { held?: CoreHold })[]; reviews: Item[] } {
+  queued(): { waiting: (Item & { held?: CoreHold })[]; reviews: (Item & { request: number })[] } {
     return { waiting: this.waiting(), reviews: this.reviewWaiting() };
   }
 
@@ -1671,8 +1806,17 @@ export class Ledger extends DurableObject<Env> {
     // Under a role policy any agent may record a review, and the gate counts
     // only an assessor's; the executor role is for taking work, not reviewing.
     const policy = this.project().policy;
-    if (!policy.agents) assertEligible(r.by, policy, this.owner);
+    const recordedActor = r.by;
+    const admission = reviewerAdmission(r.by, policy);
+    if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn; use atelier models admit`, 403);
+    if (!policy.agents && !admission?.active) assertEligible(r.by, policy, this.owner);
+    // Never trust a client-supplied admission snapshot.
+    r = { ...r, by: admission?.active ? admissionActor(r.by, admission) : r.by, reviewerAdmission: admission?.active ? admission : undefined };
     const item = this.item(r.itemId);
+    if (admission?.active) {
+      const refusal = familyRefusal(admissionActor(r.by, admission), contributorsOf(item).map((a) => admissionActor(a, admission)));
+      if (refusal) throw new RuleError("not_independent", `${r.by}: ${refusal}`, 403);
+    }
     assertReviewAllowed(item, proved);
     if (item.state !== "accepted") assertLive(item);
     else if (this.landing(item.id)) throw new RuleError("landing", "cancel the interrupted landing before reviewing again");
@@ -1714,11 +1858,11 @@ export class Ledger extends DurableObject<Env> {
     // A review answering a gate's request asked of a tier model gives the
     // tier review too (gateServesTier): the gate's review, top tier.
     const topTier = !tierClaim && claims.some((c) => c.tier !== 1 && c.topTier === 1);
-    r = { ...r, recordedBy: proved ? r.by : this.owner, proved, claimed, ...(tierClaim ? { tier: true } : {}), ...(topTier ? { topTier: true } : {}) };
+    r = { ...r, recordedBy: proved ? recordedActor : this.owner, proved, claimed, ...(tierClaim ? { tier: true } : {}), ...(topTier ? { topTier: true } : {}) };
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
     // A new review of accepted work requires another acceptance.
     if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null }, at);
-    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, criteria: r.criteria, ...(r.request !== undefined ? { request: r.request } : {}), recordedBy: r.recordedBy, ...(claimed ? { claimed } : {}), ...(r.tier ? { tier: true } : {}), ...(r.topTier ? { topTier: true } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
+    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, criteria: r.criteria, ...(r.reviewerAdmission ? { reviewerAdmission: r.reviewerAdmission } : {}), ...(r.request !== undefined ? { request: r.request } : {}), recordedBy: r.recordedBy, ...(claimed ? { claimed } : {}), ...(r.tier ? { tier: true } : {}), ...(r.topTier ? { topTier: true } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
     // A tier review answers its own request; any other answers the gate's
     // requests at the head and leaves a tier request beside them standing.
     if (tierClaim) this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE id = ?`, tierClaim.id);
@@ -3534,10 +3678,13 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // Open review requests, as the queue offers them: the part item with its
-  // dispatch overlaid by the review dispatch, whose job names "review".
-  // Each part is read once, however many requests name it.
-  reviewWaiting(): Item[] {
-    const requests = this.sql.exec(`SELECT item, head, dispatch FROM review_requests WHERE state = 'open' ORDER BY id`).toArray();
+  // dispatch overlaid by the review dispatch, whose job names "review", and
+  // the request's own number in `request`, so a runner can tell one review
+  // request from the next at the same head and end its skip of the earlier
+  // one when a new request is made (t353). Each part is read once, however
+  // many requests name it.
+  reviewWaiting(): (Item & { request: number })[] {
+    const requests = this.sql.exec(`SELECT id, item, head, dispatch FROM review_requests WHERE state = 'open' ORDER BY id`).toArray();
     if (!requests.length) return [];
     const ids = [...new Set(requests.map((r) => r.item as string))];
     const rows = this.sql.exec(`SELECT * FROM items WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(ids)).toArray();
@@ -3545,8 +3692,60 @@ export class Ledger extends DurableObject<Env> {
     return requests.map((r) => {
       const item = items.get(r.item as string);
       if (!item) throw new RuleError("no_item", `no item ${r.item as string}`, 404);
-      return { ...item, head: r.head as string, dispatch: JSON.parse(r.dispatch as string) as Dispatch };
+      return { ...item, head: r.head as string, request: r.id as number, dispatch: JSON.parse(r.dispatch as string) as Dispatch };
     });
+  }
+
+  // A runner's word that it will not serve review request `request` of this
+  // item, recorded as a `review.skipped` event under the runner's name and
+  // the request's number (t353). The landing waiting on the review reads
+  // these to say, by runner, when every runner that offers the reviewer has
+  // skipped, instead of waiting out the hour. The request must be the item's
+  // and at `head`, so a report never lands against nothing; a request no
+  // longer open is still recorded, since a report may arrive late.
+  recordReviewSkip(itemId: string, request: number, head: string, runner: string, actor: string, note: string, proved = false): void {
+    this.item(itemId);
+    const row = this.sql.exec(`SELECT head FROM review_requests WHERE id = ? AND item = ?`, request, itemId).toArray()[0];
+    if (!row) throw new RuleError("no_request", `no review request ${request} of ${itemId}`, 404);
+    if (row.head !== head) throw new RuleError("bad_head", `review request ${request} of ${itemId} is at ${(row.head as string).slice(0, 8)}, not ${head.slice(0, 8)}`, 409);
+    const at = new Date().toISOString();
+    this.log(itemId, actor, "review.skipped", { head, request, runner, ...(note ? { note: note.slice(0, REASON_MAX) } : {}) }, at, proved);
+  }
+
+  // The runners that have skipped review request `request`, as the landing's
+  // wait reads them. Matched by the request's number alone: a skip of an
+  // earlier request at the same head (an earlier landing's, or one whose
+  // claim lapsed) is that request's and counts for nothing against this one,
+  // however late it was reported.
+  reviewSkips(itemId: string, request: number): { runner: string; at: string; note?: string }[] {
+    const rows = this.sql.exec(`SELECT at, data FROM events WHERE item_id = ? AND kind = 'review.skipped' ORDER BY seq`, itemId).toArray();
+    return rows.flatMap((r) => {
+      const data = JSON.parse(r.data as string) as { request?: unknown; runner?: unknown; note?: unknown };
+      if (data.request !== request) return [];
+      return [{ runner: String(data.runner ?? ""), at: r.at as string, ...(typeof data.note === "string" && data.note ? { note: data.note } : {}) }];
+    });
+  }
+
+  // Withdraws the open gate request at `head` when every live runner that
+  // offers its reviewer for the review job has skipped it (t353), recording
+  // a `review.withdrawn` event that names the request and the runners, and
+  // says so for the new request's reason; null when no open request stands
+  // there, or a runner is left that may still serve it. A claimed request is
+  // being served and is never judged here; without live offers nothing is
+  // known to have skipped, as the landing's own wait reads it (allSkipped).
+  private renewSkippedRequest(id: string, head: string, offers: readonly SeenOffer[], actor: string, at: string, proved: boolean): string | null {
+    const open = this.sql.exec(`SELECT id, dispatch FROM review_requests WHERE item = ? AND head = ? AND state = 'open' AND tier IS NULL ORDER BY id DESC LIMIT 1`, id, head).toArray()[0];
+    if (!open) return null;
+    const d = JSON.parse(open.dispatch as string) as Dispatch;
+    const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
+    if (!asked) return null;
+    const request = open.id as number;
+    const runners = allSkipped(asked, offers, this.reviewSkips(id, request));
+    if (!runners) return null;
+    const names = runners.join(", ");
+    this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, request);
+    this.log(id, actor, "review.withdrawn", { head, reviewer: asked, request, runners, reason: `every runner that offers ${asked} skipped review request ${request} (${names}); the owner asked again` }, at, proved);
+    return `The earlier request at this head (${request}) was withdrawn: every runner that offers ${asked} had skipped it (${names}), so the review is asked anew for them to serve.`;
   }
 
   // The live review request for a part, as planView shows it: the reviewer
@@ -3604,6 +3803,13 @@ export class Ledger extends DurableObject<Env> {
 
   private async bindReview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved: boolean): Promise<ReviewClaim> {
     const item = this.item(itemId);
+    const admission = reviewerAdmission(actor, this.project().policy);
+    if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn`, 403);
+    if (admission?.active) {
+      actor = admissionActor(actor, admission);
+      const refusal = familyRefusal(admissionActor(actor, admission), contributorsOf(item).map((a) => admissionActor(a, admission)));
+      if (refusal) throw new RuleError("not_independent", `${actor}: ${refusal}`, 403);
+    }
     // A request at a head the item has left is closed before anything else,
     // whoever claims, and carried to the current head where the gate needs
     // it, so a stale request is never offered again and the claim below
@@ -3717,19 +3923,42 @@ export class Ledger extends DurableObject<Env> {
   // where the gate needs none; only a gate that cannot proceed (checks not
   // passing, a rejection at this head whose blocking findings the owner has
   // not refuted, no push) refuses, with its reason.
-  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean } {
+  // The answer names the request's number (`request`, t353), the one the
+  // queue gives runners in each review task, so the landing waiting on the
+  // verdict and the runner skipping the review name the same request. With
+  // the live runner offers (`offers`), an open request at this head that
+  // every runner offering its reviewer has skipped is withdrawn and asked
+  // anew (renewSkippedRequest), so the runners serve the new request.
+  requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }, offers?: readonly SeenOffer[]): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean; request?: number } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner asks for a review", 403);
     const item = this.item(id);
-    // A named reviewer is judged even when a request already stands, so a
-    // retry with a different name never silently keeps the wrong reviewer.
+    const policy = this.project().policy;
+    // Validate even when another request already stands.
     if (wanted && reviewer === null) throw new RuleError("bad_request", "a wanted review names its reviewer", 400);
     if (reviewer !== null) {
       if (!validActor(reviewer)) throw new RuleError("bad_actor", `"${reviewer}" is not harness/model`, 400);
-      if (contributorsOf(item).some((c) => sameActor(c, reviewer))) {
+      if (contributorsOf(item).some((c) => sameActor(c, reviewer!))) {
         throw new RuleError("self_review", `${reviewer} contributed to ${id} and cannot review it`, 403);
       }
+      const admission = reviewerAdmission(reviewer, policy);
+      const entries = pool.filter((m) => [m.id, ...m.aliases].some((n) => modelKey(`model/${n}`) === modelKey(reviewer!)));
+      if (entries.length > 1) throw new RuleError("ambiguous_model", `${reviewer} names multiple registered models`, 409);
+      if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn; use atelier models admit`, 403);
+      if ((!admission && !entries.length) || !mayAssess(reviewer, policy, this.owner)) {
+        throw new RuleError("ineligible", `${reviewer} is not a registered, eligible reviewer; the owner can use atelier models admit ID --project ${this.project().name} --reason TEXT (register it first with atelier models add)`, 403);
+      }
+      if (admission?.active) {
+        const entry = pool.find((m) => m.id === admission.id);
+        if (!entry) throw new RuleError("no_model", `${admission.id} is no longer registered; use atelier models add`, 409);
+        reviewer = `${entry.harness}/${entry.id}`;
+        const refusal = familyRefusal(reviewer, contributorsOf(item).map((a) => admissionActor(a, admission)));
+        if (refusal) throw new RuleError("not_independent", `${reviewer}: ${refusal}`, 403);
+        const dispatch = { ...makeDispatch({ to: entry.where, agent: entry.harness, model: entry.id }, ORCHESTRATOR, new Date().toISOString()), job: "review" as const };
+        if (!liveOffers(offers ?? []).some((offer) => assign(dispatch, offer))) {
+          throw new RuleError("no_runner", `no live ${entry.where} runner offers the review job for ${reviewer}; start a runner with its registered harness and endpoint`, 409);
+        }
+      }
     }
-    const policy = this.project().policy;
     const at = new Date().toISOString();
     // A request carried to this head when the head moved (reaskReview) asks
     // the reviewer of the earlier request. While no runner has claimed it,
@@ -3745,6 +3974,14 @@ export class Ledger extends DurableObject<Env> {
         this.log(id, actor, "review.withdrawn", { head: item.head, reviewer: asked, reason: `the project owner named ${reviewer} to review it` }, at, proved);
       }
     }
+    // An open request at this head that every runner offering its reviewer
+    // has skipped (t353) will never be claimed: each runner keeps its skip
+    // until the request changes, and the landing that waited on it said so
+    // by runner name. The owner asking again is the attention the skip asked
+    // for, so the request is withdrawn here and asked anew below, under a
+    // fresh number the runners serve again. Judged only when the caller has
+    // the live offers; a claimed request is being served and stays.
+    const renewed = item.head && offers ? this.renewSkippedRequest(id, item.head, offers, actor, at, proved) : null;
     const need = reviewNeeded({
       item, part: item.kind === "part", policy,
       evidence: this.evidenceFor(id), reviews: this.reviewsFor(id),
@@ -3752,7 +3989,7 @@ export class Ledger extends DurableObject<Env> {
     });
     // The newest live request: an older one at this head is one whose claim
     // lapsed, since a new request is made only when every earlier one has.
-    const live = this.sql.exec(`SELECT dispatch FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL ORDER BY id DESC LIMIT 1`, id, item.head).toArray()[0];
+    const live = this.sql.exec(`SELECT id, dispatch FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL ORDER BY id DESC LIMIT 1`, id, item.head).toArray()[0];
     if (!need.needed) {
       if (live) {
         const dispatch = JSON.parse(live.dispatch as string) as Dispatch;
@@ -3770,7 +4007,7 @@ export class Ledger extends DurableObject<Env> {
           throw new RuleError("review_requested", `a review of ${id} at ${item.head!.slice(0, 8)} is already requested from ${standing}; wait for its verdict, or let its claim lapse before naming ${reviewer}`, 409);
         }
         const recordedReason = records ? this.events(id, Number.MAX_SAFE_INTEGER).find((e) => e.kind === "review.requested" && e.data.head === item.head && e.data.reviewer === standing)?.data.reason : null;
-        return { needed: true, requested: false, reason: [need.reason, typeof recordedReason === "string" ? recordedReason : ""].filter(Boolean).join(" "), at: this.requestedAt(id, item.head!) ?? at, head: item.head!, reviewer: dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : undefined };
+        return { needed: true, requested: false, reason: [need.reason, typeof recordedReason === "string" ? recordedReason : ""].filter(Boolean).join(" "), at: this.requestedAt(id, item.head!) ?? at, head: item.head!, reviewer: dispatch.agent && dispatch.model ? `${dispatch.agent}/${dispatch.model}` : undefined, request: live.id as number };
       }
       if (wanted) throw new RuleError("review_blocked", `${id} cannot be reviewed now: ${need.reason}`, 409);
       return { needed: false, reason: need.reason };
@@ -3804,13 +4041,16 @@ export class Ledger extends DurableObject<Env> {
       chosen = pick.reviewer.actor;
     }
     const slash = chosen.indexOf("/");
-    const where = records ? pool.find((m) => sameActor(`${m.harness}/${m.id}`, chosen))?.where ?? "home" : "home";
+    const where = records || reviewerAdmission(chosen, policy)?.active ? pool.find((m) => sameActor(`${m.harness}/${m.id}`, chosen))?.where ?? "home" : "home";
     const dispatch = { ...makeDispatch({ to: where, agent: chosen.slice(0, slash), model: chosen.slice(slash + 1) }, ORCHESTRATOR, at), job: "review" as const };
+    if (reviewerAdmission(chosen, policy)?.active && !liveOffers(offers ?? []).some((offer) => assign(dispatch, offer))) {
+      throw new RuleError("no_runner", `no live ${where} runner offers the review job for ${chosen}; start a runner with its registered harness and endpoint`, 409);
+    }
     const topTier = this.gateIsTier(item, need, chosen);
-    this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?)`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item));
+    const made = this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?) RETURNING id`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item)).one();
     this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: "land", ...(choiceReason ? { reason: choiceReason } : {}), ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
     this.askTierReview(item, need, chosen, actor, at, proved);
-    return { needed: true, requested: true, reason: [need.reason, choiceReason].filter(Boolean).join(" "), at, head: need.head, reviewer: chosen };
+    return { needed: true, requested: true, reason: [need.reason, choiceReason, renewed ?? ""].filter(Boolean).join(" "), at, head: need.head, reviewer: chosen, request: made.id as number };
   }
 
   // When the newest review.requested event for a head was recorded, so a
@@ -3953,6 +4193,8 @@ export class Ledger extends DurableObject<Env> {
   // A reviewer whose harness wrote no valid verdict lets the request go, so
   // another reviewer may take it. The request returns to the queue, open.
   releaseReview(itemId: string, actor: string, note: string, proved = false): void {
+    const admission = reviewerAdmission(actor, this.project().policy);
+    if (admission) actor = admissionActor(actor, admission);
     this.item(itemId);
     const at = new Date().toISOString();
     const row = this.sql.exec(`SELECT id FROM review_requests WHERE item = ? AND state = 'claimed' AND claimedBy = ? ORDER BY id LIMIT 1`, itemId, actor).toArray()[0];
@@ -3970,6 +4212,8 @@ export class Ledger extends DurableObject<Env> {
   // or was withdrawn while the harness ran, releases nothing, and the reply is
   // kept anyway. Returns whether a request was released.
   unparsableReview(itemId: string, actor: string, head: string, note: string, reply: string, proved = false): { released: boolean } {
+    const admission = reviewerAdmission(actor, this.project().policy);
+    if (admission) actor = admissionActor(actor, admission);
     if (!validActor(actor)) throw new RuleError("bad_actor", `"${actor}" is not harness/model`, 400);
     assertLength(note, NOTE_MAX, "the review note");
     if (reply.length > VERDICT_LIMITS.reply) {
@@ -4463,6 +4707,7 @@ function briefFingerprint(text: string): string {
 function toItem(r: Row): Item {
   return {
     id: r.id as string,
+    area: (r.area as string | null) ?? null,
     title: r.title as string,
     scope: JSON.parse(r.scope as string),
     state: r.state as ItemState,
@@ -4508,6 +4753,7 @@ function toItem(r: Row): Item {
 // empty list or null gate becomes NULL, and a field left out sets nothing.
 function fieldColumns(fields: ItemFields): Record<string, string | null> {
   const set: Record<string, string | null> = {};
+  if (fields.area !== undefined) set.area = fields.area;
   if (fields.nonGoals !== undefined) set.non_goals = fields.nonGoals.length ? JSON.stringify(fields.nonGoals) : null;
   if (fields.stopWhen !== undefined) set.stop_when = fields.stopWhen.length ? JSON.stringify(fields.stopWhen) : null;
   if (fields.nextGate !== undefined) set.next_gate = fields.nextGate;
