@@ -18,6 +18,9 @@ export async function publishPinned({ git, run, step, cwd }) {
     if (rows.length !== 1 || rows[0].split(/\s+/)[1] !== step.ref || !hash(rows[0].split(/\s+/)[0])) throw new Error("unknown destination history");
     return rows[0].split(/\s+/)[0];
   };
+  // Successful content scans are reusable only within this policy/execution.
+  // Paths still need checking on every occurrence, including renamed blobs.
+  const scannedBlobs = new Set();
   for (let tries = 0; tries < 3; tries++) {
     const remote = await tip();
     if (remote) {
@@ -44,7 +47,10 @@ export async function publishPinned({ git, run, step, cwd }) {
         const safePath = JSON.stringify(step.privacy.patterns.reduce((text, pattern) => text.split(pattern).join("[redacted]"), path)).slice(0, 300);
         if (forbidden(path) || matchesFolded(path, step.privacy.forbiddenPaths)) throw Object.assign(new Error(`privacy path rejected at commit ${commit} path ${safePath}`), { privacy: true });
         if (type !== "blob" || mode === "160000") throw Object.assign(new Error(`unknown tree content at commit ${commit} path ${safePath}`), { privacy: true });
-        if (forbidden(await g(["cat-file", "blob", object]))) throw Object.assign(new Error(`privacy content rejected at commit ${commit} path ${safePath}`), { privacy: true });
+        if (!scannedBlobs.has(object)) {
+          if (forbidden(await g(["cat-file", "blob", object]))) throw Object.assign(new Error(`privacy content rejected at commit ${commit} path ${safePath}`), { privacy: true });
+          scannedBlobs.add(object);
+        }
       }
     }
     if (await tip() !== remote) continue; // Recompute outgoing history and rescan.
@@ -109,7 +115,7 @@ export async function executePostMerge({ request, name, id, env = process.env, p
     // is lost. A command report never resolves the reservation on its own.
     await request("POST", path, { run: run.id, action: "command", attempt: attempt.id, passed, publication });
     try {
-      ({ run } = await request("POST", path, { run: run.id, action: "finish", attempt: attempt.id, passed, commandOutcome, output: redactedOutput(output) }));
+      ({ run } = await request("POST", path, { run: run.id, action: "finish", attempt: attempt.id, passed, commandOutcome, output: redactedOutput(output, [...Object.values(env).filter(value => typeof value === "string" && value.length >= 8), ...(step.privacy?.patterns ?? [])]) }));
     } catch (error) {
       // A successful deploy command and a wrong /version are different facts.
       // Re-submit failure only for a definite verification refusal; a lost

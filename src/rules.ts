@@ -13,6 +13,7 @@ import { criteriaOf } from "./criteria.ts";
 export type ItemState = "open" | "claimed" | "submitted" | "accepted" | "integrated" | "merged" | "abandoned" | "blocked";
 
 export interface Item {
+  area?: string | null;
   id: string;
   title: string;            // the short title every list shows, at most TITLE_MAX characters
   // The long text of the task, shown only on its own page and in briefs to
@@ -129,6 +130,7 @@ export interface SecretClearance {
 // item's value; one absent keeps it. An empty list, a null gate or a null
 // brief clears. `title` is read by edit only: new takes its title apart.
 export interface ItemFields {
+  area?: string | null;
   // Creation only: the ledger resolves this task's recorded merge itself.
   revertOf?: string;
   nonGoals?: string[];
@@ -1047,6 +1049,10 @@ export function itemFields(input: Record<string, unknown>): ItemFields {
     return entries;
   };
   const out: ItemFields = {};
+  if (input.area !== undefined) {
+    if (input.area !== null && (typeof input.area !== "string" || !/^a[1-9]\d*$/.test(input.area))) throw new RuleError("bad_area", "area must be an area ID or null to clear", 400);
+    out.area = input.area as string | null;
+  }
   if (input.revertOf !== undefined) {
     if (typeof input.revertOf !== "string" || !/^t[1-9]\d*$/.test(input.revertOf)) throw new RuleError("bad_field", "revertOf must name a task, such as t7", 400);
     out.revertOf = input.revertOf;

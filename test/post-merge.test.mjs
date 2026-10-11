@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { parsePostMerge, reservePostMerge, preparePostMerge, startAttempt, finishAttempt, recoverPostMerge, expireAttempt } from "../src/post-merge.ts";
+import { parsePostMerge, reservePostMerge, preparePostMerge, startAttempt, finishAttempt, recoverPostMerge, expireAttempt, redactedOutput } from "../src/post-merge.ts";
 import { changeClass } from "../src/rules.ts";
 import { postMergeArgs } from "../cli/post-merge-policy.mjs";
 import { runLand } from "../cli/land.mjs";
@@ -85,7 +85,7 @@ test("reserved waivers require a recorded merge, preserve unknown paths and surv
   assert.equal(r.state, "pending");
   startAttempt(r, "second", at);
   finishAttempt(r, "second", true, "secret".repeat(10000), at);
-  assert.ok(r.steps[1].attempts[0].output.length < 100);
+  assert.ok(r.steps[1].attempts[0].output.length <= 8192);
   assert.equal(r.state, "complete");
 });
 
@@ -212,4 +212,43 @@ test("privacy scans the full raw message even beyond a NUL byte", async t => {
   r.g(["update-ref", "refs/heads/main", head]);
   await assert.rejects(publishPinned({ git: r.git, run: { after: head }, step: r.s, cwd: r.dir }), /privacy message/);
   assert.equal(r.pushes(), 0);
+});
+
+
+test("durable output preserves diagnostics, redacts credentials and bounds long output", () => {
+  const input = 'Build failed at src/index.ts:42\nTOKEN=very-private password="two words"\nAuthorization: Bearer abc123\nhttps://user:pass@example.test/log?api_key=hidden\nopaque-owner-value\n-----BEGIN PRIVATE KEY-----\nkey bytes\n-----END PRIVATE KEY-----';
+  const output = redactedOutput(input, ["opaque-owner-value"]);
+  assert.match(output, /Build failed at src\/index.ts:42/);
+  for (const secret of ["very-private", "two words", "abc123", "user:pass", "hidden", "opaque-owner-value", "key bytes"]) assert.ok(!output.includes(secret), secret);
+  assert.equal(redactedOutput(output), output);
+  const bounded = redactedOutput("x".repeat(8180) + " TOKEN=" + "s".repeat(20000));
+  assert.ok(bounded.length <= 8192);
+  assert.ok(!bounded.includes("ssss"));
+  assert.match(bounded, /output truncated/);
+  const r = run([step("check")]); preparePostMerge(r, []); startAttempt(r, "out", at);
+  finishAttempt(r, "out", false, input, at);
+  assert.match(r.steps[0].attempts[0].output, /Build failed/);
+  assert.ok(!r.steps[0].attempts[0].output.includes("very-private"));
+});
+
+test("first publication scans each distinct blob once across long history and remote rescans", async t => {
+  const r = repo(t);
+  for (let i = 0; i < 30; i++) writeFileSync(join(r.dir, `stable-${i}`), `stable content ${i}`);
+  for (let i = 0; i < 10; i++) r.commit(`revision ${i}`);
+  const head = r.g(["rev-parse", "HEAD"]).trim();
+  let tips = 0;
+  const git = args => {
+    if (args.includes("ls-remote")) return tips++ === 0 ? `${r.base}\trefs/heads/main\n` : "";
+    return r.git(args);
+  };
+  await publishPinned({ git, run: { after: head }, step: r.s, cwd: r.dir });
+  const reads = r.calls.filter(args => args[0] === "cat-file" && args[1] === "blob");
+  assert.equal(reads.length, 41);
+  assert.equal(new Set(reads.map(args => args[2])).size, reads.length);
+  assert.equal(r.calls.filter(args => args[0] === "rev-list").length, 2);
+  assert.equal(r.pushes(), 1);
+  // The cache must not allow an already scanned blob under a forbidden name.
+  r.g(["mv", "file", "private-file"]); r.g(["commit", "-qm", "rename"]);
+  r.g(["mv", "private-file", "file"]); r.g(["commit", "-qm", "restore"]);
+  await assert.rejects(publishPinned({ git: r.git, run: { after: r.g(["rev-parse", "HEAD"]).trim() }, step: { ...r.s, privacy: { ...r.s.privacy, forbiddenPaths: ["private-file"] } }, cwd: r.dir }), /privacy path/);
 });
