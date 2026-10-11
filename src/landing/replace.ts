@@ -23,6 +23,11 @@ import type { LandingWorkflowRecord } from "../ledger.ts";
 export type ReplaceReason = "lease-wait" | "reviewer";
 export interface Replacement { reason: ReplaceReason; detail: string }
 
+// After a minute, a confirmed missing, unobserved claim may be reconciled
+// by creating the same ID with the recorded review options. This is not a
+// lease-wait replacement; the claim and its fencing identity stay intact.
+export const LANDING_CREATE_RECONCILE_MS = 60_000;
+
 export const ENDED: readonly string[] = ["complete", "errored", "terminated"];
 
 const hours = (ms: number) => `${(ms / 3_600_000).toFixed(ms % 3_600_000 ? 1 : 0)} hours`;

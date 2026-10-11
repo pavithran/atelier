@@ -338,11 +338,17 @@ What this protects against, and what it does not:
   (`done` or `failed`). This lets purged instances recover even when no
   status was observed, including older records. Only `instance.not_found`
   from `get()` permits this recovery; an unreadable `status()` still fails
-  closed. Without that evidence the request fails with 503 and leaves the
-  claim intact. A claim whose
-  create fails is withdrawn, leaving no record, and the next run starts
-  afresh. The answer and the command name the reason and the old and new
-  instances (`replaced`), and the record keeps them.
+  closed. Without that evidence the request leaves the claim intact. If
+  the record has no observed status, remains at `lease`, and is at least
+  60 seconds old (from its server-recorded `at`), a confirmed
+  `instance.not_found` from `get()` allows reconciliation: create the same
+  claimed ID using its recorded checks and review options. Concurrent
+  retries and a delayed original creator use that same ID; an existing-ID
+  error requires a readable status before attaching. Recovery uses default
+  Workflow timeouts, since custom timeouts are not recorded. Other missing
+  or unreadable instances return 503. A failed create keeps the claim for
+  retry, including when creation may have succeeded before the error. The
+  answer and the command name the reason and the old and new instances (`replaced`), and the record keeps them.
 - The record keeps the review options an instance was started with
   (`reviewer`, `noReview`), and a replacement that names none keeps them.
   Before acceptance, a run naming an eligible reviewer (another family than
@@ -351,7 +357,8 @@ What this protects against, and what it does not:
   eligible replaces nothing and is reported. A record with no remembered
   reviewer is not ineligible, so naming one alone does not restart it.
   Successors of already-ended instances inherit unnamed review options and
-  retain the recorded replacement reason.
+  do not inherit a historical replacement reason. A fresh start reports a
+  replacement only when that request's predecessor qualifies for one.
 - A replaced instance, and the command attached to it, are fenced: the
   Workflow's lease calls and the command's lease renewals name their
   instance, and the Ledger refuses them (`stale_landing`) once the record
@@ -370,6 +377,13 @@ arriving late, missing or untrusted, and failing, and the routes), and the
 command against a stand-in server (`test/land.test.mjs`, including the
 local mode's checks run after the push and before the report). No test yet drives the command
 against a running Workflow, and none has run on Cloudflare itself.
+Claim reconciliation relies on Cloudflare rejecting duplicate Workflow IDs.
+The remote smoke check before and after deploy must also leave a recorded
+claim without creating its instance, wait 60 seconds, then retry concurrently
+with different review options: verify one instance with the claimed ID and
+recorded options, and that a delayed original create cannot clear its record.
+Local tests cover these races with a binding double; they do not establish
+production create visibility or duplicate-ID behavior.
 
 ## Integration basis
 

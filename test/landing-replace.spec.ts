@@ -251,19 +251,22 @@ for (const winner of ["codex/gpt-5.5", "gemini-cli/gemini-3-pro"] as const) {
   });
 }
 
-it("a create that fails withdraws its claim, so the next run starts afresh", async () => {
+it("a create that fails keeps its claim for reconciliation", async () => {
   const project = "wf-race-create-fails";
   const { L, id } = await task(project);
   const old = "wf-create-fails-old";
   await L.setLandingWorkflow(id, old, "owner", "local");
   const failing = { ...env, LANDING_WORKFLOW: {
-    get: async () => handle(async () => ({ status: "complete" }), async () => {}),
+    get: async (instance: string) => {
+      if (instance !== old) throw new Error("instance.not_found");
+      return handle(async () => ({ status: "complete" }), async () => {});
+    },
     create: async () => { throw new Error("internal error creating"); },
     createBatch: env.LANDING_WORKFLOW.createBatch.bind(env.LANDING_WORKFLOW),
     deleteBatch: env.LANDING_WORKFLOW.deleteBatch.bind(env.LANDING_WORKFLOW),
   } } as typeof env;
   expect((await call(project, id, { checks: "local" }, failing)).status).toBeGreaterThanOrEqual(500);
-  expect(await L.landingWorkflowOf(id)).toBeNull();
+  expect(await L.landingWorkflowOf(id)).toMatchObject({ instance: replacementInstanceId(id, old) });
 });
 
 it("persists the review options, and before acceptance an eligible named reviewer replaces an ineligible remembered one", async () => {
@@ -399,7 +402,7 @@ it("a request arriving after the claim but before create cannot erase the succes
   expect(await (await call(project, id, {}, testEnv)).json()).toMatchObject({ created: false, replaced: { from: old, to: claimed!.instance } });
 });
 
-it("an ended successor inherits unnamed review options and the replacement reason", async () => {
+it("an ended successor inherits unnamed review options but not a historical replacement reason", async () => {
   const project = "wf-ended-options";
   const { L, id } = await task(project);
   await L.claimLandingWorkflow(id, null, "wf-ended", "owner", { reviewer: "codex/gpt-5.5", noReview: true }, { from: "wf-original", reason: "reviewer", detail: "reviewer changed" });
@@ -414,9 +417,10 @@ it("an ended successor inherits unnamed review options and the replacement reaso
   const response = await call(project, id, {}, testEnv);
   expect(response.status).toBe(201);
   const result = await response.json() as { instance: string };
-  expect(result).toMatchObject({ replaced: { from: "wf-original", to: result.instance } });
+  expect(result).not.toHaveProperty("replaced");
   expect(params).toMatchObject({ reviewer: "codex/gpt-5.5", noReview: true });
-  expect(await L.landingWorkflowOf(id)).toMatchObject({ reviewer: "codex/gpt-5.5", noReview: true, replaced: { from: "wf-original", reason: "reviewer" } });
+  expect(await L.landingWorkflowOf(id)).toMatchObject({ reviewer: "codex/gpt-5.5", noReview: true });
+  expect(await L.landingWorkflowOf(id)).not.toHaveProperty("replaced");
 });
 
 it("naming a reviewer attaches to a pre-t430 record with no remembered reviewer", async () => {
@@ -440,4 +444,101 @@ it("naming a reviewer attaches to a pre-t430 record with no remembered reviewer"
   expect((await L.landingWorkflowOf(id))?.reviewer).toBeUndefined();
   expect(ended).toBe(false);
   expect(creates).toBe(0);
+});
+
+
+it("reconciles a dead claimant using its ID and options even with concurrent retries", async () => {
+  const project = "wf-unborn-recovery";
+  const { L, id } = await task(project);
+  const instance = "wf-unborn";
+  await L.claimLandingWorkflow(id, null, instance, "owner", { checks: "local", reviewer: "codex/gpt-5.5", noReview: true });
+  await runInDurableObject(L, async (_instance, state) => {
+    const key = `landing-workflow:${id}`;
+    const record = JSON.parse(state.storage.sql.exec(`SELECT value FROM meta WHERE key = ?`, key).one().value as string);
+    state.storage.sql.exec(`UPDATE meta SET value = ? WHERE key = ?`, JSON.stringify({ ...record, at: new Date(Date.now() - 120_000).toISOString() }), key);
+  });
+  const creates: { id: string; params: Record<string, unknown> }[] = [];
+  const reached = gate(), go = gate();
+  let attempts = 0;
+  const testEnv = { ...env, LANDING_WORKFLOW: {
+    get: async () => {
+      if (!creates.length) throw new Error("instance.not_found");
+      return handle(async () => ({ status: "queued" }), async () => {});
+    },
+    create: async (options: { id: string; params: Record<string, unknown> }) => {
+      if (++attempts === 2) reached.open();
+      await go.shut;
+      if (creates.length) throw new Error("instance.already_exists");
+      creates.push(options);
+      return handle(async () => ({ status: "queued" }), async () => {});
+    },
+  } } as unknown as typeof env;
+  const a = call(project, id, { reviewer: "gemini-cli/gemini-3-pro" }, testEnv);
+  const b = call(project, id, { noReview: false }, testEnv);
+  await reached.shut;
+  go.open();
+  for (const response of await Promise.all([a, b])) {
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ instance, created: false, reviewer: "codex/gpt-5.5", noReview: true });
+  }
+  expect(creates).toHaveLength(1);
+  expect(creates[0]).toMatchObject({ id: instance, params: { checks: "local", reviewer: "codex/gpt-5.5", noReview: true } });
+  expect(await L.landingWorkflowOf(id)).toMatchObject({ instance, reviewer: "codex/gpt-5.5", lastStatus: { status: "queued" } });
+});
+
+it("an old missing claim is retained when reconciliation fails and can be retried", async () => {
+  const project = "wf-unborn-failure";
+  const { L, id } = await task(project);
+  await L.claimLandingWorkflow(id, null, "wf-unborn-failure", "owner", { reviewer: "codex/gpt-5.5" });
+  await runInDurableObject(L, async (_instance, state) => {
+    const key = `landing-workflow:${id}`;
+    const record = JSON.parse(state.storage.sql.exec(`SELECT value FROM meta WHERE key = ?`, key).one().value as string);
+    state.storage.sql.exec(`UPDATE meta SET value = ? WHERE key = ?`, JSON.stringify({ ...record, at: new Date(Date.now() - 120_000).toISOString() }), key);
+  });
+  const before = await L.landingWorkflowOf(id);
+  let creates = 0;
+  const testEnv = { ...env, LANDING_WORKFLOW: {
+    get: async () => { throw new Error("instance.not_found"); },
+    create: async () => { creates++; throw new Error("creation unavailable"); },
+  } } as unknown as typeof env;
+  expect((await call(project, id, {}, testEnv)).status).toBe(503);
+  expect(creates).toBe(1);
+  expect(await L.landingWorkflowOf(id)).toEqual(before);
+  expect((await call(project, id, {}, testEnv)).status).toBe(503);
+  expect(creates).toBe(2);
+  expect(await L.landingWorkflowOf(id)).toEqual(before);
+});
+
+
+it("a delayed original creator cannot clear the instance reconciled by another request", async () => {
+  const project = "wf-delayed-creator";
+  const { L, id } = await task(project);
+  const reached = gate(), go = gate();
+  let attempts = 0;
+  const created: string[] = [];
+  const testEnv = { ...env, LANDING_WORKFLOW: {
+    get: async (instance: string) => {
+      if (!created.includes(instance)) throw new Error("instance.not_found");
+      return handle(async () => ({ status: "queued" }), async () => {});
+    },
+    create: async ({ id: instance }: { id: string }) => {
+      if (++attempts === 1) { reached.open(); await go.shut; }
+      if (created.includes(instance)) throw new Error("instance.already_exists");
+      created.push(instance);
+      return handle(async () => ({ status: "queued" }), async () => {});
+    },
+  } } as unknown as typeof env;
+  const original = call(project, id, { reviewer: "codex/gpt-5.5" }, testEnv);
+  await reached.shut;
+  await runInDurableObject(L, async (_instance, state) => {
+    const key = `landing-workflow:${id}`;
+    const record = JSON.parse(state.storage.sql.exec(`SELECT value FROM meta WHERE key = ?`, key).one().value as string);
+    state.storage.sql.exec(`UPDATE meta SET value = ? WHERE key = ?`, JSON.stringify({ ...record, at: new Date(Date.now() - 120_000).toISOString() }), key);
+  });
+  try {
+    expect((await call(project, id, { reviewer: "gemini-cli/gemini-3-pro" }, testEnv)).status).toBe(200);
+  } finally { go.open(); }
+  expect((await original).status).toBe(201);
+  expect(created).toHaveLength(1);
+  expect(await L.landingWorkflowOf(id)).toMatchObject({ instance: created[0], reviewer: "codex/gpt-5.5", lastStatus: { status: "queued" } });
 });
