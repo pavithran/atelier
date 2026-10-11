@@ -97,6 +97,8 @@ function serve(fork, { state = null, closeAt = null, refuseClaim = false, blockF
       if (parts[1] === "version") [status, json] = [200, { commit: "0".repeat(40), routeLevel: ROUTE_LEVEL }];
       else if (parts[1] === "config") [status, json] = [200, { ownerActor: "owner", ownerName: "Owner", runner: RUNNER, tokenId: "runner-token-id" }];
       else if (req.method === "GET" && parts[1] === "projects" && parts[2] === PROJECT && parts.length === 3) [status, json] = [200, { project: { name: PROJECT, policy: {} } }];
+      // A build merges current main before it submits (t435): main is the fork's own.
+      else if (req.method === "POST" && parts[1] === "projects" && parts[2] === PROJECT && parts[3] === "baseline-token" && parts.length === 4) [status, json] = [200, { remote: fork.remote, token: "read-secret", defaultBranch: "main" }];
       else if (parts[1] === "projects" && parts[2] === PROJECT && parts[3] === "items" && parts[4] === "t1") {
         requests.push(`${req.method} ${parts[5] ?? "item"}`);
         [status, json] = answer(req.method, parts[5], body);

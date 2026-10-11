@@ -29,7 +29,8 @@ export interface Decision {
   quote: string;         // the owner's own words it rests on
   by: string;
   at: string;
-  withdrawn?: { by: string; at: string; note: string };
+  acting?: string;       // the harness/model that recorded it for the owner (t440)
+  withdrawn?: { by: string; at: string; note: string; acting?: string };
 }
 
 export type DecisionStatus = "standing" | "withdrawn";
@@ -86,23 +87,25 @@ export function standingDecisions(store: DecisionStore): Decision[] {
 }
 
 // The owner records one decision, dated now. The same text standing already
-// is refused, so one decision is never listed twice.
-export function recordDecision(store: DecisionStore, actor: string, body: Record<string, unknown>, now: string): DecisionView {
+// is refused, so one decision is never listed twice. `acting` names the
+// harness/model that recorded it for the owner (src/models/judgement.ts);
+// the decision is still the owner's, resting on the owner's quoted words.
+export function recordDecision(store: DecisionStore, actor: string, body: Record<string, unknown>, now: string, acting: string | null = null): DecisionView {
   ownerOnly(store, actor, "records a standing decision");
   const { text, quote } = cleanDecisionInput(body);
   const all = rows(store.sql);
   const same = all.find((d) => !d.withdrawn && d.text === text);
   if (same) throw new RuleError("already_decided", `${same.id} already records that decision, on ${same.at.slice(0, 10)}. To change it, withdraw it first: atelier decisions withdraw ${same.id} --note "…"`, 409);
   const n = all.length + 1;
-  const decision: Decision = { id: `d${n}`, text, quote, by: actor, at: now };
+  const decision: Decision = { id: `d${n}`, text, quote, by: actor, at: now, ...(acting ? { acting } : {}) };
   store.sql.exec(`INSERT INTO decisions (n, id, json) VALUES (?, ?, ?)`, n, decision.id, JSON.stringify(decision));
-  store.log("decision.recorded", { id: decision.id, text, quote });
+  store.log("decision.recorded", { id: decision.id, text, quote, ...(acting ? { acting } : {}) });
   return view(decision);
 }
 
 // The owner withdraws one, with a note saying why; it stops appearing in the
 // briefs and the guide, and the list shows it only when asked for all.
-export function withdrawDecision(store: DecisionStore, actor: string, id: string, note: unknown, now: string): DecisionView {
+export function withdrawDecision(store: DecisionStore, actor: string, id: string, note: unknown, now: string, acting: string | null = null): DecisionView {
   ownerOnly(store, actor, "withdraws a standing decision");
   if (note !== undefined && typeof note !== "string") throw new RuleError("bad_note", "a note is text", 400);
   const why = line(note);
@@ -111,9 +114,9 @@ export function withdrawDecision(store: DecisionStore, actor: string, id: string
   const d = rows(store.sql).find((x) => x.id === id);
   if (!d) throw new RuleError("no_decision", `no decision ${id}; atelier decisions lists them`, 404);
   if (d.withdrawn) throw new RuleError("not_standing", `${id} was withdrawn on ${d.withdrawn.at.slice(0, 10)}, so there is nothing to withdraw`, 409);
-  d.withdrawn = { by: actor, at: now, note: why };
+  d.withdrawn = { by: actor, at: now, note: why, ...(acting ? { acting } : {}) };
   store.sql.exec(`UPDATE decisions SET json = ? WHERE id = ?`, JSON.stringify(d), d.id);
-  store.log("decision.withdrawn", { id, text: d.text, note: why });
+  store.log("decision.withdrawn", { id, text: d.text, note: why, ...(acting ? { acting } : {}) });
   return view(d);
 }
 

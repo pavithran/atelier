@@ -1,7 +1,7 @@
 // atelier finding. Its forms, flags and help are declared in src/usage/commands/finding.ts.
-import { I, OWNER, args, call, die, itemArg, project } from "../atelier.mjs";
+import { I, OWNER, actingHeaders, args, call, die, itemArg, project } from "../atelier.mjs";
 
-const USAGE = "atelier finding ID --head SHA [--review-seq N | --reviewer H/M] --index N --verdict ...";
+const USAGE = "atelier finding ID --head SHA [--review-seq N | --reviewer H/M] --index N --verdict ... [--as H/M]";
 
 // The project owner records a verdict on one finding of a review, at the
 // head the review was made at and the finding's position in its findings.
@@ -22,8 +22,9 @@ export default async function findingCommand() {
   }
   if (args.reviewer !== undefined && (typeof args.reviewer !== "string" || !args.reviewer.includes("/"))) die(`--reviewer needs the reviewer as harness/model: ${USAGE}`);
   const body = { head: args.head, index, verdict, note: args.note ?? "", ...(reviewSeq !== undefined ? { reviewSeq } : {}), ...(args.reviewer !== undefined ? { reviewer: args.reviewer } : {}) };
-  const r = await call("POST", `${I(name, id)}/finding`, body, OWNER);
+  const r = await call("POST", `${I(name, id)}/finding`, body, OWNER, actingHeaders());
   // A server from before t486 answers without the review it chose.
   const which = Number.isInteger(r?.review) ? `review ${r.review} by ${r.by}` : "review";
-  console.log(`Recorded ${verdict} on finding ${index} of ${id}'s ${which} at ${args.head.slice(0, 8)}. The Models page counts it under the reviewer.`);
+  const event = typeof r.event === "number" ? ` as event ${r.event}${r.acting ? `, declared acting ${r.acting}` : ""}; a defect that shows it wrong names it with --contradicts ${r.event}#${index}` : "";
+  console.log(`Recorded ${verdict} on finding ${index} of ${id}'s ${which} at ${args.head.slice(0, 8)}${event}. The Models page counts it under the reviewer.`);
 }
