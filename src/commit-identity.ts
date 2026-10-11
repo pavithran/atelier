@@ -70,12 +70,26 @@ export function isPublicEmail(email: string): boolean {
   return PUBLIC_EMAIL.test(email);
 }
 
+// Git's own rule for an identity part (ident.c): "crud" is any character up
+// to space and , : ; < > " \ '. Git strips crud from both ends and refuses a
+// part with nothing else, so a name that starts or ends with crud, or is all
+// crud, is not the name the commits would carry.
+const crud = (c: string) => c.charCodeAt(0) <= 32 || `,:;<>"\\'`.includes(c);
+export function gitIdentProblem(value: string): string | null {
+  const chars = [...value];
+  if (!chars.some((c) => !crud(c))) return "has no character Git keeps";
+  if (crud(chars[0]) || crud(chars[chars.length - 1])) return "starts or ends with a character Git strips";
+  return null;
+}
+
 function nameArg(value: unknown): string {
   if (typeof value !== "string" || !value.trim()) throw new RuleError("bad_identity", "commitName must be the name the project's commits carry, such as \"Project Owner\"", 400);
   const name = value.trim();
   // Git cuts angle brackets and line breaks out of a name; one that holds
   // them would not be the name the commits carry.
   if (name.length > NAME_MAX || /[<>\x00-\x1f\x7f]/.test(name)) throw new RuleError("bad_identity", `commitName must be at most ${NAME_MAX} characters with no angle brackets or control characters`, 400);
+  const problem = gitIdentProblem(name);
+  if (problem) throw new RuleError("bad_identity", `commitName ${JSON.stringify(name)} ${problem}, so it is not the name the commits would carry`, 400);
   return name;
 }
 
