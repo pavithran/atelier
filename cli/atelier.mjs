@@ -8,6 +8,8 @@
 // --allow-failing is given. Wrap commits and updates the baseline; checkout
 // remote pushes are opt-in.
 
+import { areaField } from "../src/area-commands.ts";
+
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { accessSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -87,6 +89,7 @@ export const trimSlash = (url) => String(url).replace(/\/$/, "");
 // together, so that server is the one the stored token belongs to, and the
 // token goes nowhere else: with ATELIER_SERVER naming another server it is
 // not sent, and the command says what to do instead.
+let ownerNoticeGiven = false;
 export function apiToken() {
   if (cliState.loginToken) return cliState.loginToken;
   try {
@@ -95,6 +98,10 @@ export function apiToken() {
     if (!name && ["claim", "start"].includes(args._[0])) name = args.runner;
     const runner = runnerCredential(server(), name);
     if (runner) return runner;
+    if (name && !ownerNoticeGiven) {
+      ownerNoticeGiven = true;
+      process.stderr.write(`runner ${name} has no runner token: running with the owner's credential\n`);
+    }
   } catch (error) { die(error.message); }
   const fromEnv = process.env.ATELIER_TOKEN?.trim();
   if (fromEnv) return fromEnv;
@@ -628,7 +635,8 @@ export function coreArg() {
 // empty value clears the field (the title cannot be cleared); for new, an
 // empty value is refused as a bare flag is, with the flag table's wording.
 export function fieldsArg(cmd) {
-  const out = {};
+  let out;
+  try { out = areaField(args, cmd); } catch (error) { die(error.message); }
   if (args.title !== undefined) {
     if (typeof args.title !== "string" || !args.title.trim()) die(FLAGS[cmd].title);
     out.title = args.title.trim();
@@ -1276,6 +1284,7 @@ export function formatFields(fields) {
     fields.nonGoals?.length ? `Non-goals: ${fields.nonGoals.map(flat).join("; ")}` : null,
     fields.stopWhen?.length ? `Stop when: ${fields.stopWhen.map(flat).join("; ")}` : null,
     fields.nextGate ? `Next gate: ${flat(fields.nextGate)}` : null,
+    fields.area ? `Area: ${flat(fields.area)}` : null,
   ].filter(Boolean);
 }
 
@@ -1582,10 +1591,13 @@ export function wrapReady(name, cwd, report) {
 
 // A report a runner makes under its name: a model's status, a tool's usage.
 // The answer is the server's JSON; a refusal is an error naming its detail.
-export async function postAsRunner(path, body, runner, signal) {
+// The report goes as the owner, whose token the runner holds, unless `as`
+// names another actor: a runner token cannot act as the owner, so its
+// review skip goes as the review job's actor (t353).
+export async function postAsRunner(path, body, runner, signal, as = OWNER) {
   const res = await fetch(`${server()}/api${path}`, {
     method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
-    headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": OWNER, "x-atelier-runner": runner, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": as, "x-atelier-runner": runner, "content-type": "application/json" },
     body: JSON.stringify(body),
   });
   let data = null;
