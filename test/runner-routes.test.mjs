@@ -255,6 +255,10 @@ before(async () => {
   artifactsURL = await mf.unsafeGetDirectURL("artifacts");
   ns = await mf.getDurableObjectNamespace("LEDGER");
   I = ns.get(ns.idFromName("__index"));
+  // A review request names a registered, eligible reviewer since reviewer
+  // admissions (t492): REVIEWER is in the pool, as atelier models add puts
+  // it, before any test asks it to review.
+  await expect(call("PUT", `/models/${REVIEWER.split("/")[1]}`, { body: { harness: REVIEWER.split("/")[0], where: "home" } }), 200, "models add");
 });
 after(async () => { await mf?.dispose(); });
 
