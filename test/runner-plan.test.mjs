@@ -78,6 +78,7 @@ function fixture(t, options = {}) {
       calls.push({ postPlan: [project, id, actor], text });
       return options.refused ?? { valid: true, hash: "abc123", parts: 1 };
     },
+    async identityRefusals() { return []; },
     async harness(argv, cwd, env) {
       calls.push({ harness: argv, cwd, env });
       if (options.noDocument !== true) writeFileSync(planFilePath(cwd), JSON.stringify(planDocument));
@@ -348,4 +349,25 @@ test("a task sent back with an earlier attempt gets the server's review findings
   assert.deepEqual(back.calls.find((c) => c.jobBrief).jobBrief, ["atelier", "t6", "opencode/glm-5.3"]);
   const text = back.calls.find((c) => c.brief).brief;
   assert.ok(text.includes("npm test") && text.includes("An earlier attempt is committed") && text.includes("FINDING-1"));
+});
+
+test("plans prepare after reset and before the planner starts", async (t) => {
+  const { io, calls } = fixture(t);
+  io.prepare = async () => {
+    assert.ok(calls.some((c) => c.reset));
+    assert.ok(!calls.some((c) => c.harness));
+    calls.push({ prepare: true });
+    return { key: "ready" };
+  };
+  assert.equal((await runPlanTask(planJob, planConfig, "home:studio", io)).phase, "submitted");
+  assert.ok(calls.some((c) => c.prepare));
+});
+
+test("a planner receives both deferred preparation and test-slot instructions", async (t) => {
+  const { io, calls } = fixture(t);
+  io.prepare = async () => ({ deferred: "Resolve input then run npm ci && npm run types" });
+  assert.equal((await runPlanTask(planJob, planConfig, "home:studio", io)).phase, "submitted");
+  const brief = calls.find((c) => c.brief).brief;
+  assert.match(brief, /Resolve input then run npm ci && npm run types/);
+  assert.match(brief, /host slot wrapper:.*load\.mjs/);
 });
