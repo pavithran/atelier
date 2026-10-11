@@ -23,7 +23,7 @@ Projects   projects rename OLD NEW · projects remove NAME [--force] · showcase
            
            adopt --project NAME [--as H/M]   (a ControlPlane project moves to Atelier)
 Local      gc [--project NAME] [--dry-run | --apply] · runner --name home:NAME [--once] [--config PATH] [--integrate]
-           runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH]   (what each home model's harness serves)
+           runner --discover [--name home:NAME] [--probe] [--dry-run] [--config PATH] (what each home model's harness serves) · slots set N · slots status [--json]
            runner --usage [--name home:NAME] [--dry-run] [--config PATH]   (each tool's windows, served models, costs and balances)
 Ops        ops COMMAND [ARGS...]   (portfolio operations, run by the private atelier-ops toolkit when installed)
 Docs       guide [--role build|review|plan|orchestrate] [--full] [--project P]   (paste into a project's AGENTS.md)
