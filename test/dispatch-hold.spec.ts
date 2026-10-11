@@ -225,3 +225,28 @@ it("releasing a core hold retains its builder and queue position and clears its 
   });
   expect((await L.item("t1")).state).toBe("claimed");
 });
+
+it("releasing a retained dispatch clears only the core hold, preserving the separate overlap refusal", async () => {
+  const L = await setup("dispatch-hold-retained-refusal");
+  const builder = "opencode/glm-5.3";
+  await L.dispatch("t2", "owner", { to: "home", agent: "opencode", model: "glm-5.3", note: "Keep this builder" });
+  const original = (await L.item("t2")).dispatch!;
+  const record = await L.project();
+  await L.setProject({ ...record, policy: { ...record.policy, refuseOverlap: true } }, "owner");
+  const before = (await L.waiting())[0];
+  expect(before.held?.blockers?.map((b) => b.id)).toEqual(["t1"]);
+  expect(before.claimRefusal).toContain("t1");
+  expect(holdText(before.held!)).toContain(`separate claim refusal: ${before.claimRefusal}`);
+
+  await L.releaseHold("t2", "owner", { retainAt: original.at });
+  const after = (await L.waiting())[0];
+  expect(after.dispatch).toEqual({ ...original, overlapOk: true });
+  expect(after.held).toBeUndefined();
+  expect(after.claimRefusal).toBe(before.claimRefusal);
+  await runInDurableObject(L, (instance, state) => {
+    expect(() => instance.claim("t2", builder, { runner: "home:hold", kind: "home" })).toThrow("t1");
+    expect(JSON.parse(state.storage.sql.exec("SELECT value FROM meta WHERE key = 'core-holds'").one().value as string)).toEqual({});
+  });
+  expect((await L.item("t1")).state).toBe("claimed");
+  expect((await L.item("t2")).state).toBe("open");
+});
