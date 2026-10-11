@@ -202,12 +202,23 @@ function checkedOverride(role, text) {
 // reads, and it stays unfenced in front of the brief, exactly what the brief's
 // fencing discipline exists to prevent. Falls back to the default when the
 // base has no override or no base could be fetched.
-export async function reviewRoleText(io, workspace, compare) {
+// Under single-family mode (t394) the default role text must not tell the
+// reviewer that protected changes need another company's model: that would
+// contradict the policy and could make a qualifying reviewer refuse.
+export function defaultReviewRole(single = null) {
+  const text = rolePrompt("review").replace(/\s+$/, "");
+  if (!single) return text;
+  return `## Reviewing
+
+You review one change for Atelier. This project runs in single-family mode: every model that builds or reviews here is ${single}'s, so you review as a different ${single} model from everyone who wrote the change. Read the change with \`atelier diff ID\`, judge it by the project's review bar and the rules for blocking the brief states, and record a verdict with \`atelier review ID --approve|--reject --note "…"\`. Changes to protected paths need a different ${single} model from every agent that worked on the task. Make no edits: change no files, and do not commit or push.`;
+}
+
+export async function reviewRoleText(io, workspace, compare, single = null) {
   const base = compare?.target;
-  if (!base) return rolePrompt("review").replace(/\s+$/, "");
+  if (!base) return defaultReviewRole(single);
   let text;
   try { text = await io.show(workspace, `${base}:.atelier/prompts/review.md`); }
-  catch { return rolePrompt("review").replace(/\s+$/, ""); }
+  catch { return defaultReviewRole(single); }
   return checkedOverride("review", text).replace(/\s+$/, "");
 }
 
@@ -1393,6 +1404,9 @@ export async function runReview(assignment, config, name, runnerIO) {
       diff: large && claimed.diffRef ? null : diff, diffRef: large ? claimed.diffRef ?? null : null,
       ownDiff, owner: claimed.owner,
       compare: merged?.compare ?? compare, diffFile: REVIEW_DIFF, bar: claimed.reviewBar ?? null,
+      // Under single-family mode the brief says the review is by a different
+      // model of the one company, not a cross-company one (t394).
+      singleFamily: claimed.singleFamily ?? null,
       // The owner's standing decisions (src/decisions.ts), as the claim
       // carries them; an older server sends none, and the brief says so.
       decisions: claimed.decisions ?? null,
@@ -1400,7 +1414,7 @@ export async function runReview(assignment, config, name, runnerIO) {
       // older server sends none, and the brief says so.
       evidence: claimed.evidence ?? null,
     });
-    brief = await io.brief(workspace, `${await reviewRoleText(io, workspace, compare)}\n\n${testSlotNote}\n\n${text}`);
+    brief = await io.brief(workspace, `${await reviewRoleText(io, workspace, compare, claimed.singleFamily ?? null)}\n\n${testSlotNote}\n\n${text}`);
     diffFile = await io.writeDiff(workspace, ownDiff === null ? diff : `${diff}${diff && !diff.endsWith("\n") ? "\n" : ""}${ownDiff}`);
     verdictFile = io.verdictPath(workspace);
     const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);

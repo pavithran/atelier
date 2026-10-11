@@ -1,5 +1,14 @@
 # Models, reliability and usage
 
+The cross-company rules below describe the default policy. With
+`atelier init --single-family COMPANY`, building and reviewing use only that
+company's models: a reviewer must be a different model from every contributor,
+never a contributor under another harness. This exception also applies to
+criteria review, handoffs and conflict contributors. Only that company's tier
+models qualify; if none qualifies, no separate tier review is requested.
+`atelier init --cross-family` restores the default; both switches record who
+made them and when. See [Single-family mode](gate.md#single-family-mode).
+
 The model pool Atelier dispatches to, the record it keeps of each model's
 work, the usage and balance reports from home runners, and the AI Gateway
 figures that count pay-per-use calls. The README's "Costs and usage" section
@@ -25,7 +34,9 @@ atelier models
 A model's family (Claude, GPT, GLM, Gemini, DeepSeek, Qwen and others) is
 recognised from its name, so a new release is coloured correctly on the
 graph the day it appears; a name no family claims is shown as not
-recognised. A runner reports what it finds for each model through
+recognised. The family is also what the gate's review rule reads, and what
+`atelier init --single-family COMPANY` names when a project is to run on one
+company's models alone (see [Single-family mode](gate.md#single-family-mode)). A runner reports what it finds for each model through
 `POST /api/models/ID/status`, naming itself in `X-Atelier-Runner`: a home
 model is reported only by a home runner and a cloud model only by a cloud
 runner, and the Models page shows each report with the runner that made it.
@@ -80,8 +91,9 @@ the tier and then the pool in precision order), the separate tier review
 more precise reviewer first, at (held + 1) / (judged + 2); a reviewer with
 fewer than 5 judged orders as neutral, one half. A re-review still goes
 first to the previous round's reviewer. Precision never makes a reviewer
-qualify, so a same-family or paused reviewer is passed over however
-precise.
+qualify, so a reviewer disallowed by the family policy or paused is passed over
+however precise. In single-family mode, a different model of the selected
+company qualifies; another company never does.
 
 ```text
 atelier defect t12 --note "pagination drops the last page" --found-in t19
@@ -295,7 +307,9 @@ in the project event history. Repeat `models admit` to readmit a model.
 An unknown family or an alias that disguises another family is refused.
 
 Each new admitted review must be from another family than **every** contributor
-and must name the current head and acceptance-criteria binding. Admission does
+by default. In single-family mode it must instead come from a different model
+of the selected company from every contributor; no other company qualifies.
+Every admitted review must name the current head and acceptance-criteria binding. Admission does
 not turn an owner-token assertion into a proved review: the model must use its
 own actor token or answer a review request it claimed, as before. A recorded
 review retains its admission snapshot. Withdrawal cancels outstanding requests
