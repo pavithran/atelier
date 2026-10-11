@@ -10,7 +10,7 @@ import { sessionNoteText, type SessionNote } from "./sessions.ts";
 // Colours, type, spacing and radii come from the portfolio theme (theme.css);
 // layout.css only arranges them.
 
-import { TEXT_CONTROLS } from "./text.ts";
+import { DISPATCH_NOTE_MAX, notePreview, TEXT_CONTROLS } from "./text.ts";
 import { appliesText, checkClasses, classText, type CheckClass } from "./checks.ts";
 import theme from "./theme.css";
 import layout from "./layout.css";
@@ -1404,7 +1404,7 @@ function standingSection(p: ProjectRecord, s: Standing): string {
   const runner = (q: Standing["queued"][number]) => `${q.to}${q.agent ? ` ${q.agent}` : ""}${q.model ? `/${q.model}` : ""}`;
   const groups = [
     group("Waiting on the owner", s.waiting.map((w) => `<li>${link(w.id)} <strong>${e(w.title)}</strong>${tag(KIND[w.kind][0], KIND[w.kind][1])}<span class="meta">${e(w.reason)}${w.brief ? ` · brief, ${e(w.brief.verdict)}: ${e(w.brief.line)}` : ""}</span></li>`)),
-    group("Queued for a runner", s.queued.map((q) => `<li>${link(q.id)} <strong>${e(q.title)}</strong><span class="meta">for ${e(runner(q))} · sent by ${e(q.by)} ${e(when(q.at))}${q.note ? ` · ${e(q.note)}` : ""}</span></li>`)),
+    group("Queued for a runner", s.queued.map((q) => `<li>${link(q.id)} <strong>${e(q.title)}</strong><span class="meta">for ${e(runner(q))} · sent by ${e(q.by)} ${e(when(q.at))}${q.note ? ` · ${e(notePreview(q.note))}` : ""}</span></li>`)),
     group("Last merges", s.merged.map((m) => `<li>${link(m.id)} <strong>${e(m.title)}</strong><span class="meta">${e(when(m.at))}${m.commit ? ` · <code>${e(m.commit.slice(0, 8))}</code>` : ""}${m.line ? ` · ${e(m.line)}` : ""}</span></li>`)),
     // Every merge by override, each linked, under the count the lead line gives (t371).
     group(`Merged by override: ${plural((s.overrides ?? []).length, "merge")}`, (s.overrides ?? []).map((o) => `<li>${link(o.id)} <strong>${e(o.title)}</strong><span class="meta">${e(when(o.at))} · the owner's override, not a review: ${e(o.reason)}</span></li>`)),
@@ -1837,14 +1837,15 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   const dispatchBox = item.state === "open" && !item.owner
     ? item.dispatch
       ? `<div class="notice" role="status"><h3>Waiting for ${e(describeDispatch(item.dispatch))}</h3>
-        <p>Sent by ${e(item.dispatch.by)} ${when(item.dispatch.at)}${item.dispatch.note ? `: ${e(item.dispatch.note)}` : ""}. The first matching runner to ask for work claims it.</p>
+        <p>Sent by ${e(item.dispatch.by)} ${when(item.dispatch.at)}. The first matching runner to ask for work claims it.</p>
+        ${item.dispatch.note ? `<p class="dispatch-note">${e(item.dispatch.note)}</p>` : ""}
         <form method="post" action="${action("undispatch")}">${revision}<button>Withdraw</button></form></div>`
       : `<details class="request-changes dispatch-form"><summary>Send to an agent</summary>
         <form class="stack" method="post" action="${action("dispatch")}">${revision}
           <label>Where<select name="to"><option value="any">Any runner</option><option value="home">Home runner (your Macs and the Mac Studio)</option><option value="cloud">Cloud runner</option></select></label>
           <label>Agent<select name="agent"><option value="">Runner's choice</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="zcode">ZCode (GLM)</option><option value="opencode">OpenCode (local models)</option><option value="antigravity">Antigravity (Gemini)</option><option value="gemini-cli">Gemini CLI</option></select></label>
           <label>Model <span class="meta">optional, as the runner names it</span><input type="text" name="model" placeholder="e.g. glm-5.3-flash"></label>
-          <label>Note for the agent <span class="meta">optional</span><input type="text" name="note" maxlength="500"></label>
+          <label>Note for the agent <span class="meta">optional; a full set of findings fits</span><textarea name="note" rows="4" maxlength="${DISPATCH_NOTE_MAX}"></textarea></label>
           <button class="primary">Send</button>
         </form></details>`
     : "";

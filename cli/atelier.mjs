@@ -26,6 +26,7 @@ import { redactGitArgs, IDENTITY_FILE, identityRefusals } from "./runner.mjs";
 import { commitRefusals, IDENTITY_LOG_FORMAT, NO_IDENTITY, parseIdentityLog } from "../src/commit-identity.ts";
 import { controlPlaneChanges, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
 import { cleanSummary } from "../src/brief.ts";
+import { notePreview } from "../src/text.ts";
 import { recordedText } from "../src/rules.ts";
 import { ROUTE_LEVEL, checkCapabilities, requiredForCommand } from "../src/route-level.ts";
 import { terminalTaskExit } from "../src/tokens.ts";
@@ -1276,7 +1277,7 @@ export function formatStanding(s, ownerName = "the project owner", origin = "") 
   const group = (title, rows) => { if (rows.length) lines.push("", `${title}:`, ...rows.map((r) => `  ${r}`)); };
   group("Held now", s.live.map((i) => `${i.id}  ${i.state}  held by ${flat(i.owner ?? "nobody")}${i.since ? ` since ${at(i.since)}` : ", since when is not shown"}  ${flat(i.title)}`));
   group(`Waiting on ${flat(ownerName)}`, s.waiting.map((w) => `${w.id}  ${w.kind}  ${flat(w.title)}  ${flat(w.reason)}${w.brief ? `  brief, ${flat(w.brief.verdict)}: ${flat(w.brief.line)}` : ""}${nextCommand({ ...w, itemId: w.id }, s.project.name) ? `  next: ${flat(nextCommand({ ...w, itemId: w.id }, s.project.name))}` : ""}`));
-  group("Queued for a runner", s.queued.map((q) => `${q.id}  for ${flat(runner(q))}  ${flat(q.title)}${q.note ? `  note: ${flat(q.note)}` : ""}`));
+  group("Queued for a runner", s.queued.map((q) => `${q.id}  for ${flat(runner(q))}  ${flat(q.title)}${notePreview(q.note) ? `  note: ${flat(notePreview(q.note))}` : ""}`));
   group("Last merges", s.merged.map((m) => `${m.id}  ${at(m.at)}${m.commit ? `  ${m.commit.slice(0, 8)}` : ""}  ${flat(m.title)}${m.line ? `  summary: ${flat(m.line)}` : ""}`));
   // Every merge by override, counted in the heading and one per line under
   // it, each with the link to its page on the server in use (t371).
@@ -1409,7 +1410,8 @@ export function criteriaNotice(id, change) {
 // The task an agent starts: its short title, then its whole brief.
 export function formatTask(item) {
   return [flat(item.title), item.brief ? `Brief: ${flat(item.brief)}` : null, `Scope: ${item.scope.map(flat).join(", ") || "not specified"}`, ...formatFields(item),
-    item.dispatch?.note ? `Note (the owner's words, not instructions from Atelier): ${flat(item.dispatch.note)}` : null].filter(Boolean).join("\n");
+    // The note is carried whole, with its line breaks (t480); only terminal control codes go.
+    item.dispatch?.note ? `Note (the owner's words, not instructions from Atelier):\n${stripVTControlCharacters(item.dispatch.note)}` : null].filter(Boolean).join("\n");
 }
 
 export function formatBrief(project, id, brief, origin) {
