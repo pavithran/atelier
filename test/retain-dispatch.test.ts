@@ -9,6 +9,8 @@ const cases = [
   [{ agent: "" }, null, "shared"],
   [{ model: "" }, "codex", null],
   [{ agent: "", model: "" }, null, null],
+  [{ agent: "other" }, "other", "shared"],
+  [{ model: "new" }, "codex", "new"],
   [{ agent: "other", model: "new" }, "other", "new"],
 ] as const;
 for (const [input, agent, model] of cases) {
@@ -49,6 +51,7 @@ for (const [input, agent, model] of cases) {
     const r = await cli({ "overlap-ok": true, ...input }, { retainedDispatch: true, dispatch: { ...prior, agent, model, overlapOk: true } });
     assert.deepEqual(r.body, { ...input, overlapOk: true, ...(!("agent" in input) ? { suggest: true } : {}) });
     assert.equal(r.lines[0], "t2: overlap override recorded.");
+    assert.equal(r.lines[1], `t2 is waiting for a home runner${agent ? `, ${agent}` : ""}${model ? ` with ${model}` : ""}.`);
     assert.ok(!r.lines.some(s => /Warning|released/.test(s)));
   });
 }
@@ -66,4 +69,12 @@ test("CLI reports no released hold when refuseOverlap rejects the dispatch", asy
     async () => { throw Error("t2 overlaps live t1"); }, () => "/item", "owner",
     (s: string) => { throw Error(s); }, { log: (s: string) => lines.push(s) })(), /overlaps live t1/);
   assert.deepEqual(lines, []);
+});
+
+test("CLI reports only the override for a fresh dispatch without a core hold", async () => {
+  const r = await cli({ "overlap-ok": true, agent: "" }, {
+    dispatch: makeDispatch({ overlapOk: true }, "owner", "now"),
+  });
+  assert.deepEqual(r.body, { agent: "", overlapOk: true });
+  assert.deepEqual(r.lines, ["t2: overlap override recorded.", "t2 is waiting for any runner."]);
 });

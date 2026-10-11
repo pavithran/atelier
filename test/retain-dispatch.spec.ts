@@ -26,7 +26,8 @@ type Answer = { dispatch: Dispatch; retainedDispatch?: boolean; releasedCoreHold
 const original = { to: "home", agent: "codex", model: "shared", note: "Keep the workspace" };
 const cases = [
   [{}, "codex", "shared"], [{ agent: "" }, null, "shared"], [{ model: "" }, "codex", null],
-  [{ agent: "", model: "" }, null, null], [{ agent: "other", model: "new" }, "other", "new"],
+  [{ agent: "", model: "" }, null, null], [{ agent: "other" }, "other", "shared"],
+  [{ model: "new" }, "codex", "new"], [{ agent: "other", model: "new" }, "other", "new"],
 ] as const;
 for (const [n, [change, agent, model]] of cases.entries()) {
   it(`API and queue retain omitted fields and apply ${JSON.stringify(change)}`, async () => {
