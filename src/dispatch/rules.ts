@@ -136,6 +136,35 @@ export function makeDispatch(input: { to?: unknown; agent?: unknown; model?: unk
   return { to: to as Dispatch["to"], agent, model, by, at, note, ...(job ? { job, head: head!, task: true as const } : {}), ...(input.overlapOk === true ? { overlapOk: true as const } : {}) };
 }
 
+// The owner's release of an overlap-held dispatch (atelier dispatch ID
+// --overlap-ok on a task already waiting): the dispatch stays as it is, with
+// its builder, destination, job, head, note and queue position (`at`), and
+// gains only the overlap override. An agent or model given replaces just that
+// field; the pair that results is validated as a dispatch's own is, before
+// anything is written. Releasing a dispatch already released changes nothing.
+export function retainDispatch(item: Item, input: { agent?: unknown; model?: unknown; retainAt?: unknown }, items: readonly Item[], policy: ProjectPolicy, owner = DEFAULT_OWNER): Dispatch {
+  if (item.owner || item.state !== "open") {
+    throw new RuleError("not_open", `${item.id} is ${item.owner ? `owned by ${item.owner}` : item.state}, so it has no waiting dispatch to release; dispatch it again instead`, 409);
+  }
+  const d = item.dispatch;
+  if (!d) throw new RuleError("not_dispatched", `${item.id} is not queued for a runner, so there is no dispatch to release`, 409);
+  if (input.retainAt !== undefined && input.retainAt !== d.at) {
+    throw new RuleError("stale_dispatch", `${item.id}'s dispatch has changed; read it again before releasing its hold`, 409);
+  }
+  const given = (v: unknown, what: string) => {
+    if (v === undefined || v === null || v === "") return undefined;
+    const s = String(v);
+    if (!NAME.test(s)) throw new RuleError("bad_dispatch", `"${s}" is not a valid ${what}`, 400);
+    return s;
+  };
+  const agent = given(input.agent, "agent") ?? d.agent, model = given(input.model, "model") ?? d.model;
+  if (agent && !AGENT.test(agent)) throw new RuleError("bad_dispatch", `"${agent}" is not a valid agent`, 400);
+  if (model && !claimable(agent ?? "agent", model)) throw new RuleError("bad_dispatch", `no runner could claim as "${agent ?? "agent"}/${model}"`, 400);
+  const next: Dispatch = { ...d, agent, model, overlapOk: true };
+  if (next.agent !== d.agent || next.model !== d.model) assertDispatchClaimable(item, items, policy, next, owner);
+  return next;
+}
+
 // Keep the first blocker fields for older queue consumers; diagnostics include
 // every current blocker and every dependency path.
 export interface CoreBlocker {
