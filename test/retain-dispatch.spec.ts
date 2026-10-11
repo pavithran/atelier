@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import type { Dispatch, CoreHold } from "../src/dispatch/rules.ts";
+import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 
 const TOKEN = "retain-dispatch-test";
 const revoked: string[] = [];
@@ -12,7 +13,13 @@ function call(method: string, path: string, body?: unknown) {
     body: body === undefined ? undefined : JSON.stringify(body),
   }), { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts } as typeof env);
 }
+// A pool that could suggest a builder, as other dispatch specs seed it, so a
+// retained dispatch is accepted and its suppressed suggestion is observable.
+const POOL: ModelEntry[] = ["shared", "new"].map((id) => ({
+  id, harness: "codex", where: "home", provider: "subscription", aliases: [], family: familyOf(id), note: "", addedBy: "owner", addedAt: "2026-10-06T12:00:00.000Z",
+}));
 async function setup(name: string, coreFiles = ["src/**"]) {
+  for (const m of POOL) await env.LEDGER.get(env.LEDGER.idFromName("__index")).putModel(m);
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   const record = { name, repo: name, policy: { checks: [], protected: [], coreFiles }, createdAt: new Date().toISOString() };
   await L.setProject(record, "owner");
@@ -68,6 +75,16 @@ it("fresh overrides, absent holds and ordinary redispatch keep their defaults", 
   const ordinary = await (await call("POST", path, {})).json() as Answer;
   expect(ordinary.dispatch).toMatchObject({ to: "any", agent: null, model: null, note: "" });
   expect(ordinary.dispatch.overlapOk).toBeUndefined();
+});
+it("a first overlap override asking for a suggestion still gets one from the pool", async () => {
+  const { path } = await setup("retain-fresh-suggest");
+  const res = await call("POST", path, { overlapOk: true, suggest: true });
+  expect(res.status, await res.clone().text()).toBe(200);
+  const answer = await res.json() as Answer & { suggestion?: { actor: string } };
+  expect(answer.retainedDispatch).not.toBe(true);
+  expect(answer.releasedCoreHold).toBeUndefined();
+  expect(POOL.map((m) => `codex/${m.id}`)).toContain(answer.suggestion?.actor);
+  expect(`${answer.dispatch.agent}/${answer.dispatch.model}`).toBe(answer.suggestion?.actor);
 });
 it("does not report a released hold for a first dispatch even with overlapping core scope", async () => {
   const { path } = await setup("retain-fresh-core");
