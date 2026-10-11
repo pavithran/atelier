@@ -115,7 +115,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     ];
     return {
       item: { id, title: `Fixture ${id}`, state, owner: "codex/test", ...(box.pushActors ? { pushActors: box.pushActors } : {}), head, ...(box.kinds[id] ? { kind: box.kinds[id] } : {}), acceptedHead: state === "accepted" || state === "merged" ? head : null },
-      policy: { checks: box.checks, protected: ["work.txt"], regenerate: box.regen, ...(box.agents ? { agents: box.agents } : {}), ...(box.eligible ? { eligible: box.eligible } : {}) },
+      policy: { reviewerAdmissions: box.reviewerAdmissions, checks: box.checks, protected: ["work.txt"], regenerate: box.regen, commitIdentity: { name: "Fixture", email: "fixture@example.invalid", agentEmails: [] }, ...(box.agents ? { agents: box.agents } : {}), ...(box.eligible ? { eligible: box.eligible } : {}) },
       gate: { ready: true, outOfScope: [], blockers: [] }, evidence: [], reviews, events,
     };
   };
@@ -885,6 +885,22 @@ test("where main and the task each raised the route level from one base, the lan
   assert.deepEqual(merge.body.routeLevel, { base: 6, main: 7, task: 7, was: 7, set: 8 });
 });
 
+test("named legacy mappings stop automatic renumbering until the builder resolves them", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t, { seedRouteLevel: 6 });
+  for (const dir of [f.workspace("t1"), f.checkout]) {
+    writeFileSync(join(dir, "src", "route-level.ts"), 'declare("tasks.new.v1", 7, "new behaviour");\nexport const ROUTE_LEVEL = 7;\n');
+    git(dir, "add", "."); git(dir, "commit", "-m", "Raise with a named declaration"); git(dir, "push", "-q", "origin", "main");
+  }
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.notEqual(r.status, 0, r.output);
+  assert.match(r.output, /named capability legacy mappings need manual resolution/);
+  assert.match(r.output, /Move the task's new declare\(\) levels above main's 7, set ROUTE_LEVEL to 8/);
+  assert.match(readFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "utf8"), /ROUTE_LEVEL = 7;/);
+  assert.notEqual(f.box.states.t1, "merged");
+  assert.doesNotMatch(git(f.workspace("t1"), "log", "--format=%s"), /Raise the route level after merging/);
+});
+
 test("where only main raised the route level, the merge takes main's number and nothing is raised past it", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t, { seedRouteLevel: 6 });
@@ -1076,7 +1092,7 @@ test("a server a route level lower than the CLI's refuses, naming both levels an
   f.box.requests.length = 0;
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /lacks capabilities land\.workflow\.v1/);
+  assert.match(r.output, /lacks capabilities projects\.commit-identity\.v1, land\.workflow\.v1/);
   assert.match(r.output, /route level 13/);
   assert.match(r.output, /Deploy the server/);
   assert.deepEqual(f.box.requests.filter((x) => x.method === "POST"), []);
@@ -1097,7 +1113,7 @@ test("a server a route level lower than the CLI's refuses --wait at start, sayin
   f.box.requests.length = 0;
   const r = await f.run(f.checkout, "land", "t1", "--wait");
   assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /lacks capabilities land\.workflow\.v1/);
+  assert.match(r.output, /lacks capabilities projects\.commit-identity\.v1, land\.workflow\.v1/);
   assert.match(r.output, /Deploy the server/);
   // Nothing was asked of the lease — no queued ask, no take — and the lease
   // and the queue stand exactly as they were.
@@ -1942,4 +1958,14 @@ test("Workflow lease polling bounds a three-hour queue's steps and refreshes eve
     }
   }
   assert.equal(landingLeasePollMs(30, 10), 10);
+});
+
+
+test("land accepts a project-admitted reviewer alias despite its harness lacking the assessor role", async (t) => {
+  const f = await landFixture(t);
+  f.box.agents = { claude: { available: true, eligible_roles: ["assessor"] } };
+  f.box.reviewerAdmissions = [{ id: "Qwen3-Coder-Next", aliases: ["studio-review"], active: true, by: "owner", reason: "Qualified", at: new Date().toISOString() }];
+  const result = await f.run(f.checkout, "land", "t1", "--reviewer", "opencode/studio-review");
+  assert.equal(result.status, 0, result.output);
+  assert.equal(f.posts("/review-request")[0].body.reviewer, "opencode/studio-review");
 });

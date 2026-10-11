@@ -280,7 +280,7 @@ export async function runLand(io) {
     // counts. The refusal names the agents that would count.
     if (d0.policy) {
       const refusal = roleRefusal(reviewer, d0.policy, "assessor", d0.ownerActor);
-      if (refusal) die(`${reviewer}'s approval would not count in ${name}: ${refusal}. Name another reviewer with --reviewer H/M.`);
+      if (refusal) die(`${reviewer}'s approval would not count in ${name}: ${refusal}. Name another reviewer with --reviewer H/M. The owner can admit a registered model with atelier models admit ID --project ${name} --reason TEXT.`);
     }
   }
   const regenerate = typeof d0.policy?.regenerate === "string" ? d0.policy.regenerate : null;
@@ -1006,6 +1006,11 @@ async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, g
       const rightLevel = mainLevel + (taskLevel - baseLevel);
       if (mergedLevel < rightLevel) {
         const levelFile = join(dir, "src", "route-level.ts");
+        // A numeric raise alone would falsely map the task's capabilities to
+        // main's old level. Keep the merge for the builder to resolve explicitly.
+        if (/\bdeclare\s*\(/.test(readFileSync(levelFile, "utf8"))) {
+          throw new StepError(`main and ${id} each raised the route level from ${baseLevel}; named capability legacy mappings need manual resolution. Move the task's new declare() levels above main's ${mainLevel}, set ROUTE_LEVEL to ${rightLevel}, and commit before rerunning atelier land ${id}. Keep main's published mappings unchanged.`);
+        }
         writeFileSync(levelFile, readFileSync(levelFile, "utf8").replace(/export const ROUTE_LEVEL = \d+;/, `export const ROUTE_LEVEL = ${rightLevel};`));
         git(["add", "--", "src/route-level.ts"], { cwd: dir });
         git(["commit", "--quiet", "-m", `Raise the route level after merging main into ${id}\n\nAtelier land: main and ${id} each raised it from ${baseLevel}, so the merged level is ${rightLevel}`], { cwd: dir });

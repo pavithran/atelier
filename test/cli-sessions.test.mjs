@@ -57,7 +57,7 @@ globalThis.fetch = async (url, options) => {
   } else if (path.endsWith("/standing")) result = { project: { name: "demo", title: "Demo" }, generatedAt: "2026-10-05T12:00:00Z", live: [], waiting: [], queued: [], merged: [], handoffs: [], partial: [], controlPlane: null };
   else if (path.endsWith("/baseline-head")) result = { head: ${JSON.stringify(head)} };
   else if (path.endsWith("/sessions")) result = [previous];
-  else if (path === "/api/projects/demo") result = { project: { policy: { checks: JSON.parse(process.env.FAKE_CHECKS ?? '["exit 7"]') } } };
+  else if (path === "/api/projects/demo") result = { project: { policy: { checks: JSON.parse(process.env.FAKE_CHECKS ?? '["exit 7"]'), ...(process.env.FAKE_IDENTITY ? { commitIdentity: JSON.parse(process.env.FAKE_IDENTITY) } : {}) } } };
   else throw Error("unexpected route " + path);
   return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
 };
@@ -668,6 +668,45 @@ test("wrap pushes each remote, continues after failure, files found tasks and th
   assert.match(r.stdout, /Relay: session closed with a failed push to broken\./);
   assert.match(r.stdout, /Remote broken: failed\./);
 });
+test("wrap pushes a declared public mirror only the project's no-reply address: an agent address the landing allows is not published", (t) => {
+  const f = fixture(t), path = remote(f, "github"), own = remote(f, "origin");
+  const branch = f.git("branch", "--show-current");
+  // History the mirror already holds is not read again, whatever it carries.
+  f.git("push", "-q", "github", branch);
+  const identity = JSON.stringify({ name: "Owner", email: "123+owner@users.noreply.github.com", agentEmails: ["agents@atelier.example"], publicMirrors: ["github"] });
+  // A commit under the project's no-reply address is published.
+  f.git("config", "user.email", "123+owner@users.noreply.github.com");
+  const pushed = f.runWith({ FAKE_IDENTITY: identity }, "wrap", "Owner", "--push", "--no-check");
+  assert.equal(pushed.status, 0, pushed.stderr);
+  assert.match(pushed.stdout, /Remote github: pushed\./);
+  const published = f.git("rev-parse", "HEAD");
+  assert.equal(f.git("--git-dir", path, "rev-parse", `refs/heads/${branch}`), published);
+  // One under an agent address the landing allows is not.
+  f.git("config", "user.email", "agents@atelier.example");
+  writeFileSync(join(f.checkout, "agent.txt"), "agent work\n");
+  const refused = f.runWith({ FAKE_IDENTITY: identity }, "wrap", "Agent", "--push", "--no-check");
+  assert.equal(refused.status, 1, refused.stderr);
+  const commit = f.git("rev-parse", "HEAD");
+  assert.match(refused.stdout, new RegExp(`Remote github: not pushed; it would publish addresses that are not public:\\n  commit ${commit.slice(0, 12)}: the author email agents@atelier\\.example is not the project's public address 123\\+owner@users\\.noreply\\.github\\.com \\(commitEmail\\), the only one a public mirror \\(publicMirrors\\) takes\\n  commit ${commit.slice(0, 12)}: the committer email agents@atelier\\.example`));
+  assert.doesNotMatch(refused.stdout, /test@example\.invalid/, "what the mirror already holds is outside the range");
+  assert.equal(f.git("--git-dir", path, "rev-parse", `refs/heads/${branch}`), published);
+  // A remote the policy does not declare a public mirror is the owner's own, and takes the agent's commit.
+  assert.match(refused.stdout, /Remote origin: pushed\./);
+  assert.equal(f.git("--git-dir", own, "rev-parse", `refs/heads/${branch}`), commit);
+  assert.match(refused.stderr, /the push failed for 1 remote: github/);
+});
+
+test("wrap checks no remote as a public mirror when the policy declares none", (t) => {
+  const f = fixture(t), path = remote(f, "github");
+  const branch = f.git("branch", "--show-current");
+  const identity = JSON.stringify({ name: "Owner", email: "123+owner@users.noreply.github.com", agentEmails: ["agents@atelier.example"] });
+  f.git("config", "user.email", "agents@atelier.example");
+  const r = f.runWith({ FAKE_IDENTITY: identity }, "wrap", "Agent", "--push", "--no-check");
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /Remote github: pushed\./);
+  assert.equal(f.git("--git-dir", path, "rev-parse", `refs/heads/${branch}`), f.git("rev-parse", "HEAD"));
+});
+
 test("wrap names every failed push in the relay line, beside an overridden failing check", (t) => {
   const f = fixture(t);
   f.git("remote", "add", "gone", join(f.dir, "gone.git"));

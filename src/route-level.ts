@@ -1,45 +1,6 @@
 import type { CommandModule } from "./usage/command.ts";
 import { COMMAND_MODULES } from "./usage/commands/index.ts";
 
-// The server's route level, one integer the server and the CLI share by
-// importing this module. GET /api/version reports it beside the deployed
-// commit, and a CLI from before capabilities (below) refuses when the
-// server's level is lower than its own, since it may be calling a route the
-// server does not have, or one whose meaning the server has changed. Raise
-// it by one, and only then, when a change makes the CLI start calling a
-// route the server did not have, or changes the meaning of an existing route
-// the CLI relies on; a merge that changes neither changes nothing here,
-// whatever commit it moves to. Two tasks that each raise it from one base
-// merge cleanly to the number they share; atelier land, wherever the
-// workspace's HEAD holds main — its own merge or a rerun of one resolved
-// by hand — compares this file at the task's fork point, its head and
-// main's head, and raises the merged level to main's plus the task's own
-// raise, so each number keeps meaning one set of routes. Since t458 the
-// number gates nothing on its own: each raise declares the capability it
-// stands for in CAPABILITIES below, with the level it was raised to, and
-// test/capabilities.test.mjs fails a raise that declares none, or a
-// declaration with a level this number has not reached. 14: the
-// landing-workflow routes, behind atelier land --workflow (t280). 15: items
-// take a brief and acceptance criteria apart from the short title, and edit
-// takes a title (t315). 16: a review names the binding of the acceptance
-// criteria it judged and may name the request it claimed, the review claim
-// gives both, and edit says what a change of criteria withdrew (t326).
-// 17: the review-unparsable route, which the runner's review job calls to
-// keep a reply no verdict could be read from on the task (t407).
-// 18: the owner keeps dated notes under a pool model, atelier models note
-// (t406).
-// 19: a project that requires criteria refuses a task filed or cleared
-// without them, and init takes --require-criteria (t397).
-// Runner-scoped API credentials and revocable Git gateway (t444).
-// 21: a runner reports a review it will not serve to review-skip, the
-// queue's review tasks and the review request's answer name the request's
-// number, and the landing counts skips by it (t353). 22: a runner token
-// posts review-skip for a review job it was offered, under the job's actor,
-// as the runner has done since runner tokens (t444); a server at 21 refused
-// it, so a runner's skip never reached the landing (t353).
-// 23: function areas, task assignments and the shared board snapshot (t456).
-export const ROUTE_LEVEL = 23;
-
 // Named capabilities (t458), which replace the one number as what a command
 // or runner job asks of the server. A capability names one behaviour of the
 // API a client may rely on; the server publishes the names it supports
@@ -57,9 +18,11 @@ export const ROUTE_LEVEL = 23;
 // old one stays published for as long as the server still behaves that way,
 // so a client that needs v1 is not satisfied by a server that has only v2.
 // Each capability is one `declare` line of its own in CAPABILITIES, under
-// its family, so two tasks that add one each touch different lines and
+// its family, so additions in separated existing families can
 // merge cleanly (test/capabilities.test.mjs merges them with git
-// merge-file); buildCapabilities refuses a name declared twice, or one that
+// merge-file). Same-family additions and two new families can conflict:
+// resolve by retaining both declarations, then validate names and levels.
+// buildCapabilities refuses a name declared twice, or one that
 // is not well formed, when this module loads, and commandCapabilities
 // refuses a command that requires a name no declaration publishes.
 //
@@ -67,7 +30,7 @@ export const ROUTE_LEVEL = 23;
 // reports only routeLevel is read through `level` on the declarations: level
 // N guarantees exactly the capabilities declared with level <= N, which is
 // the documented guarantee of each raise (the integration routes at 6, in
-// the commits named there, and each raise from 14 on above), and nothing
+// the commits named there, and each raise from 14 on below), and nothing
 // else. A capability with no level (one added after this migration) is not
 // guaranteed by any legacy level, so a legacy server is refused for it.
 // ROUTE_LEVEL and its merge arithmetic (atelier land) stay until no
@@ -111,10 +74,12 @@ export const CAPABILITIES = buildCapabilities([
   declare("reviews.unparsable.v1", 17, "the review-unparsable route a runner's review job calls"),
   declare("reviews.skip.v1", 21, "the review-skip route a runner posts for a review it will not serve; the queue's review tasks and the review request's answer name the request's number, and the landing counts skips by it"),
   declare("reviews.skip-as-runner.v1", 22, "a runner token posts review-skip for a review job it was offered, under the job's actor"),
+  declare("reviews.admission.v1", 25, "owner admission, withdrawal and listing of outside reviewers"),
   // models: the pool
   declare("models.note.v1", 18, "dated owner notes under a pool model"),
   // projects: what a project requires of its tasks
   declare("projects.require-criteria.v1", 19, "a project that requires criteria refuses a task filed or cleared without them"),
+  declare("projects.commit-identity.v1", 24, "project policy carries commitIdentity; init records commitName, commitEmail, agentEmails, privateEmails and publicMirrors"),
   // runners: credentials
   declare("runners.scoped-token.v1", 20, "runner-scoped API credentials and the revocable Git gateway"),
   // areas: function areas and the board
@@ -180,14 +145,14 @@ export function requiredForCommand(command: string, word?: string): string[] {
 // actor (reviews.skip.v1, reviews.skip-as-runner.v1); the integrate and
 // refresh jobs post the integration routes (plans.integration.v1).
 export const JOB_CAPABILITIES: Readonly<Record<string, readonly CapabilityName[]>> = {
-  build: ["items.brief-criteria.v1", "runners.scoped-token.v1"],
-  plan: ["items.brief-criteria.v1", "runners.scoped-token.v1"],
-  "merge-main": ["runners.scoped-token.v1"],
-  "merge-main-task": ["runners.scoped-token.v1"],
-  "merge-plan": ["runners.scoped-token.v1"],
-  review: ["reviews.criteria-binding.v1", "reviews.unparsable.v1", "reviews.skip.v1", "reviews.skip-as-runner.v1", "runners.scoped-token.v1"],
-  integrate: ["plans.integration.v1", "runners.scoped-token.v1"],
-  refresh: ["plans.integration.v1", "runners.scoped-token.v1"],
+  build: ["projects.commit-identity.v1", "items.brief-criteria.v1", "runners.scoped-token.v1"],
+  plan: ["projects.commit-identity.v1", "items.brief-criteria.v1", "runners.scoped-token.v1"],
+  "merge-main": ["projects.commit-identity.v1", "runners.scoped-token.v1"],
+  "merge-main-task": ["projects.commit-identity.v1", "runners.scoped-token.v1"],
+  "merge-plan": ["projects.commit-identity.v1", "runners.scoped-token.v1"],
+  review: ["projects.commit-identity.v1", "reviews.criteria-binding.v1", "reviews.unparsable.v1", "reviews.skip.v1", "reviews.skip-as-runner.v1", "runners.scoped-token.v1"],
+  integrate: ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1"],
+  refresh: ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1"],
 };
 
 export const requiredForJobs = (jobs: readonly string[]): string[] => [...new Set(jobs.flatMap((job) => JOB_CAPABILITIES[job] ?? []))];
@@ -229,3 +194,47 @@ export function checkCapabilities(version: unknown, required: readonly string[])
   const what = via === "legacy" ? `reports only route level ${v.routeLevel}, which guarantees ${[...have].join(", ") || "none"}` : `publishes ${[...have].join(", ") || "none"}`;
   return fail(unmapped.length ? "unmapped" : "missing", missing, `the server (${revision}) lacks capabilities ${missing.join(", ")}: it ${what}. ${remedy}`);
 }
+
+// The server's route level, one integer the server and the CLI share by
+// importing this module. GET /api/version reports it beside the deployed
+// commit, and a CLI from before capabilities (above) refuses when the
+// server's level is lower than its own, since it may be calling a route the
+// server does not have, or one whose meaning the server has changed. Raise
+// it by one, and only then, when a change makes the CLI start calling a
+// route the server did not have, or changes the meaning of an existing route
+// the CLI relies on; a merge that changes neither changes nothing here,
+// whatever commit it moves to. Two tasks that each raise it from one base
+// merge cleanly to the number they share; atelier land, wherever the
+// workspace's HEAD holds main — its own merge or a rerun of one resolved
+// by hand — compares this file at the task's fork point, its head and
+// main's head, and raises the merged level to main's plus the task's own
+// raise (named declarations require manual mapping resolution), so each number keeps meaning one set of routes. Since t458 the
+// number gates nothing on its own: each raise declares the capability it
+// stands for in CAPABILITIES above, with the level it was raised to, and
+// test/capabilities.test.mjs fails a raise that declares none, or a
+// declaration with a level this number has not reached. 14: the
+// landing-workflow routes, behind atelier land --workflow (t280). 15: items
+// take a brief and acceptance criteria apart from the short title, and edit
+// takes a title (t315). 16: a review names the binding of the acceptance
+// criteria it judged and may name the request it claimed, the review claim
+// gives both, and edit says what a change of criteria withdrew (t326).
+// 17: the review-unparsable route, which the runner's review job calls to
+// keep a reply no verdict could be read from on the task (t407).
+// 18: the owner keeps dated notes under a pool model, atelier models note
+// (t406).
+// 19: a project that requires criteria refuses a task filed or cleared
+// without them, and init takes --require-criteria (t397).
+// Runner-scoped API credentials and revocable Git gateway (t444).
+// 21: a runner reports a review it will not serve to review-skip, the
+// queue's review tasks and the review request's answer name the request's
+// number, and the landing counts skips by it (t353). 22: a runner token
+// posts review-skip for a review job it was offered, under the job's actor,
+// as the runner has done since runner tokens (t444); a server at 21 refused
+// it, so a runner's skip never reached the landing (t353).
+// 23: function areas, task assignments and the shared board snapshot (t456).
+// 24: a project's policy carries its commit identity, which every claim,
+// runner and landing reads, and init takes commitName, commitEmail,
+// agentEmails, privateEmails and publicMirrors (t451).
+// 25: the owner admits, withdraws and lists outside reviewers (PUT, DELETE
+// and GET /projects/:p/reviewers), which an older server answers 404 (t492).
+export const ROUTE_LEVEL = 25;

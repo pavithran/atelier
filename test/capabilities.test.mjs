@@ -119,19 +119,19 @@ test("a command or job with no declaration needs nothing", () => {
 // set of commands that depend on one; a command dropped from it, or one that
 // starts depending on a capability without declaring it, fails here.
 test("each command that relies on a named capability declares it in its module", () => {
-  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["area", "board", "edit", "init", "integrated", "integration-failed", "land", "merge", "models", "new", "plan", "refresh-failed", "refreshed", "review", "review-claim", "review-unparsable", "token"]);
+  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["adopt", "area", "board", "claim", "edit", "init", "integrated", "integration-failed", "land", "merge", "models", "new", "plan", "refresh-failed", "refreshed", "revert", "review", "review-claim", "review-unparsable", "start", "token", "wrap"]);
   for (const command of ["integrated", "integration-failed", "refreshed", "refresh-failed"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["plans.integration.v1"], command);
   // land counts the runners that skipped its review request by the request number the answer carries (t353).
-  assert.deepEqual(COMMAND_CAPABILITIES.land, ["land.workflow.v1", "items.brief-criteria.v1", "reviews.criteria-binding.v1", "projects.require-criteria.v1", "reviews.skip.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.land, ["projects.commit-identity.v1", "land.workflow.v1", "items.brief-criteria.v1", "reviews.criteria-binding.v1", "projects.require-criteria.v1", "reviews.skip.v1"]);
   // new and edit assign a task to a function area (--area, t456); area manages them and board reads the snapshot.
   assert.deepEqual(COMMAND_CAPABILITIES.new, ["items.brief-criteria.v1", "areas.manage.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.edit, ["items.brief-criteria.v1", "reviews.criteria-binding.v1", "areas.manage.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.area, ["areas.manage.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.board, ["areas.board.v1"]);
-  assert.deepEqual(COMMAND_CAPABILITIES.init, ["projects.require-criteria.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.init, ["projects.commit-identity.v1", "projects.require-criteria.v1"]);
   for (const command of ["review", "review-claim"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["reviews.criteria-binding.v1"], command);
   // merge posts the owner's review and, for an accepted plan that conflicts with main, the plan refresh route.
-  assert.deepEqual(COMMAND_CAPABILITIES.merge, ["reviews.criteria-binding.v1", "plans.refresh.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.merge, ["projects.commit-identity.v1", "reviews.criteria-binding.v1", "plans.refresh.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.plan, ["plans.refresh.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES["review-unparsable"], ["reviews.unparsable.v1"]);
   // The declarations are the modules' own: the module says what the registry reads.
@@ -149,7 +149,7 @@ test("a subcommand's capabilities are asked only when that subcommand runs", () 
   assert.deepEqual(requiredForCommand("models", "add"), []);
   assert.deepEqual(requiredForCommand("models", "note"), ["models.note.v1"]);
   assert.deepEqual(requiredForCommand("models", "show"), ["models.note.v1"]);
-  assert.deepEqual(COMMAND_CAPABILITIES.models, ["models.note.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.models, ["reviews.admission.v1", "models.note.v1"]);
   assert.deepEqual(requiredForCommand("token", "issue"), ["runners.scoped-token.v1"]);
   assert.deepEqual(requiredForCommand("token", "store"), ["runners.scoped-token.v1"]);
   assert.deepEqual(requiredForCommand("token", "ls"), []);
@@ -175,7 +175,7 @@ test("a module that requires a name no declaration publishes is refused, naming 
 // integrator's start check has something to check.
 test("every runner job declares what it needs, the integrator's jobs included", () => {
   for (const job of [...DEFAULT_JOBS, "review", "integrate", "refresh"]) assert.ok(JOB_CAPABILITIES[job]?.length, `${job} declares nothing`);
-  assert.deepEqual(requiredForJobs(["integrate", "refresh"]), ["plans.integration.v1", "runners.scoped-token.v1"]);
+  assert.deepEqual(requiredForJobs(["integrate", "refresh"]), ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1"]);
   const required = requiredForJobs(["integrate", "refresh"]);
   assert.equal(checkCapabilities({ capabilities: [] }, required).kind, "missing");
   assert.equal(checkCapabilities({ routeLevel: 0 }, required).kind, "missing");
@@ -183,7 +183,7 @@ test("every runner job declares what it needs, the integrator's jobs included", 
   assert.equal(checkCapabilities({ routeLevel: ROUTE_LEVEL }, required).ok, true);
   assert.equal(checkCapabilities({ capabilities: SERVER_CAPABILITIES }, required).ok, true);
   // A server with the routes but not the runner credential is short of one.
-  assert.deepEqual(checkCapabilities({ routeLevel: 19 }, required).missing, ["runners.scoped-token.v1"]);
+  assert.deepEqual(checkCapabilities({ routeLevel: 19 }, required).missing, ["projects.commit-identity.v1", "runners.scoped-token.v1"]);
 });
 
 test("the integration routes are guaranteed from legacy level 6, as the commits that added them document", () => {
@@ -212,15 +212,30 @@ test("every route level raised since capabilities declares the capability it sta
   assert.deepEqual(capabilitiesForLevel(22).filter((n) => n.startsWith("areas.")), []);
 });
 
+test("main's identity and reviewer admission guarantees keep their legacy boundaries", () => {
+  assert.deepEqual(CAPABILITIES.filter((c) => c.level === 24).map((c) => c.name), ["projects.commit-identity.v1"]);
+  assert.deepEqual(CAPABILITIES.filter((c) => c.level === 25).map((c) => c.name), ["reviews.admission.v1"]);
+  for (const command of ["adopt", "revert", "claim", "start", "wrap", "init", "land", "merge"]) {
+    assert.ok(COMMAND_CAPABILITIES[command].includes("projects.commit-identity.v1"), command);
+    assert.deepEqual(checkCapabilities({ routeLevel: 23 }, COMMAND_CAPABILITIES[command]).missing, ["projects.commit-identity.v1"]);
+    assert.equal(checkCapabilities({ routeLevel: 24 }, COMMAND_CAPABILITIES[command]).ok, true);
+  }
+  for (const word of ["admit", "withdraw", "reviewers"]) {
+    assert.deepEqual(requiredForCommand("models", word), ["reviews.admission.v1"]);
+    assert.equal(checkCapabilities({ routeLevel: 24 }, requiredForCommand("models", word)).kind, "missing");
+    assert.equal(checkCapabilities({ routeLevel: 25 }, requiredForCommand("models", word)).ok, true);
+  }
+});
+
 // The review job reports a review it will not serve as the job's actor
 // (t353): a server at 20, which has the review routes but refuses the skip,
 // and one at 21, which refuses a runner token's skip, are both short.
 test("the review job requires the skip routes, and a legacy server from before them is refused", () => {
-  assert.deepEqual(JOB_CAPABILITIES.review, ["reviews.criteria-binding.v1", "reviews.unparsable.v1", "reviews.skip.v1", "reviews.skip-as-runner.v1", "runners.scoped-token.v1"]);
-  assert.deepEqual(checkCapabilities({ routeLevel: 20 }, requiredForJobs(["review"])).missing, ["reviews.skip.v1", "reviews.skip-as-runner.v1"]);
-  assert.deepEqual(checkCapabilities({ routeLevel: 21 }, requiredForJobs(["review"])).missing, ["reviews.skip-as-runner.v1"]);
-  assert.equal(checkCapabilities({ routeLevel: 22 }, requiredForJobs(["review"])).ok, true);
-  assert.equal(checkCapabilities({ routeLevel: 22 }, requiredForJobs([...DEFAULT_JOBS, "review", "integrate", "refresh"])).ok, true, "no job asks for the areas");
+  assert.deepEqual(JOB_CAPABILITIES.review, ["projects.commit-identity.v1", "reviews.criteria-binding.v1", "reviews.unparsable.v1", "reviews.skip.v1", "reviews.skip-as-runner.v1", "runners.scoped-token.v1"]);
+  assert.deepEqual(checkCapabilities({ routeLevel: 20 }, requiredForJobs(["review"])).missing, ["projects.commit-identity.v1", "reviews.skip.v1", "reviews.skip-as-runner.v1"]);
+  assert.deepEqual(checkCapabilities({ routeLevel: 21 }, requiredForJobs(["review"])).missing, ["projects.commit-identity.v1", "reviews.skip-as-runner.v1"]);
+  assert.equal(checkCapabilities({ routeLevel: 24 }, requiredForJobs(["review"])).ok, true);
+  assert.equal(checkCapabilities({ routeLevel: 24 }, requiredForJobs([...DEFAULT_JOBS, "review", "integrate", "refresh"])).ok, true, "no job asks for the areas");
   const short = checkCapabilities({ capabilities: SERVER_CAPABILITIES.filter((n) => n !== "reviews.skip-as-runner.v1") }, requiredForJobs(["review"]));
   assert.deepEqual(short.missing, ["reviews.skip-as-runner.v1"]);
   assert.equal(checkCapabilities({ capabilities: SERVER_CAPABILITIES.filter((n) => n !== "reviews.skip-as-runner.v1") }, requiredForJobs(["build"])).ok, true);
@@ -228,8 +243,9 @@ test("the review job requires the skip routes, and a legacy server from before t
 
 // The file's shape is what lets independent changes merge: the ROUTE_LEVEL
 // block is apart from the declarations, and each declaration is a line under
-// its family, so a raise on one side and a declaration on the other, or two
-// declarations under two families, merge without conflict (git merge-file,
+// its family. A raise and a declaration, or declarations in separated existing
+// families, merge without conflict. Same-family and new-family additions
+// can conflict and require retaining both declarations by hand (git merge-file,
 // the three-way merge git merge runs), where one array line for every name,
 // or a block right after the ROUTE_LEVEL line, conflicted on every raise.
 test("a route level raise and a capability added elsewhere merge cleanly, and so do two capabilities under two families", (t) => {
@@ -261,6 +277,12 @@ test("a route level raise and a capability added elsewhere merge cleanly, and so
   const b = merge(reviewsAdd, areasAdd);
   assert.equal(b.conflicts, 0, `two declarations under two families conflict:\n${b.merged}`);
   assert.ok(b.merged.includes('declare("reviews.other.v1"') && b.merged.includes('declare("areas.other.v1"'));
+  const firstAdd = under("plans", '  declare("plans.other.v1", undefined, "first family"),\n');
+  assert.equal(merge(raise, firstAdd).conflicts, 0, "a raise must not conflict with the first family either");
+  const sameFamily = merge(reviewsAdd, under("reviews", '  declare("reviews.another.v1", undefined, "another"),\n'));
+  assert.equal(sameFamily.conflicts, 1, "same-family additions require retaining both declarations manually");
+  const newFamily = (name) => base.replace('export const CAPABILITIES = buildCapabilities([', `export const CAPABILITIES = buildCapabilities([\n  declare("${name}.new.v1", undefined, "new family"),`);
+  assert.equal(merge(newFamily("one"), newFamily("two")).conflicts, 1, "two new families at the same insertion point require manual resolution");
   const c = merge(raise, areasAdd);
   assert.equal(c.conflicts, 0, `a raise against a declaration at the end conflicts:\n${c.merged}`);
   assert.doesNotMatch(a.merged + b.merged + c.merged, /^[<>=]{7}/m);
@@ -311,6 +333,14 @@ function invocations(root) {
     { argv: ["init", "--title", "Proj"], required: COMMAND_CAPABILITIES.init },
     { argv: ["merge", "t1", "--project", "proj"], required: COMMAND_CAPABILITIES.merge },
     { argv: ["plan", "refresh", "t1", "--project", "proj"], required: ["plans.refresh.v1"] },
+    { argv: ["models", "admit", "gpt", "--project", "proj", "--reason", "independent"], required: ["reviews.admission.v1"] },
+    { argv: ["models", "withdraw", "gpt", "--project", "proj", "--reason", "retired"], required: ["reviews.admission.v1"] },
+    { argv: ["models", "reviewers", "--project", "proj"], required: ["reviews.admission.v1"] },
+    { argv: ["adopt", "--project", "proj"], required: COMMAND_CAPABILITIES.adopt },
+    { argv: ["revert", "t1", "--project", "proj"], required: COMMAND_CAPABILITIES.revert },
+    { argv: ["claim", "t1", "--project", "proj"], required: COMMAND_CAPABILITIES.claim },
+    { argv: ["start", "t1", "--project", "proj"], required: COMMAND_CAPABILITIES.start },
+    { argv: ["wrap", "summary"], required: COMMAND_CAPABILITIES.wrap },
     { argv: ["models", "note", "gpt", "a note"], required: ["models.note.v1"] },
     { argv: ["models", "show", "gpt"], required: ["models.note.v1"] },
     { argv: ["review", "t1", "--approve", "--criteria", BINDING, "--project", "proj"], required: COMMAND_CAPABILITIES.review },
@@ -391,6 +421,8 @@ test("help, --help and --version of a command that declares capabilities contact
     const r = await f.run(argv);
     assert.equal(r.status, 0, `${argv.join(" ")}: ${r.output}`);
   }
+  const rename = await f.run(["init", "--rename-local", "--name", "renamed"]);
+  assert.doesNotMatch(rename.output, /capabilities|GET \/api\/version/);
   // A flag the command does not take is refused before the server is asked.
   const bad = await f.run(["new", "A title", "--bogus"]);
   assert.equal(bad.status, 1);

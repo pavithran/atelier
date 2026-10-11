@@ -112,3 +112,22 @@ test("models lists the pool with each model's notes beneath its line, oldest fir
     "cloud gemini-cli/gemini-3  google  not checked",
   ]);
 });
+
+test("models admit and withdraw address one project's reviewer admission with a reason", async (t) => {
+  const record = { id: "Qwen3-Coder-Next", active: true, by: "owner", at: NOTE.at, reason: "Qualified locally" };
+  const f = await stub(t, (method) => ({ data: { ...record, active: method === "PUT" } }));
+  for (const sub of ["admit", "withdraw"]) {
+    const result = await f.run(["models", sub, "studio-review", "--project", "alpha", "--reason", record.reason]);
+    assert.equal(result.status, 0, result.output);
+    assert.match(result.output, /Qwen3-Coder-Next: reviewer .* in alpha by owner/);
+  }
+  assert.deepEqual(f.requests, ["PUT", "DELETE"].map((method) => ({ method, path: "/api/projects/alpha/reviewers/studio-review", body: { reason: record.reason } })));
+});
+
+test("reviewer admission needs a reason before sending a request", async (t) => {
+  const f = await stub(t, () => ({ data: {} }));
+  const result = await f.run(["models", "admit", "Qwen3-Coder-Next", "--project", "alpha"]);
+  assert.equal(result.status, 1);
+  assert.match(result.output, /--reason TEXT/);
+  assert.deepEqual(f.requests, []);
+});

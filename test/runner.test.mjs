@@ -183,6 +183,8 @@ function fixture(options = {}) {
       return { code: options.code ?? 0, timedOut: options.timedOut };
     },
     async removeBrief(brief) { calls.push({ removed: brief.file }); },
+    // The builder's commit identity (t451): allowed unless the test says otherwise.
+    async identityRefusals() { return options.identityRefusals ?? []; },
     async dataHome(workspace) {
       const dir = `${dirname(workspace)}/.atelier-${basename(workspace)}-opencode-data-x`;
       homes.push({ made: dir });
@@ -430,6 +432,9 @@ function gitWorkspace(t) {
   git("init", "--quiet");
   git("config", "user.name", "Runner test");
   git("config", "user.email", "runner@example.test");
+  // The policy a claim keeps beside that identity (t451), which the runner
+  // checks the builder's identity against.
+  writeFileSync(join(workspace, ".git", "atelier-identity.json"), JSON.stringify({ name: "Runner test", email: "runner@example.test", agentEmails: [] }));
   writeFileSync(join(workspace, "tracked"), "original");
   git("add", ".");
   git("commit", "--quiet", "-m", "initial");
@@ -660,15 +665,15 @@ test("versionRefusal names the missing capabilities and says to deploy, and clea
   assert.match(versionRefusal({ capabilities: ["items.brief-criteria.v1"] }, ["review"]), /reviews\.unparsable\.v1/);
   // A legacy server at 19 has the routes but not the runner credential;
   // one at 21 refuses a runner token's review skip (t353), which the review
-  // job needs; the runner's jobs ask nothing of the levels past 22, so the
+  // job needs; the runner's jobs ask nothing of the levels past 24, so the
   // level a server reports may trail this CLI's and the runner still starts.
   const behind = versionRefusal({ routeLevel: 19, commit: "abcdef0123456789" });
-  assert.match(behind, /lacks capabilities runners\.scoped-token\.v1/);
+  assert.match(behind, /lacks capabilities .*runners\.scoped-token\.v1/);
   assert.match(behind, /main at abcdef01/);
   assert.match(behind, /then start the runner again/);
-  assert.match(versionRefusal({ routeLevel: 21 }), /lacks capabilities reviews\.skip-as-runner\.v1: it reports only route level 21/);
-  assert.equal(versionRefusal({ routeLevel: 21 }, ["build"]), null, "the build job asks nothing of the review's skip");
-  assert.equal(versionRefusal({ routeLevel: 22, commit: "abcdef0123456789" }), null);
+  assert.match(versionRefusal({ routeLevel: 21 }), /lacks capabilities .*reviews\.skip-as-runner\.v1: it reports only route level 21/);
+  assert.match(versionRefusal({ routeLevel: 21 }, ["build"]), /projects\.commit-identity\.v1/);
+  assert.equal(versionRefusal({ routeLevel: 24, commit: "abcdef0123456789" }), null);
   assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL, commit: "abcdef0123456789" }), null);
   assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL + 1, commit: "abcdef0123456789" }), null);
 });
@@ -721,10 +726,10 @@ test("the integrator refuses a server lacking its jobs' capabilities and polls n
   const integrator = { _: ["runner"], multi: { name: ["home:studio"], integrate: [true] }, name: "home:studio", integrate: true, once: true };
   for (const [version, expected] of [
     [null, /did not answer GET \/api\/version/],
-    [{ capabilities: [] }, /lacks capabilities plans\.integration\.v1, runners\.scoped-token\.v1/],
-    [{ routeLevel: 0 }, /lacks capabilities plans\.integration\.v1, runners\.scoped-token\.v1: it reports only route level 0/],
-    [{ routeLevel: 19 }, /lacks capabilities runners\.scoped-token\.v1/],
-    [{ capabilities: ["runners.scoped-token.v1"] }, /lacks capabilities plans\.integration\.v1/],
+    [{ capabilities: [] }, /lacks capabilities projects\.commit-identity\.v1, plans\.integration\.v1, runners\.scoped-token\.v1/],
+    [{ routeLevel: 0 }, /lacks capabilities projects\.commit-identity\.v1, plans\.integration\.v1, runners\.scoped-token\.v1: it reports only route level 0/],
+    [{ routeLevel: 19 }, /lacks capabilities .*runners\.scoped-token\.v1/],
+    [{ capabilities: ["runners.scoped-token.v1"] }, /lacks capabilities projects\.commit-identity\.v1, plans\.integration\.v1/],
   ]) {
     let polls = 0;
     await assert.rejects(runRunner(integrator, {
@@ -734,7 +739,7 @@ test("the integrator refuses a server lacking its jobs' capabilities and polls n
     }), expected, JSON.stringify(version));
     assert.equal(polls, 0, `${JSON.stringify(version)}: a runner that refuses at start never polls`);
   }
-  for (const version of [{ routeLevel: ROUTE_LEVEL }, { capabilities: ["plans.integration.v1", "runners.scoped-token.v1"] }, { capabilities: [...SERVER_CAPABILITIES, "future.thing.v1"] }]) {
+  for (const version of [{ routeLevel: ROUTE_LEVEL }, { capabilities: ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1"] }, { capabilities: [...SERVER_CAPABILITIES, "future.thing.v1"] }]) {
     let polls = 0;
     await runRunner(integrator, {
       workspacePath: () => { throw new Error("no task should be claimed"); },
@@ -1520,6 +1525,7 @@ test("real runner caps reset, claim and finish failures while serving the next t
     execFileSync("git", ["clone", "--quiet", workspace, healthy]);
     execFileSync("git", ["config", "user.name", "Runner test"], { cwd: healthy });
     execFileSync("git", ["config", "user.email", "runner@example.test"], { cwd: healthy });
+    writeFileSync(join(healthy, ".git", "atelier-identity.json"), readFileSync(join(workspace, ".git", "atelier-identity.json")));
     if (failure === "reset") writeFileSync(join(workspace, ".git", "index.lock"), "stale");
     const claims = [], releases = [], runs = [], finishes = [], logs = [];
     let polls = 0;
