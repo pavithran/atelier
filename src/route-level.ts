@@ -30,7 +30,13 @@
 // posts review-skip for a review job it was offered, under the job's actor,
 // as the runner has done since runner tokens (t444); a server at 21 refused
 // it, so a runner's skip never reached the landing (t353).
-// 23: the criteria-review routes, which the runner's criteria-review job
+// 23: function areas, task assignments and the shared board snapshot (t456).
+// 24: a project's policy carries its commit identity, which every claim,
+// runner and landing reads, and init takes commitName, commitEmail,
+// agentEmails, privateEmails and publicMirrors (t451).
+// 25: the owner admits, withdraws and lists outside reviewers (PUT, DELETE
+// and GET /projects/:p/reviewers), which an older server answers 404 (t492).
+// 26: the criteria-review routes, which the runner's criteria-review job
 // calls to claim a review of a task's acceptance criteria and record its
 // verdict or failure, and init takes --require-criteria-review (t438).
-export const ROUTE_LEVEL = 23;
+export const ROUTE_LEVEL = 26;
