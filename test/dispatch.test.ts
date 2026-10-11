@@ -62,8 +62,8 @@ test("a dispatched task is claimed only by a matching runner under the requested
 });
 
 test("a dispatch note over its limit is refused, never cut", () => {
-  assert.equal(makeDispatch({ note: "n".repeat(500) }, "pavi", T).note, "n".repeat(500));
-  assert.throws(() => makeDispatch({ note: "n".repeat(501) }, "pavi", T), /the dispatch note is 501 characters; the limit is 500\. Shorten it and send it again/);
+  assert.equal(makeDispatch({ note: "n".repeat(2000) }, "pavi", T).note, "n".repeat(2000));
+  assert.throws(() => makeDispatch({ note: "n".repeat(2001) }, "pavi", T), /the dispatch note is 2001 characters; the limit is 2000\. Shorten it and send it again/);
 });
 
 // A merge-main dispatch (t243) sends a task whose landing conflicted with
