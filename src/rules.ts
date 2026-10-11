@@ -268,6 +268,14 @@ export interface Evidence {
   // a failure under a saturated machine stays legible beside a later passing
   // run of the same command. Only a run on someone's machine records one.
   load?: number;
+  // The ledger's own number for the row, set when the evidence is read back
+  // (evidenceFor in src/ledger.ts), never posted: what `atelier show` and
+  // `atelier check-log` name a result by (t436).
+  id?: number;
+  // The container run that made an observed result (src/sandbox/runner.ts),
+  // the run id `atelier check --sandbox` polls; a run on someone's machine
+  // records none.
+  run?: string;
 }
 
 // One finding of an automatic review, as parseVerdict (src/review/verdict.ts)
@@ -1355,11 +1363,22 @@ export interface EvidenceView {
 // on someone's machine is still shown but does not count.
 const countsAtHead = (policy: ProjectPolicy, e: Evidence) => e.grade === "observed" && !e.merged && (!policy.sandboxOnly || e.where === "sandbox");
 
+// The head's own runs of one check that the gate counts, oldest first: every
+// observed result at the head for that command that is not a merged run and,
+// under sandboxOnly, ran in a container. The last of them is the check's
+// result at the head (evidenceAt); the earlier ones are the retries it
+// followed, kept so a failure and the pass that answered it stay legible
+// together (t403, t436).
+export function countingRunsAt(policy: ProjectPolicy, evidence: Evidence[], head: string | null, claim: string): Evidence[] {
+  return (head ? evidence.filter((e) => e.head === head) : [])
+    .filter((e) => countsAtHead(policy, e) && !e.notApplicable && e.claim === claim)
+    .sort((a, b) => a.at.localeCompare(b.at));
+}
+
 export function evidenceAt(policy: ProjectPolicy, evidence: Evidence[], head: string | null): EvidenceView {
   const atHead = head ? evidence.filter((e) => e.head === head) : [];
   const counts = (e: Evidence) => countsAtHead(policy, e);
-  const latest = (claim: string) =>
-    atHead.filter((e) => counts(e) && !e.notApplicable && e.claim === claim).sort((a, b) => a.at.localeCompare(b.at)).pop();
+  const latest = (claim: string) => countingRunsAt(policy, atHead, head, claim).pop();
   const measured = atHead.filter((e) => counts(e) && measuredPaths(e.changedPaths) !== null).sort((a, b) =>
     Number(a.where === "sandbox") - Number(b.where === "sandbox") || a.at.localeCompare(b.at)).pop();
   const changedPaths = measured?.changedPaths ?? null;
@@ -1390,11 +1409,19 @@ export interface MergedCheckView {
   run: boolean;   // whether any merged check has been run at this head
 }
 
+// The merged runs of one check at the head that count, oldest first; the
+// last is the check's result on the merge (mergedChecksAt).
+export function mergedRunsAt(policy: ProjectPolicy, evidence: Evidence[], head: string | null, claim: string): Evidence[] {
+  return (head ? evidence.filter((e) => e.head === head) : [])
+    .filter((e) => e.claim === claim && e.merged && e.grade === "observed" && !e.notApplicable && (!policy.sandboxOnly || e.where === "sandbox"))
+    .sort((a, b) => a.at.localeCompare(b.at));
+}
+
 export function mergedChecksAt(policy: ProjectPolicy, evidence: Evidence[], head: string | null, mainNow: string | null): MergedCheckView {
   const runs = head ? evidence.filter((e) => e.head === head && e.merged && e.grade === "observed" && !e.notApplicable && (!policy.sandboxOnly || e.where === "sandbox")) : [];
   const changed = evidenceAt(policy, evidence, head).changedPaths;
   const checks = policy.checks.filter((claim) => checkApplies(policy, claim, changed) !== false).map((claim) => {
-    const e = runs.filter((e) => e.claim === claim).sort((a, b) => a.at.localeCompare(b.at)).pop();
+    const e = mergedRunsAt(policy, runs, head, claim).pop();
     return e
       ? { claim, grade: "observed" as Grade, passed: e.passed, where: e.where ?? "runner", mainHead: e.mainHead, stale: !!mainNow && e.mainHead !== mainNow, at: e.at, by: e.by }
       : { claim, grade: "pending" as Grade, passed: null, stale: false };
@@ -1414,17 +1441,25 @@ export function mergedChecksAt(policy: ProjectPolicy, evidence: Evidence[], head
 // the head's own check before it is shown and not counted. The latest merged
 // run per check decides. While the head's own check fails, it is the blocker.
 export function mergedBlockers(policy: ProjectPolicy, evidence: Evidence[], head: string | null): string[] {
-  const out: string[] = [];
+  return blockingMergedRuns(policy, evidence, head).map((b) => b.blocker);
+}
+
+// The merged runs behind mergedBlockers: each failing merged run that blocks
+// acceptance, with the blocker it is worded as, so a reading of why the gate
+// refuses (src/check-failure.ts) can show the run itself.
+export function blockingMergedRuns(policy: ProjectPolicy, evidence: Evidence[], head: string | null): { run: Evidence; blocker: string }[] {
+  const out: { run: Evidence; blocker: string }[] = [];
   for (const m of mergedChecksAt(policy, evidence, head, null).checks) {
     if (m.grade !== "observed" || m.passed || !m.mainHead || !m.at) continue;
-    const own = evidence.filter((e) => e.head === head && e.claim === m.claim && !e.notApplicable && countsAtHead(policy, e)).sort((a, b) => a.at.localeCompare(b.at));
+    const own = countingRunsAt(policy, evidence, head, m.claim);
     if (!own.at(-1)?.passed) continue;
     // The head's own run the merged one followed says which main the head's
     // check saw. With none before it, the latest run's main head is all the
     // record holds. A run that names no main head cannot say main moved.
     const ranAt = m.at, seen = own.filter((e) => e.at <= ranAt).at(-1) ?? own.at(-1)!;
     if (!seen.mainHead || (seen.at <= ranAt && seen.mainHead === m.mainHead)) continue;
-    out.push(`\`${m.claim}\` failed on the merge with main at ${m.mainHead.slice(0, 8)}, which moved after this revision's own checks passed; run atelier check --merged again, or bring main into the workspace`);
+    const run = mergedRunsAt(policy, evidence, head, m.claim).pop()!;
+    out.push({ run, blocker: `\`${m.claim}\` failed on the merge with main at ${m.mainHead.slice(0, 8)}, which moved after this revision's own checks passed; run atelier check --merged again, or bring main into the workspace` });
   }
   return out;
 }

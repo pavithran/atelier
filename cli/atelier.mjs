@@ -801,9 +801,36 @@ export async function request(method, path, body, as, extra = {}, signal) {
   return data;
 }
 
+// A text payload the server serves as it is (a stored check log, GET
+// .../logs/SHA, src/large.ts): the text, or null when nothing is stored
+// under the name; any other refusal is a RequestError with the server's
+// words.
+export async function requestText(path, as) {
+  await resolveTokenActor();
+  if (tokenActor) as = args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
+  let res, text;
+  try {
+    res = await fetch(server() + "/api" + path, { headers: { authorization: `Bearer ${apiToken()}`, ...(as ? { "x-atelier-actor": as } : {}) } });
+    text = await res.text();
+  } catch (error) { throw new RequestError(`server request failed: ${error.message}`, 4); }
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    let data = {};
+    try { data = JSON.parse(text); } catch { /* not the server's JSON refusal */ }
+    throw new RequestError(`${data.error ?? res.status}: ${data.detail ?? text.slice(0, 300)}`, res.status >= 500 ? 4 : 1);
+  }
+  return text;
+}
+
 export const P = (name) => `/projects/${encodeURIComponent(name)}`;
 export const I = (name, id) => `${P(name)}/items/${encodeURIComponent(id)}`;
 export const short = (s) => (s ? s.slice(0, 8) : "—");
+
+// The reader readCheckLog (src/check-failure.ts) takes: a stored check log
+// by its reference, from the item's own logs route, which rebuilds the key
+// from the project and item it names. `show`, `check-log` and `land`
+// (cli/commands/) pass it, each for the task it reads.
+export const logReader = (name, id, as) => (ref) => requestText(`${I(name, id)}/logs/${ref.sha256}`, as);
 
 // The owner's approval recorded on the project, or null when the project is
 // not registered yet or records none. Asked with a plain request rather than
