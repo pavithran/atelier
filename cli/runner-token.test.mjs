@@ -23,7 +23,10 @@ test("runner environment wins, empty/invalid selections cannot fall back, stores
   assert.equal(runnerCredential("https://one.test", "home:studio", { env: { ...env, ATELIER_RUNNER_TOKEN: "explicit-invalid" } }), "explicit-invalid");
   assert.throws(() => runnerCredential("https://one.test", "home:studio", { env: { ...env, ATELIER_RUNNER_TOKEN: "" } }), /empty/);
   assert.throws(() => runnerCredential("https://two.test", "home:studio", { env }), /not bound/);
-  assert.throws(() => runnerCredential("https://one.test", "home:missing", { env }), /no runner credential/);
+  assert.equal(runnerCredential("https://one.test", "home:missing", { env }), null);
+  assert.throws(() => runnerCredential("https://one.test", "home:studio", { env, read: () => "not json" }), /no server binding/);
+  assert.throws(() => runnerCredential("https://one.test", "home:studio", { env, read: () => JSON.stringify({ server: "https://one.test" }) }), /not bound/);
+  assert.throws(() => runnerCredential("https://one.test", "home:missing", { env: { ...env, ATELIER_RUNNER_TOKEN: "" } }), /empty/);
   const child = runnerChildEnv(env, "home:studio", "stored-runner", "model-review-token");
   assert.equal(runnerCredential("https://one.test", child.ATELIER_RUNNER_NAME, { env: child }), "model-review-token");
 });
@@ -68,7 +71,9 @@ for (const job of ["build", "plan"]) test(`the real runner completes ${job} with
     queue: async () => [assignment],
     jobBrief: async () => ({ text: "Build the scoped change" }),
     postPlan: async (_project, _id, who, text) => { assert.equal(who, actor); assert.equal(JSON.parse(text).goal, "Change"); posted = true; return { valid: true, hash: "plan-hash" }; },
-    taskIO: { log: (line) => logs.push(line), reset: async () => {}, head: async () => ++headReads === 1 ? "before" : "after", dataHome: async () => null },
+    // The workspace is a bare folder no claim set up, so the builder
+    // identity check (t451) is stubbed to allow it.
+    taskIO: { log: (line) => logs.push(line), reset: async () => {}, head: async () => ++headReads === 1 ? "before" : "after", dataHome: async () => null, identityRefusals: async () => [] },
     executeChild: async (argv, options) => {
       if (argv[1]?.endsWith("atelier.mjs")) {
         assert.equal(options.env.ATELIER_RUNNER_TOKEN, token);
@@ -189,4 +194,33 @@ test("the CLI stores and polls with server-bound runner credentials on an owner-
   assert.equal(polled.status, 0, polled.stderr);
   assert.match(polled.stderr, /POLLED/);
   assert.doesNotMatch(polled.stdout + polled.stderr, new RegExp(secret));
+});
+
+for (const backend of ["keychain", "secret-service"]) {
+  test(`${backend}: only a missing entry allows owner fallback`, () => {
+    const env = { ATELIER_SECRET_STORE: backend, ATELIER_TOKEN: "owner-secret" };
+    const read = (answer) => runnerCredential("https://one.test", "studio", { env, spawn: () => answer });
+    assert.equal(read({ status: backend === "keychain" ? 44 : 1, stdout: "", stderr: "" }), null);
+    for (const stdout of ["", "\n", "  \n", "null", "42", "not json"]) {
+      assert.throws(() => read({ status: 0, stdout }), /one line of text|not bound|no server binding/);
+    }
+    assert.throws(() => read({ status: 1, stdout: "", stderr: "store unavailable" }), /could not read/);
+    assert.throws(() => read({ status: null, error: new Error("unavailable") }), /could not read/);
+    assert.equal(read({ status: 0, stdout: JSON.stringify({ server: "https://one.test", token: "runner-secret" }) + "\n" }), "runner-secret");
+  });
+}
+
+test("a malformed explicit runner environment value cannot read a store or select owner", () => {
+  for (const value of ["", "  ", null, 42, false, {}]) {
+    assert.throws(() => runnerCredential("https://one.test", "studio", {
+      env: { ATELIER_RUNNER_TOKEN: value, ATELIER_TOKEN: "owner-secret" },
+      read: () => assert.fail("explicit token must not read a store"),
+    }), /ATELIER_RUNNER_TOKEN is (empty|malformed)/);
+  }
+  for (const value of ["a\nb", "a\u0000b", "a\tb", "a\u007fb"]) {
+    assert.throws(() => runnerCredential("https://one.test", "studio", {
+      env: { ATELIER_RUNNER_TOKEN: value, ATELIER_TOKEN: "owner-secret" },
+      read: () => assert.fail("explicit token must not read a store"),
+    }), /one line of text/);
+  }
 });
