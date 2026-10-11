@@ -2563,7 +2563,10 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const ref = await resolveProject(env, named ?? "");
     const project = ref.name;
     const L = ledger(env, ref.key);
-    const note = String(form.get("note") ?? "");
+    // A browser posts each line break of a textarea as CRLF, which the page
+    // counts as one character; the dispatch form folds them to LF here, so
+    // the limit the page showed holds. The API and CLI text is never changed.
+    const note = verb === "dispatch" ? String(form.get("note") ?? "").replace(/\r\n?/g, "\n") : String(form.get("note") ?? "");
     const owner = ownerActor(env);
     if (id === "new" && !verb) {
       // A long title with no brief becomes the brief, with a short title derived from it (itemText).
