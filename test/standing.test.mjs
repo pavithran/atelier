@@ -26,7 +26,7 @@ test("the text is one line per item under plain headings, and says what each par
   assert.equal(out[0], "Demo project (demo) as of 2026-10-05 10:46 UTC, from Atelier's record");
   assert.ok(out.includes("  t1  claimed  held by claude-code/opus-5.5 since 2026-10-05 09:00 UTC  Held task"));
   assert.ok(out.includes("Waiting on PAVI:"));
-  assert.ok(out.includes("  t2  accept  Ready one  all checks observed passing at this head  brief, accept: 1 of 1 required checks passed at this revision and nothing blocks it."));
+  assert.ok(out.includes("  t2  accept  Ready one  all checks observed passing at this head  brief, accept: 1 of 1 required checks passed at this revision and nothing blocks it.  next: atelier land t2 --reviewer H/M --project demo"));
   assert.ok(out.includes("  t3  for home codex/gpt-6  Queued one  note: Keep it small"));
   assert.ok(out.includes("  t0  2026-10-04 11:00 UTC  abcdef01  Earlier  summary: Fixed the thing"));
   assert.ok(out.includes("  t1  codex/gpt-6 to claude-code/opus-5.5, 2026-10-05 09:00 UTC  Tests are in test/x"));
@@ -38,7 +38,7 @@ test("a waiting line keeps the inbox's reason, so a stale task and an overlap sa
     { id: "t4", title: "Stale", kind: "stale", kinds: ["stale"], reason: "claude-code/opus-5.5 has not pushed for 14h; hand it off or release it", brief: { verdict: "wait", line: "The task is in progress and has not been submitted for a decision." } },
     { id: "t5", title: "Overlap", kind: "overlap", kinds: ["accept", "overlap"], reason: "all checks observed passing; scope overlaps t9 (codex/gpt-6)", brief: null },
   ] })).split("\n");
-  assert.ok(out.includes("  t4  stale  Stale  claude-code/opus-5.5 has not pushed for 14h; hand it off or release it  brief, wait: The task is in progress and has not been submitted for a decision."));
+  assert.ok(out.includes("  t4  stale  Stale  claude-code/opus-5.5 has not pushed for 14h; hand it off or release it  brief, wait: The task is in progress and has not been submitted for a decision.  next: atelier release t4 --project demo"));
   assert.ok(out.includes("  t5  overlap  Overlap  all checks observed passing; scope overlaps t9 (codex/gpt-6)"));
 });
 

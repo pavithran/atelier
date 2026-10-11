@@ -1,3 +1,4 @@
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
@@ -257,6 +258,7 @@ async function claimFixture(t) {
   execFileSync("git", ["clone", "-q", "--bare", source, fork], { env });
   const state = { identity: POLICY };
   const server = createServer(async (req, res) => {
+    if (req.url === "/api/version") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ capabilities: SERVER_CAPABILITIES })); }
     for await (const chunk of req) void chunk;
     const item = { id: "t1", title: "Edit", scope: [], owner: "codex/test", state: "claimed" };
     const data = req.url.endsWith("/claim")

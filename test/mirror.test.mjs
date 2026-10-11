@@ -344,12 +344,17 @@ test("publish REMOTE requires the server policy; bare publish still requests a b
   const run = (...a) => spawnSync(process.execPath, [cli, ...a, "--project", "demo"], { cwd: f.dir, encoding: "utf8", env });
   const r = run("publish", "github");
   assert.notEqual(r.status, 0);
-  assert.match(r.stderr, /fetch failed|ENOTFOUND|fake.invalid/);
+  // The server's capabilities are asked first (projects.publication-policy.v1,
+  // route level 28), and this one cannot answer.
+  assert.match(r.stderr, /capabilities \(projects\.publication-policy\.v1\) cannot be checked/);
   assert.deepEqual(f.refs(), []);
-  // Bare publish still asks the server for a write token, which this one cannot reach.
+  // Bare publish needs no publication policy and still asks the server for a
+  // write token, which this one cannot reach.
   const bare = run("publish");
   assert.notEqual(bare.status, 0);
   assert.doesNotMatch(bare.stdout, /Not published/);
+  assert.doesNotMatch(bare.stderr, /publication-policy/);
+  assert.match(bare.stderr, /fetch failed|ENOTFOUND|fake.invalid/);
   assert.equal(run("publish", "a", "b").status, 1);
 });
 
