@@ -19,6 +19,7 @@ const spec: CommandSpec = {
       "--head SHA": "the revision accepted; the task's current head unless given, and any other is refused",
       "--override-review REASON": "accepts without the independent review, when no reviewer qualifies; the reason is recorded, and the owner must first allow it on the task's page, confirming with the Access sign-in or the server's confirmation secret",
       "--note TEXT": "the owner's word on the acceptance, kept with it in the ledger",
+      "--as H/M": "with --override-review, the harness/model overriding for the owner, kept beside the owner as its acting model",
     },
     example: "atelier accept t3 --project demo",
   },

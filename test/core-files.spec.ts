@@ -67,7 +67,7 @@ it("init records the core files, keeps them on a re-init, clears them with an em
   expect(mergeProject(set, { ...base, reset: true }, "later").policy).not.toHaveProperty("coreFiles");
 });
 
-it("the queue holds a dispatch that overlaps a live item within a core file, says what it waits on, and offers it once that item merges", async () => {
+it("the queue holds core overlaps during building and landing, but offers them while awaiting landing", async () => {
   const name = "core-queue";
   const L = await project(name, ["src/ledger.ts"]);
   const live = await L.newItem("Live work", ["src/**"], "owner");
@@ -91,14 +91,18 @@ it("the queue holds a dispatch that overlaps a live item within a core file, say
   expect(owner.find((q) => q.item.id === core)?.item.held).toMatchObject({ id: live.id, owner: A, state: "claimed", core: "src/ledger.ts" });
   expect(owner.filter((q) => q.item.held).map((q) => q.item.id)).toEqual([core]);
 
-  // Once the live item merges, the held dispatch is offered.
+  // Submission and acceptance release the hold until a landing lease is acquired.
   await L.recordPush(live.id, A, H1, H1);
   const evidence: Evidence = { itemId: live.id, claim: "npm test", grade: "observed", head: H1, passed: true, by: "owner", at: new Date().toISOString(), changedPaths: ["src/a.ts"] };
   await L.addEvidence(evidence);
   await L.submit(live.id, A);
-  expect(await offered()).not.toContain(core);
+  expect(await offered()).toContain(core);
   await L.accept(live.id, "owner");
+  expect(await offered()).toContain(core);
+  expect((await listed()).some((q) => q.item.held)).toBe(false);
+  await L.beginProjectLanding(live.id, "owner");
   expect(await offered()).not.toContain(core);
+  expect((await listed()).find((q) => q.item.id === core)?.item.held).toMatchObject({ id: live.id, state: "accepted" });
   await L.merged(live.id, "owner", "f".repeat(40), true);
   expect(await offered()).toContain(core);
   expect((await listed()).some((q) => q.item.held)).toBe(false);
