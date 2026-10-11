@@ -25,6 +25,7 @@ import { NO_AGENT, type ImportedHistory } from "./import/history";
 import { HARNESSES, PROVIDERS, type ModelEntry } from "./models/pool";
 import type { ModelRecord } from "./models/record";
 import { PRECISION_MIN_JUDGED, precisionTerm, type PrecisionRecord, type ReviewerPrecision } from "./models/precision.ts";
+import { judged, judgementTotals, type ActingJudgement, type JudgementRecord } from "./models/judgement.ts";
 import { reliabilityLine, roundsPerMerge, runTotal, RUN_OUTCOMES, type Cause, type KindMeasures, type ModelReliability, type Reliability } from "./models/reliability.ts";
 import { clockTime, dayOf, shortStamp, stamp, weekdayOf, zoneLabel } from "./time";
 import { duration, type GatewayView } from "./usage/gateway.ts";
@@ -749,7 +750,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
 
 const STATUS_TONE: Record<string, string> = { available: "go", refused: "bad", slow: "ask", unknown: "" };
 
-export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }, reliability: Reliability = new Map(), gateway: GatewayView | null = null, precision: PrecisionRecord | null = null, speed: SpeedRecord | null = null): string {
+export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerName: string | null = null, error = "", window: { events: number; unread: string[] } = { events: 1000, unread: [] }, reliability: Reliability = new Map(), gateway: GatewayView | null = null, precision: PrecisionRecord | null = null, speed: SpeedRecord | null = null, judgement: JudgementRecord | null = null): string {
   const card = (m: ModelEntry) => {
     const actors = [m.id, ...m.aliases].map((id) => `${m.harness}/${id}`);
     // The entry's model across every project and harness, by modelKey; an
@@ -788,6 +789,7 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
   ${group("cloud", "In the cloud", "No cloud models yet. Add one reached through a harness sign-in or an API key in your Keychain.")}
   ${reliabilitySection(reliability, ownerName, window)}
   ${precision ? precisionSection(precision) : ""}
+  ${judgement ? judgementSection(judgement) : ""}
   ${speed ? speedSection(speed) : ""}
   ${gateway ? gatewaySection(gateway) : ""}
   <details class="new-task"><summary>+ Add a model</summary>
@@ -828,6 +830,33 @@ export function precisionSection(p: PrecisionRecord): string {
     <thead><tr><th scope="col">Reviewer</th><th scope="col">Judged blocking findings</th><th scope="col">Held up</th><th scope="col">Refuted</th><th scope="col">Precision</th></tr></thead>
     <tbody>${rows.map(row).join("")}</tbody>
   </table>` : `<p class="empty">No blocking finding was judged from ${e(from)} to ${e(to)}.</p>`}
+</section>`;
+}
+
+// ── the orchestrator's judgements ──────────────────────────────────────────
+// Each harness/model that acted for the owner (src/models/judgement.ts): its
+// verdicts on findings, split into upheld, contradicted and unresolved, and
+// apart from them the decisions and overrides it recorded, which have no
+// outcome and get no score. Events no model was named on are one row of
+// their own, unknown.
+
+export function judgementSection(j: JudgementRecord): string {
+  const from = j.window.from.slice(0, 10), to = j.window.to.slice(0, 10);
+  const totals = judgementTotals(j);
+  const rows = [...j.models, ...(judged(j.unknown) ? [j.unknown] : [])];
+  const row = (r: ActingJudgement) => `<tr><th scope="row">${r.model ? `<code>${e(r.model)}</code><span class="meta">${r.actors.map(e).join(", ")}</span>` : `unknown<span class="meta">no acting model recorded</span>`}</th>
+    <td class="num">${r.verdicts}</td><td class="num">${r.upheld}</td><td class="num">${r.contradicted}</td><td class="num">${r.unresolved}</td>
+    <td class="num">${r.decisionsRecorded}<span class="meta">${r.decisionsWithdrawn} withdrawn</span></td><td class="num">${r.overrides}</td></tr>`;
+  const causes = rows.flatMap((r) => r.contradictions.map((c) => ({ ...c, model: r.model })));
+  return `<section class="judgement" aria-label="Judgements by acting model">
+  <h2 class="section-title">The orchestrator's judgements · ${e(from)} to ${e(to)}</h2>
+  <p class="meta">What each harness/model acting for the owner recorded from ${e(from)} to ${e(to)} (the last ${j.window.days} days, every project), named with <code>--as</code>; the authority stays the owner's. The acting model is declared, not verified: Atelier checks it names a model in the pool, but the owner token cannot prove which model typed the command. A verdict on a finding is upheld when a later verdict by another named model agrees, contradicted when a later verdict corrects it or a defect names it with <code>atelier defect --contradicts</code>, and unresolved otherwise: no defect is not proof a verdict was right. Decisions and overrides are counted, never scored. Events recorded before Atelier kept the acting model, or without one, stay unknown.</p>
+  <p class="meta">Totals: ${plural(totals.verdicts, "verdict")}: ${totals.upheld} upheld, ${totals.contradicted} contradicted, ${totals.unresolved} unresolved; ${plural(totals.decisionsRecorded, "decision")} recorded, ${totals.decisionsWithdrawn} withdrawn; ${plural(totals.overrides, "override")}.</p>
+  ${rows.length ? `<table class="usage-table">
+    <thead><tr><th scope="col">Acting model (declared)</th><th scope="col">Verdicts</th><th scope="col">Upheld</th><th scope="col">Contradicted</th><th scope="col">Unresolved</th><th scope="col">Decisions</th><th scope="col">Overrides</th></tr></thead>
+    <tbody>${rows.map(row).join("")}</tbody>
+  </table>` : `<p class="empty">Nothing was judged for the owner from ${e(from)} to ${e(to)}.</p>`}
+  ${causes.length ? `<ul class="causes">${causes.map((c) => `<li class="meta">${when(c.at)} · ${c.model ? `<code>${e(c.model)}</code>` : "unknown"}'s verdict (event ${c.event}) on <code>${e(c.project)}/${e(c.item)}</code> ${c.by === "defect" ? "contradicted by a defect" : "corrected"}: ${e(c.note)}</li>`).join("")}</ul>` : ""}
 </section>`;
 }
 
