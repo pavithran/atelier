@@ -115,7 +115,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     ];
     return {
       item: { id, title: `Fixture ${id}`, state, owner: "codex/test", ...(box.pushActors ? { pushActors: box.pushActors } : {}), head, ...(box.kinds[id] ? { kind: box.kinds[id] } : {}), acceptedHead: state === "accepted" || state === "merged" ? head : null },
-      policy: { checks: box.checks, protected: ["work.txt"], regenerate: box.regen, ...(box.agents ? { agents: box.agents } : {}), ...(box.eligible ? { eligible: box.eligible } : {}) },
+      policy: { reviewerAdmissions: box.reviewerAdmissions, checks: box.checks, protected: ["work.txt"], regenerate: box.regen, ...(box.agents ? { agents: box.agents } : {}), ...(box.eligible ? { eligible: box.eligible } : {}) },
       gate: { ready: true, outOfScope: [], blockers: [] }, evidence: [], reviews, events,
     };
   };
@@ -1944,4 +1944,14 @@ test("Workflow lease polling bounds a three-hour queue's steps and refreshes eve
     }
   }
   assert.equal(landingLeasePollMs(30, 10), 10);
+});
+
+
+test("land accepts a project-admitted reviewer alias despite its harness lacking the assessor role", async (t) => {
+  const f = await landFixture(t);
+  f.box.agents = { claude: { available: true, eligible_roles: ["assessor"] } };
+  f.box.reviewerAdmissions = [{ id: "Qwen3-Coder-Next", aliases: ["studio-review"], active: true, by: "owner", reason: "Qualified", at: new Date().toISOString() }];
+  const result = await f.run(f.checkout, "land", "t1", "--reviewer", "opencode/studio-review");
+  assert.equal(result.status, 0, result.output);
+  assert.equal(f.posts("/review-request")[0].body.reviewer, "opencode/studio-review");
 });
