@@ -4,7 +4,7 @@
 // claim it through the ordinary atomic claim. A runner at home therefore only
 // ever makes outgoing requests, and every runner's work is judged the same way.
 
-import { DEFAULT_OWNER, harnessRefusal, overlappingRefusal, roleRefusal, RuleError, samePlan, scopesOverlap, scopesOverlapWithin, validActor, type Item, type ItemState, type ProjectPolicy } from "../rules.ts";
+import { DEFAULT_OWNER, harnessRefusal, overlappingLive, overlappingRefusal, roleRefusal, RuleError, samePlan, scopesOverlapWithin, validActor, type Item, type ItemState, type ProjectPolicy } from "../rules.ts";
 import { assertLength, OWNER_TEXT_MAX } from "../text.ts";
 
 export type RunnerKind = "cloud" | "home";
@@ -183,13 +183,16 @@ export function holdText(h: CoreHold): string {
 }
 
 // The live item a dispatched task's claim would be refused against, when the
-// project refuses overlapping claims (policy.refuseOverlap): a claimed or
-// submitted item outside the task's plan whose scope overlaps the task's.
-// It follows the claim (assertClaimAllowed in src/rules.ts), not coreHold:
-// the owner's --overlap-ok lets a dispatch past the core-file hold but not
-// past this refusal, and a plan's planner claim is refused like a build's.
-// Only atelier/integrator's integrate and refresh jobs, exempt from the
-// claim policy, and review requests, which claim nothing, are never refused.
+// project refuses overlapping claims (policy.refuseOverlap). It is the
+// claim's own test (overlappingLive in src/rules.ts, which assertClaimAllowed
+// refuses on): a claimed, submitted or accepted item outside the task's
+// plan whose scope overlaps the task's, unless the dispatch's claimant
+// (dispatchClaimant) already holds it. So it follows the claim, not
+// coreHold: the owner's --overlap-ok lets a dispatch past the core-file
+// hold but not past this refusal, and a plan's planner claim is refused like
+// a build's. Only atelier/integrator's integrate and refresh jobs, exempt
+// from the claim policy, and review requests, which claim nothing, are
+// never refused.
 export interface OverlapRefusal {
   id: string;
   owner: string | null;
@@ -197,15 +200,20 @@ export interface OverlapRefusal {
   state: ItemState;
 }
 
+// The name a dispatch's claim is judged under ahead of the claim: its
+// agent/model when the dispatch names both, so an item that claimant holds
+// is not counted against it, as the claim does not count it; otherwise no
+// actor's, since the runner that will claim is not yet known, and every
+// overlapping live item counts.
+export function dispatchClaimant(d: Dispatch): string {
+  return d.agent && d.model ? `${d.agent}/${d.model}` : "\u0000dispatch";
+}
+
 export function overlapRefusal(item: Item, items: readonly Item[]): OverlapRefusal | null {
   const d = item.dispatch;
   if (!d || d.job === "review" || d.job === "integrate" || d.job === "refresh") return null;
-  for (const o of items) {
-    if (o.id === item.id || samePlan(item, o)) continue;
-    if (o.state !== "claimed" && o.state !== "submitted") continue;
-    if (scopesOverlap(item.scope, o.scope)) return { id: o.id, owner: o.owner, title: o.title, state: o.state };
-  }
-  return null;
+  const o = overlappingLive(item, items, dispatchClaimant(d))[0];
+  return o ? { id: o.id, owner: o.owner, title: o.title, state: o.state } : null;
 }
 
 // The runners that gave one item up: cli/runner.mjs passes a task by once
@@ -301,7 +309,7 @@ export function unclaimed(
 ): UnclaimedReason[] {
   const out: UnclaimedReason[] = [];
   if (input.held) out.push({ kind: "held", line: heldReasonLine(item, input.held) });
-  if (input.overlap) out.push({ kind: "overlap", line: overlapReasonLine(input.overlap) });
+  if (input.overlap) out.push({ kind: "overlap", line: overlapReasonLine(input.overlap, item) });
   for (const r of refusedBy(input.refusals ?? [], item, input.offers, input.now)) out.push({ kind: "refused", line: refusedReasonLine(r, item) });
   if (input.runs && input.project) {
     for (const s of skippedBy(input.runs, input.project, item.id, input.offers, input.now, item.dispatch?.at)) out.push({ kind: "skipped", line: skippedReasonLine(s, item) });
@@ -335,8 +343,8 @@ function heldReasonLine(item: Item, h: CoreHold): string {
   return `Held: ${holdText(h)}; offered once ${h.id} merges or is abandoned${next}.`;
 }
 
-function overlapReasonLine(o: OverlapRefusal): string {
-  return `Overlap refused: ${o.id} (${o.owner ?? "unowned"}) holds a scope that overlaps this one, and the project refuses overlapping claims; a runner can take it once ${o.id} merges or is abandoned, or the owner allows overlaps with atelier init --refuse-overlap=false.`;
+function overlapReasonLine(o: OverlapRefusal, item: Item): string {
+  return `Overlap refused: ${o.id} (${o.state}${o.owner ? ` by ${o.owner}` : ""}) holds a scope that overlaps this one, and the project refuses overlapping claims; a runner can take it once ${o.id} merges or is abandoned, or the owner narrows a scope with atelier edit ${item.id} --scope GLOB (or atelier edit ${o.id} --scope GLOB), or allows overlaps with atelier init --refuse-overlap=false.`;
 }
 
 function skippedReasonLine(s: SkippedBy, item: Item): string {
@@ -373,8 +381,7 @@ export function assertDispatchClaimable(item: Item, items: readonly Item[], poli
     if (refusal) throw new RuleError("ineligible", refusal, 403);
   }
   if (policy.refuseOverlap) {
-    const claimant = d.agent && d.model ? `${d.agent}/${d.model}` : "\u0000dispatch";
-    const refusal = overlappingRefusal(item, items, claimant);
+    const refusal = overlappingRefusal(item, items, dispatchClaimant(d));
     if (refusal) throw new RuleError("overlap", refusal);
   }
 }

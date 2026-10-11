@@ -17,7 +17,7 @@
 // each named runner's jobs said as the runner's own first line says them
 // (jobsLine in cli/runner.mjs): the jobs it takes and, behind them, the known
 // jobs it does not.
-import { OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
+import { holdText, OFFER_LIVE_MS, unoffered } from "../src/dispatch/rules.ts";
 import { isOwnCall, mergedByOverride } from "../src/rules.ts";
 import { daySpend } from "../src/usage/report.ts";
 import { jobsLine } from "./runner.mjs";
@@ -208,10 +208,33 @@ function reviewQueue(waiting, name, offers) {
 // Why each queued job of one project is not being taken, by item id, from the
 // queue's entries (GET /queue): the server attaches `why`, the reasons in
 // words (unclaimed in src/dispatch/rules.ts), for the owner's listing.
-function whyIn(waiting, name) {
+function whyIn(waiting, name, offers) {
   return new Map((waiting.queue ?? [])
-    .filter((q) => q.project === name && q.item?.why?.length)
-    .map((q) => [q.item.id, q.item.why]));
+    .filter((q) => q.project === name && q.item?.id && q.item.dispatch?.job !== "review")
+    .map((q) => [q.item.id, queueReasons(q.item, offers, waiting.now)])
+    .filter(([, why]) => why.length));
+}
+
+// The reasons one queue entry carries. A server from before t420 sends no
+// `why`, only `held`, the core-file hold, so against one the hold is said as
+// it said it then, and a model no live runner offers is worked out here from
+// the offers, as status did before the server said it; show, which reads no
+// offers, says the hold alone.
+export function queueReasons(item, offers = null, now = new Date()) {
+  if (Array.isArray(item.why)) return item.why;
+  const out = [];
+  if (item.held) out.push({ kind: "held", line: heldLine(item, item.held) });
+  const dead = offers && item.dispatch && (item.dispatch.agent || item.dispatch.model) ? unoffered(item.dispatch, offers, now) : null;
+  if (dead) out.push({ kind: "unoffered", line: unofferedLine(dead) });
+  return out;
+}
+
+// A held job's line against an older server: what it waits on, and how it
+// goes ahead — once that item merges or is abandoned, or at once, for a
+// task, by the owner's override. A plan's part takes no override.
+function heldLine(item, held) {
+  const next = item.kind === "part" ? "" : `, or at once with atelier dispatch ${item.id} --overlap-ok`;
+  return `Held: ${holdText(held)}; offered once ${held.id} merges or is abandoned${next}.`;
 }
 
 // One queued job no live runner offers: said as its own line, capitalised,
@@ -240,7 +263,7 @@ export function formatStatus(views, waiting = {}) {
     const working = v.items.filter((i) => i.state === "claimed" || i.state === "submitted");
     const queued = v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch);
     const reviews = reviewQueue(waiting, v.name, offers);
-    const why = whyIn(waiting, v.name);
+    const why = whyIn(waiting, v.name, offers);
     lines.push(v.title ? `${v.title} (${v.name})` : v.name);
     if (!decisions.length && !working.length && !queued.length && !reviews.length) {
       // Only overlaps follow, so the idle line is worded for the owner: it

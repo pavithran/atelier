@@ -200,8 +200,16 @@ test("overlap refusal names the live item whose scope overlaps, for every claime
   // Outside every scope, and a part of the same plan, do not refuse.
   assert.equal(overlapRefusal(dispatched({ scope: ["docs/**"] }), [live]), null);
   assert.equal(overlapRefusal(dispatched({ scope: ["src/**"], kind: "part", plan: "t2" }), [item({ id: "t1", scope: ["src/**"], state: "claimed", owner: "x/y", kind: "part", plan: "t2" })]), null);
-  // Accepted items hold the core files but do not refuse a claim; only claimed or submitted do.
-  assert.equal(overlapRefusal(dispatched({ scope: ["src/index.ts"] }), [{ ...live, state: "accepted" }]), null);
+  // It is the claim's own test (assertClaimAllowed): an accepted item still
+  // holds its scope until it merges, so it refuses as a claimed or submitted
+  // one does; a merged, abandoned or open one does not.
+  for (const state of ["claimed", "submitted", "accepted"] as const) assert.equal(overlapRefusal(dispatched({ scope: ["src/index.ts"] }), [{ ...live, state }])?.id, "t1", state);
+  for (const state of ["merged", "abandoned", "open"] as const) assert.equal(overlapRefusal(dispatched({ scope: ["src/index.ts"] }), [{ ...live, state }]), null, state);
+  // The claim does not count an item the claimant already holds, so a
+  // dispatch naming that agent and model is not refused against it; one
+  // naming no model may go to any claimant, so the item counts.
+  assert.equal(overlapRefusal(dispatched({ scope: ["src/index.ts"] }), [{ ...live, owner: "opencode/glm-5.3-flash" }]), null);
+  assert.equal(overlapRefusal(dispatched({ scope: ["src/index.ts"], dispatch: makeDispatch({ to: "home", agent: "opencode" }, "pavi", T) }), [{ ...live, owner: "opencode/glm-5.3-flash" }])?.id, "t1");
   // Review requests claim nothing, and atelier/integrator's integrate and
   // refresh jobs are exempt from the claim policy.
   for (const job of ["review", "integrate", "refresh"]) {
@@ -287,7 +295,7 @@ test("unclaimed says each reason in words, with the command that releases it, in
   const reasons = unclaimed(d, { held, overlap: { id: "t1", owner: "codex/gpt-6", title: "Work", state: "claimed" }, runs: [{ project: "demo", item: "t9", role: "build", outcome: "refused", runner: "home:studio", at: T }, { project: "demo", item: "t9", role: "build", outcome: "stalled", runner: "home:studio", at: T }], project: "demo", offers: [{ ...offers[0], agents: [{ agent: "opencode", models: ["qwen3-coder-next"] }] }], now: new Date(T) });
   assert.deepEqual(reasons.map((r) => r.kind), ["held", "overlap", "skipped", "unoffered"]);
   assert.equal(reasons[0].line, "Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/index.ts; offered once t1 merges or is abandoned, or at once with atelier dispatch t9 --overlap-ok.");
-  assert.match(reasons[1].line, /^Overlap refused: t1 \(codex\/gpt-6\) holds a scope that overlaps this one.*atelier init --refuse-overlap=false\.$/);
+  assert.match(reasons[1].line, /^Overlap refused: t1 \(claimed by codex\/gpt-6\) holds a scope that overlaps this one.*atelier init --refuse-overlap=false\.$/);
   assert.equal(reasons[2].line, "Skipped by home:studio after 2 failed runs under this dispatch (the last refused); that runner passes it by until it is dispatched again or the runner restarts: fix the cause, then atelier dispatch t9 --to home --agent opencode --model glm-5.3-flash.");
   assert.match(reasons[3].line, /^No live runner can take it:/);
   assert.match(reasons[3].line, /atelier dispatch t9 --agent H --model M/);
