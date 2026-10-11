@@ -36,7 +36,7 @@ import { build } from "esbuild";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { agentRoute, callParts, callPath, declaredCall, RUNNER_CALLS, RUNNER_COMMANDS, runnerRoute, sha256, tokenOptions } from "../src/tokens.ts";
 import { OFFER_LIVE_MS } from "../src/dispatch/rules.ts";
-import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { ROUTE_LEVEL, checkCapabilities, requiredForJobs } from "../src/route-level.ts";
 import { helperCommand, runnerTransport } from "../cli/runner.mjs";
 
 const read = (path) => readFileSync(resolve(path), "utf8");
@@ -337,7 +337,14 @@ test("idle polling: an empty queue answers [], records the offer, and GET /queue
   assert.deepEqual([config.ownerActor, config.runner, config.tokenId, config.actor], ["owner", RUNNER, token.id, undefined], "a runner token names its runner, no actor");
   const version = await expect(mf.dispatchFetch("https://atelier.test/api/version"), 200, "version");
   assert.equal(version.routeLevel, ROUTE_LEVEL);
-  cover("queue", "config", "version");
+  // The capability check every spawned command makes first (t458) reads the
+  // same public route through its declared path, with no token, and the
+  // answer satisfies every job's capabilities.
+  const preflight = declaredCall("capabilities");
+  assert.equal(callPath(preflight), "/version");
+  const read = await expect(mf.dispatchFetch(`https://atelier.test/api${callPath(preflight)}`), 200, "capabilities");
+  assert.equal(checkCapabilities(read, requiredForJobs(preflight.jobs)).ok, true, "the server lacks a capability a runner's job needs");
+  cover("queue", "config", "version", "capabilities");
 });
 
 test("a build job: claim, reads, tokens, push, evidence, sandbox, submit and release, each under the runner's own claim", async () => {

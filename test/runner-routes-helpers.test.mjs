@@ -172,3 +172,38 @@ test("the source check reads call sites as the commands write them", () => {
   assert.equal(byRoute("POST", `${ITEM}/handoff`).length, 0, "handoff is no runner helper's call");
   assert.equal(byRoute("POST", `${ITEM}/release`)[0].body.includes("secret"), false);
 });
+
+// The capability check (t458) every spawned command makes before its
+// handler: requireCapabilities reaches the server only through
+// serverVersion, and each fetch serverVersion makes goes to a declared
+// public preflight call's path (callPath(declaredCall(NAME))), never a
+// literal URL. A fetch added there without a declaration fails here.
+const PREFLIGHT = RUNNER_CALLS.filter((c) => c.via === "preflight");
+function preflightFetches(source) {
+  const names = [];
+  for (const m of source.matchAll(/(?<![.\w])fetch\(/g)) {
+    const [url] = argumentsOf(source, m.index + m[0].length - 1);
+    const named = /^server\(\) \+ "\/api" \+ callPath\(declaredCall\("([a-z-]+)"\)\)$/.exec(url.trim());
+    assert.ok(named, `serverVersion fetches ${url.trim()}, not a declared call's path`);
+    assert.ok(PREFLIGHT.some((c) => c.name === named[1]), `serverVersion fetches ${named[1]}, which is not a declared preflight call`);
+    names.push(named[1]);
+  }
+  return names;
+}
+
+test("the capability check every spawned command makes reads only a declared public preflight call", () => {
+  assert.ok(PREFLIGHT.length, "the capability check's version read is not declared");
+  for (const c of PREFLIGHT) assert.deepEqual([c.credential, c.method, c.body, c.command], ["public", "GET", [], undefined], `${c.name}: a preflight call is a public GET naming no command`);
+  const version = exported("serverVersion"), check = exported("requireCapabilities");
+  assert.ok(version && check, "serverVersion or requireCapabilities is gone from cli/atelier.mjs; update this check");
+  assert.match(check, /(?<![.\w])serverVersion\(\)/, "requireCapabilities no longer reads the version through serverVersion");
+  for (const bypass of [/(?<![.\w])fetch\(/, /(?<![.\w])(call|request)\(/]) assert.doesNotMatch(check, bypass, "requireCapabilities reaches the server outside serverVersion");
+  assert.doesNotMatch(version, /(?<![.\w])(call|request)\(/, "serverVersion makes a call through the authenticated transport");
+  const made = preflightFetches(version);
+  assert.ok(made.length, "serverVersion makes no fetch this check can see");
+  assert.deepEqual([...new Set(made)].sort(), PREFLIGHT.map((c) => c.name).sort(), "a declared preflight call is made by no capability check");
+  // A literal URL, or a name nobody declared, fails the check.
+  assert.throws(() => preflightFetches('await fetch(server() + "/api/version", { signal });'), /not a declared call's path/);
+  assert.throws(() => preflightFetches('await fetch(server() + "/api" + callPath(declaredCall("frobnicate")));'), /frobnicate, which is not a declared preflight call/);
+  assert.deepEqual(preflightFetches('await fetch(server() + "/api" + callPath(declaredCall("capabilities")), { signal });'), ["capabilities"]);
+});

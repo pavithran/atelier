@@ -28,7 +28,7 @@ import { controlPlaneChanges, mergePolicyDecision, shipChanges } from "../src/co
 import { cleanSummary } from "../src/brief.ts";
 import { recordedText } from "../src/rules.ts";
 import { ROUTE_LEVEL, checkCapabilities, requiredForCommand } from "../src/route-level.ts";
-import { terminalTaskExit } from "../src/tokens.ts";
+import { callPath, declaredCall, terminalTaskExit } from "../src/tokens.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
 import { hooksOff, landingDir, landingJournalFile, oldLandingJournalFile, RECEIPT_TEMPLATE, RECEIPTS_DIR } from "./landing.mjs";
@@ -317,9 +317,11 @@ function checkFlags(cmd) {
 // The server's answer to GET /api/version, which needs no token, or null
 // when it gave none: unreachable, an error status, or a body that is not
 // JSON. checkCapabilities tells that null apart from a malformed answer.
+// Every command the runner spawns makes this read first, so its path is the
+// declared preflight call (RUNNER_CALLS in src/tokens.ts, t478).
 export async function serverVersion() {
   try {
-    const res = await fetch(server() + "/api/version", { signal: AbortSignal.timeout(30_000) });
+    const res = await fetch(server() + "/api" + callPath(declaredCall("capabilities")), { signal: AbortSignal.timeout(30_000) });
     return res.ok ? await res.json() : null;
   } catch { return null; }
 }
