@@ -22,7 +22,7 @@ for every owner page, and a separate public bar.
 ### Owner bar, row 1: where in Atelier
 
 ```
-Atelier   Decisions (14)   Projects   Activity          [Ledger Core ▾]  [Pavi ▾]
+Atelier   Decisions (14)   Projects   Activity          [Ledger Core ▾]  [Owner ▾]
 ```
 
 | Item | Goes to | Replaces | Current when |
