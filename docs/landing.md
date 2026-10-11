@@ -334,8 +334,12 @@ What this protects against, and what it does not:
   options; the others answer that record (`created: false`), so the
   options recorded are always those of the instance created. A missing
   instance never clears a pending claim: replacement after a missing read
-  requires a previously recorded ended status. Otherwise the request fails
-  closed with 503 and leaves the claim intact. A claim whose
+  requires a previously recorded ended status or a recorded terminal stage
+  (`done` or `failed`). This lets purged instances recover even when no
+  status was observed, including older records. Only `instance.not_found`
+  from `get()` permits this recovery; an unreadable `status()` still fails
+  closed. Without that evidence the request fails with 503 and leaves the
+  claim intact. A claim whose
   create fails is withdrawn, leaving no record, and the next run starts
   afresh. The answer and the command name the reason and the old and new
   instances (`replaced`), and the record keeps them.
@@ -344,8 +348,8 @@ What this protects against, and what it does not:
   Before acceptance, a run naming an eligible reviewer (another family than
   every contributor) while the remembered one is no longer eligible
   replaces the instance the same safe way; a named reviewer who is not
-  eligible replaces nothing and is reported. Older records with no reviewer
-  metadata can also be restarted safely when an eligible reviewer is named.
+  eligible replaces nothing and is reported. A record with no remembered
+  reviewer is not ineligible, so naming one alone does not restart it.
   Successors of already-ended instances inherit unnamed review options and
   retain the recorded replacement reason.
 - A replaced instance, and the command attached to it, are fenced: the

@@ -432,7 +432,7 @@ function workflowRequest(project: string, id: string, method = "POST") {
 it("does not remember a failed create and can retry the landing", async () => {
   const project = "wf-create-retry";
   const { L, id } = await pushedTask(project, "expired-before-create");
-  await L.observeLandingWorkflowStatus(id, "expired-before-create", { status: "terminated" });
+  await L.setLandingWorkflowStage(id, "expired-before-create", "failed", 0);
   let creates = 0;
   const binding = {
     ...workflowBinding(),
@@ -457,10 +457,12 @@ it("does not remember a failed create and can retry the landing", async () => {
   expect(creates).toBe(2);
 });
 
-it("replaces an instance missing from the real binding while keeping its queue place", async () => {
-  const project = "wf-expired-restart";
-  const { L, id } = await pushedTask(project, "wf-expired-missing");
-  await L.observeLandingWorkflowStatus(id, "wf-expired-missing", { status: "terminated" });
+it.each(["failed", "done"] as const)("replaces a missing instance at %s without an observed status, keeping its queue place", async (stage) => {
+  const project = `wf-expired-restart-${stage}`;
+  const old = `wf-expired-missing-${stage}`;
+  const { L, id } = await pushedTask(project, old);
+  await L.setLandingWorkflowStage(id, old, stage, 0);
+  expect((await L.landingWorkflowOf(id))?.lastStatus).toBeUndefined();
   const blocker = (await L.newItem("Hold lease", [], "owner")).id;
   await L.beginProjectLanding(blocker, "owner");
   await L.queueProjectLanding(id, "owner");
@@ -468,7 +470,7 @@ it("replaces an instance missing from the real binding while keeping its queue p
   const response = await worker.fetch(workflowRequest(project, id), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
   expect(response.status).toBe(201);
   const result = await response.json() as { instance: string };
-  expect(result.instance).not.toBe("wf-expired-missing");
+  expect(result.instance).not.toBe(old);
   expect(await L.landingWorkflowOf(id)).toMatchObject({ instance: result.instance });
   expect((await L.readLandingQueue()).map((row) => ({ item: row.item, at: row.at })))
     .toEqual(before.map((row) => ({ item: row.item, at: row.at })));
@@ -515,9 +517,10 @@ it("twelve multi-hour lease waiters remain readable at the stretched poll cadenc
   expect(await L.readLandingQueue()).toHaveLength(12);
 });
 
-it("does not replace an existing handle when status fails, even with a missing-instance error", async () => {
-  const project = "wf-status-failure";
+it.each(["lease", "failed", "done"] as const)("does not replace an existing handle at %s when status fails, even with a missing-instance error", async (stage) => {
+  const project = `wf-status-failure-${stage}`;
   const { L, id } = await pushedTask(project, "wf-status-existing");
+  await L.setLandingWorkflowStage(id, "wf-status-existing", stage, 0);
   let creates = 0;
   const testEnv = { ...env, ATELIER_TOKEN: TOKEN, LANDING_WORKFLOW: {
     ...workflowBinding(),

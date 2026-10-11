@@ -419,7 +419,7 @@ it("an ended successor inherits unnamed review options and the replacement reaso
   expect(await L.landingWorkflowOf(id)).toMatchObject({ reviewer: "codex/gpt-5.5", noReview: true, replaced: { from: "wf-original", reason: "reviewer" } });
 });
 
-it("an eligible named reviewer safely restarts a pre-t430 record with no reviewer", async () => {
+it("naming a reviewer attaches to a pre-t430 record with no remembered reviewer", async () => {
   const project = "wf-legacy-reviewer";
   const { L, id } = await task(project);
   await L.setLandingWorkflow(id, "wf-legacy", "owner", "local");
@@ -435,7 +435,9 @@ it("an eligible named reviewer safely restarts a pre-t430 record with no reviewe
   expect((await call(project, id, { reviewer: "claude-code/sonnet-5.5" }, testEnv)).status).toBe(200);
   expect(creates).toBe(0);
   const response = await call(project, id, { reviewer: "codex/gpt-5.5" }, testEnv);
-  expect(response.status).toBe(201);
-  expect(await response.json()).toMatchObject({ reviewer: "codex/gpt-5.5", replaced: { from: "wf-legacy", reason: "reviewer" } });
-  expect(creates).toBe(1);
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ instance: "wf-legacy", created: false });
+  expect((await L.landingWorkflowOf(id))?.reviewer).toBeUndefined();
+  expect(ended).toBe(false);
+  expect(creates).toBe(0);
 });

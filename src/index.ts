@@ -1725,11 +1725,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
             if (!/\binstance\.not_found$/.test(String((error as Error)?.message ?? error))) throw error;
             // A claimed successor may not have reached create yet. Missing
             // alone cannot distinguish that from an expired instance. Keep
-            // ownership intact unless an ended status was already recorded.
-            if (!remembered.lastStatus || !ENDED.includes(remembered.lastStatus.status)) {
+            // ownership intact unless an ended status or terminal stage was
+            // recorded. The Workflow writes done/failed itself, including for
+            // older records with no observed status, before retention purges it.
+            if (remembered.lastStatus && ENDED.includes(remembered.lastStatus.status)) {
+              standing = remembered.lastStatus;
+            } else if (remembered.stage === "done" || remembered.stage === "failed") {
+              standing = { status: remembered.stage === "done" ? "complete" : "errored" };
+            } else {
               throw new Error("instance is missing but its end is not confirmed; its create may still be in progress");
             }
-            standing = remembered.lastStatus;
           }
           if (handle) {
             standing = await handle.status();
