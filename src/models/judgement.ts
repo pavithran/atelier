@@ -69,9 +69,24 @@ export function cleanActing(header: string | null, owner: string, agentToken: bo
 // The declared acting model must name a model registered in the owner's pool,
 // by its harness and its id or an alias (sameActor: letter case and a
 // ":profile" suffix make no other model). It is kept as declared.
-export function registeredActing(acting: string, pool: readonly Pick<ModelEntry, "id" | "harness" | "aliases">[]): string {
+export function registeredActing(acting: string, pool: PoolNames): string {
   if (pool.some((m) => [m.id, ...m.aliases].some((id) => sameActor(acting, `${m.harness}/${id}`)))) return acting;
   throw new RuleError("unregistered_acting", `X-Atelier-Acting (atelier --as) names ${acting}, which is not a model in the pool; add it on the Models page, or name the harness/model you are`, 400);
+}
+
+// The model an acting name counts as: the registered pool entry it names, by
+// its id or one of its aliases, so a model declared under an alias the owner
+// registered is the same model as under its id, in one row and never another
+// hand agreeing with itself. The entry in the declared harness is preferred;
+// a name no entry knows is read by modelKey alone. The declared name is kept
+// in the row's actors; only counting and agreement use this.
+export type PoolNames = readonly Pick<ModelEntry, "id" | "harness" | "aliases">[];
+
+export function canonicalModel(acting: string, pool: PoolNames): string {
+  const names = (m: PoolNames[number]) => [m.id, ...m.aliases];
+  const entry = pool.find((m) => names(m).some((id) => sameActor(acting, `${m.harness}/${id}`)))
+    ?? pool.find((m) => names(m).some((id) => modelKey(`${m.harness}/${id}`) === modelKey(acting)));
+  return entry ? modelKey(`${entry.harness}/${entry.id}`) : modelKey(acting);
 }
 
 // The acting model an event records, or null: unknown for an event recorded
@@ -173,13 +188,15 @@ const blank = (model: string | null): ActingJudgement => ({ model, actors: [], v
 // Each acting model's judgements over the window, across every project. A
 // verdict, decision or override counts in the window when it was recorded
 // inside it; its outcome is read from every later event, inside the window or
-// after it, since a defect is usually found later.
-export function buildJudgement(projects: readonly { project: string; events: readonly LedgerEvent[] }[], window: JudgementWindow, owner: string): JudgementRecord {
+// after it, since a defect is usually found later. Each acting name is
+// resolved to its canonical model in `pool` (canonicalModel) before it is
+// grouped or compared.
+export function buildJudgement(projects: readonly { project: string; events: readonly LedgerEvent[] }[], window: JudgementWindow, owner: string, pool: PoolNames = []): JudgementRecord {
   const models = new Map<string, ActingJudgement>();
   const unknown = blank(null);
   const of = (acting: string | null): ActingJudgement => {
     if (acting === null) return unknown;
-    const key = modelKey(acting);
+    const key = canonicalModel(acting, pool);
     let r = models.get(key);
     if (!r) models.set(key, (r = blank(key)));
     if (!r.actors.some((a) => a.toLowerCase() === acting.toLowerCase())) r.actors.push(acting);
@@ -234,7 +251,7 @@ export function buildJudgement(projects: readonly { project: string; events: rea
         // upholds nothing, and an unknown verdict is upheld by no one.
         const other = (w: LedgerEvent) => {
           const a = actingOf(w, owner);
-          return acting !== null && a !== null && modelKey(a) !== modelKey(acting);
+          return acting !== null && a !== null && canonicalModel(a, pool) !== canonicalModel(acting, pool);
         };
         if (later.some((w) => verdictSide(w) === verdictSide(v) && other(w))) r.upheld++;
         else r.unresolved++;

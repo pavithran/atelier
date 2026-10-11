@@ -173,6 +173,27 @@ test("a verdict is upheld only by a later agreeing verdict from another hand", (
   assert.deepEqual(counts(build([verdict(1, "refuted", undefined), verdict(2, "refuted", undefined, { at: LATER })]).unknown), [2, 0, 0, 2]);
 });
 
+test("a model declared under a registered alias is its canonical model: one row, never another hand", () => {
+  const pool = [
+    { id: "gpt-6-astra", harness: "codex" as const, aliases: ["judge-local-alias"] },
+    { id: "opus-5.5", harness: "claude-code" as const, aliases: [] },
+  ];
+  const ALIAS = "codex/judge-local-alias";
+  assert.equal(registeredActing(ALIAS, pool), ALIAS, "the alias is accepted and kept as declared");
+  // Alias then canonical, agreeing: the same model saying it again, so neither is upheld.
+  const same = buildJudgement([{ project: "atelier", events: [verdict(1, "refuted", ALIAS), verdict(2, "refuted", GPT, { at: LATER })] }], WINDOW, OWNER, pool);
+  assert.equal(same.models.length, 1, "alias and id are one row");
+  const r = row(same, "gpt-6-astra");
+  assert.deepEqual(counts(r), [2, 0, 0, 2]);
+  assert.deepEqual(r!.actors, [ALIAS, GPT].sort(), "the declared names are kept");
+  // Canonical then alias, the other way round: still not upheld.
+  assert.deepEqual(counts(row(buildJudgement([{ project: "atelier", events: [verdict(1, "refuted", GPT), verdict(2, "refuted", ALIAS, { at: LATER })] }], WINDOW, OWNER, pool), "gpt-6-astra")), [2, 0, 0, 2]);
+  // Another registered model agreeing with the alias still upholds it.
+  assert.deepEqual(counts(row(buildJudgement([{ project: "atelier", events: [verdict(1, "refuted", ALIAS), verdict(2, "refuted", OPUS, { at: LATER })] }], WINDOW, OWNER, pool), "gpt-6-astra")), [1, 1, 0, 0]);
+  // Without the pool, the alias is unknown to the measure and reads as its own name.
+  assert.ok(row(build([verdict(1, "refuted", ALIAS)]), "judge-local-alias"));
+});
+
 test("no defect is no proof: a verdict nothing named is unresolved", () => {
   const r = build([verdict(1, "refuted", OPUS), ev(2, "t1", "item.merged", { head: B })]);
   assert.deepEqual(counts(row(r, "opus-5.5")), [1, 0, 0, 1]);
