@@ -1,0 +1,38 @@
+atelier atelier/t498 "A task page states its current state once and collapses stale notices"
+accepted head fc8a3fe2ce4755424f9230acb2454bb623db7841
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — codex/gpt-6-astra 2026-10-11T07:44:02.258Z
+OBSERVED pass npm run types && npm run typecheck — codex/gpt-6-astra 2026-10-11T07:44:05.690Z
+REVIEW approve by antigravity/gemini-3.1-pro at fc8a3fe2ce4755424f9230acb2454bb623db7841, recorded by antigravity/gemini-3.1-pro
+2026-10-11T01:41:15.679Z pavi item.created
+2026-10-11T01:44:17.607Z pavi item.edited
+2026-10-11T01:44:17.607Z pavi item.criteria_changed
+2026-10-11T01:44:24.175Z pavi item.dispatched
+2026-10-11T01:49:26.640Z codex/gpt-6-astra item.claimed
+2026-10-11T01:49:34.427Z codex/gpt-6-astra fork.created
+2026-10-11T01:56:34.589Z codex/gpt-6-astra push.observed
+2026-10-11T02:00:59.076Z codex/gpt-6-astra evidence.observed
+2026-10-11T02:01:01.755Z codex/gpt-6-astra evidence.observed
+2026-10-11T02:01:02.282Z codex/gpt-6-astra item.submitted
+2026-10-11T05:00:29.291Z pavi land.lease
+2026-10-11T05:00:50.290Z pavi land.merge
+2026-10-11T05:01:29.394Z pavi item.released
+2026-10-11T05:01:29.394Z pavi item.dispatched
+2026-10-11T06:56:34.271Z codex/gpt-6-astra item.claimed
+2026-10-11T07:01:55.538Z codex/gpt-6-astra push.observed
+2026-10-11T07:06:54.098Z codex/gpt-6-astra evidence.observed
+2026-10-11T07:06:56.742Z codex/gpt-6-astra evidence.observed
+2026-10-11T07:06:57.143Z codex/gpt-6-astra item.submitted
+2026-10-11T07:39:19.604Z pavi land.merge
+2026-10-11T07:39:29.918Z pavi land.regenerate
+2026-10-11T07:39:30.542Z pavi land.push
+2026-10-11T07:39:33.832Z codex/gpt-6-astra push.observed
+2026-10-11T07:39:34.199Z pavi land.push
+2026-10-11T07:44:02.582Z codex/gpt-6-astra evidence.observed
+2026-10-11T07:44:05.797Z codex/gpt-6-astra evidence.observed
+2026-10-11T07:44:06.226Z pavi land.check
+2026-10-11T07:44:07.336Z pavi review.requested
+2026-10-11T07:44:32.449Z antigravity/gemini-3.1-pro review.claimed
+2026-10-11T07:50:19.247Z antigravity/gemini-3.1-pro review.approved
+2026-10-11T07:50:29.283Z pavi land.review
+2026-10-11T07:50:30.141Z pavi item.accepted
+2026-10-11T07:50:30.175Z pavi land.accept
