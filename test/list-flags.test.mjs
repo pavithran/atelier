@@ -44,6 +44,7 @@ globalThis.fetch = async (url, options = {}) => {
   appendFileSync(${JSON.stringify(log)}, JSON.stringify({ method, path, body }) + "\\n");
   let data = {};
   if (path === "/api/config") data = { ownerActor: "owner", ownerName: "Pavi" };
+  else if (path === "/api/projects/demo" && method === "GET") data = { items: [] };
   else if (method === "PUT") data = { project: { name: "demo", title: "Demo", repo: "demo", policy: { checks: body.checks ?? [], protected: body.protected ?? [], eligible: [], refuseOverlap: false, sandboxOnly: false } }, baseline: { remote: ${JSON.stringify(baseline)}, token: "fake-baseline-token", defaultBranch: "main" } };
   else if (path.endsWith("/items") && method === "POST") data = { id: "t9", title: body.title, scope: body.scope };
   return new Response(JSON.stringify(data), { status: 200, headers: { "content-type": "application/json" } });
