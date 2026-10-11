@@ -41,12 +41,16 @@ it("criterion 1: a recorded approval says Approved by you, with the short head a
   expect(before).not.toContain("Approved by you");
   d.reviews = [review({})];
   const html = renderItem(project, d, "PAVI", diff);
-  const actions = html.slice(html.indexOf('<div class="actions">'));
-  expect(actions.indexOf('<p class="approval-recorded" role="status"><strong>Approved by you</strong> at <code>aaaaaaaa</code>')).toBe(actions.indexOf("<p"));
-  expect(actions).toContain('<time datetime="2026-10-10T17:41:00Z">2026-10-10 13:41 EDT</time>');
+  // Said once, as the owner-state block's approval row, just above the actions.
+  const block = html.slice(html.indexOf('<section class="owner-state"'), html.indexOf('<div class="actions">'));
+  expect(block).toContain('<dt>Your approval</dt><dd class="go"><span class="approval-recorded" role="status"><strong>Approved by you</strong> at <code>aaaaaaaa</code>');
+  expect(block.endsWith("</section>\n  ")).toBe(true);
+  expect(block).toContain('<time datetime="2026-10-10T17:41:00Z">2026-10-10 13:41 EDT</time>');
+  expect(html.match(/Approved by you/g)).toHaveLength(1);
   expect(html).not.toContain("Approve revision");
-  // The approval is the owner's own opinion, never the independent review.
-  expect(actions).toContain("your own opinion, not the independent review");
+  // The approval is the owner's own opinion, never the independent review;
+  // the headline says so, once.
+  expect(header(html).match(/does not count as|not the independent review/g)).toHaveLength(1);
 });
 
 it("criterion 1: only the configured owner's latest review at this head and criteria counts, and only while it approves", () => {
@@ -77,27 +81,27 @@ it("criterion 2: approval, independent review, CLI permission and acceptance are
   // The owner's approval does not stand in for the independent review.
   const s = ownerState(d, true, NOW);
   expect(s.approval.tone).toBe("go");
-  expect(s.independent.text).toBe("Required and not yet given; your approval does not count as it");
+  expect(s.independent.text).toBe("Required, not yet given");
   expect(s.acceptance.text).toBe("Not ready: 1 blocker");
-  expect(s.next.kind).toBe("waiting");
+  expect(s.next.kind).toBe("next");
   expect(html).not.toContain("Accept revision");
 });
 
 it("criterion 2: the state matrix covers blockers, unavailable diffs and the terminal states", () => {
   type Row = [string, (d: Detail) => void, boolean, Partial<Record<"independent" | "acceptance", string>>, "next" | "waiting" | "complete", RegExp];
   const rows: Row[] = [
-    ["waiting for review", () => {}, true, { independent: "Required and not yet given; your approval does not count as it", acceptance: "Not ready: 1 blocker" }, "waiting", /^Waiting for an independent review: ask one with the landing command below\. If no reviewer qualifies, the override below is the way on\.$/],
-    ["ready to accept", (d) => { d.reviews = [review({ by: "claude-code/opus-5.5" })]; d.gate = { ready: true, needsAssessor: false, blockers: [], outOfScope: [] }; }, true, { independent: "Approved by claude-code/opus-5.5", acceptance: "Ready to accept" }, "next", /^Accept the revision\.$/],
-    ["overridden", (d) => { d.item.reviewOverride = { head, by: "pavi", reason: "none qualifies", at: time }; d.gate = { ready: true, needsAssessor: false, blockers: [], outOfScope: [] }; }, true, { independent: "Overridden by you, 2026-10-10 17:41 UTC: not a review", acceptance: "Ready to accept" }, "next", /^Accept the revision\.$/],
-    ["failing check", (d) => { d.evidence[0].passed = false; d.gate = { ready: false, needsAssessor: true, blockers: ["`npm test` failed when observed", "Protected"], outOfScope: [] }; }, true, { acceptance: "Not ready: 2 blockers" }, "waiting", /^Waiting: The task owner must fix the failing checks/],
+    ["waiting for review", () => {}, true, { independent: "Required, not yet given", acceptance: "Not ready: 1 blocker" }, "next", /^Run the landing command below\.$/],
+    ["ready to accept", (d) => { d.reviews = [review({ by: "claude-code/opus-5.5" })]; d.gate = { ready: true, needsAssessor: false, blockers: [], outOfScope: [] }; }, true, { independent: "Approved by claude-code/opus-5.5", acceptance: "Not yet recorded; nothing blocks it" }, "next", /^Accept revision, below; the merge command follows\.$/],
+    ["overridden", (d) => { d.item.reviewOverride = { head, by: "pavi", reason: "none qualifies", at: time }; d.gate = { ready: true, needsAssessor: false, blockers: [], outOfScope: [] }; }, true, { independent: "Overridden by you, 2026-10-10 17:41 UTC: not a review", acceptance: "Not yet recorded; nothing blocks it" }, "next", /^Accept revision, below; the merge command follows\.$/],
+    ["failing check", (d) => { d.evidence[0].passed = false; d.gate = { ready: false, needsAssessor: true, blockers: ["`npm test` failed when observed", "Protected"], outOfScope: [] }; }, true, { acceptance: "Not ready: 2 blockers" }, "waiting", /^For the task owner, codex\/gpt-6\.$/],
     ["diff unavailable", () => {}, false, { acceptance: "Unavailable until the changes shown match the recorded revision" }, "next", /^Reload this task/],
-    ["secret pending", (d) => { d.item.secretScan = head; }, true, {}, "waiting", /^Waiting for the secret scan/],
+    ["secret pending", (d) => { d.item.secretScan = head; }, true, {}, "waiting", /^For the secret scan/],
     ["blocked", (d) => { d.item.state = "blocked"; d.item.blocked = { by: "pavi", at: time, reason: "waiting on design", from: "submitted" }; }, true, { acceptance: "Not possible while the task is blocked" }, "next", /^Unblock the task/],
-    ["accepted", (d) => { d.item.state = "accepted"; d.item.acceptedHead = head; }, true, { acceptance: "Accepted at aaaaaaaa; not yet merged" }, "next", /^Run the merge command/],
-    ["merged", (d) => { d.item.state = "merged"; d.item.acceptedHead = head; }, true, { acceptance: "Merged at aaaaaaaa" }, "complete", /^Complete: the revision is merged/],
-    ["closed", (d) => { d.item.state = "abandoned"; }, true, { acceptance: "Closed without merging" }, "complete", /^Complete: the task was closed/],
-    ["integrated part", (d) => { d.item.state = "integrated"; d.item.plan = "t9"; d.reviews = [review({ by: "claude-code/opus-5.5" })]; d.gate = { ready: false, needsAssessor: false, blockers: ["state is integrated, not submitted"], outOfScope: [] }; }, true, { independent: "Approved by claude-code/opus-5.5", acceptance: "Integrated into t9 at aaaaaaaa; lands with the plan" }, "waiting", /^Waiting for t9 to land: this part is submitted and integrated into the plan's branch/],
-    ["working", (d) => { d.item.state = "claimed"; d.gate = { ready: false, needsAssessor: false, blockers: ["state is claimed, not submitted"], outOfScope: [] }; }, true, { acceptance: "Not submitted yet" }, "waiting", /^Waiting: The task owner is preparing the work/],
+    ["accepted", (d) => { d.item.state = "accepted"; d.item.acceptedHead = head; }, true, { acceptance: "Accepted at aaaaaaaa; not yet merged" }, "next", /^Merging, with the command below\.$/],
+    ["merged", (d) => { d.item.state = "merged"; d.item.acceptedHead = head; }, true, { acceptance: "Accepted at aaaaaaaa" }, "complete", /^Nothing waits on you\.$/],
+    ["closed", (d) => { d.item.state = "abandoned"; }, true, { acceptance: "Closed without merging" }, "complete", /^Nothing waits on you\.$/],
+    ["integrated part", (d) => { d.item.state = "integrated"; d.item.plan = "t9"; d.reviews = [review({ by: "claude-code/opus-5.5" })]; d.gate = { ready: false, needsAssessor: false, blockers: ["state is integrated, not submitted"], outOfScope: [] }; }, true, { independent: "Approved by claude-code/opus-5.5", acceptance: "Integrated into t9 at aaaaaaaa; lands with the plan" }, "waiting", /^For t9 to land: this part is submitted and integrated into the plan's branch/],
+    ["working", (d) => { d.item.state = "claimed"; d.gate = { ready: false, needsAssessor: false, blockers: ["state is claimed, not submitted"], outOfScope: [] }; }, true, { acceptance: "Not submitted yet" }, "waiting", /^For the task owner, codex\/gpt-6\.$/],
   ];
   for (const [what, set, visible, expected, kind, next] of rows) {
     const d = detail(); set(d);
@@ -231,5 +235,60 @@ it("criterion 2: the independent review row credits the approval the gate counts
     const e = detail(); e.reviews = [r];
     e.gate = { ready: false, needsAssessor: false, blockers: [], outOfScope: [] };
     expect(ownerState(e, true, NOW).independent.text, JSON.stringify(r)).not.toMatch(/^Approved by/);
+  }
+});
+
+// t498 established that the page states its current state once. The headline
+// states it; the owner-state block adds only what the headline does not (who,
+// when, the next move or command), so no state phrase is said twice in the
+// header, and each state keeps the action it needs.
+it("the header states each state once and keeps the action it needs", () => {
+  const count = (html: string, re: RegExp) => (html.replace(/<[^>]+>/g, "").match(new RegExp(re.source, "g")) ?? []).length;
+  const nextLine = (html: string) => html.slice(html.indexOf('class="next-action"'), html.indexOf("</p>", html.indexOf('class="next-action"')));
+  const notCounted = /does not count as|not the independent review/;
+  type Case = [string, (d: Detail) => void, RegExp, (html: string) => void];
+  const cases: Case[] = [
+    ["waiting for review", () => {}, /Waiting for an independent review/, (h) => {
+      expect(count(h, notCounted)).toBe(1);
+      expect(nextLine(h)).toContain("landing command below");
+      expect(h).toContain("atelier land t1 --project");
+      expect(h).toContain("Approve revision");
+      expect(h).toContain("<button>Override the review and accept</button>");
+    }],
+    ["owner approved", (d) => { d.reviews = [review({})]; }, /Approved by you/, (h) => {
+      expect(count(h, /Waiting for an independent review/)).toBe(1);
+      expect(count(h, notCounted)).toBe(1);
+      expect(h).toContain('<time datetime="2026-10-10T17:41:00Z">');
+      expect(h).not.toContain("Approve revision");
+      expect(h).toContain("atelier land t1 --project");
+    }],
+    ["changes requested", (d) => {
+      d.reviews = [review({ by: "claude-code/opus-5.5", approve: false, note: "fix the copy" })];
+      d.gate = { ready: false, needsAssessor: true, blockers: ["Protected", "rejected by claude-code/opus-5.5: fix the copy"], outOfScope: [] };
+      d.events = [event(1, "item.submitted", { head }), { ...event(2, "review.rejected", { head, criteria: NO_CRITERIA, note: "fix the copy" }), actor: "claude-code/opus-5.5" }];
+    }, /Changes requested/, (h) => {
+      // A rejection at this revision blocks any review asked next: the way on
+      // is a new revision, never the landing command.
+      expect(nextLine(h)).not.toContain("landing command");
+      expect(nextLine(h)).toContain("push a new revision");
+      expect(h).not.toContain("atelier land t1");
+      expect(h).toContain("fix the copy");
+      expect(h).toContain("<summary>Request changes</summary>");
+    }],
+    ["ready to accept", (d) => { d.reviews = [review({ by: "claude-code/opus-5.5" })]; d.gate = { ready: true, needsAssessor: false, blockers: [], outOfScope: [] }; }, /Ready to accept/, (h) => {
+      expect(h).toContain(">Accept revision</button>");
+    }],
+    ["merged", (d) => { d.item.state = "merged"; d.item.acceptedHead = head; d.gate = { ready: false, needsAssessor: false, blockers: [], outOfScope: [] }; }, /Merged|merged/, (h) => {
+      expect(h).toContain("Accepted at aaaaaaaa");
+      expect(count(h, /deploy/i)).toBe(1);
+    }],
+  ];
+  for (const [what, set, phrase, needs] of cases) {
+    const d = detail(); set(d);
+    const h = header(renderItem(project, d, "PAVI", diff));
+    expect([what, count(h, phrase)]).toEqual([what, 1]);
+    // The next line never opens by restating its own label.
+    expect(nextLine(h), what).not.toMatch(/<\/strong> (Waiting|Complete|Next)\b/);
+    needs(h);
   }
 });

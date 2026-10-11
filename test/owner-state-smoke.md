@@ -13,9 +13,10 @@ the disclosure or moves focus.
    Independent review, Command-line permission and Acceptance apart, with one
    Next, Waiting or Done line.
 2. Press Approve revision. After the redirect, and again after a reload,
-   "Approved by you" shows beside the actions with the short head and a time
-   with its zone, and Approve revision is not offered again. Independent
-   review still reads required.
+   "Approved by you" shows once, in the Your approval row just above the
+   actions, with the short head and a time with its zone, and Approve
+   revision is not offered again. Independent review still reads required,
+   and no state phrase of the headline is said again in the panel.
 3. "Accept without an independent review" reads as a disclosure, not a
    button: a chevron and "show the override and command-line permission".
    Click it: it opens, the chevron turns, the hint reads "hide", and nothing
