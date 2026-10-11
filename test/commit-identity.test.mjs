@@ -81,6 +81,11 @@ test("an address is refused when missing, guessed, declared private or outside t
   assert.match(emailProblem("me@macbook"), /guesses/);
   // A control character cannot reach Git as an argument (gpt-6-astra at d479f052).
   assert.equal(emailProblem("owner\u0000x@example.org"), "is not an email address");
+  // Git strips these from the ends of an address (gpt-6-astra at af719d61).
+  for (const bad of ["owner@example.org,", ".owner@example.org", "owner@example.org.", "owner@example.org;", "'owner@example.org", 'owner@example.org"', "owner@example.org\\", "owner@example.org:"]) {
+    assert.match(emailProblem(bad), /Git keeps as written/, bad);
+  }
+  assert.throws(() => settleCommitIdentity({ commitName: "Owner", commitEmail: "owner@example.org," }, undefined), /commitEmail|email/);
   assert.throws(() => settleCommitIdentity({ commitName: "Owner", commitEmail: "owner\u0000x@example.org" }, undefined), /commitEmail|email/);
   assert.equal(addressRefusal(POLICY, OWNER.email), null);
   assert.equal(addressRefusal(POLICY, AGENT.toUpperCase()), null, "addresses compare without regard to case");
