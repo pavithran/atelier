@@ -363,7 +363,11 @@ export function renderInbox(
   const waitsFor = new Map(queued.map(({ project, item }) => [`${project.name}/${item.id}`, describeDispatch(item.dispatch!)]));
   const elsewhere = attention.map((a) => pipelineDisclosure(a, names.get(a.project) ?? a.project, waitsFor) + overlapDisclosure(a)).join("");
   const unknown = attention.map(unknownNotice).join("");
-  const incomplete = attention.some((a) => a.unknown.length) || projectViews.some((p) => p.unavailable);
+  // The projects not read in full, by title: the list says it may be
+  // incomplete, and so does the resting panel beside it.
+  const notRead = [...new Set([...attention.filter((a) => a.unknown.length).map((a) => a.project), ...projectViews.filter((p) => p.unavailable).map((p) => p.project.name)])]
+    .map((n) => names.get(n) ?? n);
+  const incomplete = notRead.length > 0;
 
   const lead = own.length
     ? `${own.length} task${own.length === 1 ? " needs" : "s need"} your attention.`
@@ -387,7 +391,7 @@ export function renderInbox(
   const sheet = selected
     ? `<section class="review-sheet" id="review" aria-label="Selected task">${back}${reviewBody(selected)}</section>`
     : latest?.story.threads.length
-      ? `<section class="review-sheet resting has-graph" aria-label="Latest work">${restingGraph(latest.story, latest.owner)}</section>`
+      ? `<section class="review-sheet resting has-graph" aria-label="Latest work">${restingGraph(latest.story, latest.owner, notRead)}</section>`
       : `<section class="review-sheet resting"><div>${icon("check")}<h2>Space to focus.</h2><p>Select a decision to see the changes, the evidence, and your next action.</p><a href="/studio">Watch the studio</a></div></section>`;
   return page("Decisions", `<div class="desk${selected ? " has-selection" : ""}">${queue}${sheet}</div>`, "Decisions", ownerName, 0, true, live);
 }
@@ -400,6 +404,7 @@ const taskHref = (project: string) => (th: { id: string }) => href("p", project,
 // The owner's label at the start of a sentence.
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
+const listed = (xs: string[]) => xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`;
 
 const LOCAL_KEY = '<li><i style="--c:var(--text-muted);border:1.5px dotted currentColor;border-radius:50%;background:var(--shell)"></i>dotted: ran locally</li>';
 
@@ -433,12 +438,17 @@ function headline(t: Tally, who = "You"): string {
     agents ? `${plural(agents, "agent")} did the other ${t.agentMoves} moves${t.sentBack ? `, and sent work back ${plural(t.sentBack, "time")}` : ""}.` : "No agent has started yet."}</span>`;
 }
 
-function restingGraph(s: Story, owner: string): string {
+// `notRead` names the projects whose records were not all read; while any
+// is, the panel never says nothing is waiting (t504).
+function restingGraph(s: Story, owner: string, notRead: string[] = []): string {
   const t = s.tally;
+  const waiting = notRead.length
+    ? `The list may be incomplete: some records of ${e(listed(notRead))} could not be read, so more may be waiting on you.`
+    : "Nothing is waiting on you.";
   return `<div class="resting-graph">
   <span class="kicker">${e(s.title)} · the work so far${s.partial ? " · the most recent part of the record" : ""}</span>
   <h2><span class="you">You made ${plural(t.decisions, "decision")}.</span> ${plural(t.agents.length, "agent")} made ${t.agentMoves} moves.</h2>
-  <p>Nothing is waiting on you. Each thread is a task an agent took off main; it flows back only when you accept it.</p>
+  <p>${waiting} Each thread is a task an agent took off main; it flows back only when you accept it.</p>
   ${legendLine(Object.keys(t.byVendor) as Vendor[], t.localRuns > 0)}
   <div class="stage-scroll">${drawStory(s, owner, { compact: true, replaySeconds: 6, href: taskHref(s.project) })}</div>
   <a href="/flow">See the whole flow</a>
