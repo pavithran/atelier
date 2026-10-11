@@ -1,9 +1,9 @@
 import { spawn, spawnSync } from "node:child_process";
 import { excludeScratch } from "./scratch.mjs";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, statSync, readdirSync, realpathSync, renameSync } from "node:fs";
+import { accessSync, constants, appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, statSync, readdirSync, realpathSync, renameSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { checkEnv } from "./check-env.mjs";
@@ -16,7 +16,8 @@ import { reviewBrief, BRIEF_LIMITS, criteriaCount } from "../src/review/brief.ts
 import { submission } from "../src/brief.ts";
 import { parseVerdict, VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
-import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { checkCapabilities, requiredForJobs } from "../src/route-level.ts";
+import { TERMINAL_TASK_EXITS } from "../src/tokens.ts";
 import { rolePrompt, ROLE_PROMPT_MAX } from "../src/usage.ts";
 import { builderRefusals } from "../src/commit-identity.ts";
 
@@ -114,18 +115,14 @@ export function jobsLine(jobs, known = [...DEFAULT_JOBS, "review"]) {
 
 const oneLine = (value) => String(value).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ");
 
-// Why the runner refuses to start, or null when the server's routes are new
-// enough. The same check atelier land makes (cli/land.mjs): a server behind
-// this CLI's route level would fail the runner's calls one by one, so it
-// refuses here, before the first poll, saying to deploy.
-export function versionRefusal(version) {
-  const level = Number.isInteger(version?.routeLevel) ? version.routeLevel : null;
-  const commit = typeof version?.commit === "string" && version.commit ? version.commit.slice(0, 8) : null;
-  const deploy = (why) => `the server ${commit ? `runs main at ${commit}, ` : ""}${level === null ? "reports no route level" : `runs route level ${level}`}, this CLI route level ${ROUTE_LEVEL}: ${why}. Deploy the server from a checkout at route level ${ROUTE_LEVEL} or newer (npm run deploy, which records the commit it deploys), then start the runner again`;
-  if (!version) return deploy("the server does not answer GET /api/version");
-  if (level === null) return deploy("the server is older than route levels");
-  if (level < ROUTE_LEVEL) return deploy("the server's routes are older than the ones this CLI calls");
-  return null;
+// Why the runner refuses to start, or null when the server has the
+// capabilities its jobs declare (JOB_CAPABILITIES, src/route-level.ts). The
+// same check atelier land makes (cli/land.mjs): a server short of them would
+// fail the runner's calls one by one, so it refuses here, before the first
+// poll, naming what is missing and saying to deploy.
+export function versionRefusal(version, jobs = [...DEFAULT_JOBS, "review"]) {
+  const check = checkCapabilities(version, requiredForJobs(jobs));
+  return check.ok ? null : `${check.message}, then start the runner again`;
 }
 
 export function briefFor(item, project) {
@@ -231,8 +228,30 @@ export function nextStep(state, result) {
   }
 }
 
-const quoteShell = (word) => "'" + word.replaceAll("'", "'\\''") + "'";
-const testSlotNote = `Run each test command through the host slot wrapper: ${quoteShell(process.execPath)} ${quoteShell(SLOT_WRAPPER)} -- COMMAND ARGUMENTS. It reuses nested slots and inherits this job's priority. Direct shell commands are outside enforcement.`;
+export const quoteShell = (word) => "'" + word.replaceAll("'", "'\\''") + "'";
+// The wrapper runs as `node WRAPPER`, which a harness's command allow-list
+// that permits Bash(node:*) already accepts; node comes from the harness PATH.
+export const slotNote = (wrapper) => `Run each test command through the host slot wrapper: node ${quoteShell(wrapper)} -- COMMAND ARGUMENTS. It reuses nested slots and inherits this job's priority. Direct shell commands are outside enforcement.`;
+export const testSlotNote = slotNote(SLOT_WRAPPER);
+
+// Starts a harness once node is known to be on its PATH (requireNode).
+export async function startHarness(argv, cwd, env, { capture = false, captureError = false, stream = false, signal, timeoutMs } = {}, executeChild = execute) {
+  requireNode(env, cwd);
+  return executeChild(argv, { cwd, signal, timeoutMs, env, stream, ...(capture ? { capture } : {}), ...(captureError ? { captureError } : {}) });
+}
+
+// Throws unless `node` resolves on the PATH a harness will run with, since its
+// brief tells it to run the slot wrapper with node. The harness starts in
+// `cwd`, so a relative PATH entry is looked up from there, and on POSIX an
+// empty entry means that directory, as execvp has it.
+export function requireNode(env, cwd = process.cwd()) {
+  for (const entry of env.PATH === undefined ? [] : env.PATH.split(delimiter)) {
+    if (!entry && delimiter !== ":") continue;
+    const node = resolve(cwd, entry, "node");
+    try { accessSync(node, constants.X_OK); if (statSync(node).isFile()) return; } catch { /* Not here. */ }
+  }
+  throw new Error("node is not on the harness PATH, so the test-slot wrapper cannot run; put node on the runner's PATH");
+}
 
 const cli = fileURLToPath(new URL("./atelier.mjs", import.meta.url));
 const line = (message) => console.log(`runner: ${String(message).replace(/[\r\n]+/g, " ")}`);
@@ -595,6 +614,7 @@ export async function checked(argv, options, executeChild = execute) {
     if (result.output) error.output = result.output;
     error.claimRefused = options?.claim && result.code === 3;
     error.infrastructure = result.code === 4;
+    if (argv[1] === cli) error.terminalState = Object.keys(TERMINAL_TASK_EXITS).find((state) => TERMINAL_TASK_EXITS[state] === result.code);
     throw error;
   }
   return result.output;
@@ -979,6 +999,11 @@ export async function runTask(assignment, config, name, io) {
     await io.cli(finishArgs(), workspace);
     advance({ type: "finish" });
   } catch (error) {
+    if (error.terminalState) {
+      state = { ...state, phase: "terminal", terminalState: error.terminalState, reason: error.message, taskFailure: false };
+      io.log(`task ${project}/${item.id} is ${error.terminalState === "abandoned" ? "closed" : error.terminalState} (state: ${error.terminalState}); workspace and commits preserved`);
+      return state;
+    }
     if (state.phase !== "failed") advance({ error: error.message });
     state = { ...state, taskFailure: taskFailure && !error.infrastructure && !io.stopped() };
     // The stall's report to the server (runOutcome, reportRun) says why the
@@ -1145,6 +1170,9 @@ export async function runReview(assignment, config, name, runnerIO) {
       // The owner's standing decisions (src/decisions.ts), as the claim
       // carries them; an older server sends none, and the brief says so.
       decisions: claimed.decisions ?? null,
+      // The item's evidence at the head (t490), ad-hoc checks among it; an
+      // older server sends none, and the brief says so.
+      evidence: claimed.evidence ?? null,
     });
     brief = await io.brief(workspace, `${await reviewRoleText(io, workspace, compare)}\n\n${testSlotNote}\n\n${text}`);
     diffFile = await io.writeDiff(workspace, ownDiff === null ? diff : `${diff}${diff && !diff.endsWith("\n") ? "\n" : ""}${ownDiff}`);
@@ -1573,6 +1601,7 @@ export function failureCount(count, state) {
 }
 
 export function infrastructureFailureCount(count, state) {
+  if (state.terminalState) return count;
   return state.phase === "failed" && !state.taskFailure && !state.claimRefused && !state.skipped && !state.recorded ? count + 1 : 0;
 }
 
@@ -1669,6 +1698,11 @@ export async function runPlanTask(assignment, config, name, io) {
       io.log(`failed: ${state.reason}`);
     }
   } catch (error) {
+    if (error.terminalState) {
+      state = { phase: "terminal", terminalState: error.terminalState, reason: error.message, taskFailure: false };
+      io.log(`task ${project}/${item.id} is ${error.terminalState === "abandoned" ? "closed" : error.terminalState} (state: ${error.terminalState}); workspace preserved`);
+      return state;
+    }
     state = { phase: "failed", reason: error.message };
     state.taskFailure = taskFailure && !error.infrastructure && !io.stopped();
     if (error.claimRefused) state.claimRefused = true;
@@ -1682,7 +1716,7 @@ export async function runPlanTask(assignment, config, name, io) {
     // itself, and a refused or missing one counts an attempt only once the
     // claim is given back. A claim whose fate is unknown (the claim step
     // failed without a refusal) is released too, as runTask releases it.
-    if (claimed || (claimAttempted && !state.claimRefused && !state.skipped)) {
+    if (!state.terminalState && (claimed || (claimAttempted && !state.claimRefused && !state.skipped))) {
       const note = state.phase === "failed" ? state.reason : "plan job done";
       try {
         await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", note], workspace);
@@ -1739,7 +1773,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   for (const signal of signals) process.on(signal, stop);
   // However this process exits, no group it started outlives it.
   process.on("exit", killGroups);
-  const refused = new Set(), failures = new Map(), infrastructureFailures = new Map();
+  // Tasks closed under this runner (t476), by taskKey: their exact state,
+  // kept for this process so no later poll takes them again.
+  const refused = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map();
   // Review skip reports the server has not taken yet (t353), by the review's
   // refusal key: the report's body, how many tries in a row have failed, and
   // the poll (`polls`, counting the answered ones) on which it is next due.
@@ -1823,8 +1859,8 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       await resetTo(cwd, `refs/remotes/origin/${branch}`);
     },
     // `env` is the harness's whole environment (harnessEnv); `io.env` is the runner's.
+    harness: (argv, cwd, env, options = {}) => startHarness(argv, cwd, env, { ...options, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS }, executeChild),
     identityRefusals: async (cwd, env, project) => identityRefusals(cwd, env, project),
-    harness: (argv, cwd, env, { capture = false, captureError = false, stream = false } = {}) => executeChild(argv, { cwd, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS, env, stream, ...(capture ? { capture } : {}), ...(captureError ? { captureError } : {}) }),
     prepare: async (cwd) => {
       if (!existsSync(join(cwd, ".git"))) return null;
       const git = (argv) => checked(["git", ...argv], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild);
@@ -1893,12 +1929,12 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   };
   try {
     // The home runner refuses at start when the server's routes are older
-    // than the ones it will call, as atelier land does: the server's route
-    // level is checked against the CLI's (src/route-level.ts) before the
+    // than the ones it will call, as atelier land does: the server's
+    // capabilities are checked against its jobs' (src/route-level.ts) before the
     // first poll, so a runner that would fail its calls one by one stops
     // here instead, saying to deploy.
     if (version) {
-      const refusal = versionRefusal(await version(controller.signal));
+      const refusal = versionRefusal(await version(controller.signal), offer.jobs);
       if (refusal) throw new Error(refusal);
     }
     // Said once, before the first poll (t289): the jobs this runner takes
@@ -1945,8 +1981,11 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         // before t252's fix still lists, and they stay in the queue for a
         // runner that takes them.
         const ordered = [...tasks.filter((task) => task.item.dispatch?.job === "review"), ...tasks.filter((task) => task.item.dispatch?.job !== "review")];
-        for (const task of ordered.filter((task) => offer.jobs.includes(jobOf(task)) && !refused.has(refusedKey(task)) && (failures.get(failureKey(task)) ?? 0) < 2 &&
+        for (const task of ordered.filter((task) => offer.jobs.includes(jobOf(task)) && !terminalTasks.has(taskKey(task)) && !refused.has(refusedKey(task)) && (failures.get(failureKey(task)) ?? 0) < 2 &&
           (infrastructureFailures.get(failureKey(task)) ?? 0) < 3)) {
+          // A poll can contain the same task more than once. Recheck after
+          // each job, since filtering the batch preceded its terminal result.
+          if (terminalTasks.has(taskKey(task))) continue;
           // A dispatch carrying job: "plan" asks for the plan job, one
           // carrying "review" for the review job, "integrate" for the
           // integrate job and "refresh" for the refresh job
@@ -1986,7 +2025,12 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           if (task.item.dispatch?.job === "review" && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && reportReviewSkip) {
             await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note: state.reason });
           }
-          if (state.claimRefused || state.skipped) refused.add(refusedKey(task));
+          // Closure survives changes to the head or updatedAt in later polls
+          // (t476). Remember its exact state for this process, by the task
+          // itself, independently of the revision-specific refusals that a
+          // new dispatch can supersede and of a review's per-request failures.
+          if (state.terminalState) terminalTasks.set(taskKey(task), state.terminalState);
+          else if (state.claimRefused || state.skipped) refused.add(refusedKey(task));
           else if (args.once || state.phase !== "failed" || state.taskFailure) break;
         }
         state ??= { phase: "idle" };

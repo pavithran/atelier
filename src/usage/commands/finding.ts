@@ -5,19 +5,23 @@ const spec: CommandSpec = {
   forms: [
     {
       group: "Owner", line: 1, slot: 70,
-      form: "finding ID --head SHA --index N --verdict confirmed|refuted|fixed [--note TEXT]",
-      about: "The project owner records a verdict on one finding of a review: confirmed, that the finding was right and a fix followed; fixed, that it was right and is fixed; refuted, that it was wrong. `--head` names the review's revision and `--index` the finding's position in that review's findings, one based. The event is the record, and the reliability record counts the reviewer's findings confirmed and refuted, which measures its precision.",
+      form: "finding ID --head SHA [--review-seq N | --reviewer H/M] --index N --verdict confirmed|refuted|fixed [--note TEXT]",
+      about: "The project owner records a verdict on one finding of a review: confirmed, that the finding was right and a fix followed; fixed, that it was right and is fixed; refuted, that it was wrong. `--head` names the review's revision and `--index` the finding's position in that review's findings, one based. Where more than one review at the head has findings, `--review-seq` (the review event's sequence) or `--reviewer` (its reviewer, when that reviewer reviewed the head once) names the review; without either the newest review at the head is meant, and an ambiguous request is refused with the reviews there listed. The verdict records the review's sequence. The event is the record, and the reliability record counts the reviewer's findings confirmed and refuted, which measures its precision.",
     },
   ],
   flags: {
     head: false,
     index: false,
+    "review-seq": false,
+    reviewer: false,
     verdict: "--verdict needs a value: atelier finding ID --head SHA --index N --verdict confirmed|refuted|fixed",
     note: false,
   },
   help: {
     flags: {
       "--head SHA": "the full revision the review was made at; required",
+      "--review-seq N": "the sequence of the review event the finding is in; not with --reviewer",
+      "--reviewer H/M": "the reviewer whose one review at the head the finding is in; not with --review-seq",
       "--index N": "the finding's position in that review's findings, one based; required",
       "--verdict V": "confirmed, refuted or fixed; required",
       "--note TEXT": "why; kept with the verdict",
