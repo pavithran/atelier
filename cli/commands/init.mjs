@@ -1,3 +1,4 @@
+import { postMergeArgs } from "../post-merge-policy.mjs";
 // atelier init. Its forms, flags and help are declared in src/usage/commands/init.ts.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -52,6 +53,12 @@ export default async function initCommand() {
   const reset = args.reset === true;
   const protect = given ?? (reset ? [] : cfg.projects?.[name]?.protect ?? []);
   const policy = {};
+  const postMerge = postMergeArgs(args);
+  if (postMerge !== undefined && args.multi?.["post-merge"]) {
+    // The server's support is land.post-merge.v1, which init declares and
+    // the CLI checked before this handler ran (t458).
+    policy.postMerge = postMerge;
+  }
   if (args.multi.check || reset) policy.checks = checks;
   // Each check must be read-only (src/checks.ts). One that is never
   // read-only is refused here, before any request. The ControlPlane
@@ -213,6 +220,8 @@ export default async function initCommand() {
   cfg.projects[name] = { ...cfg.projects[name], path: top, branch, protect, ...(since || fresh ? { fresh: true } : {}) };
   saveConfig(cfg);
   const pol = r.project.policy;
+  if (postMerge && !pol.postMerge) die("server did not record post-merge policy; stop and upgrade the server");
+  if (pol.postMerge) console.log(`Post-merge: ${pol.postMerge.steps.map(s => `${s.name} (${s.class})`).join(" → ")}; owner approval recorded`);
   console.log(fresh
     ? `${r.project.title ? `${r.project.title} (${name})` : name}: policy updated; the baseline was not pushed (it holds part of the history; atelier sync carries new commits).`
     : `${r.project.title ? `${r.project.title} (${name})` : name}: baseline ${r.project.repo} now holds ${branch} @ ${short(git(["rev-parse", pushed], { cwd: top }))}.`);

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 const root = resolve(".cache/runner-owner-fallback-tests");
 mkdirSync(root, { recursive: true });
@@ -23,7 +23,7 @@ function run(t, extra, argv = ["queue"], stored = {}, jobs = ["build", "review",
   const script = `
     process.argv = [process.execPath, ${JSON.stringify(cli)}, ...${JSON.stringify(argv)}];
     globalThis.fetch = async (_url, options = {}) => {
-      if (_url.endsWith("/version")) return Response.json({ routeLevel: ${ROUTE_LEVEL} });
+      if (_url.endsWith("/version")) return Response.json({ routeLevel: ${ROUTE_LEVEL}, capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
       process.stderr.write("AUTH=" + options.headers.authorization + "\\n");
       return Response.json({ error: "unauthorised" }, { status: 401 });
     };

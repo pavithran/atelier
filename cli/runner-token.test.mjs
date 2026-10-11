@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { resolve, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { runnerCredential, runnerChildEnv, storeRunnerCredential } from "./credentials.mjs";
-import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { runRunner, planFilePath } from "./runner.mjs";
 
 const root = resolve(".cache/runner-token-tests");
@@ -112,7 +112,7 @@ test("the runner reports a review it will not serve as the review's actor under 
     process.argv = [process.execPath, ${JSON.stringify(cli)}, "runner", "--name", "home:studio", "--once", "--config", ${JSON.stringify(config)}];
     const review = { project: "demo", actor: "codex/gpt-6-astra", agent: "codex", model: "gpt-6-astra", item: { id: "t21", title: "Review", head: ${JSON.stringify(head)}, request: 3, dispatch: { job: "review", to: "home", agent: "codex", model: "gpt-6-astra" } } };
     globalThis.fetch = async (url, options = {}) => {
-      if (url.endsWith("/version")) return Response.json({ routeLevel: ${ROUTE_LEVEL} });
+      if (url.endsWith("/version")) return Response.json({ routeLevel: ${ROUTE_LEVEL}, capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
       if (options.headers.authorization !== "Bearer ${secret}") throw new Error("wrong credential");
       if (url.endsWith("/config")) return Response.json({ runner: "home:studio", tokenId: "id" });
       if (url.endsWith("/queue")) return Response.json([review]);
@@ -143,7 +143,9 @@ test("runner token issue/store have subcommand help and the issue request contai
   }
   const script = `
     process.argv = [process.execPath, ${JSON.stringify(cli)}, "token", "issue", "--runner", "home:Studio", "--project", "demo"];
-    globalThis.fetch = async (_url, options) => {
+    globalThis.fetch = async (url, options) => {
+      // token issue checks the server's capabilities first (t458).
+      if (url === "https://one.test/api/version") return Response.json({ routeLevel: ${ROUTE_LEVEL}, capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
       const body = JSON.parse(options.body);
       if (body.actor !== undefined || body.runner !== "home:Studio" || body.projects[0] !== "demo") throw new Error("wrong issue body");
       return Response.json({ runner: "home:studio", id: "id", token: "issued-value", expiresAt: "later" }, { status: 201 });
@@ -165,6 +167,8 @@ test("the CLI stores and polls with server-bound runner credentials on an owner-
   const store = `
     process.argv = [process.execPath, ${JSON.stringify(cli)}, "token", "store", "--runner", "HOME:Studio"];
     globalThis.fetch = async (url, options) => {
+      // token store checks the server's capabilities first (t458); the version needs no credential.
+      if (url === "https://one.test/api/version") return Response.json({ routeLevel: ${ROUTE_LEVEL}, capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
       if (url !== "https://one.test/api/config" || options.headers.authorization !== "Bearer ${secret}") throw new Error("wrong credential");
       return Response.json({ runner: "home:studio", tokenId: "id" });
     };
@@ -178,7 +182,7 @@ test("the CLI stores and polls with server-bound runner credentials on an owner-
   const poll = `
     process.argv = [process.execPath, ${JSON.stringify(cli)}, "runner", "--name", "home:studio", "--once", "--config", ${JSON.stringify(config)}];
     globalThis.fetch = async (url, options = {}) => {
-      if (url.endsWith("/version")) return Response.json({ routeLevel: ${ROUTE_LEVEL} });
+      if (url.endsWith("/version")) return Response.json({ routeLevel: ${ROUTE_LEVEL}, capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
       if (options.headers.authorization !== "Bearer ${secret}") throw new Error("wrong polling credential");
       if (url.endsWith("/config")) return Response.json({ runner: "home:studio", tokenId: "id" });
       if (url.endsWith("/queue")) {
