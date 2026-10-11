@@ -12,7 +12,7 @@ const brief = (over = {}) => ({
       { id: "t1", state: "claimed", owner: "codex/gpt-6", title: "One" },
       { id: "t2", state: "submitted", owner: "claude-code/opus-5.5", title: "Two" },
     ],
-    waiting: [{ id: "t2", kind: "accept", title: "Two", reason: "r", brief: null }],
+    waiting: [{ id: "t2", call: "accept", title: "Two", sentence: "Accept the revision.", href: "/p/demo/t2", command: "atelier land t2 --reviewer H/M --project demo", why: "r", brief: null }],
     merged: ["t9", "t8", "t7", "t6", "t5"].map((id, n) => ({ id, title: `Merged ${id}`, at: "2026-10-09T10:00:00Z", commit: `${n}abcdef0123456789`, line: null })),
   },
   version: { commit: "deadbeefcafe1234", routeLevel: 7 },
@@ -49,7 +49,7 @@ test("the brief pins its format: merges, deployed commit, builds, reviews, landi
 
 test("the brief stays under 20 lines however much the project holds", () => {
   const many = Array.from({ length: 50 }, (_, i) => ({ id: `t${i}`, state: "claimed", owner: "a/b", title: "x" }));
-  const standing = { ...brief().standing, live: many, waiting: many.map((i) => ({ ...i, kind: "accept" })) };
+  const standing = { ...brief().standing, live: many, waiting: many.map((i) => ({ ...i, call: "accept" })) };
   const lines = formatStatusBrief(brief({ standing })).split("\n");
   assert.ok(lines.length < 20);
   assert.ok(lines.some((l) => l.includes("and 47 more")));
@@ -78,4 +78,19 @@ test("the brief says what it could not read", () => {
 
 test("the review queue is the array the API returns, and its waiting reviews are counted", () => {
   assert.match(formatStatusBrief(brief()), /1 waiting for a runner \(t2 by codex\/gpt-6\)/);
+});
+
+test("a partial brief labels its counts, retains known owner calls and all read failures within 20 lines", () => {
+  const partial = Array.from({ length: 50 }, (_, i) => `t${i}: events could not\nbe read.`);
+  const out = formatStatusBrief(brief({ standing: { ...brief().standing, partial } }));
+  assert.match(out, /counts cover only what was read:/);
+  for (let i = 0; i < 50; i++) assert.ok(out.includes(`t${i}: events could not be read.`));
+  assert.match(out, /Waiting on the owner: t2 accept; next: .*; more may be waiting\./);
+  assert.ok(out.split("\n").length < 20);
+});
+
+test("the brief includes the single-family mode if set", () => {
+  const standing = { ...brief().standing, familyMode: { single: "anthropic" } };
+  const out = formatStatusBrief(brief({ standing }));
+  assert.match(out, /single-family: anthropic/);
 });

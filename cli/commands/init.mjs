@@ -7,6 +7,7 @@ import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText
 import { buildHistory, loadPairs, savePairs } from "../fresh.mjs";
 import { pushHistory } from "../push-steps.mjs";
 import { shipPolicy } from "../ship.mjs";
+import { familyModeText } from "../status.mjs";
 import { OWNER, OWNER_NAME, P, agentsMdOffer, args, call, cfg, coreArg, die, git, holds, initName, listArg, project, readControlPlane, recordedApproval, saveConfig, short, wsConfig } from "../atelier.mjs";
 
 // The project owner, in the project's checkout.
@@ -152,6 +153,13 @@ export default async function initCommand() {
   // ones; --core "" alone clears them, and --reset without it does too.
   const core = coreArg();
   if (core || reset) policy.coreFiles = core ?? [];
+  // --single-family COMPANY has the project build and review with one
+  // company's models alone; --cross-family returns to the default, where
+  // a protected change needs a model of another company than every
+  // contributor. Omitted, the recorded mode stays; the server records
+  // either switch with who made it and when.
+  if (args["single-family"] !== undefined && args["cross-family"] === true) die("--single-family and --cross-family contradict each other; give one of them");
+  const singleFamily = args["single-family"] !== undefined ? args["single-family"] : args["cross-family"] === true ? null : undefined;
   // The commit identity (t451): each flag given replaces what is recorded,
   // and the server checks the whole and refuses an invalid one. A list
   // flag given once as "" clears its list.
@@ -161,7 +169,7 @@ export default async function initCommand() {
     const values = args.multi[flag];
     if (values) policy[field] = values.length === 1 && values[0] === "" ? [] : values;
   }
-  const r =await call("PUT", P(name), {
+  const r = await call("PUT", P(name), {
     ...policy,
     ...(reset ? { reset: true } : {}),
     // The command that regenerates the project's fixtures after a task
@@ -170,10 +178,14 @@ export default async function initCommand() {
     // What may block a review, stated in every review brief; omitted keeps
     // it, "" restores the default bar.
     ...(args["review-bar"] !== undefined ? { reviewBar: args["review-bar"] } : {}),
+    // The model that triages a landing's diff against the task's criteria
+    // before its review (t475), harness/model; omitted keeps it, "" clears it.
+    ...(args.triage !== undefined ? { triage: args.triage } : {}),
     // The top review tier, harness/model actors separated by commas, each
     // reviewing every protected change beside the gate's review; omitted
     // keeps it, "" clears it.
     ...(args["review-tier"] !== undefined ? { reviewTier: args["review-tier"] } : {}),
+    ...(singleFamily !== undefined ? { singleFamily } : {}),
     approval: args.approval,
     // Omitted keeps the current title; --title "" clears it.
     ...(args.title === undefined ? {} : { title: args.title }),
@@ -235,8 +247,14 @@ export default async function initCommand() {
   console.log(`Review bar: ${pol.reviewBar ?? "the default, which blocks for a correctness, security or data-loss defect, a behaviour change without a test that covers it, docs or help that now contradict the code, a breaking change to a command, route or API field without a migration, or a visible regression on a user-facing page; anything else is a follow-up"}`);
   // A server older than the review bar ignores it and answers without one.
   if (typeof args["review-bar"] === "string" && args["review-bar"].trim() && !pol.reviewBar) console.log("Warning: the server did not record the review bar; deploy the server, then run atelier init --review-bar again.");
+  console.log(`Triage:     ${pol.triage ? `${pol.triage}, which triages each landing's diff against the task's acceptance criteria before the review is asked for (atelier land --triage H/M names another, --no-triage REASON skips it)` : "none, unless a landing names a model with atelier land --triage H/M"}`);
+  // A server older than the triage setting ignores it and answers without one.
+  if (typeof args.triage === "string" && args.triage.trim() && !pol.triage) console.log("Warning: the server did not record the triage model; deploy the server, then run atelier init --triage again.");
   console.log(`Review tier: ${pol.reviewTier?.length ? `${pol.reviewTier.join(", ")}, one of which reviews every protected change: the gate's review goes to the tier first, and a separate tier review is asked only when the gate's reviewer is outside it` : "none"}`);
   if (typeof args["review-tier"] === "string" && args["review-tier"].trim() && !pol.reviewTier?.length) console.log("Warning: the server did not record the review tier; deploy the server, then run atelier init --review-tier again.");
+  console.log(`Models:     ${familyModeText(pol)}`);
+  // A server older than single-family mode ignores it and answers without one.
+  if (typeof singleFamily === "string" && singleFamily.trim() && !pol.familyMode?.single) console.log("Warning: the server did not record single-family mode; deploy the server, then run atelier init --single-family again.");
   const checkInputs = checkFiles(pol.checks ?? []);
   console.log(`Protected:  ${[...new Set([...(pol.protected ?? []), ...checkInputs])].sort().join(", ")}`);
   console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
