@@ -33,11 +33,13 @@ test("CLI hold release keeps the observed dispatch identity and skips suggestion
     assert.equal(body.suggest, undefined);
     assert.equal(body.agent, override.agent);
     assert.equal(body.model, override.model);
-    assert.match(result.lines[0], new RegExp(`builder: ${d.agent}/${d.model}; job: merge-main`));
+    // The hold line comes first (t491), then the builder it keeps.
+    assert.equal(result.lines[0], "t1: overlap override recorded.");
+    assert.match(result.lines[1], new RegExp(`keeps its dispatch; builder: ${d.agent}/${d.model}; job: merge-main`));
   }
   const d = { ...makeDispatch({}, "owner", "now"), overlapOk: true };
   const result = await command({ "overlap-ok": true }, { state: "open", owner: null, dispatch: d }, d);
-  assert.match(result.lines[0], /builder: any agent and model; job: build/);
+  assert.match(result.lines[1], /keeps its dispatch; builder: any agent and model; job: build/);
   assert.ok(result.lines.every(line => !line.includes("Warning")));
 });
 
@@ -53,7 +55,7 @@ test("CLI overlap override uses normal redispatch for owned work and normal disp
     assert.equal(calls[1].body.retainAt, undefined);
     assert.equal(calls[1].body.suggest, true);
     assert.equal(calls[1].body.overlapOk, true);
-    assert.ok(lines.every(line => !line.includes("released from the core-file hold")));
+    assert.ok(lines.every(line => !line.includes("keeps its dispatch") && !line.includes("released core-file hold")));
   }
 });
 
