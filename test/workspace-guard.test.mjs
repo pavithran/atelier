@@ -4,6 +4,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 // push, update and finish act on the repository in the current directory, so
 // they may run only in the claimed workspace of the item they name. Run in
@@ -67,6 +68,7 @@ const forkHead = (id) => execFileSync("git", ["--git-dir", FORKS[id], "rev-parse
 const item = (id) => ({ id, title: "Task " + id, scope: [], state: "claimed", owner: "codex/test", head: forkHead(id), acceptedHead: null, base: BASE, fork: "demo-" + id, dispatch: null });
 globalThis.fetch = async (url, options = {}) => {
   const path = new URL(url).pathname, method = options.method ?? "GET";
+  if (path === "/api/version") return Response.json({ capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
   const body = options.body ? JSON.parse(options.body) : undefined;
   appendFileSync(${JSON.stringify(log)}, JSON.stringify({ method, path, body }) + "\\n");
   let data = {};
