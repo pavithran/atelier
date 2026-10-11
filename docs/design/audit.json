@@ -1,6 +1,6 @@
 {
   "generatedBy": "scripts/design/capture.ts",
-  "source": "e9dbe086d210b6855fac8eb1e87ab54d3f8cca34",
+  "source": "dcdd9bc19ea9c3f67d640d0e0e062c1798d9094b",
   "sourceDirty": false,
   "browser": {
     "name": "chromium",
@@ -328,7 +328,7 @@
             "h2 Using Atelier well",
             "h2 Commands"
           ],
-          "words": 12781
+          "words": 13156
         },
         "targets": {
           "total": 24,
@@ -426,7 +426,7 @@
             "h2 Using Atelier well",
             "h2 Commands"
           ],
-          "words": 12781
+          "words": 13156
         },
         "targets": {
           "total": 24,
@@ -491,13 +491,13 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 853,
+            "checked": 879,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 853,
+            "checked": 879,
             "unknown": 0,
             "failures": []
           }
@@ -1099,7 +1099,7 @@
     "decisions": {
       "390": {
         "structure": {
-          "height": 2072,
+          "height": 2436,
           "navs": [
             {
               "label": "Main navigation",
@@ -1128,10 +1128,10 @@
             "h2 Handled by the orchestrator",
             "h2 Fix the Keychain.swift crash for jo@private.example (ready 1"
           ],
-          "words": 2225
+          "words": 2258
         },
         "targets": {
-          "total": 37,
+          "total": 38,
           "small": [
             {
               "tag": "a",
@@ -1234,10 +1234,10 @@
             "h2 Handled by the orchestrator",
             "h2 Fix the Keychain.swift crash for jo@private.example (ready 1"
           ],
-          "words": 2225
+          "words": 2258
         },
         "targets": {
-          "total": 134,
+          "total": 135,
           "small": [
             {
               "tag": "a",
@@ -1426,7 +1426,7 @@
           {
             "scheme": "light",
             "checked": 264,
-            "unknown": 73,
+            "unknown": 77,
             "failures": [
               {
                 "selector": "ul.decision-list > li.decision-card > a.decision-row.selected > span.tag.go",
@@ -1463,12 +1463,12 @@
           {
             "scheme": "dark",
             "checked": 264,
-            "unknown": 73,
+            "unknown": 77,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 127,
+          "stops": 128,
           "first": {
             "tag": "a",
             "label": "Skip to content",
@@ -1574,8 +1574,8 @@
         },
         "reflow320": {
           "width": 320,
-          "scrollWidth": 320,
-          "overflows": false,
+          "scrollWidth": 358,
+          "overflows": true,
           "offenders": []
         }
       },
@@ -1586,7 +1586,7 @@
     "decisions-sent-back": {
       "390": {
         "structure": {
-          "height": 2308,
+          "height": 2724,
           "navs": [
             {
               "label": "Main navigation",
@@ -1615,10 +1615,10 @@
             "h2 Handled by the orchestrator",
             "h2 Fix the decision line (sentBack 1)"
           ],
-          "words": 2365
+          "words": 2408
         },
         "targets": {
-          "total": 41,
+          "total": 42,
           "small": [
             {
               "tag": "a",
@@ -1733,10 +1733,10 @@
             "h2 Handled by the orchestrator",
             "h2 Fix the decision line (sentBack 1)"
           ],
-          "words": 2365
+          "words": 2408
         },
         "targets": {
-          "total": 138,
+          "total": 139,
           "small": [
             {
               "tag": "a",
@@ -1925,7 +1925,7 @@
           {
             "scheme": "light",
             "checked": 266,
-            "unknown": 89,
+            "unknown": 94,
             "failures": [
               {
                 "selector": "svg#gl.graph.compact > g.g-task.live > a > text.g-name",
@@ -1952,12 +1952,12 @@
           {
             "scheme": "dark",
             "checked": 266,
-            "unknown": 89,
+            "unknown": 94,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 129,
+          "stops": 130,
           "first": {
             "tag": "a",
             "label": "Skip to content",
@@ -2063,8 +2063,8 @@
         },
         "reflow320": {
           "width": 320,
-          "scrollWidth": 320,
-          "overflows": false,
+          "scrollWidth": 357,
+          "overflows": true,
           "offenders": []
         }
       },
@@ -2075,7 +2075,7 @@
     "decisions-blocked": {
       "390": {
         "structure": {
-          "height": 2110,
+          "height": 2420,
           "navs": [
             {
               "label": "Main navigation",
@@ -2104,7 +2104,7 @@
             "h2 Handled by the orchestrator",
             "h2 Fix the decision line (blocked 1)"
           ],
-          "words": 2185
+          "words": 2226
         },
         "targets": {
           "total": 27,
@@ -2204,7 +2204,7 @@
             "h2 Handled by the orchestrator",
             "h2 Fix the decision line (blocked 1)"
           ],
-          "words": 2185
+          "words": 2226
         },
         "targets": {
           "total": 124,
@@ -2396,7 +2396,7 @@
           {
             "scheme": "light",
             "checked": 266,
-            "unknown": 57,
+            "unknown": 61,
             "failures": [
               {
                 "selector": "svg#gv.graph.compact > g.g-task.live > a > text.g-name",
@@ -2423,7 +2423,7 @@
           {
             "scheme": "dark",
             "checked": 266,
-            "unknown": 57,
+            "unknown": 61,
             "failures": []
           }
         ],
@@ -4734,7 +4734,7 @@
     "project": {
       "390": {
         "structure": {
-          "height": 7797,
+          "height": 118613,
           "navs": [
             {
               "label": "Main navigation",
@@ -4761,12 +4761,13 @@
           "h1": 1,
           "headings": [
             "h1 Ledger Core",
-            "h2 Where it stands"
+            "h2 Where it stands",
+            "h2 Unsorted 156/200 merged"
           ],
-          "words": 2260
+          "words": 4506
         },
         "targets": {
-          "total": 87,
+          "total": 287,
           "small": [
             {
               "tag": "a",
@@ -4954,7 +4955,7 @@
       },
       "1440": {
         "structure": {
-          "height": 3543,
+          "height": 22708,
           "navs": [
             {
               "label": "Main navigation",
@@ -4981,12 +4982,13 @@
           "h1": 1,
           "headings": [
             "h1 Ledger Core",
-            "h2 Where it stands"
+            "h2 Where it stands",
+            "h2 Unsorted 156/200 merged"
           ],
-          "words": 2260
+          "words": 4506
         },
         "targets": {
-          "total": 88,
+          "total": 288,
           "small": [
             {
               "tag": "a",
@@ -5174,19 +5176,19 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 345,
+            "checked": 1148,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 345,
+            "checked": 1148,
             "unknown": 0,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 46,
+          "stops": 200,
           "first": {
             "tag": "a",
             "label": "Skip to content",
@@ -5240,9 +5242,10 @@
           "h1": 1,
           "headings": [
             "h1 blank-slate",
-            "h2 Where it stands"
+            "h2 Where it stands",
+            "h2 Unsorted 0/0 merged"
           ],
-          "words": 69
+          "words": 79
         },
         "targets": {
           "total": 19,
@@ -5286,9 +5289,10 @@
           "h1": 1,
           "headings": [
             "h1 blank-slate",
-            "h2 Where it stands"
+            "h2 Where it stands",
+            "h2 Unsorted 0/0 merged"
           ],
-          "words": 69
+          "words": 79
         },
         "targets": {
           "total": 20,
@@ -5305,13 +5309,13 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 32,
+            "checked": 36,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 32,
+            "checked": 36,
             "unknown": 0,
             "failures": []
           }
@@ -5433,7 +5437,7 @@
     "tasks": {
       "390": {
         "structure": {
-          "height": 63000,
+          "height": 111277,
           "navs": [
             {
               "label": "Main navigation",
@@ -5459,9 +5463,10 @@
           ],
           "h1": 1,
           "headings": [
-            "h1 Ledger Core"
+            "h1 Ledger Core",
+            "h2 Unsorted 156/200 merged"
           ],
-          "words": 2675
+          "words": 2288
         },
         "targets": {
           "total": 221,
@@ -5471,7 +5476,7 @@
       },
       "1440": {
         "structure": {
-          "height": 18298,
+          "height": 19476,
           "navs": [
             {
               "label": "Main navigation",
@@ -5497,9 +5502,10 @@
           ],
           "h1": 1,
           "headings": [
-            "h1 Ledger Core"
+            "h1 Ledger Core",
+            "h2 Unsorted 156/200 merged"
           ],
-          "words": 2675
+          "words": 2288
         },
         "targets": {
           "total": 222,
@@ -5509,13 +5515,13 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 827,
+            "checked": 830,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 827,
+            "checked": 830,
             "unknown": 0,
             "failures": []
           }
@@ -5574,9 +5580,10 @@
           ],
           "h1": 1,
           "headings": [
-            "h1 blank-slate"
+            "h1 blank-slate",
+            "h2 Unsorted 0/0 merged"
           ],
-          "words": 47
+          "words": 51
         },
         "targets": {
           "total": 21,
@@ -5612,9 +5619,10 @@
           ],
           "h1": 1,
           "headings": [
-            "h1 blank-slate"
+            "h1 blank-slate",
+            "h2 Unsorted 0/0 merged"
           ],
-          "words": 47
+          "words": 51
         },
         "targets": {
           "total": 22,
@@ -5624,13 +5632,13 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 28,
+            "checked": 31,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 28,
+            "checked": 31,
             "unknown": 0,
             "failures": []
           }
@@ -8995,7 +9003,7 @@
     "task-open-long": {
       "390": {
         "structure": {
-          "height": 1629,
+          "height": 1728,
           "navs": [
             {
               "label": "Main navigation",
@@ -9030,7 +9038,7 @@
           "headings": [
             "h2 Say in the decision line which revision, where each check ra"
           ],
-          "words": 489
+          "words": 491
         },
         "targets": {
           "total": 32,
@@ -9047,7 +9055,7 @@
       },
       "1440": {
         "structure": {
-          "height": 1148,
+          "height": 1246,
           "navs": [
             {
               "label": "Main navigation",
@@ -9082,7 +9090,7 @@
           "headings": [
             "h2 Say in the decision line which revision, where each check ra"
           ],
-          "words": 489
+          "words": 491
         },
         "targets": {
           "total": 33,
@@ -9100,13 +9108,13 @@
           {
             "scheme": "light",
             "checked": 25,
-            "unknown": 35,
+            "unknown": 37,
             "failures": []
           },
           {
             "scheme": "dark",
             "checked": 25,
-            "unknown": 35,
+            "unknown": 37,
             "failures": []
           }
         ],
@@ -9179,7 +9187,7 @@
     "task-working": {
       "390": {
         "structure": {
-          "height": 2244,
+          "height": 2448,
           "navs": [
             {
               "label": "Main navigation",
@@ -9224,7 +9232,7 @@
           "headings": [
             "h2 Fix the decision line (working 1)"
           ],
-          "words": 334
+          "words": 357
         },
         "targets": {
           "total": 50,
@@ -9295,7 +9303,7 @@
       },
       "1440": {
         "structure": {
-          "height": 1860,
+          "height": 2038,
           "navs": [
             {
               "label": "Main navigation",
@@ -9340,7 +9348,7 @@
           "headings": [
             "h2 Fix the decision line (working 1)"
           ],
-          "words": 334
+          "words": 357
         },
         "targets": {
           "total": 51,
@@ -9412,7 +9420,7 @@
           {
             "scheme": "light",
             "checked": 41,
-            "unknown": 80,
+            "unknown": 84,
             "failures": [
               {
                 "selector": "div.stage-scroll > svg#g16.graph > g.g-task.live > text.g-name",
@@ -9429,7 +9437,7 @@
           {
             "scheme": "dark",
             "checked": 41,
-            "unknown": 80,
+            "unknown": 84,
             "failures": []
           }
         ],
@@ -9461,7 +9469,7 @@
     "task-stale": {
       "390": {
         "structure": {
-          "height": 2244,
+          "height": 2448,
           "navs": [
             {
               "label": "Main navigation",
@@ -9506,7 +9514,7 @@
           "headings": [
             "h2 Fix the decision line (stale 1)"
           ],
-          "words": 334
+          "words": 357
         },
         "targets": {
           "total": 50,
@@ -9577,7 +9585,7 @@
       },
       "1440": {
         "structure": {
-          "height": 1860,
+          "height": 2038,
           "navs": [
             {
               "label": "Main navigation",
@@ -9622,7 +9630,7 @@
           "headings": [
             "h2 Fix the decision line (stale 1)"
           ],
-          "words": 334
+          "words": 357
         },
         "targets": {
           "total": 51,
@@ -9694,7 +9702,7 @@
           {
             "scheme": "light",
             "checked": 41,
-            "unknown": 80,
+            "unknown": 84,
             "failures": [
               {
                 "selector": "div.stage-scroll > svg#g17.graph > g.g-task.live > text.g-name",
@@ -9711,7 +9719,7 @@
           {
             "scheme": "dark",
             "checked": 41,
-            "unknown": 80,
+            "unknown": 84,
             "failures": []
           }
         ],
@@ -9743,7 +9751,7 @@
     "task-blocked": {
       "390": {
         "structure": {
-          "height": 2527,
+          "height": 2837,
           "navs": [
             {
               "label": "Main navigation",
@@ -9788,7 +9796,7 @@
           "headings": [
             "h2 Fix the decision line (blocked 1)"
           ],
-          "words": 356
+          "words": 397
         },
         "targets": {
           "total": 41,
@@ -9865,7 +9873,7 @@
       },
       "1440": {
         "structure": {
-          "height": 1983,
+          "height": 2213,
           "navs": [
             {
               "label": "Main navigation",
@@ -9910,7 +9918,7 @@
           "headings": [
             "h2 Fix the decision line (blocked 1)"
           ],
-          "words": 356
+          "words": 397
         },
         "targets": {
           "total": 42,
@@ -9988,7 +9996,7 @@
           {
             "scheme": "light",
             "checked": 46,
-            "unknown": 67,
+            "unknown": 71,
             "failures": [
               {
                 "selector": "div.stage-scroll > svg#g18.graph > g.g-task > text.g-name",
@@ -10005,7 +10013,7 @@
           {
             "scheme": "dark",
             "checked": 46,
-            "unknown": 67,
+            "unknown": 71,
             "failures": []
           }
         ],
@@ -10037,7 +10045,7 @@
     "task-failed": {
       "390": {
         "structure": {
-          "height": 2437,
+          "height": 2808,
           "navs": [
             {
               "label": "Main navigation",
@@ -10082,10 +10090,10 @@
           "headings": [
             "h2 Fix the decision line (failed 1)"
           ],
-          "words": 485
+          "words": 519
         },
         "targets": {
-          "total": 55,
+          "total": 56,
           "small": [
             {
               "tag": "a",
@@ -10183,7 +10191,7 @@
       },
       "1440": {
         "structure": {
-          "height": 2014,
+          "height": 2297,
           "navs": [
             {
               "label": "Main navigation",
@@ -10228,2153 +10236,7 @@
           "headings": [
             "h2 Fix the decision line (failed 1)"
           ],
-          "words": 485
-        },
-        "targets": {
-          "total": 56,
-          "small": [
-            {
-              "tag": "a",
-              "label": "",
-              "width": 14,
-              "height": 14
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 14,
-              "height": 14
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 14,
-              "height": 14
-            },
-            {
-              "tag": "a",
-              "label": "Changes",
-              "width": 54,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Checks",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "History",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Browse the fork",
-              "width": 99,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Its log",
-              "width": 40,
-              "height": 22
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            }
-          ],
-          "smallCount": 15
-        },
-        "contrast": [
-          {
-            "scheme": "light",
-            "checked": 47,
-            "unknown": 90,
-            "failures": [
-              {
-                "selector": "div.stage-scroll > svg#g19.graph > g.g-task.live > text.g-name",
-                "text": "t188",
-                "ratio": 4.03,
-                "need": 4.5,
-                "fg": "#0b7a5c",
-                "bg": "#e4e0d5",
-                "size": 12,
-                "count": 1
-              }
-            ]
-          },
-          {
-            "scheme": "dark",
-            "checked": 47,
-            "unknown": 90,
-            "failures": []
-          }
-        ],
-        "focus": {
-          "stops": 40,
-          "first": {
-            "tag": "a",
-            "label": "Skip to content",
-            "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
-            "onScreen": true,
-            "width": 132,
-            "height": 49
-          },
-          "noIndicator": [
-            {
-              "tag": "g",
-              "label": "2026-10-10 10:35 UTC, submitted: gpt-6-astra submi",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 14,
-              "height": 14
-            }
-          ],
-          "offScreen": []
-        },
-        "reflow320": {
-          "width": 320,
-          "scrollWidth": 320,
-          "overflows": false,
-          "offenders": []
-        }
-      },
-      "path": "/p/ledger-core/t188",
-      "status": 200,
-      "audience": "owner"
-    },
-    "task-ready-unavailable": {
-      "390": {
-        "structure": {
-          "height": 2386,
-          "navs": [
-            {
-              "label": "Main navigation",
-              "links": [
-                "Home",
-                "Decisions",
-                "Studio"
-              ]
-            },
-            {
-              "label": null,
-              "links": [
-                "Home",
-                "Ledger Core"
-              ]
-            },
-            {
-              "label": "Ledger Core",
-              "links": [
-                "Overview",
-                "Tasks",
-                "Flow",
-                "Plans",
-                "Code",
-                "Log",
-                "Ship",
-                "Settings"
-              ]
-            },
-            {
-              "label": "In this review",
-              "links": [
-                "Changes",
-                "Checks",
-                "History",
-                "Browse the fork",
-                "Its log"
-              ]
-            }
-          ],
-          "h1": 0,
-          "headings": [
-            "h2 Fix the decision line (ready 1)"
-          ],
-          "words": 482
-        },
-        "targets": {
-          "total": 54,
-          "small": [
-            {
-              "tag": "a",
-              "label": "",
-              "width": 13,
-              "height": 13
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 13,
-              "height": 13
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 13,
-              "height": 13
-            },
-            {
-              "tag": "a",
-              "label": "Changes",
-              "width": 54,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Checks",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "History",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Browse the fork",
-              "width": 99,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Its log",
-              "width": 40,
-              "height": 22
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            }
-          ],
-          "smallCount": 15
-        }
-      },
-      "1440": {
-        "structure": {
-          "height": 1859,
-          "navs": [
-            {
-              "label": "Main navigation",
-              "links": [
-                "Home",
-                "Decisions",
-                "Studio"
-              ]
-            },
-            {
-              "label": null,
-              "links": [
-                "Home",
-                "Ledger Core"
-              ]
-            },
-            {
-              "label": "Ledger Core",
-              "links": [
-                "Overview",
-                "Tasks",
-                "Flow",
-                "Plans",
-                "Code",
-                "Log",
-                "Ship",
-                "Settings"
-              ]
-            },
-            {
-              "label": "In this review",
-              "links": [
-                "Changes",
-                "Checks",
-                "History",
-                "Browse the fork",
-                "Its log"
-              ]
-            }
-          ],
-          "h1": 0,
-          "headings": [
-            "h2 Fix the decision line (ready 1)"
-          ],
-          "words": 482
-        },
-        "targets": {
-          "total": 55,
-          "small": [
-            {
-              "tag": "a",
-              "label": "",
-              "width": 14,
-              "height": 14
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 14,
-              "height": 14
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 14,
-              "height": 14
-            },
-            {
-              "tag": "a",
-              "label": "Changes",
-              "width": 54,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Checks",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "History",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Browse the fork",
-              "width": 99,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Its log",
-              "width": 40,
-              "height": 22
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            }
-          ],
-          "smallCount": 15
-        },
-        "contrast": [
-          {
-            "scheme": "light",
-            "checked": 41,
-            "unknown": 88,
-            "failures": [
-              {
-                "selector": "div.stage-scroll > svg#g1a.graph > g.g-task.live > text.g-name",
-                "text": "t191",
-                "ratio": 4.03,
-                "need": 4.5,
-                "fg": "#0b7a5c",
-                "bg": "#e4e0d5",
-                "size": 12,
-                "count": 1
-              }
-            ]
-          },
-          {
-            "scheme": "dark",
-            "checked": 41,
-            "unknown": 88,
-            "failures": []
-          }
-        ],
-        "focus": {
-          "stops": 37,
-          "first": {
-            "tag": "a",
-            "label": "Skip to content",
-            "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
-            "onScreen": true,
-            "width": 132,
-            "height": 49
-          },
-          "noIndicator": [
-            {
-              "tag": "g",
-              "label": "2026-10-10 12:38 UTC, submitted: gpt-6-astra submi",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 14,
-              "height": 14
-            }
-          ],
-          "offScreen": []
-        },
-        "reflow320": {
-          "width": 320,
-          "scrollWidth": 320,
-          "overflows": false,
-          "offenders": []
-        }
-      },
-      "path": "/p/ledger-core/t191",
-      "status": 200,
-      "audience": "owner"
-    },
-    "task-ready": {
-      "390": {
-        "structure": {
-          "height": 2430,
-          "navs": [
-            {
-              "label": "Main navigation",
-              "links": [
-                "Home",
-                "Decisions",
-                "Studio"
-              ]
-            },
-            {
-              "label": null,
-              "links": [
-                "Home",
-                "Ledger Core"
-              ]
-            },
-            {
-              "label": "Ledger Core",
-              "links": [
-                "Overview",
-                "Tasks",
-                "Flow",
-                "Plans",
-                "Code",
-                "Log",
-                "Ship",
-                "Settings"
-              ]
-            },
-            {
-              "label": "In this review",
-              "links": [
-                "Changes",
-                "Checks",
-                "History",
-                "Browse the fork",
-                "Its log"
-              ]
-            }
-          ],
-          "h1": 0,
-          "headings": [
-            "h2 Add the project tabs (ready 2)"
-          ],
-          "words": 450
-        },
-        "targets": {
-          "total": 55,
-          "small": [
-            {
-              "tag": "a",
-              "label": "",
-              "width": 13,
-              "height": 13
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 13,
-              "height": 13
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 13,
-              "height": 13
-            },
-            {
-              "tag": "a",
-              "label": "Changes",
-              "width": 54,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Checks",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "History",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Browse the fork",
-              "width": 99,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Its log",
-              "width": 40,
-              "height": 22
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            }
-          ],
-          "smallCount": 15
-        }
-      },
-      "1440": {
-        "structure": {
-          "height": 1914,
-          "navs": [
-            {
-              "label": "Main navigation",
-              "links": [
-                "Home",
-                "Decisions",
-                "Studio"
-              ]
-            },
-            {
-              "label": null,
-              "links": [
-                "Home",
-                "Ledger Core"
-              ]
-            },
-            {
-              "label": "Ledger Core",
-              "links": [
-                "Overview",
-                "Tasks",
-                "Flow",
-                "Plans",
-                "Code",
-                "Log",
-                "Ship",
-                "Settings"
-              ]
-            },
-            {
-              "label": "In this review",
-              "links": [
-                "Changes",
-                "Checks",
-                "History",
-                "Browse the fork",
-                "Its log"
-              ]
-            }
-          ],
-          "h1": 0,
-          "headings": [
-            "h2 Add the project tabs (ready 2)"
-          ],
-          "words": 450
-        },
-        "targets": {
-          "total": 56,
-          "small": [
-            {
-              "tag": "a",
-              "label": "",
-              "width": 14,
-              "height": 14
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 14,
-              "height": 14
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 14,
-              "height": 14
-            },
-            {
-              "tag": "a",
-              "label": "Changes",
-              "width": 54,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Checks",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "History",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Browse the fork",
-              "width": 99,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Its log",
-              "width": 40,
-              "height": 22
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            }
-          ],
-          "smallCount": 15
-        },
-        "contrast": [
-          {
-            "scheme": "light",
-            "checked": 46,
-            "unknown": 91,
-            "failures": []
-          },
-          {
-            "scheme": "dark",
-            "checked": 46,
-            "unknown": 91,
-            "failures": []
-          }
-        ],
-        "focus": {
-          "stops": 39,
-          "first": {
-            "tag": "a",
-            "label": "Skip to content",
-            "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
-            "onScreen": true,
-            "width": 132,
-            "height": 49
-          },
-          "noIndicator": [
-            {
-              "tag": "g",
-              "label": "2026-10-10 13:19 UTC, submitted: glm-5.3 submitted",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 14,
-              "height": 14
-            }
-          ],
-          "offScreen": []
-        },
-        "reflow320": {
-          "width": 320,
-          "scrollWidth": 320,
-          "overflows": false,
-          "offenders": []
-        }
-      },
-      "path": "/p/ledger-core/t192",
-      "status": 200,
-      "audience": "owner"
-    },
-    "task-protected": {
-      "390": {
-        "structure": {
-          "height": 3031,
-          "navs": [
-            {
-              "label": "Main navigation",
-              "links": [
-                "Home",
-                "Decisions",
-                "Studio"
-              ]
-            },
-            {
-              "label": null,
-              "links": [
-                "Home",
-                "Ledger Core"
-              ]
-            },
-            {
-              "label": "Ledger Core",
-              "links": [
-                "Overview",
-                "Tasks",
-                "Flow",
-                "Plans",
-                "Code",
-                "Log",
-                "Ship",
-                "Settings"
-              ]
-            },
-            {
-              "label": "In this review",
-              "links": [
-                "Changes",
-                "Checks",
-                "History",
-                "Browse the fork",
-                "Its log"
-              ]
-            }
-          ],
-          "h1": 0,
-          "headings": [
-            "h2 Fix the decision line (protected 1)"
-          ],
-          "words": 689
-        },
-        "targets": {
-          "total": 60,
-          "small": [
-            {
-              "tag": "a",
-              "label": "",
-              "width": 13,
-              "height": 13
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 13,
-              "height": 13
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 13,
-              "height": 13
-            },
-            {
-              "tag": "a",
-              "label": "Changes",
-              "width": 54,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Checks",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "History",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Browse the fork",
-              "width": 99,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Its log",
-              "width": 40,
-              "height": 22
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            }
-          ],
-          "smallCount": 15
-        }
-      },
-      "1440": {
-        "structure": {
-          "height": 2161,
-          "navs": [
-            {
-              "label": "Main navigation",
-              "links": [
-                "Home",
-                "Decisions",
-                "Studio"
-              ]
-            },
-            {
-              "label": null,
-              "links": [
-                "Home",
-                "Ledger Core"
-              ]
-            },
-            {
-              "label": "Ledger Core",
-              "links": [
-                "Overview",
-                "Tasks",
-                "Flow",
-                "Plans",
-                "Code",
-                "Log",
-                "Ship",
-                "Settings"
-              ]
-            },
-            {
-              "label": "In this review",
-              "links": [
-                "Changes",
-                "Checks",
-                "History",
-                "Browse the fork",
-                "Its log"
-              ]
-            }
-          ],
-          "h1": 0,
-          "headings": [
-            "h2 Fix the decision line (protected 1)"
-          ],
-          "words": 689
-        },
-        "targets": {
-          "total": 61,
-          "small": [
-            {
-              "tag": "a",
-              "label": "",
-              "width": 14,
-              "height": 14
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 14,
-              "height": 14
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 14,
-              "height": 14
-            },
-            {
-              "tag": "a",
-              "label": "Changes",
-              "width": 54,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Checks",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "History",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Browse the fork",
-              "width": 99,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Its log",
-              "width": 40,
-              "height": 22
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            }
-          ],
-          "smallCount": 15
-        },
-        "contrast": [
-          {
-            "scheme": "light",
-            "checked": 46,
-            "unknown": 103,
-            "failures": [
-              {
-                "selector": "div.stage-scroll > svg#g1c.graph > g.g-task.live > text.g-name",
-                "text": "t195",
-                "ratio": 4.03,
-                "need": 4.5,
-                "fg": "#0b7a5c",
-                "bg": "#e4e0d5",
-                "size": 12,
-                "count": 1
-              }
-            ]
-          },
-          {
-            "scheme": "dark",
-            "checked": 46,
-            "unknown": 103,
-            "failures": []
-          }
-        ],
-        "focus": {
-          "stops": 42,
-          "first": {
-            "tag": "a",
-            "label": "Skip to content",
-            "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
-            "onScreen": true,
-            "width": 132,
-            "height": 49
-          },
-          "noIndicator": [
-            {
-              "tag": "g",
-              "label": "2026-10-10 15:22 UTC, submitted: gpt-6-astra submi",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 14,
-              "height": 14
-            }
-          ],
-          "offScreen": []
-        },
-        "reflow320": {
-          "width": 320,
-          "scrollWidth": 320,
-          "overflows": false,
-          "offenders": []
-        }
-      },
-      "path": "/p/ledger-core/t195",
-      "status": 200,
-      "audience": "owner"
-    },
-    "task-sent-back": {
-      "390": {
-        "structure": {
-          "height": 2725,
-          "navs": [
-            {
-              "label": "Main navigation",
-              "links": [
-                "Home",
-                "Decisions",
-                "Studio"
-              ]
-            },
-            {
-              "label": null,
-              "links": [
-                "Home",
-                "Ledger Core"
-              ]
-            },
-            {
-              "label": "Ledger Core",
-              "links": [
-                "Overview",
-                "Tasks",
-                "Flow",
-                "Plans",
-                "Code",
-                "Log",
-                "Ship",
-                "Settings"
-              ]
-            },
-            {
-              "label": "In this review",
-              "links": [
-                "Changes",
-                "Checks",
-                "History",
-                "Browse the fork",
-                "Its log"
-              ]
-            }
-          ],
-          "h1": 0,
-          "headings": [
-            "h2 Fix the decision line (sentBack 1)"
-          ],
-          "words": 603
-        },
-        "targets": {
-          "total": 58,
-          "small": [
-            {
-              "tag": "a",
-              "label": "",
-              "width": 13,
-              "height": 13
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 13,
-              "height": 13
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 13,
-              "height": 13
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 13,
-              "height": 13
-            },
-            {
-              "tag": "a",
-              "label": "Changes",
-              "width": 54,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Checks",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "History",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Browse the fork",
-              "width": 99,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Its log",
-              "width": 40,
-              "height": 22
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            }
-          ],
-          "smallCount": 17
-        }
-      },
-      "1440": {
-        "structure": {
-          "height": 2064,
-          "navs": [
-            {
-              "label": "Main navigation",
-              "links": [
-                "Home",
-                "Decisions",
-                "Studio"
-              ]
-            },
-            {
-              "label": null,
-              "links": [
-                "Home",
-                "Ledger Core"
-              ]
-            },
-            {
-              "label": "Ledger Core",
-              "links": [
-                "Overview",
-                "Tasks",
-                "Flow",
-                "Plans",
-                "Code",
-                "Log",
-                "Ship",
-                "Settings"
-              ]
-            },
-            {
-              "label": "In this review",
-              "links": [
-                "Changes",
-                "Checks",
-                "History",
-                "Browse the fork",
-                "Its log"
-              ]
-            }
-          ],
-          "h1": 0,
-          "headings": [
-            "h2 Fix the decision line (sentBack 1)"
-          ],
-          "words": 603
-        },
-        "targets": {
-          "total": 59,
-          "small": [
-            {
-              "tag": "a",
-              "label": "",
-              "width": 14,
-              "height": 14
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 14,
-              "height": 14
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 14,
-              "height": 14
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 14,
-              "height": 14
-            },
-            {
-              "tag": "a",
-              "label": "Changes",
-              "width": 54,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Checks",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "History",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Browse the fork",
-              "width": 99,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Its log",
-              "width": 40,
-              "height": 22
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            }
-          ],
-          "smallCount": 17
-        },
-        "contrast": [
-          {
-            "scheme": "light",
-            "checked": 47,
-            "unknown": 100,
-            "failures": [
-              {
-                "selector": "div.stage-scroll > svg#g1d.graph > g.g-task.live > text.g-name",
-                "text": "t197",
-                "ratio": 4.03,
-                "need": 4.5,
-                "fg": "#0b7a5c",
-                "bg": "#e4e0d5",
-                "size": 12,
-                "count": 1
-              }
-            ]
-          },
-          {
-            "scheme": "dark",
-            "checked": 47,
-            "unknown": 100,
-            "failures": []
-          }
-        ],
-        "focus": {
-          "stops": 41,
-          "first": {
-            "tag": "a",
-            "label": "Skip to content",
-            "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
-            "onScreen": true,
-            "width": 132,
-            "height": 49
-          },
-          "noIndicator": [
-            {
-              "tag": "g",
-              "label": "2026-10-10 16:44 UTC, submitted: gpt-6-astra submi",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 14,
-              "height": 14
-            }
-          ],
-          "offScreen": []
-        },
-        "reflow320": {
-          "width": 320,
-          "scrollWidth": 320,
-          "overflows": false,
-          "offenders": []
-        }
-      },
-      "path": "/p/ledger-core/t197",
-      "status": 200,
-      "audience": "owner"
-    },
-    "task-accepted": {
-      "390": {
-        "structure": {
-          "height": 2457,
-          "navs": [
-            {
-              "label": "Main navigation",
-              "links": [
-                "Home",
-                "Decisions",
-                "Studio"
-              ]
-            },
-            {
-              "label": null,
-              "links": [
-                "Home",
-                "Ledger Core"
-              ]
-            },
-            {
-              "label": "Ledger Core",
-              "links": [
-                "Overview",
-                "Tasks",
-                "Flow",
-                "Plans",
-                "Code",
-                "Log",
-                "Ship",
-                "Settings"
-              ]
-            },
-            {
-              "label": "In this review",
-              "links": [
-                "Changes",
-                "Checks",
-                "History",
-                "Browse the fork",
-                "Its log"
-              ]
-            }
-          ],
-          "h1": 0,
-          "headings": [
-            "h2 Fix the decision line (accepted 1)"
-          ],
-          "words": 510
-        },
-        "targets": {
-          "total": 47,
-          "small": [
-            {
-              "tag": "a",
-              "label": "",
-              "width": 13,
-              "height": 13
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 13,
-              "height": 13
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 13,
-              "height": 13
-            },
-            {
-              "tag": "a",
-              "label": "Changes",
-              "width": 54,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Checks",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "History",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Browse the fork",
-              "width": 99,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Its log",
-              "width": 40,
-              "height": 22
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            }
-          ],
-          "smallCount": 16
-        }
-      },
-      "1440": {
-        "structure": {
-          "height": 1938,
-          "navs": [
-            {
-              "label": "Main navigation",
-              "links": [
-                "Home",
-                "Decisions",
-                "Studio"
-              ]
-            },
-            {
-              "label": null,
-              "links": [
-                "Home",
-                "Ledger Core"
-              ]
-            },
-            {
-              "label": "Ledger Core",
-              "links": [
-                "Overview",
-                "Tasks",
-                "Flow",
-                "Plans",
-                "Code",
-                "Log",
-                "Ship",
-                "Settings"
-              ]
-            },
-            {
-              "label": "In this review",
-              "links": [
-                "Changes",
-                "Checks",
-                "History",
-                "Browse the fork",
-                "Its log"
-              ]
-            }
-          ],
-          "h1": 0,
-          "headings": [
-            "h2 Fix the decision line (accepted 1)"
-          ],
-          "words": 510
-        },
-        "targets": {
-          "total": 48,
-          "small": [
-            {
-              "tag": "a",
-              "label": "",
-              "width": 14,
-              "height": 14
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 14,
-              "height": 14
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 14,
-              "height": 14
-            },
-            {
-              "tag": "a",
-              "label": "Changes",
-              "width": 54,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Checks",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "History",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Browse the fork",
-              "width": 99,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Its log",
-              "width": 40,
-              "height": 22
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 822,
-              "height": 20
-            }
-          ],
-          "smallCount": 16
-        },
-        "contrast": [
-          {
-            "scheme": "light",
-            "checked": 47,
-            "unknown": 86,
-            "failures": [
-              {
-                "selector": "div.stage-scroll > svg#g1e.graph > g.g-task.live > text.g-name",
-                "text": "t198",
-                "ratio": 4.03,
-                "need": 4.5,
-                "fg": "#0b7a5c",
-                "bg": "#e4e0d5",
-                "size": 12,
-                "count": 1
-              }
-            ]
-          },
-          {
-            "scheme": "dark",
-            "checked": 47,
-            "unknown": 86,
-            "failures": []
-          }
-        ],
-        "focus": {
-          "stops": 39,
-          "first": {
-            "tag": "a",
-            "label": "Skip to content",
-            "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
-            "onScreen": true,
-            "width": 132,
-            "height": 49
-          },
-          "noIndicator": [
-            {
-              "tag": "g",
-              "label": "2026-10-10 17:55 UTC, submitted: gpt-6-astra submi",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 14,
-              "height": 14
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-10 18:15 UTC, accepted: You accepted 863c7",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 14,
-              "height": 14
-            }
-          ],
-          "offScreen": []
-        },
-        "reflow320": {
-          "width": 320,
-          "scrollWidth": 320,
-          "overflows": false,
-          "offenders": []
-        }
-      },
-      "path": "/p/ledger-core/t198",
-      "status": 200,
-      "audience": "owner"
-    },
-    "task-scope": {
-      "390": {
-        "structure": {
-          "height": 2420,
-          "navs": [
-            {
-              "label": "Main navigation",
-              "links": [
-                "Home",
-                "Decisions",
-                "Studio"
-              ]
-            },
-            {
-              "label": null,
-              "links": [
-                "Home",
-                "Ledger Core"
-              ]
-            },
-            {
-              "label": "Ledger Core",
-              "links": [
-                "Overview",
-                "Tasks",
-                "Flow",
-                "Plans",
-                "Code",
-                "Log",
-                "Ship",
-                "Settings"
-              ]
-            },
-            {
-              "label": "In this review",
-              "links": [
-                "Changes",
-                "Checks",
-                "History",
-                "Browse the fork",
-                "Its log"
-              ]
-            }
-          ],
-          "h1": 0,
-          "headings": [
-            "h2 Fix the decision line (scope 1)"
-          ],
-          "words": 478
-        },
-        "targets": {
-          "total": 56,
-          "small": [
-            {
-              "tag": "a",
-              "label": "",
-              "width": 13,
-              "height": 13
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 13,
-              "height": 13
-            },
-            {
-              "tag": "a",
-              "label": "",
-              "width": 13,
-              "height": 13
-            },
-            {
-              "tag": "a",
-              "label": "Changes",
-              "width": 54,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Checks",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "History",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Browse the fork",
-              "width": 99,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Its log",
-              "width": 40,
-              "height": 22
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            }
-          ],
-          "smallCount": 15
-        }
-      },
-      "1440": {
-        "structure": {
-          "height": 1903,
-          "navs": [
-            {
-              "label": "Main navigation",
-              "links": [
-                "Home",
-                "Decisions",
-                "Studio"
-              ]
-            },
-            {
-              "label": null,
-              "links": [
-                "Home",
-                "Ledger Core"
-              ]
-            },
-            {
-              "label": "Ledger Core",
-              "links": [
-                "Overview",
-                "Tasks",
-                "Flow",
-                "Plans",
-                "Code",
-                "Log",
-                "Ship",
-                "Settings"
-              ]
-            },
-            {
-              "label": "In this review",
-              "links": [
-                "Changes",
-                "Checks",
-                "History",
-                "Browse the fork",
-                "Its log"
-              ]
-            }
-          ],
-          "h1": 0,
-          "headings": [
-            "h2 Fix the decision line (scope 1)"
-          ],
-          "words": 478
+          "words": 519
         },
         "targets": {
           "total": 57,
@@ -12475,8 +10337,2154 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 49,
+            "checked": 47,
+            "unknown": 95,
+            "failures": [
+              {
+                "selector": "div.stage-scroll > svg#g19.graph > g.g-task.live > text.g-name",
+                "text": "t188",
+                "ratio": 4.03,
+                "need": 4.5,
+                "fg": "#0b7a5c",
+                "bg": "#e4e0d5",
+                "size": 12,
+                "count": 1
+              }
+            ]
+          },
+          {
+            "scheme": "dark",
+            "checked": 47,
+            "unknown": 95,
+            "failures": []
+          }
+        ],
+        "focus": {
+          "stops": 41,
+          "first": {
+            "tag": "a",
+            "label": "Skip to content",
+            "href": "#main",
+            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "onScreen": true,
+            "width": 132,
+            "height": 49
+          },
+          "noIndicator": [
+            {
+              "tag": "g",
+              "label": "2026-10-10 10:35 UTC, submitted: gpt-6-astra submi",
+              "href": null,
+              "indicator": null,
+              "onScreen": true,
+              "width": 14,
+              "height": 14
+            }
+          ],
+          "offScreen": []
+        },
+        "reflow320": {
+          "width": 320,
+          "scrollWidth": 351,
+          "overflows": true,
+          "offenders": []
+        }
+      },
+      "path": "/p/ledger-core/t188",
+      "status": 200,
+      "audience": "owner"
+    },
+    "task-ready-unavailable": {
+      "390": {
+        "structure": {
+          "height": 2749,
+          "navs": [
+            {
+              "label": "Main navigation",
+              "links": [
+                "Home",
+                "Decisions",
+                "Studio"
+              ]
+            },
+            {
+              "label": null,
+              "links": [
+                "Home",
+                "Ledger Core"
+              ]
+            },
+            {
+              "label": "Ledger Core",
+              "links": [
+                "Overview",
+                "Tasks",
+                "Flow",
+                "Plans",
+                "Code",
+                "Log",
+                "Ship",
+                "Settings"
+              ]
+            },
+            {
+              "label": "In this review",
+              "links": [
+                "Changes",
+                "Checks",
+                "History",
+                "Browse the fork",
+                "Its log"
+              ]
+            }
+          ],
+          "h1": 0,
+          "headings": [
+            "h2 Fix the decision line (ready 1)"
+          ],
+          "words": 515
+        },
+        "targets": {
+          "total": 55,
+          "small": [
+            {
+              "tag": "a",
+              "label": "",
+              "width": 13,
+              "height": 13
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 13,
+              "height": 13
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 13,
+              "height": 13
+            },
+            {
+              "tag": "a",
+              "label": "Changes",
+              "width": 54,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Checks",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "History",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Browse the fork",
+              "width": 99,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Its log",
+              "width": 40,
+              "height": 22
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            }
+          ],
+          "smallCount": 15
+        }
+      },
+      "1440": {
+        "structure": {
+          "height": 2141,
+          "navs": [
+            {
+              "label": "Main navigation",
+              "links": [
+                "Home",
+                "Decisions",
+                "Studio"
+              ]
+            },
+            {
+              "label": null,
+              "links": [
+                "Home",
+                "Ledger Core"
+              ]
+            },
+            {
+              "label": "Ledger Core",
+              "links": [
+                "Overview",
+                "Tasks",
+                "Flow",
+                "Plans",
+                "Code",
+                "Log",
+                "Ship",
+                "Settings"
+              ]
+            },
+            {
+              "label": "In this review",
+              "links": [
+                "Changes",
+                "Checks",
+                "History",
+                "Browse the fork",
+                "Its log"
+              ]
+            }
+          ],
+          "h1": 0,
+          "headings": [
+            "h2 Fix the decision line (ready 1)"
+          ],
+          "words": 515
+        },
+        "targets": {
+          "total": 56,
+          "small": [
+            {
+              "tag": "a",
+              "label": "",
+              "width": 14,
+              "height": 14
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 14,
+              "height": 14
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 14,
+              "height": 14
+            },
+            {
+              "tag": "a",
+              "label": "Changes",
+              "width": 54,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Checks",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "History",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Browse the fork",
+              "width": 99,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Its log",
+              "width": 40,
+              "height": 22
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            }
+          ],
+          "smallCount": 15
+        },
+        "contrast": [
+          {
+            "scheme": "light",
+            "checked": 41,
+            "unknown": 92,
+            "failures": [
+              {
+                "selector": "div.stage-scroll > svg#g1a.graph > g.g-task.live > text.g-name",
+                "text": "t191",
+                "ratio": 4.03,
+                "need": 4.5,
+                "fg": "#0b7a5c",
+                "bg": "#e4e0d5",
+                "size": 12,
+                "count": 1
+              }
+            ]
+          },
+          {
+            "scheme": "dark",
+            "checked": 41,
+            "unknown": 92,
+            "failures": []
+          }
+        ],
+        "focus": {
+          "stops": 38,
+          "first": {
+            "tag": "a",
+            "label": "Skip to content",
+            "href": "#main",
+            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "onScreen": true,
+            "width": 132,
+            "height": 49
+          },
+          "noIndicator": [
+            {
+              "tag": "g",
+              "label": "2026-10-10 12:38 UTC, submitted: gpt-6-astra submi",
+              "href": null,
+              "indicator": null,
+              "onScreen": true,
+              "width": 14,
+              "height": 14
+            }
+          ],
+          "offScreen": []
+        },
+        "reflow320": {
+          "width": 320,
+          "scrollWidth": 364,
+          "overflows": true,
+          "offenders": []
+        }
+      },
+      "path": "/p/ledger-core/t191",
+      "status": 200,
+      "audience": "owner"
+    },
+    "task-ready": {
+      "390": {
+        "structure": {
+          "height": 2794,
+          "navs": [
+            {
+              "label": "Main navigation",
+              "links": [
+                "Home",
+                "Decisions",
+                "Studio"
+              ]
+            },
+            {
+              "label": null,
+              "links": [
+                "Home",
+                "Ledger Core"
+              ]
+            },
+            {
+              "label": "Ledger Core",
+              "links": [
+                "Overview",
+                "Tasks",
+                "Flow",
+                "Plans",
+                "Code",
+                "Log",
+                "Ship",
+                "Settings"
+              ]
+            },
+            {
+              "label": "In this review",
+              "links": [
+                "Changes",
+                "Checks",
+                "History",
+                "Browse the fork",
+                "Its log"
+              ]
+            }
+          ],
+          "h1": 0,
+          "headings": [
+            "h2 Add the project tabs (ready 2)"
+          ],
+          "words": 486
+        },
+        "targets": {
+          "total": 56,
+          "small": [
+            {
+              "tag": "a",
+              "label": "",
+              "width": 13,
+              "height": 13
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 13,
+              "height": 13
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 13,
+              "height": 13
+            },
+            {
+              "tag": "a",
+              "label": "Changes",
+              "width": 54,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Checks",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "History",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Browse the fork",
+              "width": 99,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Its log",
+              "width": 40,
+              "height": 22
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            }
+          ],
+          "smallCount": 15
+        }
+      },
+      "1440": {
+        "structure": {
+          "height": 2196,
+          "navs": [
+            {
+              "label": "Main navigation",
+              "links": [
+                "Home",
+                "Decisions",
+                "Studio"
+              ]
+            },
+            {
+              "label": null,
+              "links": [
+                "Home",
+                "Ledger Core"
+              ]
+            },
+            {
+              "label": "Ledger Core",
+              "links": [
+                "Overview",
+                "Tasks",
+                "Flow",
+                "Plans",
+                "Code",
+                "Log",
+                "Ship",
+                "Settings"
+              ]
+            },
+            {
+              "label": "In this review",
+              "links": [
+                "Changes",
+                "Checks",
+                "History",
+                "Browse the fork",
+                "Its log"
+              ]
+            }
+          ],
+          "h1": 0,
+          "headings": [
+            "h2 Add the project tabs (ready 2)"
+          ],
+          "words": 486
+        },
+        "targets": {
+          "total": 57,
+          "small": [
+            {
+              "tag": "a",
+              "label": "",
+              "width": 14,
+              "height": 14
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 14,
+              "height": 14
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 14,
+              "height": 14
+            },
+            {
+              "tag": "a",
+              "label": "Changes",
+              "width": 54,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Checks",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "History",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Browse the fork",
+              "width": 99,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Its log",
+              "width": 40,
+              "height": 22
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            }
+          ],
+          "smallCount": 15
+        },
+        "contrast": [
+          {
+            "scheme": "light",
+            "checked": 46,
+            "unknown": 95,
+            "failures": []
+          },
+          {
+            "scheme": "dark",
+            "checked": 46,
+            "unknown": 95,
+            "failures": []
+          }
+        ],
+        "focus": {
+          "stops": 40,
+          "first": {
+            "tag": "a",
+            "label": "Skip to content",
+            "href": "#main",
+            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "onScreen": true,
+            "width": 132,
+            "height": 49
+          },
+          "noIndicator": [
+            {
+              "tag": "g",
+              "label": "2026-10-10 13:19 UTC, submitted: glm-5.3 submitted",
+              "href": null,
+              "indicator": null,
+              "onScreen": true,
+              "width": 14,
+              "height": 14
+            }
+          ],
+          "offScreen": []
+        },
+        "reflow320": {
+          "width": 320,
+          "scrollWidth": 348,
+          "overflows": true,
+          "offenders": []
+        }
+      },
+      "path": "/p/ledger-core/t192",
+      "status": 200,
+      "audience": "owner"
+    },
+    "task-protected": {
+      "390": {
+        "structure": {
+          "height": 3475,
+          "navs": [
+            {
+              "label": "Main navigation",
+              "links": [
+                "Home",
+                "Decisions",
+                "Studio"
+              ]
+            },
+            {
+              "label": null,
+              "links": [
+                "Home",
+                "Ledger Core"
+              ]
+            },
+            {
+              "label": "Ledger Core",
+              "links": [
+                "Overview",
+                "Tasks",
+                "Flow",
+                "Plans",
+                "Code",
+                "Log",
+                "Ship",
+                "Settings"
+              ]
+            },
+            {
+              "label": "In this review",
+              "links": [
+                "Changes",
+                "Checks",
+                "History",
+                "Browse the fork",
+                "Its log"
+              ]
+            }
+          ],
+          "h1": 0,
+          "headings": [
+            "h2 Fix the decision line (protected 1)"
+          ],
+          "words": 744
+        },
+        "targets": {
+          "total": 61,
+          "small": [
+            {
+              "tag": "a",
+              "label": "",
+              "width": 13,
+              "height": 13
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 13,
+              "height": 13
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 13,
+              "height": 13
+            },
+            {
+              "tag": "a",
+              "label": "Changes",
+              "width": 54,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Checks",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "History",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Browse the fork",
+              "width": 99,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Its log",
+              "width": 40,
+              "height": 22
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            }
+          ],
+          "smallCount": 15
+        }
+      },
+      "1440": {
+        "structure": {
+          "height": 2495,
+          "navs": [
+            {
+              "label": "Main navigation",
+              "links": [
+                "Home",
+                "Decisions",
+                "Studio"
+              ]
+            },
+            {
+              "label": null,
+              "links": [
+                "Home",
+                "Ledger Core"
+              ]
+            },
+            {
+              "label": "Ledger Core",
+              "links": [
+                "Overview",
+                "Tasks",
+                "Flow",
+                "Plans",
+                "Code",
+                "Log",
+                "Ship",
+                "Settings"
+              ]
+            },
+            {
+              "label": "In this review",
+              "links": [
+                "Changes",
+                "Checks",
+                "History",
+                "Browse the fork",
+                "Its log"
+              ]
+            }
+          ],
+          "h1": 0,
+          "headings": [
+            "h2 Fix the decision line (protected 1)"
+          ],
+          "words": 744
+        },
+        "targets": {
+          "total": 62,
+          "small": [
+            {
+              "tag": "a",
+              "label": "",
+              "width": 14,
+              "height": 14
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 14,
+              "height": 14
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 14,
+              "height": 14
+            },
+            {
+              "tag": "a",
+              "label": "Changes",
+              "width": 54,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Checks",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "History",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Browse the fork",
+              "width": 99,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Its log",
+              "width": 40,
+              "height": 22
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            }
+          ],
+          "smallCount": 15
+        },
+        "contrast": [
+          {
+            "scheme": "light",
+            "checked": 46,
+            "unknown": 107,
+            "failures": [
+              {
+                "selector": "div.stage-scroll > svg#g1c.graph > g.g-task.live > text.g-name",
+                "text": "t195",
+                "ratio": 4.03,
+                "need": 4.5,
+                "fg": "#0b7a5c",
+                "bg": "#e4e0d5",
+                "size": 12,
+                "count": 1
+              }
+            ]
+          },
+          {
+            "scheme": "dark",
+            "checked": 46,
+            "unknown": 107,
+            "failures": []
+          }
+        ],
+        "focus": {
+          "stops": 43,
+          "first": {
+            "tag": "a",
+            "label": "Skip to content",
+            "href": "#main",
+            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "onScreen": true,
+            "width": 132,
+            "height": 49
+          },
+          "noIndicator": [
+            {
+              "tag": "g",
+              "label": "2026-10-10 15:22 UTC, submitted: gpt-6-astra submi",
+              "href": null,
+              "indicator": null,
+              "onScreen": true,
+              "width": 14,
+              "height": 14
+            }
+          ],
+          "offScreen": []
+        },
+        "reflow320": {
+          "width": 320,
+          "scrollWidth": 345,
+          "overflows": true,
+          "offenders": []
+        }
+      },
+      "path": "/p/ledger-core/t195",
+      "status": 200,
+      "audience": "owner"
+    },
+    "task-sent-back": {
+      "390": {
+        "structure": {
+          "height": 3141,
+          "navs": [
+            {
+              "label": "Main navigation",
+              "links": [
+                "Home",
+                "Decisions",
+                "Studio"
+              ]
+            },
+            {
+              "label": null,
+              "links": [
+                "Home",
+                "Ledger Core"
+              ]
+            },
+            {
+              "label": "Ledger Core",
+              "links": [
+                "Overview",
+                "Tasks",
+                "Flow",
+                "Plans",
+                "Code",
+                "Log",
+                "Ship",
+                "Settings"
+              ]
+            },
+            {
+              "label": "In this review",
+              "links": [
+                "Changes",
+                "Checks",
+                "History",
+                "Browse the fork",
+                "Its log"
+              ]
+            }
+          ],
+          "h1": 0,
+          "headings": [
+            "h2 Fix the decision line (sentBack 1)"
+          ],
+          "words": 646
+        },
+        "targets": {
+          "total": 59,
+          "small": [
+            {
+              "tag": "a",
+              "label": "",
+              "width": 13,
+              "height": 13
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 13,
+              "height": 13
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 13,
+              "height": 13
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 13,
+              "height": 13
+            },
+            {
+              "tag": "a",
+              "label": "Changes",
+              "width": 54,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Checks",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "History",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Browse the fork",
+              "width": 99,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Its log",
+              "width": 40,
+              "height": 22
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            }
+          ],
+          "smallCount": 17
+        }
+      },
+      "1440": {
+        "structure": {
+          "height": 2397,
+          "navs": [
+            {
+              "label": "Main navigation",
+              "links": [
+                "Home",
+                "Decisions",
+                "Studio"
+              ]
+            },
+            {
+              "label": null,
+              "links": [
+                "Home",
+                "Ledger Core"
+              ]
+            },
+            {
+              "label": "Ledger Core",
+              "links": [
+                "Overview",
+                "Tasks",
+                "Flow",
+                "Plans",
+                "Code",
+                "Log",
+                "Ship",
+                "Settings"
+              ]
+            },
+            {
+              "label": "In this review",
+              "links": [
+                "Changes",
+                "Checks",
+                "History",
+                "Browse the fork",
+                "Its log"
+              ]
+            }
+          ],
+          "h1": 0,
+          "headings": [
+            "h2 Fix the decision line (sentBack 1)"
+          ],
+          "words": 646
+        },
+        "targets": {
+          "total": 60,
+          "small": [
+            {
+              "tag": "a",
+              "label": "",
+              "width": 14,
+              "height": 14
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 14,
+              "height": 14
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 14,
+              "height": 14
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 14,
+              "height": 14
+            },
+            {
+              "tag": "a",
+              "label": "Changes",
+              "width": 54,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Checks",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "History",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Browse the fork",
+              "width": 99,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Its log",
+              "width": 40,
+              "height": 22
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            }
+          ],
+          "smallCount": 17
+        },
+        "contrast": [
+          {
+            "scheme": "light",
+            "checked": 47,
+            "unknown": 105,
+            "failures": [
+              {
+                "selector": "div.stage-scroll > svg#g1d.graph > g.g-task.live > text.g-name",
+                "text": "t197",
+                "ratio": 4.03,
+                "need": 4.5,
+                "fg": "#0b7a5c",
+                "bg": "#e4e0d5",
+                "size": 12,
+                "count": 1
+              }
+            ]
+          },
+          {
+            "scheme": "dark",
+            "checked": 47,
+            "unknown": 105,
+            "failures": []
+          }
+        ],
+        "focus": {
+          "stops": 42,
+          "first": {
+            "tag": "a",
+            "label": "Skip to content",
+            "href": "#main",
+            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "onScreen": true,
+            "width": 132,
+            "height": 49
+          },
+          "noIndicator": [
+            {
+              "tag": "g",
+              "label": "2026-10-10 16:44 UTC, submitted: gpt-6-astra submi",
+              "href": null,
+              "indicator": null,
+              "onScreen": true,
+              "width": 14,
+              "height": 14
+            }
+          ],
+          "offScreen": []
+        },
+        "reflow320": {
+          "width": 320,
+          "scrollWidth": 357,
+          "overflows": true,
+          "offenders": []
+        }
+      },
+      "path": "/p/ledger-core/t197",
+      "status": 200,
+      "audience": "owner"
+    },
+    "task-accepted": {
+      "390": {
+        "structure": {
+          "height": 2822,
+          "navs": [
+            {
+              "label": "Main navigation",
+              "links": [
+                "Home",
+                "Decisions",
+                "Studio"
+              ]
+            },
+            {
+              "label": null,
+              "links": [
+                "Home",
+                "Ledger Core"
+              ]
+            },
+            {
+              "label": "Ledger Core",
+              "links": [
+                "Overview",
+                "Tasks",
+                "Flow",
+                "Plans",
+                "Code",
+                "Log",
+                "Ship",
+                "Settings"
+              ]
+            },
+            {
+              "label": "In this review",
+              "links": [
+                "Changes",
+                "Checks",
+                "History",
+                "Browse the fork",
+                "Its log"
+              ]
+            }
+          ],
+          "h1": 0,
+          "headings": [
+            "h2 Fix the decision line (accepted 1)"
+          ],
+          "words": 536
+        },
+        "targets": {
+          "total": 48,
+          "small": [
+            {
+              "tag": "a",
+              "label": "",
+              "width": 13,
+              "height": 13
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 13,
+              "height": 13
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 13,
+              "height": 13
+            },
+            {
+              "tag": "a",
+              "label": "Changes",
+              "width": 54,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Checks",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "History",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Browse the fork",
+              "width": 99,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Its log",
+              "width": 40,
+              "height": 22
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            }
+          ],
+          "smallCount": 16
+        }
+      },
+      "1440": {
+        "structure": {
+          "height": 2220,
+          "navs": [
+            {
+              "label": "Main navigation",
+              "links": [
+                "Home",
+                "Decisions",
+                "Studio"
+              ]
+            },
+            {
+              "label": null,
+              "links": [
+                "Home",
+                "Ledger Core"
+              ]
+            },
+            {
+              "label": "Ledger Core",
+              "links": [
+                "Overview",
+                "Tasks",
+                "Flow",
+                "Plans",
+                "Code",
+                "Log",
+                "Ship",
+                "Settings"
+              ]
+            },
+            {
+              "label": "In this review",
+              "links": [
+                "Changes",
+                "Checks",
+                "History",
+                "Browse the fork",
+                "Its log"
+              ]
+            }
+          ],
+          "h1": 0,
+          "headings": [
+            "h2 Fix the decision line (accepted 1)"
+          ],
+          "words": 536
+        },
+        "targets": {
+          "total": 49,
+          "small": [
+            {
+              "tag": "a",
+              "label": "",
+              "width": 14,
+              "height": 14
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 14,
+              "height": 14
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 14,
+              "height": 14
+            },
+            {
+              "tag": "a",
+              "label": "Changes",
+              "width": 54,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Checks",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "History",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Browse the fork",
+              "width": 99,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Its log",
+              "width": 40,
+              "height": 22
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            }
+          ],
+          "smallCount": 16
+        },
+        "contrast": [
+          {
+            "scheme": "light",
+            "checked": 47,
             "unknown": 90,
+            "failures": [
+              {
+                "selector": "div.stage-scroll > svg#g1e.graph > g.g-task.live > text.g-name",
+                "text": "t198",
+                "ratio": 4.03,
+                "need": 4.5,
+                "fg": "#0b7a5c",
+                "bg": "#e4e0d5",
+                "size": 12,
+                "count": 1
+              }
+            ]
+          },
+          {
+            "scheme": "dark",
+            "checked": 47,
+            "unknown": 90,
+            "failures": []
+          }
+        ],
+        "focus": {
+          "stops": 40,
+          "first": {
+            "tag": "a",
+            "label": "Skip to content",
+            "href": "#main",
+            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "onScreen": true,
+            "width": 132,
+            "height": 49
+          },
+          "noIndicator": [
+            {
+              "tag": "g",
+              "label": "2026-10-10 17:55 UTC, submitted: gpt-6-astra submi",
+              "href": null,
+              "indicator": null,
+              "onScreen": true,
+              "width": 14,
+              "height": 14
+            },
+            {
+              "tag": "g",
+              "label": "2026-10-10 18:15 UTC, accepted: You accepted 863c7",
+              "href": null,
+              "indicator": null,
+              "onScreen": true,
+              "width": 14,
+              "height": 14
+            }
+          ],
+          "offScreen": []
+        },
+        "reflow320": {
+          "width": 320,
+          "scrollWidth": 350,
+          "overflows": true,
+          "offenders": []
+        }
+      },
+      "path": "/p/ledger-core/t198",
+      "status": 200,
+      "audience": "owner"
+    },
+    "task-scope": {
+      "390": {
+        "structure": {
+          "height": 2759,
+          "navs": [
+            {
+              "label": "Main navigation",
+              "links": [
+                "Home",
+                "Decisions",
+                "Studio"
+              ]
+            },
+            {
+              "label": null,
+              "links": [
+                "Home",
+                "Ledger Core"
+              ]
+            },
+            {
+              "label": "Ledger Core",
+              "links": [
+                "Overview",
+                "Tasks",
+                "Flow",
+                "Plans",
+                "Code",
+                "Log",
+                "Ship",
+                "Settings"
+              ]
+            },
+            {
+              "label": "In this review",
+              "links": [
+                "Changes",
+                "Checks",
+                "History",
+                "Browse the fork",
+                "Its log"
+              ]
+            }
+          ],
+          "h1": 0,
+          "headings": [
+            "h2 Fix the decision line (scope 1)"
+          ],
+          "words": 506
+        },
+        "targets": {
+          "total": 57,
+          "small": [
+            {
+              "tag": "a",
+              "label": "",
+              "width": 13,
+              "height": 13
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 13,
+              "height": 13
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 13,
+              "height": 13
+            },
+            {
+              "tag": "a",
+              "label": "Changes",
+              "width": 54,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Checks",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "History",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Browse the fork",
+              "width": 99,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Its log",
+              "width": 40,
+              "height": 22
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 296,
+              "height": 20
+            }
+          ],
+          "smallCount": 15
+        }
+      },
+      "1440": {
+        "structure": {
+          "height": 2185,
+          "navs": [
+            {
+              "label": "Main navigation",
+              "links": [
+                "Home",
+                "Decisions",
+                "Studio"
+              ]
+            },
+            {
+              "label": null,
+              "links": [
+                "Home",
+                "Ledger Core"
+              ]
+            },
+            {
+              "label": "Ledger Core",
+              "links": [
+                "Overview",
+                "Tasks",
+                "Flow",
+                "Plans",
+                "Code",
+                "Log",
+                "Ship",
+                "Settings"
+              ]
+            },
+            {
+              "label": "In this review",
+              "links": [
+                "Changes",
+                "Checks",
+                "History",
+                "Browse the fork",
+                "Its log"
+              ]
+            }
+          ],
+          "h1": 0,
+          "headings": [
+            "h2 Fix the decision line (scope 1)"
+          ],
+          "words": 506
+        },
+        "targets": {
+          "total": 58,
+          "small": [
+            {
+              "tag": "a",
+              "label": "",
+              "width": 14,
+              "height": 14
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 14,
+              "height": 14
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 14,
+              "height": 14
+            },
+            {
+              "tag": "a",
+              "label": "Changes",
+              "width": 54,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Checks",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "History",
+              "width": 45,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Browse the fork",
+              "width": 99,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "Its log",
+              "width": 40,
+              "height": 22
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            },
+            {
+              "tag": "summary",
+              "label": "",
+              "width": 822,
+              "height": 20
+            }
+          ],
+          "smallCount": 15
+        },
+        "contrast": [
+          {
+            "scheme": "light",
+            "checked": 49,
+            "unknown": 94,
             "failures": [
               {
                 "selector": "div.stage-scroll > svg#g1f.graph > g.g-task.live > text.g-name",
@@ -12493,12 +12501,12 @@
           {
             "scheme": "dark",
             "checked": 49,
-            "unknown": 90,
+            "unknown": 94,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 40,
+          "stops": 41,
           "first": {
             "tag": "a",
             "label": "Skip to content",
@@ -12523,8 +12531,8 @@
         },
         "reflow320": {
           "width": 320,
-          "scrollWidth": 320,
-          "overflows": false,
+          "scrollWidth": 355,
+          "overflows": true,
           "offenders": []
         }
       },
@@ -12535,7 +12543,7 @@
     "task-merged": {
       "390": {
         "structure": {
-          "height": 1854,
+          "height": 2122,
           "navs": [
             {
               "label": "Main navigation",
@@ -12580,10 +12588,10 @@
           "headings": [
             "h2 Fix the decision line (merged 1)"
           ],
-          "words": 375
+          "words": 394
         },
         "targets": {
-          "total": 44,
+          "total": 45,
           "small": [
             {
               "tag": "a",
@@ -12693,7 +12701,7 @@
       },
       "1440": {
         "structure": {
-          "height": 1492,
+          "height": 1730,
           "navs": [
             {
               "label": "Main navigation",
@@ -12738,10 +12746,10 @@
           "headings": [
             "h2 Fix the decision line (merged 1)"
           ],
-          "words": 375
+          "words": 394
         },
         "targets": {
-          "total": 45,
+          "total": 46,
           "small": [
             {
               "tag": "a",
@@ -12852,7 +12860,7 @@
           {
             "scheme": "light",
             "checked": 46,
-            "unknown": 76,
+            "unknown": 79,
             "failures": [
               {
                 "selector": "div.stage-scroll > svg#g1g.graph > g.g-task > text.g-name",
@@ -12869,12 +12877,12 @@
           {
             "scheme": "dark",
             "checked": 46,
-            "unknown": 76,
+            "unknown": 79,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 37,
+          "stops": 38,
           "first": {
             "tag": "a",
             "label": "Skip to content",
@@ -12908,8 +12916,8 @@
         },
         "reflow320": {
           "width": 320,
-          "scrollWidth": 320,
-          "overflows": false,
+          "scrollWidth": 351,
+          "overflows": true,
           "offenders": []
         }
       },
@@ -12920,7 +12928,7 @@
     "task-abandoned": {
       "390": {
         "structure": {
-          "height": 1858,
+          "height": 1991,
           "navs": [
             {
               "label": "Main navigation",
@@ -12965,7 +12973,7 @@
           "headings": [
             "h2 Fix the decision line (abandoned 1)"
           ],
-          "words": 239
+          "words": 247
         },
         "targets": {
           "total": 38,
@@ -13042,7 +13050,7 @@
       },
       "1440": {
         "structure": {
-          "height": 1547,
+          "height": 1681,
           "navs": [
             {
               "label": "Main navigation",
@@ -13087,7 +13095,7 @@
           "headings": [
             "h2 Fix the decision line (abandoned 1)"
           ],
-          "words": 239
+          "words": 247
         },
         "targets": {
           "total": 39,
@@ -13165,7 +13173,7 @@
           {
             "scheme": "light",
             "checked": 42,
-            "unknown": 60,
+            "unknown": 63,
             "failures": [
               {
                 "selector": "div.stage-scroll > svg#g1h.graph > g.g-task.closed > text.g-name",
@@ -13182,7 +13190,7 @@
           {
             "scheme": "dark",
             "checked": 42,
-            "unknown": 60,
+            "unknown": 63,
             "failures": []
           }
         ],
