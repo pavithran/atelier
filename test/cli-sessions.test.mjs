@@ -671,6 +671,7 @@ test("wrap pushes a declared public mirror only the project's no-reply address: 
   const branch = f.git("branch", "--show-current");
   // History the mirror already holds is not read again, whatever it carries.
   f.git("push", "-q", "github", branch);
+  f.git("push", "-q", "origin", branch);
   const identity = JSON.stringify({ name: "Owner", email: "123+owner@users.noreply.github.com", agentEmails: ["agents@atelier.example"], publicMirrors: ["github"], publicMirrorDestinations: { github: path } });
   // A commit under the project's no-reply address is published.
   f.git("config", "user.email", "123+owner@users.noreply.github.com");
@@ -688,10 +689,10 @@ test("wrap pushes a declared public mirror only the project's no-reply address: 
   assert.ok(refused.stdout.includes(`${commit.slice(0, 12)}: author and committer email is not 123+owner@users.noreply.github.com`), refused.stdout);
   assert.doesNotMatch(refused.stdout, /test@example\.invalid/, "what the mirror already holds is outside the range");
   assert.equal(f.git("--git-dir", path, "rev-parse", `refs/heads/${branch}`), published);
-  // A remote the policy does not declare a public mirror is the owner's own, and takes the agent's commit.
-  assert.match(refused.stdout, /Remote origin: pushed\./);
-  assert.equal(f.git("--git-dir", own, "rev-parse", `refs/heads/${branch}`), commit);
-  assert.match(refused.stderr, /the push failed for 1 remote: github/);
+  // With a public mirror declared, no remote is trusted by its URL: origin gets the same check and keeps what it had.
+  assert.match(refused.stdout, /Remote origin: failed\./);
+  assert.equal(f.git("--git-dir", own, "rev-parse", `refs/heads/${branch}`), published);
+  assert.match(refused.stderr, /the push failed for 2 remotes: github, origin/);
 });
 
 test("wrap checks no remote as a public mirror when the policy declares none", (t) => {

@@ -63,7 +63,7 @@ export function readPolicy(policy) {
     if (!destination) return bad(`publicMirrorDestinations needs a destination for ${name}`);
     mirrors[name] = { destination, email: policy.email };
   }
-  return { ok: true, mirrors, paths: (policy.privatePaths ?? []).map(globMatcher),
+  return { ok: true, email: policy.email, mirrors, paths: (policy.privatePaths ?? []).map(globMatcher),
     patterns: (policy.privatePatterns ?? []).map((s) => new RegExp(s)), privateEmails: policy.privateEmails ?? [] };
 }
 
@@ -89,26 +89,27 @@ export function globMatcher(glob) {
 const sameUrl = (a, b) => a.trim().replace(/\/+$/, "") === b.trim().replace(/\/+$/, "");
 const firstLine = (text) => (text || "").trim().split("\n")[0];
 
-// wrap pushes every checkout remote. An alias of a pinned public destination
-// needs exactly the same check as its declared name, including pushurl fanout.
+// wrap pushes every checkout remote. Once the policy declares any public
+// mirror, no remote is trusted by its URL: matching URLs misses aliases
+// (file://, a missing .git, ssh forms), so every remote's outgoing commits
+// get the public check before anything is pushed, failing closed. Each push
+// URL is fetched, scanned for what it lacks and pushed by that URL itself,
+// so pushurl fanout and a remote re-pointed mid-check are covered alike.
 export function publishCheckoutRemote({ git, dir, branch, remote, say, identity }) {
-  const urls = git(["remote", "get-url", "--push", "--all", remote], { cwd: dir, allowFail: true });
-  if (urls.status !== 0) { say(`Not published: cannot read push destinations for ${remote}.`); return { ok: false }; }
-  const destinations = urls.stdout.trim().split("\n");
-  const named = identity?.publicMirrors?.includes(remote);
-  const alias = Object.entries(identity?.publicMirrorDestinations ?? {}).find(([, url]) =>
-    typeof url === "string" && destinations.some((destination) => sameUrl(destination, url)));
-  if (named || alias) {
-    // Validate the original policy before deriving an alias; otherwise a
-    // missing declaration could be silently repaired by this routing step.
-    const policy = readPolicy(identity);
-    if (!policy.ok) { say(`Not published: ${policy.why}.`); return { ok: false }; }
-    if (!named) identity = { ...identity, publicMirrors: [...identity.publicMirrors, remote],
-      publicMirrorDestinations: { ...identity.publicMirrorDestinations, [remote]: alias[1] } };
-    return publishMirror({ git, dir, branch, remote, say, identity });
+  if (!identity?.publicMirrors?.length) {
+    const result = git(["-c", `remote.${remote}.mirror=false`, "push", "--no-force", "--no-follow-tags", remote, `refs/heads/${branch}:refs/heads/${branch}`], { cwd: dir, allowFail: true, ownerRemote: true });
+    return { ok: result.status === 0 };
   }
-  const result = git(["-c", `remote.${remote}.mirror=false`, "push", "--no-force", "--no-follow-tags", remote, `refs/heads/${branch}:refs/heads/${branch}`], { cwd: dir, allowFail: true, ownerRemote: true });
-  return { ok: result.status === 0 };
+  const policy = readPolicy(identity);
+  if (!policy.ok) { say(`Not published: ${policy.why}.`); return { ok: false }; }
+  if (policy.mirrors[remote]) return publishMirror({ git, dir, branch, remote, say, identity });
+  const urls = git(["remote", "get-url", "--push", "--all", remote], { cwd: dir, allowFail: true });
+  const destinations = urls.status === 0 ? urls.stdout.split("\n").filter(Boolean) : [];
+  if (!destinations.length) { say(`Not published: cannot read push destinations for ${remote}.`); return { ok: false }; }
+  for (const destination of destinations) {
+    if (!checkAndPush({ git, dir, branch, remote, say, policy, destination }).ok) return { ok: false };
+  }
+  return { ok: true };
 }
 
 // The paths one commit changes, with each one's new mode, blob and size (null
@@ -312,6 +313,18 @@ export function publishMirror({ git, dir, branch, remote, say, identity }) {
   if (!url) return refuse(`Not published: ${dir} has no remote called ${remote}.`);
   if (!sameUrl(url, mirror.destination)) return refuse(`Not published: remote ${remote} points at a different place than the policy's destination for it; it was not pushed to. Point the remote at the declared destination, or change the policy.`);
 
+  return checkAndPush({ git, dir, branch, remote, say, policy, destination: mirror.destination, urlNow, url });
+}
+
+// Steps 2 to 5 for one destination: fetch what it holds of the branch, refuse
+// divergence, check every commit it lacks, and push the scanned tip there.
+// `urlNow` and `url` let a declared mirror refuse a remote re-pointed during
+// the check; a destination given as a URL is pushed to by that URL.
+function checkAndPush({ git, dir, branch, remote, say, policy, destination, urlNow, url }) {
+  const refuse = (...lines) => { for (const l of lines) say(l); return { ok: false }; };
+  const raw = (args, opts = {}) => git(args, { cwd: dir, allowFail: true, ...opts });
+  const out = (args) => { const r = raw(args); return r.status === 0 ? r.stdout.trim() : null; };
+  const mirror = { destination, email: policy.email };
   const ref = `refs/heads/${branch}`;
   const tip = out(["rev-parse", "--verify", `${ref}^{commit}`]);
   if (!tip) return refuse(`Not published: the registered branch ${branch} does not exist in ${dir}.`);
@@ -436,7 +449,7 @@ export function publishMirror({ git, dir, branch, remote, say, identity }) {
   // the declared destination itself. A remote re-pointed since the check is
   // refused here; a mirror that moved since the fetch is refused by git, which
   // rejects a push that is not a fast-forward.
-  if (urlNow() !== url) return refuse("Not published: the remote's URL changed during the check; it was not pushed to.");
+  if (urlNow && urlNow() !== url) return refuse("Not published: the remote's URL changed during the check; it was not pushed to.");
   const pushed = raw(["-c", `remote.${remote}.mirror=false`, "-c", "push.followTags=false", "push", "--no-force", "--quiet", "--no-follow-tags", "--recurse-submodules=no", mirror.destination, `${tip}:${ref}`], { ownerRemote: true });
   if (pushed.status !== 0) return refuse(`Not published: the mirror refused the push (it may have moved since it was fetched): ${firstLine(pushed.stderr)}`);
   say(`Mirror ${remote} now at ${tip.slice(0, 8)}: ${commits.length} commit${commits.length === 1 ? "" : "s"} checked and pushed to ${branch}.`);
