@@ -1968,7 +1968,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         return json(await L.cancelLanding(id, actor));
       }
       const project = await L.project();
-      if (!project.policy.postMerge) return json(await L.beginLanding(id, actor, String(body.head ?? "")));
+      // Steps may be enabled while this landing is in progress. Observe its
+      // original baseline now, even if there is no post-merge policy yet.
       const generation = await L.mergeGeneration();
       const before = await headOf(env, project.repo);
       return json(await L.beginLanding(id, actor, String(body.head ?? ""), before ?? undefined, generation));

@@ -70,6 +70,38 @@ test("executor death and expiry become uncertain and require explicit reconcilia
   assert.equal(r.state, "complete");
 });
 
+test("reserved waivers require a recorded merge, preserve unknown paths and survive preparation", () => {
+  const r = reservePostMerge(policy([step("first", { when: { paths: ["src/**"] } }), step("second")]), ["t1"], a, "reserved", at);
+  assert.throws(() => recoverPostMerge(r, "skip", "waive", "owner", at));
+  r.after = b;
+  for (const action of ["retry", "reconcile"]) assert.throws(() => recoverPostMerge(r, action, "waive", "owner", at));
+  assert.throws(() => recoverPostMerge(r, "skip", "", "owner", at));
+  recoverPostMerge(r, "skip", "history unavailable", "owner", at);
+  assert.equal(r.state, "reserved");
+  assert.equal(r.paths, null);
+  assert.throws(() => startAttempt(r, "early", at));
+  preparePostMerge(r, []);
+  assert.equal(r.steps[0].outcome, "waived");
+  assert.equal(r.state, "pending");
+  startAttempt(r, "second", at);
+  finishAttempt(r, "second", true, "secret".repeat(10000), at);
+  assert.ok(r.steps[1].attempts[0].output.length < 100);
+  assert.equal(r.state, "complete");
+});
+
+test("CLI can waive an unprepared step without attempting the unavailable diff again", async () => {
+  const r = run([step("first"), step("second")]);
+  const calls = [];
+  await runLand({ args: { "post-merge": "skip", reason: "history unavailable" }, name: "p", id: "t1", print() {}, request: async (method, path, body) => {
+    calls.push(body?.action ?? method);
+    if (body) recoverPostMerge(r, body.action, body.reason, "owner", at);
+    return { run: structuredClone(r) };
+  } });
+  assert.deepEqual(calls, ["GET", "skip"]);
+  assert.equal(r.state, "reserved");
+  assert.equal(r.steps[0].outcome, "waived");
+});
+
 function repo(t) {
   const dir = mkdtempSync(join(tmpdir(), "post-merge-privacy-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
