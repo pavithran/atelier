@@ -10,7 +10,7 @@ import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOU
 import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, taskKey, failureKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, skipRefusedForGood, skipRetryPolls, jobsLine, gatewayMetadata, harnessRunEnv, codexBuildRefusal, validationBlockedReport, alreadyComplete } from "../cli/runner.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
 import { helpText, ROLE_PROMPTS } from "../src/usage.ts";
-import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { terminalTaskExit } from "../src/tokens.ts";
 
 const entry = { agent: "opencode", models: ["GLM-5.3-Flash-4_8bit", "glm:fast"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{workspace}"] };
@@ -658,17 +658,24 @@ test("skipRefusedForGood drops a 4xx other than 408 and 429, and skipRetryPolls 
   assert.deepEqual([1, 2, 3, 4, 5, 10].map(skipRetryPolls), [1, 2, 4, 8, 10, 10]);
 });
 
-test("versionRefusal names both levels and says to deploy, and clears a current server", () => {
-  assert.match(versionRefusal(null), /reports no route level/);
-  assert.match(versionRefusal(null), /the server does not answer GET \/api\/version/);
-  assert.match(versionRefusal(null), new RegExp(`this CLI route level ${ROUTE_LEVEL}`));
-  assert.match(versionRefusal({ commit: "abcdef0123456789" }), /reports no route level/);
-  assert.match(versionRefusal({ commit: "abcdef0123456789" }), new RegExp(`this CLI route level ${ROUTE_LEVEL}`));
-  const behind = versionRefusal({ routeLevel: ROUTE_LEVEL - 1, commit: "abcdef0123456789" });
-  assert.match(behind, new RegExp(`runs route level ${ROUTE_LEVEL - 1}`));
-  assert.match(behind, new RegExp(`this CLI route level ${ROUTE_LEVEL}`));
-  assert.match(behind, /runs main at abcdef01/);
+test("versionRefusal names the missing capabilities and says to deploy, and clears a current server", () => {
+  assert.match(versionRefusal(null), /did not answer GET \/api\/version/);
+  assert.match(versionRefusal({ commit: "abcdef0123456789" }), /neither capabilities nor a route level/);
+  assert.equal(versionRefusal({ capabilities: [...SERVER_CAPABILITIES, "future.thing.v1"] }), null);
+  assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL }, ["merge-main"]), null);
+  assert.match(versionRefusal({ capabilities: ["items.brief-criteria.v1"] }, ["review"]), /reviews\.unparsable\.v1/);
+  // A legacy server at 19 has the routes but not the runner credential;
+  // one at 21 refuses a runner token's review skip (t353), which the review
+  // job needs; a server at 25 lacks the review claim leases (t351), which
+  // the review job needs; the build jobs ask nothing past 24.
+  const behind = versionRefusal({ routeLevel: 19, commit: "abcdef0123456789" });
+  assert.match(behind, /lacks capabilities .*runners\.scoped-token\.v1/);
+  assert.match(behind, /main at abcdef01/);
   assert.match(behind, /then start the runner again/);
+  assert.match(versionRefusal({ routeLevel: 21 }), /lacks capabilities .*reviews\.skip-as-runner\.v1: it reports only route level 21/);
+  assert.match(versionRefusal({ routeLevel: 21 }, ["build"]), /projects\.commit-identity\.v1/);
+  assert.match(versionRefusal({ routeLevel: 25, commit: "abcdef0123456789" }), /reviews\.lease\.v1/);
+  assert.equal(versionRefusal({ routeLevel: 24, commit: "abcdef0123456789" }, ["build"]), null);
   assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL, commit: "abcdef0123456789" }), null);
   assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL + 1, commit: "abcdef0123456789" }), null);
 });
@@ -679,13 +686,21 @@ test("the runner refuses at start on a lower route level and polls nothing", asy
   const path = join(dir, "runner.json");
   writeFileSync(path, JSON.stringify(config));
   t.mock.method(console, "log", () => {});
-  for (const version of [null, {}, { routeLevel: ROUTE_LEVEL - 1 }]) {
+  // A reviewer's config: the review job needs the skip routes (t353), which a
+  // legacy server at 21 lacks and a build runner never asks for.
+  const reviewing = join(dir, "reviewer.json");
+  writeFileSync(reviewing, JSON.stringify({ agents: [{ ...entry, command: [...entry.command, "{verdict_file}"] }], jobs: ["review"] }));
+  const refused = [
+    [path, null], [path, {}], [path, { routeLevel: 19 }],
+    [reviewing, { routeLevel: 21 }], [reviewing, { capabilities: SERVER_CAPABILITIES.filter((n) => n !== "reviews.skip.v1") }],
+  ];
+  for (const [config, version] of refused) {
     let polls = 0;
-    await assert.rejects(runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+    await assert.rejects(runRunner({ _: ["runner"], multi: {}, name: "home:studio", config }, {
       workspacePath: () => { throw new Error("no task should be claimed"); },
       version: async () => version,
       async queue() { polls++; return []; },
-    }), /Deploy the server/);
+    }), /Deploy the server/, `${basename(config)} against ${JSON.stringify(version)}`);
     assert.equal(polls, 0, "a runner that refuses at start never polls the queue");
   }
 });
@@ -703,6 +718,40 @@ test("the runner starts on a current route level and polls the queue", async (t)
     async queue() { polls++; return []; },
   });
   assert.equal(polls, 1);
+});
+
+// t458 rework: the integrator's jobs claim the task, read Git through the
+// runner's credential and post the integration routes, so a server short of
+// those is refused before the first poll, as a build runner's is.
+test("the integrator refuses a server lacking its jobs' capabilities and polls nothing", async (t) => {
+  t.mock.method(console, "log", () => {});
+  const integrator = { _: ["runner"], multi: { name: ["home:studio"], integrate: [true] }, name: "home:studio", integrate: true, once: true };
+  for (const [version, expected] of [
+    [null, /did not answer GET \/api\/version/],
+    [{ capabilities: [] }, /lacks capabilities projects\.commit-identity\.v1, plans\.integration\.v1, runners\.scoped-token\.v1/],
+    [{ routeLevel: 0 }, /lacks capabilities projects\.commit-identity\.v1, plans\.integration\.v1, runners\.scoped-token\.v1: it reports only route level 0/],
+    [{ routeLevel: 19 }, /lacks capabilities .*runners\.scoped-token\.v1/],
+    [{ capabilities: ["runners.scoped-token.v1"] }, /lacks capabilities projects\.commit-identity\.v1, plans\.integration\.v1/],
+  ]) {
+    let polls = 0;
+    await assert.rejects(runRunner(integrator, {
+      workspacePath: () => { throw new Error("no task should be claimed"); },
+      version: async () => version,
+      async queue() { polls++; return []; },
+    }), expected, JSON.stringify(version));
+    assert.equal(polls, 0, `${JSON.stringify(version)}: a runner that refuses at start never polls`);
+  }
+  for (const version of [{ routeLevel: ROUTE_LEVEL }, { capabilities: ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1"] }, { capabilities: [...SERVER_CAPABILITIES, "future.thing.v1"] }]) {
+    let polls = 0;
+    await runRunner(integrator, {
+      workspacePath: () => { throw new Error("no task should be claimed"); },
+      version: async () => version,
+      async queue() { polls++; return []; },
+    });
+    assert.equal(polls, 1, JSON.stringify(version));
+  }
+  assert.match(versionRefusal({ routeLevel: 5 }, ["integrate"]), /plans\.integration\.v1/);
+  assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL }, ["integrate", "refresh"]), null);
 });
 
 test("config validates task timeouts and honours ATELIER_CONFIG_DIR", (t) => {
