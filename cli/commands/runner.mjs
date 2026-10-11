@@ -1,5 +1,23 @@
 // atelier runner. Its forms, flags and help are declared in src/usage/commands/runner.ts.
-import { OWNER, apiToken, args, die, discoverModels, reportUsage, server, setupRunner, workspacePath } from "../atelier.mjs";
+import { I, OWNER, apiToken, args, die, discoverModels, reportUsage, server, setupRunner, tokenRunner, workspacePath } from "../atelier.mjs";
+
+// Queue polling has already resolved the runner's identity. A failed policy
+// read must reach the job's infrastructure handling, never the process.exit
+// the CLI's own call helper makes of a refusal.
+// The read goes through the runner's transport (t478), as the declared
+// "project" call in RUNNER_CALLS (src/tokens.ts).
+export async function hasPreparation(project, actor) {
+  try {
+    const { runnerTransport } = await import("../runner.mjs");
+    const transport = runnerTransport({ server: server(), credential: apiToken(), runner: tokenRunner });
+    const res = await transport.send("project", { project }, { actor });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.data?.project?.policy) throw new Error("missing project policy");
+    return !!res.data.project.policy.prepare;
+  } catch (error) {
+    throw Object.assign(new Error(`the preparation policy could not be read: ${error.message}`), { infrastructure: true });
+  }
+}
 
 // `runner --discover` reports what each home model's harness serves (discover.mjs);
 // `runner --usage` reports each tool's windows, served models and balances (usage.mjs).
@@ -19,6 +37,7 @@ export default async function runnerCommand() {
   try {
     await runRunner(args, {
       credential: apiToken(),
+      api: { server, I },
       workspacePath,
       // The server's route level against the CLI's, checked once at start:
       // a server behind this CLI would fail the runner's calls one by one.
@@ -55,6 +74,7 @@ export default async function runnerCommand() {
         if (res.incomplete) console.log(`Could not read: ${res.incomplete}. Tasks waiting there are not listed.`);
         return res.data;
       },
+      hasPreparation,
       async jobBrief(project, id, actor) {
         let res;
         try { res = await transport.send("job-brief", { project, item: id }, { actor }); }
