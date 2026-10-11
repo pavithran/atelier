@@ -581,7 +581,9 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       if (ask.reviewer && ask.request !== null) {
         const stuck = await step.do(`see whether every reviewer skipped #${i}`, RETRIES, async () => {
           const offers = await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers();
-          const runners = allSkipped(ask.reviewer!, offers, await L.reviewSkips(p.item, ask.request!));
+          const live = await L.liveReviewRequest(p.item, head);
+          if (!live) return null;
+          const runners = allSkipped(live.reviewer, offers, await L.reviewSkips(p.item, live.request));
           return runners ? { runners } : null;
         });
         if (stuck) {

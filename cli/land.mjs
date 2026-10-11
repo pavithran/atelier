@@ -285,7 +285,7 @@ export async function runLand(io) {
     // counts. The refusal names the agents that would count.
     if (d0.policy) {
       const refusal = roleRefusal(reviewer, d0.policy, "assessor", d0.ownerActor);
-      if (refusal) die(`${reviewer}'s approval would not count in ${name}: ${refusal}. Name another reviewer with --reviewer H/M.`);
+      if (refusal) die(`${reviewer}'s approval would not count in ${name}: ${refusal}. Name another reviewer with --reviewer H/M. The owner can admit a registered model with atelier models admit ID --project ${name} --reason TEXT.`);
     }
   }
   const regenerate = typeof d0.policy?.regenerate === "string" ? d0.policy.regenerate : null;

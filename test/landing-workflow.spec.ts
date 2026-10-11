@@ -1,8 +1,8 @@
 import { env } from "cloudflare:workers";
-import { introspectWorkflow, introspectWorkflowInstance } from "cloudflare:test";
+import { introspectWorkflow, introspectWorkflowInstance, runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
-import { LANDING_DETAIL_MAX, type LedgerEvent } from "../src/ledger.ts";
+import { LANDING_DETAIL_MAX, type ReviewClaim, type Ledger, type LedgerEvent } from "../src/ledger.ts";
 import { putLarge } from "../src/large.ts";
 import { effectiveFailures, failureSummary, resolveFailures } from "../src/check-failure.ts";
 import type { Evidence } from "../src/rules.ts";
@@ -724,3 +724,53 @@ it("retries its first stage when execution starts before create returns and repl
   expect(await until(() => L.landingWorkflowOf(id), (r) => r?.stage === "workspace"))
     .toMatchObject({ instance: result.instance, stage: "workspace" });
 });
+
+
+for (const ending of ["approve", "reject", "timeout", "lease-loss"] as const) {
+it(`t485: the recovered landing ignores obsolete skips and preserves ${ending}`, async () => {
+  const project = `wf-review-restart-${ending}`, instance = `${project}-1`;
+  const { L, id } = await pushedTask(project, instance);
+  const reviewer = "codex/gpt-6-astra";
+  const index = env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  await index.putModel({ id: "gpt-6-astra", harness: "codex", where: "cloud", provider: "subscription", aliases: [], family: familyOf("gpt-6-astra"), note: "", addedBy: "owner", addedAt: new Date().toISOString() });
+  await index.putRunnerOffer({ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }] }, new Date().toISOString());
+  await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, instance);
+  await wf.modify(async (m) => {
+    await m.disableSleeps();
+    await m.mockStepResult({ name: "confirm the fork's head" }, { head: H1 });
+    await m.mockStepResult({ name: "wait for the merge #0" }, true);
+  });
+  await env.LANDING_WORKFLOW.create({ id: instance, params: { ...params(project, id), reviewer, reviewTimeoutMs: ending === "timeout" ? 1000 : 60_000 } });
+  await send(instance, "workspace", { round: 0, head: H1, mainHead: null, mergedIn: false });
+  await until(() => L.reviewWaiting(), (rows) => rows.length > 0);
+  const old = await L.claimReview(id, reviewer, { runner: "home:studio", kind: "home" }, true) as unknown as ReviewClaim;
+  // Fake only the review lease clock inside this Ledger call. The landing
+  // keeps its original lease and deadline, as with a real review restart.
+  await runInDurableObject(L, (ledger: Ledger, state: DurableObjectState) => {
+    const start = Date.parse(state.storage.sql.exec(`SELECT claimedAt FROM review_requests WHERE id = ?`, old.request).one().claimedAt as string);
+    const realNow = Date.now;
+    try {
+      Date.now = () => start + 40 * 60_000;
+      expect(ledger.reviewWaiting()[0].request).not.toBe(old.request);
+    } finally { Date.now = realNow; }
+  });
+  await L.recordReviewSkip(id, old.request, H1, "home:studio", "owner", "late skip from the dead runner");
+  const successor = await L.claimReview(id, reviewer, { runner: "home:studio", kind: "home" }, true) as unknown as ReviewClaim;
+  expect(successor.request).not.toBe(old.request);
+  // Let the Workflow read the obsolete skip before an approval arrives.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(await L.landingWorkflowOf(id)).toMatchObject({ instance, stage: "review" });
+  if (ending === "approve" || ending === "reject") {
+    await L.addReview({ itemId: id, by: reviewer, head: H1, criteria: successor.criteria, request: successor.request, approve: ending === "approve", note: "Recovered verdict", at: new Date().toISOString() }, undefined, true);
+  } else if (ending === "lease-loss") {
+    await L.cancelProjectLanding(id, "owner");
+  }
+  await wf.waitForStatus(ending === "approve" ? "complete" : "errored");
+  expect(await L.landingWorkflowOf(id)).toMatchObject({ instance, stage: ending === "approve" ? "done" : "failed" });
+  expect((await L.item(id)).state).toBe(ending === "approve" ? "accepted" : "submitted");
+  if (ending !== "approve") {
+    const detail = (await L.landingWorkflowOf(id))!.detail;
+    expect(detail).toMatch(ending === "reject" ? /rejected/ : ending === "timeout" ? /no verdict.*within/ : /lease/);
+  }
+});
+}
