@@ -54,8 +54,10 @@ const isReviewer = (actor: string, owner: string | null) => actor !== owner && a
 // from the same task id in another project). `owner` is never a reviewer
 // model: a finding of the owner's own review is left out.
 export function buildPrecision(projects: readonly { project: string; events: readonly LedgerEvent[] }[], window: PrecisionWindow, owner: string | null = null): PrecisionRecord {
-  // The newest verdict on each finding: project, item, head, reviewer, index.
+  // The newest verdict on each finding: project, item, head, reviewer, index
+  // and, when the verdict names it, the review's sequence.
   const newest = new Map<string, { seq: number; at: string; by: string; verdict: string }>();
+  const named: { legacy: string; seq: number }[] = [];
   for (const { project, events } of projects) {
     for (const ev of events) {
       if (ev.kind !== "review.finding" || ev.itemId === null) continue;
@@ -66,11 +68,17 @@ export function buildPrecision(projects: readonly { project: string; events: rea
       if (!isReviewer(by, owner)) continue;
       const verdict = str(d.verdict);
       if (verdict !== "confirmed" && verdict !== "fixed" && verdict !== "refuted") continue;
-      const key = `${project} ${ev.itemId} ${str(d.head)} ${by.toLowerCase()} ${String(d.index)}`;
+      // A verdict naming its review (t486) is on that review's finding alone;
+      // one from before keeps the key it always had.
+      const key = `${project} ${ev.itemId} ${str(d.head)} ${by.toLowerCase()} ${String(d.index)}${typeof d.review === "number" ? ` ${d.review}` : ""}`;
       const seen = newest.get(key);
       if (!seen || ev.seq > seen.seq) newest.set(key, { seq: ev.seq, at: ev.at, by, verdict });
+      if (typeof d.review === "number") named.push({ legacy: `${project} ${ev.itemId} ${str(d.head)} ${by.toLowerCase()} ${String(d.index)}`, seq: ev.seq });
     }
   }
+  // A verdict naming its review replaces an older one on that finding that
+  // named none, so a finding judged again is counted once.
+  for (const n of named) if ((newest.get(n.legacy)?.seq ?? Infinity) < n.seq) newest.delete(n.legacy);
   const models = new Map<string, ReviewerPrecision>();
   for (const v of newest.values()) {
     if (v.at < window.from || v.at > window.to) continue;

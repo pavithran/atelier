@@ -1966,8 +1966,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "finding": {
       requireOwner(env, actor);
       const { head, index, verdict, note } = cleanFinding(body);
-      await L.addFinding(id, actor, head, index, verdict, note);
-      return json({ id, head, index, verdict }, 201);
+      const { review, by } = await L.addFinding(id, actor, head, index, verdict, note, { reviewSeq: body.reviewSeq, reviewer: body.reviewer });
+      return json({ id, head, index, verdict, review, by }, 201);
     }
   }
   throw new RuleError("not_found", "no such route", 404);
