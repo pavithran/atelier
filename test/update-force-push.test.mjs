@@ -1,3 +1,4 @@
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -65,6 +66,7 @@ const BASE = ${JSON.stringify(base)}, BASELINE = ${JSON.stringify(baseline)}, FO
 const forkHead = () => execFileSync("git", ["--git-dir", FORK, "rev-parse", "refs/heads/main"], { encoding: "utf8" }).trim();
 const item = () => ({ id: "t3", title: "Task three", scope: [], state: "claimed", owner: "codex/a", head: process.env.FAKE_RECORDED_HEAD ?? forkHead(), acceptedHead: null, base: BASE, fork: "demo-t3", dispatch: null });
 globalThis.fetch = async (url, options = {}) => {
+  if (new URL(url).pathname === "/api/version") return Response.json({ capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
   const path = new URL(url).pathname, method = options.method ?? "GET";
   const body = options.body ? JSON.parse(options.body) : undefined;
   appendFileSync(${JSON.stringify(log)}, JSON.stringify({ method, path, body }) + "\\n");
