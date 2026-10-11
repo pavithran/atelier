@@ -104,6 +104,7 @@ function fixture(t, { conflict, harness, kind = "part", findings = null, rescueR
     async jobBrief() { calls.push({ jobBrief: true }); return { job: findings ? "rework" : "build", text: kind === "part" ? "SERVER BRIEF" : findings ?? "", hash: "h" }; },
     async brief(workspace, text) { calls.push({ brief: text }); return { file: join(r.root, "brief.txt") }; },
     async harness(argv, cwd) { calls.push({ harness: argv }); return harness(cwd); },
+    async identityRefusals() { return []; },
     async removeBrief() {},
   };
   return { r, job, io, calls, logs };
