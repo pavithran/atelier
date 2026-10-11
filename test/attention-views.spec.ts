@@ -7,6 +7,7 @@ import { attentionFor } from "../src/attention";
 import { buildStanding, renderHome, renderInbox, renderProject, type Detail } from "../src/ui";
 import { readStanding, type StandingSource } from "../src/standing-read";
 import type { ProjectRecord } from "../src/ledger";
+import { buildStory } from "../src/graph";
 import { ALL_ENTRIES, ALPHA_ITEMS, BETA_ITEMS, EXPECTED, NOW, OFFERS } from "./fixtures/attention";
 
 const record = (name: string): ProjectRecord => ({ name, title: name === "alpha" ? "Alpha" : "Beta", repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: NOW.toISOString() });
@@ -120,4 +121,22 @@ it("Decisions never says the owner is clear when tasks or notices could not be r
     expect(page).not.toContain("You’re clear.");
     expect(page).not.toContain("Nothing is waiting on you.");
   }
+});
+
+// Found in pre-review of t504: with no owner task known, the resting panel
+// beside the list said "Nothing is waiting on you." while the list said it
+// may be incomplete. Both now say the same.
+it("Decisions' resting panel says the list may be incomplete, naming the project, when its records were not all read", () => {
+  const at = (seq: number, actor: string, kind: string) => ({ seq, itemId: "b1", at: `2026-10-04T10:0${seq}:00.000Z`, actor, kind, data: {} });
+  const story = buildStory("beta", [{ ...BETA_ITEMS[0], id: "b1", state: "merged" }], [at(2, "pavi", "item.merged"), at(1, "codex/gpt-6", "item.claimed")], "pavi");
+  expect(story.threads.length).toBe(1);
+  const unread = renderInbox([attentionFor("beta", null, null, OFFERS, NOW)], [record("beta")], "PAVI", undefined, [], undefined, NOW, [], { story, owner: "pavi" });
+  const panel = unread.slice(unread.indexOf('class="resting-graph"'));
+  expect(unread).toContain("The list may be incomplete.");
+  expect(panel).toContain("The list may be incomplete: some records of Beta could not be read, so more may be waiting on you.");
+  expect(unread).not.toContain("Nothing is waiting on you.");
+  // Read in full and with nothing waiting, it says so.
+  const read = renderInbox([attentionFor("beta", [], [], OFFERS, NOW)], [record("beta")], "PAVI", undefined, [], undefined, NOW, [], { story, owner: "pavi" });
+  expect(read.slice(read.indexOf('class="resting-graph"'))).toContain("Nothing is waiting on you.");
+  expect(read).not.toContain("may be incomplete");
 });
