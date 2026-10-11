@@ -35,10 +35,10 @@
 // format lets its CRITERION line say deferred (replyFormat in
 // src/review/verdict.ts), and nobody rejects the task for it.
 
-import type { ModelEntry } from "../models/pool.ts";
+import type { ModelEntry, PoolFamily } from "../models/pool.ts";
 import type { Choice } from "../plans/route.ts";
 import type { PlanPart } from "../plans/schema.ts";
-import { actorFamily, assertEligible, DEFAULT_OWNER, familyRefusal, hasRole, modelKey, parseRuleError, sameActor, type Finding, type PostDeployCheck, type ProjectPolicy } from "../rules.ts";
+import { actorFamily, assertEligible, companyRefusal, DEFAULT_OWNER, familyRefusal, hasRole, modelKey, parseRuleError, sameActor, singleFamily, type Finding, type PostDeployCheck, type ProjectPolicy } from "../rules.ts";
 import { TEXT_CONTROLS } from "../text.ts";
 import { CRITERIA_REPLY_FORMAT } from "./verdict.ts";
 
@@ -156,17 +156,21 @@ export function attributionRefusal(authors: readonly string[], owner = DEFAULT_O
 // Why `reviewer` cannot review criteria these authors wrote, or null when it
 // can: it wrote them itself, its family is not recognised, or it shares a
 // family with a model author. Criteria no model wrote take any recognised
-// family.
-export function criteriaIndependenceRefusal(reviewer: string, authors: readonly string[], owner = DEFAULT_OWNER): string | null {
+// family. Under single-family mode (`single`, t394) the reviewer is instead
+// one of that company's models and a different model from every author, as
+// the code review's rule is (familyRefusal).
+export function criteriaIndependenceRefusal(reviewer: string, authors: readonly string[], owner = DEFAULT_OWNER, single: PoolFamily | null = null): string | null {
   const refused = attributionRefusal(authors, owner);
   if (refused) return refused;
   if (authors.some((a) => isModelAuthor(a, owner) && modelKey(a) === modelKey(reviewer))) return `${reviewer} wrote these criteria, and nobody reviews their own work`;
+  const company = companyRefusal(reviewer, single);
+  if (company) return company;
   const models = authors.filter((a) => isModelAuthor(a, owner));
   if (!models.length) {
     return actorFamily(reviewer) === "other" ? `${reviewer}'s family is not recognised from its name` : null;
   }
-  const family = familyRefusal(reviewer, models);
-  return family ? `${reviewer} is not of another family than every author of the criteria: ${family}` : null;
+  const family = familyRefusal(reviewer, models, single);
+  return family ? `${reviewer} is not ${single ? `a different ${single} model from` : "of another family than"} every author of the criteria: ${family}` : null;
 }
 
 export interface CriteriaPickInput {
@@ -197,6 +201,7 @@ const PAID = new Set(["ai-studio", "openai-compatible", "google", "deepseek", "o
 // the refusal is the attribution's.
 export function pickCriteriaReviewer(input: CriteriaPickInput): CriteriaReviewerPick {
   const owner = input.owner ?? DEFAULT_OWNER;
+  const single = singleFamily(input.policy);
   const none = (unpicked: string, passedOver: Choice[] = []): CriteriaReviewerPick => ({ reviewer: null, passedOver, unpicked });
   const refused = attributionRefusal(input.authors, owner);
   if (refused) return none(refused);
@@ -212,8 +217,9 @@ export function pickCriteriaReviewer(input: CriteriaPickInput): CriteriaReviewer
     const actor = actorOf(entry);
     const failed: string[] = [];
     const passed: string[] = [];
-    const independence = criteriaIndependenceRefusal(actor, input.authors, owner);
+    const independence = criteriaIndependenceRefusal(actor, input.authors, owner, single);
     if (independence) failed.push(independence);
+    else if (single) passed.push(`A different ${single} model from every model that wrote the criteria (single-family mode): ${input.authors.join(", ")}`);
     else passed.push(input.authors.some((a) => isModelAuthor(a, owner))
       ? `Another family (${actorFamily(actor)}) than every model that wrote the criteria: ${input.authors.filter((a) => isModelAuthor(a, owner)).map((a) => `${a} (${actorFamily(a)})`).join(", ")}`
       : `A recognised family (${actorFamily(actor)}); the criteria were written by ${input.authors.join(", ")}, no model among them, so any recognised family may review them`);
