@@ -12,7 +12,7 @@ const brief = (over = {}) => ({
       { id: "t1", state: "claimed", owner: "codex/gpt-6", title: "One" },
       { id: "t2", state: "submitted", owner: "claude-code/opus-5.5", title: "Two" },
     ],
-    waiting: [{ id: "t2", call: "accept", title: "Two", sentence: "Accept the revision.", href: "/p/demo/t2", command: null, why: "r", brief: null }],
+    waiting: [{ id: "t2", call: "accept", title: "Two", sentence: "Accept the revision.", href: "/p/demo/t2", command: "atelier land t2 --reviewer H/M --project demo", why: "r", brief: null }],
     merged: ["t9", "t8", "t7", "t6", "t5"].map((id, n) => ({ id, title: `Merged ${id}`, at: "2026-10-09T10:00:00Z", commit: `${n}abcdef0123456789`, line: null })),
   },
   version: { commit: "deadbeefcafe1234", routeLevel: 7 },
@@ -42,7 +42,7 @@ test("the brief pins its format: merges, deployed commit, builds, reviews, landi
     "Live builds: 1 (t1 codex/gpt-6).",
     "Reviews: 1 submitted or accepted (t2 submitted); 1 waiting for a runner (t2 by codex/gpt-6).",
     "Landing: t4 held by owner since 2026-10-09 12:00 UTC.",
-    "Waiting on the owner: t2 accept.",
+    "Waiting on the owner: t2 accept; next: atelier land t2 --reviewer H/M --project demo.",
     "Spend, last 24 hours: $13.75 (codex $12.50, claude $1.25); limit $10.00 a tool a day; over it: codex.",
   ].join("\n"));
 });

@@ -132,7 +132,9 @@ export function placeTask(project: string, item: Item, notices: readonly InboxEn
   const proposed = has("approve-plan");
   if (proposed) return own("approve-plan", "Read the planner's split, then approve it by its hash or send it back with a note.", `atelier plan show ${item.id}${flag}`, proposed.reason);
   const ready = has("accept");
-  if (ready) return own("accept", "Accept the revision, whose required checks all passed at its head.", `atelier accept ${item.id}${flag}`, ready.reason);
+  // The owner's path for a submitted task is atelier land, which reviews,
+  // accepts and merges it (t495).
+  if (ready) return own("accept", "Accept the revision, whose required checks all passed at its head.", `atelier land ${item.id} --reviewer ${ready.reviewer ?? "H/M"}${flag}`, ready.reason);
   // An assess notice whose reviewer is null: the pool was read and offers no
   // reviewer that qualifies, so only the owner moves it. Undefined: the pool
   // was not read, and the task stays at its stage (attentionFor says so).

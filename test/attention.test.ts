@@ -52,7 +52,7 @@ test("each owner item says in one sentence what to do and links where it is done
     assert.ok(t.why.length > 0);
   }
   const by = Object.fromEntries(a.owner.map((t) => [t.call, t]));
-  assert.equal(by.accept.command, "atelier accept a1 --project alpha");
+  assert.equal(by.accept.command, "atelier land a1 --reviewer H/M --project alpha");
   assert.equal(by.unblock.command, "atelier unblock a4 --project alpha");
   assert.equal(by["approve-plan"].command, "atelier plan show a5 --project alpha");
   assert.equal(by.ship.command, "atelier ship --dry-run --project alpha");

@@ -226,7 +226,7 @@ test("inbox prints each task waiting on the owner with what to do and its link, 
     `    t1  Accept  ${brief.title}`,
     "      Accept the revision, whose required checks all passed at its head.",
     "      why: all checks observed passing at this head",
-    "      next: atelier accept t1 --project proj",
+    "      next: atelier land t1 --reviewer H/M --project proj",
     `      ${f.origin}/p/proj/t1`,
   ]);
   const json = await f.run(["inbox", "--json"]);
