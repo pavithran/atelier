@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { controllingRule, reviewDisagreements, reviewNotice } from "../src/review-notice.ts";
 import { changedFromMain, policySource, workspaceNotice } from "../cli/review-notice.mjs";
 import { formatStatus, statusJson } from "../cli/status.mjs";
-import type { ProjectPolicy } from "../src/rules.ts";
+import { changeClass, type ProjectPolicy } from "../src/rules.ts";
 
 const open: ProjectPolicy = { checks: ["npm test"], protected: ["AGENTS.md", "wrangler.*"] };
 const governed: ProjectPolicy = {
@@ -169,4 +169,31 @@ test("imported adapter and execution protections name the matching file and vers
     assert.match(reviewNotice([path], policy, () => source)!.join("\n"), new RegExp(file));
   }
   assert.equal(policySource(dir, controllingRule(["other/a"], policy), policy), null);
+});
+
+test("post-merge policy gives even a direct docs-only change a protected notice and status disagreement", () => {
+  const postMerge: NonNullable<ProjectPolicy["postMerge"]> = {
+    version: 1,
+    approval: { by: "owner", at: "2026-10-09T00:00:00Z", reason: "run checks after landing" },
+    steps: [{ name: "check", command: "node scripts/check.mjs", class: "check", when: "always", protect: ["scripts/**"], timeoutMs: 1000 }],
+  };
+  for (const base of [governed, { checks: [], protected: [] }]) {
+    const policy = { ...base, postMerge };
+    for (const path of ["docs/guide.md", "scripts/check.mjs", "scripts/import.mjs", "package.json", ".npmrc"]) {
+      assert.equal(changeClass([path], policy), "protected");
+      assert.equal(controllingRule([path], policy)?.kind, changeClass([path], policy));
+      const text = reviewNotice([path], policy)!.join("\n");
+      assert.ok(text.includes(`${path} matches the protected glob`));
+      if (path === "docs/guide.md") {
+        assert.ok(text.includes(`${path} matches the protected glob **`));
+        assert.match(text, /Controlling policy:.*post-merge policy/);
+      }
+      assert.match(text, /another model family/);
+    }
+    const found = reviewDisagreements(policy, [{ file: "AGENTS.md", text: "Review is optional for docs." }]);
+    assert.equal(found.length, 1);
+    assert.match(found[0], /post-merge policy protects all repository paths \(\*\*\)/);
+    assert.match(formatStatus([{ name: "p", items: [], inbox: [], mismatches: found }]), /post-merge policy/);
+    assert.equal(reviewNotice(["docs/guide.md"], { ...policy, postMerge: null }), null);
+  }
 });

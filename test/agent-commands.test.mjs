@@ -359,14 +359,15 @@ test("the task an agent starts and the brief it reads carry the owner's framing,
 
 // The early review notice (t422): done says which policy requires a review
 // before the push and the checks run, measured against the project baseline.
-for (const [label, extra, expected] of [
+for (const [label, extra, expected, path = "AGENTS.md"] of [
+  ["docs covered by post-merge steps", { policy: { protected: [], postMerge: { version: 1, steps: [{ name: "check", command: "node scripts/check.mjs", protect: ["scripts/**"] }] } } }, /docs.md matches the protected glob \*\*, from the post-merge policy/, "docs.md"],
   ["a protected change", { policy: { protected: ["AGENTS.md"] } }, /AGENTS\.md matches the protected glob AGENTS\.md/],
   ["a plan's part, though the change is direct", { kind: "part", policy: { protected: [] } }, /part of a plan, and every part of a plan is reviewed/],
 ]) test(`done prints the review notice for ${label} before the checks run`, async (t) => {
   const f = await fixture(t, { failed: true, ...extra });
   assert.equal((await f.run(["start", "t1"])).status, 0);
-  writeFileSync(join(f.workspace, "AGENTS.md"), "changed\n");
-  git(f.workspace, "add", "AGENTS.md"); git(f.workspace, "-c", "user.name=T", "-c", "user.email=t@example.test", "commit", "-q", "-m", "Edit");
+  writeFileSync(join(f.workspace, path), "changed\n");
+  git(f.workspace, "add", path); git(f.workspace, "-c", "user.name=T", "-c", "user.email=t@example.test", "commit", "-q", "-m", "Edit");
   const r = await f.run(["done", "Edited docs"], f.workspace);
   assert.equal(r.status, 2, r.output);
   const notice = r.output.indexOf("A review will be needed before this lands"), failed = r.output.indexOf("atelier: running");

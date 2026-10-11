@@ -917,9 +917,22 @@ export function measuredPaths(value: unknown): string[] | null {
 // environment, and an item cannot add a ship file either.
 export const SHIP_FILES = ["docs/atelier/**"];
 
+// Keep classification and its early explanation on the same protected set.
+export function protectedRuleGroups(policy: ProjectPolicy): [string, string[]][] {
+  return [
+    ["the project's protected paths", policy.protected ?? []],
+    ["the files its required checks run", checkFiles(policy.checks)],
+    ["the execution policy's protected_path_patterns", policy.execution?.protected_path_patterns ?? []],
+    ["the ship files", SHIP_FILES],
+    ["the files its ship order runs", checkFiles(policy.shipRuns ?? [])],
+    ["the post-merge policy (all repository paths)", policy.postMerge ? ["**"] : []],
+    ["the post-merge steps' protected files", policy.postMerge?.steps.flatMap(s => [...s.protect, ...checkFiles([s.command]), "package.json", "package-lock.json", "wrangler.*", ".npmrc"]) ?? []],
+  ];
+}
+
 export function changeClass(paths: string[], policy: ProjectPolicy): ChangeClass | null {
   if (!paths.length) return null;
-  const guarded = [...policy.protected, ...checkFiles(policy.checks), ...(policy.execution?.protected_path_patterns ?? []), ...SHIP_FILES, ...checkFiles(policy.shipRuns ?? []), ...(policy.postMerge ? ["**"] : []), ...(policy.postMerge?.steps.flatMap(s => [...s.protect, ...checkFiles([s.command]), "package.json", "package-lock.json", "wrangler.*", ".npmrc"]) ?? [])];
+  const guarded = protectedRuleGroups(policy).flatMap(([, globs]) => globs);
   if (paths.some((p) => matchesFolded(p, guarded))) return "protected";
   const direct = policy.execution?.direct;
   return direct?.enabled && paths.every((p) => matchesAny(p, direct.allowed_path_patterns)) ? "direct" : "coordinated";
