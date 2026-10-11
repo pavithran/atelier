@@ -53,6 +53,7 @@ import { LANDING_CHECKS_MODES, type LandingChecksMode } from "./landing-workflow
 import { ENDED, LANDING_CREATE_RECONCILE_MS, replacementFor, terminateConfirmed, type Replacement } from "./landing/replace.ts";
 import { replacementInstanceId } from "./landing/lease-wait.ts";
 import { renderHow } from "./how.ts";
+import { triageSettingRefusal } from "./review/triage.ts";
 
 const WRITE_TTL = 8 * 3600;
 const READ_TTL = 3600;
@@ -642,6 +643,16 @@ function reviewBarArg(value: unknown): string | null {
   return text || null;
 }
 
+// The project's triage model (src/review/triage.ts) as init sends it:
+// harness/model under a harness Atelier ships an adapter for; null or ""
+// clears it, and a landing then triages only when it names a model.
+function triageArg(value: unknown): string | null {
+  if (value === null || value === "") return null;
+  const refusal = triageSettingRefusal(value);
+  if (refusal) throw new RuleError("bad_triage", refusal, 400);
+  return value as string;
+}
+
 // The project's review tier (src/review/tier.ts) as init sends it: a list
 // of harness/model actors, or one string of them separated by commas. Blank
 // entries are dropped and repeats kept once, in the owner's order; an empty
@@ -1144,6 +1155,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // What may block a review, stated in every review brief: text, or
       // null or "" to clear it and state the default bar.
       ...(has("reviewBar") ? { reviewBar: reviewBarArg(body.reviewBar) } : {}),
+      // The model that triages a landing before its review (t475):
+      // harness/model, or null or "" to clear it.
+      ...(has("triage") ? { triage: triageArg(body.triage) } : {}),
       // The top review tier: harness/model actors, or [] or "" to clear it.
       ...(has("reviewTier") ? { reviewTier: body.reviewTier === null ? [] : parseReviewTier(body.reviewTier) } : {}),
       ...(has("protected") ? { protected: asStrings(body.protected, "protected") } : {}),
@@ -1922,6 +1936,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
                     checks: remembered.checks ?? "container",
                     ...(remembered.reviewer ? { reviewer: remembered.reviewer } : {}),
                     ...(remembered.noReview ? { noReview: true } : {}),
+                    ...(remembered.triage ? { triage: true } : {}),
                   },
                 });
               } catch {
@@ -1976,7 +1991,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // that names none, the ones the replaced instance was started with.
       const reviewer = named ?? (remembered && body.noReview !== true ? remembered?.reviewer ?? null : null);
       const noReview = body.noReview === true || (!!remembered && named === null && remembered?.noReview === true);
-      const options = { checks, ...(reviewer ? { reviewer } : {}), ...(noReview ? { noReview: true } : {}) };
+      // A landing that triages (t475): the Workflow submits and asks for
+      // the review only while a triage recorded at the reported head,
+      // merge base and criteria lets it go on. The record keeps it, so an
+      // instance reconciled from its claim triages too.
+      const options = { checks, ...(reviewer ? { reviewer } : {}), ...(noReview ? { noReview: true } : {}), ...(body.triage === true ? { triage: true } : {}) };
       // Who starts the next instance is decided in the Ledger before anything
       // is created (t430). The instance that follows a remembered one has an
       // id derived from it, so every request that follows it (two replacing

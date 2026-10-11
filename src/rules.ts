@@ -443,6 +443,11 @@ export interface ProjectPolicy {
   // What may block a review, as every review brief states it; absent, the
   // briefs state DEFAULT_REVIEW_BAR (src/review/verdict.ts).
   reviewBar?: string;
+  // The model, harness/model, that triages a landing's diff against the
+  // task's criteria before its review is asked for (`atelier init
+  // --triage`, src/review/triage.ts); `atelier land --triage` names another
+  // for one landing. Absent, no triage runs unless a landing names one.
+  triage?: string;
   // The project's top review tier, as harness/model actors (`atelier init
   // --review-tier`): every protected change that gets its gate review is
   // also reviewed by one of these. The gate's review goes to a tier model of
