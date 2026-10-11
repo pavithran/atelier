@@ -334,6 +334,9 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
             const held: LandingLease | null = await L.liveProjectLanding();
             return { took: false as const, why: parsed.detail, at: new Date().toISOString(), holder: held ? { item: held.item, holder: held.holder, since: held.at } : null };
           }
+          // Unfinished post-merge work blocks the take; no landing holds the
+          // lease then, so the refusal names the run instead of a holder.
+          if (parsed?.code === "post_merge_blocked") return { took: false as const, why: parsed.detail, at: new Date().toISOString() };
           if (parsed && parsed.status >= 400 && parsed.status < 500) throw new NonRetryableError(parsed.detail);
           throw error;
         }
@@ -617,10 +620,17 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
   private async waitForMerge(step: WorkflowStep, L: LedgerStub, p: Landing): Promise<void> {
     const maxPolls = Math.max(1, Math.floor(p.merge / p.mergePoll));
     for (let i = 0; ; i++) {
-      const done = await step.do(`wait for the merge #${i}`, RETRIES, async () => (await L.item(p.item)).state === "merged");
+      const done = await step.do(`wait for the merge #${i}`, RETRIES, async () => {
+        if ((await L.item(p.item)).state !== "merged") return false;
+        const run = await L.postMergeRun(p.item);
+        return !run || run.state === "complete";
+      });
       if (done) return;
       if (i + 1 >= maxPolls) {
-        throw new NonRetryableError(`${p.item}'s merge was not recorded within ${span(p.merge)}; it stays accepted. Merge it by hand: atelier merge ${p.item}`);
+        const run = await L.postMergeRun(p.item);
+        throw new NonRetryableError(run && run.state !== "complete"
+          ? `${p.item} has unresolved post-merge run ${run.id} (${run.state}); later merges remain blocked. Inspect with atelier land ${p.item} --post-merge status`
+          : `${p.item}'s merge was not recorded within ${span(p.merge)}; it stays accepted. Merge it by hand: atelier merge ${p.item}`);
       }
       await step.sleep(`wait for the merge to record #${i}`, p.mergePoll);
     }
