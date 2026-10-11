@@ -49,16 +49,20 @@ function realGit(a, o = {}) {
 // credentials file it includes together, as `http.URL.extraheader VALUE`.
 const headers = (dir) => realGit(["config", "--local", "--includes", "--get-regexp", "^http\\..*\\.extraheader$"], { cwd: dir, allowFail: true }).stdout.split("\n").filter(Boolean);
 const config = (dir, key) => { const r = realGit(["config", "--local", key], { cwd: dir, allowFail: true }); return r.status === 0 ? r.stdout.trim() : null; };
+// Every value a key holds, in order, as Git pushes to every configured URL.
+const configAll = (dir, key) => { const r = realGit(["config", "--local", "--get-all", key], { cwd: dir, allowFail: true }); return r.status === 0 ? r.stdout.split("\n").filter(Boolean) : []; };
 
 // The baseline, the task's fork and its workspace, as a runner's claim left
 // them: `origin` names the runner route (or, with `pushUrlOnly`, the fork
-// with the route as a push URL apart), the credentials file holds the
-// runner's Git credential for the route, and the workspace records the
+// with the route as a push URL apart; or, with `pushUrls` or `urls`, the
+// fork with those push URLs set apart or those fetch URLs, each "fork" or
+// the route, in that order), the credentials file holds the runner's Git
+// credential for the route, and the workspace records the
 // expiry the claim answered (none when null). With `onFork` the workspace
 // is an ordinary fork workspace. `claim` says how the server answers the
 // re-claim: ok, a refusal, no-token, no-remote, route (another runner route)
 // or bad-remote (a fork path that does not exist, so the fetch fails).
-function landing(t, { expiresAt = "2999-01-01T00:00:00.000Z", pushUrlOnly = false, onFork = false, holder = "codex/gpt-6-astra", runner = "home:mbp", actor = holder, claim = "ok", state = "submitted", workflow = false, dryRun = false, push = [], directHeader = false } = {}) {
+function landing(t, { expiresAt = "2999-01-01T00:00:00.000Z", pushUrlOnly = false, pushUrls = null, urls = null, onFork = false, holder = "codex/gpt-6-astra", runner = "home:mbp", actor = holder, claim = "ok", state = "submitted", workflow = false, dryRun = false, push = [], directHeader = false } = {}) {
   const p = root(t), seed = join(p, "seed"), baseline = join(p, "baseline.git"), fork = join(p, "fork.git"), dir = join(p, "work", "proj", "t1");
   mkdirSync(seed);
   sh(seed, "init", "-q", "-b", "main"); sh(seed, "config", "user.name", "Fixture"); sh(seed, "config", "user.email", "fixture@example.invalid");
@@ -70,7 +74,10 @@ function landing(t, { expiresAt = "2999-01-01T00:00:00.000Z", pushUrlOnly = fals
   const head = sh(dir, "rev-parse", "HEAD");
   for (const [key, value] of Object.entries({ project: "proj", item: "t1", actor, branch: "main", ...(expiresAt ? { "write-token-expires-at": expiresAt } : {}) })) if (value) sh(dir, "config", `atelier.${key}`, value);
   if (!onFork) {
-    if (pushUrlOnly) sh(dir, "config", "remote.origin.pushurl", ROUTE); else sh(dir, "remote", "set-url", "origin", ROUTE);
+    const named = (u) => (u === "fork" ? fork : u);
+    if (pushUrls) for (const u of pushUrls) sh(dir, "config", "--add", "remote.origin.pushurl", named(u));
+    else if (urls) { sh(dir, "config", "--replace-all", "remote.origin.url", named(urls[0])); for (const u of urls.slice(1)) sh(dir, "config", "--add", "remote.origin.url", named(u)); }
+    else if (pushUrlOnly) sh(dir, "config", "remote.origin.pushurl", ROUTE); else sh(dir, "remote", "set-url", "origin", ROUTE);
     // The runner's claim stores its credential as claimWorkspace does, in
     // the credentials file; `directHeader` puts one in .git/config too.
     storeWorkspaceToken(dir, ROUTE, RUNNER_SECRET);
@@ -131,8 +138,8 @@ function landing(t, { expiresAt = "2999-01-01T00:00:00.000Z", pushUrlOnly = fals
 // pushes to the fork, the only header is the fork's write token, the route's
 // credential is gone from every setting and the fresh expiry is recorded.
 function assertOnFork(l) {
-  assert.equal(config(l.dir, "remote.origin.url"), l.fork);
-  assert.equal(config(l.dir, "remote.origin.pushurl"), null);
+  assert.deepEqual(configAll(l.dir, "remote.origin.url"), [l.fork], "origin fetches from the fork alone");
+  assert.deepEqual(configAll(l.dir, "remote.origin.pushurl"), [], "no push URL is set apart");
   assert.deepEqual(headers(l.dir), [`http.${l.fork}.extraheader Authorization: Bearer ${FORK_TOKEN}`]);
   assert.ok(!readFileSync(join(l.dir, ".git", "config"), "utf8").includes(RUNNER_SECRET));
   assert.equal(config(l.dir, "atelier.write-token-expires-at"), l.fresh);
@@ -190,6 +197,64 @@ test("a runner route set as origin's push URL alone is detected and dropped for 
   assert.ok(l.lines.some((x) => /pushes to the runner route/.test(x)), l.lines.join("\n"));
   assert.deepEqual(l.commands, ["push", "check", "submit"]);
   noSecret(l);
+});
+
+// Git pushes to every push URL origin is configured with, where `git config
+// --get` answers only the last: a route before the fork, as much as one
+// after it, is detected and every push URL is dropped for the fork.
+for (const pushUrls of [[ROUTE, "fork"], ["fork", ROUTE]]) {
+  test(`a runner route among several push URLs, ordered [${pushUrls.map((u) => (u === "fork" ? "fork" : "route")).join(", ")}], is detected and every push URL is dropped for the fork (t488)`, async (t) => {
+    const l = landing(t, { pushUrls, directHeader: true });
+    assert.equal(config(l.dir, "remote.origin.url"), l.fork);
+    assert.deepEqual(configAll(l.dir, "remote.origin.pushurl"), pushUrls.map((u) => (u === "fork" ? l.fork : u)));
+    await runLand(l.io);
+    assert.equal(l.claims().length, 1);
+    assert.equal(l.claims()[0].as, "codex/gpt-6-astra");
+    assert.deepEqual(l.claims()[0].extra, { "x-atelier-runner": "home:mbp" });
+    const claimAt = l.indexOf((c) => c.path.endsWith("/claim"));
+    const leaseAt = l.indexOf((c) => c.method === "POST" && c.path.endsWith("/landing-lease") && !c.body.cancel);
+    assert.ok(claimAt >= 0 && leaseAt > claimAt, "the re-claim comes before the lease");
+    assertOnFork(l);
+    assert.deepEqual(l.adoption, ["store", "record", "fetch"]);
+    assert.ok(l.lines.some((x) => /pushes to the runner route https:\/\/atelier\.invalid\/git\/runner\/proj\/t1\.git/.test(x) && /re-claiming t1 for its holder/.test(x)), l.lines.join("\n"));
+    assert.deepEqual(l.commands, ["push", "check", "submit"]);
+    noSecret(l);
+    // The next landing finds the fork alone and claims nothing.
+    await runLand(l.io);
+    assert.equal(l.claims().length, 1, "no second claim");
+    assertOnFork(l);
+  });
+}
+
+test("a runner route among several fetch URLs, which Git pushes to as well, is detected and origin is left the fork alone (t488)", async (t) => {
+  for (const urls of [["fork", ROUTE], [ROUTE, "fork"]]) {
+    const l = landing(t, { urls, directHeader: true });
+    assert.equal(configAll(l.dir, "remote.origin.url").length, 2);
+    await runLand(l.io);
+    assert.equal(l.claims().length, 1, urls.join(","));
+    assertOnFork(l);
+    assert.ok(l.lines.some((x) => /the runner route https:\/\/atelier\.invalid\/git\/runner\/proj\/t1\.git/.test(x)), l.lines.join("\n"));
+    assert.deepEqual(l.commands, ["push", "check", "submit"]);
+    noSecret(l);
+  }
+});
+
+test("a refused re-claim of a workspace with several push URLs leaves every push URL and the route's credential as they were (t488)", async (t) => {
+  for (const pushUrls of [[ROUTE, "fork"], ["fork", ROUTE]]) {
+    const l = landing(t, { pushUrls, claim: "owned: t1 is held by codex/gpt-6-astra on home:mbp, not by this claim" });
+    const before = configAll(l.dir, "remote.origin.pushurl");
+    const error = await runLand(l.io).then(() => null, (e) => e);
+    assert.ok(error, pushUrls.join(","));
+    assert.match(error.message, /could not be moved from the runner route to its fork, so the landing stops before taking the lease/);
+    assert.equal(l.leaseTaken(), false);
+    assert.deepEqual(l.commands, []);
+    assert.deepEqual(l.adoption, []);
+    assert.equal(config(l.dir, "remote.origin.url"), l.fork);
+    assert.deepEqual(configAll(l.dir, "remote.origin.pushurl"), before);
+    assert.ok(headers(l.dir).includes(`http.${ROUTE}.extraheader Authorization: Bearer ${RUNNER_SECRET}`));
+    assert.equal(sh(l.dir, "rev-parse", "HEAD"), l.head);
+    noSecret(l, error);
+  }
 });
 
 test("a header .git/config holds for the runner route goes with the route (t488)", async (t) => {
@@ -289,6 +354,18 @@ test("a dry run names the runner route and claims, rewrites and fetches nothing 
     assert.equal(readFileSync(join(l.dir, ".git", "atelier-credentials"), "utf8"), before.credentials);
     assert.equal(readFileSync(join(l.dir, ".git", "config"), "utf8"), before.config);
     assertUntouched(l, { pushUrlOnly });
+    noSecret(l);
+  }
+  for (const pushUrls of [[ROUTE, "fork"], ["fork", ROUTE]]) {
+    const l = landing(t, { dryRun: true, pushUrls, directHeader: true });
+    const before = { credentials: readFileSync(join(l.dir, ".git", "atelier-credentials"), "utf8"), config: readFileSync(join(l.dir, ".git", "config"), "utf8") };
+    await runLand(l.io);
+    assert.ok(l.lines.some((x) => /\(first\) re-claim t1 for its holder codex\/gpt-6-astra on home:mbp/.test(x) && /pushes to the runner route/.test(x)), l.lines.join("\n"));
+    assert.equal(l.claims().length, 0);
+    assert.deepEqual(l.adoption, []);
+    assert.equal(readFileSync(join(l.dir, ".git", "config"), "utf8"), before.config);
+    assert.equal(readFileSync(join(l.dir, ".git", "atelier-credentials"), "utf8"), before.credentials);
+    assert.deepEqual(configAll(l.dir, "remote.origin.pushurl"), pushUrls.map((u) => (u === "fork" ? l.fork : u)));
     noSecret(l);
   }
   const fork = landing(t, { dryRun: true, onFork: true });
