@@ -40,7 +40,7 @@ export default async function dispatchCommand() {
   else if (suggest && !d.agent) console.log("Warning: the server chose no builder; deploy the server, then dispatch again, or name one with --agent.");
   // A server older than the override ignores it and answers without it.
   if (args["overlap-ok"] === true && !d.overlapOk) console.log("Warning: the server did not record --overlap-ok; deploy the server, then dispatch again.");
-  else if (d.overlapOk) console.log(`${id} is offered to a runner although its scope may overlap a live item's in a core file.`);
+  else if (d.overlapOk) console.log(`${id} is offered to a runner although its scope may overlap a claimed or landing item's in a core file.`);
   if (d.job === "merge-main") {
     console.log(`${id} goes back to its builder to merge main at ${d.head.slice(0, 8)} into its workspace and resolve the conflicts: a runner that offers the merge-main job claims it, merges main there and leaves the conflicts for the harness to resolve and commit${d.agent ? ` (built by ${d.agent}${d.model ? ` with ${d.model}` : ""})` : ""}. Then run atelier land ${id} again.`);
     return;
