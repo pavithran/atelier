@@ -113,8 +113,9 @@ and releases. Neither completion needs an owner token. A restart polls and
 resumes jobs held by the same runner before taking new jobs.
 
 Only polling, configuration/base reads, authorized job reads, claiming,
-Git push, checks/evidence, submission, plan posting, release and job reports
-are permitted. Owner acceptance, merge/land, overrides, criteria edits,
+Git push, checks/evidence, submission, plan posting, release, job reports
+and review skips (a runner's word that it will not serve a review job its
+poll was offered, posted as that job's actor) are permitted. Owner acceptance, merge/land, overrides, criteria edits,
 decisions, token administration, policy changes and browser access return
 403 with the runner name and token ID, never the secret. Invalid, expired or
 revoked API credentials return 401. Reviews still use the model's own agent

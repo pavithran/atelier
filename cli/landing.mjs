@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
@@ -107,6 +107,27 @@ export function landingLeft(git, cwd, gitDir, begun, branch, marker) {
   const tree = (rev) => { const r = git(['rev-parse', '--verify', '--quiet', `${rev}^{tree}`], { cwd, allowFail: true }); return r.status === 0 ? r.stdout.trim() : null; };
   const incoming = !begun.mergeCommit && existsSync(join(gitDir, 'MERGE_HEAD')) && git(['rev-parse', 'HEAD'], { cwd }) === begun.start ? tree('MERGE_HEAD') : null;
   return { commit, held, merging: !!incoming && incoming === tree(begun.head) };
+}
+
+// The moved-code record of a task's workspace (t471): one JSON line for each
+// comparison `atelier land` made of the task's edits with code main moved to
+// another file (src/moved-code.ts) — the revisions it compared, what it
+// found, the porting instructions when it stopped — and for each --moved-ok
+// approval, with its actor. A line is written whole and flushed to disk
+// before the landing goes on, in the workspace's Git directory, where no
+// commit or status sees it; the workspace lives in the CLI's cache, never in
+// iCloud Drive.
+export const movedCodeLogFile = (gitDir) => join(gitDir, 'atelier-moved-code.jsonl');
+
+export function appendMovedCodeRecord(gitDir, record) {
+  const fd = openSync(movedCodeLogFile(gitDir), 'a', 0o600);
+  try { writeSync(fd, `${JSON.stringify(record)}\n`); fsyncSync(fd); }
+  finally { closeSync(fd); }
+}
+
+export function readMovedCodeRecords(gitDir) {
+  const file = movedCodeLogFile(gitDir);
+  return existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
 }
 
 // One landing at a time per checkout: the lock is a directory, created
