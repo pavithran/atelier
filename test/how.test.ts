@@ -69,8 +69,10 @@ test("the review code is called by the ledger and the runner, and the page says 
   // an unparsable reply (t407); neither calls any of the review code.
   const sharesTypes = new Set([join("src", "plans", "brief.ts"), join("cli", "commands", "review-unparsable.mjs")]);
   // The landing's triage before the review (t475) lives in src/review/triage.ts
-  // and is not review code: the landing imports it and nothing else here.
-  const triageOnly = (file: string) => file === join("cli", "land.mjs")
+  // and is not review code: the landing, the landing Workflow that checks its
+  // binding and the init route that records the project's triage model
+  // import it, and nothing else from src/review.
+  const triageOnly = (file: string) => [join("cli", "land.mjs"), join("src", "landing-workflow.ts"), join("src", "index.ts")].includes(file)
     && [...read(file).matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*)["'](?:[^"']*\/)?review\/([^"']+)["']/g)].every((m) => m[1] === "triage.ts");
   const callers = [...sources("src"), ...sources("cli")].filter((file) => !file.startsWith(inside) && !sharesTypes.has(file) && !triageOnly(file) && imports.test(read(file)));
   assert.deepEqual([...callers].sort(), ["cli/runner.mjs", "src/ledger.ts"], "the review code should be called by the ledger and the runner alone");
