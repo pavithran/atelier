@@ -75,6 +75,7 @@ import command_unblock from "./unblock.ts";
 import command_undispatch from "./undispatch.ts";
 import command_unwrap from "./unwrap.ts";
 import command_update from "./update.ts";
+import command_wait from "./wait.ts";
 import command_wrap from "./wrap.ts";
 
 export const COMMAND_MODULES: CommandModule[] = [
@@ -153,5 +154,6 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/undispatch.ts", spec: command_undispatch },
   { path: "src/usage/commands/unwrap.ts", spec: command_unwrap },
   { path: "src/usage/commands/update.ts", spec: command_update },
+  { path: "src/usage/commands/wait.ts", spec: command_wait },
   { path: "src/usage/commands/wrap.ts", spec: command_wrap },
 ];
