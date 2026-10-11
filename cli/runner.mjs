@@ -1628,7 +1628,7 @@ export function runOutcome(state) {
 
 // `reportRun(body, runner, signal)` sends a run report; a report that fails
 // is logged and the loop goes on.
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, version }) {
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, version, api }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
@@ -1702,7 +1702,10 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       // Lease control calls stay in the runner so shutdown can give each
       // request its own deadline, independent of the aborted child signal.
       if (["review-renew", "review-release", "review-unparsable"].includes(argv[0]) && argv.includes("--request")) {
-        const { server, I } = await import("./atelier.mjs");
+        // The CLI hands its own helpers in (api): inside `atelier runner`, a
+        // dynamic import of atelier.mjs waits on that module's unfinished
+        // top-level await, and Node exits 13 with nothing left to run (t505).
+        const { server, I } = api ?? await import("./atelier.mjs");
         const value = (flag) => argv[argv.indexOf(flag) + 1];
         const body = { request: Number(value("--request")), note: argv.includes("--note") ? value("--note") : "" };
         if (argv[0] === "review-unparsable") {
