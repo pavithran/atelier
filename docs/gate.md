@@ -1,5 +1,14 @@
 # The task lifecycle and the gate
 
+The cross-company rules below describe the default policy. With
+`atelier init --single-family COMPANY`, building and reviewing use only that
+company's models: a reviewer must be a different model from every contributor,
+never a contributor under another harness. This exception also applies to
+criteria review, handoffs and conflict contributors. Only that company's tier
+models qualify; if none qualifies, no separate tier review is requested.
+`atelier init --cross-family` restores the default; both switches record who
+made them and when. See [Single-family mode](gate.md#single-family-mode).
+
 This is the full reference for how a task moves from creation to merge, what
 the gate requires before the project owner may accept it, which checks are
 allowed, and which checks apply to a change. The README's "Concepts" section
