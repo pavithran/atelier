@@ -1,14 +1,15 @@
 import { reportLimits, stuckReport, type Snapshot } from "./stuck/report.ts";
+import { parsePostMerge, currentStep } from "./post-merge.ts";
 import { runnerGitRequest } from "./runner-git.ts";
-import { assertCriteriaAllowed, assertReviewAllowed } from "./rules.ts";
+import { assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed } from "./rules.ts";
 import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
-import { itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
+import { changedPaths, itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
 import { scanCommit } from "./secret-scan.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
 import { accessSettings, accessVouches } from "./access.ts";
-import { ROUTE_LEVEL } from "./route-level.ts";
+import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, type Evidence, type Item, type OwnerFactor } from "./rules";
@@ -1112,6 +1113,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         return { command: value.command, inputs: value.inputs, outputs: value.outputs,
           ...(value.declaration !== undefined ? { declaration: parseDeclarations([value.declaration])[0] } : {}) };
       })() } : {}),
+      ...(has("postMerge") ? { postMerge: parsePostMerge(body.postMerge, actor, new Date().toISOString()) } : {}),
       ...(has("checks") ? { checks: asStrings(body.checks, "checks") } : {}),
       ...(has("checkClasses") ? { checkClasses: parseDeclarations(body.checkClasses) } : {}),
       ...(has("checkPaths") ? { checkPaths: parseCheckPaths(body.checkPaths) } : {}),
@@ -1233,13 +1235,55 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // names the landing Workflow `instance` it acts for (the Workflow
   // executor's) is refused once another instance replaced it (t430).
   if (parts[2] === "landing-lease" && parts.length === 3) {
-    if (m === "GET") return json({ lease: await L.readProjectLanding(), waiting: await L.readLandingQueue() });
+    if (m === "GET") {
+      const postMerge = await L.activePostMerge();
+      return json({ lease: await L.readProjectLanding(), waiting: await L.readLandingQueue(), ...(postMerge ? { postMerge } : {}) });
+    }
     requireOwner(env, actor);
     const instance = typeof body.instance === "string" && body.instance ? body.instance : undefined;
     if (body.cancel === true) return json(await L.cancelProjectLanding(String(body.item ?? ""), actor, instance));
     if (body.renew === true) return json({ lease: await L.renewProjectLanding(String(body.item ?? ""), actor, instance) });
     if (body.queued === true) return json(await L.queueProjectLanding(String(body.item ?? ""), actor, body.leave === true, instance));
     return json(await L.beginProjectLanding(String(body.item ?? ""), actor, instance));
+  }
+  if (parts[2] === "post-merge" && parts.length === 4) {
+    const item = parts[3];
+    if (m === "GET") return json({ run: await L.postMergeRun(item) });
+    requireOwner(env, actor);
+    const run = await L.postMergeRun(item);
+    if (!run || run.id !== body.run) throw new RuleError("stale_run", "post-merge run changed", 409);
+    if (body.action === "prepare") {
+      if (!run.after) throw new RuleError("post_merge_blocked", "merge not recorded", 409);
+      using repo = await env.ARTIFACTS.get((await L.project()).repo);
+      const before = await repo.readCommit(run.before), after = await repo.readCommit(run.after);
+      if (!before || !after) throw new RuleError("missing_history", "post-merge diff history is unavailable", 409);
+      const paths = await changedPaths(repoReader(repo), before.treeHash, after.treeHash);
+      return json({ run: await L.preparePostMerge(item, run.id, paths, actor) });
+    }
+    let deployment;
+    const step = run.policy.steps.find(s => s.name === currentStep(run)?.name);
+    if (step?.class === "deploy" && ((body.action === "finish" && body.passed === true) || (body.action === "reconcile" && body.resolution === "completed"))) {
+      // Observe independently of the executor's command result. No owner
+      // credential is sent to the version endpoint and redirects are refused.
+      using repo = await env.ARTIFACTS.get((await L.project()).repo);
+      const commit = await repo.readCommit(run.after!);
+      if (!commit) throw new RuleError("missing_history", "deployment source unavailable", 409);
+      const node = await walk(repoReader(repo), commit.treeHash, ["src", "route-level.ts"]);
+      let requiredLevel = ROUTE_LEVEL;
+      if (node) {
+        if (node.kind !== "blob") throw new RuleError("missing_history", "deployment route level is not a file", 409);
+        const blob = await repo.readBlob(node.hash);
+        if (!blob || blob.size > 65536) throw new RuleError("missing_history", "deployment route level is unavailable", 409);
+        const level = /export\s+const\s+ROUTE_LEVEL\s*=\s*(\d+)\s*;/.exec(await blob.text());
+        if (!level) throw new RuleError("missing_history", "deployment route level cannot be read", 409);
+        requiredLevel = Math.max(requiredLevel, Number(level[1]));
+      }
+      const response = await fetch(step.versionUrl!, { redirect: "error", signal: AbortSignal.timeout(15000) });
+      const v = await response.json() as { commit?: unknown; routeLevel?: unknown };
+      if (!response.ok || v.commit !== run.after || !Number.isInteger(v.routeLevel) || Number(v.routeLevel) < requiredLevel) throw new RuleError("deployment_unverified", "deployment does not report the pinned commit and required route level", 409);
+      deployment = { commit: String(v.commit), routeLevel: Number(v.routeLevel) };
+    }
+    return json({ run: await L.postMergeAction(item, actor, { run: String(body.run), action: String(body.action), attempt: typeof body.attempt === "string" ? body.attempt : undefined, passed: body.passed === true, output: body.output, commandOutcome: body.commandOutcome === "passed" ? "passed" : "failed", publication: body.publication as { source: string; remote: string | null; commits: number } | undefined, reason: body.reason, resolution: body.resolution }, deployment) });
   }
   if (parts[2] === "baseline-token" && m === "POST") {
     const scope = body.scope === "write" ? "write" : "read";
@@ -1377,6 +1421,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // predicted conflict sends the part back to its builder without a runner
       // trip (docs/orchestrator.md, section 5).
       const before = await L.item(id);
+      assertNotTerminal(before);
       if (before.kind === "plan" && before.dispatch?.job === "integrate" && before.dispatch.part && actor === INTEGRATOR) {
         const conflict = await predictConflict(env, L, before);
         if (conflict) {
@@ -1410,7 +1455,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // A give-up that fails is logged, and the claim's own failure is
           // answered: the claimer still holds an item with no fork, which its
           // retry forks (t349).
-          await L.unclaim(id, actor, codeOf(err).trim(), !!c.token).catch((e) => console.error(errorLine(`give up ${id} after a failed fork`, e)));
+          await L.unclaim(id, actor, codeOf(err).trim(), !!c.token, generation).catch((e) => console.error(errorLine(`give up ${id} after a failed fork`, e)));
           throw err;
         }
       } else {
@@ -1420,7 +1465,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         try {
           moved = await movePartFork(env, L, item, p, actor, !!c.token);
         } catch (err) {
-          if (before.owner !== actor) await L.unclaim(id, actor, codeOf(err).trim(), !!c.token);
+          if (before.owner !== actor) await L.unclaim(id, actor, codeOf(err).trim(), !!c.token, generation);
           throw err;
         }
       }
@@ -1598,7 +1643,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (!item.fork || !item.head) throw new RuleError("nothing_pushed", `${id} has nothing pushed to check`);
       const p = await L.project();
       if (!p.policy.checks.length) throw new RuleError("no_checks", `${project} has no required checks`);
-      const refused = p.policy.checks.flatMap((claim) => { const why = refusalOf(claim); return why ? [refusalText(claim, why)] : []; });
+      const refused = [...(p.policy.prepare ? [p.policy.prepare.command] : []), ...p.policy.checks].flatMap((claim) => { const why = refusalOf(claim); return why ? [refusalText(claim, why)] : []; });
       if (refused.length) throw new RuleError("not_read_only", `${refused.join(". ")}. The project owner replaces it with atelier init --check; until then the container runs nothing.`, 409);
       // The run is named and the runner records to the Ledger by the key, so a
       // run started under one of the project's names is read under any other.
@@ -1606,6 +1651,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const request: RunRequest = {
         runId, project: ref.key, itemId: id, baselineRepo: await baseRepo(env, L, item, p.repo), fork: item.fork, head: item.head,
         checks: p.policy.checks, requestedBy: actor,
+        ...(p.policy.prepare ? { prepare: p.policy.prepare } : {}),
         ...(body.merged === true ? { merged: true } : {}),
       };
       if (p.policy.checkPaths?.length) request.checkPaths = p.policy.checkPaths;
@@ -1615,6 +1661,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json({ runId, state }, 202);
     }
     case "dispatch": {
+      assertNotTerminal(await L.item(id));
       // --overlap-ok alone on a waiting dispatch releases its hold and keeps
       // everything else. An explicit snapshot is checked atomically even if
       // a runner has since claimed it; an already-owned task is redispatched.
@@ -2097,7 +2144,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const commit = /^[a-f0-9]{40,64}$/.test(merge) ? await baseline.readCommit(merge) : null;
       const history = await baseline.log({limit:1000});
       const observed = !!commit && commit.parents.includes(item.acceptedHead ?? "") && history.some(c=>c.hash===merge);
-      return json(await L.merged(id, actor, merge, observed, item.acceptedHead));
+      const merged = await L.merged(id, actor, merge, observed, item.acceptedHead);
+      const postMerge = await L.postMergeRun(id);
+      return json({ ...merged, ...(postMerge ? { postMerge } : {}) });
     }
     case "landing": {
       requireOwner(env, actor);
@@ -2112,11 +2161,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const item = await L.item(id);
         const p = await L.project();
         const top = item.acceptedHead ? await headOf(env, p.repo) : null;
-        const landed = !!top && (await holdsCommit(env, p.repo, top, item.acceptedHead!)).holds === true;
+        const ancestry = top ? (await holdsCommit(env, p.repo, top, item.acceptedHead!)).holds : null;
+        if (await L.postMergeRun(id) && ancestry === null) throw new RuleError("missing_history", "cannot cancel a post-merge reservation without proving the accepted revision is absent from the baseline", 409);
+        const landed = ancestry === true;
         if (landed) throw new RuleError("landed", `${id} is already merged on the baseline; run atelier merge ${id} to record it`, 409);
         return json(await L.cancelLanding(id, actor));
       }
-      return json(await L.beginLanding(id, actor, String(body.head ?? "")));
+      const project = await L.project();
+      // Steps may be enabled while this landing is in progress. Observe its
+      // original baseline now, even if there is no post-merge policy yet.
+      const generation = await L.mergeGeneration();
+      const before = await headOf(env, project.repo);
+      return json(await L.beginLanding(id, actor, String(body.head ?? ""), before ?? undefined, generation));
     }
     case "plan":
       if (parts.length > 6) break;
@@ -2141,8 +2197,8 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "finding": {
       requireOwner(env, actor);
       const { head, index, verdict, note } = cleanFinding(body);
-      await L.addFinding(id, actor, head, index, verdict, note);
-      return json({ id, head, index, verdict }, 201);
+      const { review, by } = await L.addFinding(id, actor, head, index, verdict, note, { reviewSeq: body.reviewSeq, reviewer: body.reviewer });
+      return json({ id, head, index, verdict, review, by }, 201);
     }
   }
   throw new RuleError("not_found", "no such route", 404);
@@ -2939,14 +2995,16 @@ export default {
       }
       const how = await authorised(req, env);
       if (parts[0] === "api") {
-        // The server's version: the deployed main commit and its route
-        // level (src/route-level.ts). It answers without a token: the
-        // commit of a public repository and a route level are not secret,
-        // and a session checks them before it signs in. atelier land
-        // refuses on the level, saying to deploy, when the server's is
-        // lower than the CLI's.
+        // The server's version: the deployed main commit, its route level
+        // and the capabilities it supports (src/route-level.ts). It answers
+        // without a token: the commit of a public repository, a route level
+        // and capability names are not secret, and a session checks them
+        // before it signs in. Each CLI command and runner job checks the
+        // capabilities it declares against this list before its first
+        // dependent request, refusing with the missing names and saying to
+        // deploy; a CLI from before capabilities reads routeLevel alone.
         if (parts.length === 2 && parts[1] === "version" && (req.method === "GET" || req.method === "HEAD")) {
-          return json({ commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, routeLevel: ROUTE_LEVEL });
+          return json({ commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES });
         }
         if (how !== "api" && (typeof how !== "object" || !how)) {
           // A path that names no part of the API answers 404 whoever asks:
