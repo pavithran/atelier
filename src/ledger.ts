@@ -10,7 +10,7 @@ import {
   REVIEW_RENEW_MS, reviewLeaseExpired,
   reviewerAdmission, admissionActor, actorFamily, familyRefusal, modelKey, type ReviewerAdmission,
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
-  assertNotTerminal, assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, RuleError, sameActor, validActor,
+  assertNotTerminal, assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, roleRefusal, RuleError, sameActor, validActor,
   type OverrideConfirmation, type OwnerFactor,
   assertBlockable, assertNotBlocked, blockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX,
   type Evidence, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
@@ -4795,6 +4795,7 @@ export class Ledger extends DurableObject<Env> {
     if (reviewer) {
       const refusal = criteriaIndependenceRefusal(reviewer, authors, this.owner);
       if (refusal) throw new RuleError("no_criteria_reviewer", `${reviewer} cannot review ${item.id}'s acceptance criteria: ${refusal}`, 409);
+      this.assertCriteriaAssessor(reviewer, item.id);
       chosen = reviewer;
       reasons = ["Named by the project owner"];
     } else {
@@ -4860,6 +4861,7 @@ export class Ledger extends DurableObject<Env> {
     if (dispatch.model && model !== dispatch.model) throw new RuleError("wrong_model", `${id}'s criteria review asks for ${dispatch.model}, not ${model ?? "no model"}`, 403);
     const refusal = criteriaIndependenceRefusal(actor, row.authors, this.owner);
     if (refusal) throw new RuleError("not_independent", `${actor} cannot review ${id}'s acceptance criteria: ${refusal}`, 403);
+    this.assertCriteriaAssessor(actor, id);
     this.sql.exec(`UPDATE criteria_reviews SET state = 'claimed', claimedBy = ?, runner = ?, claimedAt = ? WHERE id = ?`, actor, runner.runner, at, row.id);
     this.log(id, actor, "criteria_review.claimed", { review: row.id, rev, criteria: row.criteria, runner: runner.runner }, at, proved);
     // A part's claimed review lapses on the alarm, as a code review's does
@@ -4871,6 +4873,16 @@ export class Ledger extends DurableObject<Env> {
     }
     const status = criteriaStatus(rev, this.criteriaReviewsFor(id), this.criteriaResolutionsFor(id), now);
     return { item, rev, criteria: row.criteria, authors: row.authors, request: row.id, reviewer: actor, brief: this.criteriaBrief(item, rev, row.authors, status.round), owner: this.owner };
+  }
+
+  // A named criteria reviewer, and every claim and verdict, meets the
+  // project's policy for reviewing as a code reviewer does (namedActor,
+  // mayAssess): an available agent with the assessor role, or an active
+  // reviewer admission. The policy may change between request and verdict,
+  // so each step asks again.
+  private assertCriteriaAssessor(actor: string, id: string): void {
+    const refusal = roleRefusal(actor, this.project().policy, "assessor", this.owner);
+    if (refusal) throw new RuleError("ineligible", `${actor} cannot review ${id}'s acceptance criteria: ${refusal}`, 403);
   }
 
   private criteriaDispatch(review: number): Dispatch {
@@ -4948,6 +4960,7 @@ export class Ledger extends DurableObject<Env> {
     }
     const refusal = criteriaIndependenceRefusal(r.by, row.authors, this.owner);
     if (refusal) throw new RuleError("not_independent", `${r.by} cannot review ${r.itemId}'s acceptance criteria: ${refusal}`, 403);
+    this.assertCriteriaAssessor(r.by, r.itemId);
     const findings = r.findings ?? [];
     const blocking = findings.filter((f) => f.severity === "blocking").length;
     if (r.approve && blocking) throw new RuleError("bad_verdict", `an approval of the acceptance criteria cannot carry ${blocking === 1 ? "a blocking finding" : `${blocking} blocking findings`}; reject, or mark the finding a follow-up`, 400);
@@ -4956,7 +4969,11 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`UPDATE criteria_reviews SET state = ?, decidedAt = ?, summary = ?, findings = ?, checks = ? WHERE id = ?`, state, at, r.summary, JSON.stringify(findings), JSON.stringify(checks), row.id);
     this.log(r.itemId, r.by, r.approve ? "criteria_review.approved" : "criteria_review.rejected", { review: row.id, rev, criteria: r.criteria, summary: r.summary, ...(findings.length ? { findings } : {}), ...(checks.length ? { checks } : {}) }, at, proved);
     // An approval lets the plan dispatch the part it held (the tick); a
-    // rejection with blocking findings waits for the owner.
+    // rejection with blocking findings waits for the owner. A part the tick
+    // blocked for its criteria review (no reviewer qualified, so the owner
+    // named one) is unblocked by the approval, since the tick passes over a
+    // blocked part and a blocked part holds a parallel slot.
+    if (r.approve) this.unblockForCriteria(r.itemId, at);
     this.afterPlanChange(r.itemId);
     return this.criteriaReviewsFor(r.itemId).find((x) => x.id === row.id)!;
   }
