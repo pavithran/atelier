@@ -27,7 +27,7 @@ import { commitRefusals, IDENTITY_LOG_FORMAT, NO_IDENTITY, parseIdentityLog } fr
 import { controlPlaneChanges, mergePolicyDecision, shipChanges } from "../src/control-plane.ts";
 import { cleanSummary } from "../src/brief.ts";
 import { recordedText } from "../src/rules.ts";
-import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { ROUTE_LEVEL, checkCapabilities, requiredForCommand } from "../src/route-level.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
 import { hooksOff, landingDir, landingJournalFile, oldLandingJournalFile, RECEIPT_TEMPLATE, RECEIPTS_DIR } from "./landing.mjs";
@@ -311,6 +311,37 @@ function checkFlags(cmd) {
   if (args.rest && !REST.has(cmd)) die(`${cmd} does not take "--" and the words after it; see ${see}`);
   for (const flag of args.bare) die(typeof row[flag] === "string" ? row[flag] : `--${flag} needs a value: --${flag} VALUE or --${flag}=VALUE`);
   for (const problem of args.problems) die(problem);
+}
+
+// The server's answer to GET /api/version, which needs no token, or null
+// when it gave none: unreachable, an error status, or a body that is not
+// JSON. checkCapabilities tells that null apart from a malformed answer.
+export async function serverVersion() {
+  try {
+    const res = await fetch(server() + "/api/version", { signal: AbortSignal.timeout(30_000) });
+    return res.ok ? await res.json() : null;
+  } catch { return null; }
+}
+
+// The server's capabilities against the ones the command declares in its
+// module (src/usage/commands/NAME.ts, `capabilities`, and the subcommand's
+// own when the word after the command names one), asked before the handler
+// runs, so a server short of them refuses the command before its first
+// dependent request and names the missing set, the revision the server runs
+// and the deploy to run. A command that declares none asks nothing, which
+// keeps help, --version and the local commands usable without a server. A
+// command whose module says `capabilityCheck: "handler"` (land, whose
+// --release-lease must free a stuck lease while the server is behind) makes
+// the same check itself, before its first dependent request. The exit code
+// is 4, as for a request the server could not answer, when the version could
+// not be read, and 1 for a refusal.
+export async function requireCapabilities(cmd, word = args._[1]) {
+  if (cmd === "init" && args["rename-local"] === true) return;
+  if (COMMANDS[cmd]?.capabilityCheck === "handler") return;
+  const required = requiredForCommand(cmd, word, args);
+  if (!required.length) return;
+  const check = checkCapabilities(await serverVersion(), required);
+  if (!check.ok) die(`${check.message}, then run atelier ${cmd} again`, check.kind === "unavailable" ? 4 : 1);
 }
 
 const isMain = process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
@@ -1806,5 +1837,8 @@ if (isMain) {
     process.exit(0);
   }
   checkFlags(cmd);
+  // The flags are checked first, so a misuse is refused without a request;
+  // then the server's capabilities, before the handler's first request.
+  await requireCapabilities(cmd);
   await fn();
 }
