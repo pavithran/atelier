@@ -1191,12 +1191,18 @@ export class Ledger extends DurableObject<Env> {
   // The token's validity, its project scope and the route were checked before
   // this (src/index.ts, src/runner-git.ts); this checks the job: that the
   // runner holds it, or that a live poll offered it to this actor for a claim.
-  // A job this runner demonstrably held or was offered, whose task has since
-  // been merged or abandoned, is answered with that state (task_terminal,
-  // t476), not with runner_forbidden: the runner reads the state and stops
-  // the job for good, where a refusal would be retried. Nothing else changes:
-  // another actor or runner, a task never offered to this one, and a blocked
-  // task are refused as before; accepted and integrated are not closed.
+  // A job this runner demonstrably held, whose task has since been merged or
+  // abandoned, is answered with that state (task_terminal, t476), not with
+  // runner_forbidden: the runner reads the state and stops the job for good,
+  // where a refusal would be retried. So is a job a poll offered this actor on
+  // this runner, when no runner's claim ever took it (runnerJobClaimed): the
+  // offer was never superseded, so the state is this runner's to read. Once
+  // any runner claimed it, the state is the holder's alone: a runner the poll
+  // offered the job to but that never held it is refused, as its offer record
+  // is never cleared and would otherwise tell it what became of another
+  // runner's task. Nothing else changes: another actor or runner, a task never
+  // offered to this one, and a blocked task are refused as before; accepted
+  // and integrated are not closed.
   assertRunnerJob(token: AgentToken, id: string, actor: string, claim = false): void {
     let item: Item;
     try { item = this.item(id); } catch { throw runnerDenied(token); }
@@ -1204,8 +1210,9 @@ export class Ledger extends DurableObject<Env> {
     const holds = held?.actor === actor && held?.runner === token.runner;
     if (holds && item.owner === actor && item.runner === token.runner && !["merged", "abandoned", "blocked"].includes(item.state)) return;
     if (item.state === "merged" || item.state === "abandoned") {
+      if (holds) throw runnerTaskTerminal(id, item.state);
       const offered = ["build", "plan"].some((role) => this.runnerMeta(`runner-report:${token.id}:${id}:${actor}:${role}`) !== null);
-      if (holds || offered) throw runnerTaskTerminal(id, item.state);
+      if (offered && !this.runnerJobClaimed(id)) throw runnerTaskTerminal(id, item.state);
       throw runnerDenied(token);
     }
     if (claim && (item.state === "open" && !item.owner || item.state === "claimed" && item.owner === actor && item.runner === token.runner) && item.dispatch && !["review", "integrate", "refresh"].includes(item.dispatch.job ?? "")) {
@@ -1213,6 +1220,13 @@ export class Ledger extends DurableObject<Env> {
       if (offer && liveOffers([offer]).length && assign(item.dispatch, offer)?.actor === actor && !coreHold(item, this.items(), this.project().policy.coreFiles)) return;
     }
     throw runnerDenied(token);
+  }
+
+  // Whether any runner's claim ever took this job: the claim records the hold
+  // under the runner token's id (claim, below), and the record outlives the
+  // claim. Item ids are a letter and digits, so the suffix match is exact.
+  private runnerJobClaimed(id: string): boolean {
+    return this.sql.exec(`SELECT 1 FROM meta WHERE key LIKE 'runner-job:%' AND key LIKE ? LIMIT 1`, `%:${id}`).toArray().length > 0;
   }
 
   recordRunnerGit(id: string, actor: string, generation: number, replaces: string | null, hash: string, token: AgentToken): boolean {

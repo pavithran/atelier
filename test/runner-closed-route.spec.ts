@@ -110,6 +110,51 @@ for (const state of STATES) it(`a job offered to the runner and ${state} before 
   await forbidden(await t.api("POST", `/projects/${t.name}/items/t2/claim`, {}), t.token.id);
 });
 
+// The leak triage found at 42d6073: the poll's offer record is never cleared,
+// so a runner offered the job that never held it would read the state of
+// another runner's task. Two runners poll; one claims; the task closes: the
+// holder reads the state, the other is forbidden, before and after a claim of
+// its own is refused. With no claim at all, both offers still read the state.
+for (const state of STATES) it(`a job two runners were offered and one claimed, then ${state}, tells only the holder its state`, async () => {
+  const t = await setup();
+  const b = await t.issue("home:other");
+  const pollB = async () => { expect((await t.request("POST", "/queue", b.token, ACTOR, { ...t.offer, runner: "home:other" })).status).toBe(200); };
+  await t.poll();
+  await pollB();
+  await t.claim();
+  await t.close(state);
+  await terminal(await t.api("GET", t.base), state);
+  await terminal(await t.api("POST", `${t.base}/claim`, {}), state);
+  await forbidden(await t.request("GET", t.base, b.token, ACTOR), b.id);
+  await forbidden(await t.request("POST", `${t.base}/claim`, b.token, ACTOR, {}), b.id);
+  // A fresh offer after the closure changes nothing: the claim was another runner's.
+  await pollB();
+  await forbidden(await t.request("POST", `${t.base}/claim`, b.token, ACTOR, {}), b.id);
+  await forbidden(await t.request("POST", `${t.base}/push`, b.token, ACTOR, { head: PUSHED }), b.id);
+  // The holder's own token under another actor is still the wrong actor.
+  await forbidden(await t.api("GET", t.base, undefined, "codex/other"), t.token.id);
+});
+
+for (const state of STATES) it(`a job two runners were offered and neither claimed, then ${state}, tells both its state`, async () => {
+  const t = await setup();
+  const b = await t.issue("home:other");
+  await t.poll();
+  expect((await t.request("POST", "/queue", b.token, ACTOR, { ...t.offer, runner: "home:other" })).status).toBe(200);
+  await t.close(state);
+  await terminal(await t.api("POST", `${t.base}/claim`, {}), state);
+  await terminal(await t.request("POST", `${t.base}/claim`, b.token, ACTOR, {}), state);
+  await terminal(await t.request("GET", t.base, b.token, ACTOR), state);
+  // Live, the same two offers are a claim race, not a leak: the second claim is refused as owned, not forbidden.
+  const live = await setup();
+  const c = await live.issue("home:other");
+  await live.poll();
+  expect((await live.request("POST", "/queue", c.token, ACTOR, { ...live.offer, runner: "home:other" })).status).toBe(200);
+  await live.claim();
+  const raced = await live.request("POST", `${live.base}/claim`, c.token, ACTOR, {});
+  expect(raced.status).not.toBe(200);
+  expect(((await raced.json()) as Json).error).not.toBe("task_terminal");
+});
+
 for (const state of STATES) it(`a held job ${state} during its push is answered task_terminal by the Git route and the push record`, async () => {
   const t = await setup();
   const workspace = await t.claim();
