@@ -71,6 +71,7 @@ import { LANDING_LEASE_WAIT_LIMIT_MS, leaseTimeout } from "./landing/lease-wait.
 import { LANDING_DETAIL_MAX, type LandingWorkflowStage } from "./ledger.ts";
 import { landingVerdict, allSkipped, type LandingReview } from "./landing-verdict.ts";
 import type { RunRequest } from "./sandbox/runner";
+import { triageStandsRefusal, type TriageBinding, type TriageEvent } from "./review/triage.ts";
 
 // What the landing-workflow route passes when it creates the instance.
 // `key` is the project's storage key; `actor` is the project owner;
@@ -98,6 +99,12 @@ export interface LandingWorkflowParams {
   // observed results.
   checks?: LandingChecksMode;
   checksTimeoutMs?: number;
+  // The landing triages before its review (t475, src/review/triage.ts): the
+  // executor triages the pushed head before it reports it, and reports the
+  // binding the triage stands for; the Workflow submits, and asks for the
+  // review, only while the Ledger holds a triage at that binding that lets
+  // the landing go on, and the task's head and criteria are still those.
+  triage?: boolean;
 }
 
 export type LandingChecksMode = "local" | "container";
@@ -117,6 +124,9 @@ export interface WorkspaceReport {
   files?: string[];
   failed?: boolean;
   reason?: string;
+  // The triage's binding beside the head: the merge base and the criteria
+  // hash the triage read (t475).
+  triage?: { base?: string; criteria?: string } | null;
 }
 
 const DAY = 86_400_000;
@@ -157,6 +167,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       // The executor has already run the checks when it reports the push,
       // so the wait only bridges a slow record; half an hour, renewed lease.
       checksWait: bounded(raw.checksTimeoutMs, 30 * 60_000),
+      triage: raw.triage === true,
     };
     const L = this.env.LEDGER.get(this.env.LEDGER.idFromName(`project:${p.key}`));
     let round = 0;
@@ -176,7 +187,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       // merge of main and the push, and either go on with the head it
       // pushed or, on conflicts, release the lease and pause until the
       // owner resolves them, then begin a new round.
-      let report: { head: string; mainHead: string | null; mergedIn: boolean };
+      let report: Reported;
       for (;;) {
         await this.stage(step, L, p, "lease", round);
         await this.takeLease(step, L, p, `r${round}`, round === 0);
@@ -209,12 +220,14 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
       // The submission, in the name of the task's holder, as `atelier
       // submit` run in the workspace submits it with the owner's token; it
       // is skipped where the Ledger already holds it, so a retried step
-      // never submits twice.
+      // never submits twice. A landing that triages submits only while its
+      // triage stands at the reported binding (t475).
       await step.do("submit the merged head", RETRIES, async () => {
         await this.renewOrStop(L, p);
         const item = await L.item(p.item);
         if (item.head !== head) throw new NonRetryableError(`${p.item}'s head moved to ${short(item.head)}; start the landing again`);
         if (["submitted", "accepted", "merged"].includes(item.state)) return { skipped: true };
+        await this.triageStands(L, p, report, `so the landing stops before the submission: nothing was submitted and no review was asked for, and ${p.item} stays with its holder`);
         if (!item.owner) throw new NonRetryableError(`${p.item} has no holder to submit it; claim it, then run atelier land ${p.item} --workflow again`);
         const t0 = Date.now();
         try {
@@ -238,7 +251,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         await this.stage(step, L, p, "done", round, "submitted; the review is left to the owner (--no-review)");
         return { item: p.item, workflow: p.instance, review: "skipped" };
       }
-      await this.review(step, L, p, head, round);
+      await this.review(step, L, p, head, round, report);
 
       // The acceptance: the fork's head is read from Artifacts and must be
       // the reviewed head (as the accept route checks it), and the lease
@@ -391,7 +404,7 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
   // and the wait goes on. A report that a step failed carries the CLI's own
   // message, which already says what to do; one of conflicts pauses the
   // landing (run, above).
-  private async waitForWorkspace(step: WorkflowStep, p: Landing, round: number): Promise<{ head: string; mainHead: string | null; mergedIn: boolean } | { conflict: true; files: string[]; reason: string }> {
+  private async waitForWorkspace(step: WorkflowStep, p: Landing, round: number): Promise<Reported | { conflict: true; files: string[]; reason: string }> {
     const chunks = Math.max(1, Math.ceil(p.workspace / EVENT_CHUNK_MS));
     for (let i = 0; ; i++) {
       let payload: WorkspaceReport | null = null;
@@ -408,7 +421,9 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
         const head = String(payload.head ?? "");
         if (!HASH.test(head)) throw new NonRetryableError(`the workspace report is malformed (its head is not a commit hash); run atelier land ${p.item} --workflow again`);
         const mainHead = String(payload.mainHead ?? "");
-        return { head, mainHead: HASH.test(mainHead) ? mainHead : null, mergedIn: payload.mergedIn === true };
+        const t = payload.triage;
+        const triage = t && typeof t === "object" && HASH.test(String(t.base ?? "")) && /^[a-f0-9]{64}$/.test(String(t.criteria ?? "")) ? { head, base: String(t.base), criteria: String(t.criteria) } : null;
+        return { head, mainHead: HASH.test(mainHead) ? mainHead : null, mergedIn: payload.mergedIn === true, triage };
       }
       if (i + 1 >= chunks) {
         throw new NonRetryableError(`the workspace did not report the merge of main and the push within ${span(p.workspace)}, so the landing stops without submitting ${p.item}; the lease is released and nothing was merged. Run atelier land ${p.item} --workflow again from the machine holding its workspace`);
@@ -548,9 +563,12 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
     }
   }
 
-  private async review(step: WorkflowStep, L: LedgerStub, p: Landing, head: string, round: number): Promise<void> {
+  private async review(step: WorkflowStep, L: LedgerStub, p: Landing, head: string, round: number, report: Reported): Promise<void> {
     const ask = await step.do("request the review", RETRIES, async () => {
       await this.renewOrStop(L, p);
+      // The triage is asked again whether it stands: criteria changed since
+      // the submission stop the landing before any review is asked for.
+      await this.triageStands(L, p, report, `so no review was asked for: ${p.item} is submitted at ${short(head)} and stays with its holder`);
       const index = this.env.LEDGER.get(this.env.LEDGER.idFromName("__index"));
       const pool = await index.models();
       const records = p.reviewer === null ? { ...await suggestionRecords(index, (project) => this.env.LEDGER.get(this.env.LEDGER.idFromName(`project:${project.key ?? project.name}`))), project: (await index.resolveProject(p.project)).key } : undefined;
@@ -643,6 +661,22 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
     }
   }
 
+  // ── the triage (t475) ─────────────────────────────────────────────────
+
+  // A landing that triages goes on only while the Ledger says the triage
+  // stands: the task's head and criteria are the reported binding's, and a
+  // land.triage record at that binding passed, or the owner's bypass or
+  // override was recorded there. Otherwise the landing ends, saying what
+  // moved, with `after` saying where it stopped, and the command that
+  // triages again.
+  private async triageStands(L: LedgerStub, p: Landing, report: Reported, after: string): Promise<void> {
+    if (!p.triage) return;
+    const item = await L.item(p.item);
+    const events = (await L.events(p.item)) as unknown as TriageEvent[];
+    const why = triageStandsRefusal(item, events, report.triage);
+    if (why) throw new NonRetryableError(`the triage of ${p.item} no longer stands: ${why}, ${after}. Run atelier land ${p.item} --workflow again, which triages the change as it is now`);
+  }
+
   // ── small pieces ──────────────────────────────────────────────────────
 
   private refusal(error: unknown): string {
@@ -679,9 +713,10 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
 }
 
 type LedgerStub = ReturnType<Env["LEDGER"]["get"]>;
+type Reported = { head: string; mainHead: string | null; mergedIn: boolean; triage: TriageBinding | null };
 type Landing = {
   project: string; key: string; item: string; actor: string; instance: string;
   reviewer: string | null; noReview: boolean; origin?: string;
   poll: number; mergePoll: number; wait: number; workspace: number; conflict: number; review: number; merge: number;
-  checks: LandingChecksMode; checksWait: number;
+  checks: LandingChecksMode; checksWait: number; triage: boolean;
 };

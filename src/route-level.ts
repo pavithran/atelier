@@ -216,4 +216,7 @@ export function checkCapabilities(version: unknown, required: readonly string[])
 // exact request generation, and expired requests are reoffered (t351).
 // 27: durable owner-approved post-merge steps and recovery (t477,
 // land.post-merge.v1).
-export const ROUTE_LEVEL = 27;
+// 28: the ledger takes the land step triage and its binding, so atelier land
+// records a triage, a --no-triage bypass and an --override-triage (t475,
+// land.triage.v1).
+export const ROUTE_LEVEL = 28;

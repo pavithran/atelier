@@ -181,6 +181,9 @@ export interface ProjectInit {
   regenerate?: string | null;
   // What may block a review; null clears it (see ProjectPolicy.reviewBar).
   reviewBar?: string | null;
+  // The model that triages a landing before its review; null clears it
+  // (see ProjectPolicy.triage).
+  triage?: string | null;
   // The top review tier; an empty list clears it (see ProjectPolicy.reviewTier).
   reviewTier?: string[];
   protected?: string[];
@@ -217,8 +220,10 @@ export interface AcceptanceFamily {
 export const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*", ".atelier/prompts/**"];
 
 // The steps a landing records (landEvent): taking the lease, merging main,
-// regenerating the project's fixtures, pushing, checking, the review, the
-// acceptance and the merge that lands the task.
+// regenerating the project's fixtures, pushing, checking, the triage before
+// the review (t475: its own record, never one of the reviews the gate counts,
+// src/review/triage.ts), the review, the acceptance and the merge that lands
+// the task.
 // Where a landing Workflow stands (t280, setLandingWorkflowStage).
 export type LandingWorkflowStage = "lease" | "workspace" | "conflict" | "checks" | "review" | "merge" | "done" | "failed";
 // The most a landing Workflow record keeps of a stage's detail and of the
@@ -241,12 +246,14 @@ export interface LandingWorkflowRecord {
   // that attaches to it can tell whether a reviewer it names differs.
   reviewer?: string | null;
   noReview?: boolean;
+  // Whether the instance triages before the submission and the review (t475).
+  triage?: boolean;
   // Set on an instance that replaced another (src/landing/replace.ts):
   // which one, why, and when.
   replaced?: { from: string; reason: string; detail: string; at: string };
   lastStatus?: { status: InstanceStatus["status"]; error?: { name: string; message: string } };
 }
-export interface LandingWorkflowOptions { checks?: "local" | "container"; reviewer?: string | null; noReview?: boolean }
+export interface LandingWorkflowOptions { checks?: "local" | "container"; reviewer?: string | null; noReview?: boolean; triage?: boolean }
 
 // A new instance's record: at the stage `lease` from now, with the options
 // it was started with.
@@ -256,10 +263,11 @@ function landingWorkflowRecord(instance: string, options: LandingWorkflowOptions
     instance, at, stage: "lease", stageAt: at, round: 0, checks: options.checks ?? "container",
     ...(options.reviewer ? { reviewer: options.reviewer } : {}),
     ...(options.noReview ? { noReview: true } : {}),
+    ...(options.triage ? { triage: true } : {}),
   };
 }
 
-const LAND_STEPS = new Set(["lease", "merge", "regenerate", "push", "check", "submit", "review", "accept", "merged"]);
+const LAND_STEPS = new Set(["lease", "merge", "regenerate", "push", "check", "submit", "triage", "review", "accept", "merged"]);
 
 // What a land.* event may carry beside its duration, and as what: hashes and
 // actors, the commits that came from main, the files a conflict stopped on,
@@ -272,6 +280,9 @@ const LAND_DATA: Record<string, "string" | "boolean" | "strings"> = {
   resolvedBy: "string", reviewer: "string", verdict: "string", command: "string",
   reason: "string", changed: "boolean", failed: "boolean", skipped: "boolean", requested: "boolean",
   runners: "strings",
+  // A triage's binding (the merge base and the criteria hash beside the
+  // head), its model, how it ended and each criterion's status (t475).
+  base: "string", criteria: "string", triager: "string", outcome: "string", statuses: "strings",
 };
 export const LAND_JSON_MAX = 4000;
 
@@ -417,6 +428,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   const shipKinds = i.shipKinds ?? p?.shipKinds ?? [];
   const regenerate = i.regenerate === undefined ? p?.regenerate : i.regenerate ?? undefined;
   const reviewBar = i.reviewBar === undefined ? p?.reviewBar : i.reviewBar ?? undefined;
+  const triage = i.triage === undefined ? p?.triage : i.triage ?? undefined;
   const reviewTier = i.reviewTier ?? p?.reviewTier ?? [];
   const coreFiles = i.coreFiles ?? p?.coreFiles ?? [];
   // A switch of model policy is stamped with this init's time; an init that
@@ -441,6 +453,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       ...(shipKinds.length ? { shipKinds } : {}),
       ...(regenerate ? { regenerate } : {}),
       ...(reviewBar ? { reviewBar } : {}),
+      ...(triage ? { triage } : {}),
       ...(reviewTier.length ? { reviewTier: [...reviewTier] } : {}),
       protected: i.protected ?? p?.protected ?? [...DEFAULT_PROTECTED],
       eligible: i.eligible ?? p?.eligible ?? [],
