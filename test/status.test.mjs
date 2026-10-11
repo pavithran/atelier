@@ -5,13 +5,13 @@ import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { formatRunners, formatStatus, isLive, runnerLine, statusJson } from "../cli/status.mjs";
+import { familyModeText, formatRunners, formatStatus, isLive, runnerLine, singleFamilyLine, statusJson } from "../cli/status.mjs";
 import { OFFER_LIVE_MS } from "../src/dispatch/rules.ts";
 
 const item = (id, state, over = {}) => ({ id, title: `Task ${id}`, state, owner: null, dispatch: null, ...over });
 const entry = (itemId, kind, over = {}) => ({ project: "demo", itemId, title: `Task ${itemId}`, kind, reason: `because ${kind}`, weight: 1, ...over });
 
-test("lists decisions with the next command, work in progress and tasks waiting for a runner", () => {
+test("lists what waits on the owner with the next command and link, work in progress and tasks waiting for a runner", () => {
   const out = formatStatus([{
     name: "demo",
     title: "Demo project",
@@ -20,28 +20,56 @@ test("lists decisions with the next command, work in progress and tasks waiting 
       item("t2", "claimed", { owner: "codex/gpt-6" }),
       item("t3", "open", { dispatch: { to: "home", agent: "codex", model: "gpt-6" } }),
       item("t4", "merged"),
+      item("t5", "accepted", { owner: "codex/gpt-6" }),
     ],
     inbox: [entry("t1", "accept"), entry("t5", "merge"), entry("t2", "overlap")],
-  }]).split("\n");
+  }], { server: "https://a.test" }).split("\n");
   assert.equal(out[0], "Demo project (demo)");
-  assert.ok(out.includes("      next: atelier accept t1 --project demo"));
-  assert.ok(out.includes("      next: atelier merge t5 --project demo"));
-  assert.ok(out.includes("    t1  submitted  held by claude-code/opus-5.5  Task t1"));
+  assert.ok(out.includes("  Waiting for you"));
+  assert.ok(out.includes("    t1  Accept  Task t1"));
+  assert.ok(out.includes("      next: atelier land t1 --reviewer H/M --project demo"));
+  assert.ok(out.includes("      https://a.test/p/demo/t1"));
+  assert.ok(!out.includes("    t1  submitted  held by claude-code/opus-5.5  Task t1"), "a task waiting on the owner is said once");
   assert.ok(out.includes("    t2  claimed  held by codex/gpt-6  Task t2"));
   assert.ok(out.includes("    t3  for home codex/gpt-6  Task t3"));
-  assert.equal(out.filter((l) => l.includes("next:")).length, 2, "overlap has no command");
+  assert.equal(out.filter((l) => l.includes("next:")).length, 1, "merging is the pipeline's, an overlap has no command");
   assert.ok(!out.some((l) => l.includes("t4")), "merged work is not listed");
+});
+
+// t394: a project on one company's models says so under its name, in the
+// text and in --json, so its reviews are never read as cross-company ones;
+// the default, and a recorded return to it, add nothing.
+test("single-family mode is named under the project, in text and in --json", () => {
+  const mode = { single: "anthropic", by: "pavi", at: "2026-10-09T10:00:00.000Z" };
+  const view = (familyMode) => ({ name: "demo", title: "Demo", items: [item("t1", "claimed", { owner: "claude-code/opus-5.5" })], inbox: [], policy: { checks: [], protected: [], ...(familyMode ? { familyMode } : {}) } });
+  const out = formatStatus([view(mode)]).split("\n");
+  assert.equal(out[0], "Demo (demo)");
+  assert.equal(out[1], "  Single-family mode (anthropic): building and reviewing use anthropic models only; a review counts from a different anthropic model than every contributor, not from another company.");
+  assert.equal(out[2], "  Nothing waiting on you.");
+  assert.equal(singleFamilyLine("openai"), "Single-family mode (openai): building and reviewing use openai models only; a review counts from a different openai model than every contributor, not from another company.");
+  assert.equal(statusJson([view(mode)])[0].singleFamily, "anthropic");
+  for (const v of [view(null), view({ single: null, by: "pavi", at: mode.at }), { ...view(null), policy: undefined }]) {
+    assert.ok(!formatStatus([v]).includes("Single-family"), formatStatus([v]));
+    assert.equal(statusJson([v])[0].singleFamily, undefined);
+  }
+  // atelier init prints the mode after the policy it sent, with who switched and when.
+  assert.equal(familyModeText({ familyMode: mode }), "single-family, anthropic: building and reviewing use anthropic models only, and a review counts from a different anthropic model than every contributor (set by pavi at 2026-10-09T10:00:00.000Z)");
+  assert.equal(familyModeText({ familyMode: { single: null, by: "pavi", at: mode.at } }), "cross-family, the default: a protected change needs approval from a model of another company than every contributor (set by pavi at 2026-10-09T10:00:00.000Z)");
+  assert.equal(familyModeText({}), "cross-family, the default: a protected change needs approval from a model of another company than every contributor");
+  assert.equal(familyModeText(null), familyModeText({}));
 });
 
 test("a project with nothing to do says so, and other projects' decisions are ignored", () => {
   const out = formatStatus([{ name: "quiet", items: [item("t1", "merged")], inbox: [entry("t9", "accept", { project: "other" })] }]);
-  assert.equal(out, "quiet\n  Nothing waiting.");
+  // A project that has merged says how many merges went in by override (t371).
+  assert.equal(out, "quiet\n  Nothing waiting.\n  Merged by override: 0 of 1 merge");
+  assert.equal(formatStatus([{ name: "quiet", items: [item("t1", "open")], inbox: [] }]), "quiet\n  Nothing waiting on you.\n  In the pipeline: 1 task: 1 not yet dispatched; none waits on you.");
 });
 
-test("the waiting list splits the lead developer's own decisions from what the orchestrator handles", () => {
+test("only the owner's calls wait on the owner: a review, a merge and a stale claim stay in the pipeline", () => {
   const out = formatStatus([{
     name: "demo",
-    items: [item("t1", "submitted", { owner: "claude-code/opus-5.5" }), item("t2", "accepted"), item("t3", "claimed", { owner: "codex/gpt-6" })],
+    items: [item("t1", "submitted", { owner: "claude-code/opus-5.5" }), item("t2", "accepted"), item("t3", "claimed", { owner: "codex/gpt-6" }), item("t4", "merged"), item("t5", "open", { kind: "plan" })],
     inbox: [
       entry("t1", "assess"),
       entry("t2", "merge"),
@@ -51,19 +79,11 @@ test("the waiting list splits the lead developer's own decisions from what the o
     ],
   }]).split("\n");
   const yours = out.indexOf("  Waiting for you");
-  const handled = out.indexOf("  Handled by the orchestrator");
-  const progress = out.indexOf("  In progress");
-  assert.ok(yours > -1 && handled > -1, "both headings print");
-  assert.ok(yours < handled && handled < progress, "own decisions, then the orchestrator's, then work in progress");
-  // The lead developer's own calls: assess (override or review), ship (a
-  // protected action), approve-plan — under "Waiting for you".
-  for (const id of ["t1  assess", "t4  ship", "t5  approve-plan"]) {
-    assert.ok(out.indexOf(`    ${id}  Task ${id.split(" ")[0]}`) < handled, `${id} is the lead developer's own call`);
-  }
-  // Merging and a stale claim are the orchestrator's, listed apart.
-  for (const id of ["t2  merge", "t3  stale"]) {
-    assert.ok(out.indexOf(`    ${id}  Task ${id.split(" ")[0]}`) > handled, `${id} is the orchestrator's`);
-  }
+  const pipeline = out.findIndex((l) => l.startsWith("  In the pipeline: "));
+  assert.ok(yours > -1 && pipeline > yours, "the owner's calls, then the pipeline's count");
+  assert.deepEqual(out.filter((l) => /^ {4}t\d {2}/.test(l) && out.indexOf(l) < pipeline), ["    t5  Approve plan  Task t5", "    t4  Ship  Task t4"]);
+  assert.equal(out[pipeline], "  In the pipeline: 3 tasks: 1 in review, 1 accepted, 1 building; none waits on you.");
+  assert.ok(!out.some((l) => l.includes("Handled by the orchestrator")));
 });
 
 test("no projects", () => {
@@ -71,97 +91,53 @@ test("no projects", () => {
 });
 
 test("a plan's entries point to what the plan shows", () => {
-  const out = formatStatus([{ name: "demo", items: [item("t1", "open", { kind: "plan" })], inbox: [entry("t1", "approve-plan"), entry("t2", "plan-blocked")] }]).split("\n");
+  const out = formatStatus([{ name: "demo", items: [item("t1", "open", { kind: "plan" }), item("t2", "claimed", { kind: "plan", owner: "atelier/orchestrator" })], inbox: [entry("t1", "approve-plan"), entry("t2", "plan-blocked")] }]).split("\n");
   assert.equal(out.filter((l) => l === "      next: atelier plan show t1 --project demo").length, 1);
   assert.equal(out.filter((l) => l === "      next: atelier plan show t2 --project demo").length, 1);
 });
 
-test("an assess entry names the reviewer the pool offers, and H/M when none is offered", () => {
-  const named = formatStatus([{ name: "demo", items: [item("t1", "submitted", { owner: "claude-code/opus-5.5" })], inbox: [entry("t1", "assess", { reviewer: "codex/gpt-6-astra" })] }]).split("\n");
-  assert.ok(named.includes("    t1  assess  Task t1"));
-  assert.ok(named.includes("      next: atelier land t1 --reviewer codex/gpt-6-astra --project demo"));
-  const placeholder = formatStatus([{ name: "demo", items: [item("t1", "submitted", { owner: "claude-code/opus-5.5" })], inbox: [entry("t1", "assess")] }]).split("\n");
-  assert.ok(placeholder.includes("      next: atelier land t1 --reviewer H/M --project demo"));
-});
-
-test("an undelivered merge's entry names the dry run, and the merged task itself stays out of In progress", () => {
+test("an undelivered merge's entry names the dry run and links Ship, and the merged task itself stays out of In progress", () => {
   const out = formatStatus([{ name: "demo", items: [item("t1", "merged")], inbox: [entry("t1", "ship")] }]).split("\n");
-  assert.ok(out.includes("    t1  ship  Task t1"));
+  assert.ok(out.includes("    t1  Ship  Task t1"));
   assert.ok(out.includes("      next: atelier ship --dry-run --project demo"));
-  assert.ok(!out.includes("In progress"));
+  assert.ok(out.includes("      /p/demo/ship"));
+  assert.ok(!out.includes("  In progress"));
 });
 
-test("three live tasks where t1 overlaps t2 and t3 print two pair lines, each pair once, after the owner's waits and under the heading", () => {
+test("overlapping scopes are counted on one line after the owner's waits, each pair once, never listed inline", () => {
   const out = formatStatus([{
     name: "demo",
     items: [
       item("t1", "claimed", { owner: "claude-code/opus-5.5" }),
       item("t2", "claimed", { owner: "codex/gpt-6" }),
       item("t3", "claimed", { owner: "opencode/glm-5.3" }),
+      item("t4", "submitted", { owner: "codex/gpt-6" }),
     ],
     inbox: [
       entry("t4", "accept"),
       entry("t1", "overlap", { reason: "scope overlaps t2 (codex/gpt-6)" }),
       entry("t1", "overlap", { reason: "scope overlaps t3 (opencode/glm-5.3)" }),
-    ],
-  }]).split("\n");
-  assert.ok(out.includes("    t4  accept  Task t4"), "the owner's waits stay where they are");
-  assert.ok(out.includes("      next: atelier accept t4 --project demo"));
-  assert.equal(out.filter((l) => l.includes("name overlapping paths")).length, 2, "one line per pair");
-  assert.ok(out.includes("    t1 and t2 name overlapping paths"));
-  assert.ok(out.includes("    t1 and t3 name overlapping paths"));
-  const heading = out.indexOf("  Overlapping scopes");
-  const lastWait = out.indexOf("      next: atelier accept t4 --project demo");
-  assert.ok(heading > lastWait, "the pairs print after every wait that needs the owner");
-  assert.ok(out.includes("    Expect a merge conflict when the second lands; nothing waits on you."));
-});
-
-test("a pair seen from both sides is printed once", () => {
-  const out = formatStatus([{
-    name: "demo",
-    items: [item("t1", "claimed", { owner: "claude-code/opus-5.5" }), item("t2", "claimed", { owner: "codex/gpt-6" })],
-    inbox: [
-      entry("t1", "overlap", { reason: "scope overlaps t2 (codex/gpt-6)" }),
       entry("t2", "overlap", { reason: "scope overlaps t1 (claude-code/opus-5.5)" }),
     ],
   }]).split("\n");
-  assert.equal(out.filter((l) => l.includes("name overlapping paths")).length, 1);
-  assert.ok(out.includes("    t1 and t2 name overlapping paths"));
+  assert.ok(out.includes("    t4  Accept  Task t4"), "the owner's waits stay where they are");
+  const line = out.findIndex((l) => l.startsWith("  Overlapping scopes: "));
+  assert.equal(out[line], "  Overlapping scopes: 2 pairs; expect a merge conflict when the second lands; nothing waits on you. atelier status --json lists them.");
+  assert.ok(line > out.indexOf("      next: atelier land t4 --reviewer H/M --project demo"), "after every wait that needs the owner");
+  assert.ok(!out.some((l) => l.includes("name overlapping paths")));
 });
 
-test("an overlap whose reason names no pair stays a plain decision, so nothing the server says is lost", () => {
-  const out = formatStatus([{
-    name: "demo",
-    items: [item("t1", "claimed", { owner: "claude-code/opus-5.5" }), item("t2", "claimed", { owner: "codex/gpt-6" })],
-    inbox: [
-      entry("t1", "overlap", { reason: "scope overlaps t2 (codex/gpt-6)" }),
-      entry("t7", "overlap", { reason: "its paths are shared with other live work" }),
-    ],
-  }]).split("\n");
-  assert.ok(out.includes("    t1 and t2 name overlapping paths"), "the pair still stands under its heading");
-  // Overlapping work is not the lead developer's call, so an entry that names
-  // no pair stands with the orchestrator's, not the owner's decisions.
-  const handled = out.indexOf("  Handled by the orchestrator");
-  const said = out.indexOf("    t7  overlap  Task t7");
-  assert.ok(said > handled, "the entry stands with the orchestrator's");
-  assert.ok(out.includes("      its paths are shared with other live work"), "its reason is shown");
-  assert.ok(!out.some((l) => l.includes("next:")), "an overlap still offers no command");
-});
-
-test("a project whose only entries are overlaps says nothing waits on the owner, then lists the scopes", () => {
+test("a project whose only notices are overlaps says nothing waits on the owner", () => {
   const out = formatStatus([{
     name: "demo",
     items: [item("t1", "open"), item("t2", "open")],
     inbox: [entry("t1", "overlap", { reason: "scope overlaps t2 (unowned)" })],
   }]).split("\n");
-  assert.ok(!out.includes("  Nothing waiting."), "the bare idle line is gone");
-  const idle = out.indexOf("  Nothing waiting on you.");
-  const heading = out.indexOf("  Overlapping scopes");
-  const pair = out.indexOf("    t1 and t2 name overlapping paths");
-  assert.ok(idle > -1 && idle < heading && heading < pair, "the idle line, the heading, then the scopes");
+  assert.equal(out[1], "  Nothing waiting on you.");
+  assert.ok(out.some((l) => l.startsWith("  Overlapping scopes: 1 pair;")));
 });
 
-test("--json carries the sorted pairs, each once, beside an unchanged inbox", () => {
+test("--json carries the sorted pairs, each once, beside an unchanged inbox, and the placement", () => {
   const read = statusJson([{
     name: "demo",
     items: [item("t1", "claimed"), item("t2", "claimed"), item("t3", "claimed")],
@@ -174,9 +150,11 @@ test("--json carries the sorted pairs, each once, beside an unchanged inbox", ()
   }]);
   assert.deepEqual(read[0].overlaps, [["t1", "t2"], ["t1", "t3"]]);
   assert.equal(read[0].inbox.length, 3, "the inbox itself is unchanged");
+  assert.deepEqual(read[0].attention.owner, []);
+  assert.deepEqual(read[0].attention.pipeline.map((t) => t.id), ["t1", "t2", "t3"]);
 });
 
-test("a status with no overlaps prints no heading", () => {
+test("a status with no overlaps prints no overlap line", () => {
   const out = formatStatus([{ name: "demo", items: [item("t1", "submitted", { owner: "claude-code/opus-5.5" })], inbox: [entry("t1", "accept")] }]);
   assert.ok(!out.includes("Overlapping scopes"));
 });
@@ -199,8 +177,11 @@ test("with the queue and the runners' offers, open reviews wait with the runner 
     items: [item("t3", "open", { dispatch: { to: "home", agent: "codex", model: "gpt-6-astra", by: "owner", at: now.toISOString(), note: "" } }), item("t4", "open", { dispatch: { to: "home", agent: "opencode", model: "glm-5.3", by: "owner", at: now.toISOString(), note: "" } })],
     inbox: [],
   }], { queue, offers, now }).split("\n");
-  assert.ok(out.includes("    t3  for home codex/gpt-6-astra  Task t3"));
-  assert.ok(out.includes("      No live runner can take it: home:studio offers build as opencode/glm-5.3."));
+  // A queued build no live runner can take waits on the owner, said once.
+  assert.ok(out.includes("    t3  No runner  Task t3"));
+  assert.ok(out.includes("      Start a runner that offers codex/gpt-6-astra on a home runner, or send the task elsewhere."));
+  assert.ok(out.includes("      why: no live runner can take it: home:studio offers build as opencode/glm-5.3"));
+  assert.ok(!out.includes("    t3  for home codex/gpt-6-astra  Task t3"));
   assert.ok(out.includes("    t4  for home opencode/glm-5.3  Task t4"), "a job a live runner offers says no more");
   assert.ok(out.includes("    t7  review by claude-code/fable-5.1  Task t7"));
   assert.ok(out.includes("      No live runner can take it: home:studio offers review as opencode/glm-5.3."));
@@ -480,7 +461,24 @@ test("a queued task the core files hold says what it waits on and how to let it 
     { project: "demo", item: item("t4", "open", { dispatch: d }) },
     { project: "other", item: { ...item("t4", "open", { dispatch: d }), held } },
   ] }).split("\n");
-  assert.ok(out.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned, or at once with atelier dispatch t2 --overlap-ok."), out.join("\n"));
-  assert.ok(out.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 merges or is abandoned."));
+  assert.ok(out.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 submits or is released, or at once with atelier dispatch t2 --overlap-ok."), out.join("\n"));
+  assert.ok(out.includes("      Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t1 submits or is released."));
   assert.equal(out.filter((l) => l.includes("Held:")).length, 2, "t4 is not held here, only in another project");
+});
+
+// A hold lifts when every blocker stops holding: a claimed one when it submits
+// or is released, the landing one when that landing ends. Each is named.
+test("a held task names every blocker and when each stops holding, claimed or landing", () => {
+  const d = { to: "home", agent: "codex", model: "gpt-6" };
+  const claimed = (id) => ({ id, owner: "codex/gpt-6", state: "claimed", title: `Task ${id}`, core: "src/ledger.ts" });
+  const landing = (id) => ({ id, owner: "claude-code/opus-5.5", state: "accepted", title: `Task ${id}`, core: "src/ledger.ts" });
+  const line = (blockers) => formatStatus([{ name: "demo", items: [item("t2", "open", { dispatch: d })], inbox: [] }],
+    { queue: [{ project: "demo", item: { ...item("t2", "open", { dispatch: d }), held: { ...blockers[0], blockers } } }] })
+    .split("\n").find((l) => l.includes("Held:"));
+  const reach = "both scopes reach core file src/ledger.ts";
+  const override = ", or at once with atelier dispatch t2 --overlap-ok.";
+  assert.equal(line([claimed("t1")]), `      Held: waits on t1 (claimed by codex/gpt-6): ${reach}; offered once t1 submits or is released${override}`);
+  assert.equal(line([landing("t5")]), `      Held: waits on t5 (accepted by claude-code/opus-5.5): ${reach}; offered once the landing of t5 ends${override}`);
+  assert.equal(line([claimed("t1"), claimed("t3")]), `      Held: waits on t1 (claimed by codex/gpt-6): ${reach}; t3 (claimed by codex/gpt-6): ${reach}; offered once t1 submits or is released and t3 submits or is released${override}`);
+  assert.equal(line([claimed("t1"), claimed("t3"), landing("t5")]), `      Held: waits on t1 (claimed by codex/gpt-6): ${reach}; t3 (claimed by codex/gpt-6): ${reach}; t5 (accepted by claude-code/opus-5.5): ${reach}; offered once t1 submits or is released, t3 submits or is released and the landing of t5 ends${override}`);
 });

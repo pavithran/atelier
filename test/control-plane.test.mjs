@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { controlPlaneChanges, mergePolicyDecision, readControlPlane, refreshControlPlane } from "../cli/atelier.mjs";
 import { acceptancePolicy, mergeContext } from "../src/control-plane.ts";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 const agents = { codex: { available: true, eligible_roles: ["executor"], preferred_roles: ["planner"] }, claude: { available: false, eligible_roles: ["assessor"] } };
 const execution = { allowed_classes: ["direct", "protected"], direct: { enabled: true, allowed_path_patterns: ["docs/**"] }, protected_path_patterns: ["src/security/**"] };
@@ -43,6 +44,7 @@ function fixture(run) {
 }
 
 const before = { protected: ["AGENTS.md"], eligible: ["claude"], refuseOverlap: false, approval: "Owner approved the copy", checks: ["npm test"], sandboxOnly: true };
+const IDENTITY = { name: "Project Owner", email: "123+owner@users.noreply.github.com", agentEmails: ["agents@atelier.example"] };
 
 test("refresh sends only ControlPlane fields and leaves project settings intact", () => fixture(async ({ dir, write }) => {
   write("agent-policy", { agents: { codex: { available: true }, claude: { available: false } }, authority: { overlapping_claims: "refuse" } });
@@ -227,19 +229,26 @@ else if (args[0] === 'merge-base' && !args.includes('--is-ancestor')) console.lo
 // Diffed from the recorded base, the revision shows a path the baseline
 // changed since the fork; from its real fork point, only its own.
 else if (args.includes('diff')) process.stdout.write(args.includes(${JSON.stringify(base)}) ? 'src/secret.ts\\0' : 'docs/own.md\\0');
+// The commits a landing checks for their identity (t451): none unless the
+// test names some, as JSON, since the environment cannot carry a NUL.
+else if (args[0] === 'log' && args.includes('--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x1e')) process.stdout.write(JSON.parse(process.env.TEST_IDENTITY_LOG ?? '""'));
 else if (args.includes('merge')) { console.error('merge reached'); process.exit(1); }
 else if (args[0] === 'merge-base' && args.at(-1) !== 'HEAD') process.exit(1);
 `, { mode: 0o755 });
     const storage = join(dir, "server.json");
-    writeFileSync(storage, JSON.stringify({ policy: before, state: "accepted", acceptanceProtected: before.protected }));
+    writeFileSync(storage, JSON.stringify({ policy: { ...before, commitIdentity: IDENTITY }, state: "accepted", acceptanceProtected: before.protected }));
     const preload = join(dir, "fetch.mjs");
     writeFileSync(preload, `import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 const storage = ${JSON.stringify(storage)};
 let { policy, state, acceptanceProtected, acceptancePolicy } = JSON.parse(readFileSync(storage, 'utf8'));
+// A project from before t451, whose policy names no commit identity.
+if (process.env.TEST_NO_IDENTITY) delete policy.commitIdentity;
 // The acceptance on record was made before every field was recorded.
 acceptancePolicy ??= { protected: acceptanceProtected };
 if (process.env.TEST_SUBMITTED) state = 'submitted';
 globalThis.fetch = async (url, options) => {
+  // The capability check before merge and init (t458) reads the version.
+  if (new URL(url).pathname === '/api/version') return Response.json({ capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
   appendFileSync(${JSON.stringify(log)}, JSON.stringify({ url, method: options.method, body: options.body }) + '\\n');
   if (options.method === 'PUT') policy = { ...policy, ...JSON.parse(options.body) };
   if (options.method === 'PUT' && process.env.TEST_PUT_FAIL) return new Response('unavailable', { status: 500 });
@@ -301,6 +310,28 @@ test("merge without ControlPlane files makes no project policy requests", () => 
   assert.doesNotMatch(result.stderr, /ControlPlane|newly protected/);
   assert.ok(!calls().some((c) => c.url.endsWith("/api/projects/example")));
   assert.ok(gitCalls().some((args) => args.includes("merge") && args.includes("--no-ff")));
+}));
+
+test("merge in a project with no commit identity refuses before Git merge, naming the init that sets one", () => commandFixture(({ command, dir, gitCalls }) => {
+  rmSync(join(dir, "docs/control-plane"), { recursive: true });
+  const result = command(["merge", "t1"], { TEST_NO_IDENTITY: "1" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /example has no commit identity in its policy; the owner sets one with atelier init --commit-name NAME --commit-email EMAIL .*\. Nothing was merged\./);
+  assert.ok(!gitCalls().some((args) => args.includes("merge") && args.includes("--no-ff")));
+}));
+
+test("merge refuses an accepted revision whose new commits the policy refuses, naming each commit and field", () => commandFixture(({ command, dir, gitCalls }) => {
+  rmSync(join(dir, "docs/control-plane"), { recursive: true });
+  const c = "c".repeat(40), d = "d".repeat(40);
+  const record = (...fields) => `${fields.join("\x00")}\x1e\n`;
+  const log = record(c, "codex", "agents@atelier.example", "Project Owner", "123+owner@users.noreply.github.com") + record(d, "Pavi", "pavi@studio.local", "Pavi", "pavi@personal.example");
+  const result = command(["merge", "t1"], { TEST_IDENTITY_LOG: JSON.stringify(log) });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /t1's accepted revision holds commits whose identity the project's policy refuses:\n {2}commit dddddddddddd: the author email pavi@studio\.local is one Git guesses from the machine's user and host names\n {2}commit dddddddddddd: the committer email pavi@personal\.example is neither the project's commit address \(123\+owner@users\.noreply\.github\.com\) nor an agent address the policy allows \(agentEmails\)\nNothing was merged\./);
+  assert.doesNotMatch(result.stderr, /cccccccc/, "the agent's allowed commit is not named");
+  // Only the commits the baseline lacks are read.
+  assert.ok(gitCalls().some((args) => args[0] === "log" && args.at(-1) === `${"a".repeat(40)}..${"a".repeat(40)}`));
+  assert.ok(!gitCalls().some((args) => args.includes("merge") && args.includes("--no-ff")));
 }));
 
 test("acceptance during merge uses the refreshed policy before review and acceptance", () => commandFixture(({ command, calls, gitCalls }) => {

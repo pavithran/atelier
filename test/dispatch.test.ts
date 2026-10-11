@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assertDispatchable, assertDispatchedClaim, assign, coreHold, describe, liveOffers, makeDispatch, OFFER_LIVE_MS, offeredActors, parseRunner, type RunnerOffer, type SeenOffer } from "../src/dispatch/rules.ts";
+import { assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, assign, coreHold, describe, liveOffers, makeDispatch, OFFER_LIVE_MS, offeredActors, parseRunner, type RunnerOffer, type SeenOffer } from "../src/dispatch/rules.ts";
+import type { ProjectPolicy } from "../src/rules.ts";
 
 const T = "2026-10-04T12:00:00.000Z";
 const item = (over: Record<string, unknown> = {}) => ({
@@ -61,8 +62,8 @@ test("a dispatched task is claimed only by a matching runner under the requested
 });
 
 test("a dispatch note over its limit is refused, never cut", () => {
-  assert.equal(makeDispatch({ note: "n".repeat(500) }, "pavi", T).note, "n".repeat(500));
-  assert.throws(() => makeDispatch({ note: "n".repeat(501) }, "pavi", T), /the dispatch note is 501 characters; the limit is 500\. Shorten it and send it again/);
+  assert.equal(makeDispatch({ note: "n".repeat(2000) }, "pavi", T).note, "n".repeat(2000));
+  assert.throws(() => makeDispatch({ note: "n".repeat(2001) }, "pavi", T), /the dispatch note is 2001 characters; the limit is 2000\. Shorten it and send it again/);
 });
 
 // A merge-main dispatch (t243) sends a task whose landing conflicted with
@@ -160,13 +161,12 @@ test("the core files hold a building dispatch whose scope overlaps a live item's
   assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [live], []), null);
   assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [live], undefined), null);
   // Two scopes that each reach a core glob, but not the same path, hold nothing.
-  const both = item({ id: "t1", scope: ["src/index.ts"], state: "submitted", owner: "x/y" });
+  const both = item({ id: "t1", scope: ["src/index.ts"], state: "claimed", owner: "x/y" });
   assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [both], ["src/**"]), null);
   // An unscoped item reaches every core file.
   assert.equal(coreHold(waiting({ scope: [] }), [live], core)?.core, "src/ledger.ts");
-  // Submitted and accepted items hold; merged, abandoned, open and integrated ones do not.
-  for (const state of ["submitted", "accepted"]) assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...live, state }], core)?.id, "t1", state);
-  for (const state of ["merged", "abandoned", "open", "integrated"]) assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...live, state }], core), null, state);
+  // Without a live landing lease, only claimed items hold core files.
+  for (const state of ["submitted", "accepted", "merged", "abandoned", "open", "integrated"]) assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...live, state }], core), null, state);
   // The owner's override, and the jobs that build nothing, are never held; merge-main is.
   assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"], dispatch: makeDispatch({ overlapOk: true }, "pavi", T) }), [live], core), null);
   for (const job of ["plan", "integrate", "refresh", "review"]) assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"], dispatch: { ...d, job } }), [live], core), null, job);
@@ -176,14 +176,86 @@ test("the core files hold a building dispatch whose scope overlaps a live item's
   const queuedPart = waiting({ scope: ["src/ledger.ts"], kind: "part", plan: "t4" });
   assert.equal(coreHold(queuedPart, [sibling], core), null);
   assert.equal(coreHold(queuedPart, [sibling, live], core)?.id, "t1");
-  // A plan item its planner or the integrator holds changes no main; a submitted one does.
+  // A claimed plan does not hold core files; a submitted plan holds only while landing.
   const planItem = item({ id: "t6", scope: ["src/**"], state: "claimed", owner: "atelier/integrator", kind: "plan" });
   assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [planItem], core), null);
-  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...planItem, state: "submitted" }], core)?.id, "t6");
+  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...planItem, state: "submitted" }], core), null);
+  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...planItem, state: "submitted" }], core, { item: "t6", holder: "pavi", at: T }, Date.parse(T))?.id, "t6");
 });
 
 test("a dispatch keeps the owner's overlap override only when it is asked for", () => {
   assert.equal(makeDispatch({ overlapOk: true }, "pavi", T).overlapOk, true);
   assert.equal("overlapOk" in makeDispatch({ overlapOk: false }, "pavi", T), false);
   assert.throws(() => makeDispatch({ overlapOk: "yes" }, "pavi", T), /overlapOk must be true or false/);
+});
+
+// A dispatch is refused now where the claim would refuse it later, with the
+// claim's own reason (t405): an agent and model the policy would not let
+// claim, or a scope a refuseOverlap policy would refuse against a live item.
+test("a dispatch refuses a named agent and model the claim would refuse, and an overlap the claim would refuse", () => {
+  const policy = (over: Partial<ProjectPolicy> = {}): ProjectPolicy => ({ checks: [], protected: [], ...over });
+  const d = (o: Record<string, unknown> = {}) => makeDispatch(o, "pavi", T);
+  const open = item({ id: "t2", scope: ["relay/test/foo.ts"] });
+  // A governed policy gives the named actor no executor role, so the claim
+  // would refuse it; the dispatch names the agent that would be eligible.
+  const governed = policy({ agents: { claude: { available: true, eligible_roles: ["executor"] }, codex: { available: true, eligible_roles: ["assessor"] } } });
+  assert.throws(() => assertDispatchClaimable(open, [], governed, d({ agent: "codex", model: "gpt-6" })), /codex\/gpt-6 needs an available agent with the executor role; available agents with the executor role: claude/);
+  assert.doesNotThrow(() => assertDispatchClaimable(open, [], governed, d({ agent: "claude-code", model: "opus-5.5" })));
+  // A legacy policy refuses an ineligible harness, naming the eligible ones.
+  assert.throws(() => assertDispatchClaimable(open, [], policy({ eligible: ["claude"] }), d({ agent: "codex", model: "gpt-6" })), /codex is not an eligible agent here \(eligible: claude\)/);
+  // A scope a refuseOverlap policy refuses is refused, naming the live item,
+  // whatever agent is named, and left alone where the policy does not refuse.
+  const live = item({ id: "t28", scope: ["relay/test/**"], state: "claimed", owner: "codex/gpt-6" });
+  assert.throws(() => assertDispatchClaimable(open, [live], policy({ refuseOverlap: true }), d({ agent: "claude-code", model: "opus-5.5" })), /t2's scope overlaps live t28 \(codex\/gpt-6\); this project refuses overlapping claims/);
+  assert.throws(() => assertDispatchClaimable(open, [live], policy({ refuseOverlap: true }), d()), /overlaps live t28/);
+  assert.doesNotThrow(() => assertDispatchClaimable(open, [live], policy(), d()));
+  // The holder of the overlapping item is not refused when named.
+  assert.doesNotThrow(() => assertDispatchClaimable(open, [live], policy({ refuseOverlap: true }), d({ agent: "codex", model: "gpt-6" })));
+});
+
+// A dispatch that names only a harness is refused where the claim would be
+// for every model under that harness (t405): a harness whose governed agent
+// is unavailable or lacks the executor role, or whose harness the legacy
+// eligibility list excludes. The refusal names the eligible agents, or the
+// eligible harnesses, exactly as the claim's would.
+test("a dispatch naming only a harness refuses the harness the claim would refuse", () => {
+  const policy = (over: Partial<ProjectPolicy> = {}): ProjectPolicy => ({ checks: [], protected: [], ...over });
+  const d = (o: Record<string, unknown> = {}) => makeDispatch(o, "pavi", T);
+  const open = item({ id: "t2", scope: ["relay/test/foo.ts"] });
+  // Codex's governed agent lacks the executor role, so no codex model could
+  // claim; the refusal names the agent that would be eligible.
+  const assessorOnly = policy({ agents: { claude: { available: true, eligible_roles: ["executor"] }, codex: { available: true, eligible_roles: ["assessor"] } } });
+  assert.throws(() => assertDispatchClaimable(open, [], assessorOnly, d({ agent: "codex" })), /codex needs an available agent with the executor role; available agents with the executor role: claude/);
+  // Codex's governed agent is unavailable, so no codex model could claim.
+  const unavailable = policy({ agents: { claude: { available: true, eligible_roles: ["executor"] }, codex: { available: false, eligible_roles: ["executor"] } } });
+  assert.throws(() => assertDispatchClaimable(open, [], unavailable, d({ agent: "codex" })), /codex needs an available agent with the executor role; available agents with the executor role: claude/);
+  // A legacy policy excludes the codex harness, naming the eligible ones.
+  assert.throws(() => assertDispatchClaimable(open, [], policy({ eligible: ["claude"] }), d({ agent: "codex" })), /codex is not an eligible agent here \(eligible: claude\)/);
+  // A harness the policy would let claim is not refused, and a harness whose
+  // governed agent depends on the model is left to the claim's own check.
+  assert.doesNotThrow(() => assertDispatchClaimable(open, [], assessorOnly, d({ agent: "claude-code" })));
+  assert.doesNotThrow(() => assertDispatchClaimable(open, [], policy({ eligible: ["claude"] }), d({ agent: "claude" })));
+  assert.doesNotThrow(() => assertDispatchClaimable(open, [], assessorOnly, d({ agent: "opencode" })));
+});
+
+// A harness whose governed agent depends on the model (opencode) cannot be
+// judged per model ahead of the claim, but when no governed agent holds the
+// role at all no model under any harness could qualify, so the refusal is
+// said now with the claim's own reason (t405).
+test("a dispatch naming only a harness refuses it when no agent holds the role, even a model-dependent harness", () => {
+  const policy = (over: Partial<ProjectPolicy> = {}): ProjectPolicy => ({ checks: [], protected: [], ...over });
+  const d = (o: Record<string, unknown> = {}) => makeDispatch(o, "pavi", T);
+  const open = item({ id: "t2", scope: ["relay/test/foo.ts"] });
+  // No governed agent holds the executor role: a claim by any model would be
+  // refused, so a harness-only dispatch for opencode is refused too.
+  const assessorOnly = policy({ agents: { codex: { available: true, eligible_roles: ["assessor"] } } });
+  assert.throws(() => assertDispatchClaimable(open, [], assessorOnly, d({ agent: "opencode" })), /opencode needs an available agent with the executor role; no agent is available with the executor role/);
+  // An agent that is present but unavailable for the role also leaves no
+  // model that could qualify.
+  const unavailable = policy({ agents: { glm: { available: false, eligible_roles: ["executor"] } } });
+  assert.throws(() => assertDispatchClaimable(open, [], unavailable, d({ agent: "opencode" })), /no agent is available with the executor role/);
+  // When some agent holds the role, opencode is left to the claim's own
+  // check, since a model that maps to that agent could qualify.
+  const exec = policy({ agents: { claude: { available: true, eligible_roles: ["executor"] } } });
+  assert.doesNotThrow(() => assertDispatchClaimable(open, [], exec, d({ agent: "opencode" })));
 });

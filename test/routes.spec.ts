@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { NO_CRITERIA } from "../src/criteria.ts";
+import { NO_OWNER_FACTOR } from "../src/rules.ts";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import { signIn } from "./signin.ts";
@@ -347,6 +348,54 @@ it("the review bar route cleans the bar, keeps it on re-init, clears it on an em
   }
 });
 
+// t394: init --single-family COMPANY records the mode with who set it and
+// when; --cross-family (null or "") records the return the same way; a
+// company no model name is recognised by is refused; and a hand dispatch
+// under the mode names only that company's models.
+it("the single-family route records the company with who and when, records the return to cross-family, and refuses an unknown company", async () => {
+  await project("routes-single-family");
+  const put = (fields: Record<string, unknown>, actor = "owner") => worker.fetch(new Request("https://atelier.test/api/projects/routes-single-family", {
+    method: "PUT",
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
+    body: JSON.stringify({ checks: ["npm test"], protected: [], ...fields }),
+  }), artifactsEnv);
+  const modeOf = async (fields: Record<string, unknown>, actor = "owner") =>
+    (((await (await put(fields, actor)).json()) as { project: { policy: { familyMode?: { single: string | null; by: string; at: string } } } }).project.policy.familyMode);
+  expect(await modeOf({})).toBeUndefined();
+  const single = await modeOf({ singleFamily: " Anthropic " });
+  expect(single).toMatchObject({ single: "anthropic", by: "owner" });
+  expect(Number.isFinite(Date.parse(single!.at))).toBe(true);
+  // A re-init that names no mode keeps it.
+  expect(await modeOf({ title: "Kept" })).toEqual(single);
+  // The return is recorded, not dropped: who made it and when.
+  const back = await modeOf({ singleFamily: null });
+  expect(back).toMatchObject({ single: null, by: "owner" });
+  expect(await modeOf({ singleFamily: "openai" })).toMatchObject({ single: "openai", by: "owner" });
+  expect(await modeOf({ singleFamily: "" })).toMatchObject({ single: null, by: "owner" });
+  for (const bad of ["acme", "other", 7, ["anthropic"]]) {
+    const res = await put({ singleFamily: bad });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("bad_single_family");
+  }
+  expect((await put({ singleFamily: "acme" })).status).toBe(400);
+  expect(await modeOf({})).toMatchObject({ single: null, by: "owner" });
+
+  // Under the mode a hand dispatch names one of the company's models only.
+  await put({ singleFamily: "anthropic" });
+  const created = await (await call("POST", "/projects/routes-single-family/items", "owner", { title: "Small edit", scope: ["docs/**"] })).json() as { id: string };
+  const other = await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
+  expect(other.status).toBe(409);
+  const refusal = await other.json() as { error: string; detail: string };
+  expect(refusal.error).toBe("single_family");
+  expect(refusal.detail).toBe("gpt-6-astra is not one of anthropic's models, and this project runs in single-family mode (anthropic): use one of anthropic's models, or return to cross-family review with atelier init --cross-family");
+  expect((await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home", agent: "claude-code", model: "sonnet-5.5" })).status).toBe(200);
+  // A dispatch that names no model leaves the choice to the runner's offer, as before.
+  expect((await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home" })).status).toBe(200);
+  // Back under the default any model may be named.
+  await put({ singleFamily: null });
+  expect((await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" })).status).toBe(200);
+});
+
 it("the review tier route takes models separated by commas or a list, keeps the tier on re-init, clears it on an empty one, and refuses one not harness/model", async () => {
   await project("routes-review-tier");
   const put = (fields: Record<string, unknown>) => worker.fetch(new Request("https://atelier.test/api/projects/routes-review-tier", {
@@ -682,13 +731,19 @@ it("decision 2026-10-06: the accept route takes an override only from the owner,
   await L.recordPush("t1", A, H1, H1);
   await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
   await L.submit("t1", A);
-  const ARTIFACTS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }] }, {});
-  const as = (bearer: string, actor: string | null) => (method: string, path: string, body?: unknown) =>
+  // The baseline's log too, so the task page can draw the change and offer its forms.
+  const ARTIFACTS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }], [name]: [{ hash: H0, parents: [], treeHash: T0 }] }, {});
+  // The server takes the confirmation secret as the owner's factor (t371);
+  // `bare` is one with neither it nor Access, which can confirm no override.
+  const SECRET = "owner-only-word-no-session-holds";
+  const bindings = { ...testEnv, ARTIFACTS, OVERRIDE_SECRET: SECRET } as typeof env;
+  const bare = { ...testEnv, ARTIFACTS } as typeof env;
+  const as = (bearer: string, actor: string | null, on = bindings) => (method: string, path: string, body?: unknown) =>
     worker.fetch(new Request(`https://atelier.test/api/projects/${name}${path}`, {
       method,
       headers: { authorization: `Bearer ${bearer}`, ...(actor ? { "x-atelier-actor": actor } : {}), "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
-    }), { ...testEnv, ARTIFACTS } as typeof env);
+    }), on);
   const owner = as(TOKEN, "owner");
   const reason = "No model of another family is available";
 
@@ -708,12 +763,106 @@ it("decision 2026-10-06: the accept route takes an override only from the owner,
     expect([overrideReview, res.status, (await res.json() as { error: string }).error]).toEqual([overrideReview, 400, "override_reason"]);
   }
   expect((await L.item("t1")).state).toBe("submitted");
+  // t371: the owner token alone does not override, since an agent session
+  // may hold it, and nor does the browser session that token signs in at
+  // /login. The API's override is refused, naming the page on this server,
+  // the button and the factor the server takes, until the owner allows it
+  // there with that factor: the Access sign-in where the pages are behind
+  // Access (test/access.spec.ts), else the confirmation secret, which no
+  // session is given. A server with neither takes no confirmation and says
+  // what to set. One permission takes one override, for 15 minutes.
+  const unconfirmed = await owner("POST", "/items/t1/accept", { head: H1, overrideReview: reason });
+  expect(unconfirmed.status).toBe(403);
+  expect(await unconfirmed.json()).toEqual({ error: "override_unconfirmed", detail: `an override of the independent review needs the owner's confirmation: open https://atelier.test/p/${name}/t1 as the owner, press "Allow an override from the command line" giving the server's confirmation secret (OVERRIDE_SECRET, which no session is given), then run the command again within 15 minutes; the owner token alone does not confirm it` });
+  expect((await L.item("t1")).state).toBe("submitted");
+  // On a server with neither Access nor a secret, the refusal says what to set.
+  const nowhere = await as(TOKEN, "owner", bare)("POST", "/items/t1/accept", { head: H1, overrideReview: reason });
+  expect(nowhere.status).toBe(403);
+  expect((await nowhere.json() as { detail: string }).detail).toContain(`confirming as the owner, then run the command again within 15 minutes; ${NO_OWNER_FACTOR}; the owner token alone does not confirm it`);
+  const page = (headers: Record<string, string>, on = bindings, confirmation?: string) => worker.fetch(new Request(`https://atelier.test/ui/${name}/t1/allow-override`, {
+    method: "POST", headers: { origin: "https://atelier.test", ...headers }, body: new URLSearchParams({ head: H1, criteria: NO_CRITERIA, note: "", ...(confirmation === undefined ? {} : { confirmation }) }),
+  }), on);
+  // The owner token as a bearer is refused, even with the secret.
+  const byBearer = await page({ authorization: `Bearer ${TOKEN}` }, bindings, SECRET);
+  expect(byBearer.status).toBe(403);
+  expect(await byBearer.text()).toMatch(/needs the owner(&#39;|'|&#x27;)s own sign-in, not the owner token/);
+  // A session alone, which that token buys at /login, is refused without the secret, or with a wrong one.
+  const cookie = await signIn(TOKEN, bindings);
+  const noSecret = await page({ cookie });
+  expect(noSecret.status).toBe(403);
+  expect(await noSecret.text()).toMatch(/needs the confirmation secret, which was not given/);
+  const wrongSecret = await page({ cookie }, bindings, "a guess");
+  expect(wrongSecret.status).toBe(403);
+  expect(await wrongSecret.text()).toMatch(/needs the confirmation secret, which was not this server(&#39;|'|&#x27;)s/);
+  // On the bare server the session confirms nothing, whatever the form carries,
+  // and the page says what to set instead of offering the forms.
+  const bareCookie = await signIn(TOKEN, bare);
+  const noFactor = await page({ cookie: bareCookie }, bare, SECRET);
+  expect(noFactor.status).toBe(403);
+  expect(await noFactor.text()).toMatch(/which this server cannot take/);
+  const bareTask = await (await worker.fetch(new Request(`https://atelier.test/p/${name}/t1`, { headers: { cookie: bareCookie } }), bare)).text();
+  expect(bareTask).toContain("put its pages behind Cloudflare Access");
+  expect(bareTask).not.toContain("Allow an override from the command line");
+  expect((await L.item("t1")).overrideConfirmation).toBeUndefined();
+  // With the secret set, the page asks for it in both forms; the right secret
+  // allows the override, and the record says which factor confirmed it.
+  const task = await (await worker.fetch(new Request(`https://atelier.test/p/${name}/t1`, { headers: { cookie } }), bindings)).text();
+  expect(task.match(/name="confirmation"/g)).toHaveLength(2);
+  expect(task).toContain("Allow an override from the command line");
+  expect((await page({ cookie }, bindings, SECRET)).status).toBe(303);
+  expect((await L.item("t1")).overrideConfirmation).toMatchObject({ head: H1, by: "owner", factor: "secret" });
   const accepted = await owner("POST", "/items/t1/accept", { head: H1, overrideReview: reason });
   expect(accepted.status, await accepted.clone().text()).toBe(200);
   expect(await accepted.json()).toMatchObject({ state: "accepted", acceptedHead: H1, reviewOverride: { head: H1, by: "owner", reason } });
-  const detail = await (await owner("GET", "/items/t1")).json() as { events: { kind: string; data: Record<string, unknown> }[]; reviews: unknown[] };
-  expect(detail.events.find((e) => e.kind === "review.overridden")?.data).toMatchObject({ head: H1, reason });
+  const detail = await (await owner("GET", "/items/t1")).json() as { item: { overrideConfirmation?: unknown }; events: { kind: string; data: Record<string, unknown> }[]; reviews: unknown[] };
+  expect(detail.events.find((e) => e.kind === "review.overridden")?.data).toMatchObject({ head: H1, reason, confirmed: "command line", factor: "secret" });
+  expect(detail.events.find((e) => e.kind === "override.allowed")?.data).toMatchObject({ head: H1, factor: "secret" });
+  expect(detail.item.overrideConfirmation).toBeUndefined();
   expect(detail.reviews).toHaveLength(1);
+});
+
+// t371: a project set up with `atelier init --no-override` refuses every
+// override and every permission for one, through the API and the page alike.
+it("t371: a project that forbids overrides refuses them through the API and the page", async () => {
+  const name = "no-override-route", A = "claude-code/opus-5.5", H0 = "0".repeat(40), H1 = "a".repeat(40), T0 = "1".repeat(40), T1 = "2".repeat(40);
+  await project(name, ["AGENTS.md"]);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  // As `atelier init --no-override` records it (the init route sends noOverride: true).
+  expect((await L.initProject({ name, repo: name, reset: false, noOverride: true }, "owner")).policy.noOverride).toBe(true);
+  await L.newItem("Rewrite the agent instructions", [], "owner");
+  await L.claim("t1", A);
+  await L.setFork("t1", `${name}--t1`, H0, A);
+  await L.recordPush("t1", A, H1, H1);
+  await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head: H1, passed: true, by: A, at: new Date().toISOString(), changedPaths: ["AGENTS.md"] });
+  await L.submit("t1", A);
+  const ARTIFACTS = gitStore({ [`${name}--t1`]: [{ hash: H1, parents: [H0], treeHash: T1 }, { hash: H0, parents: [], treeHash: T0 }], [name]: [{ hash: H0, parents: [], treeHash: T0 }] }, {});
+  // A server that takes the confirmation secret, given: the prohibition is told even to a confirmed owner.
+  const bindings = { ...testEnv, ARTIFACTS, OVERRIDE_SECRET: "owner-only-word" } as typeof env;
+  const api = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/accept`, {
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ head: H1, overrideReview: "No other family" }),
+  }), bindings);
+  expect([api.status, (await api.json() as { error: string }).error]).toEqual([403, "override_forbidden"]);
+  const cookie = await signIn(TOKEN, bindings);
+  const page = (verb: string) => worker.fetch(new Request(`https://atelier.test/ui/${name}/t1/${verb}`, {
+    method: "POST", headers: { origin: "https://atelier.test", cookie }, body: new URLSearchParams({ head: H1, criteria: NO_CRITERIA, note: "No other family", confirmation: "owner-only-word" }),
+  }), bindings);
+  for (const verb of ["allow-override", "override"]) {
+    const res = await page(verb);
+    expect([verb, res.status]).toEqual([verb, 403]);
+    expect(await res.text()).toMatch(/forbids overrides of the independent review/);
+  }
+  expect((await L.item("t1")).state).toBe("submitted");
+  // The task's page offers neither form and says the project forbids them;
+  // the Settings tab says so too, and `--no-override=false` allows them again.
+  const task = await worker.fetch(new Request(`https://atelier.test/p/${name}/t1`, { headers: { cookie } }), bindings);
+  const html = await task.text();
+  expect(html).toContain("This project forbids overrides of that review.");
+  expect(html).not.toContain("Allow an override from the command line");
+  expect(html).not.toContain("Override the review and accept");
+  const settings = await (await worker.fetch(new Request(`https://atelier.test/p/${name}/settings`, { headers: { cookie } }), bindings)).text();
+  expect(settings).toContain("Refused: every change needs its independent review");
+  expect((await L.initProject({ name, repo: name, reset: false, noOverride: false }, "owner")).policy.noOverride).toBeUndefined();
+  expect((await L.initProject({ name, repo: name, reset: false }, "owner")).policy.noOverride).toBeUndefined();
 });
 
 // PAVI's decision, 2026-10-09, through the Worker: when the owner overrides
@@ -741,6 +890,8 @@ it("decision 2026-10-09: the accept route names the reviewer that could replace 
     }), { ...testEnv, ARTIFACTS } as typeof env);
   const owner = as(TOKEN, "owner");
   const reason = "No model of another family is available";
+  // t371: the owner allows the override first, as the task page records it with the confirmation secret.
+  await L.confirmOverride("t1", "owner", H1, "secret");
   const accepted = await owner("POST", "/items/t1/accept", { head: H1, overrideReview: reason });
   expect(accepted.status, await accepted.clone().text()).toBe(200);
   expect(await accepted.json()).toMatchObject({ state: "accepted", acceptedHead: H1, availableReviewer: "codex/gpt-6-astra" });
@@ -764,8 +915,11 @@ it("the standing route is readable by any signed-in actor, and by no one else", 
     const s = await res.json() as { project: { name: string }; live: { id: string }[]; waiting: { id: string; brief: { verdict: string } | null }[]; queued: { id: string }[] };
     expect(s.project.name).toBe(name);
     expect(s.live.map((x) => x.id)).toEqual(["t1"]);
-    expect(s.waiting).toEqual([expect.objectContaining({ id: "t1", kind: "accept", brief: expect.objectContaining({ verdict: "accept" }) })]);
-    expect(s.queued.map((x) => x.id)).toEqual(["t2"]);
+    // t2 waits on the owner too while no live runner can take it, which
+    // depends on the runner offers earlier tests in this file recorded.
+    expect(s.waiting.filter((w) => (w as { call?: string }).call !== "start-runner")).toEqual([expect.objectContaining({ id: "t1", call: "accept", href: `/p/${name}/t1`, brief: expect.objectContaining({ verdict: "accept" }) })]);
+    for (const w of s.waiting.filter((x) => (x as { call?: string }).call === "start-runner")) expect(w.id).toBe("t2");
+    expect(s.queued.map((x) => x.id)).toEqual(["t2"])
   }
   const anonymous = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/standing`, { headers: { "x-atelier-actor": "owner" } }), testEnv);
   expect(anonymous.status).toBe(401);
@@ -1252,7 +1406,7 @@ it("a verdict on criteria that changed while its reviewer ran is refused with ho
   const owner = api("owner"), reviewer = api(GPT);
   type Detail = { criteria: string; gate: { ready: boolean }; reviews: unknown[] };
   const one = (await (await owner("GET", "/items/t1")).json() as Detail).criteria;
-  await L.requestReview("t1", "owner", GPT, []);
+  await L.requestReview("t1", "owner", GPT, [{ id: "gpt-6-astra", harness: "codex", where: "home", provider: "subscription", aliases: [], family: "openai", note: "", addedBy: "owner", addedAt: new Date().toISOString() }]);
   const claim = await L.claimReview("t1", GPT, { runner: "home:studio", kind: "home" }) as unknown as { criteria: string; request: number };
   expect(claim.criteria).toBe(one);
 
@@ -1293,4 +1447,40 @@ it("a verdict on criteria that changed while its reviewer ran is refused with ho
   expect((await (await owner("GET", "/items/t1")).json() as Detail).gate.ready).toBe(true);
   // The brief route gives the criteria and their binding, as atelier show prints them.
   expect(await (await owner("GET", "/items/t1/brief")).json()).toMatchObject({ accept: TWO, partAccept: null, criteria: two });
+});
+
+// Task t480: the page's textarea counts a line break as one character and its
+// maxlength stops a note at 2000 of those, but a browser posts each break as
+// CRLF. A note the form took must not then be refused as 2010 characters, so
+// the form handler stores every break as LF before the limit is checked. The
+// API and CLI text is checked and stored as given.
+it("a dispatch note at the limit posted with CRLF line breaks is taken and stored with LF, while API text is kept as given", async () => {
+  const name = "routes-crlf-note";
+  await project(name);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.newItem("Form note", [], "owner");
+  await L.newItem("API note", [], "owner");
+  const lines = Array.from({ length: 11 }, (_, i) => String(i % 10).repeat(i < 10 ? 181 : 180));
+  const stored = lines.join("\n");
+  expect(stored.length).toBe(2000);
+  const posted = lines.join("\r\n");
+  expect(posted.length).toBe(2010);
+
+  const cookie = await signIn(TOKEN, testEnv);
+  const form = await worker.fetch(new Request(`https://atelier.test/ui/${name}/t1/dispatch`, {
+    method: "POST", headers: { origin: "https://atelier.test", cookie }, body: new URLSearchParams({ to: "home", agent: "", model: "", note: posted }), redirect: "manual",
+  }), testEnv);
+  expect(form.status, await form.clone().text()).toBe(303);
+  expect((await L.item("t1")).dispatch?.note).toBe(stored);
+
+  // The API, as atelier dispatch --note-file sends a file, stores the text as
+  // given: a lone CR is kept, and CRLF counts as two units, so the same note
+  // in CRLF (2010 units) is refused whole, never folded to fit.
+  const api = await call("POST", `/projects/${name}/items/t2/dispatch`, "owner", { to: "home", note: lines.join("\r") });
+  expect(api.status, await api.clone().text()).toBe(200);
+  expect((await L.item("t2")).dispatch?.note).toBe(lines.join("\r"));
+  const over = await call("POST", `/projects/${name}/items/t2/dispatch`, "owner", { to: "home", note: posted });
+  expect(over.status).toBe(400);
+  expect(((await over.json()) as { error: string }).error).toBe("too_long");
+  expect((await L.item("t2")).dispatch?.note).toBe(lines.join("\r"));
 });

@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockup: Activity, Merges — Atelier</title>
+<link rel="stylesheet" href="mockup.css">
+<style>
+  .day { margin: 18px 0 6px; font: 600 15px/1.2 var(--sans); color: var(--text-muted); }
+  .merges > li { grid-template-columns: 130px 1fr auto auto; }
+  .notice { border: 1px solid var(--caution); border-radius: 8px; padding: 10px 12px; color: var(--text); }
+  .notice strong { color: var(--caution); }
+</style>
+</head>
+<body>
+<div class="mock-head">
+  <p class="mock-back"><a href="index.html">All mockups</a></p>
+  <p class="mock-title">Activity: Merges</p>
+  <p class="mock-routes">Covers <code>/history</code> with <code>?week=YYYY-Www</code>. Drawn: the week of 5–11 Oct 2026 (the newest), cold-storage unreadable.</p>
+</div>
+
+<div class="frames">
+<figure class="frame desktop">
+<figcaption>Desktop · 1440 · /history</figcaption>
+<div class="screen">
+<header class="ob">
+  <a class="skip" href="#d-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <ul>
+      <li><a href="/decisions">Decisions <span class="count">(14)</span></a></li>
+      <li><a href="/home">Projects</a></li>
+      <li><a href="/history" aria-current="page">Activity</a></li>
+    </ul>
+    <span class="spacer"></span>
+    <details><summary>Project ▾</summary><div class="menu-panel"><a href="/p/ledger-core">Ledger Core <span>9</span></a><a href="/p/field-notes">Field Notes <span>4</span></a><a href="/p/open-tool">Open Tool <span>1</span></a></div></details>
+    <details><summary>Owner ▾</summary><div class="menu-panel"><a href="/models">Models</a><a href="/usage">Usage</a><hr><a href="/logout">Sign out</a></div></details>
+  </nav>
+</header>
+<main id="d-main" class="app-main">
+  <div class="row-flex">
+    <h1>Merges · 5–11 Oct 2026 · 23 merged, 1 closed <a class="mk" href="#n1">1</a></h1>
+    <nav aria-label="Activity views" class="switch"><a href="/studio">Now</a><a href="/flow">Flow</a><a href="/history" aria-current="page">Merges</a></nav>
+  </div>
+  <nav class="pager" aria-label="Weeks" style="justify-content:flex-start">
+    <span class="btn small" aria-disabled="true">← Newer week</span><a class="btn small" href="?week=2026-W40">Older week: 28 Sep – 4 Oct →</a><a class="mk" href="#n2">2</a>
+  </nav>
+  <p class="notice" role="status" style="margin-top:14px"><strong>▲ cold-storage could not be read.</strong> Its merges are missing from this week. <a href="/home">Retry</a> <a class="mk" href="#n3">3</a></p>
+
+  <p class="day">Saturday 10 Oct · 6 <a class="mk" href="#n4">4</a></p>
+  <ul class="rows merges">
+    <li><span class="id">09:58 · t156</span><span><strong>Ledger Core</strong> · Validate ISO 4217 codes on import</span><span class="who">codex/gpt-6-astra</span><span class="tag done">Merged</span></li>
+    <li><span class="id">07:12 · t155</span><span><strong>Ledger Core</strong> · Show closing balance per period</span><span class="who">claude-code/opus-5.5</span><span class="tag done">Merged</span></li>
+    <li><span class="id">06:30 · t62</span><span><strong>Field Notes</strong> · Export a notebook as Markdown</span><span class="who">antigravity/gemini-3.1-pro</span><span class="tag done">Merged</span></li>
+    <li><span class="id">03:05 · t153</span><span><strong>Ledger Core</strong> · Fix off-by-one in statement ranges</span><span class="who">zcode/glm-5.3</span><span class="tag done">Merged</span></li>
+    <li><span class="id">01:40 · t37</span><span><strong>Open Tool</strong> · Add --json to the status command</span><span class="who">opencode/qwen-4</span><span class="tag done">Merged</span></li>
+    <li><span class="id">00:22 · t157</span><span><strong>Ledger Core</strong> · Experiment: event-sourced balances</span><span class="who">zcode/glm-5.3</span><span class="tag done">Closed</span></li>
+  </ul>
+  <p class="day">Friday 9 Oct · 5</p>
+  <ul class="rows merges">
+    <li><span class="id">22:48 · t151</span><span><strong>Ledger Core</strong> · Seed chart of accounts for tests</span><span class="who">antigravity/gemini-3.1-pro</span><span class="tag done">Merged</span></li>
+    <li><span class="id">19:10 · t150</span><span><strong>Ledger Core</strong> · Rename Txn to Entry in the API</span><span class="who">opencode/qwen-4</span><span class="tag done">Merged</span></li>
+    <li><span class="id dim">…</span><span class="dim">3 more on Friday; Monday–Thursday below</span><span></span><span></span></li>
+  </ul>
+  <p class="pager"><span>Week 41 of 2026 · 24 entries on this page (was 241 on one page)</span><a href="?week=2026-W40">Older week →</a></p>
+</main>
+</div>
+</figure>
+
+<figure class="frame phone">
+<figcaption>Phone · 390 · /history</figcaption>
+<div class="screen">
+<header class="ob phone">
+  <a class="skip" href="#p-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <a href="/decisions">Decisions <span class="count">(14)</span></a>
+    <span class="spacer"></span>
+    <details><summary>Menu ▾</summary><div class="menu-panel"><a href="/home">Projects</a><a href="/history" aria-current="page">Activity</a><hr><a href="/models">Models</a><a href="/usage">Usage</a><a href="/logout">Sign out</a></div></details>
+  </nav>
+</header>
+<main id="p-main" class="app-main">
+  <h1>Merges · 5–11 Oct</h1>
+  <p class="muted" style="margin:0 0 8px">23 merged, 1 closed</p>
+  <nav aria-label="Activity views" class="switch"><a href="/studio">Now</a><a href="/flow">Flow</a><a href="/history" aria-current="page">Merges</a></nav>
+  <p class="notice" role="status"><strong>▲ cold-storage could not be read.</strong> <a href="/home">Retry</a></p>
+  <p class="day">Sat 10 Oct · 6</p>
+  <ul class="rows">
+    <li><span class="id">t156</span><span class="tag done">Merged</span><span class="title">Validate ISO 4217 codes on import</span><span class="meta">Ledger Core · <span class="who">codex</span></span></li>
+    <li><span class="id">t155</span><span class="tag done">Merged</span><span class="title">Show closing balance per period</span><span class="meta">Ledger Core · <span class="who">claude-code</span></span></li>
+    <li><span class="id">t62</span><span class="tag done">Merged</span><span class="title">Export a notebook as Markdown</span><span class="meta">Field Notes · <span class="who">antigravity</span></span></li>
+  </ul>
+  <nav class="pager" aria-label="Weeks"><span class="btn small" aria-disabled="true">← Newer</span><a class="btn small" href="?week=2026-W40">Older →</a></nav>
+</main>
+</div>
+</figure>
+</div>
+
+<section class="notes" aria-labelledby="notes-h">
+  <h2 id="notes-h">Notes</h2>
+  <ol>
+    <li id="n1"><span class="num">1</span><div>One week per page, with its merge and closure counts in the heading; the page was 231 merges and 10 closures at once. <span class="cite">F6 → P9</span></div></li>
+    <li id="n2"><span class="num">2</span><div>Newer and Older are links that work without script; Newer is visibly unavailable on the newest week. <span class="cite">F6 → P9</span></div></li>
+    <li id="n3"><span class="num">3</span><div>The unreadable-project notice is <code>role="status"</code>, in the caution role with its shape and a Retry. <span class="cite">F6 → P9, P2</span></div></li>
+    <li id="n4"><span class="num">4</span><div>"Merges" replaces the rail-less "History", which also meant a file's history in Code; Merged and Closed use the done role and their words. <span class="cite">F1, F3 → P1, P3</span></div></li>
+  </ol>
+</section>
+</body>
+</html>
