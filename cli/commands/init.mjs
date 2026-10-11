@@ -7,6 +7,7 @@ import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText
 import { buildHistory, loadPairs, savePairs } from "../fresh.mjs";
 import { pushHistory } from "../push-steps.mjs";
 import { shipPolicy } from "../ship.mjs";
+import { familyModeText } from "../status.mjs";
 import { OWNER, OWNER_NAME, P, agentsMdOffer, args, call, cfg, coreArg, die, git, holds, initName, listArg, project, readControlPlane, recordedApproval, saveConfig, short, wsConfig } from "../atelier.mjs";
 
 // The project owner, in the project's checkout.
@@ -152,6 +153,13 @@ export default async function initCommand() {
   // ones; --core "" alone clears them, and --reset without it does too.
   const core = coreArg();
   if (core || reset) policy.coreFiles = core ?? [];
+  // --single-family COMPANY has the project build and review with one
+  // company's models alone; --cross-family returns to the default, where
+  // a protected change needs a model of another company than every
+  // contributor. Omitted, the recorded mode stays; the server records
+  // either switch with who made it and when.
+  if (args["single-family"] !== undefined && args["cross-family"] === true) die("--single-family and --cross-family contradict each other; give one of them");
+  const singleFamily = args["single-family"] !== undefined ? args["single-family"] : args["cross-family"] === true ? null : undefined;
   // The commit identity (t451): each flag given replaces what is recorded,
   // and the server checks the whole and refuses an invalid one. A list
   // flag given once as "" clears its list.
@@ -161,7 +169,7 @@ export default async function initCommand() {
     const values = args.multi[flag];
     if (values) policy[field] = values.length === 1 && values[0] === "" ? [] : values;
   }
-  const r =await call("PUT", P(name), {
+  const r = await call("PUT", P(name), {
     ...policy,
     ...(reset ? { reset: true } : {}),
     // The command that regenerates the project's fixtures after a task
@@ -177,6 +185,7 @@ export default async function initCommand() {
     // reviewing every protected change beside the gate's review; omitted
     // keeps it, "" clears it.
     ...(args["review-tier"] !== undefined ? { reviewTier: args["review-tier"] } : {}),
+    ...(singleFamily !== undefined ? { singleFamily } : {}),
     approval: args.approval,
     // Omitted keeps the current title; --title "" clears it.
     ...(args.title === undefined ? {} : { title: args.title }),
@@ -243,6 +252,9 @@ export default async function initCommand() {
   if (typeof args.triage === "string" && args.triage.trim() && !pol.triage) console.log("Warning: the server did not record the triage model; deploy the server, then run atelier init --triage again.");
   console.log(`Review tier: ${pol.reviewTier?.length ? `${pol.reviewTier.join(", ")}, one of which reviews every protected change: the gate's review goes to the tier first, and a separate tier review is asked only when the gate's reviewer is outside it` : "none"}`);
   if (typeof args["review-tier"] === "string" && args["review-tier"].trim() && !pol.reviewTier?.length) console.log("Warning: the server did not record the review tier; deploy the server, then run atelier init --review-tier again.");
+  console.log(`Models:     ${familyModeText(pol)}`);
+  // A server older than single-family mode ignores it and answers without one.
+  if (typeof singleFamily === "string" && singleFamily.trim() && !pol.familyMode?.single) console.log("Warning: the server did not record single-family mode; deploy the server, then run atelier init --single-family again.");
   const checkInputs = checkFiles(pol.checks ?? []);
   console.log(`Protected:  ${[...new Set([...(pol.protected ?? []), ...checkInputs])].sort().join(", ")}`);
   console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
