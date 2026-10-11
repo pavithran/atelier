@@ -3918,8 +3918,12 @@ export class Ledger extends DurableObject<Env> {
   // under review, observed and reported, with the project's required checks,
   // so the brief can show ad-hoc runs apart from the required ones. Records
   // at other heads stay in the ledger; the brief would leave them out anyway.
+  // Each run carries its row's id as its recording sequence, which breaks a
+  // tie between runs recorded in the same millisecond.
   private reviewEvidence(id: string, head: string, policy: ProjectPolicy): ReviewEvidence {
-    return { runs: this.evidenceFor(id).filter((e) => e.head === head), required: [...policy.checks] };
+    const runs = this.sql.exec(`SELECT id, json FROM evidence WHERE item_id = ? ORDER BY id`, id).toArray()
+      .map((r) => ({ ...(JSON.parse(r.json as string) as Evidence), seq: r.id as number }));
+    return { runs: runs.filter((e) => e.head === head), required: [...policy.checks] };
   }
 
   // The events a review brief reads: the item's latest, for the builder's

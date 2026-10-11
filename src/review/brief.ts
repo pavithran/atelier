@@ -94,9 +94,17 @@ export interface BriefInput {
 }
 
 export interface ReviewEvidence {
-  runs: readonly Evidence[];
+  runs: readonly RecordedEvidence[];
   required: readonly string[];
 }
+
+// A run with its place in the ledger's recording sequence: the evidence row's
+// id, written in the same step as the run's evidence event, so it orders runs
+// as they were recorded. Two runs recorded in the same millisecond are told
+// apart by it, never by their outcome or the order they were read in. A
+// claim from an older server carries none, and such runs fall back to an
+// order of their own fields.
+export type RecordedEvidence = Evidence & { seq?: number };
 
 // The most of one run's output a brief carries (t490): its last 2,000
 // characters, where a failure says what it is.
@@ -478,15 +486,25 @@ export interface EvidenceGroup {
 type Outcome = "passed" | "failed" | "not applicable";
 const outcomeOf = (e: Evidence): Outcome => (e.notApplicable ? "not applicable" : e.passed ? "passed" : "failed");
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
-// The order of two runs, oldest first, decided by their own fields alone, so
-// the brief is the same whatever order the runs were read in.
-const byTime = (a: Evidence, b: Evidence) =>
-  cmp(a.at, b.at) || cmp(outcomeOf(a), outcomeOf(b)) || cmp(a.by, b.by) || cmp(a.outputTail ?? "", b.outputTail ?? "");
+// The order of two runs, oldest first: by time, then by the ledger's
+// recording sequence, so a failure recorded after a pass in the same
+// millisecond is the later run. Runs without a sequence (an older server's
+// claim) are ordered by all their fields, so the brief is the same whatever
+// order they were read in.
+const bySeq = (a: RecordedEvidence, b: RecordedEvidence) =>
+  a.seq !== undefined && b.seq !== undefined ? a.seq - b.seq : Number(a.seq === undefined) - Number(b.seq === undefined);
+const byTime = (a: RecordedEvidence, b: RecordedEvidence) =>
+  cmp(a.at, b.at) || bySeq(a, b) || cmp(canonical(a), canonical(b));
+function canonical(e: RecordedEvidence): string {
+  const sorted = (v: unknown): unknown => Array.isArray(v) ? v.map(sorted)
+    : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sorted((v as Record<string, unknown>)[k])])) : v;
+  return JSON.stringify(sorted(e));
+}
 
-export function evidenceGroups(evidence: ReviewEvidence, head: string): { groups: EvidenceGroup[]; reports: Evidence[]; elsewhere: number } {
+export function evidenceGroups(evidence: ReviewEvidence, head: string): { groups: EvidenceGroup[]; reports: RecordedEvidence[]; elsewhere: number } {
   const required = new Set(evidence.required);
   const atHead = evidence.runs.filter((e) => e.head === head);
-  const groups = new Map<string, Evidence[]>();
+  const groups = new Map<string, RecordedEvidence[]>();
   for (const e of atHead) {
     if (e.grade !== "observed") continue;
     const key = JSON.stringify([e.claim, e.merged ? 1 : 0, e.merged ? e.mainHead ?? "" : "", e.where ?? "runner"]);
@@ -508,7 +526,7 @@ export function evidenceGroups(evidence: ReviewEvidence, head: string): { groups
     || Number(a.where !== "sandbox") - Number(b.where !== "sandbox"));
   return {
     groups: out,
-    reports: atHead.filter((e) => e.grade === "reported").sort(byTime).map((e) => e),
+    reports: atHead.filter((e) => e.grade === "reported").sort(byTime),
     elsewhere: evidence.runs.length - atHead.length,
   };
 }
