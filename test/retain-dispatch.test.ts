@@ -36,6 +36,19 @@ test("override preserves job payload and validates merged restrictions", () => {
   assert.throws(() => retainDispatch({ overlapOk: true }, { ...job, head: "bad" }, "owner", "now"), /full commit hash/);
 });
 
+test("undefined override fields retain the full dispatch payload", () => {
+  for (const job of ["plan", "review", "integrate", "refresh", "merge-main"] as const) {
+    const previous: Dispatch = { ...prior, job, head: "a".repeat(40), part: "part", partId: "t3", planHead: "b".repeat(40) };
+    const updated = retainDispatch({ overlapOk: true, to: undefined, agent: undefined, model: undefined, note: undefined, job: undefined, head: undefined }, previous, "owner", "now");
+    assert.deepEqual(updated, { ...previous, overlapOk: true, at: "now" });
+  }
+});
+
+test("merged validation checks retained fields even when clearing another restriction", () => {
+  assert.throws(() => retainDispatch({ overlapOk: true, agent: "" }, { ...prior, model: "invalid model" }, "owner", "now"), /valid model/);
+  assert.throws(() => retainDispatch({ overlapOk: true, model: "" }, { ...prior, agent: "invalid agent" }, "owner", "now"), /valid agent/);
+});
+
 // Exercise the command handler with its HTTP and terminal boundaries injected;
 // no CLI process or live service is needed.
 const source = readFileSync(new URL("../cli/commands/dispatch.mjs", import.meta.url), "utf8")
