@@ -113,8 +113,9 @@ and releases. Neither completion needs an owner token. A restart polls and
 resumes jobs held by the same runner before taking new jobs.
 
 Only polling, configuration/base reads, authorized job reads, claiming,
-Git push, checks/evidence, submission, plan posting, release and job reports
-are permitted. Owner acceptance, merge/land, overrides, criteria edits,
+Git push, checks/evidence, submission, plan posting, release, job reports
+and review skips (a runner's word that it will not serve a review job its
+poll was offered, posted as that job's actor) are permitted. Owner acceptance, merge/land, overrides, criteria edits,
 decisions, token administration, policy changes and browser access return
 403 with the runner name and token ID, never the secret. Invalid, expired or
 revoked API credentials return 401. Reviews still use the model's own agent
@@ -152,7 +153,7 @@ machine with no owner token:
 
 Do not promote the deployment if this smoke check fails. Local validation:
 `npm test`, `npm run typecheck`, `node --test cli/runner-token.test.mjs cli/runner-git.test.mjs` and
-`npx vitest run --config cli/runner-vitest.config.mjs`. The task-specific
+`npx vitest run src/runner-token.spec.mjs` (it runs under `npm test` too). The task-specific
 tests live in `src/` and `cli/` to stay within this task's scope.
 
 ## Setting up a runner
@@ -347,7 +348,7 @@ uses; that folder serves an opencode entry with a custom `command`.
 
 ## Home runner
 
-`atelier runner --name home:NAME [--once] [--config PATH] [--integrate]` polls the queue every 30 seconds, claims one eligible job, and runs its configured harness. A runner offers `build`, `plan`, `merge-main`, `merge-main-task` and `merge-plan` jobs for every harness in its config, and `review` when its config lists it. A build or plan job runs the harness in the claimed workspace; a review job clones the head into a folder of its own, reads the diff and writes a verdict. The task brief is kept outside the workspace. A runner with `--integrate` runs no harness and takes no config: it offers only the `integrate` and `refresh` jobs, merging each part onto its plan's branch as `atelier/integrator`. Before its first poll every runner reads `GET /api/version` and refuses to start while the server lacks a capability one of the jobs it offers declares (`JOB_CAPABILITIES`, `src/route-level.ts`; the integrator's jobs need `plans.integration.v1` and `runners.scoped-token.v1`), naming the missing capabilities and the deploy to run, so a runner that would fail its calls one by one stops at once instead. The runner gives each opencode run a data folder of
+`atelier runner --name home:NAME [--once] [--config PATH] [--integrate]` polls the queue every 30 seconds, claims one eligible job, and runs its configured harness. A runner offers `build`, `plan`, `merge-main`, `merge-main-task` and `merge-plan` jobs for every harness in its config, and `review` when its config lists it. A build or plan job runs the harness in the claimed workspace; a review job clones the head into a folder of its own, reads the diff and writes a verdict. The task brief is kept outside the workspace. A runner with `--integrate` runs no harness and takes no config: it offers only the `integrate` and `refresh` jobs, merging each part onto its plan's branch as `atelier/integrator`. Before its first poll every runner reads `GET /api/version` and refuses to start while the server lacks a capability one of the jobs it offers declares (`JOB_CAPABILITIES`, `src/route-level.ts`; the integrator's jobs need `plans.integration.v1` and `runners.scoped-token.v1`; the review job needs the review skip, `reviews.skip.v1` and `reviews.skip-as-runner.v1`, beside the binding and the unparsable route), naming the missing capabilities and the deploy to run, so a runner that would fail its calls one by one stops at once instead. The runner gives each opencode run a data folder of
 its own (`XDG_DATA_HOME`) beside the workspace, removed as the harness ends,
 however it ends: opencode processes sharing
 `~/.local/share/opencode/opencode.db` deadlock on it. The shipped
@@ -429,13 +430,12 @@ deadline from 45 minutes, and `finishTimeoutMs` to change the whole finish
 deadline from 60 minutes. Expiry ends the process group as above. A finish
 timeout leaves the claim held.
 
-A runner takes a new job only while the machine's load average is under a
-limit, so a saturated machine is not handed another harness to run on top of
-the rest (t403). The limit is the core count by default; set `loadLimit` to a
-number to change it, and the runner holds off while the load is at or above
-it, saying so on each poll it skips. The reading is the one-minute load
-average, and it is checked again before each job in a poll, so finishing a
-heavy job lets the load fall before another begins.
+Runner admission no longer uses load average. Individual test commands share
+[the host test-slot pool](test-slots.md), including commands an agent runs
+through the documented wrapper. Review harnesses inherit review priority;
+build and plan harnesses inherit ordinary priority. The runner includes the
+wrapper's absolute path in build, plan and review briefs. The old `loadLimit`
+setting is ignored.
 
 ```sh
 atelier runner --name home:studio

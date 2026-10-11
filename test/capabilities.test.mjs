@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -119,11 +119,15 @@ test("a command or job with no declaration needs nothing", () => {
 // set of commands that depend on one; a command dropped from it, or one that
 // starts depending on a capability without declaring it, fails here.
 test("each command that relies on a named capability declares it in its module", () => {
-  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["edit", "init", "integrated", "integration-failed", "land", "merge", "models", "new", "plan", "refresh-failed", "refreshed", "review", "review-claim", "review-unparsable", "token"]);
+  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["area", "board", "edit", "init", "integrated", "integration-failed", "land", "merge", "models", "new", "plan", "refresh-failed", "refreshed", "review", "review-claim", "review-unparsable", "token"]);
   for (const command of ["integrated", "integration-failed", "refreshed", "refresh-failed"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["plans.integration.v1"], command);
-  assert.deepEqual(COMMAND_CAPABILITIES.land, ["land.workflow.v1", "items.brief-criteria.v1", "reviews.criteria-binding.v1", "projects.require-criteria.v1"]);
-  assert.deepEqual(COMMAND_CAPABILITIES.new, ["items.brief-criteria.v1"]);
-  assert.deepEqual(COMMAND_CAPABILITIES.edit, ["items.brief-criteria.v1", "reviews.criteria-binding.v1"]);
+  // land counts the runners that skipped its review request by the request number the answer carries (t353).
+  assert.deepEqual(COMMAND_CAPABILITIES.land, ["land.workflow.v1", "items.brief-criteria.v1", "reviews.criteria-binding.v1", "projects.require-criteria.v1", "reviews.skip.v1"]);
+  // new and edit assign a task to a function area (--area, t456); area manages them and board reads the snapshot.
+  assert.deepEqual(COMMAND_CAPABILITIES.new, ["items.brief-criteria.v1", "areas.manage.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.edit, ["items.brief-criteria.v1", "reviews.criteria-binding.v1", "areas.manage.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.area, ["areas.manage.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.board, ["areas.board.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.init, ["projects.require-criteria.v1"]);
   for (const command of ["review", "review-claim"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["reviews.criteria-binding.v1"], command);
   // merge posts the owner's review and, for an accepted plan that conflicts with main, the plan refresh route.
@@ -155,7 +159,7 @@ test("a subcommand's capabilities are asked only when that subcommand runs", () 
   // A prototype key is not a subcommand.
   assert.deepEqual(requiredForCommand("models", "constructor"), []);
   // The command's own are asked under every word.
-  assert.deepEqual(requiredForCommand("edit", "t1"), ["items.brief-criteria.v1", "reviews.criteria-binding.v1"]);
+  assert.deepEqual(requiredForCommand("edit", "t1"), ["items.brief-criteria.v1", "reviews.criteria-binding.v1", "areas.manage.v1"]);
 });
 
 test("a module that requires a name no declaration publishes is refused, naming the module", () => {
@@ -188,6 +192,78 @@ test("the integration routes are guaranteed from legacy level 6, as the commits 
   assert.deepEqual(capabilitiesForLevel(6), ["plans.integration.v1", "plans.refresh.v1"]);
   assert.deepEqual(capabilitiesForLevel(13), ["plans.integration.v1", "plans.refresh.v1"]);
   assert.deepEqual(capabilitiesForLevel(14), ["plans.integration.v1", "plans.refresh.v1", "land.workflow.v1"]);
+});
+
+// Raising ROUTE_LEVEL gates nothing by itself since t458: a raise stands for
+// the capability declared with its level, and a raise that declares none
+// would leave a legacy server at the old level passing for the new routes.
+// Every level from the last one declared before capabilities (20) to the
+// current one ties to a declaration, and no declaration runs ahead of the
+// number.
+test("every route level raised since capabilities declares the capability it stands for", () => {
+  const levels = new Set(CAPABILITIES.map((c) => c.level).filter((l) => l !== undefined));
+  for (let level = 21; level <= ROUTE_LEVEL; level++) assert.ok(levels.has(level), `route level ${level} was raised without declaring a capability in src/route-level.ts`);
+  assert.equal(Math.max(...levels), ROUTE_LEVEL, "a declaration carries a level ROUTE_LEVEL has not reached");
+  // main's raises while t458 was built: the review skip (t353, 21 and 22) and the function areas (t456, 23).
+  assert.deepEqual(CAPABILITIES.filter((c) => c.level === 21).map((c) => c.name), ["reviews.skip.v1"]);
+  assert.deepEqual(CAPABILITIES.filter((c) => c.level === 22).map((c) => c.name), ["reviews.skip-as-runner.v1"]);
+  assert.deepEqual(CAPABILITIES.filter((c) => c.level === 23).map((c) => c.name).sort(), ["areas.board.v1", "areas.manage.v1"]);
+  assert.deepEqual(capabilitiesForLevel(20).filter((n) => n.startsWith("reviews.skip") || n.startsWith("areas.")), []);
+  assert.deepEqual(capabilitiesForLevel(22).filter((n) => n.startsWith("areas.")), []);
+});
+
+// The review job reports a review it will not serve as the job's actor
+// (t353): a server at 20, which has the review routes but refuses the skip,
+// and one at 21, which refuses a runner token's skip, are both short.
+test("the review job requires the skip routes, and a legacy server from before them is refused", () => {
+  assert.deepEqual(JOB_CAPABILITIES.review, ["reviews.criteria-binding.v1", "reviews.unparsable.v1", "reviews.skip.v1", "reviews.skip-as-runner.v1", "runners.scoped-token.v1"]);
+  assert.deepEqual(checkCapabilities({ routeLevel: 20 }, requiredForJobs(["review"])).missing, ["reviews.skip.v1", "reviews.skip-as-runner.v1"]);
+  assert.deepEqual(checkCapabilities({ routeLevel: 21 }, requiredForJobs(["review"])).missing, ["reviews.skip-as-runner.v1"]);
+  assert.equal(checkCapabilities({ routeLevel: 22 }, requiredForJobs(["review"])).ok, true);
+  assert.equal(checkCapabilities({ routeLevel: 22 }, requiredForJobs([...DEFAULT_JOBS, "review", "integrate", "refresh"])).ok, true, "no job asks for the areas");
+  const short = checkCapabilities({ capabilities: SERVER_CAPABILITIES.filter((n) => n !== "reviews.skip-as-runner.v1") }, requiredForJobs(["review"]));
+  assert.deepEqual(short.missing, ["reviews.skip-as-runner.v1"]);
+  assert.equal(checkCapabilities({ capabilities: SERVER_CAPABILITIES.filter((n) => n !== "reviews.skip-as-runner.v1") }, requiredForJobs(["build"])).ok, true);
+});
+
+// The file's shape is what lets independent changes merge: the ROUTE_LEVEL
+// block is apart from the declarations, and each declaration is a line under
+// its family, so a raise on one side and a declaration on the other, or two
+// declarations under two families, merge without conflict (git merge-file,
+// the three-way merge git merge runs), where one array line for every name,
+// or a block right after the ROUTE_LEVEL line, conflicted on every raise.
+test("a route level raise and a capability added elsewhere merge cleanly, and so do two capabilities under two families", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-capabilities-merge-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const base = readFileSync(resolve("src/route-level.ts"), "utf8");
+  const levelLine = `export const ROUTE_LEVEL = ${ROUTE_LEVEL};`;
+  assert.ok(base.includes(levelLine));
+  const raise = base.replace(levelLine, `// ${ROUTE_LEVEL + 1}: a route one task added.\nexport const ROUTE_LEVEL = ${ROUTE_LEVEL + 1};`);
+  const under = (family, line) => {
+    const last = [...base.matchAll(new RegExp(`  declare\\("${family}\\.[^\\n]*\\n`, "g"))].at(-1);
+    assert.ok(last, family);
+    return base.slice(0, last.index + last[0].length) + line + base.slice(last.index + last[0].length);
+  };
+  const reviewsAdd = under("reviews", `  declare("reviews.other.v1", ${ROUTE_LEVEL + 1}, "a route one task added"),\n`);
+  const areasAdd = under("areas", `  declare("areas.other.v1", undefined, "a route another task added"),\n`);
+  const merge = (ours, theirs) => {
+    const files = { base: join(dir, "base.ts"), ours: join(dir, "ours.ts"), theirs: join(dir, "theirs.ts") };
+    writeFileSync(files.base, base); writeFileSync(files.ours, ours); writeFileSync(files.theirs, theirs);
+    try {
+      return { conflicts: 0, merged: execFileSync("git", ["merge-file", "-p", files.ours, files.base, files.theirs], { encoding: "utf8" }) };
+    } catch (error) {
+      return { conflicts: error.status, merged: String(error.stdout) };
+    }
+  };
+  const a = merge(raise, reviewsAdd);
+  assert.equal(a.conflicts, 0, `a raise against a declaration conflicts:\n${a.merged}`);
+  assert.ok(a.merged.includes(`export const ROUTE_LEVEL = ${ROUTE_LEVEL + 1};`) && a.merged.includes('declare("reviews.other.v1"'));
+  const b = merge(reviewsAdd, areasAdd);
+  assert.equal(b.conflicts, 0, `two declarations under two families conflict:\n${b.merged}`);
+  assert.ok(b.merged.includes('declare("reviews.other.v1"') && b.merged.includes('declare("areas.other.v1"'));
+  const c = merge(raise, areasAdd);
+  assert.equal(c.conflicts, 0, `a raise against a declaration at the end conflicts:\n${c.merged}`);
+  assert.doesNotMatch(a.merged + b.merged + c.merged, /^[<>=]{7}/m);
 });
 
 // The CLI against a stub server: what GET /api/version answers decides
@@ -242,6 +318,8 @@ function invocations(root) {
     { argv: ["review-unparsable", "t1", "--head", SHA, "--note", "n", "--reply-file", reply, "--project", "proj"], required: COMMAND_CAPABILITIES["review-unparsable"] },
     { argv: ["token", "issue", "--as", "codex/x"], required: ["runners.scoped-token.v1"] },
     { argv: ["token", "store", "--runner", "home:x"], required: ["runners.scoped-token.v1"] },
+    { argv: ["area", "list", "--project", "proj"], required: COMMAND_CAPABILITIES.area },
+    { argv: ["board", "--project", "proj"], required: COMMAND_CAPABILITIES.board },
   ];
 }
 
@@ -259,7 +337,7 @@ test("a server missing one capability a command needs refuses it before its firs
 
 test("a server with every capability a command needs, or more, lets its first request through", async (t) => {
   const extra = { commit: "0123456789abcdef", routeLevel: ROUTE_LEVEL, capabilities: [...SERVER_CAPABILITIES, "future.thing.v1"] };
-  for (const argv of [["new", "A short title", "--project", "proj"], ["models", "note", "gpt", "a note"], ["review-claim", "t1", "--project", "proj"], ["token", "issue", "--as", "codex/x"]]) {
+  for (const argv of [["new", "A short title", "--project", "proj"], ["models", "note", "gpt", "a note"], ["review-claim", "t1", "--project", "proj"], ["token", "issue", "--as", "codex/x"], ["board", "--project", "proj"]]) {
     const f = await stub(t, extra);
     const r = await f.run(argv);
     assert.doesNotMatch(r.output, /lacks capabilities/, argv.join(" "));
@@ -292,7 +370,7 @@ test("an unavailable or malformed version answer refuses with its own message an
   const down = await stub(t, { error: "unavailable" }, { status: 503 });
   const r = await down.run(["new", "A short title", "--project", "proj"]);
   assert.equal(r.status, 4, r.output);
-  assert.match(r.output, /^atelier: the server did not answer GET \/api\/version with a version, so its capabilities \(items\.brief-criteria\.v1\) cannot be checked\. Check that the server is reachable and deployed\./);
+  assert.match(r.output, /^atelier: the server did not answer GET \/api\/version with a version, so its capabilities \(items\.brief-criteria\.v1, areas\.manage\.v1\) cannot be checked\. Check that the server is reachable and deployed\./);
   assert.deepEqual(down.requests.map((x) => x.path), ["/api/version"]);
   const text = await stub(t, "<html>not json</html>");
   const n = await text.run(["new", "A short title", "--project", "proj"]);
