@@ -24,4 +24,13 @@
 // 19: a project that requires criteria refuses a task filed or cleared
 // without them, and init takes --require-criteria (t397).
 // Runner-scoped API credentials and revocable Git gateway (t444).
-export const ROUTE_LEVEL = 20;
+// 21: a runner reports a review it will not serve to review-skip, the
+// queue's review tasks and the review request's answer name the request's
+// number, and the landing counts skips by it (t353). 22: a runner token
+// posts review-skip for a review job it was offered, under the job's actor,
+// as the runner has done since runner tokens (t444); a server at 21 refused
+// it, so a runner's skip never reached the landing (t353).
+// 23: function areas, task assignments and the shared board snapshot (t456).
+// 24: the pool's standing: atelier models set (POST /models/ID/set), and PUT
+// /models takes state, roles and tier (t389).
+export const ROUTE_LEVEL = 24;
