@@ -3,6 +3,7 @@ import { MODEL_PROFILES } from "./models/registry.ts";
 import type { Dispatch } from "./dispatch/rules";
 import type { CheckDeclaration } from "./checks.ts";
 import type { LargeRef } from "./large.ts";
+import type { CommitIdentityPolicy } from "./commit-identity.ts";
 import { criteriaOf } from "./criteria.ts";
 // Atelier's rules, as pure functions. Nothing here touches Cloudflare, so the
 // whole policy can be tested with `node --test` and read in one place.
@@ -418,6 +419,12 @@ export interface ProjectPolicy {
   // or without the owner's confirmation (`atelier init --no-override`, t371):
   // every change gets its review from another family, or does not land.
   noOverride?: boolean;
+  // The name and address the project's commits carry, the agent addresses
+  // allowed beside it, and the addresses declared private (t451,
+  // src/commit-identity.ts). A claim writes the name and address into the
+  // workspace's Git config; a runner and a landing refuse what falls outside
+  // it. Absent in a project set up before t451 until the owner names one.
+  commitIdentity?: CommitIdentityPolicy;
 }
 
 // Reject malformed policy at the boundary instead of silently widening access.
