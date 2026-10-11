@@ -53,9 +53,11 @@ export default async function statusCommand() {
     request("GET", "/queue", undefined, OWNER).catch(() => null),
     request("GET", "/runners", undefined, OWNER).catch(() => null),
   ]);
+  // A project whose tasks cannot be read is listed as not read (null items),
+  // as `atelier inbox` lists it, and the others are still shown.
   const views = await Promise.all(chosen.map(async (p) => {
-    const { items } = await call("GET", P(p.name), undefined, OWNER);
-    return { name: p.name, title: p.title, items, inbox: projectInbox(notices, p.name) };
+    const read = await request("GET", P(p.name), undefined, OWNER).catch(() => null);
+    return { name: p.name, title: p.title, items: Array.isArray(read?.items) ? read.items : null, inbox: projectInbox(notices, p.name) };
   }));
   if (args.json) return console.log(JSON.stringify(statusJson(views, server(), Array.isArray(offers) ? offers : null), null, 2));
   const strays = formatStrays(localStrays());

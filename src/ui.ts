@@ -1185,6 +1185,9 @@ function pulseGraph(p: Pulse): string {
 // published, under the card's own link.
 export interface HomeView extends ProjectView {
   waiting?: Attention;
+  // The project's recent moves could not be read: the card says so rather
+  // than reading as a quiet fortnight.
+  eventsUnread?: boolean;
 }
 
 export function renderHome(views: HomeView[], ownerName: string | null = null, now = new Date(), owner = DEFAULT_OWNER, showcase: Record<string, "named" | "anonymous"> = {}): string {
@@ -1213,7 +1216,7 @@ export function renderHome(views: HomeView[], ownerName: string | null = null, n
     const waitCount = a ? `${waiting.length}${a.unknown.length ? "?" : ""}` : "?";
     const tally = `<p class="card-tally"><span><b>${waitCount}</b>waiting on you</span><span><b>${count(["claimed", "submitted", "accepted"])}</b>running</span><span><b>${count(["open"])}</b>ready to start</span><span><b>${count(["merged"])}</b>merged</span></p>`;
     const last = p.lastAt ? ` · last activity ${e(ago(p.lastAt, now))}` : "";
-    const line = p.moves || p.decisions
+    const line = v.eventsUnread ? "Its recent moves could not be read." : p.moves || p.decisions
       ? `${plural(p.moves, "move")} by ${plural(p.agents.length, "agent")} and ${plural(p.decisions, "decision")} in two weeks${p.cut ? ", from the most recent part of the record" : ""}${last}.`
       : `No moves in the last two weeks${last}.`;
     const waitRows = waiting.slice(0, 3).map((t) => ownerRow(t)).join("");
@@ -1466,11 +1469,14 @@ const newTaskForm = (p: ProjectRecord) => `<details class="new-task"><summary>+ 
 // Overview: where the project stands and what waits on the owner there, with
 // Atelier's own record of it under a disclosure named for what it is (finding
 // 19).
-export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEvent[], ownerName: string | null = null, standing?: Standing, board?: BoardSnapshot): string {
+// `events` or `board` null: not read, which the page says rather than
+// showing an empty record or no tasks.
+export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEvent[] | null, ownerName: string | null = null, standing?: Standing, board?: BoardSnapshot | null): string {
+  const unread = (what: string) => `<p class="notice" role="status">${what} could not be read.</p>`;
   return projectPage(p, "Overview", `
   ${standing ? standingSection(p, standing) : ""}
-  ${board ? renderBoard(p.name, board) : ""}
-  <details class="disclosure"><summary>Ledger events</summary>${eventTable(events, true)}</details>
+  ${board ? renderBoard(p.name, board) : board === null ? unread("The task board") : ""}
+  <details class="disclosure"><summary>Ledger events</summary>${events ? eventTable(events, true) : unread("The project's events")}</details>
   `, ownerName);
 }
 
