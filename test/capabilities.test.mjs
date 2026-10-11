@@ -298,8 +298,10 @@ async function stub(t, version, { status = 200 } = {}) {
       return res.end(typeof version === "string" ? version : JSON.stringify(version));
     }
     res.writeHead(200, { "content-type": "application/json" });
-    // One answer for every route: an item, a pool entry, a token, a note.
-    res.end(JSON.stringify({ id: "t1", title: "x", scope: [], head: SHA, item: { id: "t1", head: SHA, state: "claimed", title: "x", scope: [] }, criteria: BINDING, at: "2026-10-10T00:00:00.000Z", by: "owner", text: "x", kept: true, expiresAt: "later", token: "atl_x", actor: "codex/x", remote: "https://fork.invalid/x.git", defaultBranch: "main" }));
+    // One answer for every route: an item, a pool entry, a token, a note,
+    // and a project with no live items, which atelier new reads first to
+    // refuse a duplicate (t409).
+    res.end(JSON.stringify({ items: [], id: "t1", title: "x", scope: [], head: SHA, item: { id: "t1", head: SHA, state: "claimed", title: "x", scope: [] }, criteria: BINDING, at: "2026-10-10T00:00:00.000Z", by: "owner", text: "x", kept: true, expiresAt: "later", token: "atl_x", actor: "codex/x", remote: "https://fork.invalid/x.git", defaultBranch: "main" }));
   });
   t.after(() => server.close());
   await new Promise((done, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", done); });
