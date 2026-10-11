@@ -54,6 +54,8 @@ function declaredPath(expr) {
   if (/^P\(\s*name\s*\)$/.test(text)) return "/projects/{project}";
   const template = /^`\$\{I\(\s*name\s*,\s*id\s*\)\}((?:\/[a-z-]+)*)(\/\$\{encodeURIComponent\(runId\)\})?`$/.exec(text);
   if (template) return `${ITEM}${template[1]}${template[2] ? "/{run}" : ""}`;
+  // The project-level baseline read (t435), the one project route below the project record a runner token may call.
+  if (/^`\$\{P\(\s*name\s*\)\}\/baseline-token`$/.test(text)) return "/projects/{project}/baseline-token";
   const literal = /^"(\/[a-z/-]+)"$/.exec(text);
   if (literal) return literal[1];
   return null;
@@ -301,6 +303,7 @@ test("the source check reads call sites as the commands write them", () => {
   assert.equal(declaredPath("`${I(name, id)}/sandbox/${encodeURIComponent(runId)}`"), `${ITEM}/sandbox/{run}`);
   assert.equal(declaredPath('"/runs"'), "/runs");
   assert.equal(declaredPath("P(name)"), "/projects/{project}");
+  assert.equal(declaredPath("`${P(name)}/baseline-token`"), "/projects/{project}/baseline-token");
   assert.equal(declaredPath("`${P(name)}/items`"), null, "a path on another helper is not read, and fails the check");
   assert.deepEqual(bodyKeys('{ head, ...(rebasedFrom ? { rebasedFrom } : {}) }'), ["head", "rebasedFrom"]);
   assert.deepEqual(bodyKeys('{ kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed, outputTail: `${r.output.slice(-3500)}`, ...(mainHead ? { merged: true, mainHead } : {}) }'),

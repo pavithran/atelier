@@ -51,7 +51,7 @@ const PLAN_DOCUMENT = { schema: "atelier.plan.v1", goal: "Ship", parts: [{ key: 
 // The reads runnerRoute allows that no runner call makes: configuration and
 // base reads a runner may make by hand (docs/runners.md), each exercised below.
 const SPARE_READS = [
-  ["GET", "/projects/p/decisions"], ["GET", "/projects/p/baseline-head"], ["POST", "/projects/p/baseline-token"],
+  ["GET", "/projects/p/decisions"], ["GET", "/projects/p/baseline-head"],
   ["GET", "/projects/p/items/t1/brief"], ["GET", "/projects/p/items/t1/diff"], ["GET", `/projects/p/items/t1/logs/${"a".repeat(64)}`], ["GET", `/projects/p/items/t1/diffs/${"a".repeat(64)}`],
 ];
 
@@ -92,7 +92,7 @@ test("each declared call is allowed for the credential it declares, and refused 
     assert.equal(call.actor === "none", call.name === "config", `${call.name}: only the config read names no actor`);
   }
   // A write token is never a runner's to ask for, whatever route asks.
-  for (const name of ["read-token", "base-token"]) assert.equal(runnerRoute("POST", callParts(declaredCall(name)), { scope: "write" }), false, name);
+  for (const name of ["read-token", "base-token", "baseline-token"]) assert.equal(runnerRoute("POST", callParts(declaredCall(name)), { scope: "write" }), false, name);
   assert.throws(() => declaredCall("frobnicate"), /frobnicate is not a call the runner declares/);
 });
 
@@ -412,7 +412,7 @@ test("a build job: claim, reads, tokens, push, evidence, sandbox, submit and rel
   assert.equal((await expect(api("POST", `${p.base(id)}/submit`, { body: { summary: "Built" } }), 200, "submit")).state, "submitted");
   assert.equal((await expect(api("POST", `${p.base(id)}/release`, { body: { note: "done" } }), 200, "release")).state, "open");
   await denied(api("GET", p.base(id)), token, "item after release");
-  cover("project", "claim-project", "claim", "item", "job-brief", "read-token", "base-token", "push", "evidence", "sandbox", "sandbox-run", "submit", "release");
+  cover("project", "claim-project", "claim", "item", "job-brief", "read-token", "base-token", "baseline-token", "baseline-project", "push", "evidence", "sandbox", "sandbox-run", "submit", "release");
 });
 
 test("a plan job: claim, the brief, a valid document, a refused one, and the release", async () => {
