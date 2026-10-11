@@ -26,11 +26,17 @@ const methodAt = (line) => methods.findLast((m) => m.start <= line);
 // The lines of the ledger matching a pattern, with the method each is in.
 const sites = (pattern) => ledger.flatMap((line, i) => (pattern.test(line) ? [{ line: i + 1, method: methodAt(i) }] : []));
 
-test("makeDispatch is called only by standingDispatch", () => {
+test("makeDispatch is called only by overrideDispatch, and that only by standingDispatch", () => {
+  // overrideDispatch (src/dispatch/rules.ts) is the one factory over makeDispatch.
+  const rules = readFileSync("src/dispatch/rules.ts", "utf8").split("\n");
+  const inOverride = rules.flatMap((line, i) => (/\bmakeDispatch\(/.test(line) && !/export function makeDispatch\(/.test(line) ? [i + 1] : []));
+  const start = rules.findIndex((l) => /export function overrideDispatch\(/.test(l)) + 1;
+  const end = start + rules.slice(start).findIndex((l) => /^}/.test(l)) + 1;
+  assert.ok(inOverride.length > 0 && inOverride.every((n) => n > start && n <= end), "rules.ts calls makeDispatch only inside overrideDispatch");
   const calls = files("src").flatMap((f) => readFileSync(f, "utf8").split("\n").flatMap((line, i) =>
-    /\bmakeDispatch\(/.test(line) && !/export function makeDispatch\(/.test(line) && !/typeof makeDispatch/.test(line) ? [`${f}:${i + 1}`] : []));
-  const allowed = sites(/\bmakeDispatch\(/).filter((s) => s.method.name === "standingDispatch").map((s) => `src/ledger.ts:${s.line}`);
-  assert.equal(allowed.length, 1, "standingDispatch calls makeDispatch once");
+    /\b(makeDispatch|overrideDispatch)\(/.test(line) && !/export function (makeDispatch|overrideDispatch)\(/.test(line) && !/typeof (makeDispatch|overrideDispatch)/.test(line) && f !== join("src", "dispatch", "rules.ts") ? [`${f}:${i + 1}`] : []));
+  const allowed = sites(/\boverrideDispatch\(/).filter((s) => s.method.name === "standingDispatch").map((s) => `src/ledger.ts:${s.line}`);
+  assert.equal(allowed.length, 1, "standingDispatch calls overrideDispatch once");
   assert.deepEqual(calls, allowed);
 });
 
