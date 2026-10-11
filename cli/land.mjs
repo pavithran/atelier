@@ -548,9 +548,13 @@ export async function runLand(io) {
     await step("check", ["check"], dir);
     // The triage, before the submission: a submitted task can draw an
     // automatic review request, so a triage that stops leaves the task
-    // claimed by its holder and nothing asked of a reviewer (t475).
+    // claimed by its holder and nothing asked of a reviewer (t475). The
+    // gate reads the criteria again after the model answers, and once more
+    // here, just before the submission: criteria changed meanwhile triage
+    // again, still with nothing submitted.
     const triageAt = { triage, dir, id, itemPath, head, mainHead, target, record, guard: guardLease };
     let triaged = await triageGate(io, triageAt);
+    triaged = await triageGate(io, { ...triageAt, previous: triaged });
     await step("submit", ["submit", "--summary", mergedIn ? `Merged with main at ${short(mainHead)}; the required checks pass.` : "The required checks pass."], dir);
 
     // The review: the server says whether the gate needs one and who reviews;
@@ -565,9 +569,10 @@ export async function runLand(io) {
       // A named reviewer is a review the owner asks for, so the server makes
       // the request even where the gate needs none, and refuses, with its
       // reason, where the gate cannot proceed at all. The triage is asked
-      // first whether it still stands: criteria changed since it ran (by
-      // the submission, or the owner meanwhile) triage again.
-      triaged = await triageGate(io, { ...triageAt, previous: triaged });
+      // first whether it still stands: criteria changed since the
+      // submission stop the landing here, with the task submitted and no
+      // review asked for, which the stop says.
+      await triageStillStands(io, { triaged, id, itemPath, head, retry: triageRetry(io, triage, id) });
       guardLease();
       const ask = await request("POST", `${itemPath}/review-request`, reviewer ? { reviewer, wanted: true } : {});
       if (!ask.needed && reviewer) throw new StepError(`the server made no review request for ${reviewer} (${ask.reason}); ${id} stays submitted`);
@@ -719,7 +724,7 @@ async function dryRunTriage(io, triage, item) {
 async function triageGate(io, { triage, dir, id, itemPath, head, mainHead, target, record, guard, previous = null }) {
   if (triage.mode === "off") return null;
   const { request, git, print } = io;
-  const retry = `atelier land ${id}${io.args?.workflow === true ? " --workflow" : ""}${triage.mode === "model" && triage.source === "--triage" ? ` --triage ${triage.actor}` : ""}`;
+  const retry = triageRetry(io, triage, id);
   const base = git(["merge-base", head, mainHead], { cwd: dir });
   // A record the landing cannot go on without: the owner's bypass or
   // override. The server records it only from the signed-in project owner,
@@ -774,6 +779,24 @@ async function triageGate(io, { triage, dir, id, itemPath, head, mainHead, targe
     throw new StepError([...findings,
       `The landing stops before the review request: nothing was submitted for review, the merged head stays pushed to ${id}'s fork, and ${id} stays with its holder. Fix what the triage found and run ${retry} again, which triages the new head; or, as the project owner, go past this stop with ${retry} --override-triage "REASON", or skip the triage with ${retry} --no-triage "REASON" — either is recorded with the head and the criteria binding before the landing goes on.`].join("\n"));
   }
+}
+
+// The command that runs the landing again, triaging as this one did.
+const triageRetry = (io, triage, id) => `atelier land ${id}${io.args?.workflow === true ? " --workflow" : ""}${triage.mode === "model" && triage.source === "--triage" ? ` --triage ${triage.actor}` : ""}`;
+
+// After the submission, before the review request: the binding the triage
+// stood for must still be the task's. Nothing is triaged here, since the
+// task is already submitted; criteria changed since then stop the landing
+// before any review is asked for, saying the task is submitted.
+async function triageStillStands(io, { triaged, id, itemPath, head, retry }) {
+  if (!triaged) return;
+  const d = await io.request("GET", itemPath);
+  const now = { head: d.item?.head ?? null, base: triaged.base, criteria: criteriaOf(d.item ?? {}) };
+  if (sameBinding(triaged, now)) return;
+  const what = now.head !== triaged.head
+    ? `its head moved from the triaged ${short(triaged.head)} to ${short(now.head)}`
+    : `its acceptance criteria changed after the triage (binding ${short(triaged.criteria)}, now ${short(now.criteria)})`;
+  throw new StepError(`${id} was submitted at ${short(head)}, but ${what}, so the landing stops before the review request: no review was asked for, and ${id} stays submitted with its holder. Run ${retry} again, which triages the change against the criteria as they are now before it asks for the review`);
 }
 
 // One triage: the model's answer for the binding, or why there is none.
@@ -1151,7 +1174,9 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, triage }) {
   const live = !!current?.instance && LIVE.includes(current.status?.status);
   if (d0.item.state === "accepted" && !live) die(`${id} is accepted at ${short(d0.item.acceptedHead)}; merge it with: atelier merge ${id}.`);
   let started;
-  try { started = await request("POST", wfPath, { checks: askedChecks, ...(reviewer ? { reviewer } : {}), ...(noReview ? { noReview: true } : {}) }); }
+  // A landing that triages says so, and the Workflow then submits and asks
+  // for the review only while the triage it is told of stands (t475).
+  try { started = await request("POST", wfPath, { checks: askedChecks, ...(reviewer ? { reviewer } : {}), ...(noReview ? { noReview: true } : {}), ...(triage.mode !== "off" ? { triage: true } : {}) }); }
   catch (error) { die(error.message); }
   // The mode is the instance's, as the server recorded it: a live instance
   // keeps the mode it was started with, and a server older than the modes
@@ -1264,10 +1289,12 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, triage }) {
         // The triage, before the head is reported: the Workflow submits and
         // asks for the review only once it has the head, so a triage that
         // stops ends the landing (the failed report below) with nothing
-        // submitted and no review asked for (t475).
-        await triageGate(io, { triage, dir, id, itemPath, head: merged.head, mainHead: merged.mainHead, target: merged.target, record, guard });
+        // submitted and no review asked for. The binding goes with the
+        // head, and the Workflow checks it against the Ledger before the
+        // submission and again before the review request (t475).
+        const triaged = await triageGate(io, { triage, dir, id, itemPath, head: merged.head, mainHead: merged.mainHead, target: merged.target, record, guard });
         guard();
-        await send("workspace", { round, head: merged.head, mainHead: merged.mainHead, mergedIn: merged.mergedIn });
+        await send("workspace", { round, head: merged.head, mainHead: merged.mainHead, mergedIn: merged.mergedIn, ...(triaged ? { triage: { base: triaged.base, criteria: triaged.criteria } } : {}) });
       } catch (error) {
         const conflicts = Array.isArray(error.data?.conflicts) && error.data.conflicts.length ? error.data.conflicts : null;
         // A conflict pauses the Workflow (it releases the lease and waits

@@ -1,13 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { ROUTE_LEVEL } from "../src/route-level.ts";
 import { criteriaOf } from "../src/criteria.ts";
 import {
-  decideTriage, parseTriage, recordedTriage, resolveTriage, sameBinding, triageBrief, triageCriteria, triageFormat, triageModelRefusal, triageRecord,
+  decideTriage, parseTriage, recordedTriage, resolveTriage, sameBinding, triageBrief, triageCriteria, triageFormat, triageModelRefusal, triageRecord, triageSettingRefusal, triageStandsRefusal,
 } from "../src/review/triage.ts";
 
 // Triage before the review (t475), against runLand with injected fakes and a
@@ -305,7 +306,7 @@ test("a triage model the pool refuses, or a task with no criteria, stops before 
   }
 });
 
-test("criteria that change while the model triages are triaged again, and a change after the submission is triaged again before the review request (t475)", async (t) => {
+test("criteria that change while the model triages are triaged again before the submission, and a change after the submission stops before the review request, saying the task is submitted (t475)", async (t) => {
   // The item is read before the triage, after it (changed: triage again),
   // before the second, after it, and so on.
   const during = landing(t, { args: { triage: "codex/gpt-6-astra", "no-review": true }, criteria: (reads) => (reads < 3 ? CRITERIA : [...CRITERIA, "A third"]), answers: [allMet(2), allMet(3)] });
@@ -316,16 +317,40 @@ test("criteria that change while the model triages are triaged again, and a chan
   assert.deepEqual(during.triages().map((d) => [d.outcome, d.criteria]), [["passed", criteriaOf({ accept: [...CRITERIA, "A third"] })]]);
   assert.deepEqual(during.commands(), ["push", "check", "submit"]);
 
-  // Criteria changed once the task was submitted: the triage runs again,
-  // and the review request waits for it.
+  // Criteria changed after the triage answered and was confirmed, just
+  // before the submission: the re-check there triages again, still with
+  // nothing submitted.
+  let confirmed = 0;
+  const before = landing(t, { args: { triage: "codex/gpt-6-astra", "no-review": true }, answers: [allMet(2), allMet(3)] });
+  const read = before.io.request;
+  before.io.request = async (method, path, body) => {
+    const r = await read(method, path, body);
+    // The first read after the model answers confirms the criteria; the
+    // next, just before the submission, finds a third, and it stays.
+    if (path === "/projects/proj/items/t1" && before.asked.length >= 1 && (before.asked.length > 1 || ++confirmed >= 2)) r.item.accept = [...CRITERIA, "A third"];
+    return r;
+  };
+  await runLand(before.io);
+  assert.equal(before.asked.length, 2);
+  assert.ok(before.at((c) => c.triage) < before.log.findLastIndex((c) => c.triage) && before.log.findLastIndex((c) => c.triage) < before.at((c) => c.command === "submit"), "both triages come before the submission");
+  assert.deepEqual(before.triages().map((d) => d.outcome), ["passed", "passed"]);
+  assert.equal(before.triages()[1].criteria, criteriaOf({ accept: [...CRITERIA, "A third"] }));
+
+  // Criteria changed once the task was submitted: no model is asked again
+  // and no review is asked for; the stop says the task is submitted.
   let submitted = false;
   const after = landing(t, { args: { triage: "codex/gpt-6-astra" }, criteria: () => (submitted ? [...CRITERIA, "A third"] : CRITERIA), answers: [allMet(2), allMet(3)] });
   const run = after.io.runCommand;
   after.io.runCommand = async (argv) => { const r = await run(argv); if (argv[2] === "submit") submitted = true; return r; };
-  await runLand(after.io);
-  assert.equal(after.asked.length, 2);
-  const second = after.log.filter((c) => c.triage).length === 2 ? after.log.findLastIndex((c) => c.triage) : -1;
-  assert.ok(after.at((c) => c.command === "submit") < second && second < after.at((c) => c.path?.endsWith("/review-request")), "the second triage comes after the submission and before the review request");
+  await assert.rejects(runLand(after.io), (error) => {
+    assert.match(error.message, /t1 was submitted at aaaaaaaa, but its acceptance criteria changed after the triage \(binding [0-9a-f]{8}, now [0-9a-f]{8}\), so the landing stops before the review request: no review was asked for, and t1 stays submitted with its holder/);
+    assert.match(error.message, /Run atelier land t1 --triage codex\/gpt-6-astra again/);
+    assert.doesNotMatch(error.message, /nothing was submitted/);
+    return true;
+  });
+  assert.equal(after.asked.length, 1);
+  assert.equal(after.reviewAsked(), false);
+  assert.ok(after.released());
 
   // Criteria that never settle stop the landing rather than triage for ever.
   let n = 0;
@@ -482,14 +507,24 @@ test("--dry-run reports the triage choice and its source without calling a model
 
 // ── the Workflow landing ────────────────────────────────────────────────────
 
-test("a Workflow landing triages after the local checks and reports the head only once every criterion is met (t475)", async (t) => {
+test("a Workflow landing triages after the local checks and reports the head only once every criterion is met, with the binding the Workflow checks (t475)", async (t) => {
   const l = landing(t, { workflow: true, args: { triage: "codex/gpt-6-astra" } });
   await runLand(l.io);
   const triagedAt = l.at((c) => c.triage);
   const reportedAt = l.at((c) => c.body?.event?.type === "workspace");
   assert.ok(l.at((c) => c.command === "check") < triagedAt && triagedAt < reportedAt, "checks, triage, then the head is reported");
-  assert.equal(l.log[reportedAt].body.event.payload.head, HEAD);
+  // The Workflow is started as one that triages, and the head goes with
+  // the merge base and the criteria the triage read, which the Workflow
+  // checks against the Ledger before it submits and before the review.
+  assert.equal(l.log.find((c) => c.method === "POST" && c.path?.endsWith("/landing-workflow") && !c.body?.event)?.body.triage, true);
+  assert.deepEqual(l.log[reportedAt].body.event.payload, { round: 0, head: HEAD, mainHead: HEAD, mergedIn: false, triage: { base: BASE, criteria: criteriaOf({ accept: CRITERIA }) } });
   assert.deepEqual(l.triages().map((d) => d.outcome), ["passed"]);
+
+  // Without a triage the Workflow is started as before, and the report carries no binding.
+  const off = landing(t, { workflow: true });
+  await runLand(off.io);
+  assert.equal(off.log.find((c) => c.method === "POST" && c.path?.endsWith("/landing-workflow") && !c.body?.event)?.body.triage, undefined);
+  assert.equal(off.log.find((c) => c.body?.event?.type === "workspace")?.body.event.payload.triage, undefined);
 });
 
 test("a Workflow landing whose triage stops reports a failed workspace, so the Workflow submits nothing, asks for no review and releases the lease (t475)", async (t) => {
@@ -518,4 +553,41 @@ test("a Workflow landing with --no-triage records the bypass before reporting th
   const refused = landing(t, { workflow: true, args: { "no-triage": "hotfix" }, project: { triage: "codex/gpt-6-astra" }, landFails: (b) => b.step === "triage" });
   await assert.rejects(runLand(refused.io), /could not be recorded on the ledger/);
   assert.equal(refused.log.find((c) => c.body?.event?.type === "workspace")?.body.event.payload.failed, true);
+});
+
+// ── the binding the Workflow checks, and the project's setting ──────────────
+
+test("a triage stands for a landing only while the head and criteria are the bound ones and a pass, bypass or override is recorded at that binding (t475)", () => {
+  const binding = { head: HEAD, base: BASE, criteria: criteriaOf({ accept: CRITERIA }) };
+  const item = { head: HEAD, accept: CRITERIA };
+  const at = (outcome, b = binding) => [{ kind: "land.triage", seq: 1, data: triageRecord(b, outcome, { triager: "codex/gpt-6-astra" }) }];
+  for (const outcome of ["passed", "bypassed", "overridden"]) assert.equal(triageStandsRefusal(item, at(outcome), binding), null, outcome);
+  assert.match(triageStandsRefusal(item, at("stopped"), binding), /no triage that lets the landing go on/);
+  assert.match(triageStandsRefusal(item, [], binding), /no triage that lets the landing go on/);
+  assert.match(triageStandsRefusal(item, at("passed", { ...binding, base: "c".repeat(40) }), binding), /no triage that lets the landing go on/);
+  assert.match(triageStandsRefusal({ ...item, head: "c".repeat(40) }, at("passed"), binding), /the head moved from the triaged aaaaaaaa to cccccccc/);
+  assert.match(triageStandsRefusal({ ...item, accept: [...CRITERIA, "A third"] }, at("passed"), binding), /the acceptance criteria changed since the triage/);
+  assert.match(triageStandsRefusal(item, at("passed"), null), /reported no triage binding/);
+  assert.match(triageStandsRefusal(item, at("passed"), { head: HEAD, base: BASE, criteria: "short" }), /reported no triage binding/);
+});
+
+test("the project's triage setting is harness/model under a harness Atelier ships an adapter for (t475)", () => {
+  assert.equal(triageSettingRefusal("codex/gpt-6-astra"), null);
+  assert.equal(triageSettingRefusal("claude-code/opus-5.5"), null);
+  assert.match(triageSettingRefusal("gpt-6-astra"), /must be harness\/model/);
+  assert.match(triageSettingRefusal(7), /must be harness\/model/);
+  assert.match(triageSettingRefusal("cursor/composer-2"), /runs under cursor, and Atelier ships adapters for/);
+});
+
+test("init --triage needs a model, and a bare one is refused before anything is sent (t475)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-init-triage-"));
+  try {
+    const r = spawnSync(process.execPath, [resolve("cli/atelier.mjs"), "init", "--triage"], { cwd: dir, encoding: "utf8" });
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /--triage needs a model: atelier init --triage H\/M, or --triage "" to clear it/);
+    assert.doesNotMatch(r.stderr, /fetch failed|ECONNREFUSED|ENOTFOUND/);
+    assert.equal(r.stdout, "");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

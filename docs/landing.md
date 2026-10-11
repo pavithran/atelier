@@ -179,9 +179,10 @@ without changing anything.
 A landing can have one model triage the change before the review is asked
 for (t475), so a change that plainly misses a criterion goes back to its
 holder without spending a review round. The model is `--triage H/M`, or else
-the project's `triage` setting (the policy's, or `"triage": "H/M"` in this
-Mac's registration of the project in the Atelier config); with neither, no
-triage runs. A model of the builder's own company may triage, since triage
+the project's `triage` setting (the policy's, set with `atelier init --triage
+H/M` and cleared with `--triage ""`, or `"triage": "H/M"` in this Mac's
+registration of the project in the Atelier config); with neither, no triage
+runs. A model of the builder's own company may triage, since triage
 is not the independent review; the pool's rules still apply: the model must
 be in the pool, not refused, and not paid per token. It runs on the owner's
 Mac through its harness's adapter (`bin/harness`), read-only, for at most 30
@@ -194,9 +195,19 @@ For each criterion it answers met, not-met or unsure, with its evidence and
 a file and line, or the reason no location applies. Its brief has it trace
 the production request paths the change touches and list the runtime
 behaviour it could not verify. A result is bound to the head, the merge base
-and the criteria binding: criteria that change before the review request
-are triaged again, and a pass recorded at the same binding by the same model
-is not asked for twice.
+and the criteria binding, and a pass recorded at the same binding by the same
+model is not asked for twice. The criteria are read again just before the
+submission, and criteria changed by then are triaged again with nothing yet
+submitted. Criteria changed after the submission stop the landing before the
+review request, saying the task is submitted and no review was asked for;
+running the landing again triages the new criteria.
+
+Through the Workflow, the landing is started as one that triages and the
+machine holding the workspace reports the triage's merge base and criteria
+binding with the head. The Workflow submits, and later asks for the review,
+only while the Ledger holds a pass, bypass or override recorded at that whole
+binding and the task's head and criteria are still those; otherwise it ends,
+saying what moved, with the lease released.
 
 Only every criterion met goes on. A criterion not met or unsure, a task with
 no criteria, a reply that cannot be read, a timeout, or a model that is

@@ -163,6 +163,9 @@ export interface ProjectInit {
   regenerate?: string | null;
   // What may block a review; null clears it (see ProjectPolicy.reviewBar).
   reviewBar?: string | null;
+  // The model that triages a landing before its review; null clears it
+  // (see ProjectPolicy.triage).
+  triage?: string | null;
   // The top review tier; an empty list clears it (see ProjectPolicy.reviewTier).
   reviewTier?: string[];
   protected?: string[];
@@ -343,6 +346,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   const shipKinds = i.shipKinds ?? p?.shipKinds ?? [];
   const regenerate = i.regenerate === undefined ? p?.regenerate : i.regenerate ?? undefined;
   const reviewBar = i.reviewBar === undefined ? p?.reviewBar : i.reviewBar ?? undefined;
+  const triage = i.triage === undefined ? p?.triage : i.triage ?? undefined;
   const reviewTier = i.reviewTier ?? p?.reviewTier ?? [];
   const coreFiles = i.coreFiles ?? p?.coreFiles ?? [];
   return {
@@ -361,6 +365,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       ...(shipKinds.length ? { shipKinds } : {}),
       ...(regenerate ? { regenerate } : {}),
       ...(reviewBar ? { reviewBar } : {}),
+      ...(triage ? { triage } : {}),
       ...(reviewTier.length ? { reviewTier: [...reviewTier] } : {}),
       protected: i.protected ?? p?.protected ?? [...DEFAULT_PROTECTED],
       eligible: i.eligible ?? p?.eligible ?? [],
