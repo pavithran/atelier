@@ -209,6 +209,10 @@ export const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*", ".atel
 // the task.
 // Where a landing Workflow stands (t280, setLandingWorkflowStage).
 export type LandingWorkflowStage = "lease" | "workspace" | "conflict" | "checks" | "review" | "merge" | "done" | "failed";
+// The most a landing Workflow record keeps of a stage's detail and of the
+// instance's last error message, in characters; the Workflow fits the
+// failure summary it writes to it (src/landing-workflow.ts, failureText).
+export const LANDING_DETAIL_MAX = 2000;
 export interface LandingWorkflowRecord {
   instance: string;
   at: string;
@@ -2519,6 +2523,10 @@ export class Ledger extends DurableObject<Env> {
   // The Workflow's own report of its stage. An instance that is no longer
   // the one recorded for the task (a newer landing replaced it) writes
   // nothing, so a stale instance never overwrites the live one's stage.
+  // The detail holds at most LANDING_DETAIL_MAX characters: the Workflow
+  // fits its failure summary to that size (src/check-failure.ts) rather
+  // than have the cut drop a failed check or the line naming the command
+  // that prints the whole logs.
   setLandingWorkflowStage(id: string, instance: string, stage: LandingWorkflowStage, round: number, detail?: string, files?: string[]): LandingWorkflowRecord | null {
     const record = this.landingWorkflowOf(id);
     if (!record || record.instance !== instance) return null;
@@ -2529,7 +2537,7 @@ export class Ledger extends DurableObject<Env> {
     const next: LandingWorkflowRecord = {
       ...kept,
       instance, at: record.at, stage, stageAt, round,
-      ...(detail ? { detail: detail.slice(0, 2000) } : {}),
+      ...(detail ? { detail: detail.slice(0, LANDING_DETAIL_MAX) } : {}),
       ...(files?.length ? { files: files.slice(0, 200).map((f) => String(f).slice(0, 500)) } : {}),
     };
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing-workflow:${id}`, JSON.stringify(next));
@@ -2540,7 +2548,7 @@ export class Ledger extends DurableObject<Env> {
   observeLandingWorkflowStatus(id: string, instance: string, status: NonNullable<LandingWorkflowRecord["lastStatus"]>): void {
     const record = this.landingWorkflowOf(id);
     if (!record || record.instance !== instance || status.status === "unknown") return;
-    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing-workflow:${id}`, JSON.stringify({ ...record, lastStatus: { status: status.status, ...(status.error ? { error: { name: status.error.name.slice(0, 200), message: status.error.message.slice(0, 2000) } } : {}) } }));
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `landing-workflow:${id}`, JSON.stringify({ ...record, lastStatus: { status: status.status, ...(status.error ? { error: { name: status.error.name.slice(0, 200), message: status.error.message.slice(0, LANDING_DETAIL_MAX) } } : {}) } }));
   }
 
   // Remove only the missing instance that the owner actually read.
@@ -2977,8 +2985,11 @@ export class Ledger extends DurableObject<Env> {
     return { matched, pending: pending.length, annotated: apply ? pending.length : 0, applied: apply };
   }
 
+  // Each row carries the ledger's own number for it (Evidence.id), so a
+  // result can be named exactly: `atelier show` and `atelier check-log`
+  // print it (t436). The number is read, never stored in the row's JSON.
   evidenceFor(id: string): Evidence[] {
-    return this.sql.exec(`SELECT json FROM evidence WHERE item_id = ? ORDER BY id`, id).toArray().map((r) => JSON.parse(r.json as string));
+    return this.sql.exec(`SELECT id, json FROM evidence WHERE item_id = ? ORDER BY id`, id).toArray().map((r) => ({ ...JSON.parse(r.json as string), id: r.id as number }));
   }
 
   // Each review carries `seq`, the sequence of the review event that

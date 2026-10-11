@@ -1,0 +1,9 @@
+
+ RUN  v4.1.11 /work
+
+ ❯ test/sample.spec.ts (3 tests | 2 failed) 8ms
+   ✓ adds numbers 1ms
+   × fails: the cap is enforced 4ms
+     → expected 1 to be 2 // Object.is equality
+   × a suite > fails inside: names are read 1ms
+     → boom
