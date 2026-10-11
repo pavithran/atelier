@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -241,51 +241,46 @@ test("the review job requires the skip routes, and a legacy server from before t
   assert.equal(checkCapabilities({ capabilities: SERVER_CAPABILITIES.filter((n) => n !== "reviews.skip-as-runner.v1") }, requiredForJobs(["build"])).ok, true);
 });
 
-// The file's shape is what lets independent changes merge: the ROUTE_LEVEL
-// block is apart from the declarations, and each declaration is a line under
-// its family. A raise and a declaration, or declarations in separated existing
-// families, merge without conflict. Same-family and new-family additions
-// can conflict and require retaining both declarations by hand (git merge-file,
-// the three-way merge git merge runs), where one array line for every name,
-// or a block right after the ROUTE_LEVEL line, conflicted on every raise.
-test("a route level raise and a capability added elsewhere merge cleanly, and so do two capabilities under two families", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "atelier-capabilities-merge-"));
+// Exercise git merge itself so this also verifies the committed attribute.
+test("independent capability additions merge cleanly, including the same and new families", async (t) => {
+  const dir = mkdtempSync(resolve(".capabilities-merge-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const base = readFileSync(resolve("src/route-level.ts"), "utf8");
-  const levelLine = `export const ROUTE_LEVEL = ${ROUTE_LEVEL};`;
-  assert.ok(base.includes(levelLine));
-  const raise = base.replace(levelLine, `// ${ROUTE_LEVEL + 1}: a route one task added.\nexport const ROUTE_LEVEL = ${ROUTE_LEVEL + 1};`);
-  const under = (family, line) => {
-    const last = [...base.matchAll(new RegExp(`  declare\\("${family}\\.[^\\n]*\\n`, "g"))].at(-1);
-    assert.ok(last, family);
-    return base.slice(0, last.index + last[0].length) + line + base.slice(last.index + last[0].length);
-  };
-  const reviewsAdd = under("reviews", `  declare("reviews.other.v1", ${ROUTE_LEVEL + 1}, "a route one task added"),\n`);
-  const areasAdd = under("areas", `  declare("areas.other.v1", undefined, "a route another task added"),\n`);
-  const merge = (ours, theirs) => {
-    const files = { base: join(dir, "base.ts"), ours: join(dir, "ours.ts"), theirs: join(dir, "theirs.ts") };
-    writeFileSync(files.base, base); writeFileSync(files.ours, ours); writeFileSync(files.theirs, theirs);
-    try {
-      return { conflicts: 0, merged: execFileSync("git", ["merge-file", "-p", files.ours, files.base, files.theirs], { encoding: "utf8" }) };
-    } catch (error) {
-      return { conflicts: error.status, merged: String(error.stdout) };
+  const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+  git("init", "-q");
+  git("config", "user.name", "Capability test");
+  git("config", "user.email", "capability@example.test");
+  git("config", "commit.gpgsign", "false");
+  mkdirSync(join(dir, "cli"));
+  mkdirSync(join(dir, "src"));
+  const file = "src/capability-declarations.ts";
+  const base = readFileSync(resolve(file), "utf8");
+  writeFileSync(join(dir, file), base);
+  writeFileSync(join(dir, ".gitattributes"), readFileSync(resolve(".gitattributes")));
+  writeFileSync(join(dir, "src/route-level.ts"), `export const ROUTE_LEVEL = ${ROUTE_LEVEL};\n`);
+  git("add", "."); git("commit", "-qm", "base");
+  const baseline = git("rev-parse", "HEAD").trim();
+  const add = (name, summary) => base.replace("] as const;", `  { name: "${name}", summary: "${summary}" },\n] as const;`);
+  for (const [i, names] of [["reviews.first.v1", "reviews.second.v1"], ["one.new.v1", "two.new.v1"], ["reviews.same.v1", "reviews.same.v1"]].entries()) {
+    git("checkout", "-qB", `ours-${i}`, baseline);
+    writeFileSync(join(dir, file), add(names[0], "ours"));
+    writeFileSync(join(dir, "src/route-level.ts"), `export const ROUTE_LEVEL = ${ROUTE_LEVEL + 1};\n`);
+    git("add", "."); git("commit", "-qm", "ours");
+    git("checkout", "-qB", `theirs-${i}`, baseline);
+    writeFileSync(join(dir, file), add(names[1], "theirs"));
+    git("add", "."); git("commit", "-qm", "theirs");
+    git("checkout", "-q", `ours-${i}`);
+    git("merge", "--no-edit", `theirs-${i}`);
+    const merged = readFileSync(join(dir, file), "utf8");
+    assert.doesNotMatch(merged, /^[<>=]{7}/m);
+    assert.ok(merged.includes('summary: "ours"') && merged.includes('summary: "theirs"'));
+    assert.match(readFileSync(join(dir, "src/route-level.ts"), "utf8"), new RegExp(`ROUTE_LEVEL = ${ROUTE_LEVEL + 1}`));
+    const { CAPABILITY_DECLARATIONS } = await import(`${join(dir, file)}?case=${i}`);
+    if (names[0] === names[1]) assert.throws(() => buildCapabilities(CAPABILITY_DECLARATIONS), /declared twice/);
+    else {
+      const published = buildCapabilities(CAPABILITY_DECLARATIONS).map((c) => c.name);
+      assert.deepEqual(published.filter((n) => names.includes(n)).sort(), names.sort());
     }
-  };
-  const a = merge(raise, reviewsAdd);
-  assert.equal(a.conflicts, 0, `a raise against a declaration conflicts:\n${a.merged}`);
-  assert.ok(a.merged.includes(`export const ROUTE_LEVEL = ${ROUTE_LEVEL + 1};`) && a.merged.includes('declare("reviews.other.v1"'));
-  const b = merge(reviewsAdd, areasAdd);
-  assert.equal(b.conflicts, 0, `two declarations under two families conflict:\n${b.merged}`);
-  assert.ok(b.merged.includes('declare("reviews.other.v1"') && b.merged.includes('declare("areas.other.v1"'));
-  const firstAdd = under("plans", '  declare("plans.other.v1", undefined, "first family"),\n');
-  assert.equal(merge(raise, firstAdd).conflicts, 0, "a raise must not conflict with the first family either");
-  const sameFamily = merge(reviewsAdd, under("reviews", '  declare("reviews.another.v1", undefined, "another"),\n'));
-  assert.equal(sameFamily.conflicts, 1, "same-family additions require retaining both declarations manually");
-  const newFamily = (name) => base.replace('export const CAPABILITIES = buildCapabilities([', `export const CAPABILITIES = buildCapabilities([\n  declare("${name}.new.v1", undefined, "new family"),`);
-  assert.equal(merge(newFamily("one"), newFamily("two")).conflicts, 1, "two new families at the same insertion point require manual resolution");
-  const c = merge(raise, areasAdd);
-  assert.equal(c.conflicts, 0, `a raise against a declaration at the end conflicts:\n${c.merged}`);
-  assert.doesNotMatch(a.merged + b.merged + c.merged, /^[<>=]{7}/m);
+  }
 });
 
 // The CLI against a stub server: what GET /api/version answers decides
@@ -328,7 +323,7 @@ function invocations(root) {
   const reply = join(root, "reply.txt");
   writeFileSync(reply, "no verdict here");
   return [
-    { argv: ["new", "A short title", "--project", "proj"], required: COMMAND_CAPABILITIES.new },
+    { argv: ["new", "A short title", "--area", "a1", "--project", "proj"], required: COMMAND_CAPABILITIES.new },
     { argv: ["edit", "t1", "--title", "Another", "--project", "proj"], required: COMMAND_CAPABILITIES.edit },
     { argv: ["init", "--title", "Proj"], required: COMMAND_CAPABILITIES.init },
     { argv: ["merge", "t1", "--project", "proj"], required: COMMAND_CAPABILITIES.merge },
@@ -387,6 +382,22 @@ test("a server with every capability a command needs, or more, lets its first re
   assert.deepEqual(behind.requests.map((x) => x.path), ["/api/version"]);
 });
 
+test("new requires areas only when --area is supplied, on named and legacy servers", async (t) => {
+  assert.deepEqual(requiredForCommand("new"), ["items.brief-criteria.v1"]);
+  assert.deepEqual(requiredForCommand("new", undefined, { area: "a1" }), COMMAND_CAPABILITIES.new);
+  for (const version of [{ capabilities: ["items.brief-criteria.v1"] }, { routeLevel: 15 }]) {
+    const f = await stub(t, version);
+    const allowed = await f.run(["new", "Title", "--project", "proj"]);
+    assert.equal(allowed.status, 0, allowed.output);
+    assert.ok(f.requests.some((r) => r.method === "POST" && r.path === "/api/projects/proj/items"));
+    f.requests.length = 0;
+    const refused = await f.run(["new", "Title", "--area", "a1", "--project", "proj"]);
+    assert.equal(refused.status, 1, refused.output);
+    assert.match(refused.output, /lacks capabilities areas\.manage\.v1/);
+    assert.deepEqual(f.requests.map((r) => r.path), ["/api/version"]);
+  }
+});
+
 test("a subcommand with no capabilities asks nothing and runs against a server that lacks its siblings'", async (t) => {
   const f = await stub(t, { commit: "0123456789abcdef", capabilities: [] });
   for (const argv of [["models"], ["models", "add", "gpt", "--harness", "codex", "--where", "cloud"]]) {
@@ -400,7 +411,7 @@ test("an unavailable or malformed version answer refuses with its own message an
   const down = await stub(t, { error: "unavailable" }, { status: 503 });
   const r = await down.run(["new", "A short title", "--project", "proj"]);
   assert.equal(r.status, 4, r.output);
-  assert.match(r.output, /^atelier: the server did not answer GET \/api\/version with a version, so its capabilities \(items\.brief-criteria\.v1, areas\.manage\.v1\) cannot be checked\. Check that the server is reachable and deployed\./);
+  assert.match(r.output, /^atelier: the server did not answer GET \/api\/version with a version, so its capabilities \(items\.brief-criteria\.v1\) cannot be checked\. Check that the server is reachable and deployed\./);
   assert.deepEqual(down.requests.map((x) => x.path), ["/api/version"]);
   const text = await stub(t, "<html>not json</html>");
   const n = await text.run(["new", "A short title", "--project", "proj"]);
