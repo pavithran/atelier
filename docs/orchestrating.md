@@ -1,5 +1,14 @@
 # Running Atelier for a project
 
+The cross-company rules below describe the default policy. With
+`atelier init --single-family COMPANY`, building and reviewing use only that
+company's models: a reviewer must be a different model from every contributor,
+never a contributor under another harness. This exception also applies to
+criteria review, handoffs and conflict contributors. Only that company's tier
+models qualify; if none qualifies, no separate tier review is requested.
+`atelier init --cross-family` restores the default; both switches record who
+made them and when. See [Single-family mode](gate.md#single-family-mode).
+
 This is the handbook for a session that runs Atelier for a project: one that
 files tasks, sends them to coding agents, has their work reviewed, and lands
 it for the owner. It is written from the work of 6 October 2026, when one
@@ -21,10 +30,11 @@ silence it, and a project with no checkout on this Mac always gets it.
 `atelier init` offers a short AGENTS.md section that
 points at it and states the review path (it does not edit the file).
 
-- Use builders from several companies, chosen by tier, and not one company's
-  models alone.
+- By default use builders from several companies, chosen by tier. In
+  single-family mode use only the selected company's models.
 - Every protected or coordinated change is reviewed by a model from another
-  company than every agent that worked on it.
+  company than every agent that worked on it; in single-family mode, only a
+  different model of the selected company from every contributor counts.
 - Never override a review, a check or a block, except on the owner's own
   confirmation. Ask, and cite the owner's words; never infer them.
 - Judge each review finding against the code before acting, and record every
@@ -38,7 +48,7 @@ points at it and states the review path (it does not edit the file).
   name is found by the reviewer instead, a round at a time: on 10 October
   one task took three review rounds and another five, each over a case the
   criteria left unstated.
-- Before asking for the cross-company review, read the diff against the
+- Before asking for the independent review, read the diff against the
   criteria yourself. Your reading does not count at the gate; it catches the
   plain misses before the expensive review does.
 - Land one task at a time with `atelier land ID --reviewer H/M`, where
@@ -83,7 +93,7 @@ A task moves through five hands:
    has a protected change's review asked of a tier model of another family
    first, and that one review serves both. Only when the gate's reviewer is
    outside the tier does one tier model that did not build the change
-   review it as well, at the same time, whatever its family: its rejection
+   review it as well, at the same time, whatever its family in the default mode (only the selected company in single-family mode): its rejection
    sends the change back like any rejection, its approval never stands in
    for the cross-family review, and a landing never waits for it.
 5. **The owner** accepts that exact revision and merges it into the
@@ -226,7 +236,8 @@ So land one task at a time, in this order:
    one.
    Where the project has a tier, the server asks a qualifying tier model
    for this review first, and it serves as the tier review too. A
-   `--reviewer` outside the tier gets a separate tier review alongside;
+   `--reviewer` outside the tier gets a separate tier review alongside only
+   when a tier model qualifies under the family policy;
    `atelier land` waits only for the independent review, stops on a tier
    rejection, and the acceptance withdraws a tier request still open.
 4. Accept and merge at once, before anything else lands.
@@ -363,7 +374,8 @@ after deploy: record that check and do not claim it passed from local tests.
 The reviewer must be of another company than every contributor to the task,
 not only its last builder: `atelier show tN` names who worked on it, and the
 task's history may include an earlier builder or a session that fixed a
-conflict. Among qualifying reviewers, alternate between companies so that
+conflict. Among qualifying reviewers, alternate between companies (between models of
+the selected company in single-family mode) so that
 no one reviewer's queue holds every landing. A reviewer that has rejected
 the same task several rounds running is still the right reviewer; see
 "Judging a review".

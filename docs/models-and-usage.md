@@ -1,5 +1,14 @@
 # Models, reliability and usage
 
+The cross-company rules below describe the default policy. With
+`atelier init --single-family COMPANY`, building and reviewing use only that
+company's models: a reviewer must be a different model from every contributor,
+never a contributor under another harness. This exception also applies to
+criteria review, handoffs and conflict contributors. Only that company's tier
+models qualify; if none qualifies, no separate tier review is requested.
+`atelier init --cross-family` restores the default; both switches record who
+made them and when. See [Single-family mode](gate.md#single-family-mode).
+
 The model pool Atelier dispatches to, the record it keeps of each model's
 work, the usage and balance reports from home runners, and the AI Gateway
 figures that count pay-per-use calls. The README's "Costs and usage" section
@@ -82,8 +91,9 @@ the tier and then the pool in precision order), the separate tier review
 more precise reviewer first, at (held + 1) / (judged + 2); a reviewer with
 fewer than 5 judged orders as neutral, one half. A re-review still goes
 first to the previous round's reviewer. Precision never makes a reviewer
-qualify, so a same-family or paused reviewer is passed over however
-precise.
+qualify, so a reviewer disallowed by the family policy or paused is passed over
+however precise. In single-family mode, a different model of the selected
+company qualifies; another company never does.
 
 ```text
 atelier defect t12 --note "pagination drops the last page" --found-in t19
