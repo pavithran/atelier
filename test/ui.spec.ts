@@ -146,6 +146,8 @@ it('the dispatch and withdraw forms carry the revision, as every other form does
   const send = renderItem(project, d, 'PAVI', null);
   const sendForm = send.slice(send.indexOf('action="/ui/example/t1/dispatch"'));
   expect(sendForm.slice(0, 200)).toContain(`name="head" value="${head}"`);
+  // The page takes a note as long as the CLI's (t480): a full set of findings.
+  expect(sendForm).toContain('<textarea name="note" rows="4" maxlength="2000"></textarea>');
   d.item.dispatch = { to: 'home', agent: null, model: null, by: 'pavi', at: time, note: '' };
   const wait = renderItem(project, d, 'PAVI', null);
   const withdraw = wait.slice(wait.indexOf('action="/ui/example/t1/undispatch"'));
