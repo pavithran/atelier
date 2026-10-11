@@ -270,11 +270,42 @@ test("the shown tail is bounded by lines and characters, flattened, with the log
   const wide = boundedTail(Array.from({ length: 5 }, (_, i) => `${i}${"w".repeat(900)}`).join("\n"));
   assert.ok(wide.lines.join("").length <= SUMMARY_TAIL_CHARS);
   assert.ok(wide.lines.length < 5 && wide.lines.at(-1)!.startsWith("4"));
+  assert.equal(wide.cut, 0);
   const oneLine = boundedTail("z".repeat(SUMMARY_TAIL_CHARS + 10));
   assert.equal(oneLine.lines[0].length, SUMMARY_TAIL_CHARS);
   assert.ok(oneLine.lines[0].startsWith("…"));
+  assert.deepEqual([oneLine.total, oneLine.cut], [1, SUMMARY_TAIL_CHARS + 10]);
   assert.deepEqual(boundedTail("\x1b[31mred\x1b[0m\tx\r\n\n\x07bell").lines, ["red x", "bell"]);
-  assert.deepEqual(boundedTail(""), { lines: [], total: 0 });
+  assert.deepEqual(boundedTail(""), { lines: [], total: 0, cut: 0 });
+});
+
+test("a line longer than the summary's characters is cut to its last characters and said to be cut, never reported whole", async () => {
+  // One 2,500-character line: the tail keeps its last SUMMARY_TAIL_CHARS
+  // characters behind a `…` and says the line's whole length.
+  const line = `${"y".repeat(2_400)}${"z".repeat(100)}`;
+  const tail = boundedTail(line);
+  assert.deepEqual([tail.lines.length, tail.total, tail.cut], [1, 1, 2_500]);
+  assert.equal(tail.lines[0], `…${line.slice(-(SUMMARY_TAIL_CHARS - 1))}`);
+  // A long line that is not the last is left out whole rather than cut: the
+  // lines after it fill the budget first, and nothing retained is cut.
+  const notLast = boundedTail(`${line}\nnot ok 1 - the cap is enforced`);
+  assert.deepEqual([notLast.lines, notLast.total, notLast.cut], [["not ok 1 - the cap is enforced"], 2, 0]);
+  // In the summary: a whole output of that one line is not "1 line, whole".
+  const typecheck = ev({ claim: "npm run typecheck", passed: true });
+  const [one] = await resolveFailures(effectiveFailures(policy, [ev({ passed: false, outputTail: line }), typecheck], H1), none);
+  const text = failureSummary("t1", H1, [one]);
+  assert.ok(text.includes(`    log: whole output, inline; 1 line, cut to its last ${(SUMMARY_TAIL_CHARS - 1).toLocaleString("en-US")} of 2,500 characters:\n      …${"y".repeat(SUMMARY_TAIL_CHARS - 101)}${"z".repeat(100)}\n`), text);
+  assert.ok(!text.includes("whole:"), text);
+  // Among more lines, the count of lines shown is said with the cut.
+  const [last] = await resolveFailures(effectiveFailures(policy, [ev({ passed: false, outputTail: `one\ntwo\n${line}` }), typecheck], H1), none);
+  assert.ok(failureSummary("t1", H1, [last]).includes(`    log: whole output, inline; last 1 of 3 lines, cut to its last ${(SUMMARY_TAIL_CHARS - 1).toLocaleString("en-US")} of 2,500 characters:\n`), failureSummary("t1", H1, [last]));
+  // Fitted to a size that leaves no tail, the line is left out and not called cut.
+  const fitted = failureSummary("t1", H1, [one], 700);
+  assert.ok(fitted.includes("    log: whole output, inline; 1 line, left out of this summary for its size\n"), fitted);
+  assert.ok(fitted.length <= 700 && fitted.endsWith(checkLogPointer("t1")), fitted);
+  // The JSON form carries the cut line's length.
+  assert.deepEqual([failureJson(one).cut, failureJson(one).lines, failureJson(one).tail.length], [2_500, 1, 1]);
+  assert.equal(failureJson(last).cut, 2_500);
 });
 
 // ── the summary every caller prints ────────────────────────────────────────
@@ -376,7 +407,7 @@ test("the JSON form carries the same facts, with the tail as lines", async () =>
   assert.deepEqual({ ...json, tail: undefined, lines: undefined, failingTests: undefined }, {
     claim: "npm test", head: H1, id: row.id, run: "k:t1:a:1", at: row.at, by: "codex/test", where: "sandbox", merged: false, mainHead: null, load: null, attempt: 1, attempts: 1,
     log: { source: "stored", whole: true, label: `whole log, stored (12,000 bytes, ${"c".repeat(12)})`, sha256: stored.sha256, bytes: 12_000 },
-    tail: undefined, lines: undefined, failingTests: undefined,
+    tail: undefined, lines: undefined, cut: 0, failingTests: undefined,
   });
   assert.deepEqual(json.failingTests?.names, ["test/sample.spec.ts > fails: the cap is enforced", "test/sample.spec.ts > a suite > fails inside: names are read"]);
   assert.equal(json.tail.length, SUMMARY_TAIL_LINES);

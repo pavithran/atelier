@@ -73,8 +73,11 @@
 //
 // The summary's log tail is bounded: the last SUMMARY_TAIL_LINES lines and
 // at most SUMMARY_TAIL_CHARS characters of the log, and it says how many
-// lines the log holds when more were cut. `atelier check-log ID` prints the
-// retained logs whole, for every attempt at the head.
+// lines the log holds when more were cut. A single line longer than that
+// (a minified bundle, a one-line JSON report) is cut to its last
+// SUMMARY_TAIL_CHARS characters, and the summary says so, with the line's
+// length, rather than calling the log whole. `atelier check-log ID` prints
+// the retained logs whole, for every attempt at the head.
 //
 // Where the summary itself must fit a size (the landing Workflow's record of
 // why it failed holds LANDING_DETAIL_MAX characters, src/ledger.ts), it is
@@ -100,6 +103,12 @@ export const SUMMARY_TAIL_LINES = 20;
 export const SUMMARY_TAIL_CHARS = 2000;
 // How many failing test names the summary lists before it counts the rest.
 export const SUMMARY_TEST_NAMES = 20;
+// What the landing Workflow keeps of a workspace report's reason (its
+// waitForWorkspace, src/landing-workflow.ts), the Ledger's LANDING_DETAIL_MAX
+// (src/ledger.ts): the local checks mode of `atelier land --workflow` fits
+// its failure summary to this with failureDetail before reporting it, so the
+// record keeps every failed check and the check-log line (cli/land.mjs).
+export const WORKSPACE_REASON_MAX = 2000;
 
 export type Where = "sandbox" | "runner";
 
@@ -392,18 +401,30 @@ export async function resolveFailures(failures: CheckFailure[], read: LogReader)
 export const flatLine = (s: string): string => s.replace(ANSI, "").replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ").trim();
 
 // The last SUMMARY_TAIL_LINES lines of a log, within SUMMARY_TAIL_CHARS
-// characters, each line flattened, with how many lines the log holds.
-export function boundedTail(text: string, lines = SUMMARY_TAIL_LINES, chars = SUMMARY_TAIL_CHARS): { lines: string[]; total: number } {
+// characters, each line flattened, with how many lines the log holds. A
+// line longer than `chars` is kept as its last `chars` characters behind a
+// `…`, and only ever alone (it fills the budget): `cut` is that line's
+// whole length, so the caller can say the line was cut rather than report
+// it whole; 0 when every retained line is whole.
+export interface BoundedTail {
+  lines: string[];
+  total: number;
+  cut: number;
+}
+
+export function boundedTail(text: string, lines = SUMMARY_TAIL_LINES, chars = SUMMARY_TAIL_CHARS): BoundedTail {
   const all = plainLines(text).map(flatLine).filter((line) => line.length);
   const kept: string[] = [];
   let size = 0;
+  let cut = 0;
   for (const line of all.slice(-lines).reverse()) {
-    const cut = line.length > chars ? `…${line.slice(-(chars - 1))}` : line;
-    if (size + cut.length > chars && kept.length) break;
-    kept.unshift(cut);
-    size += cut.length;
+    const shown = line.length > chars ? `…${line.slice(-(chars - 1))}` : line;
+    if (size + shown.length > chars && kept.length) break;
+    kept.unshift(shown);
+    size += shown.length;
+    if (shown.length < line.length) cut = line.length;
   }
-  return { lines: kept, total: all.length };
+  return { lines: kept, total: all.length, cut };
 }
 
 export const WHERE_TEXT: Record<Where, string> = { sandbox: "in a Cloudflare container", runner: "on a runner, in a clean clone" };
@@ -424,9 +445,13 @@ export function failureLines(f: ResolvedFailure, fit: FailureFit = {}): string[]
   const tail = boundedTail(f.logRead.text);
   const lines = fit.tailLines === undefined ? tail.lines : fit.tailLines > 0 ? tail.lines.slice(-fit.tailLines) : [];
   const fitted = lines.length < tail.lines.length;
+  // A retained line cut to the summary's size is said so, with its length:
+  // the log is not whole in the summary, however few lines it holds.
+  const cut = tail.cut && lines.length ? `, cut to its last ${thousands(lines[lines.length - 1].length - 1)} of ${thousands(tail.cut)} characters` : "";
   const shown = !tail.total ? "no output"
     : !lines.length ? `${count(tail.total, "line")}, left out of this summary for its size`
-    : lines.length < tail.total ? `last ${lines.length} of ${thousands(tail.total)} lines${fitted ? " (fewer, for this summary's size)" : ""}`
+    : lines.length < tail.total ? `last ${lines.length} of ${thousands(tail.total)} lines${fitted ? " (fewer, for this summary's size)" : ""}${cut}`
+    : tail.cut ? `${count(tail.total, "line")}${cut}`
     : `${count(tail.total, "line")}, whole`;
   return [
     `\`${flatLine(f.claim)}\` failed${on} ${WHERE_TEXT[f.where]} at ${when(f.at)}${f.load !== null ? `, load ${f.load}` : ""}: ${ident}`,
@@ -506,7 +531,7 @@ export function failureJson(f: ResolvedFailure) {
     merged: f.merged, mainHead: f.mainHead, load: f.load, attempt: f.attempt, attempts: f.attempts,
     log: { source: f.logRead.source, whole: f.logRead.whole, label: f.logRead.label, sha256: f.log?.sha256 ?? null, bytes: f.log?.bytes ?? null },
     failingTests: f.tests,
-    tail: tail.lines, lines: tail.total,
+    tail: tail.lines, lines: tail.total, cut: tail.cut,
   };
 }
 

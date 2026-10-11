@@ -11,7 +11,7 @@ import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-leas
 import { unoffered } from "../src/dispatch/rules.ts";
 import { contributorsOf, roleRefusal, sameActor } from "../src/rules.ts";
 import { landingVerdict, allSkipped } from "../src/landing-verdict.ts";
-import { effectiveFailures, failureSummary, resolveFailures } from "../src/check-failure.ts";
+import { WORKSPACE_REASON_MAX, effectiveFailures, failureDetail, failureSummary, resolveFailures } from "../src/check-failure.ts";
 import { DETECTOR_ENV, describeAmbiguous, describeFinding, detectMovedEdits, findingKey } from "../src/moved-code.ts";
 import { appendMovedCodeRecord } from "./landing.mjs";
 
@@ -934,19 +934,29 @@ async function runRegenerateIn(dir, regenerate, io) {
 // each stored log read by reference where the run kept one. The step's own
 // output stands, as before, when the server records no failure at that head
 // (the check died before it posted, or the server is older than the
-// summary), and the step is recorded by `step` as any other.
+// summary), and the step is recorded by `step` as any other. The error's
+// message holds the summary whole, for the terminal; its data's `reason` is
+// the same failure fitted to WORKSPACE_REASON_MAX by failureDetail (the
+// tails give way first, then the names, then later checks are counted in
+// one line), which the Workflow landing reports as why its workspace
+// failed, so the record keeps every failed check and the check-log line
+// however long the first check's output ran.
 async function checkStep(io, itemPath, id, step, dir) {
   try { await step("check", ["check"], dir); }
   catch (error) {
     if (!(error instanceof StepError)) throw error;
+    const why = String(error.message).split("\n")[0];
     let summary = null;
     try {
       const d = await io.request("GET", itemPath);
       const failures = d?.item?.head && Array.isArray(d.policy?.checks) ? effectiveFailures(d.policy, d.evidence ?? [], d.item.head) : [];
-      if (failures.length) summary = failureSummary(id, d.item.head, await resolveFailures(failures, io.readLog ?? (async () => null)));
+      if (failures.length) {
+        const resolved = await resolveFailures(failures, io.readLog ?? (async () => null));
+        summary = { whole: failureSummary(id, d.item.head, resolved), reason: failureDetail(why, id, d.item.head, resolved, WORKSPACE_REASON_MAX) };
+      }
     } catch (read) { io.print(`Warning: the failed checks could not be read from the server (${read.message}); the check's own output follows.`); }
     if (!summary) throw error;
-    throw new StepError(`${String(error.message).split("\n")[0]}\n${summary}`, error.data);
+    throw new StepError(`${why}\n${summary.whole}`, { ...error.data, reason: summary.reason });
   }
 }
 
@@ -1389,11 +1399,15 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, moved }) {
       } catch (error) {
         const conflicts = Array.isArray(error.data?.conflicts) && error.data.conflicts.length ? error.data.conflicts : null;
         // A conflict pauses the Workflow (it releases the lease and waits
-        // for the owner); any other failure ends it with this message. Edits
-        // in code main moved pause it the same way (t471), naming the moved
-        // code's files, though no merge was made: the resume asks for the
-        // workspace steps again, which compare afresh.
-        try { await send("workspace", conflicts ? { round, conflict: true, files: conflicts, reason: error.message.slice(0, 2000) } : { round, failed: true, reason: String(error.message).slice(0, 2000) }); }
+        // for the owner); any other failure ends it with this message, which
+        // the Workflow keeps to WORKSPACE_REASON_MAX: a failed check reports
+        // the summary checkStep fitted to that size, so it is never cut
+        // here; any other message is cut at it. Edits in code main moved
+        // pause it the same way (t471), naming the moved code's files,
+        // though no merge was made: the resume asks for the workspace steps
+        // again, which compare afresh.
+        const reason = String(typeof error.data?.reason === "string" ? error.data.reason : error.message).slice(0, WORKSPACE_REASON_MAX);
+        try { await send("workspace", conflicts ? { round, conflict: true, files: conflicts, reason } : { round, failed: true, reason }); }
         catch { /* the Workflow times out on its own and releases the lease */ }
         die(conflicts && error.data.moved
           ? `${error.message}\nThe landing Workflow is paused at its conflict stage and has released the lease; no merge was made, so nothing is left to resolve in the index. Once the edits are ported and committed, run atelier land ${id} --workflow again: it resumes this landing and compares afresh (with --moved-ok, it records your approval of the findings it detects and goes on).`
