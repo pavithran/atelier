@@ -181,27 +181,44 @@ test("a ship step's background process ends with the step and at its timeout", {
 // signal it takes by default, ends the step's group with it, though no
 // "exit" event runs and its timers die with it. A parent with a handler of
 // its own (land's lease release) finds the group gone before it exits.
-test("a ship step's group ends when its parent gets SIGINT, SIGTERM or SIGHUP", { timeout: 30_000 }, async (t) => {
+// Six process trees must start and be reaped on a saturated host. Five minutes
+// bounds failure; readiness and exit are acknowledged, never timed sleeps.
+test("a ship step's group ends when its parent gets SIGINT, SIGTERM or SIGHUP", { timeout: 300_000 }, async (t) => {
   for (const handled of [false, true]) for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     const dir = scratch(t);
     const pidFile = join(dir, "pid");
     const script = `import { runCommand } from ${JSON.stringify(resolve("cli/ship.mjs"))};
-      ${handled ? `process.on(${JSON.stringify(signal)}, () => setTimeout(() => process.exit(9), 4000));` : ""}
-      runCommand(["/bin/sh", "-c", "sleep 300 & echo $! > ${pidFile}; wait"], { timeoutMs: 600_000, out: { write() {} }, err: { write() {} } });`;
-    const parent = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: "ignore" });
+      ${handled ? `process.on(${JSON.stringify(signal)}, () => process.send("handled"));` : ""}
+      runCommand(["/bin/sh", "-c", "sleep 300 & echo $! > ${pidFile}; wait"], { timeoutMs: 600_000, out: { write() {} }, err: { write() {} } });
+      process.on("message", () => process.exit(9));
+      process.send("ready");`;
+    const parent = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
     t.after(() => parent.kill("SIGKILL"));
-    const sleeper = await fileWritten(pidFile);
     const ended = new Promise((ok) => parent.on("close", (status, sig) => ok({ status, sig })));
+    const message = (expected) => new Promise((ok, reject) => {
+      const onMessage = (value) => { if (value === expected) { cleanup(); ok(); } };
+      const onClose = () => { cleanup(); reject(new Error(`parent exited before ${expected}`)); };
+      const cleanup = () => { parent.off("message", onMessage); parent.off("close", onClose); };
+      parent.on("message", onMessage).once("close", onClose);
+    });
+    // The shell can write its PID before runGroup's spawn returns and track()
+    // installs the signal listeners. Only the parent's acknowledgement proves
+    // those listeners exist (especially for SIGHUP, whose default is fatal).
+    await message("ready");
+    const sleeper = await fileWritten(pidFile, 60_000);
+    const acknowledged = handled ? message("handled") : null;
     parent.kill(signal);
     // A handled signal ends the group at once, while its parent still runs.
     if (handled) {
-      assert.ok(await gone(sleeper, 2000), `${signal} to a parent with a handler left the step's sleeper ${sleeper} running`);
+      await acknowledged;
+      assert.ok(await gone(sleeper, 60_000), `${signal} to a parent with a handler left the step's sleeper ${sleeper} running`);
       assert.ok(alive(parent.pid), "the parent's own handler decides when it exits");
+      parent.send("exit");
     }
     const { status, sig } = await ended;
     assert.equal(sig, null, `${signal} was taken by the parent, not left to end it unhandled`);
     assert.equal(status, handled ? 9 : 128 + osConstants.signals[signal]);
-    assert.ok(await gone(sleeper, 2000), `after ${signal}${handled ? " to a parent with a handler" : ""}, the step's sleeper ${sleeper} outlived it`);
+    assert.ok(await gone(sleeper, 60_000), `after ${signal}${handled ? " to a parent with a handler" : ""}, the step's sleeper ${sleeper} outlived it`);
   }
 });
 

@@ -31,7 +31,16 @@ points at it and states the review path (it does not edit the file).
   verdict with `atelier finding`.
 - File every task with its acceptance criteria, written before the build. A
   review judges the change against them, so a task without them gives the
-  review nothing to bind to.
+  review nothing to bind to. Write with each criterion the edge cases it
+  implies (an option left out, an empty list, a policy under which nothing
+  qualifies), and have a model of another company than the orchestrator
+  read the criteria before the task is dispatched. A case the criteria do not
+  name is found by the reviewer instead, a round at a time: on 10 October
+  one task took three review rounds and another five, each over a case the
+  criteria left unstated.
+- Before asking for the cross-company review, read the diff against the
+  criteria yourself. Your reading does not count at the gate; it catches the
+  plain misses before the expensive review does.
 - Land one task at a time with `atelier land ID --reviewer H/M`, where
   `H/M` names a reviewer of another family than every contributor; the
   command merges main, checks, submits, waits for the independent review,
@@ -42,8 +51,16 @@ points at it and states the review path (it does not edit the file).
 - On a stall (a claimed task with no progress), check whether the agent's
   process still runs, then `atelier handoff` the task to another model or
   `atelier release` it. Do not start the same work twice.
-- After a repeated rejection of the same task, stop resending it: judge the
-  findings, then hand it to a builder from another company or ask the owner.
+- After two rejections on the same point, stop resending the task to the
+  same builder: judge the findings, then hand it to a builder from another
+  company or ask the owner.
+- Record every judgement you make for the owner, with its reason: a finding's
+  verdict (`atelier finding`), a decision (`atelier decide`), a hold released.
+  Your judgements are measured like a reviewer's: a finding you refuted that
+  later proves real counts against you.
+- Investigate in parallel. A failing check or a large conflict can go to a
+  helper agent of your own while you keep landing; do not stop the queue to
+  read a log.
 - Feed what you learn back into Atelier, as the last section says.
 
 ## The shape of the work
@@ -107,6 +124,31 @@ says it does.
 
 The scripts this handbook refers to are in `bin/orchestrate/`, with their
 setup in its README.
+
+## Registering workspace preparation
+
+After deploying the Worker and updating the runner's CLI, the owner registers
+Atelier's preparation policy once, from the project checkout:
+
+```sh
+atelier init --prepare "npm ci --prefer-offline --no-audit --no-fund && npm run types" \
+  --prepare-input package.json --prepare-input package-lock.json \
+  --prepare-input wrangler.jsonc \
+  --prepare-output node_modules --prepare-output worker-configuration.d.ts
+```
+
+This is an owner rollout step; a task build does not register the project.
+The runner prepares build and plan workspaces after reset and automatic
+merges, before starting the harness or finishing resumed work. Manual claims
+print the command and directory for the caller to run. Reviews, integration
+and refresh jobs do not prepare.
+
+The declared inputs are the manifest, lockfile and Wrangler configuration;
+`src` is not an input. A cached success also depends on the command and runtime,
+and both declared outputs must still exist. Once preparation succeeds, an old
+validation blocker written before successful preparation no longer holds the
+build back. Omit `--prepare` on later init calls to preserve the policy, or
+pass `--prepare ""` to clear it.
 
 ## Reading the server's logs
 
@@ -254,6 +296,313 @@ such merges, before landing the next task or starting a runner.
 and checks at once pushed the load average past 100 and made timing tests
 fail at random; run checks one after another when the machine is busy.
 
+## The loop with runners
+
+This section is the procedure, step by step, as one session ran it on
+10 October 2026 to land Atelier's own tasks: runners build and review, and
+the session watches, chooses reviewers, lands, judges findings, resolves
+what the runners cannot, deploys and publishes. Atelier always runs with an
+AI in this role beside the lead developer, a frontier model such as Fable,
+Opus or GPT-6 Astra; this is what that AI does all day. The steps assume
+its judgement (of findings, conflicts and reviewers) but no one company's
+tools: every step is an Atelier command, git, or the shell. Each step names the command and what each of its outcomes means. The
+open tasks named here replace a manual step; when one merges, the step
+becomes a command.
+
+### The runners
+
+Run one process per runner name, each as its own long-lived background job
+whose output is kept in a file (`docs/runners.md` sets them up):
+
+- build runners, one per job the machine can carry at once (four on a
+  64 GB laptop): `atelier runner --name home:NAME --config
+  ~/.config/atelier/runner-build.json`;
+- two review runners, so one slow review does not hold every landing:
+  `atelier runner --name home:NAME-rev --config ~/.config/atelier/runner-review.json`;
+- one integrator for plans: `atelier runner --name home:NAME-int
+  --integrate`, with the integrator's own token.
+
+Restart a runner when:
+
+- **the server was deployed with a change the runner's code depends on**:
+  a runner keeps the code it started with (t265 makes it reload);
+- **its log says `atelier/tN needs the owner's attention after 2 failures;
+  skipped for this process`**: the runner will not take tN again until it
+  restarts. First read the two failures above that line and fix their cause;
+  restarting without a fix only repeats them;
+- **a review runner has printed nothing for a long time while a review
+  waits**: restart it (t351, t353). A review it had claimed may need
+  `atelier review-release ID`.
+
+To restart, stop that runner's recorded process with `kill -TERM PID`, wait
+for it to exit, then repeat its original `atelier runner` command above.
+A missing PID means it already exited; an error in the new process's log
+means fix the configuration before retrying. Do not start a duplicate with
+the same name while its old process is still alive.
+
+Each harness's command must give agents no MCP servers or plugins, and a
+build sandbox that allows the network, the package manager's cache and
+localhost: a build that cannot install or run the tests is not a model's
+failure. Check both whenever a harness is updated.
+
+### Watching
+
+Watch every runner's output and the landing queue's together, for these
+lines only (t434 makes this a command):
+
+```sh
+tail -n0 -F RUNNER-OUTPUTS... | grep -E --line-buffered \
+  "^LANDQ |^t[0-9]+ submitted|^runner: failed: harness|needs the owner's attention|Error loading config"
+```
+
+| Line | Meaning | Next step |
+| --- | --- | --- |
+| `tN submitted` | A build finished, pushed and passed its own checks | Triage its diff against every criterion, then queue its landing (below) |
+| `runner: failed: harness …` | A run ended without a commit or with an error | Read the run's lines above it; `atelier run-report` if the model stopped early |
+| `… needs the owner's attention after 2 failures` | The runner gave up on that task | Read both failures, fix the cause, restart the runner |
+| `Error loading config` | A harness's own configuration is broken | Fix it before anything else: every run of that harness fails |
+| `LANDQ tN: …` | A landing ended | See "Landing outcomes" |
+
+`atelier status` lists dispatches waiting for a runner, with the reason each
+is not being taken.
+
+Before starting an agent in a fresh workspace on another machine, run
+`npm ci` and `npm run types` there. If either fails, fix the dependency or
+configuration failure before starting the agent. A stale
+`.git/atelier-validation-blocked` marker strands an otherwise finished build:
+read it with `cat .git/atelier-validation-blocked`, fix the reported cause,
+run `npm test` and `npm run typecheck`, then remove the stale marker with
+`rm .git/atelier-validation-blocked` only after both pass and retry
+`atelier finish`. A remaining failure stays blocked.
+
+### Choosing a reviewer
+
+Before queueing, read `atelier show tN` and, in the task workspace,
+`git fetch origin main` then `git diff origin/main...HEAD`. Triage the diff
+against each acceptance criterion. Missing behaviour goes back to the
+builder with `atelier dispatch tN --to home --agent A --model M --note "…"`;
+a complete diff proceeds to independent review. A criterion the builder
+cannot verify, such as a signed-in browser flow, belongs to the orchestrator
+after deploy: record that check and do not claim it passed from local tests.
+
+The reviewer must be of another company than every contributor to the task,
+not only its last builder: `atelier show tN` names who worked on it, and the
+task's history may include an earlier builder or a session that fixed a
+conflict. Among qualifying reviewers, alternate between companies so that
+no one reviewer's queue holds every landing. A reviewer that has rejected
+the same task several rounds running is still the right reviewer; see
+"Judging a review".
+
+### The landing queue
+
+`bin/orchestrate/land-queue.sh` lands tasks one after another, waiting for
+the machine's load to fall under 25 before each, and prints one `LANDQ tN:`
+line per landing. After a successful merge it synchronously runs
+`bin/orchestrate/post-merge.sh tN`; the next task stays queued until that
+step checks main, deploys and publishes successfully. Start it once from the project's checkout as a long-lived
+background job, then add each submitted task with `--add`:
+
+```sh
+bin/orchestrate/land-queue.sh            # once, in the background
+bin/orchestrate/land-queue.sh --add t405:codex/gpt-6-astra
+```
+
+`--add` takes the queue's lock (the directory `atelier.queue.lock` beside the
+queue file), as the queue does when it takes the first line, so an addition
+made while a landing is being taken off the queue is never lost. A bare
+`echo … >>` does not take the lock and can be lost; do not use it. The queue
+prints `LANDQ tN: …` for each landing and, once nothing has been queued for
+two hours, `LANDQ idle: …` and exits: start it again then.
+
+Order the queue so the tasks that touch core files land first: everything
+else will merge around them, and a core-file change landed late conflicts
+with every task that landed before it. Within that, put first the tasks that
+another piece of work waits on. To reorder it, hold the lock while you edit the queue file:
+`mkdir "$ATELIER_CACHE/land-queue/atelier.queue.lock"`, edit, then `rmdir` it.
+
+Do not chain landings by having a shell wait on `pgrep -f "… tN"`: the
+waiting shell's own command line contains the pattern, so `pgrep` finds the
+waiter itself and it waits forever. On 10 October two landings sat for fifty
+minutes that way. If a wait on a process is unavoidable, write the pattern so
+it cannot match itself (`pgrep -f "land-queue.sh t40[5]"`). t408 replaces
+these waits with a command.
+
+A failed post-merge step prints `LANDQ tN: post-merge blocked` and exits
+nonzero. Read `$ATELIER_CACHE/land-queue/atelier.queue.post-merge` for the
+pending task and `$ATELIER_CACHE/land-queue/tN.post-merge.log` for the error.
+Fix it and restart `bin/orchestrate/land-queue.sh`; it retries that step
+before consuming any task, even after a process restart. Do not delete the
+marker or requeue the already merged task. `post-merge complete` means the
+barrier cleared. `LAND_QUEUE_POST_MERGE=/absolute/path/to/hook` may replace
+the step only with an executable that performs all the same operations;
+zero means they all finished, any other status holds the queue.
+
+### Landing outcomes
+
+| `LANDQ tN:` says | What happened | Next step |
+| --- | --- | --- |
+| `tN landed through the landing Workflow` | Merged on main | "After each merge" |
+| `paused at its conflict stage` | Main has moved and the merge conflicts | "Conflicts" |
+| `… rejected tN at SHA: …` | The reviewer asked for changes | "Judging a review" |
+| `… route level N, this CLI route level N+1` | A merge raised `ROUTE_LEVEL` and the server is older | Deploy, then queue the task again |
+| `the landing lease was not tN's within 3 hours` | The landing reattached to an old Workflow run that had been waiting for the lease and has now timed out (t430) | Queue the task again: the next landing starts a fresh run |
+| `FAIL … npm test @ SHA` | The checks failed in a clean clone at the merged head, or ran out of time (`check exceeded its time limit` in the landing's output) | If it timed out, the machine was too loaded: lower the load, or raise `ATELIER_CHECK_TIMEOUT` for the landing, and queue it again. Otherwise run the suite in the task's workspace, keeping the whole output, to name the failing test; then send it back or fix it |
+
+### Conflicts
+
+In the task's workspace, `git diff --name-only --diff-filter=U` lists the
+conflicting files.
+
+- **A mechanical conflict**, however many files it spans, is resolved by the
+  orchestrator: two sides each adding entries to help or usage text, an
+  import list, a table or a registry, and generated fixtures (regenerate them
+  from the merged code). Keep both sides, run the type check and the tests of
+  the files touched, commit the merge with your own `Agent:` line, push with
+  `atelier push --as H/M` from the workspace, and queue the landing again.
+  The commit makes you a contributor, so the reviewer must be of another
+  company than you as well as the builder.
+- **A conflict that changes behaviour** (two sides changing the same logic): `git merge --abort` in the workspace, then send it
+  back to its builder:
+  `atelier dispatch tN --job merge-main --to home --agent A --model M --overlap-ok`.
+  For a task with many conflicting files in core code, name the strongest
+  builder available rather than the original one.
+
+A task built before a code move is ported by its builder, even if Git can
+merge it cleanly: dispatch `atelier dispatch tN --job merge-main --to home
+--agent A --model M --overlap-ok` and wait for the builder's port and checks
+before queueing it again. Moving paths is not a mechanical resolution when
+imports, registries or behaviour need adapting.
+
+The same files conflict almost every time on Atelier: `cli/atelier.mjs`,
+`src/usage.ts`, `src/ledger.ts` and the CLI's help and usage fixtures. A
+merge-main job merges main as it is when a runner claims it (t429), so the
+job needs no redispatch to pick up a newer main.
+
+A build job, a fix after findings included, submits the head it built on
+the fork's old base without merging main first, so on 10 October nearly
+every resubmitted task stopped at the conflict stage and cost a further
+round; t435 has the runner merge main before submitting.
+
+### Held dispatches
+
+Scope each task as narrowly as the change allows. A scope of `src/**`
+reaches every core file, so the task is held behind any live task in any of
+them: on 10 October twelve tasks filed with broad scopes all waited on one
+task, while a second machine's runners sat idle.
+
+When runners sit idle, read `atelier queue` first: held dispatches are work
+waiting on scope overlaps, not an empty backlog. If none are held, use
+`atelier status` to check runner eligibility and health.
+
+`atelier status` shows `Held: waits on tX … both scopes reach core file F`
+for a dispatch whose scope overlaps a live task's in a core file. Check that
+tX is really moving (its workspace's last commit, an agent process in it). If
+tX is stuck, fix tX first. If many tasks wait on one, release the few that
+matter most with `atelier dispatch tN --overlap-ok`, not all of them: tasks
+released together into the same core file mostly conflict with each other at
+landing.
+
+### After each merge
+
+The queue runs `bin/orchestrate/post-merge.sh tN` in the project checkout
+and waits for it. It requires a clean `main`, pulls with `--ff-only`, runs
+`npm run typecheck` and `npm test`,
+deploys, audits outgoing history and publishes. Any failed command stops it
+and holds the next landing. The steps below explain those operations and
+manual diagnosis; never start a second queue while this barrier is pending.
+The script runs the full suite in the clean checkout; a clean clone below
+can reproduce failures independently.
+
+For a task whose platform/runtime behaviour needs a remote smoke check, set
+`POST_MERGE_SMOKE=/absolute/path/to/check`; the executable receives `before`
+and `after` around deployment and must return zero for each. A failure
+holds the queue. Include the orchestrator's signed-in browser criterion in
+that verification after deployment; a local pass cannot stand in for it.
+
+1. Update and type check:
+
+   ```sh
+   PREVIOUS=$(git rev-parse HEAD)
+   git pull --ff-only
+   npm run typecheck
+   ```
+
+   `git pull` failing as not fast-forward means the checkout holds a commit
+   main does not: stop and find it. A type error is a break on main: name the
+   task whose merge caused it (`git log $PREVIOUS..HEAD`) and send it back.
+2. Check main's full suite in a clean clone, with the whole output kept so a
+   failure can be named:
+
+   ```sh
+   rm -rf /tmp/main-check; git clone -q . /tmp/main-check
+   (cd /tmp/main-check && npm ci && npm test) > /tmp/main-check.log 2>&1; echo $?
+   ```
+
+   `0`: main is good, go on. Non-zero: do not deploy. Find the failing test
+   in the log and run it a second time; a failure that does not repeat is a
+   flaky test to file, one that repeats is a break on main to send back to
+   the task that caused it.
+3. Deploy once the suite passes (the owner's decision d6: landed changes are
+   deployed after main's full suite passes, not only when `ROUTE_LEVEL`
+   rises):
+
+   ```sh
+   git diff $PREVIOUS HEAD -- src/route-level.ts
+   npm run deploy
+   ```
+
+   The diff shows whether `ROUTE_LEVEL` rose; if it did, queue again every
+   landing refused on route level once the deploy is done. `npm run deploy`
+   does not run tests, which is why step 2 comes first. If it fails, report
+   the error and queue no landing that needs the new route.
+4. Publish main to the public mirror once it is checked (t433 makes this a
+   command). Name the mirror's remote `public` (`git remote -v` lists them;
+   `git remote add public URL` once) and run:
+
+   ```sh
+   : "${NOREPLY:?Set the recorded public no-reply address}"
+   git fetch public
+   # a. every new commit's author and committer address must be the public
+   #    no-reply address; this prints the ones that are not
+   git log --format='%H %ae %ce' public/main..HEAD | awk -v expected="$NOREPLY" '$2 != expected || $3 != expected'
+   # b. inspect every outgoing commit, including additions later removed
+   git log -p -m --root --format=fuller --binary public/main..HEAD | grep -E '^\+' | grep -iE 'api[_-]?key|token|secret|password|PRIVATE KEY|sk-[A-Za-z0-9]{20,}|([0-9]{1,3}\.){3}[0-9]{1,3}|@[a-z0-9-]+\.[a-z]{2,}'
+   # c. private paths must not appear in any outgoing commit
+   git log --name-only -m --root --format= public/main..HEAD | grep -E '^(PROJECT|AGENTS)\.md$|^\.env'
+   # d. read all outgoing metadata, messages and patches too; pattern scans
+   #    only flag candidates and cannot prove prose or binary assets public
+   git log -p -m --root --format=fuller --binary public/main..HEAD
+   # after every candidate is cleared, let the pending post-merge step push
+   export PUBLIC_AUDIT_HEAD=$(git rev-parse HEAD)
+   bin/orchestrate/land-queue.sh
+   ```
+
+   `NOREPLY` is the public no-reply address, read from the project's
+   recorded decisions (`atelier guide --role orchestrate`). An unset or empty `NOREPLY` is a stop, never a pass.
+   Compare author and committer separately with exact equality: either
+   private address holds publication. Output from a: those commits must be rewritten
+   before they are published, so send their task back. Output from b: read
+   each line; a test fixture or a documented placeholder is fine, a real
+   value goes back to its task. Output from c: the file must be removed from every outgoing
+   commit that contains it. Deleting it at the tip does not remove it from
+   published history. Stop publication and coordinate history repair with
+   the owner; do not rewrite shared main casually. Re-audit the entire
+   outgoing range after any repair. The `-m --root` scans include merge
+   changes and initial commits. Review commit messages, metadata and binary
+   files as well as added lines for private details, including spend figures.
+   Any unresolved candidate holds the push.
+
+   The script saves addresses, paths and the full patch under
+   `$(git rev-parse --git-path public-audit)` and stops until
+   `PUBLIC_AUDIT_HEAD` names the exact audited head. Setting it acknowledges
+   that human inspection; it cannot bypass bad addresses or private paths.
+   On restart, the pending step repeats checks and deployment before pushing;
+   it takes the next task only after the push succeeds. If the push is rejected as
+   non-fast-forward, the mirror has a commit main does not: fetch, find it,
+   and never force the push.
+5. Report to the lead developer: what merged, what was deployed, what is
+   landing and what went back.
+
 ## Judging a review
 
 A reviewer's finding is a claim about the code, and it can be wrong. On
@@ -267,6 +616,22 @@ owner it read as a defect. The other half were real, and some were serious.
 - When it does not, say why in the review's context, with the file and line
   that show it, and ask for the review again. Do not override the review
   quietly, and never let a reviewer overrule the owner's decision.
+- A rejection is bound to the revision it read. Another reviewer's approval
+  of the same revision does not clear it: the gate still sees a reviewer who
+  asked for changes with no push since. So a refuted finding is answered
+  either by the same reviewer reading the refutation, or by a new push. When
+  one reviewer rejects the same task round after round on narrower and
+  narrower points, a small change that meets the point usually costs less
+  than another round; the refutation stays on the record either way.
+- When a confirmed finding names a case the criteria did not state, add the
+  case to the criteria (`atelier edit tN --accept "…"`, all criteria
+  restated) before sending the task back, so the review that follows, and the
+  next task like it, start with the case written down.
+- Read a review's findings with `atelier show tN --json` (the `reviews`
+  list, each with its `head` and `findings`); the text summary shortens them.
+  Send a confirmed finding back with
+  `atelier dispatch tN --to home --agent A --model M --note "…"`, naming in
+  the note exactly what to change and what not to.
 - Record the verdict on each finding (`atelier finding`, task t186). Which
   reviewers are right, and how often, is the most useful thing Atelier can
   measure about them. The next review brief shows each verdict and its note,

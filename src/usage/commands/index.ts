@@ -5,8 +5,10 @@ import command_accept from "./accept.ts";
 import command_adopt from "./adopt.ts";
 import command_approvals from "./approvals.ts";
 import command_approve from "./approve.ts";
+import command_area from "./area.ts";
 import command_base_token from "./base-token.ts";
 import command_block from "./block.ts";
+import command_board from "./board.ts";
 import command_check from "./check.ts";
 import command_claim from "./claim.ts";
 import command_decide from "./decide.ts";
@@ -58,6 +60,7 @@ import command_served from "./served.ts";
 import command_ship from "./ship.ts";
 import command_show from "./show.ts";
 import command_showcase from "./showcase.ts";
+import command_slots from "./slots.ts";
 import command_start from "./start.ts";
 import command_status from "./status.ts";
 import command_submit from "./submit.ts";
@@ -75,8 +78,10 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/adopt.ts", spec: command_adopt },
   { path: "src/usage/commands/approvals.ts", spec: command_approvals },
   { path: "src/usage/commands/approve.ts", spec: command_approve },
+  { path: "src/usage/commands/area.ts", spec: command_area },
   { path: "src/usage/commands/base-token.ts", spec: command_base_token },
   { path: "src/usage/commands/block.ts", spec: command_block },
+  { path: "src/usage/commands/board.ts", spec: command_board },
   { path: "src/usage/commands/check.ts", spec: command_check },
   { path: "src/usage/commands/claim.ts", spec: command_claim },
   { path: "src/usage/commands/decide.ts", spec: command_decide },
@@ -128,6 +133,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/ship.ts", spec: command_ship },
   { path: "src/usage/commands/show.ts", spec: command_show },
   { path: "src/usage/commands/showcase.ts", spec: command_showcase },
+  { path: "src/usage/commands/slots.ts", spec: command_slots },
   { path: "src/usage/commands/start.ts", spec: command_start },
   { path: "src/usage/commands/status.ts", spec: command_status },
   { path: "src/usage/commands/submit.ts", spec: command_submit },
