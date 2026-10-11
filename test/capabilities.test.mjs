@@ -122,13 +122,13 @@ test("each command that relies on a named capability declares it in its module",
   assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["adopt", "area", "board", "claim", "criteria-finding", "criteria-review", "criteria-review-claim", "criteria-review-failed", "criteria-verdict", "edit", "init", "integrated", "integration-failed", "land", "merge", "models", "new", "plan", "refresh-failed", "refreshed", "revert", "review", "review-claim", "review-unparsable", "start", "token", "wrap"]);
   for (const command of ["integrated", "integration-failed", "refreshed", "refresh-failed"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["plans.integration.v1"], command);
   // land counts the runners that skipped its review request by the request number the answer carries (t353).
-  assert.deepEqual(COMMAND_CAPABILITIES.land, ["projects.commit-identity.v1", "land.workflow.v1", "items.brief-criteria.v1", "reviews.criteria-binding.v1", "projects.require-criteria.v1", "reviews.skip.v1", "land.post-merge.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.land, ["projects.commit-identity.v1", "land.workflow.v1", "items.brief-criteria.v1", "reviews.criteria-binding.v1", "projects.require-criteria.v1", "reviews.skip.v1", "land.post-merge.v1", "land.triage.v1"]);
   // new and edit assign a task to a function area (--area, t456); area manages them and board reads the snapshot.
   assert.deepEqual(COMMAND_CAPABILITIES.new, ["items.brief-criteria.v1", "areas.manage.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.edit, ["items.brief-criteria.v1", "reviews.criteria-binding.v1", "areas.manage.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.area, ["areas.manage.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.board, ["areas.board.v1"]);
-  assert.deepEqual(COMMAND_CAPABILITIES.init, ["projects.commit-identity.v1", "projects.require-criteria.v1", "land.post-merge.v1", "reviews.criteria-review.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.init, ["projects.commit-identity.v1", "projects.require-criteria.v1", "land.post-merge.v1", "land.triage.v1", "reviews.criteria-review.v1"]);
   // The criteria review's commands post the criteria-review routes (t438).
   for (const command of ["criteria-review", "criteria-review-claim", "criteria-verdict", "criteria-review-failed", "criteria-finding"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["reviews.criteria-review.v1"], command);
   for (const command of ["review", "review-claim"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["reviews.criteria-binding.v1"], command);
@@ -216,11 +216,21 @@ test("every route level raised since capabilities declares the capability it sta
 
 test("post-merge runs are guaranteed from legacy level 27 alone, and init and land require them (t477)", () => {
   assert.deepEqual(CAPABILITIES.filter((c) => c.level === 27).map((c) => c.name), ["land.post-merge.v1"]);
-  assert.deepEqual(checkCapabilities({ routeLevel: 26 }, COMMAND_CAPABILITIES.land).missing, ["land.post-merge.v1"]);
-  assert.equal(checkCapabilities({ routeLevel: 27 }, COMMAND_CAPABILITIES.land).ok, true);
-  // init also requires the criteria review, which only level 32 guarantees (t438).
-  assert.deepEqual(checkCapabilities({ routeLevel: 26 }, COMMAND_CAPABILITIES.init).missing, ["land.post-merge.v1", "reviews.criteria-review.v1"]);
-  assert.deepEqual(checkCapabilities({ routeLevel: 27 }, COMMAND_CAPABILITIES.init).missing, ["reviews.criteria-review.v1"]);
+  for (const command of ["init", "land"]) {
+    // init also requires the criteria review, which only level 32 guarantees (t438).
+    const upTo27 = COMMAND_CAPABILITIES[command].filter((n) => n !== "land.triage.v1" && n !== "reviews.criteria-review.v1");
+    assert.deepEqual(checkCapabilities({ routeLevel: 26 }, upTo27).missing, ["land.post-merge.v1"], command);
+    assert.equal(checkCapabilities({ routeLevel: 27 }, upTo27).ok, true, command);
+  }
+});
+
+test("the landing's triage is guaranteed from legacy level 28 alone, and init and land require it (t475)", () => {
+  assert.deepEqual(CAPABILITIES.filter((c) => c.level === 28).map((c) => c.name), ["land.triage.v1"]);
+  for (const command of ["init", "land"]) {
+    const upTo28 = COMMAND_CAPABILITIES[command].filter((n) => n !== "reviews.criteria-review.v1");
+    assert.deepEqual(checkCapabilities({ routeLevel: 27 }, upTo28).missing, ["land.triage.v1"], command);
+    assert.equal(checkCapabilities({ routeLevel: 28 }, upTo28).ok, true, command);
+  }
 });
 
 test("the criteria review is guaranteed from legacy level 32 alone (t438)", () => {
@@ -237,8 +247,8 @@ test("main's identity and reviewer admission guarantees keep their legacy bounda
   assert.deepEqual(CAPABILITIES.filter((c) => c.level === 25).map((c) => c.name), ["reviews.admission.v1"]);
   for (const command of ["adopt", "revert", "claim", "start", "wrap", "init", "land", "merge"]) {
     assert.ok(COMMAND_CAPABILITIES[command].includes("projects.commit-identity.v1"), command);
-    // Only what levels up to 24 guarantee: init and land also require the post-merge runs (27, t477), and init the criteria review (32, t438).
-    const upTo24 = COMMAND_CAPABILITIES[command].filter((n) => n !== "land.post-merge.v1" && n !== "reviews.criteria-review.v1");
+    // Only what levels up to 24 guarantee: init and land also require the post-merge runs (27, t477) and the triage step (28, t475), and init the criteria review (32, t438).
+    const upTo24 = COMMAND_CAPABILITIES[command].filter((n) => n !== "land.post-merge.v1" && n !== "land.triage.v1" && n !== "reviews.criteria-review.v1");
     assert.deepEqual(checkCapabilities({ routeLevel: 23 }, upTo24).missing, ["projects.commit-identity.v1"]);
     assert.equal(checkCapabilities({ routeLevel: 24 }, upTo24).ok, true);
   }

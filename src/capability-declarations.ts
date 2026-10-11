@@ -17,5 +17,6 @@ export const CAPABILITY_DECLARATIONS = [
   { name: "reviews.lease.v1", level: 26, summary: "five-minute review claim leases: review-renew, and release, unparsable and verdicts naming the claim generation (--request)" },
   { name: "areas.board.v1", level: 23, summary: "the board snapshot, every task grouped by function area, which atelier board and the project page read" },
   { name: "reviews.criteria-review.v1", level: 32, summary: "the criteria-review routes (request, claim, verdict, failure and finding resolution) that review a task's acceptance criteria before its build, and the project policy's requireCriteriaReview" },
+  { name: "land.triage.v1", level: 28, summary: "the landing's triage step: the land step route records a triage, a --no-triage bypass and an --override-triage with the head, merge base and criteria binding, the project policy carries the triage model, and a landing Workflow triages before the review" },
   { name: "land.post-merge.v1", level: 27, summary: "durable post-merge runs: the project policy's owner-approved postMerge steps, the post-merge run routes (status, prepare, start, command, finish, retry, skip, reconcile) and the merge and landing reservations that block later merges until a run completes" },
 ] as const;

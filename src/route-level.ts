@@ -218,6 +218,9 @@ export function checkCapabilities(version: unknown, required: readonly string[])
 // exact request generation, and expired requests are reoffered (t351).
 // 27: durable owner-approved post-merge steps and recovery (t477,
 // land.post-merge.v1).
+// 28: the ledger takes the land step triage and its binding, so atelier land
+// records a triage, a --no-triage bypass and an --override-triage (t475,
+// land.triage.v1).
 // 32: the criteria-review routes, which the runner's criteria-review job
 // calls to claim a review of a task's acceptance criteria and record its
 // verdict or failure, and init takes --require-criteria-review (t438,
