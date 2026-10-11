@@ -7,6 +7,7 @@ import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
   preparationPaths,
+  REVIEW_RENEW_MS, reviewLeaseExpired,
   reviewerAdmission, admissionActor, actorFamily, familyRefusal, modelKey, type ReviewerAdmission,
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
   assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, RuleError, sameActor, validActor,
@@ -1854,20 +1855,24 @@ export class Ledger extends DurableObject<Env> {
     // the request flow, which the gate counts even when the owner token
     // recorded it. A claim the criteria change withdrew is not live, so a
     // verdict on it never answers the request that replaced it.
+    this.expireReviewClaims();
     const claims = this.sql.exec(`SELECT id, claimedBy, tier, topTier FROM review_requests WHERE item = ? AND head = ? AND state = 'claimed' AND criteria = ?`, r.itemId, r.head, r.criteria!).toArray()
       .filter((c) => typeof c.claimedBy === "string" && sameActor(c.claimedBy, r.by));
     // A reviewer that names the request it claimed answers that one only:
     // when it is no longer its live claim, the verdict is for a request that
     // was withdrawn or replaced, and is refused.
-    if (r.request !== undefined && !claims.some((c) => c.id === r.request)) {
+    const hadClaim = this.sql.exec(`SELECT claimedBy FROM review_requests WHERE item = ? AND head = ? AND claimedBy IS NOT NULL`, r.itemId, r.head).toArray()
+      .some((c) => sameActor(c.claimedBy as string, r.by));
+    if ((r.request !== undefined || hadClaim) && !claims.some((c) => c.id === r.request)) {
       throw new RuleError("stale_request", `the review request ${r.request} for ${r.itemId} is no longer claimed by ${r.by} at ${r.head.slice(0, 8)}: it was withdrawn or replaced, so this verdict answers nothing; refresh: claim the review again (atelier review-claim ${r.itemId}) and judge the change against the criteria it gives`, 409);
     }
-    const claimed = claims.length > 0;
+    const boundClaims = claims.filter((c) => c.id === r.request);
+    const claimed = boundClaims.length > 0;
     // A review answering a tier request this reviewer claimed is a tier
     // review. One whose tier request was withdrawn, when the change was
     // accepted or closed, is no longer asked for and is refused, so a late
     // tier verdict never reopens accepted work.
-    const tierClaim = claims.find((c) => c.tier === 1 && !claims.some((o) => o.tier !== 1));
+    const tierClaim = boundClaims.find((c) => c.tier === 1);
     if (!claimed) {
       const mine = this.sql.exec(`SELECT state, tier, claimedBy FROM review_requests WHERE item = ? AND head = ? AND claimedBy IS NOT NULL ORDER BY id DESC`, r.itemId, r.head).toArray()
         .filter((c) => sameActor(c.claimedBy as string, r.by));
@@ -1877,7 +1882,7 @@ export class Ledger extends DurableObject<Env> {
     }
     // A review answering a gate's request asked of a tier model gives the
     // tier review too (gateServesTier): the gate's review, top tier.
-    const topTier = !tierClaim && claims.some((c) => c.tier !== 1 && c.topTier === 1);
+    const topTier = !tierClaim && boundClaims.some((c) => c.tier !== 1 && c.topTier === 1);
     r = { ...r, recordedBy: proved ? recordedActor : this.owner, proved, claimed, ...(tierClaim ? { tier: true } : {}), ...(topTier ? { topTier: true } : {}) };
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
     // A new review of accepted work requires another acceptance.
@@ -3258,9 +3263,10 @@ export class Ledger extends DurableObject<Env> {
   // Timeouts. The alarm is set for an approved plan's deadline and for the
   // moment a part's claimed review would lapse (see claimReview); it runs
   // the tick of every approved plan that is still open, which blocks one
-  // past its deadline, asks a lapsed review again of another reviewer, and
+  // past its deadline, reoffers an expired review, and
   // is set again for a moment still to come.
   async alarm(): Promise<void> {
+    this.expireReviewClaims();
     const ids = this.sql.exec(`SELECT id FROM items WHERE kind = 'plan' AND state NOT IN ('merged', 'abandoned')`).toArray().map((r) => r.id as string);
     const now = Date.now();
     let next = Infinity;
@@ -3276,7 +3282,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // When the plan's earliest claimed review lapses, so the alarm fires then
-  // and the tick asks the review again of another reviewer. A claim already
+  // and the tick reoffers the review. A claim already
   // lapsed lies in the past and never re-fires an alarm: the tick that just
   // ran has either asked again or found nothing to ask.
   private nextLapse(id: string, now: number): number {
@@ -3622,7 +3628,7 @@ export class Ledger extends DurableObject<Env> {
       if (!need.needed) continue;
       // The reviewer the owner named is asked first, in or out of the pool,
       // while it is independent of every contributor, may review under the
-      // policy, and has not let a claim on this head lapse.
+      // policy.
       const change = record.reviewers?.[p.partKey!];
       const named = change?.by && !need.lapsed.some((a) => sameActor(a, change.actor)) && !independenceRefusal(change.actor, contributors)
         && mayAssess(change.actor, policy, this.owner) ? change.actor : null;
@@ -3684,6 +3690,7 @@ export class Ledger extends DurableObject<Env> {
 
   // The review requests for one part, oldest first, as reviewNeeded reads them.
   reviewRequests(item: string): ReviewRequestView[] {
+    this.expireReviewClaims();
     return this.sql.exec(`SELECT head, state, claimedBy, claimedAt, tier FROM review_requests WHERE item = ? ORDER BY id`, item).toArray()
       .map((r) => ({
         head: r.head as string,
@@ -3701,6 +3708,7 @@ export class Ledger extends DurableObject<Env> {
   // one when a new request is made (t353). Each part is read once, however
   // many requests name it.
   reviewWaiting(): (Item & { request: number })[] {
+    this.expireReviewClaims();
     const requests = this.sql.exec(`SELECT id, item, head, dispatch FROM review_requests WHERE state = 'open' ORDER BY id`).toArray();
     if (!requests.length) return [];
     const ids = [...new Set(requests.map((r) => r.item as string))];
@@ -3729,12 +3737,23 @@ export class Ledger extends DurableObject<Env> {
     this.log(itemId, actor, "review.skipped", { head, request, runner, ...(note ? { note: note.slice(0, REASON_MAX) } : {}) }, at, proved);
   }
 
+  // The Workflow follows the live gate request across lease generations.
+  liveReviewRequest(item: string, head: string): { request: number; reviewer: string } | null {
+    this.expireReviewClaims();
+    const row = this.sql.exec(`SELECT id, dispatch FROM review_requests WHERE item = ? AND head = ? AND tier IS NULL AND state IN ('open', 'claimed') ORDER BY id DESC LIMIT 1`, item, head).toArray()[0];
+    if (!row) return null;
+    const dispatch = JSON.parse(row.dispatch as string) as Dispatch;
+    return { request: row.id as number, reviewer: `${dispatch.agent}/${dispatch.model}` };
+  }
+
   // The runners that have skipped review request `request`, as the landing's
   // wait reads them. Matched by the request's number alone: a skip of an
   // earlier request at the same head (an earlier landing's, or one whose
   // claim lapsed) is that request's and counts for nothing against this one,
   // however late it was reported.
   reviewSkips(itemId: string, request: number): { runner: string; at: string; note?: string }[] {
+    this.expireReviewClaims();
+    if (!this.sql.exec(`SELECT id FROM review_requests WHERE id = ? AND item = ? AND state = 'open'`, request, itemId).toArray().length) return [];
     const rows = this.sql.exec(`SELECT at, data FROM events WHERE item_id = ? AND kind = 'review.skipped' ORDER BY seq`, itemId).toArray();
     return rows.flatMap((r) => {
       const data = JSON.parse(r.data as string) as { request?: unknown; runner?: unknown; note?: unknown };
@@ -3819,6 +3838,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   private async bindReview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved: boolean): Promise<ReviewClaim> {
+    this.expireReviewClaims();
     const item = this.item(itemId);
     const admission = reviewerAdmission(actor, this.project().policy);
     if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn`, 403);
@@ -3860,7 +3880,7 @@ export class Ledger extends DurableObject<Env> {
     const [harness, model] = actor.split("/");
     if (dispatch.agent && harness !== dispatch.agent) throw new RuleError("wrong_agent", `${itemId}'s review asks for ${dispatch.agent}, not ${harness}`, 403);
     if (dispatch.model && model !== dispatch.model) throw new RuleError("wrong_model", `${itemId}'s review asks for ${dispatch.model}, not ${model ?? "no model"}`, 403);
-    const at = new Date().toISOString();
+    const at = new Date(Date.now()).toISOString();
     // A part's claim carries the plan's account of it for the brief; an item
     // outside a plan has none, and its need is read as the gate reads it.
     const record = item.plan ? this.planRecord(item.plan) : null;
@@ -3870,13 +3890,14 @@ export class Ledger extends DurableObject<Env> {
     // plan's acceptance for this part as the brief gives it. The review this
     // claim leads to must name it.
     const criteria = criteriaHash(item.accept, part ? part.acceptance : item.partAccept);
-    this.sql.exec(`UPDATE review_requests SET state = 'claimed', claimedBy = ?, runner = ?, claimedAt = ?, criteria = ? WHERE id = ?`, actor, runner?.runner ?? null, at, criteria, row.id);
+    // No await separates selection from this conditional write. The request
+    // id is the fencing generation and may be claimed only once.
+    const bound = this.sql.exec(`UPDATE review_requests SET state = 'claimed', claimedBy = ?, runner = ?, claimedAt = ?, criteria = ? WHERE id = ? AND state = 'open' RETURNING id`, actor, runner.runner, at, criteria, row.id).toArray();
+    if (!bound.length) throw new RuleError("no_review", `${itemId} has no open review request`, 409);
     this.log(itemId, actor, "review.claimed", { head, runner: runner.runner, criteria, request: row.id as number, ...(tier ? { tier: true } : {}) }, at, proved);
-    // A part's claimed review can lapse (REVIEW_CLAIM_TIMEOUT_MS,
-    // reviewNeeded), and when it does, nothing but the alarm ticks the plan
-    // unprompted: the alarm is set for the lapse, never later than one
-    // already held. A review outside a plan sets none; its landing asks
-    // again itself (requestReview).
+    // The plan alarm recovers expired reviews without a poll. Renewals can
+    // move expiry forward; the alarm reads the latest timestamp and rearms.
+    // Standalone reviews recover on queue or Workflow polling.
     if (item.plan) {
       const lapse = Date.parse(at) + REVIEW_CLAIM_TIMEOUT_MS + 1000;
       const held = await this.ctx.storage.getAlarm();
@@ -3977,6 +3998,17 @@ export class Ledger extends DurableObject<Env> {
       }
     }
     const at = new Date().toISOString();
+    // An explicit owner request can choose another reviewer once the prior
+    // claim expires. Ordinary queue recovery keeps the original routing.
+    if (reviewer !== null && item.head) {
+      for (const row of this.sql.exec(`SELECT id, dispatch, claimedAt FROM review_requests WHERE item = ? AND head = ? AND state = 'claimed' AND tier IS NULL`, id, item.head).toArray()) {
+        if (!reviewLeaseExpired(row.claimedAt as string | null, Date.now())) continue;
+        const dispatch = JSON.parse(row.dispatch as string) as Dispatch;
+        if (dispatch.agent && dispatch.model && sameActor(`${dispatch.agent}/${dispatch.model}`, reviewer)) continue;
+        this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, row.id);
+        this.log(id, ORCHESTRATOR, "review.expired", { request: row.id }, at);
+      }
+    }
     // A request carried to this head when the head moved (reaskReview) asks
     // the reviewer of the earlier request. While no runner has claimed it,
     // the owner naming another reviewer replaces it rather than being told a
@@ -4207,17 +4239,58 @@ export class Ledger extends DurableObject<Env> {
     this.askTierReview(item, need, reviewer, ORCHESTRATOR, at);
   }
 
-  // A reviewer whose harness wrote no valid verdict lets the request go, so
-  // another reviewer may take it. The request returns to the queue, open.
-  releaseReview(itemId: string, actor: string, note: string, proved = false): void {
+  // A request number is also its claim generation. Never reopen a claimed
+  // row: late verdicts, skips and cleanup retain the old number forever.
+  private replaceReviewClaim(request: number): void {
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, tier, topTier, criteria, carried)
+        SELECT item, head, dispatch, briefHash, 'open', wanted, tier, topTier, criteria, carried
+        FROM review_requests WHERE id = ? AND state = 'claimed'`, request);
+      this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ? AND state = 'claimed'`, request);
+    });
+  }
+
+  private expireReviewClaims(): void {
+    const now = Date.now();
+    for (const row of this.sql.exec(`SELECT id, item, claimedAt FROM review_requests WHERE state = 'claimed'`).toArray()) {
+      if (!reviewLeaseExpired(row.claimedAt as string | null, now)) continue;
+      this.replaceReviewClaim(row.id as number);
+      this.log(row.item as string, ORCHESTRATOR, "review.expired", { request: row.id }, new Date(now).toISOString());
+    }
+  }
+
+  private currentReviewClaim(item: string, actor: string, request?: number): Row {
+    const admission = reviewerAdmission(actor, this.project().policy);
+    if (admission) actor = admissionActor(actor, admission);
+    this.expireReviewClaims();
+    const row = !Number.isSafeInteger(request) || request! < 1 ? undefined : this.sql.exec(`SELECT * FROM review_requests WHERE id = ? AND item = ? AND state = 'claimed'`, request!, item).toArray()[0];
+    if (!row || !sameActor(row.claimedBy as string, actor)) throw new RuleError("stale_request", "the review claim generation is no longer current", 409);
+    return row;
+  }
+
+  renewReview(item: string, actor: string, request: number): void {
+    const row = this.currentReviewClaim(item, actor, request);
+    const now = Date.now();
+    if (now - Date.parse(row.claimedAt as string) < REVIEW_RENEW_MS) return;
+    this.sql.exec(`UPDATE review_requests SET claimedAt = ? WHERE id = ?`, new Date(now).toISOString(), request);
+  }
+
+  releaseReview(itemId: string, actor: string, note: string, proved = false, request?: number): void {
     const admission = reviewerAdmission(actor, this.project().policy);
     if (admission) actor = admissionActor(actor, admission);
     this.item(itemId);
-    const at = new Date().toISOString();
-    const row = this.sql.exec(`SELECT id FROM review_requests WHERE item = ? AND state = 'claimed' AND claimedBy = ? ORDER BY id LIMIT 1`, itemId, actor).toArray()[0];
-    if (!row) throw new RuleError("no_review", `${itemId} has no review request claimed by ${actor}`, 404);
-    this.sql.exec(`UPDATE review_requests SET state = 'open', claimedBy = NULL, runner = NULL, claimedAt = NULL WHERE id = ?`, row.id);
-    this.log(itemId, actor, "review.released", { note }, at, proved);
+    // The owner's manual review-release command predates claim generations.
+    // Resolve its actor to the current claim here, without an RPC race. Agent
+    // credentials and explicitly numbered requests always remain fenced.
+    if (!proved && request === undefined) {
+      this.expireReviewClaims();
+      const row = this.sql.exec(`SELECT id, claimedBy FROM review_requests WHERE item = ? AND state = 'claimed'`, itemId)
+        .toArray().find((row) => sameActor(row.claimedBy as string, actor));
+      request = row?.id as number | undefined;
+    }
+    const row = this.currentReviewClaim(itemId, actor, request);
+    this.replaceReviewClaim(row.id as number);
+    this.log(itemId, actor, "review.released", { note, request }, new Date().toISOString(), proved);
   }
 
   // A reviewer's reply parseVerdict could not read (t407): kept on the task,
@@ -4228,7 +4301,7 @@ export class Ledger extends DurableObject<Env> {
   // four replies this way on t372). A claim no longer held, because it lapsed
   // or was withdrawn while the harness ran, releases nothing, and the reply is
   // kept anyway. Returns whether a request was released.
-  unparsableReview(itemId: string, actor: string, head: string, note: string, reply: string, proved = false): { released: boolean } {
+  unparsableReview(itemId: string, actor: string, head: string, note: string, reply: string, proved = false, request?: number): { released: boolean } {
     const admission = reviewerAdmission(actor, this.project().policy);
     if (admission) actor = admissionActor(actor, admission);
     if (!validActor(actor)) throw new RuleError("bad_actor", `"${actor}" is not harness/model`, 400);
@@ -4240,10 +4313,13 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     this.sql.exec(`INSERT INTO unparsable (item_id, json) VALUES (?, ?)`, itemId, JSON.stringify({ itemId, by: actor, head, note, reply, at } satisfies UnparsableReply));
     this.log(itemId, actor, "review.unparsable", { head, note }, at, proved);
-    const row = this.sql.exec(`SELECT id FROM review_requests WHERE item = ? AND state = 'claimed' AND claimedBy = ? ORDER BY id LIMIT 1`, itemId, actor).toArray()[0];
+    // Keeping an unusable reply is harmless; releasing a successor is not.
+    this.expireReviewClaims();
+    if (request === undefined) return { released: false };
+    const row = this.sql.exec(`SELECT id FROM review_requests WHERE id = ? AND item = ? AND head = ? AND state = 'claimed' AND claimedBy = ?`, request, itemId, head, actor).toArray()[0];
     if (!row) return { released: false };
-    this.sql.exec(`UPDATE review_requests SET state = 'open', claimedBy = NULL, runner = NULL, claimedAt = NULL WHERE id = ?`, row.id);
-    this.log(itemId, actor, "review.released", { note }, at, proved);
+    this.replaceReviewClaim(row.id as number);
+    this.log(itemId, actor, "review.released", { note, request }, at, proved);
     return { released: true };
   }
 

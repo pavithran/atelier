@@ -87,7 +87,7 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
   }
   if (section !== "items" || !id) return false;
   if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "diff", "job-brief"].includes(verb) || parts.length === 6 && ["sandbox", "logs", "diffs"].includes(verb);
-  return method === "POST" && parts.length === 5 && ["claim", "read-token", "base-token", "push", "evidence", "sandbox", "review", "review-claim", "review-release", "review-unparsable", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "block", "unblock"].includes(verb);
+  return method === "POST" && parts.length === 5 && ["claim", "read-token", "base-token", "push", "evidence", "sandbox", "review", "review-claim", "review-renew", "review-release", "review-unparsable", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "block", "unblock"].includes(verb);
 }
 
 // A separate allowlist: runner credentials never inherit an agent's review,
