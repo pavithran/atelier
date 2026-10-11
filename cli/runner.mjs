@@ -234,16 +234,19 @@ export const testSlotNote = slotNote(SLOT_WRAPPER);
 
 // Starts a harness once node is known to be on its PATH (requireNode).
 export async function startHarness(argv, cwd, env, { capture = false, captureError = false, stream = false, signal, timeoutMs } = {}, executeChild = execute) {
-  requireNode(env);
+  requireNode(env, cwd);
   return executeChild(argv, { cwd, signal, timeoutMs, env, stream, ...(capture ? { capture } : {}), ...(captureError ? { captureError } : {}) });
 }
 
 // Throws unless `node` resolves on the PATH a harness will run with, since its
-// brief tells it to run the slot wrapper with node.
-export function requireNode(env) {
-  for (const dir of (env.PATH ?? "").split(delimiter)) {
-    if (!dir) continue;
-    try { accessSync(join(dir, "node"), constants.X_OK); if (statSync(join(dir, "node")).isFile()) return; } catch { /* Not here. */ }
+// brief tells it to run the slot wrapper with node. The harness starts in
+// `cwd`, so a relative PATH entry is looked up from there, and on POSIX an
+// empty entry means that directory, as execvp has it.
+export function requireNode(env, cwd = process.cwd()) {
+  for (const entry of env.PATH === undefined ? [] : env.PATH.split(delimiter)) {
+    if (!entry && delimiter !== ":") continue;
+    const node = resolve(cwd, entry, "node");
+    try { accessSync(node, constants.X_OK); if (statSync(node).isFile()) return; } catch { /* Not here. */ }
   }
   throw new Error("node is not on the harness PATH, so the test-slot wrapper cannot run; put node on the runner's PATH");
 }
