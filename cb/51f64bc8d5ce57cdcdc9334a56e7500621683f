@@ -1,0 +1,38 @@
+atelier atelier/t495 "A project's agent guide names atelier land as the owner's path"
+accepted head e9a1c992af023010afab337a5dd2673f3cbd126c
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — codex/gpt-6-astra 2026-10-11T10:19:56.522Z
+OBSERVED pass npm run types && npm run typecheck — codex/gpt-6-astra 2026-10-11T10:20:00.065Z
+REVIEW approve by antigravity/gemini-3.1-pro at e9a1c992af023010afab337a5dd2673f3cbd126c, recorded by antigravity/gemini-3.1-pro
+2026-10-11T01:32:29.300Z pavi item.created
+2026-10-11T01:44:17.041Z pavi item.edited
+2026-10-11T01:44:17.041Z pavi item.criteria_changed
+2026-10-11T01:44:23.359Z pavi item.dispatched
+2026-10-11T01:44:36.073Z codex/gpt-6-astra item.claimed
+2026-10-11T01:44:45.739Z codex/gpt-6-astra fork.created
+2026-10-11T01:56:33.831Z codex/gpt-6-astra push.observed
+2026-10-11T02:01:01.420Z codex/gpt-6-astra evidence.observed
+2026-10-11T02:01:04.259Z codex/gpt-6-astra evidence.observed
+2026-10-11T02:01:04.793Z codex/gpt-6-astra item.submitted
+2026-10-11T05:00:55.473Z pavi land.lease
+2026-10-11T05:01:05.521Z pavi land.merge
+2026-10-11T05:01:16.396Z pavi land.regenerate
+2026-10-11T05:01:20.358Z codex/gpt-6-astra push.observed
+2026-10-11T05:01:21.115Z pavi land.push
+2026-10-11T05:07:04.710Z codex/gpt-6-astra evidence.observed
+2026-10-11T05:07:08.084Z codex/gpt-6-astra evidence.observed
+2026-10-11T05:07:08.548Z pavi land.check
+2026-10-11T09:25:31.993Z pavi land.lease
+2026-10-11T09:25:42.249Z pavi land.merge
+2026-10-11T10:14:59.790Z pavi land.merge
+2026-10-11T10:15:10.316Z pavi land.regenerate
+2026-10-11T10:15:16.219Z codex/gpt-6-astra push.observed
+2026-10-11T10:15:16.865Z pavi land.push
+2026-10-11T10:19:56.756Z codex/gpt-6-astra evidence.observed
+2026-10-11T10:20:00.260Z codex/gpt-6-astra evidence.observed
+2026-10-11T10:20:00.627Z pavi land.check
+2026-10-11T10:20:03.143Z pavi review.requested
+2026-10-11T10:24:03.383Z antigravity/gemini-3.1-pro review.claimed
+2026-10-11T10:30:57.378Z antigravity/gemini-3.1-pro review.approved
+2026-10-11T10:31:10.417Z pavi land.review
+2026-10-11T10:31:10.970Z pavi item.accepted
+2026-10-11T10:31:10.995Z pavi land.accept
