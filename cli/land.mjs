@@ -18,6 +18,7 @@ import { decideTriage, parseTriage, recordedTriage, resolveTriage, sameBinding, 
 import { WORKSPACE_REASON_MAX, effectiveFailures, failureDetail, failureSummary, resolveFailures } from "../src/check-failure.ts";
 import { DETECTOR_ENV, describeAmbiguous, describeFinding, detectMovedEditsAsync, findingKey } from "../src/moved-code.ts";
 import { appendMovedCodeRecord } from "./landing.mjs";
+import { workspaceNotice } from "./review-notice.mjs";
 
 // atelier land (t187): the project owner lands one task whole, taking the
 // project's landing lease on the server so two sessions never race main.
@@ -375,6 +376,15 @@ export async function runLand(io) {
   // Conflicting flags are refused here, before the lease or any change.
   const triage = resolveTriage({ ...triageFlags, project: d0.policy?.triage ?? p?.triage ?? undefined });
   if ("error" in triage) die(triage.error);
+  // A review the change will need is said now, before the lease, the merge
+  // and the checks, with the policy that requires it (t422). A dry run skips
+  // it: measuring needs a baseline fetch into the workspace, and a dry run
+  // changes nothing.
+  if (!noReview && !dryRun) {
+    const baseline = await request("POST", `/projects/${encodeURIComponent(name)}/items/${encodeURIComponent(id)}/base-token`, { scope: "read" }).catch(() => undefined);
+    const notice = workspaceNotice((argv, o) => git(argv, { allowFail: true, ...o }), dir, d0.policy, { baseline, part: d0.item?.kind === "part" });
+    if (notice) for (const line of notice) print(line);
+  }
   // The moved-code comparison's state across this run's merges of main: the
   // owner's --moved-ok, the approval it recorded (revisions and findings),
   // and the command a stopped landing is run again with.
