@@ -235,8 +235,11 @@ async function runLocal(t, setup, argv) {
   const server = createServer((req, res) => {
     seen.push(`${req.method} ${req.url}`);
     let status = 200, body;
-    if (req.url === "/api/projects/demo/standing") body = STANDING;
-    else if (req.url === "/api/projects/demo") body = { project: STANDING.project, items: state.items ?? [], events: [] };
+    if (req.url === "/api/projects") body = [STANDING.project];
+    else if (req.url === "/api/inbox") body = [];
+    else if (req.url === "/api/projects/demo/baseline-head") body = { head: git(state.checkout, "rev-parse", "HEAD") };
+    else if (req.url === "/api/projects/demo/standing") body = STANDING;
+    else if (req.url === "/api/projects/demo") body = { project: { ...STANDING.project, policy: state.policy }, items: state.items ?? [], events: [] };
     else if (req.url === "/api/projects/demo/landing-lease") {
       if (state.noLeaseRoute) { status = 404; body = { error: "not_found", detail: "no such route" }; }
       else body = { lease: state.lease ?? null };
@@ -246,7 +249,7 @@ async function runLocal(t, setup, argv) {
   });
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   t.after(() => server.close());
-  writeFileSync(join(dir, "config.json"), JSON.stringify({ server: "x", owner: "owner", projects: {} }));
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ server: "x", owner: "owner", projects: state.checkout ? { demo: { path: state.checkout } } : {} }));
   const child = spawn(process.execPath, [cli, ...(argv ?? ["status", "--project", "demo"])], {
     cwd: dir, env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: cache, ATELIER_TOKEN: "test-token", ATELIER_ACTOR: "owner", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}` },
   });
@@ -522,6 +525,20 @@ test("against an older server's queue, status falls back to the hold and the off
     { project: "demo", item: { ...item("t3", "open", { dispatch: d }), why: [] } },
   ], offers, now }).split("\n");
   assert.ok(!fresh.some((l) => l.includes("Held:") || l.includes("No live runner")), fresh.join("\n"));
+});
+
+for (const project of [false, true]) for (const json of [false, true]) test(`status module reports policy disagreements (project=${project}, json=${json})`, async (t) => {
+  const r = await runLocal(t, ({ dir }) => {
+    const checkout = workspace(join(dir, "checkout"), [["AGENTS.md", "Review is optional.\n"]]);
+    return { checkout, policy: { protected: ["AGENTS.md"], checks: [] } };
+  }, ["status", ...(project ? ["--project", "demo"] : []), ...(json ? ["--json"] : [])]);
+  assert.equal(r.code, 0, r.output);
+  assert.match(r.output, /AGENTS\.md:1 calls review optional/);
+  if (!json) assert.match(r.output, /Policy and instructions disagree/);
+  else {
+    const value = JSON.parse(r.output);
+    assert.equal((project ? value : value[0]).mismatches.length, 1);
+  }
 });
 
 // A hold lifts when every blocker stops holding: a claimed one when it submits

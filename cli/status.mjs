@@ -24,6 +24,12 @@ import { attentionFor, legacyFields, OWNER_CALL_LABEL, pipelineLine } from "../s
 import { daySpend } from "../src/usage/report.ts";
 import { jobsLine } from "./runner.mjs";
 
+export function formatPolicyDisagreements(mismatches = []) {
+  if (!mismatches.length) return "";
+  return ["  Policy and instructions disagree", ...mismatches.map((m) => `    ${m}`),
+    "    Settle which is right; agents are held to the recorded policy."].join("\n");
+}
+
 // A project's model policy in words (ProjectPolicy.familyMode, t394): the
 // default, cross-family review, or single-family mode naming the company,
 // with who switched and when where a switch is recorded. `atelier init`
@@ -73,6 +79,7 @@ export function statusJson(views, server = "", offers = null, now = new Date()) 
       // empty list standing for nothing.
       inbox: v.inbox ? mine : null,
       items: v.items ? v.items.map(itemJson) : null,
+      ...(v.mismatches?.length ? { mismatches: v.mismatches } : {}),
       overlaps: a.overlaps,
       attention: { owner: a.owner.map((t) => ({ ...t, url: absolute(server, t.href) })), pipeline: a.pipeline, unknown: a.unknown },
       // The merges that went in on the owner's override, each with the link
@@ -276,6 +283,7 @@ export function formatStatus(views, waiting = {}) {
       lines.push(quiet ? "  Nothing waiting." : a.unknown.length ? "  Nothing known to wait on you." : "  Nothing waiting on you.");
     } else lines.push("  Waiting for you", ...ownerLines(a.owner, waiting.server));
     if (a.unknown.length) lines.push("  Not read", ...a.unknown.map((x) => `    ${x}`));
+    if (v.mismatches?.length) lines.push(formatPolicyDisagreements(v.mismatches));
     if (a.pipeline.length) lines.push(`  In the pipeline: ${pipelineLine(a)}; none waits on you.`);
     // Overlapping scopes are counted, not listed: --json names each pair.
     if (a.overlaps.length) lines.push(`  Overlapping scopes: ${a.overlaps.length} ${a.overlaps.length === 1 ? "pair" : "pairs"}; expect a merge conflict when the second lands; nothing waits on you. atelier status --json lists them.`);
