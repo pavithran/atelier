@@ -311,7 +311,21 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
           await this.renewOrStop(L, p);
           return { main: await this.mainHead(L, p) };
         });
-        if (main.main === report.mainHead) break;
+        if (main.main === report.mainHead) {
+          // Recorded on the Ledger with the head, so the merge of this head
+          // is refused into any other main (beginLanding), whatever happens
+          // to the lease before the executor merges.
+          await step.do(`record the confirmed main${p.sfx}`, RETRIES, async () => {
+            try { await L.confirmLeaseMain(p.item, p.actor, main.main, p.instance); }
+            catch (error) {
+              const parsed = parseRuleError(error);
+              if (parsed && parsed.status < 500) throw new NonRetryableError(`the landing could not record main ${short(main.main)} under its lease, so it stops without accepting ${p.item}: ${parsed.detail}. Run atelier land ${p.item} --workflow again`);
+              throw error;
+            }
+            return {};
+          });
+          break;
+        }
         moves++;
         await this.release(step, L, p, `release the landing lease, main moved r${round}`, leasedAt, `main moved from ${report.mainHead} to ${main.main}`);
         leasedAt = null;
@@ -754,16 +768,34 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
     }
   }
 
-  // Watches the Ledger for the merge the executor records. The wait leaves
-  // the lease unrenewed, so a checkout that never comes (a closed laptop)
-  // does not hold the project: the lease lapses after its expiry, a merge
-  // refused meanwhile because another landing took it (t232) is retried by
-  // the executor, and this wait times out into the by-hand command.
+  // Watches the Ledger for the merge the executor records, renewing the
+  // lease on each poll until it is recorded (t550): a lease left to lapse
+  // here once let a queued landing take it, merge, and move main under this
+  // accepted head, which the executor then merged unchecked. A checkout
+  // that never comes (a closed laptop) now holds the project until the
+  // wait times out into the by-hand command, or until the owner frees the
+  // lease with atelier land ID --release-lease, which ends this landing at
+  // its next poll; and the merge of a head into a main other than the one
+  // confirmed under the lease is refused by the Ledger (beginLanding).
   private async waitForMerge(step: WorkflowStep, L: LedgerStub, p: Landing): Promise<void> {
     const maxPolls = Math.max(1, Math.floor(p.merge / p.mergePoll));
     for (let i = 0; ; i++) {
       const done = await step.do(`wait for the merge #${i}`, RETRIES, async () => {
-        if ((await L.item(p.item)).state !== "merged") return false;
+        // The lease is renewed while the merge is awaited (t550), so it
+        // cannot lapse to a queued landing that would merge first and move
+        // main under this accepted head. Once merged the lease guards
+        // nothing and may already be another landing's, so it is left alone.
+        if ((await L.item(p.item)).state !== "merged") {
+          try { await L.renewProjectLanding(p.item, p.actor, p.instance); }
+          catch (error) {
+            const parsed = parseRuleError(error);
+            if (parsed?.code === "stale_landing") throw new NonRetryableError(`this landing Workflow was replaced, so it stops without advancing ${p.item}: ${parsed.detail}`);
+            if (!parsed || (parsed.code !== "no_lease" && parsed.code !== "landing_lease")) throw error;
+            // Merged between the read and the renewal: the lease went with it.
+            if ((await L.item(p.item)).state !== "merged") throw new NonRetryableError(`the landing lease of ${p.project} was lost while ${p.item} waited to merge (the server said "${parsed.detail}"); ${p.item} stays accepted, and its merge is refused if main has moved from the commit it was checked against. Run atelier land ${p.item} --workflow again`);
+          }
+          return false;
+        }
         const run = await L.postMergeRun(p.item);
         return !run || run.state === "complete";
       });

@@ -3163,6 +3163,17 @@ export class Ledger extends DurableObject<Env> {
     // resumed landing may already have published, so its newly observed tip
     // must never replace the original before SHA. Legacy unknowns fail closed.
     const landingRow = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `landing:${id}`).toArray()[0];
+    // The merge of a head into a main other than the one its landing
+    // confirmed under the lease (t550) is refused before anything is
+    // reserved: the head was checked and reviewed against that main, so it
+    // goes back for a merge of the new main, new checks and a review. A
+    // resumed merge (its reservation already made) keeps the baseline it
+    // began from, and a head no landing confirmed (a merge by hand) is not
+    // judged here.
+    const confirmed = landingRow ? null : this.leaseMain(id);
+    if (confirmed && confirmed.head === head && before && before !== confirmed.main) {
+      throw new RuleError("main_moved", `main moved from ${confirmed.main.slice(0, 8)} to ${before.slice(0, 8)} since ${id}'s landing confirmed it under the lease; ${id} at ${head.slice(0, 8)} was checked and reviewed against ${confirmed.main.slice(0, 8)}, so it is not merged into ${before.slice(0, 8)}. Nothing was merged. Merge main into ${id}'s workspace and push it (atelier dispatch ${id} --job merge-main, or by hand with atelier push), which withdraws the acceptance, then run atelier land ${id} again to check and review the new head`, 409);
+    }
     const landing = landingRow ? JSON.parse(landingRow.value as string) as { head: string; at: number; before?: string | null } : { head, at: Date.now(), before: before ?? null };
     // A cancelled reservation remains in history, but does not become the
     // run of a new landing after the owner clears the step policy.
@@ -3437,7 +3448,14 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     const held = this.projectLanding();
     if (!held || held.item !== id) {
-      throw new RuleError("no_lease", held ? `the landing lease is held for ${held.item}, not ${id}` : `no landing lease is held, so ${id}'s landing cannot renew it`, 409);
+      // An executor from before t550 renews the lease through the workspace
+      // steps, but a review-first landing Workflow takes it only for the
+      // merge: such a renewal is told to update rather than that it lost.
+      const stage = instance ? this.landingWorkflowOf(id)?.stage : undefined;
+      const older = stage === "workspace" || stage === "conflict" || stage === "checks" || stage === "review"
+        ? `. ${id}'s landing Workflow holds no lease while main is merged, checked and reviewed (t550); this atelier command is older than that and renews a lease it no longer needs. Update the atelier command, then run atelier land ${id} --workflow again to attach`
+        : "";
+      throw new RuleError("no_lease", (held ? `the landing lease is held for ${held.item}, not ${id}` : `no landing lease is held, so ${id}'s landing cannot renew it`) + older, 409);
     }
     this.dispatchWaiting();
     const renewed = { ...held, renewedAt: at };
@@ -3445,6 +3463,35 @@ export class Ledger extends DurableObject<Env> {
     this.dispatchWaiting();
     await this.schedulePrereviews();
     return renewed;
+  }
+
+  // The main a landing confirmed under its lease (t550): the baseline's head
+  // its head was merged with, checked and reviewed against, recorded with
+  // that head once the landing has read main again under the lease and
+  // found it unmoved. beginLanding refuses the merge of that head into any
+  // other main, so a head whose lease lapsed while it waited to merge (and
+  // whose main another landing then moved) is sent back for a re-merge
+  // rather than merged unverified. Only the lease's holder records it. A
+  // part merges into its plan's branch, not the baseline the merge reads,
+  // so none is recorded for one.
+  confirmLeaseMain(id: string, actor: string, main: string, instance?: string): { main: string; head: string } | null {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner lands a task", 403);
+    if (!/^[a-f0-9]{40,64}$/.test(main)) throw new RuleError("bad_main", "main must be the commit hash the landing confirmed", 400);
+    this.fenceLandingInstance(id, instance);
+    const held = this.projectLanding();
+    if (!held || held.item !== id || !this.landingLive(held, new Date().toISOString())) {
+      throw new RuleError("no_lease", held ? `the landing lease is held for ${held.item}, not ${id}` : `no landing lease is held, so ${id}'s landing cannot confirm main under it`, 409);
+    }
+    const item = this.item(id);
+    if (item.kind === "part" || !item.head) return null;
+    const record = { main, head: item.head, at: new Date().toISOString() };
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `lease-main:${id}`, JSON.stringify(record));
+    return { main, head: item.head };
+  }
+
+  private leaseMain(id: string): { main: string; head: string } | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, `lease-main:${id}`).toArray()[0];
+    return row ? JSON.parse(row.value as string) : null;
   }
 
   // Frees the lease held for one task, answering which task held it since

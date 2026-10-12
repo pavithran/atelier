@@ -154,7 +154,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
       // remembers, its stage and round, and its status. A test moves it on
       // through `wf.tick` (after each read) and `wf.onEvent` (each event).
       const wf = box.wf;
-      const view = () => ({ ...(wf.readError ? { readError: wf.readError } : {}), ...(wf.lastStatus ? { lastStatus: wf.lastStatus } : {}), instance: wf.instance, stage: wf.stage, round: wf.round, ...(wf.checks ? { checks: wf.checks } : {}), ...(wf.files ? { files: wf.files } : {}), status: wf.unreadable ? null : { status: wf.status, ...(wf.error ? { error: { name: "Error", message: wf.error } } : {}), ...(wf.output ? { output: wf.output } : {}) } });
+      const view = () => ({ ...(wf.detail ? { detail: wf.detail } : {}), ...(wf.readError ? { readError: wf.readError } : {}), ...(wf.lastStatus ? { lastStatus: wf.lastStatus } : {}), instance: wf.instance, stage: wf.stage, round: wf.round, ...(wf.checks ? { checks: wf.checks } : {}), ...(wf.files ? { files: wf.files } : {}), status: wf.unreadable ? null : { status: wf.status, ...(wf.error ? { error: { name: "Error", message: wf.error } } : {}), ...(wf.output ? { output: wf.output } : {}) } });
       if (req.method === "GET") { answer = wf.instance ? view() : { instance: null, status: null, stage: null }; wf.reads++; }
       else if (body.event) { wf.events.push(body.event); wf.onEvent?.(body.event, box); answer = { sent: true, instance: wf.instance }; }
       else if (wf.instance && ["running", "waiting", "queued"].includes(wf.status) && !wf.replace) answer = { ...view(), created: false, ...(wf.attach ?? {}) };
@@ -186,6 +186,16 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
         answer = { held: !!box.lease, lease: box.lease };
         if (box.lease) box.leaseLog.push({ item: box.lease.item, kind: "release", i: box.requests.length });
         box.lease = null;
+      }
+      else if (body.confirm === true) {
+        // The holder's confirmation of main under the lease (t550): the
+        // server reads main itself (`box.serverMain`, else the baseline the
+        // fixture pushed) and refuses a main it does not hold.
+        if (!box.lease || box.lease.item !== body.item) return fail(409, "no_lease", `the landing lease is held for ${box.lease?.item ?? "nobody"}, not ${body.item}`);
+        const top = box.serverMain ?? git(baseline, "rev-parse", "main");
+        if (top !== body.main) return fail(409, "main_moved", `main is at ${top.slice(0, 8)}, not ${String(body.main).slice(0, 8)}, the commit ${body.item}'s head was merged with; release the lease and merge main again`);
+        (box.confirmed ??= []).push({ item: body.item, main: body.main });
+        answer = { confirmed: { main: body.main, head: forkHead(body.item) } };
       }
       else if (body.renew === true) {
         if (box.renewFails) return fail(503, "unavailable", "the ledger could not be reached");
@@ -277,7 +287,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
 
 // The takes of the lease a landing asked for (refused ones included), and
 // the takes the server granted, in the order it granted them.
-const takesOf = (f, id = "t1") => f.posts("/landing-lease").filter((x) => x.body.item === id && !x.body.cancel && !x.body.renew && x.body.queued !== true);
+const takesOf = (f, id = "t1") => f.posts("/landing-lease").filter((x) => x.body.item === id && !x.body.cancel && !x.body.renew && !x.body.confirm && x.body.queued !== true);
 const grantedTo = (f, id = "t1") => f.box.leaseLog.filter((x) => x.item === id && x.kind === "take");
 // Where in the requests the landing recorded a step, the first time.
 const recordedAt = (f, step, id = "t1") => f.box.requests.findIndex((x) => x.method === "POST" && x.path === `/api/projects/proj/items/${id}/land` && x.body.step === step);
@@ -327,6 +337,31 @@ test("a clean landing merges main, checks and is reviewed without the lease, the
   // Under the lease, main was read again and found where the head was merged with it.
   assert.match(r.output, new RegExp(`main is still at ${f.mainCommit.slice(0, 8)}, the commit ${head.slice(0, 8)} was checked and reviewed against\\.`));
   assert.match(r.output, /Landing lease taken for t1 \(submitted\) for its merge alone/);
+});
+
+// t550 pre-review finding: nothing on the server held a head to the main it
+// was checked against, so a landing that lost its lease before it merged
+// could merge into a main another landing had moved. The landing records
+// the main it confirmed under the lease, and the server checks it itself.
+test("under the lease the landing records the main it confirmed, before it accepts (t550)", async (t) => {
+  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
+  const main = git(f.p, "--git-dir", f.baseline, "rev-parse", "main");
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.deepEqual(f.box.confirmed, [{ item: "t1", main }]);
+  const confirm = f.box.requests.findIndex((x) => x.path.endsWith("/landing-lease") && x.body.confirm === true);
+  assert.ok(confirm > recordedAt(f, "lease") && confirm < recordedAt(f, "accept"), "main is confirmed under the lease, before the acceptance");
+});
+
+test("a server that reads main elsewhere than this machine fetched it stops the landing unaccepted (t550)", async (t) => {
+  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
+  f.box.serverMain = "f".repeat(40);
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 1, r.output);
+  assert.match(r.output, /the server reads main at ffffffff, not [a-f0-9]{8} as this machine fetched it, so t1 is not accepted or merged/);
+  assert.equal(f.posts("/accept").length, 0);
+  assert.notEqual(f.box.states.t1, "merged");
+  assert.equal(f.box.lease, null);
 });
 
 test("a server that records the landing's timing gets the time before the lease and the time holding it (t550)", async (t) => {
@@ -1907,11 +1942,27 @@ function scriptWorkflow(f) {
     if (event.type === "workspace" && event.payload.round !== wf.round) return;
     if (event.type === "workspace" && event.payload.conflict) { wf.stage = "conflict"; wf.files = event.payload.files; }
     else if (event.type === "workspace" && event.payload.failed) { wf.stage = "failed"; wf.status = "errored"; wf.error = event.payload.reason; }
-    else if (event.type === "workspace") { wf.stage = "lease"; leaseReads = 0; }
+    else if (event.type === "workspace") { wf.stage = "lease"; wf.detail = `${event.payload.head.slice(0, 8)} is checked and approved; waiting for the landing lease for the merge`; leaseReads = 0; }
     else if (event.type === "resume" && event.payload.round === wf.round) { wf.stage = "workspace"; wf.round++; }
   };
   return wf;
 }
+
+// A new instance's record begins at `lease` before its first step writes
+// `workspace` (t550); the CLI said that as the queue for the lease a checked
+// and approved head makes, before anything was checked.
+test("a landing Workflow at its first record is said to be starting, not queueing for the lease (t550)", async (t) => {
+  const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });
+  const wf = scriptWorkflow(f);
+  wf.firstStage = "lease";
+  const tick = wf.tick;
+  wf.tick = (box) => { if (wf.stage === "lease" && !wf.detail) { wf.stage = "workspace"; return; } tick(box); };
+  const r = await f.run(f.checkout, "land", "t1", "--workflow", "--checks", "container");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /The landing Workflow is starting\./);
+  assert.ok(r.output.indexOf("is starting") < r.output.indexOf("merge main and push, holding no lease"));
+  assert.ok(r.output.indexOf("queues for the landing lease") > r.output.indexOf("merge main and push, holding no lease"));
+});
 
 test("land --workflow starts the Workflow, merges main and pushes holding no lease, reports the head, and merges once the Workflow holds the lease and accepts (t550)", async (t) => {
   const f = await landFixture(t, { mainChange: { file: "main-note.txt", text: "from main\n", message: "Main work" } });

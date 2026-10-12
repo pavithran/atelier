@@ -900,6 +900,38 @@ it("main moved before the lease: the lease is released unaccepted, the workspace
   expect(await L.readProjectLanding()).toBeNull();
 });
 
+// t550 pre-review finding: the wait for the merge left the lease to lapse,
+// so a queued landing could take it, merge and move main under the
+// accepted head. The wait renews it, and the main confirmed under the lease
+// is recorded, so the merge into another main is refused.
+it("holds the lease through the wait for the merge, renewing it, and records the main it confirmed (t550)", async () => {
+  const instance = "wf-merge-wait-1";
+  const { L, id } = await pushedTask("wf-merge-wait", instance);
+  await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, instance);
+  await wf.modify(async (m) => {
+    await m.mockStepResult({ name: "confirm the fork's head" }, { head: H1 });
+    await m.mockStepResult({ name: "confirm main has not moved" }, { main: H2 });
+  });
+  await env.LANDING_WORKFLOW.create({ id: instance, params: params("wf-merge-wait", id) });
+  await send(instance, "workspace", { round: 0, head: H1, mainHead: H2, mergedIn: true });
+  await until(() => L.landingWorkflowOf(id), (r) => r?.stage === "merge");
+  // The lease is set back to the edge of its expiry; the wait renews it.
+  const held = (await L.readProjectLanding())!;
+  const stale = new Date(Date.now() - 14 * 60_000).toISOString();
+  await runInDurableObject(L, async (_instance: Ledger, state: DurableObjectState) => {
+    state.storage.sql.exec(`UPDATE meta SET value = ? WHERE key = 'landing-lease'`, JSON.stringify({ ...held, renewedAt: stale }));
+  });
+  const renewed = await until(() => L.readProjectLanding(), (l) => !!l && Date.parse(l.renewedAt!) > Date.parse(stale) + 60_000);
+  expect(renewed).toMatchObject({ item: id });
+  // The merge of the head into another main than H2 is refused; into H2 it begins.
+  const moved = await L.beginLanding(id, "owner", H1, H9).then(() => null, (e: unknown) => e as Error);
+  expect(moved?.message).toMatch(/main_moved\|main moved from bbbbbbbb to 99999999/);
+  await L.beginLanding(id, "owner", H1, H2);
+  await L.merged(id, "owner", H3, true, H1);
+  await wf.waitForStatus("complete");
+  expect(await L.readProjectLanding()).toBeNull();
+});
+
 it("a workspace report that names no main head ends the landing before anything runs (t550)", async () => {
   const instance = "wf-no-main-1";
   const { L, id } = await pushedTask("wf-no-main", instance);
