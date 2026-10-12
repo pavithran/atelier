@@ -1607,13 +1607,19 @@ export class Ledger extends DurableObject<Env> {
     return row ? JSON.parse(row.value as string) : null;
   }
 
-  runnerPoll(token: AgentToken, offer: RunnerOffer): void {
+  // A runner token's poll (the queue route): records the runners' last polls
+  // it was given, the offer, and the polls the offer is judged with, then
+  // answers the queue as queued() does, in this one call, so nothing written
+  // between the offer and its answer judges the two differently (t540).
+  runnerPoll(token: AgentToken, offer: RunnerOffer, polls?: readonly { runner: string; at: string }[]): { waiting: Waiting[]; reviews: (Item & { request: number })[] } {
     if (!token.runner || offer.runner !== token.runner) throw runnerDenied(token);
+    if (polls) this.recordRunnerPolls(polls);
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-offer:${token.id}`, JSON.stringify({ ...offer, at: new Date().toISOString() }));
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-offer-polls:${token.id}`, JSON.stringify(this.runnerPolls()?.polls ?? null));
     // A report may follow a failed claim or a review run authenticated with
     // its model token. Remember only jobs this poll actually authorizes,
     // separately from the grants that authorize build/plan operations.
-    const { waiting, reviews } = this.queued();
+    const queue = this.queued(), { waiting, reviews } = queue;
     for (const item of [...this.heldJobs(offer.runner), ...waiting, ...reviews]) {
       if (!item.dispatch || "held" in item && item.held) continue;
       const assignment = assign(item.dispatch, offer);
@@ -1622,6 +1628,18 @@ export class Ledger extends DurableObject<Env> {
       const role = item.dispatch.job === "review" ? "review" : item.dispatch.job === "plan" ? "plan" : "build";
       this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-report:${token.id}:${item.id}:${assignment.actor}:${role}`, JSON.stringify(item.dispatch.at));
     }
+    return queue;
+  }
+
+  // The runners' last polls the token's last offer was judged with (t540):
+  // its claim is judged with the same, so a task the queue offered free, a
+  // claim its runner orphaned holding it no longer, is not refused at the
+  // claim because that runner polled in between. Its next poll is judged
+  // with that poll, and is not offered the task. An offer recorded before
+  // t540, which kept none, is judged with the ledger's record as before.
+  private offerPolls(token: AgentToken): RunnerPolls | null {
+    const polls = this.runnerMeta<{ runner: string; at: string }[] | null>(`runner-offer-polls:${token.id}`);
+    return polls ? { polls } : this.runnerPolls();
   }
 
   assertRunnerReport(token: AgentToken, id: string, actor: string, role: string): void {
@@ -1657,7 +1675,7 @@ export class Ledger extends DurableObject<Env> {
     }
     if (claim && (item.state === "open" && !item.owner || item.state === "claimed" && item.owner === actor && item.runner === token.runner) && item.dispatch && !["review", "integrate", "refresh"].includes(item.dispatch.job ?? "")) {
       const offer = this.runnerMeta<SeenOffer>(`runner-offer:${token.id}`);
-      if (offer && liveOffers([offer]).length && assign(item.dispatch, offer)?.actor === actor && !coreHold(item, this.items(), this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls())) return;
+      if (offer && liveOffers([offer]).length && assign(item.dispatch, offer)?.actor === actor && !coreHold(item, this.items(), this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.offerPolls(token))) return;
     }
     throw runnerDenied(token);
   }
@@ -2103,7 +2121,7 @@ export class Ledger extends DurableObject<Env> {
     if (!liveOffers([offer]).length) return `the offer token ${token.id} last polled with is no longer live`;
     const assigned = assign(d, offer)?.actor;
     if (assigned !== actor) return assigned ? `its offer assigns this dispatch to ${assigned}, not ${actor}` : `its offer does not cover this dispatch (${describe(d)})`;
-    const held = coreHold(item, this.items(), this.project().policy.coreFiles, null, Date.now(), this.runnerPolls());
+    const held = coreHold(item, this.items(), this.project().policy.coreFiles, null, Date.now(), this.offerPolls(token));
     return held ? `the core files hold it: it ${holdText(held)}` : null;
   }
 
@@ -3564,7 +3582,12 @@ export class Ledger extends DurableObject<Env> {
 
   // Newest first. `before` pages back: only events with a lower seq than it.
   // Read-only diagnostic snapshot: no tick, lease renewal or status observation.
-  stuckSnapshot() {
+  // The stuck report's reading of the project. The runners' last polls the
+  // report judges orphaned claims with are recorded here first (t540), so
+  // the hold, the queue and the claim check read the same polls at the
+  // same moment.
+  stuckSnapshot(polls?: readonly { runner: string; at: string }[]) {
+    if (polls) this.recordRunnerPolls(polls);
     const items = this.items();
     return {
       items, events: this.events(undefined, Number.MAX_SAFE_INTEGER),
