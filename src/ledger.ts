@@ -1117,6 +1117,15 @@ export class Ledger extends DurableObject<Env> {
       const held = asked ? actorStanding(pool, asked, "review") : null;
       if (held) this.withdrawHeldRequest(r.item as string, r.id as number, r.head as string, asked!, held, r.tier === 1, at);
     }
+    // An unclaimed criteria review asked of a model now held from reviewing
+    // is withdrawn as a code-review request is, a part's included: its plan
+    // ticks below and asks another; a task's owner asks again. A claimed one
+    // stands, and its verdict is refused while the reviewer is held
+    // (addCriteriaReview).
+    for (const r of this.sql.exec(`SELECT * FROM criteria_reviews WHERE state = 'open' ORDER BY id`).toArray().map(toCriteriaReview)) {
+      const held = actorStanding(pool, r.reviewer, "review");
+      if (held) this.withdrawHeldCriteriaReview(r, held, at);
+    }
     // A queued build of a standalone task, or an unapproved plan's queued
     // plan job, for a model the owner's standing now holds from that job is
     // withdrawn too; an approved plan's parts are taken back by its tick.
@@ -1153,6 +1162,14 @@ export class Ledger extends DurableObject<Env> {
   private withdrawHeldRequest(itemId: string, request: number, head: string, reviewer: string, reason: string, tier: boolean, at: string): void {
     this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ? AND state = 'open'`, request);
     this.log(itemId, ORCHESTRATOR, "review.withdrawn", { head, reviewer, reason, ...(tier ? { tier: true } : {}) }, at);
+  }
+
+  // A criteria review asked of, or claimed by, a model the owner's standing
+  // holds from reviewing, withdrawn with the reason (t438). The criteria are
+  // not approved by it, and a review of them may be asked of another.
+  private withdrawHeldCriteriaReview(r: CriteriaReview, reason: string, at: string): void {
+    this.sql.exec(`UPDATE criteria_reviews SET state = 'withdrawn', failure = ?, decidedAt = ? WHERE id = ? AND state IN ('open', 'claimed')`, reason, at, r.id);
+    this.log(r.itemId, ORCHESTRATOR, "criteria_review.withdrawn", { review: r.id, rev: r.rev, reviewer: r.claimedBy ?? r.reviewer, reason }, at);
   }
 
   // ── usage ────────────────────────────────────────────────────────────────
@@ -5689,6 +5706,16 @@ export class Ledger extends DurableObject<Env> {
     if (dispatch.to !== "any" && dispatch.to !== runner.kind) throw new RuleError("wrong_runner", `${id}'s criteria review is for a ${dispatch.to} runner, not ${runner.runner}`, 403);
     if (dispatch.agent && harness !== dispatch.agent) throw new RuleError("wrong_agent", `${id}'s criteria review asks for ${dispatch.agent}, not ${harness}`, 403);
     if (dispatch.model && model !== dispatch.model) throw new RuleError("wrong_model", `${id}'s criteria review asks for ${dispatch.model}, not ${model ?? "no model"}`, 403);
+    // A review asked before the owner paused, reserved or kept this model
+    // from reviewing is not claimable, as a code review is not (claimReview):
+    // it is withdrawn, so a part's plan asks another, and the claim refused
+    // with the reason.
+    const held = actorStanding(this.poolStanding(), actor, "review");
+    if (held) {
+      this.withdrawHeldCriteriaReview(row, held, at);
+      this.afterPlanChange(id);
+      throw new RuleError("model_held", `${held}; its review of ${id}'s acceptance criteria is withdrawn`, 409);
+    }
     const refusal = criteriaIndependenceRefusal(actor, row.authors, this.owner, singleFamily(this.project().policy));
     if (refusal) throw new RuleError("not_independent", `${actor} cannot review ${id}'s acceptance criteria: ${refusal}`, 403);
     this.assertCriteriaAssessor(actor, id);
@@ -5787,6 +5814,15 @@ export class Ledger extends DurableObject<Env> {
     }
     if (row.state !== "claimed" || !row.claimedBy || !sameActor(row.claimedBy, r.by)) {
       throw new RuleError("stale_request", `criteria review ${r.request} of ${r.itemId} is ${row.state === "claimed" ? `claimed by ${row.claimedBy}, not ${r.by}` : row.state}, so this verdict answers nothing; claim it again (atelier criteria-review-claim ${r.itemId})`, 409);
+    }
+    // The owner's standing holds at the verdict as at the claim: a reviewer
+    // paused, reserved or kept from reviewing since it claimed approves
+    // nothing. Its review is withdrawn, so another may be asked.
+    const held = actorStanding(this.poolStanding(), r.by, "review");
+    if (held) {
+      this.withdrawHeldCriteriaReview(row, held, at);
+      this.afterPlanChange(r.itemId);
+      throw new RuleError("model_held", `${held}; its review of ${r.itemId}'s acceptance criteria is withdrawn, and this verdict is not recorded`, 409);
     }
     const refusal = criteriaIndependenceRefusal(r.by, row.authors, this.owner, singleFamily(this.project().policy));
     if (refusal) throw new RuleError("not_independent", `${r.by} cannot review ${r.itemId}'s acceptance criteria: ${refusal}`, 403);
