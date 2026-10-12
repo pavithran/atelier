@@ -93,7 +93,7 @@ colour never carries status alone.
 | Check passed in a Cloudflare container | filled circle |
 | Check passed on a runner, in a clean clone | open circle |
 | Check failed | cross |
-| Reported (an agent's own run; not verified) | dashed circle |
+| Reported, not verified | dashed circle |
 | Submitted | open diamond |
 | Approved | upward triangle |
 | Changes requested | downward triangle |
