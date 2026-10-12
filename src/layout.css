@@ -730,11 +730,18 @@ body.public main { margin: 0 auto; padding: 28px 16px 64px; }
    from the tally only. Company colours stay in the cards' bars, the story's
    threads and their legends. */
 body.public main.showcase { max-width: none; padding: 0 0 8px; }
-.show-section { max-width: 1200px; margin: 0 auto; padding: 48px 32px; box-sizing: border-box; }
-.show-h2 { margin: 0 0 24px; max-width: 26ch; font: 800 clamp(30px, 3.4vw, 44px)/1.05 var(--font-display); letter-spacing: -.025em; color: var(--text-bright); text-wrap: balance; }
+/* The canvas's bar: ruled across the page, its row on the 1200 px column,
+   the links in text colour and Sign in as an outlined button. */
+.show-page .public-bar { max-width: none; padding: 14px max(32px, calc((100% - 1200px) / 2)); border-bottom: 1px solid var(--line); }
+.show-page .public-bar .brand { font-size: 22px; letter-spacing: -.02em; color: var(--text-bright); text-decoration: none; }
+.show-page .public-bar nav a { color: var(--text); text-decoration: none; }
+.show-page .public-bar nav a:hover { color: var(--text-bright); text-decoration: underline; }
+.show-page .public-bar nav a[href="/login"] { margin-left: 4px; border: 1px solid var(--line-bright); border-radius: var(--radius-small); }
+.show-section { max-width: 1264px; margin: 0 auto; padding: 48px 32px; box-sizing: border-box; }
+.show-h2 { margin: 0 0 24px; max-width: 26ch; font: 800 clamp(30px, 3.4vw, 44px)/1.05 var(--font-display); letter-spacing: -.025em; color: var(--text-bright); }
 .show-window { margin: -12px 0 28px; font-size: 15px; color: var(--text-muted); }
 .show-hero { padding-top: 64px; padding-bottom: 24px; }
-.show-hero .kicker { display: block; margin: 0 0 18px; }
+.show-hero .kicker { display: block; margin: 0 0 18px; font-weight: 400; line-height: 1.5; letter-spacing: .1em; }
 .show-hero h1 { margin: 0; max-width: 15ch; font: 800 clamp(44px, 6.4vw, 88px)/.98 var(--font-display); letter-spacing: -.035em; color: var(--text-bright); }
 .show-lead { margin: 28px 0 0; max-width: 640px; font-size: 20px; line-height: 1.5; color: var(--text); }
 .show-hero .error { margin-top: 20px; }
@@ -784,6 +791,10 @@ body.public main.showcase { max-width: none; padding: 0 0 8px; }
 .card-figures div { display: flex; flex-direction: column; }
 .card-figures dd { order: -1; margin: 0; font: 800 30px/1 var(--font-display); color: var(--text); font-variant-numeric: tabular-nums; }
 .card-figures dt { margin-top: 4px; font-size: 13px; color: var(--text-muted); }
+.pulse-chart { display: flex; flex-direction: column; gap: 8px; }
+.pulse-graph.bars { height: 96px; }
+.pulse-graph.bars .baseline { vector-effect: non-scaling-stroke; }
+.pulse-axis { display: flex; justify-content: space-between; gap: 12px; margin: 0; font: 12px/1 var(--font-mono); color: var(--text-muted); }
 .show-card .legend-line { margin: 0; font: 13px/1 var(--font-sans); color: var(--text); gap: 8px 14px; }
 .show-card .legend-line i { width: 10px; height: 10px; border-radius: 2px; }
 
@@ -824,13 +835,14 @@ body.public main.showcase { max-width: none; padding: 0 0 8px; }
 .runs-on .cloud dd span { border-color: var(--observed-line); }
 .runs-on code { font-family: var(--font-mono); }
 
-.show-foot { max-width: 1200px; margin: 0 auto; padding: 28px 32px 40px; box-sizing: border-box; display: flex; flex-wrap: wrap; gap: 20px; justify-content: space-between; border-top: 1px solid var(--line); font-size: 14px; color: var(--text-muted); }
+.show-foot { max-width: 1264px; margin: 0 auto; padding: 28px 32px 40px; box-sizing: border-box; display: flex; flex-wrap: wrap; gap: 20px; justify-content: space-between; border-top: 1px solid var(--line); font-size: 14px; color: var(--text-muted); }
 .show-foot .public-note { margin: 0; max-width: 70ch; }
 .show-foot-links { display: flex; gap: 8px; margin: 0; }
 .show-foot-links a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 8px; }
 
 @media (max-width: 720px) {
   .show-section, .show-foot { padding-inline: 16px; }
+  .show-page .public-bar { padding-inline: 16px; }
   .show-section { padding-block: 36px; }
   .show-hero { padding-top: 40px; }
   .show-band .show-section { padding-block: 44px; }

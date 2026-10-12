@@ -211,15 +211,17 @@ export function page(title: string, body: string, active = "Decisions", ownerNam
 
 // The shell of the pages anyone can read: no rail, and no link into a signed-in
 // page. `main` is the inner HTML of <main>; `css` is appended after the site's.
-export function publicPage(o: { title: string; description: string; brand: string; nav: [label: string, url: string][]; mainClass: string; main: string; css?: string; head?: string }): string {
+// `night` keeps the page in Night whatever the device prefers, as the
+// owner's pages are; the showcase is drawn that way (d24, the d29 canvas).
+export function publicPage(o: { title: string; description: string; brand: string; nav: [label: string, url: string][]; mainClass: string; main: string; css?: string; head?: string; night?: boolean; bodyClass?: string }): string {
   const nav = o.nav.map(([label, url]) => `<a href="${url}">${e(label)}</a>`).join("");
-  return `<!doctype html><html lang="en" data-theme="night"><head><meta charset="utf-8">
+  return `<!doctype html><html lang="en" data-theme="night"${o.night ? ' data-scheme="night"' : ""}><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark light">${o.head ?? ""}
+<meta name="color-scheme" content="${o.night ? "dark" : "dark light"}">${o.head ?? ""}
 <meta name="description" content="${e(o.description)}">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="${FONTS}">
-<title>${e(o.title)}</title><style>${theme}\n${layout}${o.css ? `\n${o.css}` : ""}</style></head><body class="public">
+<title>${e(o.title)}</title><style>${theme}\n${layout}${o.css ? `\n${o.css}` : ""}</style></head><body class="public${o.bodyClass ? ` ${o.bodyClass}` : ""}">
 <header class="public-bar"><a class="brand" href="${o.brand}">Atelier</a><nav aria-label="Elsewhere">${nav}</nav></header>
 <main id="main" class="${o.mainClass}">${o.main}</main></body></html>`;
 }
@@ -901,7 +903,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     const figure = (v: number, label: string) => `<div><dt>${label}</dt><dd>${n(v)}</dd></div>`;
     return `<li class="show-card" id="card-${i + 1}">
     <h3>${e(shownLabel(c))}</h3>
-    ${c.pulse ? pulseGraph(c.pulse) : ""}
+    ${c.pulse ? pulseGraph(c.pulse, false) : ""}
     <dl class="card-figures">${figure(t.merges, "merged, last two weeks")}${c.allTimeMerged === undefined ? "" : figure(c.allTimeMerged, "merged, all time")}${figure(t.sentBack, "sent back, last two weeks")}${figure(inProgress, "in progress, last two weeks")}</dl>
     <ul class="legend-line" aria-label="Who worked on it">${families}${t.decisions ? `<li><i style="--c:var(--m-owner)"></i>${e(cap(who))}</li>` : ""}</ul>
   </li>`;
@@ -941,6 +943,8 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     brand: "/",
     nav: [["How it works", "/how"], ["Source on GitHub", REPO_URL], ["Sign in", "/login"]],
     mainClass: "showcase",
+    night: true,
+    bodyClass: "show-page",
     main: `
   <header class="show-section show-hero" id="top">
     <p class="kicker">Public showcase · read only · from the ledger</p>
@@ -1409,7 +1413,9 @@ const PULSE_W = 20, PULSE_BAR = 14, PULSE_H = 86, PULSE_TOP = 6, PULSE_BASE = 68
 // Two weeks of moves, one bar per day, each stacked by family with the
 // owner's decisions on top; a day with nothing is a tick on the baseline.
 // Every bar says in its title what it counts, and the drawing says its total.
-function pulseGraph(p: Pulse): string {
+// Without `axis`, the bars stand alone at a fixed height and the first and
+// last day follow as text, so the labels keep their size at any card width.
+function pulseGraph(p: Pulse, axis = true): string {
   const W = PULSE_W * p.days.length;
   const peak = Math.max(1, ...p.days.map((d) => d.moves + d.decisions));
   const scale = (n: number) => (n / peak) * (PULSE_BASE - PULSE_TOP);
@@ -1431,9 +1437,13 @@ function pulseGraph(p: Pulse): string {
   const label = p.moves || p.decisions
     ? `Moves per day over the last two weeks: ${p.moves} by agents and ${plural(p.decisions, "decision")} by you, most on ${keyLabel(busiest.day, false)}`
     : "No moves in the last two weeks";
+  const first = e(keyLabel(p.days[0].day, false)), last = e(keyLabel(p.days[p.days.length - 1].day, false));
+  if (!axis) return `<div class="pulse-chart"><svg class="pulse-graph bars" viewBox="0 0 ${W} ${PULSE_BASE + 1}" preserveAspectRatio="none" role="img" aria-label="${e(label)}">
+    <line class="baseline" x1="0" x2="${W}" y1="${PULSE_BASE + 0.5}" y2="${PULSE_BASE + 0.5}"/>${bars}
+  </svg><p class="pulse-axis" aria-hidden="true"><span>${first}</span><span>${last}</span></p></div>`;
   return `<svg class="pulse-graph" viewBox="0 0 ${W} ${PULSE_H}" role="img" aria-label="${e(label)}">
     <line class="baseline" x1="0" x2="${W}" y1="${PULSE_BASE + 0.5}" y2="${PULSE_BASE + 0.5}"/>${bars}
-    <text x="4" y="${PULSE_H - 3}">${e(keyLabel(p.days[0].day, false))}</text><text x="${W - 4}" y="${PULSE_H - 3}" text-anchor="end">${e(keyLabel(p.days[p.days.length - 1].day, false))}</text>
+    <text x="4" y="${PULSE_H - 3}">${first}</text><text x="${W - 4}" y="${PULSE_H - 3}" text-anchor="end">${last}</text>
   </svg>`;
 }
 
