@@ -701,5 +701,11 @@ The reset is read from an epoch, an explicit offset, or a relative duration
 ("in 2 hours", "retry after 120"); an unzoned date or time is read in the
 message's named zone or the runner's (`TZ`), and a time alone means its next
 occurrence. A message with no reset, one that cannot be read (an unknown zone,
-February 31st) or a dated reset already past pauses the harness for the
-**60-minute fallback**, counted from when the runner saw the limit.
+February 31st), a dated reset already past, or one more than eight days
+away (`MAX_PAUSE_DAYS`) pauses the harness for the **60-minute fallback**,
+counted from when the runner saw the limit.
+
+To tell a limit from an answer, the adapter reads the harness's whole output:
+a build, plan or review run under it is piped rather than inherited, so what
+the harness printed reaches the runner's log once the harness ends, not as it
+is written.
