@@ -156,8 +156,9 @@ for (const state of STATES) test(`a task ${state} during its push ends the job w
   t.after(server.close);
   const r = await run(t, { fork, server });
   assert.match(r.log, new RegExp(`task ${PROJECT}/t1 ${label(state).replace(/[()]/g, "\\$&")}; workspace and commits preserved`));
-  // The claim, then reads of the task; no push recorded, nothing released or submitted.
-  assert.ok(subsequence(r.requests, ["POST claim", "GET item"]), r.requests.join(", "));
+  // The claim, finish's read of the task and the review notice's baseline
+  // request, then reads of the task; no push recorded, nothing released or submitted.
+  assert.ok(subsequence(r.requests, ["POST claim", "GET item", "POST base-token", "GET item"]), r.requests.join(", "));
   assert.ok(!r.requests.some((request) => ["POST push", "POST release", "POST submit"].includes(request)), r.requests.join(", "));
   assert.ok(existsSync(fork.marker), "the fork refused the push");
   assert.equal(r.forkHead, fork.seedHead);
@@ -176,8 +177,9 @@ for (const state of STATES) test(`a task ${state} during finish, after a success
   t.after(server.close);
   const r = await run(t, { fork, server });
   assert.match(r.log, new RegExp(`task ${PROJECT}/t1 ${label(state).replace(/[()]/g, "\\$&")}; workspace and commits preserved`));
-  // The push went through and was recorded, then a read answered the state.
-  assert.ok(subsequence(r.requests, ["POST claim", "POST push", "GET item"]), r.requests.join(", "));
+  // The review notice's baseline request, then the push went through and was
+  // recorded, then a read answered the state.
+  assert.ok(subsequence(r.requests, ["POST claim", "POST base-token", "POST push", "GET item"]), r.requests.join(", "));
   assert.ok(!r.requests.some((request) => ["POST release", "POST submit"].includes(request)), r.requests.join(", "));
   assert.equal(r.forkHead, r.head);
   assert.equal(server.item.head, r.head);
