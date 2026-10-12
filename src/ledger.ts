@@ -243,8 +243,9 @@ export const DEFAULT_PROTECTED = ["AGENTS.md", "CLAUDE.md", "wrangler.*", ".atel
 // The steps a landing records (landEvent): taking the lease, merging main,
 // regenerating the project's fixtures, pushing, checking, the triage before
 // the review (t475: its own record, never one of the reviews the gate counts,
-// src/review/triage.ts), the review, the acceptance and the merge that lands
-// the task.
+// src/review/triage.ts), the review, the acceptance, the merge that lands
+// the task, and releasing the lease (t550: its duration the time the lease
+// was held, beside the lease step's time before it).
 // Where a landing Workflow stands (t280, setLandingWorkflowStage).
 export type LandingWorkflowStage = "lease" | "workspace" | "conflict" | "checks" | "review" | "merge" | "done" | "failed";
 // The most a landing Workflow record keeps of a stage's detail and of the
@@ -288,7 +289,7 @@ function landingWorkflowRecord(instance: string, options: LandingWorkflowOptions
   };
 }
 
-const LAND_STEPS = new Set(["lease", "merge", "regenerate", "push", "check", "submit", "triage", "review", "accept", "merged"]);
+const LAND_STEPS = new Set(["lease", "merge", "regenerate", "push", "check", "submit", "triage", "review", "accept", "merged", "release"]);
 
 // What a land.* event may carry beside its duration, and as what: hashes and
 // actors, the commits that came from main, the files a conflict stopped on,
@@ -296,7 +297,7 @@ const LAND_STEPS = new Set(["lease", "merge", "regenerate", "push", "check", "su
 // cut to its first entries by the ledger itself, which adds the count of the
 // whole list beside it (`fromMainCount`, cutLandLists below), so no caller
 // sends those counts.
-const LAND_DATA: Record<string, "string" | "boolean" | "strings"> = {
+const LAND_DATA: Record<string, "string" | "boolean" | "strings" | "ms"> = {
   head: "string", mergeCommit: "string", fromMain: "strings", conflicts: "strings",
   resolvedBy: "string", reviewer: "string", verdict: "string", command: "string",
   reason: "string", changed: "boolean", failed: "boolean", skipped: "boolean", requested: "boolean",
@@ -304,6 +305,10 @@ const LAND_DATA: Record<string, "string" | "boolean" | "strings"> = {
   // A triage's binding (the merge base and the criteria hash beside the
   // head), its model, how it ended and each criterion's status (t475).
   base: "string", criteria: "string", triager: "string", outcome: "string", statuses: "strings",
+  // The lease step's main (the commit the head was merged with, checked and
+  // reviewed against), the time the landing spent before it and the time it
+  // waited in the queue for it, in milliseconds (t550).
+  main: "string", beforeLease: "ms", waited: "ms",
 };
 export const LAND_JSON_MAX = 4000;
 
@@ -315,7 +320,8 @@ function cleanLandData(data: Record<string, unknown>): Record<string, unknown> {
     if (kind === "string" && typeof value === "string") out[key] = value.slice(0, 500);
     else if (kind === "boolean" && typeof value === "boolean") out[key] = value;
     else if (kind === "strings" && Array.isArray(value) && value.length <= 200 && value.every((s) => typeof s === "string")) out[key] = value.slice(0, 200).map((s) => s.slice(0, 200));
-    else throw new RuleError("bad_field", `${key} must be ${kind === "strings" ? "a list of commit hashes or paths" : kind === "boolean" ? "true or false" : "text"}`, 400);
+    else if (kind === "ms" && typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 30 * 86_400_000) out[key] = Math.round(value);
+    else throw new RuleError("bad_field", `${key} must be ${kind === "strings" ? "a list of commit hashes or paths" : kind === "boolean" ? "true or false" : kind === "ms" ? "a duration in milliseconds, thirty days at most" : "text"}`, 400);
   }
   cutLandLists(out);
   return out;
