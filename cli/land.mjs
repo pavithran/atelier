@@ -607,11 +607,12 @@ export async function runLand(io) {
         print(`Landing lease taken for ${id} (${item.state}) for its merge alone; one merge at a time in ${name}.`);
         return { waited: ask - asked, took: leasedAt - ask };
       } catch (error) {
-        const refused = /^landing_lease: /.test(error.message);
+        const refused = /^(landing_lease|post_merge_blocked): /.test(error.message);
         // Another landing holds the lease, another queued landing took it
         // between the poll and this request, the server judged live a lease
         // this machine's clock judged lapsed, or a landing that queued
-        // earlier is still first for it (t249): this one waits a beat and
+        // earlier is still first for it (t249), or another landing's
+        // post-merge work is still running (t477): this one waits a beat and
         // queues again behind it.
         if (refused) {
           if (Date.now() - queuedSince >= WAIT_TIMEOUT_MS) await timedOut(null);
@@ -619,10 +620,10 @@ export async function runLand(io) {
           queued = true;
           continue;
         }
-        // Unfinished post-merge work (t477) or a blocking pre-review's fence
-        // (t524) refuses the lease whatever the queue; said as the server
-        // said it, with the head left checked and approved.
-        const why = error.message.replace(/^(post_merge_blocked|prereview_blocked): /, "") || `the landing lease could not be taken: ${error.message}`;
+        // A blocking pre-review's fence (t524) refuses the lease whatever
+        // the queue; said as the server said it, with the head left checked
+        // and approved.
+        const why = error.message.replace(/^prereview_blocked: /, "") || `the landing lease could not be taken: ${error.message}`;
         throw new StepError(`${why.replace(/\.$/, "")}. ${id} is checked and approved but the lease was not taken, so nothing was merged`);
       }
     }
