@@ -37,8 +37,8 @@ it("Home, the Overview and Decisions agree with the rule, per project, counting 
     expect(s.pipeline.reduce((k, x) => k + x.count, 0)).toBe(EXPECTED[n].pipeline.length);
     const page = renderProject(record(n), items[n], [], "PAVI", s);
     const sec = page.split('id="standing"')[1].split('<details class="disclosure')[0];
-    if (EXPECTED[n].owner.length) expect(sec).toContain(`${EXPECTED[n].owner.length} tasks waiting on you here`);
-    else expect(sec).not.toContain("waiting on you here");
+    expect(sec).toContain(`<h2 id="wait-h">Waiting on you · ${EXPECTED[n].owner.length}</h2>`);
+    expect(ids(sec, /<li><a class="row-id" href="\/p\/\w+\/(\w+)">/g).slice(0, Math.min(5, EXPECTED[n].owner.length))).toEqual(EXPECTED[n].owner.slice(0, 5).map(([id]) => id));
     // Overlapping scopes never sit inline with what waits.
     expect(sec).not.toContain("overlap");
   }
@@ -84,7 +84,7 @@ it("the Overview and GET standing keep the owner calls already read when the not
   expect(page).toContain("The project&#39;s notices could not be read");
   expect(page).toContain("The task board could not be read.");
   expect(page).toContain("The project's events could not be read.");
-  expect(page).toContain("tasks waiting on you here");
+  expect(page).toContain(`Waiting on you · ${known.length}`);
 });
 
 it("the standing labels the tasks as not read when the task list cannot be read, rather than nothing waiting", async () => {
@@ -93,8 +93,8 @@ it("the standing labels the tasks as not read when the task list cannot be read,
   expect(s.partial).toContain("The project's tasks could not be read, so what waits on you there is unknown.");
   const page = renderProject(record("alpha"), [], null, "PAVI", s, null);
   expect(page).toContain("The project&#39;s tasks could not be read");
-  expect(page).toContain("Nothing waiting, queued or recently merged is shown in the part read.");
-  expect(page).not.toContain("Nothing is waiting, queued or recently merged.");
+  // No count is drawn from tasks that were not read.
+  expect(page).not.toContain('class="state-grid"');
 });
 
 it("Home keeps a project's owner calls when its moves or notices cannot be read, and labels what was not", () => {

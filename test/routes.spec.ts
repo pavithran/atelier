@@ -943,6 +943,32 @@ it("the project page carries the same standing as the route", async () => {
   expect(html).toContain("A queued &lt;task&gt;");
 });
 
+// t546: each count on the Overview links to the Tasks tab narrowed to the
+// tasks it counts; a value that names no state is the whole list.
+it("the Overview's counts link to the tasks they count, and the Tasks tab lists them", async () => {
+  const name = "state-counts";
+  await project(name);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.newItem("Open <work>", ["src/a/**"], "owner");
+  await L.newItem("Held work", ["src/b/**"], "owner");
+  await L.claim("t2", "codex/gpt-6");
+  const signedIn = await signIn(TOKEN, testEnv);
+  const get = async (path: string) => (await worker.fetch(new Request(`https://atelier.test${path}`, { headers: { cookie: signedIn } }), testEnv)).text();
+  const over = await get(`/p/${name}`);
+  expect(over).toContain(`<a href="/p/${name}/tasks?state=open"><span class="state-n neutral">1</span><span class="state-label">Ready to start</span></a>`);
+  expect(over).toContain(`<a href="/p/${name}/tasks?state=working"><span class="state-n neutral">1</span><span class="state-label">Working</span></a>`);
+  expect(over).toContain('<h2 id="run-h">Running · 1</h2>');
+  expect(over).toContain(`<a class="row-id" href="/p/${name}/t2">t2</a><span class="row-title">Held work</span>`);
+  const open = await get(`/p/${name}/tasks?state=open`);
+  expect(open).toContain('<h2 id="state-h">Ready to start · 1</h2>');
+  expect(open).toContain(`href="/p/${name}/t1"`);
+  expect(open).not.toContain(`href="/p/${name}/t2"`);
+  const all = await get(`/p/${name}/tasks?state=nonsense`);
+  expect(all).toContain(`href="/p/${name}/t1"`);
+  expect(all).toContain(`href="/p/${name}/t2"`);
+  expect(all).toContain(`action="/ui/${name}/new"`);
+});
+
 // Task t185: the site organised by project. Home is the portfolio, each
 // project has its own area with tabs, and the URLs that moved answer with a
 // permanent redirect so links in the ledger, the notifications and the README
@@ -980,7 +1006,7 @@ it("the project's area serves each tab, and the URLs that moved redirect permane
   const overHtml = await over.text();
   expect(overHtml).toContain('aria-label="area-routes"');
   expect(overHtml).toContain('href="/p/area-routes" aria-current="page">Overview');
-  expect(overHtml).toContain("Where it stands");
+  expect(overHtml).toContain('aria-label="Tasks by state"');
   const tasks = await get(`/p/${name}/tasks`);
   expect(tasks.status).toBe(200);
   const tasksHtml = await tasks.text();

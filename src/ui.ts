@@ -1456,43 +1456,130 @@ export function buildStanding(
   };
 }
 
-// Where a project stands on its Overview tab: what waits on the owner there,
-// what is queued, what merged last and what the last handoff said. Who holds
-// what is the Tasks tab's one list, not a second one here (finding 8), and
-// the policy lives on the Settings tab.
-function standingSection(p: ProjectRecord, s: Standing): string {
+// ── a project's Overview, as the canvas draws it (PAVI's d29, t546) ────────
+// One word per state (docs/design/brief.md §5), each with its colour role.
+// A submitted task is split by the notice the Ledger gives it: accept is
+// Ready to accept, assess Needs review, failing Checks failed. One with none
+// of these, or read without the notices, stays In review: Sent back needs
+// the task's reviews, which the Overview does not read.
+export type StateWord = "open" | "working" | "ready-to-accept" | "needs-review" | "checks-failed" | "in-review" | "ready-to-merge" | "blocked" | "integrated" | "merged" | "closed";
+export const STATE_WORDS: [word: StateWord, label: string, role: string][] = [
+  ["open", "Ready to start", "neutral"], ["working", "Working", "neutral"], ["ready-to-accept", "Ready to accept", "go"],
+  ["needs-review", "Needs review", "ask"], ["checks-failed", "Checks failed", "fault"], ["in-review", stateLabel.submitted, "neutral"],
+  ["ready-to-merge", "Ready to merge", "go"], ["blocked", "Blocked", "caution"], ["integrated", stateLabel.integrated, "done"],
+  ["merged", "Merged", "done"], ["closed", "Closed", "done"],
+];
+const WORD = new Map(STATE_WORDS.map(([w, label, role]) => [w, { label, role }]));
+export const isStateWord = (v: unknown): v is StateWord => typeof v === "string" && WORD.has(v as StateWord);
+
+// Each task's word, from its item and the notices naming it (null: not read).
+export function stateWords(items: Item[], inbox: InboxEntry[] | null): Map<string, StateWord> {
+  const kinds = new Map<string, Set<string>>();
+  for (const x of inbox ?? []) kinds.set(x.itemId, (kinds.get(x.itemId) ?? new Set()).add(x.kind));
+  return new Map(items.map((i) => {
+    const has = (k: string) => kinds.get(i.id)?.has(k) ?? false;
+    const word: StateWord = i.state === "blocked" || i.blocked ? "blocked"
+      : i.state === "open" ? "open"
+      : i.state === "claimed" ? "working"
+      : i.state === "accepted" ? "ready-to-merge"
+      : i.state === "integrated" ? "integrated"
+      : i.state === "merged" ? "merged"
+      : i.state === "abandoned" ? "closed"
+      : has("accept") ? "ready-to-accept" : has("assess") ? "needs-review" : has("failing") ? "checks-failed" : "in-review";
+    return [i.id, word];
+  }));
+}
+
+const tasksIn = (p: ProjectRecord, word: StateWord) => `${href("p", p.name, "tasks")}?state=${word}`;
+const stateText = (word: StateWord) => `<span class="state-word ${WORD.get(word)!.role}">${e(WORD.get(word)!.label)}</span>`;
+const idLink = (p: ProjectRecord, id: string) => `<a class="row-id" href="${href("p", p.name, id)}">${e(id)}</a>`;
+const bare = (s: string) => s.replace(/ ago$/, "");
+
+// The counts by state as a grid of links, each to the tasks it counts; a
+// state no task is in is left out. Working names how many are stale.
+function stateGrid(p: ProjectRecord, words: Map<string, StateWord>, stale: number): string {
+  const counts = new Map<StateWord, number>();
+  for (const w of words.values()) counts.set(w, (counts.get(w) ?? 0) + 1);
+  const cells = STATE_WORDS.filter(([w]) => counts.get(w)).map(([w, label, role]) =>
+    `<li><a href="${tasksIn(p, w)}"><span class="state-n ${role}">${counts.get(w)}</span><span class="state-label">${e(label)}${w === "working" && stale ? ` (${stale} stale)` : ""}</span></a></li>`);
+  return cells.length ? `<ul class="state-grid" aria-label="Tasks by state">${cells.join("")}</ul>` : "";
+}
+
+// What else the standing holds, folded under its figures: queued tasks, every
+// merge by override (t371), handoff notes, the newest session and where the
+// same record is read as text or JSON.
+function standingMore(p: ProjectRecord, s: Standing): string {
   const link = (id: string) => `<a href="${href("p", p.name, id)}">${e(id)}</a>`;
   const group = (title: string, rows: string[]) => rows.length ? `<h3>${e(title)}</h3><ul class="standing-list">${rows.join("")}</ul>` : "";
   const runner = (q: Standing["queued"][number]) => `${q.to}${q.agent ? ` ${q.agent}` : ""}${q.model ? `/${q.model}` : ""}`;
-  const groups = [
-    group("Waiting on the owner", s.waiting.map((w) => `<li>${link(w.id)} <strong>${e(w.title)}</strong>${callTag(w)}<p>${e(w.sentence)} ${actionLink(w)}</p><span class="meta">${e(w.why)}${w.brief ? ` · brief, ${e(w.brief.verdict)}: ${e(w.brief.line)}` : ""}</span></li>`)),
-    group("Queued for a runner", s.queued.map((q) => `<li>${link(q.id)} <strong>${e(q.title)}</strong><span class="meta">for ${e(runner(q))} · sent by ${e(q.by)} ${e(when(q.at))}${q.note ? ` · ${e(notePreview(q.note))}` : ""}</span></li>`)),
-    group("Last merges", s.merged.map((m) => `<li>${link(m.id)} <strong>${e(m.title)}</strong><span class="meta">${e(when(m.at))}${m.commit ? ` · <code>${e(m.commit.slice(0, 8))}</code>` : ""}${m.line ? ` · ${e(m.line)}` : ""}</span></li>`)),
-    // Every merge by override, each linked, under the count the lead line gives (t371).
-    group(`Merged by override: ${plural((s.overrides ?? []).length, "merge")}`, (s.overrides ?? []).map((o) => `<li>${link(o.id)} <strong>${e(o.title)}</strong><span class="meta">${e(when(o.at))} · the owner's override, not a review: ${e(o.reason)}</span></li>`)),
-    group("Handoff notes", s.handoffs.map((h) => `<li>${link(h.id)} <strong>${e(h.title)}</strong><span class="meta">${e(h.from || "?")} to ${e(h.to || "?")}, ${e(when(h.at))}: ${e(h.note)}</span></li>`)),
-  ].join("");
-  const inHand = s.live.length, byOverride = (s.overrides ?? []).length;
-  const lead = `<p class="meta">${plural(inHand, "task")} in hand${s.waiting.length ? ` · ${plural(s.waiting.length, "task")} waiting on you here` : ""} · <span class="merged-by-override">${plural(byOverride, "merge")} by override</span> · <a href="${href("p", p.name, "tasks")}">the whole task list</a></p>`;
-  return `<section class="standing" id="standing" aria-label="Where it stands">
-  <h2 class="section-title">Where it stands</h2>
-  ${lead}
-  <p class="meta">Generated from Atelier's record as of ${e(when(s.generatedAt))}. <code>atelier status --project ${e(p.name)}</code> prints the same as text; ${e(`/api/projects/${p.name}/standing`)} returns it as JSON.</p>
-  ${s.partial.length ? `<div class="notice" role="status"><h3>Part of this record is not shown</h3><ul>${s.partial.map((x) => `<li>${e(x)}</li>`).join("")}</ul></div>` : ""}
-  ${groups || `<p class="empty">${s.partial.length ? "Nothing waiting, queued or recently merged is shown in the part read." : "Nothing is waiting, queued or recently merged."}</p>`}
-  ${standingDisclosures(p, s)}
+  const overrides = s.overrides ?? [];
+  return `<details class="disclosure standing-more"><summary>${plural(s.queued.length, "task")} queued · <span class="merged-by-override">${plural(overrides.length, "merge")} by override</span> · ${plural(s.handoffs.length, "handoff note")}</summary>
+  ${group("Queued for a runner", s.queued.map((q) => `<li>${link(q.id)} <strong>${e(q.title)}</strong><span class="meta">for ${e(runner(q))} · sent by ${e(q.by)} ${e(when(q.at))}${q.note ? ` · ${e(notePreview(q.note))}` : ""}</span></li>`))}
+  ${group(`Merged by override: ${plural(overrides.length, "merge")}`, overrides.map((o) => `<li>${link(o.id)} <strong>${e(o.title)}</strong><span class="meta">${e(when(o.at))} · the owner's override, not a review: ${e(o.reason)}</span></li>`))}
+  ${group("Handoff notes", s.handoffs.map((h) => `<li>${link(h.id)} <strong>${e(h.title)}</strong><span class="meta">${e(h.from || "?")} to ${e(h.to || "?")}, ${e(when(h.at))}: ${e(h.note)}</span></li>`))}
   ${s.session ? `<h3>Newest session</h3>${sessionNoteText(s.session).split("\n").map((line) => `<p class="meta">${e(line)}</p>`).join("")}` : ""}
-</section>`;
+  ${overlapDisclosure({ project: p.name, owner: [], pipeline: [], overlaps: s.overlaps ?? [], unknown: [] })}
+  <p class="meta">Read from Atelier's record ${e(when(s.generatedAt))}. <code>atelier status --project ${e(p.name)}</code> prints it as text; ${e(`/api/projects/${p.name}/standing`)} returns it as JSON.</p>
+</details>`;
 }
 
-// The pipeline's counts and the overlapping scopes, each in a disclosure
-// below what waits on the owner.
-function standingDisclosures(p: ProjectRecord, s: Standing): string {
-  const total = (s.pipeline ?? []).reduce((n, x) => n + x.count, 0);
-  const pipeline = total
-    ? `<details class="disclosure pipeline"><summary>${plural(total, "task")} in the pipeline: ${s.pipeline.map((x) => `${x.count} ${STAGE_LABEL[x.stage]}`).join(" · ")}</summary><p class="meta">The orchestrator, runners and reviewers move these; none waits on you. <a href="${href("p", p.name, "tasks")}">The task list</a> names each.</p></details>`
-    : "";
-  return pipeline + overlapDisclosure({ project: p.name, owner: [], pipeline: [], overlaps: s.overlaps ?? [], unknown: [] });
+// The Overview's body: the figures line, the counts by state, what waits on
+// the owner, who is working, the last five merges and the ship requests,
+// each read from the Ledger and linked to the tasks it names. Without the
+// standing only what the items tell is drawn; nothing is shown as zero
+// that was not read.
+function overviewSection(p: ProjectRecord, items: Item[], inbox: InboxEntry[] | null, s: Standing | undefined, now: Date): string {
+  const words = stateWords(items, inbox);
+  const stale = new Set((inbox ?? []).filter((x) => x.kind === "stale").map((x) => x.itemId));
+  const staleWorking = items.filter((i) => words.get(i.id) === "working" && stale.has(i.id)).length;
+  const merged = s?.merged ?? lastMerged(items).map((i) => ({ id: i.id, title: i.title, at: i.updatedAt }));
+  const since = new Map((s?.live ?? []).map((l) => [l.id, l.since]));
+  const working = items.filter((i) => words.get(i.id) === "working")
+    .map((i) => ({ i, push: i.lastPushAt, since: since.get(i.id) ?? null }))
+    .sort((a, b) => (b.push ?? b.since ?? "").localeCompare(a.push ?? a.since ?? ""));
+  const waiting = s?.waiting ?? [];
+  const ships = waiting.filter((w) => w.call === "ship");
+  const figures = [
+    plural(items.length, "task"),
+    ...s ? [`${waiting.length} waiting on you`] : [],
+    ...merged.length ? [`last merge ${ago(merged[0].at, now)}`] : [],
+  ].join(" · ");
+  const list = (cls: string, rows: string[]) => `<ul class="overview-list ${cls}">${rows.join("")}</ul>`;
+  const waitRows = waiting.slice(0, 5).map((w) => `<li>${idLink(p, w.id)}<span class="row-title">${e(w.title)}</span>${stateText(words.get(w.id) ?? "in-review")}<span class="row-why">${e(w.sentence)}</span></li>`);
+  const runRows = working.slice(0, 5).map(({ i, push, since: at }) => `<li>${idLink(p, i.id)}<span class="row-title">${e(i.title)}</span><span class="row-who">${e(i.owner ?? "nobody")}${push ? ` · pushed ${e(ago(push, now))}` : at ? ` · taken ${e(ago(at, now))}` : ""}${stale.has(i.id) ? ' · <span class="state-word caution">stale</span>' : ""}</span></li>`);
+  const mergeRows = merged.map((m) => `<li>${idLink(p, m.id)}<span class="row-title">${e(m.title)}</span><time class="row-when" datetime="${e(m.at)}">${e(bare(ago(m.at, now)))}</time></li>`);
+  const shipRows = ships.map((w) => `<li>${idLink(p, w.id)}<span class="row-title">${e(w.title)}</span><span class="row-why">${e(w.sentence)} <a href="${e(w.href)}">Open Ship</a></span></li>`);
+  const waitingSection = s ? `<section class="overview-block" aria-labelledby="wait-h">
+      <h2 id="wait-h">Waiting on you · ${waiting.length}</h2>
+      ${waitRows.length ? list("wait-list", waitRows) : '<p class="empty">Nothing waits on you here.</p>'}
+      ${waiting.length ? `<p class="overview-more"><a href="/decisions">All ${waiting.length} waiting</a></p>` : ""}
+    </section>` : "";
+  const shipSection = s ? `<section class="overview-block" aria-labelledby="ship-h">
+        <h2 id="ship-h">Ship requests</h2>
+        ${shipRows.length ? list("wait-list", shipRows) : `<p class="meta">None pending. Approvals are in <a href="${href("p", p.name, "ship")}">Ship</a>.</p>`}
+      </section>` : "";
+  return `<section class="overview" id="standing" aria-label="Overview">
+  <p class="overview-figures">${e(figures)}</p>
+  ${s?.partial.length ? `<div class="notice" role="status"><h3>Part of this record is not shown</h3><ul>${s.partial.map((x) => `<li>${e(x)}</li>`).join("")}</ul></div>` : ""}
+  ${stateGrid(p, words, staleWorking)}
+  <div class="overview-cols">
+    ${waitingSection}
+    <div class="overview-side">
+      <section class="overview-block" aria-labelledby="run-h">
+        <h2 id="run-h">Running · ${working.length}</h2>
+        ${runRows.length ? list("run-list", runRows) : '<p class="empty">Nobody is working on a task.</p>'}
+        ${working.length ? `<p class="overview-more"><a href="${tasksIn(p, "working")}">All ${working.length} working</a></p>` : ""}
+      </section>
+      <section class="overview-block" aria-labelledby="merge-h">
+        <h2 id="merge-h">Last five merges</h2>
+        ${mergeRows.length ? list("merge-list", mergeRows) : '<p class="empty">Nothing merged yet.</p>'}
+        <p class="overview-more"><a href="${href("p", p.name, "flow")}">Activity</a></p>
+      </section>
+      ${shipSection}
+    </div>
+  </div>
+  ${s ? standingMore(p, s) : ""}
+</section>`;
 }
 
 // Every task in one list: open, held, in review or closed, each row with its
@@ -1563,22 +1650,34 @@ const newTaskForm = (p: ProjectRecord) => `<details class="new-task"><summary>+ 
     </form>
   </details>`;
 
-// Overview: where the project stands and what waits on the owner there, with
-// Atelier's own record of it under a disclosure named for what it is (finding
-// 19).
-// `events` or `board` null: not read, which the page says rather than
-// showing an empty record or no tasks.
-export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEvent[] | null, ownerName: string | null = null, standing?: Standing, board?: BoardSnapshot | null): string {
+// Overview: the project as the canvas draws it (t546), with Atelier's own
+// record of it under a disclosure named for what it is (finding 19). The
+// whole task list is the Tasks tab's. `events` or `board` null: not read,
+// which the page says rather than showing an empty record or no tasks.
+// `inbox` holds the project's notices, which split a submitted task by its
+// state word; null when they could not be read.
+export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEvent[] | null, ownerName: string | null = null, standing?: Standing, board?: BoardSnapshot | null, inbox: InboxEntry[] | null = null, now = standing ? new Date(standing.generatedAt) : new Date()): string {
   const unread = (what: string) => `<p class="notice" role="status">${what} could not be read.</p>`;
   return projectPage(p, "Overview", `
-  ${standing ? standingSection(p, standing) : ""}
-  ${board ? renderBoard(p.name, board) : board === null ? unread("The task board") : ""}
+  ${board === null ? unread("The task board") : ""}
+  ${overviewSection(p, items, inbox, standing, now)}
   <details class="disclosure"><summary>Ledger events</summary>${events ? eventTable(events, true) : unread("The project's events")}</details>
   `, ownerName);
 }
 
-// Tasks: the one list, with the form that starts a task.
-export function renderProjectTasks(p: ProjectRecord, items: Item[], ownerName: string | null = null, board?: BoardSnapshot): string {
+// Tasks: the one list, with the form that starts a task. `state` narrows it
+// to the tasks one state word counts, as the Overview's grid links them;
+// `words` is each task's word (stateWords).
+export function renderProjectTasks(p: ProjectRecord, items: Item[], ownerName: string | null = null, board?: BoardSnapshot, state?: { word: StateWord; words: Map<string, StateWord> }): string {
+  if (state) {
+    const shown = items.filter((i) => state.words.get(i.id) === state.word);
+    return projectPage(p, "Tasks", `
+  <section class="overview-block" aria-labelledby="state-h">
+    <h2 id="state-h">${e(WORD.get(state.word)!.label)} · ${shown.length}</h2>
+    ${shown.length ? taskRows(p, shown) : '<p class="empty">No task is in this state.</p>'}
+    <p class="overview-more"><a href="${href("p", p.name, "tasks")}">All tasks</a></p>
+  </section>`, ownerName, `${WORD.get(state.word)!.label} · ${titleOf(p)}`);
+  }
   return projectPage(p, "Tasks", `
   ${newTaskForm(p)}
   ${board ? renderBoard(p.name, board) : items.length ? taskRows(p, items) : '<p class="empty">No tasks yet. Create one above.</p>'}
