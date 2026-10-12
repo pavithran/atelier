@@ -1,6 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runTask } from "./runner.mjs";
+import { failureKey, orderJobs, runTask } from "./runner.mjs";
+
+test("criteria reviews and pre-reviews retain their ordering and failure counts together", () => {
+  const task = (id, job, request = 1) => ({ project: "atelier", item: { id, head: "a".repeat(40), request, dispatch: { job } } });
+  const build = task("t1"), criteria = task("t1", "criteria-review"), pre = task("t1", "prereview"), review = task("t1", "review");
+  assert.deepEqual(orderJobs([build, pre, criteria, review]), [criteria, review, pre, build]);
+  assert.notEqual(failureKey(criteria), failureKey(pre));
+  assert.notEqual(failureKey(criteria), failureKey(build));
+  assert.notEqual(failureKey(pre), failureKey(task("t1", "prereview", 2)));
+});
 
 // The server regression lives in src/runner-token.spec.mjs: approve, dispatch,
 // claim, crash without a commit, edit, then refuse the holder's reclaim.

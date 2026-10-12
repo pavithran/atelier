@@ -379,7 +379,8 @@ test("a reviews-only runner passes builds by and serves the review", async (t) =
     workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
     queue: async (offer) => { offers.push(offer.jobs); return [...builds, assignment]; },
   });
-  assert.deepEqual(offers, [["review"]], "the offer names reviews alone");
+  // A runner that takes reviews also advertises pre-review (t524).
+  assert.deepEqual(offers, [["review", "prereview"]], "the offer names reviews alone, and the pre-review they bring");
   assert.deepEqual(calls.filter((c) => c.argv).map((c) => c.argv[0]), ["review-claim", "review"], "the review runs and no build is claimed");
 });
 

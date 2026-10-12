@@ -30,7 +30,10 @@ export interface Dispatch {
   // jobs are the plan's. "criteria-review" is the review of a task's
   // acceptance criteria before its build (t438, src/review/criteria.ts),
   // stored with that review and offered like a review.
-  job?: "plan" | "review" | "criteria-review" | "integrate" | "refresh" | "merge-main";
+  // "prereview" is a pre-review's dispatch (t524,
+  // src/dispatch/prereview.ts), stored with the pre-review like a review's
+  // and offered only to a runner whose offer lists the job.
+  job?: "plan" | "review" | "prereview" | "criteria-review" | "integrate" | "refresh" | "merge-main";
   // For an integrate job: the part key to merge, its verified head, and the
   // part's item id, so the integrator can fetch the head to merge. For a
   // refresh job, `head` is the main head to merge. For merge-main it is

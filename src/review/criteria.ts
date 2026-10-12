@@ -122,7 +122,7 @@ export const CRITERIA_REVIEW_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 // after an integration conflict carries no job name but names the plan
 // branch's head (`planHead`): the runner's merge-plan job, a merge too. A
 // dispatch with none of these builds, and a build needs the approval.
-export const CRITERIA_EXEMPT_JOBS: readonly string[] = ["plan", "review", "criteria-review", "integrate", "refresh", "merge-main"];
+export const CRITERIA_EXEMPT_JOBS: readonly string[] = ["plan", "review", "prereview", "criteria-review", "integrate", "refresh", "merge-main"];
 
 export function buildJob(dispatch: { job?: string; planHead?: string | null } | null | undefined): boolean {
   if (!dispatch) return true;
