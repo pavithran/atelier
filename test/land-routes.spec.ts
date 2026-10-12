@@ -477,6 +477,19 @@ it("the landing's steps are recorded as land.* events with their duration, and a
   await refusal(L.landEvent(id, OPUS, "merge", 5, {}), "not_project_owner", /only the project owner records/);
 });
 
+it("the time before the lease and the time holding it are recorded on the lease and release steps (t550)", async () => {
+  const L = await setup("land-timing");
+  const id = (await L.newItem("Landing", [], "owner")).id;
+  await L.landEvent(id, "owner", "lease", 40, { head: "a".repeat(40), main: "b".repeat(40), beforeLease: 690_000.4, waited: 0 });
+  await L.landEvent(id, "owner", "release", 52_000, { reason: "merged" });
+  const recorded = (await events(L, id)).filter((e) => e.kind.startsWith("land.")).sort((a, b) => a.seq - b.seq);
+  expect(recorded.map((e) => e.kind)).toEqual(["land.lease", "land.release"]);
+  expect(recorded[0].data).toMatchObject({ ms: 40, head: "a".repeat(40), main: "b".repeat(40), beforeLease: 690_000, waited: 0 });
+  expect(recorded[1].data).toMatchObject({ ms: 52_000, reason: "merged" });
+  await refusal(L.landEvent(id, "owner", "lease", 5, { beforeLease: -1 }), "bad_field", /beforeLease must be a duration in milliseconds/);
+  await refusal(L.landEvent(id, "owner", "lease", 5, { waited: "long" }), "bad_field", /waited must be a duration in milliseconds/);
+});
+
 it("a triage is recorded as its own land.triage step, by the project owner alone, and changes no review, round or gate decision (t475)", async () => {
   const L = await setup("land-triage");
   const id = (await L.newItem("Landing", ["src/**"], "owner")).id;
