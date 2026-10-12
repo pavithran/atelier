@@ -22,9 +22,9 @@ import { cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, sameCriteria } from "./criteria.ts";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
-import { assertLength, NOTE_MAX } from "./text.ts";
+import { assertLength, NOTE_MAX, TEXT_CONTROLS } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
-import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, makeDispatch, overrideDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, type CoreHold, type Dispatch, type RunnerKind, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
+import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, overrideDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type RunnerKind, type RunnerOffer, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
@@ -156,6 +156,10 @@ export interface ProjectRef {
 }
 
 type Row = Record<string, SqlStorageValue>;
+
+// A dispatched open task as the queue answers it: the core-file hold with every
+// blocker, the separate claim refusal, and what t420 adds for the owner's listing.
+type Waiting = Item & { held?: CoreHold; claimRefusal?: string; overlap?: OverlapRefusal; refusals?: ClaimRefusal[]; skips?: RunSkip[] };
 
 // What an init asks for. A field present replaces the project's current
 // value; a field absent keeps it. `reset` starts from the defaults, as a
@@ -992,6 +996,16 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`SELECT json FROM runs ORDER BY id DESC LIMIT ?`, limit).toArray().map((r) => JSON.parse(r.json as string));
   }
 
+  // The build runs of each waiting dispatch since it was dispatched (t420),
+  // read task by task, so a task's failures count however many reports other
+  // tasks have sent since (runs keeps only the newest RUN_REPORTS overall).
+  buildRunsSince(asks: { project: string; item: string; since: string }[]): RunReport[] {
+    return asks.flatMap(({ project, item, since }) => this.sql.exec(
+      `SELECT json FROM runs WHERE json_extract(json, '$.project') = ? AND json_extract(json, '$.item') = ? AND json_extract(json, '$.role') = 'build' AND json_extract(json, '$.at') >= ? ORDER BY id DESC LIMIT ?`,
+      project, item, since, RUN_REPORTS,
+    ).toArray().map((r) => JSON.parse(r.json as string) as RunReport));
+  }
+
   runsForItem(project: string, item: string): RunReport[] {
     return this.sql.exec(`SELECT json FROM runs WHERE json_extract(json, '$.project') = ? AND json_extract(json, '$.item') = ? ORDER BY id DESC LIMIT 20`, project, item).toArray().map((r) => JSON.parse(r.json as string));
   }
@@ -1734,13 +1748,45 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id);
   }
 
+  // Open tasks waiting for a runner, oldest dispatch first, each one the
+  // project's core files hold carrying `held`: the live item it waits on
+  // (coreHold in src/dispatch/rules.ts). The queue offers a runner none that
+  // is held; the owner's listing shows them with what each waits on. Not
+  // named queue(): that is a reserved handler name, which Durable Object RPC
+  // will not call.
+  //
+  // Read on every runner's poll, so it reads only the rows it answers from:
+  // the open dispatched items, and only when one waits and the project names
+  // core files, the live items that could hold one (claimed, submitted or
+  // accepted, the only states coreHold counts), in id order as items() lists
+  // them, so the first holder found is the same. The event log is read only
+  // for the waiting items' push actors.
   // Hold starts are durable and reconciled on mutations as well as polls, so
   // a clear/re-block between polls starts a new continuous hold.
-  waiting(): (Item & { held?: CoreHold; claimRefusal?: string })[] {
-    return this.dispatchWaiting(true);
+  //
+  // A runner's poll also carries what t420 says of a task beside the hold:
+  // the overlap the project's policy refuses (`overlap`, against every live
+  // item), the claims runners were refused (`refusals`) and the tasks they
+  // gave up after failures (`skips`), each of the task as it stands.
+  waiting(): Waiting[] {
+    const held = this.dispatchWaiting(true);
+    if (!held.length) return held;
+    const refused = this.runnerNotes<ClaimRefusal>("claim-refused");
+    const skipped = this.runnerNotes<RunSkip>("run-skip");
+    const live = this.project().policy.refuseOverlap === true
+      ? this.sql.exec(`SELECT * FROM items WHERE state IN ('claimed', 'submitted', 'accepted') ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem)
+      : null;
+    return held.map((i) => {
+      const refusals = (refused.get(i.id) ?? []).filter((r) => sameRevision(r, i));
+      const skips = (skipped.get(i.id) ?? []).filter((r) => r.dispatchAt === i.dispatch!.at);
+      const overlap = live ? overlapRefusal(i, live) : null;
+      return refusals.length || skips.length || overlap
+        ? { ...i, ...(refusals.length ? { refusals } : {}), ...(skips.length ? { skips } : {}), ...(overlap ? { overlap } : {}) }
+        : i;
+    });
   }
 
-  private dispatchWaiting(pushHistory = false): (Item & { held?: CoreHold; claimRefusal?: string })[] {
+  private dispatchWaiting(pushHistory = false): Waiting[] {
     const rows = this.sql.exec(`SELECT * FROM items WHERE state = 'open' AND (owner IS NULL OR owner = '') AND dispatch IS NOT NULL AND dispatch != '' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
     const open = rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)) : [];
     const policy = this.project().policy, lease = this.projectLanding(), now = Date.now();
@@ -1771,8 +1817,77 @@ export class Ledger extends DurableObject<Env> {
   // Both halves of the queue in one call, as a runner's poll reads them:
   // the open tasks waiting (waiting) and the open review requests
   // (reviewWaiting).
-  queued(): { waiting: (Item & { held?: CoreHold })[]; reviews: (Item & { request: number })[] } {
+  queued(): { waiting: Waiting[]; reviews: (Item & { request: number })[] } {
     return { waiting: this.waiting(), reviews: this.reviewWaiting() };
+  }
+
+  // What runners said of dispatched tasks they pass by, by item id (t420):
+  // the claims they were refused (claim-refused, noteClaimRefusal) and the
+  // tasks they gave up after failures (run-skip, recordRunSkip). Each is one
+  // row per item and runner; waiting() keeps those of the task as it stands.
+  private runnerNotes<T>(prefix: "claim-refused" | "run-skip"): Map<string, T[]> {
+    const out = new Map<string, T[]>();
+    for (const row of this.sql.exec(`SELECT key, value FROM meta WHERE key LIKE ?`, `${prefix}:%`).toArray()) {
+      const id = (row.key as string).split(":")[1];
+      out.set(id, [...out.get(id) ?? [], JSON.parse(row.value as string) as T]);
+    }
+    return out;
+  }
+
+  // Keeps one runner's note of a task, and drops the task's
+  // notes of that kind made under an earlier dispatch.
+  private putRunnerNote(prefix: "claim-refused" | "run-skip", id: string, runner: string, dispatchAt: string, note: object): void {
+    for (const row of this.sql.exec(`SELECT key, value FROM meta WHERE key LIKE ?`, `${prefix}:${id}:%`).toArray()) {
+      if ((JSON.parse(row.value as string) as { dispatchAt: string }).dispatchAt !== dispatchAt) this.sql.exec(`DELETE FROM meta WHERE key = ?`, row.key);
+    }
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `${prefix}:${id}:${runner}`, JSON.stringify(note));
+  }
+
+  // Records a runner's word that it gives up a dispatched build or plan job
+  // (the run-skip route): after its failed runs, or after infrastructure
+  // failures in a row, which reach no run report (runOutcome in
+  // cli/runner.mjs). Kept on the task under its current dispatch, so status
+  // and show name it however many run reports follow; a report for a task
+  // no longer open and dispatched is not kept, since nothing waits on it.
+  recordRunSkip(id: string, runner: string, actor: string, kind: RunSkipKind, failures: number, note: string): boolean {
+    const item = this.item(id);
+    const d = item.dispatch;
+    if (item.state !== "open" || item.owner || !d || d.job === "review") return false;
+    const skip: RunSkip = { runner, actor, kind, failures, note: note.replace(TEXT_CONTROLS, " ").slice(-300), dispatchAt: d.at, at: new Date().toISOString() };
+    this.putRunnerNote("run-skip", id, runner, d.at, skip);
+    return true;
+  }
+
+  // Records a claim refused a runner (the router calls it as the refusal
+  // goes back), for a task still open and dispatched; for any other nothing
+  // is kept. A runner_forbidden refusal of a runner token says only that the
+  // operation is not allowed, so the reason is worked out here as
+  // assertRunnerJob decided it. Rows of an older dispatch of the task go.
+  noteClaimRefusal(id: string, runner: string, actor: string, error: string, detail: string, token?: AgentToken): void {
+    let item: Item;
+    try { item = this.item(id); } catch { return; }
+    const d = item.dispatch;
+    if (item.state !== "open" || item.owner || !d) return;
+    const why = error === "runner_forbidden" && token ? this.runnerClaimWhy(token, item, actor) ?? detail : detail;
+    // Kept with the task's head and last change, the runner's refusedKey, so
+    // a change that lets the runner claim afresh ends it (sameRevision).
+    const refusal: ClaimRefusal = { runner, actor, error, detail: why.slice(0, 300), dispatchAt: d.at, head: item.head ?? null, updatedAt: item.updatedAt, at: new Date().toISOString() };
+    this.putRunnerNote("claim-refused", id, runner, d.at, refusal);
+  }
+
+  // Why assertRunnerJob refused a runner token's claim of an open dispatched
+  // task, in words, or null when its checks pass and the refusal came from
+  // elsewhere.
+  private runnerClaimWhy(token: AgentToken, item: Item, actor: string): string | null {
+    const d = item.dispatch!;
+    if (d.job === "review" || d.job === "integrate" || d.job === "refresh") return `a runner token does not claim a ${d.job} job`;
+    const offer = this.runnerMeta<SeenOffer>(`runner-offer:${token.id}`);
+    if (!offer) return `token ${token.id} has not polled this project's queue, so no offer of its runner is on record here`;
+    if (!liveOffers([offer]).length) return `the offer token ${token.id} last polled with is no longer live`;
+    const assigned = assign(d, offer)?.actor;
+    if (assigned !== actor) return assigned ? `its offer assigns this dispatch to ${assigned}, not ${actor}` : `its offer does not cover this dispatch (${describe(d)})`;
+    const held = coreHold(item, this.items(), this.project().policy.coreFiles);
+    return held ? `the core files hold it: it ${holdText(held)}` : null;
   }
 
   // Items as item() reads them, from their rows, with each one's push actors
