@@ -38,12 +38,12 @@ function fixture(t) {
   return { root, source, dir, base, head, detail, io, ctx, local, calls, lines, backup };
 }
 
-for (const state of ['missing', 'behind', 'ahead', 'dirty', 'conflicted']) test(`recorded head recovery preserves ${state} workspace and ignores newer fork tip`, async t => {
+for (const state of ['missing', 'behind', 'diverged', 'dirty', 'conflicted']) test(`recorded head recovery preserves ${state} workspace and ignores newer fork tip`, async t => {
   const f = fixture(t);
   if (state === 'missing') rmSync(f.dir, { recursive: true });
   else {
     f.local('reset', '--hard', f.base);
-    if (state === 'ahead') {
+    if (state === 'diverged') {
       f.local('config', 'user.name', 'Local'); f.local('config', 'user.email', 'local@example.invalid');
       writeFileSync(join(f.dir, 'local-only'), 'unpublished'); f.local('add', '.'); f.local('commit', '-qm', 'local-only');
     }
@@ -72,7 +72,41 @@ for (const state of ['missing', 'behind', 'ahead', 'dirty', 'conflicted']) test(
     assert.equal(f.io.git(['status', '--porcelain'], { cwd: backup }), oldStatus);
     if (state === 'conflicted') assert.ok(existsSync(join(backup, '.git/MERGE_HEAD')));
     if (state === 'dirty') assert.equal(readFileSync(join(backup, 'work'), 'utf8'), 'dirty bytes');
+    const said = f.lines.join('\n');
+    if (state === 'diverged' || state === 'conflicted') {
+      assert.match(said, new RegExp(`diverged from the recorded head ${f.head} and holds 1 commit the recorded head lacks:\\n  ${oldHead.slice(0, 7)}\\S* ${state === 'diverged' ? 'local-only' : 'conflicting'}\\n`));
+      assert.ok(said.includes(`Recover them from ${backup}`));
+    } else assert.doesNotMatch(said, /diverged/);
   }
+});
+
+test('a workspace ahead of the recorded head stops landing, names its commits and atelier push, and is left untouched', async t => {
+  const f = fixture(t);
+  f.local('config', 'user.name', 'Local'); f.local('config', 'user.email', 'local@example.invalid');
+  writeFileSync(join(f.dir, 'fix'), 'one'); f.local('add', '.'); f.local('commit', '-qm', 'First fix');
+  const first = f.local('rev-parse', '--short', 'HEAD');
+  writeFileSync(join(f.dir, 'fix'), 'two'); f.local('commit', '-qam', 'Second fix');
+  const second = f.local('rev-parse', '--short', 'HEAD'), tip = f.local('rev-parse', 'HEAD');
+  for (const dryRun of [true, false]) {
+    await assert.rejects(prepareRecordedWorkspace(f.io, { ...f.ctx, dryRun }), e => {
+      assert.ok(e.message.includes(`holds 2 commits the recorded head ${f.head} lacks:\n  ${second} Second fix\n  ${first} First fix\n`), e.message);
+      assert.match(e.message, /atelier push/);
+      assert.match(e.message, /atelier land t1 again/);
+      return true;
+    });
+  }
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(f.lines, []);
+  assert.equal(f.local('rev-parse', 'HEAD'), tip);
+  assert.equal(readdirSync(f.root).some(s => /^workspace\.(backup|prepare)-/.test(s)), false);
+});
+
+test('a workspace at the recorded head but unconfigured is rebuilt without naming commits', async t => {
+  const f = fixture(t);
+  await prepareRecordedWorkspace(f.io, f.ctx);
+  assert.equal(f.local('rev-parse', 'HEAD'), f.head);
+  assert.equal(f.io.git(['rev-parse', 'HEAD'], { cwd: f.backup() }), f.head);
+  assert.doesNotMatch(f.lines.join('\n'), /diverged|lacks/);
 });
 
 for (const failure of ['read token', 'unavailable', 'wrong fetched head', 'checkout', 'configuration', 'race', 'owner race', 'state race', 'backup', 'install']) test(`failed ${failure} stops recovery without losing the original`, async t => {
@@ -107,7 +141,11 @@ test('recovery fetches the exact recorded object using only the read credential'
     return git(args, opts);
   };
   await prepareRecordedWorkspace(f.io, f.ctx);
-  assert.equal(fetches.length, 1);
+  // The second fetch reads the old workspace's own commits, with no credential.
+  assert.equal(fetches.length, 2);
+  assert.deepEqual(fetches[1].args, ['fetch', '--quiet', '--no-tags', f.dir, f.base]);
+  assert.equal(fetches[1].token, undefined);
+  assert.notEqual(fetches[1].cwd, f.dir);
   assert.deepEqual(fetches[0].args, ['fetch', '--quiet', '--no-tags', f.source, f.head]);
   assert.equal(fetches[0].token, 'SECRET-READ');
   assert.notEqual(fetches[0].cwd, f.dir);
