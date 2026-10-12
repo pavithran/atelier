@@ -1105,8 +1105,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // over settles it, finishing the commits the dead run made, before
         // it starts new work.
         const L = ledgerOf(env, p);
-        if (c.token?.runner && offer) await L.runnerPoll(c.token, offer);
-        const [held, { waiting, reviews }] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), L.queued(polls)]);
+        // A runner token's poll records the polls and its offer, and is
+        // answered from them in the same call. The claim check reads the
+        // same record of the polls, kept current by every poll and
+        // heartbeat, so it judges an orphaned claim as the queue does (t540).
+        const queue = c.token?.runner && offer ? await L.runnerPoll(c.token, offer, polls) : null;
+        const [held, { waiting, reviews }] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), queue ?? L.queued(polls)]);
         return [...held, ...waiting, ...reviews].map((item) => ({ project: p.name, item }));
       }
       catch { unreadable.push(p.name); return []; }
@@ -1164,12 +1168,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       try { return await action(); }
       catch (error) { unavailable.push(`${source}: ${String((error as Error).message ?? error)}`); return null; }
     }
-    const [snapshot, offers, runs, projects] = await Promise.all([
-      read<Snapshot>("project ledger", () => L.stuckSnapshot()),
+    // The runner offers are read first and recorded in the project's ledger
+    // as its snapshot is taken, so the report judges orphaned claims with the
+    // polls the queue and the claim check read at that moment (t540).
+    const [offers, runs, projects] = await Promise.all([
       read("runner offers", () => index(env).runnerOffers()),
       read("run reports", () => index(env).runs(Number.MAX_SAFE_INTEGER)),
       read("project index", () => index(env).projects()),
     ]);
+    const snapshot = await read<Snapshot>("project ledger", () => L.stuckSnapshot(offers?.map(({ runner, at }) => ({ runner, at }))));
     if (snapshot) await Promise.all(snapshot.workflows.map(async (w) => {
       const status = await read(`Workflow ${w.record.instance}`, async () => (await (await env.LANDING_WORKFLOW.get(w.record.instance)).status()).status);
       w.status = status ?? "unknown";
@@ -3383,7 +3390,10 @@ export default {
           ? token?.runner ?? parseRunner(req.headers.get("x-atelier-runner"))?.runner ?? null : null;
         const noteRefusal = async (error: unknown) => {
           const rule = parseRuleError(error);
-          if (!claimRunner || !ref || !rule || rule.status >= 500) return;
+          // A claim that lost the race to a hold (held, t540) is no
+          // refusal: the queue stops offering the task while the hold
+          // stands, and offers it again once it clears.
+          if (!claimRunner || !ref || !rule || rule.status >= 500 || rule.code === "held") return;
           try { await ledger(env, ref.key).noteClaimRefusal(parts[4], claimRunner, actor, rule.code, rule.detail, token?.runner ? token : undefined); }
           catch (e) { console.error("claim refusal not recorded", String(e)); }
         };
@@ -3402,7 +3412,11 @@ export default {
             // its poll was offered, checked as that job's run report is.
             else if (parts[5] === "run-skip") await ledger(env, ref.key).assertRunnerReport(token, parts[4], actor, input.role === "plan" ? "plan" : "build");
             else {
-              try { await ledger(env, ref.key).assertRunnerJob(token, parts[4], actor, parts[5] === "claim"); }
+              // A claim is judged from the runners' polls as the index has
+              // them now, recorded first in the project's one record of them
+              // (t540), as the queue, atelier queue and atelier stuck judge.
+              const polls = parts[5] === "claim" ? (await index(env).runnerOffers()).map(({ runner, at }) => ({ runner, at })) : undefined;
+              try { await ledger(env, ref.key).assertRunnerJob(token, parts[4], actor, parts[5] === "claim", polls); }
               catch (error) { await noteRefusal(error); throw error; }
             }
             // The authenticated runner, never a caller-selected identity, goes to the atomic claim.
