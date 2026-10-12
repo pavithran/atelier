@@ -181,6 +181,8 @@ The steps in between:
    The identity consumers (`adopt`, `revert`, `claim`, `start`, `wrap`, `init`, `merge`,
    `land` and runner jobs) require `projects.commit-identity.v1`;
    `models admit`, `withdraw` and `reviewers` require `reviews.admission.v1`;
+   `models set` requires the pool's standing, `models.standing.v1` (t389),
+   and `models add` asks for it only with `--state`, `--roles` or `--tier`;
    `init` and `land` require the durable post-merge runs, `land.post-merge.v1`
    (t477), and `land --post-merge` asks for that one alone; they also
    require the landing's triage step, `land.triage.v1` (t475); `stuck` requires
@@ -210,15 +212,21 @@ The steps in between:
    level requirement or renumbering step. The capabilities test pins the
    frozen number and checks independent additions in both merge orders.
 
+   The run skip, `runners.run-skip.v1` (t420), is one such name: every
+   runner job but the review requires it, so a runner refuses a server that
+   reports only a route level and starts on one that publishes the name.
+
 2. Main is fetched into the task's workspace and merged with `--no-ff`. On
    conflicts the landing stops, leaves the merge in the workspace for the
    owner to resolve, and names the files. After resolving and committing,
-   `atelier land t9` again picks up from the push. The conflicts can also go
+   run `atelier push` in the workspace to record the resolution before running
+   `atelier land t9` again. A rerun prepares from the recorded head and preserves
+   an unpushed resolution in a separate backup workspace. The conflicts can also go
    back to the task's builder instead: `atelier dispatch t9 --job merge-main`
    (naming the holder with `--agent` and `--model`, as the message the
    landing prints says) sends the task to a runner, whose merge-main job
    merges main into the workspace again and leaves the conflicts for the
-   builder to resolve and commit; then `atelier land t9` again, with main
+   builder to resolve, commit and push with `atelier push`; then `atelier land t9` again, with main
    already merged. See [Dispatch](runners.md#dispatch).
 3. When the project's policy declares a `regenerate` command
    (`atelier init --regenerate "CMD"`), it runs in the workspace like a check

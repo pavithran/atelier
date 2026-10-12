@@ -1,6 +1,7 @@
 // atelier show. Its forms, flags and help are declared in src/usage/commands/show.ts.
 import { effectiveFailures, failureJson, failureSummary, resolveFailures } from "../../src/check-failure.ts";
 import { I, OWNER, RequestError, actor, args, call, die, formatBrief, formatCriteriaReviews, formatReviews, itemArg, logReader, newestReviews, project, request, server } from "../atelier.mjs";
+import { queueReasons } from "../status.mjs";
 
 export default async function showCommand() {
   const name = project(), id = itemArg(), as = await actor(OWNER);
@@ -26,6 +27,15 @@ export default async function showCommand() {
     const label = event.kind === "item.reverts" ? "Reverts" : "Revert requested in";
     brief.evidence.push(`${label} ${itemId} (recorded merge ${mergeCommit}): ${server()}/p/${encodeURIComponent(name)}/${itemId}`);
   }
+  // Why a dispatched task is not being taken, as the queue holds it (t420):
+  // each reason in words and the command that releases it. Read from the
+  // queue's entry for it, so `show` and `status` say the same thing.
+  let why = [];
+  try {
+    const entry = ((await request("GET", "/queue", undefined, as)) ?? [])
+      .find((q) => q.project === name && q.item?.id === id && q.item.dispatch?.job !== "review");
+    why = entry ? queueReasons(entry.item) : [];
+  } catch { /* the brief still prints; the queue's reason is a bonus */ }
   // The failed checks at the current head, as the gate reads them (t436,
   // src/check-failure.ts): each named by command, head and evidence id,
   // with the failing tests its reporter named and a bounded tail of its
@@ -36,8 +46,9 @@ export default async function showCommand() {
     : [];
   // The record of the criteria reviews (t438) rides along when the server
   // keeps one; an older server sends none, and the output is as before.
-  if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}) }, null, 2));
+  if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), failedChecks: failures.map(failureJson), ...(why.length ? { why } : {}), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}) }, null, 2));
   const blocks = [formatBrief(name, id, brief, server())];
+  if (why.length) blocks.push(why.map((r) => r.line).join("\n"));
   if (failures.length) blocks.push(failureSummary(id, d.item.head, failures));
   if (args.reviews) blocks.push(formatReviews(d?.reviews ?? [], d?.ownerActor, d?.unparsable ?? []));
   if (args.reviews && d?.criteriaReview) blocks.push(formatCriteriaReviews(d.criteriaReview));

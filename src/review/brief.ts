@@ -50,7 +50,7 @@ export const BRIEF_LIMITS = { diff: DIFF_INLINE_MAX } as const;
 
 export interface BriefInput {
   need: ReviewRequired;                    // from reviewNeeded: the head, change class, checks and earlier reviews
-  item: Pick<Item, "id" | "title" | "base" | "scope"> & Partial<Pick<Item, "brief" | "accept">>;
+  item: Pick<Item, "id" | "title" | "base" | "scope"> & Partial<Pick<Item, "brief" | "accept" | "state">>;
   events: readonly LedgerEvent[];          // the builder's summary for this head, read by submission()
   plan?: { goal: string; part: PlanPart } | null;
   diff?: string | null;                    // git diff from `compare.from` (or the base) to the head, when the caller has it
@@ -202,6 +202,7 @@ export function reviewBrief(input: BriefInput): string {
   // The criteria the reply must prove, numbered across both lists.
   const criteria = criteriaCount(item, input.plan);
   const out: string[] = [];
+  if (item.state === "merged") out.push(`Post-merge audit of the recorded merge ${head}. Judge the landed change against its criteria. The original merge and any owner override remain historical records; blocking findings will create a linked defect task.`);
   const section = (...lines: string[]) => out.push(lines.join("\n"));
 
   // Why this is a later round: a model rejected an earlier head and the
@@ -253,9 +254,9 @@ export function reviewBrief(input: BriefInput): string {
     "",
     ...(item.scope.length ? ["Scope, the globs the item intends to touch:", block(item.scope.join("\n"))] : ["The item has no scope, so no changed file is outside it."]),
     "",
-    `Changed files (${need.changedPaths.length}):`,
+    ` ${item.state === "merged" ? "Historical measured files from the submitted revision; verify the landed files in the diff" : "Changed files"} (${need.changedPaths.length}):`.trim(),
     block(need.changedPaths.join("\n")),
-    ...(item.scope.length
+    ...(item.scope.length && item.state !== "merged"
       ? need.outOfScope.length
         ? ["", `Changed files outside the scope (${need.outOfScope.length}); judge them as part of the change:`, block(need.outOfScope.join("\n"))]
         : ["", "Every changed file is inside the scope."]
@@ -289,7 +290,9 @@ export function reviewBrief(input: BriefInput): string {
   section(
     "## Checks",
     "",
-    ...(need.checks.length
+    ...(item.state === "merged"
+      ? ["Historical checks belong to the submitted revision, not the merge under review. They do not verify this merge; run relevant checks in the clone.", ...need.checks.map((c) => `- ${code(c.claim)}: ${c.grade}${c.grade === "observed" ? c.passed ? " passed" : " failed" : ""}`)]
+      : need.checks.length
       ? ["Every required check was observed passing at this head:", ...need.checks.map((c) => `- ${code(c.claim)}, ${WHERE_LABEL[c.where ?? "runner"]}`)]
       : ["The project requires no checks."]),
   );

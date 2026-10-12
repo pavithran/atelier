@@ -1,10 +1,82 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { foldPath } from '../src/rules.ts';
+
+// Prepare off to the side. Neither a failed fetch nor failed configuration
+// may disturb the old repository (including its index and unfinished merge).
+export async function prepareRecordedWorkspace(io, { dir, itemPath, detail, dryRun = false }) {
+  const { git, request, name, id, p, print } = io;
+  const head = detail.item.head;
+  if (!head) return false;
+  if (!/^[a-f0-9]{40,64}$/.test(head)) throw new Error(`${id} has an invalid recorded head`);
+  const local = existsSync(join(dir, '.git'))
+    ? git(['rev-parse', '--verify', 'HEAD'], { cwd: dir, allowFail: true }).stdout?.trim() : null;
+  const configured = local === head && ['project', 'item', 'actor'].every(key => {
+    const value = git(['config', '--local', `atelier.${key}`], { cwd: dir, allowFail: true }).stdout?.trim();
+    return key === 'actor' ? !!value : value === (key === 'project' ? name : id);
+  });
+  if (configured) return false;
+  if (dryRun) {
+    print(`Would prepare ${id} from recorded source ${head}, preserving any existing workspace beside ${dir}.`);
+    return true;
+  }
+  mkdirSync(dirname(dir), { recursive: true });
+  const staging = mkdtempSync(`${dir}.prepare-`);
+  let backup = null;
+  try {
+    const read = await request('POST', `${itemPath}/read-token`, { scope: 'read' });
+    // Do not allow credentials embedded in a URL to reach saved config.
+    if (!read.remote || /[\r\n\0]/.test(read.remote) || /:\/\/[^/]*@/.test(read.remote)) throw new Error('invalid fork remote');
+    git(['init', '--quiet', staging]);
+    try {
+      git(['fetch', '--quiet', '--no-tags', read.remote, head], { cwd: staging, token: read.token });
+      const fetched = git(['rev-parse', '--verify', 'FETCH_HEAD^{commit}'], { cwd: staging });
+      if (fetched !== head) throw new Error('wrong commit');
+    } catch {
+      // Git and network errors can echo authentication headers; report only
+      // the public revision, never the credential-bearing diagnostic.
+      throw new Error(`${id}'s recorded commit ${head} is unavailable; the original workspace is untouched`);
+    }
+    const branch = read.defaultBranch ?? p.branch;
+    git(['checkout', '--quiet', '-b', branch, head], { cwd: staging });
+    git(['remote', 'add', 'origin', read.remote], { cwd: staging });
+    const actor = detail.item.owner || io.owner;
+    if (!actor) throw new Error(`${id} has no actor for the prepared workspace`);
+    const config = { 'atelier.project': name, 'atelier.item': id, 'atelier.actor': actor, 'atelier.branch': branch,
+      'atelier.prepare': JSON.stringify(detail.policy?.prepare ?? null) };
+    const identity = detail.policy?.commitIdentity;
+    for (const key of ['name', 'email']) {
+      const value = identity?.[key] ?? git(['config', '--local', `user.${key}`], { cwd: p.path, allowFail: true }).stdout?.trim();
+      if (value) config[`user.${key}`] = value;
+    }
+    for (const [key, value] of Object.entries(config)) git(['config', '--local', key, value], { cwd: staging });
+    if (identity) writeFileSync(join(staging, '.git', 'atelier-identity.json'), `${JSON.stringify(identity)}\n`);
+    const current = (await request('GET', itemPath)).item;
+    if (current.head !== head || current.owner !== detail.item.owner || current.state !== detail.item.state) throw new Error(`${id} changed while preparing recorded head ${head}; retry landing`);
+    if (existsSync(dir)) {
+      // A same-volume rename preserves every byte, even ignored files,
+      // local-only objects and the merge index. A failed rename leaves the
+      // original untouched; no copying or deletion fallback is safe here.
+      const slot = mkdtempSync(`${dir}.backup-`);
+      backup = join(slot, 'workspace');
+      try { (io.renameWorkspace ?? renameSync)(dir, backup); }
+      catch { rmSync(slot, { recursive: true, force: true }); throw new Error(`could not preserve ${dir}; landing stopped with the original untouched`); }
+      print(`Preserved ${id}'s previous workspace at ${backup}.`);
+    }
+    try { (io.renameWorkspace ?? renameSync)(staging, dir); }
+    catch {
+      throw new Error(`could not install the prepared workspace${backup ? `; the original is preserved at ${backup}` : ''}`);
+    }
+    print(`Prepared ${id} at recorded source ${head} in ${dir}.`);
+    return true;
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
+}
 
 // A landing's lock and journal live under the CLI's cache, in a directory per
 // checkout, never inside the checkout's Git directory. The owner's checkout

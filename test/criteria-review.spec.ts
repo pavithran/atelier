@@ -483,6 +483,29 @@ it("a named criteria reviewer that is unavailable or lacks the assessor role is 
   expect((await status(L, id)).approved).toBe(true);
 });
 
+// The owner's standing for a model (paused, reserved, its roles) holds at
+// the criteria review as at every dispatch and review request: a named
+// reviewer it holds is refused with the reason, and the pick passes over a
+// held model as the pool would.
+it("a criteria reviewer the owner's standing holds from reviewing is refused when named and passed over when picked", async () => {
+  const L = await setup("criteria-standing");
+  const { id } = await L.newItem("Faster search", ["src/**"], "owner", { accept: ["Search answers within 200 ms"] });
+  const paused: ModelEntry = { ...entry("glm-5.3", "zcode"), state: "paused", stateAt: AT, note: "AI Studio down" };
+  const pool = [paused, entry("gpt-6-astra", "codex"), entry("opus-5.5", "claude-code")];
+  await refusal(L.requestCriteriaReview(id, "owner", GLM, pool), "model_held", /zcode\/glm-5\.3 is paused since 2026-10-10 \(the owner's standing\): AI Studio down; name another, or change its standing with atelier models set/);
+  expect(await L.criteriaReviewsFor(id)).toEqual([]);
+  // The owner alone wrote the criteria; glm, first by model id, is held, so the pick passes to gpt.
+  const asked = await L.requestCriteriaReview(id, "owner", null, pool);
+  expect(asked).toMatchObject({ requested: true, reviewer: GPT });
+  expect((await events(L, id)).find((e) => e.kind === "criteria_review.requested")?.data).toMatchObject({ reviewer: GPT });
+  expect(await waiting(L)).toEqual([{ id, job: "criteria-review", reviewer: GPT }]);
+  // With every model held, the refusal says so for each.
+  const { id: other } = await L.newItem("Slower search", ["src/**"], "owner", { accept: ["Search answers within 400 ms"] });
+  const allHeld = pool.map((e) => ({ ...e, state: "reserved" as const, stateAt: AT, note: "credits" }));
+  await refusal(L.requestCriteriaReview(other, "owner", null, allHeld), "no_criteria_reviewer", /reserved since 2026-10-10 \(the owner's standing\): credits/);
+  expect(await L.criteriaReviewsFor(other)).toEqual([]);
+});
+
 // A part blocked because no reviewer in the plan's pool qualifies is
 // unblocked by the approval of the reviewer the owner names, and dispatched;
 // blocked, it held a slot of the plan's parallel limit with no work in it.

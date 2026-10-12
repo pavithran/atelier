@@ -14,6 +14,27 @@ the gate requires before the project owner may accept it, which checks are
 allowed, and which checks apply to a change. The README's "Concepts" section
 gives the outline.
 
+## The five steps
+
+The app, the README, `/how` and this reference name the life of a task in
+five verbs. They are labels: the commands keep their own names.
+
+| Step | Its line | Commands |
+| --- | --- | --- |
+| Claim | One holder per task. | `atelier start`, `atelier claim`, `atelier handoff`, `atelier release` |
+| Fork | Every task its own fork. | `atelier push`, `atelier update` |
+| Prove | Atelier runs the tests. | `atelier check`, `atelier submit` |
+| Review | Another company reviews, or in single-family mode another model. | `atelier review` |
+| Land | One landing at a time, with a receipt. | `atelier land`, `atelier accept`, `atelier merge` |
+
+A task's page shows the five as its progress, the current one marked, read
+from the task's recorded state: open is at Claim; claimed with nothing pushed,
+a fresh fork whose head is still its base among them, is at Fork; claimed with
+a pushed head, or submitted without every required check
+observed passing, is at Prove; submitted with them all passing is at Review;
+accepted is at Land; merged has done all five. What lands is **Proven.
+Reviewed. Recorded.** Git keeps the code. Atelier brings the receipts.
+
 ## How it works
 
 In outline: a project's main branch is copied into an Artifacts repository,
@@ -29,7 +50,7 @@ In detail:
 | `atelier new "title" --scope 'src/**'` | the project owner | Creates an item with a short title (at most 80 characters). The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. `--brief` holds the whole task and `--accept` its acceptance criteria, which the review brief numbers and a reviewer blocks on. `--non-goal`, `--stop-when` and `--next-gate` frame it, and `atelier edit` changes all of these later; the brief, `atelier start` and the item's page show them. |
 | `atelier block t3 "reason"` | the item's owner or the project owner | Blocks the item with what it is waiting on. It keeps its owner and workspace, leaves the runner queue and stuck detection, cannot be pushed or submitted, and sits in the inbox with the reason until `atelier unblock t3` returns it to the state it was in. |
 | `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants ownership atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the owner alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/` and records the project's branch as the one it pushes to; a later claim records it again and says when it changed. A claim that reuses a workspace the fork's branch has moved past, as when a task handed off comes back, fast-forwards it to what the fork holds, or stops and names the commits to integrate when the two have diverged. |
-| `atelier push` | the item's owner | Runs only in the item's claimed workspace, as `update` and `finish` do: anywhere else, the owner's checkout included, it stops before git is asked to push and says where to run it. Refuses, pushing nothing, when the workspace's branch is not the one its fork's HEAD names, since Atelier reads only that one. Otherwise pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named, and refuses a head that no longer holds the one it recorded, unless `atelier push --force` declares the rebase `atelier update` made; that push leases against the recorded head and first checks, by patch, that every recorded commit survives. A fork whose history runs deeper than the Worker reads to tell is refused as unverified, not taken for a rewrite. |
+| `atelier push` | the item's owner; the project owner for an open, unclaimed task | Runs only in the item's claimed workspace, as `update` and `finish` do: anywhere else, the owner's checkout included, it stops before git is asked to push and says where to run it. Refuses, pushing nothing, when the workspace's branch is not the one its fork's HEAD names, since Atelier reads only that one. Otherwise pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named, and refuses a head that no longer holds the one it recorded, unless `atelier push --force` declares the rebase `atelier update` made; that push leases against the recorded head and first checks, by patch, that every recorded commit survives. A fork whose history runs deeper than the Worker reads to tell is refused as unverified, not taken for a rewrite. The project owner may also push an open, unclaimed task's workspace (`atelier push --as owner`), as an orchestrator's port or merge before the next builder claims: the push asks the Worker for a five-minute write token for that task's fork alone (`items.owner-port.v1`), recorded as the owner's, which the next claim revokes. |
 | `atelier update` | the item's owner | Rebases the workspace onto the baseline's current head. The fork's own branch comes first: commits another holder pushed there and this workspace lacks are taken before its own commits move, so the `push --force` that follows keeps them. |
 | `atelier check` | the item's owner; anyone with `--sandbox` | Clones the workspace afresh at that head (or runs in a Cloudflare container with `--sandbox` or `sandboxOnly` policy), runs each required check, and records the results as Observed. A result run on the caller's machine is recorded only for the item's owner, since the gate counts it on the caller's word; anyone the project's tokens reach may ask for a sandbox run, which records its own results. With each result Atelier records every path on which the workspace's head differs from main's head, which it measures itself from Artifacts; a list the caller sends is ignored. A result for a head that has since moved is refused. A local check runs with the caller's file access; run untrusted code with `--sandbox`. `--merged` runs the checks on the would-be merge instead: the head merged with main as main is now, in a temporary merge commit made in the clean clone and never pushed, or built by the Worker with `--sandbox`. A check that does not apply to the change is not run merged either. The result is recorded against both revisions, shown beside the merge preview on the item page, and marked stale when main moves on; it is never the head's own check. |
 | `atelier report [ID] "…"` | anyone | Records a Reported claim on the item named, else on the workspace's item; in a workspace, another item's id needs `--item ID`. It is shown and never counted. |
