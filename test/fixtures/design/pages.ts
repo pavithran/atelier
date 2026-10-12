@@ -18,9 +18,11 @@ const AUD = "d3519n0000000000000000000000c0de";
 const EMAIL = "owner@example.com";
 const TOKEN = "design-capture-token";
 
-// Who asks: nobody signed in; Access's sign-in without an Atelier session
-// (the sign-in page); the owner with both.
-export type Audience = "public" | "access" | "owner";
+// Who asks: nobody signed in; Access's sign-in without an Atelier session,
+// which behind Access starts one (t534); the owner with both; and nobody
+// signed in on a server without Access, the only one that draws the sign-in
+// page's token form.
+export type Audience = "public" | "access" | "owner" | "token";
 
 export interface PageState {
   id: string;          // the screenshot name: docs/design/screens/<id>-<width>.png
@@ -69,6 +71,10 @@ export async function session(env: Env): Promise<string> {
 
 export async function draw(env: Env, path: string, audience: Audience, cookie: string): Promise<Response> {
   const headers: Record<string, string> = {};
+  if (audience === "token") {
+    const { CF_ACCESS_ISS: _iss, CF_ACCESS_AUD: _aud, CF_ACCESS_OWNER_EMAIL: _email, ...plain } = env as unknown as Record<string, unknown>;
+    return worker.fetch(new Request(`${ORIGIN}${path}`, { redirect: "manual" }), plain as unknown as Env);
+  }
   if (audience !== "public") headers["cf-access-jwt-assertion"] = await assertion();
   if (audience === "owner") headers.cookie = cookie;
   return worker.fetch(new Request(`${ORIGIN}${path}`, { headers, redirect: "manual" }), env);
@@ -85,7 +91,7 @@ export function pageStates(s: Seeded): PageState[] {
     { id: "public-showcase-none", path: "/", audience: "public", status: 404, marker: "There is no public showcase", state: "No project shown publicly", setup: "no-showcase" },
     { id: "public-how", path: "/how", audience: "public", status: 200, marker: "How", state: "The explainer" },
     { id: "public-owner-route", path: "/p/ledger-core", audience: "public", status: 401, marker: "behind Cloudflare Access", state: "A visitor on an owner URL without Access's sign-in" },
-    { id: "signin", path: "/login", audience: "access", status: 200, marker: "Sign in to Atelier", state: "Sign-in over the anonymised backdrop" },
+    { id: "signin", path: "/login", audience: "token", status: 200, marker: "Sign in to Atelier", state: "Sign-in over the anonymised backdrop" },
     // Cross-project
     { id: "home", path: "/home", audience: "owner", status: 200, marker: "Ledger Core", state: "Portfolio: dense, empty and unavailable projects" },
     { id: "decisions", path: "/decisions", audience: "owner", status: 200, marker: "Needs your attention", state: "Inbox with the first decision selected" },
@@ -141,5 +147,5 @@ export const ALIASES: { path: string; audience: Audience; status: number; locati
   { path: "/showcase", audience: "public", status: 200, location: "" },
   { path: "/projects", audience: "owner", status: 301, location: "/home" },
   { path: "/flow?project=ledger-core", audience: "owner", status: 301, location: "/p/ledger-core/flow" },
-  { path: "/home", audience: "access", status: 303, location: "/login" },
+  { path: "/home", audience: "token", status: 303, location: "/login" },
 ];
