@@ -2712,13 +2712,13 @@ export class Ledger extends DurableObject<Env> {
     return this.item(id);
   }
 
-  release(id: string, actor: string, note: string, proved = false, token?: string | null): Item {
+  release(id: string, actor: string, note: string, proved = false, token?: string | null, providerLimit = false): Item {
     const item = this.releaseAllowed(id, actor, note);
     this.dropToken(id, token);
     this.dropRunnerJobs(id);
     const at = new Date().toISOString();
     this.update(id, { owner: null, state: "open" }, at);
-    this.log(id, actor, "item.released", { from: item.owner, note }, at, proved);
+    this.log(id, actor, "item.released", { from: item.owner, note, ...(providerLimit ? { providerLimit: true } : {}) }, at, proved);
     this.afterPlanChange(id);
     return this.item(id);
   }

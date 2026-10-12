@@ -2256,7 +2256,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       await L.checkRelease(id, actor, note);
       const before = await L.item(id);
       await revoke(env, before.fork, oldToken);
-      const item = await L.release(id, actor, note, !!c.token, oldToken);
+      // Only a runner credential can exempt this release from plan attempts;
+      // neither an actor nor a free-text note establishes infrastructure failure.
+      const item = await L.release(id, actor, note, !!c.token, oldToken, !!c.token?.runner && body.providerLimit === true);
       return json(item);
     }
     case "accept": {
