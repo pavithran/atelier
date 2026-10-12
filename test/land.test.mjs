@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -2095,7 +2095,7 @@ test("land accepts a project-admitted reviewer alias despite its harness lacking
 });
 
 
-for (const state of ["missing", "stale", "ahead"]) test(`land reconstructs a ${state} workspace at the ledger head and runs the gates`, async t => {
+for (const state of ["missing", "stale", "diverged"]) test(`land reconstructs a ${state} workspace at the ledger head and runs the gates`, async t => {
   const f = await landFixture(t);
   const dir = f.workspace("t1"), head = git(dir, "rev-parse", "HEAD");
   if (state === "missing") rmSync(dir, { recursive: true });
@@ -2103,9 +2103,11 @@ for (const state of ["missing", "stale", "ahead"]) test(`land reconstructs a ${s
     git(dir, "reset", "--hard", "HEAD^");
     writeFileSync(join(dir, "local-notes"), "keep me");
   } else {
+    git(dir, "reset", "--hard", "HEAD^");
     writeFileSync(join(dir, "local-only"), "not on the ledger");
     git(dir, "add", "."); git(dir, "commit", "-m", "Unpublished work");
   }
+  const old = state === "missing" ? null : git(dir, "rev-parse", "--short", "HEAD");
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
   assert.ok(r.output.includes(`Prepared t1 at recorded source ${head}`), r.output);
@@ -2113,11 +2115,33 @@ for (const state of ["missing", "stale", "ahead"]) test(`land reconstructs a ${s
   const read = f.box.requests.findIndex(x => x.path.endsWith("/read-token"));
   assert.ok(take >= 0 && read > take, "recovery fetch follows lease acquisition");
   if (state !== "missing") assert.match(r.output, /Preserved t1's previous workspace at .*backup-/);
+  if (state === "diverged") {
+    const backup = r.output.match(/Preserved t1's previous workspace at (\S+)\./)[1];
+    assert.ok(r.output.includes(`holds 1 commit the recorded head lacks:\n  ${old} Unpublished work\nRecover them from ${backup}`), r.output);
+    assert.equal(readFileSync(join(backup, "local-only"), "utf8"), "not on the ledger");
+  } else assert.doesNotMatch(r.output, /diverged/);
   assert.equal(existsSync(join(dir, "local-only")), false);
   assert.equal(f.box.states.t1, "merged");
   const steps = f.posts("/land").map(x => x.body.step);
   for (const step of ["push", "check", "review", "accept", "merged"]) assert.ok(steps.includes(step), steps.join(", "));
   assert.deepEqual(f.posts("/claim").map(x => x.as), ["codex/test"]);
+});
+
+test("land stops before the lease when the workspace holds commits the recorded head lacks", async t => {
+  const f = await landFixture(t);
+  const dir = f.workspace("t1"), head = git(dir, "rev-parse", "HEAD");
+  writeFileSync(join(dir, "fix"), "the orchestrator's fix");
+  git(dir, "add", "."); git(dir, "commit", "-m", "Fix found in review");
+  const tip = git(dir, "rev-parse", "HEAD"), short = git(dir, "rev-parse", "--short", "HEAD");
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 1, r.output);
+  assert.ok(r.output.includes(`holds 1 commit the recorded head ${head} lacks:\n  ${short} Fix found in review\n`), r.output);
+  assert.match(r.output, /Push them with atelier push/);
+  assert.equal(f.box.requests.some(x => x.path.endsWith("/landing-lease") && x.method === "POST"), false);
+  assert.equal(f.posts("/read-token").length, 0);
+  assert.doesNotMatch(r.output, /Preserved|Prepared/);
+  assert.equal(git(dir, "rev-parse", "HEAD"), tip);
+  assert.equal(readdirSync(dirname(dir)).some(s => s.startsWith("t1.backup-")), false);
 });
 
 for (const wait of [false, true]) test(`workspace recovery waits for the lease (wait: ${wait})`, async t => {
