@@ -1,7 +1,7 @@
 import { taskPage } from "../src/task-page.ts";
 import {expect,it} from 'vitest';
 import { NO_CRITERIA } from "../src/criteria.ts";
-import {renderInbox,renderItem,renderProject,renderProjectTasks,renderProjectSettings,renderProjectFlow,renderProjectShip,renderHome,renderHistory,renderProjectPlans,renderModels,renderError,type Detail} from '../src/ui';
+import {fillShell,hasShell,projectPageAt,renderInbox,renderItem,renderProject,renderProjectTasks,renderProjectSettings,renderProjectFlow,renderProjectShip,renderHome,renderHistory,renderProjectPlans,renderModels,renderError,type Detail} from '../src/ui';
 import {buildFloor} from '../src/floor';
 import {attentionFor} from '../src/attention';
 import type {InboxEntry} from '../src/rules';
@@ -437,7 +437,7 @@ it('the showcase is read only: no forms, no links into signed-in pages, and no n
  expect(html).not.toContain('<form');
  expect(html).not.toContain('href="/p/');
  expect(html).not.toContain('secret reviewer note');
- expect(html).not.toContain('class="rail"');
+ expect(html).not.toContain('class="owner-bar"');
  expect(html).toContain('https://github.com/pavithran/atelier');
 });
 it('the showcase route is public only when the owner names projects, and caches briefly',async()=>{
@@ -541,7 +541,7 @@ it('the front door: / is the public showcase for everyone, and the owner signs i
  expect(page).toContain('<title>Atelier · public showcase</title>');
  expect(page).toContain('<a href="/login">Sign in</a>');
  expect(page).toContain('<a class="brand" href="/">Atelier</a>');
- for(const secret of ['Door project','Door work','class="rail"','href="/home"','href="/p/','action="/projects/showcase"'])expect(page).not.toContain(secret);
+ for(const secret of ['Door project','Door work','class="owner-bar"','href="/home"','href="/p/','action="/projects/showcase"'])expect(page).not.toContain(secret);
  expect(await (await go('/showcase',{SHOWCASE:'door:anonymous'})).text()).toBe(page);
  expect((await go('/',{SHOWCASE:'door:anonymous'},false,'HEAD')).status).toBe(200);
  // Signed in, / is still the public front; Home moved to /home.
@@ -1435,47 +1435,116 @@ it('the sign-in page stands over the showcase\'s graph, dimmed, with nothing foc
   expect(await wrong.text()).toContain('class="login-backdrop"');
 });
 
-// ── the site organised by project (t185) ──
-it('the navigation holds the owner\'s cross-project views in order, with Models and Usage under the account menu',()=>{
- const html=renderHome([]);
- const nav=html.split('<nav aria-label="Main navigation">')[1].split('</nav>')[0];
- const labels=[...nav.matchAll(/<span>([^<]+)<\/span>/g)].map((m)=>m[1]);
- expect(labels).toEqual(['Home','Decisions','Studio']);
- expect(nav).toContain('href="/home"');expect(nav).not.toContain('href="/"');expect(nav).toContain('href="/decisions"');expect(nav).toContain('href="/studio"');
- // Models and Usage are the account menu's, out of the work navigation.
- expect(nav).not.toContain('/models');expect(nav).not.toContain('/usage');
- const account=html.split('<details class="account">')[1].split('</details>')[0];
- expect(account).toContain('<summary>Settings</summary>');
- expect(account).toContain('href="/models"');expect(account).toContain('href="/usage"');
- // A Models page opens the menu and marks its own link current.
+// ── the owner's bar (t543; docs/design/reimagined/, plan.md P1) ──
+const bar=(html:string)=>html.slice(html.indexOf('<header class="owner-bar">'),html.indexOf('</header>',html.indexOf('<header class="owner-bar">'))+9);
+const row1=(html:string)=>bar(html).split('<nav class="bar-nav" aria-label="Atelier">')[1]?.split('</nav>')[0]??'';
+const row2=(html:string)=>bar(html).split('<nav aria-label="Project">')[1]?.split('</nav>')[0]??'';
+const currents=(nav:string)=>[...nav.matchAll(/<a href="([^"]+)" aria-current="page">([^<]+)/g)].map((m)=>`${m[1]} ${m[2]}`);
+it('every owner page draws one bar: Decisions, Projects and Activity, the project switcher and the owner\'s menu, with its own item current',()=>{
+ const home=renderHome([],'PAVI');
+ const nav=row1(home);
+ expect([...nav.matchAll(/<a href="([^"]+)"[^>]*>([A-Za-z]+)/g)].map((m)=>`${m[2]} ${m[1]}`)).toEqual(['Decisions /decisions','Projects /home','Activity /studio']);
+ expect(bar(home)).toContain('<a class="brand" href="/decisions">Atelier</a>');
+ expect(currents(nav)).toEqual(['/home Projects']);
+ expect(bar(home)).not.toContain('<nav aria-label="Project">');
+ // Models and Usage are the owner's menu's, with sign-out; the switcher lists every project under All projects.
+ const account=bar(home).split('<details class="bar-menu account">')[1].split('</details>')[0];
+ expect(account).toContain('<summary>PAVI</summary>');
+ expect(account).toContain('href="/models"');expect(account).toContain('href="/usage"');expect(account).toContain('action="/logout"');
+ const switcher=bar(home).split('<details class="bar-menu switcher">')[1].split('</details>')[0];
+ expect(switcher).toContain('<summary><!--shell:title-->Project</summary>');expect(fillShell(home,{waiting:0,incomplete:false,projects:[]})).toContain('<summary>Project</summary>');expect(switcher).toContain('<a href="/home">All projects</a>');
+ // Each page marks its own item, and only one.
+ const s=story();
+ expect(currents(row1(renderInbox([],[],'PAVI')))).toEqual(['/decisions Decisions']);
+ expect(currents(row1(renderStudio(buildFloor([],new Date()),'PAVI')))).toEqual(['/studio Activity']);
+ expect(currents(row1(renderFlow([s],s.tally,'pavi','PAVI')))).toEqual(['/studio Activity']);
+ expect(currents(row1(renderHistory([],'PAVI')))).toEqual(['/studio Activity']);
  const models=renderModels([],new Map(),'PAVI');
- expect(models).toContain('<details class="account" open>');
- expect(models.split('<details class="account" open>')[1]).toContain('<a href="/models" aria-current="page">Models</a>');
+ expect(currents(row1(models))).toEqual([]);
+ expect(bar(models)).toContain('<a href="/models" aria-current="page">Models</a>');
+ // The rail and its tagline are gone.
+ expect(home).not.toContain('class="rail"');expect(home).not.toContain('Main navigation');
 });
 
-it('a project\'s area has its tabs on every page, with the page\'s own tab current',()=>{
- const tabs=(html:string,open:string)=>html.split(`<nav class="repo-tabs proj-tabs" aria-label="example">`)[1]?.split('</nav>')[0]??'';
- const names=(html:string)=>[...tabs(html,'').matchAll(/>([A-Za-z]+)<\/a>/g)].map((m)=>m[1]);
+it('a project\'s pages add the second row: Project › page and five tabs, the page\'s own tab current, with every old tab\'s page under one',()=>{
+ const names=(html:string)=>[...row2(html).matchAll(/>([A-Za-z]+)(?:<span data-shell="[a-z]+">(?:<!--[^>]*-->)?<\/span>)?<\/a>/g)].map((m)=>m[1]);
  const over=renderProject(project,[],[],'PAVI');
- expect(names(over)).toEqual(['Overview','Tasks','Flow','Plans','Code','Log','Ship','Settings']);
- expect(tabs(over,'')).toContain('href="/p/example" aria-current="page">Overview');
- expect(tabs(over,'')).toContain('href="/p/example/tasks">Tasks');
- expect(tabs(over,'')).toContain('href="/p/example/flow">Flow');
- expect(tabs(over,'')).toContain('href="/p/example/plans">Plans');
- expect(tabs(over,'')).toContain('href="/p/example/code">Code');
- expect(tabs(over,'')).toContain('href="/p/example/log">Log');
- expect(tabs(over,'')).toContain('href="/p/example/ship">Ship');
- expect(tabs(over,'')).toContain('href="/p/example/settings">Settings');
- expect(tabs(renderProjectTasks(project,[]),'')).toContain('href="/p/example/tasks" aria-current="page">Tasks');
- expect(tabs(renderProjectFlow(project,buildStory('example',[],[],'pavi'),'pavi'),'')).toContain('href="/p/example/flow" aria-current="page">Flow');
- expect(tabs(renderProjectPlans(project,[]),'')).toContain('href="/p/example/plans" aria-current="page">Plans');
- expect(tabs(renderProjectShip(project,''),'')).toContain('href="/p/example/ship" aria-current="page">Ship');
- expect(tabs(renderProjectSettings(project),'')).toContain('href="/p/example/settings" aria-current="page">Settings');
- // The area hangs from Home, and the task page sits inside it.
- expect(over.split('<aside class="rail">')[1]).toContain('href="/home" aria-current="page"');
+ expect(names(over)).toEqual(['Overview','Tasks','Code','Activity','Settings']);
+ for(const [label,url] of [['Overview','/p/example'],['Tasks','/p/example/tasks'],['Code','/p/example/code'],['Activity','/p/example/flow'],['Settings','/p/example/settings']])expect(row2(over)).toContain(`href="${url}"`+(label==='Overview'?' aria-current="page"':'')+`>${label}`);
+ expect(bar(over)).toContain('<p class="crumb"><a href="/p/example">example</a> › <span>Overview</span></p>');
+ // The switcher names the project the page is in; the row is in the bar, not the body.
+ expect(bar(over)).toContain('<summary>example</summary>');
+ expect(over.split('<main id="main"')[1]).not.toContain('aria-label="Project"');
+ expect(currents(row1(over))).toEqual(['/home Projects']);
+ const tab=(html:string)=>currents(row2(html));
+ expect(tab(renderProjectTasks(project,[]))).toEqual(['/p/example/tasks Tasks']);
+ expect(tab(renderProjectPlans(project,[]))).toEqual(['/p/example/tasks Tasks']);
+ expect(tab(renderProjectFlow(project,buildStory('example',[],[],'pavi'),'pavi'))).toEqual(['/p/example/flow Activity']);
+ expect(tab(renderProjectShip(project,''))).toEqual(['/p/example/settings Settings']);
+ expect(tab(renderProjectSettings(project))).toEqual(['/p/example/settings Settings']);
+ // A task's page sits under Tasks, its id the last crumb.
  const task=renderItem(project,detail(),'PAVI',null);
- expect(tabs(task,'')).toContain('href="/p/example/tasks" aria-current="page">Tasks');
- expect(task).toContain('<a href="/home">Home</a>');
+ expect(tab(task)).toEqual(['/p/example/tasks Tasks']);
+ expect(bar(task)).toContain('› <span>t1</span></p>');
+ expect(task).not.toContain('class="breadcrumbs"');
+});
+
+it('the server fills the bar: the Decisions count, each project\'s task count, and the switcher\'s list',()=>{
+ const over=renderProject(project,[],[],'PAVI');
+ const shell={waiting:14,incomplete:false,projects:[{name:'example',title:'Example <one>',tasks:200,waiting:9},{name:'gone',title:'Gone',tasks:null,waiting:null}]};
+ const filled=fillShell(over,shell);
+ expect(filled).not.toContain('<!--shell:');
+ expect(row1(filled)).toContain('Decisions<span data-shell="waiting"> <span class="badge"><span class="visually-hidden">, waiting on you: </span>14</span></span></a>');
+ expect(row2(filled)).toContain('aria-current="page">Overview</a>');expect(row2(filled)).toContain('>Tasks<span data-shell="tasks"> (200)</span></a>');
+ expect(bar(filled)).toContain('<a href="/p/example">Example &lt;one&gt; <span class="meta">9 waiting</span></a><a href="/p/gone">Gone</a>');
+ // Nothing waiting, and every project read: no badge. A project not read: the count is uncertain.
+ expect(fillShell(over,{...shell,waiting:0})).not.toContain('class="badge"');
+ expect(fillShell(over,{...shell,waiting:0,incomplete:true})).toContain('waiting on you: </span>0?</span>');
+ expect(hasShell(over)).toBe(true);expect(hasShell(renderLogin())).toBe(false);
+});
+
+// Gate finding 3: a page under /p/NAME whose body drew no project row (an
+// error, an empty repository) is given one from the address it was asked at.
+it('the bar gives an error page in a project its row, from the address',()=>{
+ const err=renderError('This repository has no commits yet.','/p/example','PAVI');
+ expect(bar(err)).not.toContain('aria-label="Project"');
+ const shell={waiting:1,incomplete:false,projects:[{name:'example',title:'Example',tasks:3,waiting:1}]};
+ for(const [rest,tab,crumb] of [[[],'/p/example Overview','Overview'],[['code'],'/p/example/code Code','Code'],[['log'],'/p/example/code Code','Log'],[['commit','abc'],'/p/example/code Code','Code'],[['plans'],'/p/example/tasks Tasks','Plans'],[['ship'],'/p/example/settings Settings','Ship'],[['flow'],'/p/example/flow Activity','Activity'],[['t9'],'/p/example/tasks Tasks','t9'],[['t9','code'],'/p/example/tasks Tasks','t9']] as [string[],string,string][]){
+  const filled=fillShell(err,{...shell,here:{project,...projectPageAt(rest)}});
+  expect(filled,rest.join('/')).not.toContain('<!--shell:');
+  expect(currents(row2(filled)),rest.join('/')).toEqual([tab]);
+  expect(bar(filled)).toContain(`› <span>${crumb}</span></p>`);
+  expect(bar(filled)).toContain('<summary>example</summary>');
+  expect(row2(filled)).toContain('>Tasks<span data-shell="tasks"> (3)</span></a>');
+ }
+ // A page that drew its own row keeps it; no second row is added.
+ const own=fillShell(renderProjectTasks(project,[]),{...shell,here:{project,active:'Overview'}});
+ expect(own.split('aria-label="Project"').length).toBe(2);expect(currents(row2(own))).toEqual(['/p/example/tasks Tasks']);
+ // An unreadable project's count is left out, not left as a marker.
+ expect(fillShell(err,{...shell,projects:[{...shell.projects[0],tasks:null}],here:{project,active:'Overview'}})).not.toContain('<!--shell:');
+});
+
+// Gate finding 4: the canvas is Night only (d24), so the owner's pages are
+// marked to keep the light blocks away (test/theme.test.ts); the public pages
+// keep following the device.
+it('every owner page is Night only, and the public pages follow the device',()=>{
+ for(const html of [renderHome([],'PAVI'),renderInbox([],[],'PAVI'),renderProject(project,[],[],'PAVI'),renderError('x','/home','PAVI')]){
+  expect(html).toContain('<html lang="en" data-theme="night" data-scheme="night">');
+  expect(html).toContain('<meta name="color-scheme" content="dark">');
+ }
+ const login=renderLogin();
+ expect(login).toContain('<html lang="en" data-theme="night"><head>');expect(login).toContain('<meta name="color-scheme" content="dark light">');
+});
+
+it('the error page keeps the owner\'s name, highlights nothing, and says Go back',()=>{
+ const html=renderError('Something <odd> happened.','/p/example','PAVI');
+ expect(html).toContain('<summary>PAVI</summary>');
+ expect(html).toContain('Something &lt;odd&gt; happened.');
+ expect(html).toContain('>Go back</a>');
+ // No link in the markup is current: the page does not know which page failed (finding 18).
+ expect(html).not.toMatch(/<a[^>]*aria-current="page"/);
+ expect(renderError('x')).not.toMatch(/<a[^>]*aria-current="page"/);
+ expect(renderError('x')).toContain('<summary>Owner</summary>');
 });
 
 it('Tasks is one list of every task with state, holder and time; the Overview tab no longer repeats it',async()=>{
@@ -1523,23 +1592,6 @@ it('a task with nothing pushed shows its scope and the dispatch box, not a revie
  expect(framed).toContain('Task history');
 });
 
-it('the error page keeps the owner\'s name, highlights nothing, and says Go back',()=>{
- const html=renderError('Something <odd> happened.','/p/example','PAVI');
- expect(html).toContain('<strong>PAVI</strong>');
- expect(html).toContain('Something &lt;odd&gt; happened.');
- expect(html).toContain('>Go back</a>');
- // No link in the markup is current: the page does not know which page failed (finding 18).
- expect(html).not.toMatch(/<a[^>]*aria-current="page"/);
- expect(renderError('x')).not.toMatch(/<a[^>]*aria-current="page"/);
- expect(renderError('x')).toContain('Project owner');
-});
-
-it('one line about Atelier serves both the rail and the sign-in headline',()=>{
- const rail=renderProject(project,[],[],'PAVI');
- expect(rail).toContain('<p>Git keeps the code. Atelier brings the receipts.</p>');
- expect(renderLogin()).toContain('<h1>Git keeps the code.<br>Atelier brings the receipts.</h1>');
-});
-
 it('Plans draws each plan as one unit with its parts, their state and why each went to its agent',()=>{
  const when='2026-10-06T12:00:00Z';
  const route=(key:string,builder:string)=>({key,builder:{actor:builder,reasons:['Rank 1 of 3 eligible for feature work, score 0.72']},alternates:[{actor:'codex/gpt-6-astra',reasons:[]}],reviewer:{actor:'zcode/glm-5.3',reasons:[]},excluded:[],unrouted:null});
@@ -1572,11 +1624,11 @@ it('Plans draws each plan as one unit with its parts, their state and why each w
  expect(renderProjectPlans(project,[])).toContain('No plans yet.');
 });
 
-it('a commit page marks the Log tab current and its crumb names the commit',()=>{
+it('a commit page marks the Code tab current and its crumb names the commit',()=>{
  const c={hash:'11a7ee68'+'0'.repeat(32),treeHash:'b'.repeat(40),message:'m',author:{name:'A',email:'a@x'},parents:[],authoredAt:1759600000};
  const commit=renderCommit({project,item:null,at:null},{commit:c,parent:null,files:[],truncated:false},'PAVI');
- expect(commit).toContain('aria-label="example">');
- expect(commit).toContain('href="/p/example/log" aria-current="page">Log');
+ expect(commit).toContain('<nav aria-label="Project">');
+ expect(commit).toContain('href="/p/example/code" aria-current="page">Code');
  expect(commit).toContain('/ Commit 11a7ee68</nav>');
  expect(commit).not.toContain('href="/projects"');
 });
