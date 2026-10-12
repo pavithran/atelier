@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { refreshStanding, queued } from "./standing.ts";
-import { afterSettle, enqueue, headMoved, leaseLive, LEASE_MS, reportedLease, resultKey, takeLease } from "./queue.ts";
+import { afterSettle, checksPending, enqueue, headMoved, leaseLive, LEASE_MS, reportedLease, resultKey, takeLease } from "./queue.ts";
 import { parseResolvers, pickResolver, resolverRefusal } from "./resolver.ts";
 import { refreshReview } from "./review.ts";
 import { parseRuleError, sameActor } from "../rules.ts";
@@ -114,6 +114,30 @@ test("a mechanical conflict waits for its resolver at the head it was found at; 
   // A newer main supersedes what waited on the older one.
   assert.equal(enqueue(returned, "t7", H("b"), at).target.state, "queued");
   assert.equal(afterSettle({ ...target, state: "leased", lease }, lease, "superseded", at).state, "queued");
+});
+
+test("a resolver's lease that lapses after main moved on queues the newer main head for the integrator, not the resolver", () => {
+  const now = Date.now(), at = new Date(now).toISOString();
+  const target = enqueue(null, "t7", H("a"), at).target;
+  const lease = takeLease(target, { job: "refresh", actor: "atelier/integrator", runner: null, head: H("1"), now, id: "L1", same: sameActor });
+  const resolving = afterSettle({ ...target, state: "leased", lease }, lease, "mechanical", at, { resolver: "claude-code/opus-5.5" });
+  const resolve = takeLease(resolving, { job: "resolve", actor: "claude-code/opus-5.5", runner: null, head: H("1"), now, id: "L2", same: sameActor });
+  const later = now + LEASE_MS + 1, laterAt = new Date(later).toISOString();
+  // Lapsed while resolving, and lapsed while its checks ran at the recorded head.
+  for (const [leased, head] of [[{ ...resolving, state: "leased", lease: resolve }, H("1")], [checksPending({ ...resolving, state: "leased", lease: resolve }, resolve, H("2"), at), H("2")]]) {
+    const moved = enqueue(leased, "t7", H("b"), at).target;
+    assert.equal(moved.state, "leased");
+    const current = headMoved(moved, head, laterAt, later);
+    assert.equal(current.state, "queued");
+    assert.equal(current.resolver, null);
+    assert.equal(current.lease, moved.lease, "the lapsed lease is kept so the next lease revokes its token");
+    assert.equal(code(() => takeLease(current, { job: "resolve", actor: "claude-code/opus-5.5", runner: null, head, now: later, id: "L3", same: sameActor })), "not_resolving");
+    const next = takeLease(current, { job: "refresh", actor: "atelier/integrator", runner: null, head, now: later, id: "L3", same: sameActor });
+    assert.deepEqual([next.job, next.mainHead, next.expectedHead, next.checking], ["refresh", H("b"), head, undefined]);
+    // A live lease, or one lapsed for the main head still targeted, is left as it is.
+    assert.equal(headMoved(moved, head, at, now), moved);
+    assert.equal(headMoved(leased, head, laterAt, later), leased);
+  }
 });
 
 test("a resolver is a configured frontier model of a known provider, independent of every review it would retain", () => {
