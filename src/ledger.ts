@@ -1635,11 +1635,16 @@ export class Ledger extends DurableObject<Env> {
   // its claim is judged with the same, so a task the queue offered free, a
   // claim its runner orphaned holding it no longer, is not refused at the
   // claim because that runner polled in between. Its next poll is judged
-  // with that poll, and is not offered the task. An offer recorded before
-  // t540, which kept none, is judged with the ledger's record as before.
-  private offerPolls(token: AgentToken): RunnerPolls | null {
+  // with that poll, and is not offered the task. The offer's polls count
+  // only while the offer is recent, within OFFER_REFRESH_MS: a runner claims
+  // right after its poll, and an older offer, though still live, is judged
+  // with the ledger's current record, as the queue and atelier stuck judge
+  // at that moment. So is an offer recorded before t540, which kept none.
+  private offerPolls(token: AgentToken, now = Date.now()): RunnerPolls | null {
+    const offer = this.runnerMeta<SeenOffer>(`runner-offer:${token.id}`);
     const polls = this.runnerMeta<{ runner: string; at: string }[] | null>(`runner-offer-polls:${token.id}`);
-    return polls ? { polls } : this.runnerPolls();
+    const recent = !!offer && now - Date.parse(offer.at) <= OFFER_REFRESH_MS;
+    return polls && recent ? { polls } : this.runnerPolls();
   }
 
   assertRunnerReport(token: AgentToken, id: string, actor: string, role: string): void {
@@ -3616,7 +3621,8 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // Newest first. `before` pages back: only events with a lower seq than it.
-  // Read-only diagnostic snapshot: no tick, lease renewal or status observation.
+  // Diagnostic snapshot: no tick, lease renewal or status observation; it
+  // writes only the runners' last polls it is given.
   // The stuck report's reading of the project. The runners' last polls the
   // report judges orphaned claims with are recorded here first (t540), so
   // the hold, the queue and the claim check read the same polls at the

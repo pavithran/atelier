@@ -5,9 +5,10 @@
 // them at the claim: its runner had polled in between, and the claim read
 // the ledger's copy of the polls another poll had rewritten since the offer.
 import { env } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
-import { OFFER_REFRESH_MS, RUNNER_GONE_MS } from "../src/dispatch/rules.ts";
+import { OFFER_LIVE_MS, OFFER_REFRESH_MS, RUNNER_GONE_MS } from "../src/dispatch/rules.ts";
 import type { Item } from "../src/rules.ts";
 
 const A = "codex/gpt-6-astra", OWNER = "orphan-agreement-owner";
@@ -83,6 +84,47 @@ it("a task offered free past an orphaned claim is claimed, though that claim's r
   // t2 free, so it is not refused for t1's hold.
   await notRefused(await one.claim("t2"));
   expect((await L.waiting()).find((i) => i.id === "t2")?.refusals?.filter((r) => r.runner === `home:${name}-1`) ?? []).toEqual([]);
+});
+
+// An offer still live but no longer recent (OFFER_REFRESH_MS) is judged with
+// the ledger's current polls: the offer's frozen polls do not outlast the
+// queue, which already shows the hold back.
+async function ageOffers(L: DurableObjectStub, runner: string, ms: number) {
+  await runInDurableObject(L, async (_instance, state) => {
+    for (const row of state.storage.sql.exec("SELECT key, value FROM meta WHERE key LIKE 'runner-offer:%'").toArray()) {
+      const value = JSON.parse(row.value as string);
+      if (value.runner !== runner) continue;
+      value.at = new Date(Date.now() - ms).toISOString();
+      state.storage.sql.exec("UPDATE meta SET value = ? WHERE key = ?", JSON.stringify(value), row.key);
+    }
+  });
+}
+
+it("a claim on a live but stale offer is judged with the current polls, as the queue is", async () => {
+  const name = "orphan-agreement-stale";
+  const { L, held, runner, beat } = await setup(name);
+  const one = await runner(1);
+  // Runner 1 is offered t2 while t1's runner is gone.
+  await polled(held, GONE);
+  expect(await one.poll()).toContain("t2");
+  // t1's runner returns, and the queue holds t2 again.
+  await beat();
+  expect((await L.waiting())[0].held?.id).toBe("t1");
+  // Ninety minutes on, the offer is still live (OFFER_LIVE_MS) but long past
+  // OFFER_REFRESH_MS: its claim is refused for the hold the queue shows.
+  const age = 90 * 60_000;
+  expect(age).toBeLessThan(OFFER_LIVE_MS);
+  await ageOffers(L, `home:${name}-1`, age);
+  expect((await one.claim("t2")).status).toBe(403);
+  const why = (await L.waiting())[0].refusals?.map((r) => r.detail) ?? [];
+  expect(why.some((d) => d.includes("the core files hold it") && d.includes("t1"))).toBe(true);
+  // A claim just within OFFER_REFRESH_MS of its offer is still judged with
+  // the offer's polls.
+  await polled(held, GONE);
+  expect(await one.poll()).toContain("t2");
+  await beat();
+  await ageOffers(L, `home:${name}-1`, OFFER_REFRESH_MS - 5_000);
+  await notRefused(await one.claim("t2"));
 });
 
 it("a claim refused after its offer names the hold that offer saw, not a later one", async () => {
