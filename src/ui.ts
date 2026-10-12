@@ -44,8 +44,9 @@ import type { PartRoute } from "./plans/route.ts";
 export interface Live { nonce: string; refresh?: number }
 import {
   bindingOf, changeClass, confirmationAt, contributorsOf, countingReviews, DEFAULT_OWNER, decisionFor, evidenceAt, independentApproval, latestReviews, mergedByOverride, mergedChecksAt, NO_OWNER_FACTOR, OVERRIDE_CONFIRMATION_MS, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey, singleFamily,
-  type Finding, type Evidence, type FamilyMode, type Gate, type InboxEntry, type Item, type MergedCheckView, type OwnerFactor, type ProjectPolicy, type Review, type UnparsableReply,
+  type Finding, type Evidence, type FamilyMode, type Gate, type InboxEntry, type Item, type ItemState, type MergedCheckView, type OwnerFactor, type ProjectPolicy, type Review, type UnparsableReply,
 } from "./rules";
+import { STEPS, TAGLINE, TAKEAWAYS, type Verb } from "./how-data.ts";
 
 // What a page calls a project: its title when it has one, else its name. Links,
 // forms and commands always use the name.
@@ -104,9 +105,8 @@ const ACCOUNT: [string, string][] = [
   ["Usage", "/usage"],
 ];
 
-// One line about Atelier, used here and as the sign-in page's headline, so
-// the two never say different things.
-const TAGLINE = "Multiple agents, one owner per task.";
+// One line about Atelier (src/how-data.ts), used here and as the sign-in
+// page's headline, so the two never say different things.
 
 // src/render-check.ts lets the render check's browser load exactly this URL.
 export const FONTS = "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap";
@@ -277,12 +277,12 @@ export function renderLogin(error?: string, showcase = false, backdrop?: { stori
     : "";
   return publicPage({
     title: "Sign in · Atelier",
-    description: "Sign in to Atelier, a Git platform for multiple coding agents: one owner per task, evidence observed, another model family reviews, the owner decides.",
+    description: `Sign in to Atelier, a Git platform for multiple coding agents: claim, fork, prove, review, land. ${TAKEAWAYS}`,
     brand: "/",
     nav: [["How it works", "/how"], ["Source on GitHub", REPO_URL]],
     mainClass: "login-page",
     main: `<section class="login${graph ? " over-graph" : ""}">${graph}
-  <h1>Multiple agents,<br>one owner per task.</h1>
+  <h1>${TAGLINE.split(". ").map(e).join(".<br>")}</h1>
   <p class="lead">Atelier gives every task one owner, grades its evidence, and brings you only what needs a person.</p>
   <form method="post" action="/login" class="login-form">
     <h2>Sign in to Atelier</h2>
@@ -480,8 +480,10 @@ function restingGraph(s: Story, owner: string, notRead: string[] = []): string {
 </div>`;
 }
 
+// Latest moves is a list, not a chart, so its dots carry no company colour:
+// red for a catch, the accent for the owner, neutral for everything else.
 const MOMENT_COLOUR = (m: Story["moments"][number], owner: string) =>
-  m.tone === "catch" ? "var(--fault)" : m.tone === "merge" ? "var(--main-line)" : m.actor === owner ? "var(--m-owner)" : `var(--m-${vendorFor(m.actor, owner)})`;
+  m.tone === "catch" ? "var(--fault)" : m.tone === "merge" ? "var(--main-line)" : m.actor === owner ? "var(--m-owner)" : "var(--text-muted)";
 
 // A page's numbers count only the projects whose threads it draws, so the
 // headline and the picture agree. Callers' totals are not used.
@@ -624,18 +626,18 @@ function flowParts(stories: Story[], t: Tally, owner: string, href?: (s: Story) 
   ${importedBlock(imported.get(s.project), owner, s.title, s.project)}
 </section>`).join("");
   const yours = who === "You" ? "your" : `${who}'s`;
-  const journey = [
-    ["Planned", `${cap(who)} ${who === "You" ? "describe" : "describes"} an outcome; it becomes a task with a scope.`, `${plural(t.planned, "task")} planned`, "var(--main-line)"],
-    ["Claimed", "One agent takes it and gets its own fork in Cloudflare Artifacts. Nobody else can write there.", `${plural(t.claims, "claim")}, ${plural(t.handoffs, "handoff")}`, "var(--m-anthropic)"],
-    ["Worked", `The agent commits and pushes to its fork, never to ${yours} checkout.`, `${plural(t.pushes, "push", "pushes")}`, "var(--m-openai)"],
-    ["Checked", "The project's checks run in a fresh clone of exactly the pushed head, on the machine that asks for them; in a Cloudflare container only with --sandbox, or where the project requires it.", `${plural(t.checks, "check")} observed${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}`, "var(--observed)"],
-    ["Reviewed", `Changes to protected files need an approval from a model of another family than every contributor by default, or a different model of the selected company from every contributor in single-family mode; ${yours} own approval does not count. Without one, ${who === "You" ? "you" : who} can accept only by recording an override with its reason.`, `${plural(t.approvals, "approval")}, ${t.sentBack} sent back`, "var(--m-zai)"],
-    ["Decided", `${cap(who)} ${who === "You" ? "see" : "sees"} the diff, the evidence and the reviews, and ${who === "You" ? "accept" : "accepts"} one revision.`, `${plural(t.accepts, "acceptance")}`, "var(--m-owner)"],
-    ["Merged", `It merges into main on ${yours} machine, with its whole history attached as a git note.`, `${t.merges} merged`, "var(--main-line)"],
-  ].map(([b, p, n, c]) => `<li style="--c:${c}"><b>${e(b)}</b><p>${e(p)}</p><span class="n">${e(n)}</span></li>`).join("");
+  // The five steps of src/how-data.ts, each said for this owner and counted.
+  const said: Record<Verb, [text: string, count: string]> = {
+    Claim: [`${cap(who)} ${who === "You" ? "describe" : "describes"} an outcome; it becomes a task with a scope. One agent claims it, and a second claim is refused.`, `${plural(t.planned, "task")} planned, ${plural(t.claims, "claim")}, ${plural(t.handoffs, "handoff")}`],
+    Fork: [`The task gets its own fork in Cloudflare Artifacts, and nobody else can write there. The agent commits and pushes to its fork, never to ${yours} checkout.`, `${plural(t.pushes, "push", "pushes")}`],
+    Prove: ["The project's checks run in a fresh clone of exactly the pushed head, on the machine that asks for them; in a Cloudflare container only with --sandbox, or where the project requires it.", `${plural(t.checks, "check")} observed${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}`],
+    Review: [`Changes to protected files need an approval from a model of another family than every contributor by default, or a different model of the selected company from every contributor in single-family mode; ${yours} own approval does not count. Without one, ${who === "You" ? "you" : who} can accept only by recording an override with its reason.`, `${plural(t.approvals, "approval")}, ${t.sentBack} sent back`],
+    Land: [`${cap(who)} ${who === "You" ? "accept" : "accepts"} one revision on the diff, the evidence and the reviews. It merges into main on ${yours} machine, one landing at a time, with its whole history attached as a git note.`, `${plural(t.accepts, "acceptance")}, ${t.merges} merged`],
+  };
+  const journey = STEPS.map((s) => `<li><h3>${e(s.verb)}</h3><p><span class="motto">${e(s.line)}</span> ${e(said[s.verb][0])}</p><span class="n">${e(said[s.verb][1])}</span></li>`).join("");
   const moments = `<section aria-label="Latest moves"><h2>${many ? "Latest moves across projects" : "Latest moves"}</h2><ol class="moments">${momentsList.map((m) =>
     `<li class="${m.tone}"><span class="dot" style="--c:${MOMENT_COLOUR(m, owner)}"></span><time datetime="${e(m.at)}">${e(shortStamp(m.at))}</time><p>${many ? `<span class="meta">${e(m.project)} · </span>` : ""}${e(m.text)}</p></li>`).join("")}</ol></section>`;
-  const journeySection = `<section aria-label="How a task travels"><h2>How a task travels</h2><ol class="journey">${journey}</ol></section>`;
+  const journeySection = `<section aria-label="How a task travels"><h2>How a task travels</h2><ol class="journey">${journey}</ol><p class="takeaways">${e(TAKEAWAYS)}</p><p class="meta">${e(TAGLINE)}</p></section>`;
   return { stages, moments, journey: journeySection, shown };
 }
 
@@ -650,8 +652,10 @@ export function renderFlow(stories: Story[], _total: Tally, owner: string, owner
   const sinceLinks = [["1d", "last day"], ["7d", "last week"], ["all", "all time"]]
     .map(([val, label]) => `<a href="${link(val, familyParam)}"${sinceParam === val ? ' aria-current="page"' : ''}>${e(label)}</a>`).join('');
 
+  // Company colours live only inside charts; the family filter is a plain
+  // tab like the time filter beside it.
   const fams = VENDOR_NAMES.filter(([v]) => familiesPresent.includes(v));
-  const familyLinks = fams.map(([v, label]) => `<a href="${link(sinceParam, v)}"${familyParam === v ? ' aria-current="page"' : ''} style="color:var(--m-${v})">${e(label)}</a>`).join('');
+  const familyLinks = fams.map(([v, label]) => `<a href="${link(sinceParam, v)}"${familyParam === v ? ' aria-current="page"' : ''}>${e(label)}</a>`).join('');
   const allFamiliesLink = `<a href="${link(sinceParam, undefined)}"${!familyParam ? ' aria-current="page"' : ''}>all families</a>`;
 
   // The filter labels carry their own class: the row wraps at any width, and
@@ -746,7 +750,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   </figure>`).join("");
   return publicPage({
     title: "Atelier · public showcase",
-    description: "Atelier: several coding agents on one codebase, one owner per task, graded evidence, and the owner's decision. A Git platform on Cloudflare Workers and Artifacts.",
+    description: `Atelier: several coding agents on one codebase. Claim, fork, prove, review, land. ${TAKEAWAYS} A Git platform on Cloudflare Workers and Artifacts.`,
     brand: "/",
     nav: [["How it works", "/how"], ["Source on GitHub", REPO_URL], ["Sign in", "/login"]],
     mainClass: "page-width flow",
@@ -754,7 +758,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   <header class="flow-hero">
     <div><span class="kicker">Public showcase · read only · from the ledger</span>
       <h1>A Git platform for multiple coding agents</h1>
-      <p class="lead">One owner per task, evidence observed, another model family reviews, the owner decides. Each card below is a project ${e(who)} chose to show, with its last two weeks of activity beside its all-time merges; under them, task stories drawn as threads, from claim to merge.</p>
+      <p class="lead"><strong>${e(TAKEAWAYS)}</strong> ${e(TAGLINE)} Each card below is a project ${e(who)} chose to show, with its last two weeks of activity beside its all-time merges; under them, task stories drawn as threads, from claim to merge.</p>
       <p class="subhead">${headline(total, who)}</p>${allMerged === undefined ? "" : `<p class="meta tally-window">The figures in the tally are the last two weeks; all time, ${allMerged} merged across ${plural(cards.length, "project")}.</p>`}</div>
     ${tallyBlock(total, who)}
   </header>
@@ -799,7 +803,7 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
       ? `${tag(m.status.state, STATUS_TONE[m.status.state])}<span class="meta">checked by ${e(m.status.by ?? "a runner")} ${e(when(m.status.at))}${m.status.served && m.status.served !== m.id ? `, served as <code>${e(m.status.served)}</code>` : ""}${m.status.detail ? `, ${e(m.status.detail)}` : ""}</span>`
       : `${tag("not checked yet")}<span class="meta">the runner reports here once it has tried this model</span>`;
     const how = [e(m.harness), e(m.provider), m.endpoint ? `<code>${e(m.endpoint)}</code>` : "", m.keychain ? `key in Keychain <code>${e(m.keychain)}</code>` : ""].filter(Boolean).join(" · ");
-    return `<li class="model" style="--c:var(--m-${m.family})">
+    return `<li class="model">
   <div class="model-head"><strong class="mono">${e(m.id)}</strong>${m.family === "other" ? tag("family not recognised", "ask") : `<span class="meta">${e(m.family)}</span>`}</div>
   <p class="meta">${how}</p>
   ${m.aliases.length ? `<p class="meta">Also known as ${m.aliases.map((a) => `<code>${e(a)}</code>`).join(", ")}</p>` : ""}
@@ -1691,23 +1695,22 @@ export function renderHistory(views: ProjectView[], ownerName: string | null = n
   const entries = buildTimeline(views.map((v) => ({ project: v.project, items: v.items, events: v.events ?? [] })), owner);
   const merged = entries.filter((x) => x.ending === "merged").length, closed = entries.length - merged;
   const projects = new Set(entries.map((x) => x.project.name)).size;
-  const vendors = [...new Set(entries.map((x) => x.vendor).filter((v): v is Vendor => v !== null))];
   const days = byDay(entries).map(({ day, entries: list }) => `<li class="timeline-day"><h2>${e(`${weekdayOf(list[0].at)} ${keyLabel(day, true)}`)}</h2><ol>${list.map((x) => {
     const model = x.holder ? splitActor(x.holder).model || x.holder : null;
     const mark = x.vendor
-      ? `<i class="family-mark" style="--c:var(--m-${x.vendor})" title="${e(`${x.ending} while held by ${x.holder}`)}"></i>`
+      ? `<i class="family-mark" title="${e(`${x.ending} while held by ${x.holder}`)}"></i>`
       : '<i class="family-mark unknown" title="who held it is not in the record read"></i>';
     const detail = [titleOf(x.project), x.item.id, model ?? "holder not in the record read", x.ending === "merged" ? (x.commit ? `merged as ${x.commit.slice(0, 8)}` : "merged") : "closed without merging"];
     return `<li class="merge-row ${x.ending}"><a href="${href("p", x.project.name, x.item.id)}">${mark}<time datetime="${e(x.at)}">${e(clock(x.at))}</time><span><strong>${e(x.item.title)}</strong><span class="meta">${detail.map(e).join(" · ")}</span></span>${tag(x.ending === "merged" ? "Merged" : "Closed", x.ending === "merged" ? "go" : "")}</a></li>`;
   }).join("")}</ol></li>`).join("");
   const lead = entries.length
-    ? `${plural(merged, "task")} merged and ${closed} closed across ${plural(projects, "project")}, newest first. Each mark is the family of the agent that held the task when it ended. The same work, move by move, is on <a href="/flow">Flow</a>.`
+    ? `${plural(merged, "task")} merged and ${closed} closed across ${plural(projects, "project")}, newest first. Each row names the model that held the task when it ended. The same work, move by move, is on <a href="/flow">Flow</a>.`
     : "Finished work, with its evidence intact. The work in motion is on <a href=\"/flow\">Flow</a>.";
   const capKey = closed ? '<li><i class="cap-key"></i>closed without merging</li>' : "";
   return page("History", `<div class="page-width">
   <header><h1>History</h1><p class="lead">${lead}</p></header>
   ${views.some((v) => v.unavailable) ? '<p class="error">Some project history is unavailable. Refresh to retry.</p>' : ""}
-  ${entries.length ? familyLegend(vendors, "You", capKey) : ""}
+  ${entries.length ? familyLegend([], "You", capKey) : ""}
   <ol class="merge-timeline">${days}</ol>
   ${!entries.length ? '<p class="empty">Completed tasks will appear here after they merge or close.</p>' : ""}
 </div>`, "Home", ownerName);
@@ -1750,12 +1753,55 @@ function taskText(item: Item): string {
 </div>`;
 }
 
+// Where a task stands among the five steps, read from its recorded state and
+// the required checks at its head, never from what an agent said. A step
+// before the current one is done; a merged task has done all five, and a
+// closed or blocked one keeps the steps it reached, with a note saying so.
+export type StepState = "done" | "current" | "todo";
+export interface TaskProgress { steps: { verb: Verb; line: string; state: StepState }[]; note: string | null }
+
+export function taskProgress(item: Pick<Item, "state" | "head" | "base" | "fork" | "blocked">, checks: { grade: string; passed: boolean | null }[]): TaskProgress {
+  // A fresh fork records its base as its head (Ledger.setFork), so the work
+  // is pushed only once the head has moved off the base.
+  const pushed = item.head !== null && item.head !== item.base;
+  // Every required check observed passing at the head; with none required, a pushed head is proven.
+  const proven = pushed && checks.every((c) => c.grade === "observed" && c.passed === true);
+  const reached = (state: ItemState): number => {
+    switch (state) {
+      case "open": return 0;
+      case "claimed": return pushed ? 2 : 1;
+      case "submitted": return proven ? 3 : 2;
+      case "accepted": case "integrated": return 4;
+      case "merged": return STEPS.length;
+      case "blocked": return reached(item.blocked?.from ?? "claimed");
+      // Closed without landing: the steps its record shows it passed.
+      case "abandoned": return !pushed ? (item.fork ? 1 : 0) : proven ? 3 : 2;
+    }
+  };
+  const at = reached(item.state);
+  const closed = item.state === "abandoned";
+  const note = item.state === "blocked" ? `Blocked at ${STEPS[at]?.verb ?? "Land"}` : closed ? "Closed without landing" : item.state === "merged" ? "Landed" : null;
+  return {
+    steps: STEPS.map((s, i) => ({ verb: s.verb, line: s.line, state: i < at ? "done" : i === at && !closed ? "current" : "todo" })),
+    note,
+  };
+}
+
+function progressBlock(item: Item, checks: { grade: string; passed: boolean | null }[]): string {
+  const { steps, note } = taskProgress(item, checks);
+  return `<ol class="task-steps" aria-label="Progress: claim, fork, prove, review, land">${steps.map((s) =>
+    `<li class="${s.state}"${s.state === "current" ? ' aria-current="step"' : ""}><b>${e(s.verb)}</b><span>${s.state === "current" ? (item.state === "blocked" ? "Blocked here" : "Now") : s.state === "done" ? "Done" : e(s.line)}</span></li>`).join("")}</ol>
+  ${note && item.state !== "blocked" ? `<p class="meta task-steps-note">${e(note)}</p>` : ""}`;
+}
+
 // A task's page sits inside its project's area: the project's tab bar above
-// the review sheet, the area reached from Home.
+// the review sheet, the area reached from Home. The five steps sit above
+// the sheet, the task's current one marked.
 export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null = null, diff: ItemDiff | "unavailable" | null = null, live?: Live): string {
   return page(d.item.title, `<div class="page-width">
   <nav class="breadcrumbs"><a href="/home">Home</a> / <a href="${href("p", p.name)}">${e(titleOf(p))}</a> / ${e(d.item.id)}</nav>
   ${projectTabs(p, "Tasks")}
+  ${progressBlock(d.item, evidenceAt(d.policy, d.evidence, d.item.head).checks)}
   <article class="review-sheet standalone" id="review">${reviewBody({ project: p, detail: d, diff, thread: true, full: true })}</article>
 </div>`, "Home", ownerName, 0, true, live);
 }
@@ -2398,11 +2444,11 @@ export function renderMainPreview(m: MainPreview | null | undefined, merged?: Me
   if (m === undefined) return "";
   if (m === null) return `<p class="meta">Whether this merges cleanly into main could not be read just now.</p>`;
   const plural = (n: number, w: string) => `${n.toLocaleString("en")} ${w}${n === 1 ? "" : "s"}`;
-  if (m.ahead === 0) return `<p class="merge-preview">${tag("Up to date", "go")} Main has not moved since this task forked; it merges as it is.</p>${renderMergedChecks(merged, m, false)}`;
+  if (m.ahead === 0) return `<p class="merge-preview">${tag("Up to date")} Main has not moved since this task forked; it merges as it is.</p>${renderMergedChecks(merged, m, false)}`;
   const moved = `Main has moved ${m.aheadCapped ? "at least " : ""}${plural(m.ahead, "commit")} along its first-parent line since this task forked (a merge counts once), changing ${plural(m.merge.ours, "path")}`;
   if (m.merge.clean) {
     const shared = m.merge.both.length ? `; both sides changed ${plural(m.merge.both.length, "path")}, and the changes do not overlap` : "; none of them are paths this task changed";
-    return `<p class="merge-preview">${tag("Merges cleanly", "go")} ${moved}${shared}.</p>${renderMergedChecks(merged, m, true)}`;
+    return `<p class="merge-preview">${tag("Merges cleanly")} ${moved}${shared}.</p>${renderMergedChecks(merged, m, true)}`;
   }
   const rows = m.merge.conflicts.map((c) => `<li><code>${e(c.path)}</code> <span class="meta">${e(c.reason)}</span></li>`).join("");
   return `<div class="merge-preview">${tag(plural(m.merge.conflicts.length, "conflict"), "bad")} ${moved}. Merging now would stop at:<ul class="merge-conflicts">${rows}</ul><p class="meta">Bring main into the task's workspace and resolve these before accepting.</p></div>${renderMergedChecks(merged, m, false)}`;

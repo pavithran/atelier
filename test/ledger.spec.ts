@@ -8,6 +8,7 @@ import { parseRuleError, type Evidence, type Item, type ProjectPolicy, type Revi
 import type { Detail } from "../src/ui.ts";
 import { signIn } from "./signin.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
+import { taskProgress } from "../src/ui.ts";
 
 // The Ledger driven end to end over Durable Object RPC, with its real SQLite
 // storage, inside the Workers test pool. The pure policy underneath is tested
@@ -158,6 +159,20 @@ it("an item moves from creation to merge, gated by observed evidence", async () 
     "item.merged", "item.accepted", "item.submitted", "evidence.observed", "push.observed",
     "fork.created", "item.claimed", "item.created",
   ]);
+});
+
+// t367: the task page's steps read from what the Ledger records. A fresh
+// fork's head is its base, so Fork stays current until a push moves it.
+it("a fresh fork is at Fork, and a push that moves the head brings it to Prove", async () => {
+  const L = await setup("progress");
+  await L.newItem("Show the steps", ["src/**"], "owner");
+  await L.claim("t1", A);
+  const at = async () => taskProgress(await L.item("t1"), []).steps.find((s) => s.state === "current")?.verb;
+  await L.setFork("t1", "progress--t1", H0, A);
+  expect(await L.item("t1")).toMatchObject({ base: H0, head: H0 });
+  expect(await at()).toBe("Fork");
+  await L.recordPush("t1", A, H1, H1);
+  expect(await at()).toBe("Prove");
 });
 
 // t168: a merged revision whose declared protected actions have not run asks
