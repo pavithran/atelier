@@ -1030,25 +1030,30 @@ async function standingFixture(over:Partial<{approval:string}>={}){
  const att=(entries:any[]=inbox,list:any[]=items)=>attentionFor('example',list as never,entries as never,offers,now);
  return {buildStanding,renderProject,renderProjectSettings,renderProjectTasks,p,items,evs,tasks,inbox,att,details:new Map([['t2',d]]),now};
 }
-it('the Overview tab leads with where the project stands: waiting with a brief, queued, merged and handoff notes; who holds what is the Tasks tab',async()=>{
+it('the Overview tab leads with where the project stands: waiting, running and merged from the standing; queued and handoff notes folded; who holds what is the Tasks tab',async()=>{
  const f=await standingFixture();
  const s=f.buildStanding(f.p,f.items,f.tasks,300,f.att(),f.details,f.now);
- const html=f.renderProject(f.p,f.items,[],'PAVI',s);
+ const html=f.renderProject(f.p,f.items,[],'PAVI',s,undefined,f.inbox);
  const sec=html.slice(html.indexOf('id="standing"'),html.indexOf('<details class="disclosure"'));
  expect(html.indexOf('id="standing"')).toBeLessThan(html.indexOf('<details class="disclosure"'));
  // The one list of who holds what is the Tasks tab's, not a second one here (finding 8).
  expect(sec).not.toContain('Held now');
- expect(sec).toContain('Waiting on the owner');expect(sec).toContain('all checks observed passing · brief, accept: 1 of 1 required checks passed at this revision and nothing blocks it.');
- expect(sec).not.toContain('bad');expect(sec).toContain('<span class="tag go">Accept</span>');
- expect(sec).toContain('Accept the revision, whose required checks all passed at its head. <a href="/p/example/t2">Open the task page</a>');
- expect(sec).toContain('Queued for a runner');expect(sec).toContain('for home codex/gpt-6 · sent by pavi');
+ expect(sec).toContain('<h2 id="wait-h">Waiting on you · 1</h2>');
+ expect(sec).toContain('<li><a class="row-id" href="/p/example/t2">t2</a><span class="row-title">Ready task</span><span class="state-word go">Ready to accept</span><span class="row-why">Accept the revision, whose required checks all passed at its head.</span></li>');
+ expect(sec).not.toContain('bad');
+ expect(sec).toContain('<h2 id="run-h">Running · 1</h2>');
+ expect(sec).toContain('<span class="row-who">claude-code/opus-5.5 · taken 1 d ago</span>');
+ expect(sec).toContain('<h2 id="merge-h">Last five merges</h2>');
+ expect((sec.match(/class="row-id" href="\/p\/example\/t(?:4|5|6|7|8|9|10)"/g)||[]).length).toBe(5);
+ expect(sec).toContain('Merged 10');
+ // Queued work and handoff notes fold under their figures.
+ const more=sec.slice(sec.indexOf('<details class="disclosure standing-more">'));
+ expect(more).toContain('<summary>1 task queued · <span class="merged-by-override">0 merges by override</span> · 1 handoff note</summary>');
+ expect(more).toContain('Queued for a runner');expect(more).toContain('for home codex/gpt-6 · sent by pavi');
  // A queued row shows the note's first-line preview; the whole note is the task page's (t480).
- expect(sec).toContain(' · &lt;i&gt;small&lt;/i&gt;…</span>');expect(sec).not.toContain('Second line of the findings');
- expect(sec).toContain('Last merges');
- expect((sec.match(/href="\/p\/example\/t(?:4|5|6|7|8|9|10)"/g)||[]).length).toBe(5);
- expect(sec).toContain('Merged 10');expect(sec).toContain('Merged &lt;u&gt;summary&lt;/u&gt;');
- expect(sec).toContain('Handoff notes');expect(sec).toContain('codex/gpt-6 to claude-code/opus-5.5');
- expect(sec).toContain('atelier status --project example');
+ expect(more).toContain(' · &lt;i&gt;small&lt;/i&gt;…</span>');expect(more).not.toContain('Second line of the findings');
+ expect(more).toContain('Handoff notes');expect(more).toContain('codex/gpt-6 to claude-code/opus-5.5');
+ expect(more).toContain('atelier status --project example');
  expect(sec).not.toContain('ControlPlane');
  const tasks=f.renderProjectTasks(f.p,f.items);
  expect(tasks).toContain('claude-code/opus-5.5');expect(tasks).toContain('codex/gpt-6');
@@ -1059,7 +1064,7 @@ it('the standing section and the Settings tab escape everything a person or agen
  const page=f.renderProject(f.p,f.items,[],'PAVI',s);
  const sec=page.split('id="standing"')[1].split('<details class="disclosure"')[0];
  for(const raw of ['<b>task</b>','<script>x</script>','<i>small</i>','<b>PAVI</b>','<u>summary</u>'])expect(page).not.toContain(raw);
- for(const esc of ['Read &lt;script&gt;x&lt;/script&gt; first','&lt;i&gt;small&lt;/i&gt;','Merged &lt;u&gt;summary&lt;/u&gt;'])expect(sec).toContain(esc);
+ for(const esc of ['Read &lt;script&gt;x&lt;/script&gt; first','&lt;i&gt;small&lt;/i&gt;','Held &lt;b&gt;task&lt;/b&gt;'])expect(sec).toContain(esc);
  // The ControlPlane policy the project records is drawn on the Settings tab, escaped.
  expect(page).not.toContain('ControlPlane');
  const settings=f.renderProjectSettings(f.p);
@@ -1108,11 +1113,12 @@ it('the standing data lists the last five merges newest first, with the agent\'s
  expect(s.live.map((l)=>l.id)).toEqual(['t1','t2']);
  expect(s.handoffs.map((h)=>h.note)).toEqual(['Read <script>x</script> first']);
  const quiet=f.buildStanding(f.p,[],new Map(),300,f.att([],[]),new Map(),f.now);
- expect(f.renderProject(f.p,[],[],'PAVI',quiet)).toContain('Nothing is waiting, queued or recently merged.');
- expect(f.renderProject(f.p,[],[],'PAVI',quiet)).not.toContain('<h3>');
+ const empty=f.renderProject(f.p,[],[],'PAVI',quiet);
+ for(const said of ['Nothing waits on you here.','Nobody is working on a task.','Nothing merged yet.','None pending. Approvals are in <a href="/p/example/ship">Ship</a>.'])expect(empty).toContain(said);
+ expect(empty).not.toContain('<h3>');expect(empty).not.toContain('class="state-grid"');
 });
 
-it('the Overview waits only on the owner\'s calls, one per task; the pipeline and overlaps are counted in disclosures',async()=>{
+it('the Overview waits only on the owner\'s calls, one per task; the pipeline is the grid of counts and overlaps fold',async()=>{
  const f=await standingFixture();
  const inbox=[
   {project:'example',itemId:'t2',title:'Ready task',kind:'accept' as const,reason:'all checks observed passing',weight:100},
@@ -1124,13 +1130,86 @@ it('the Overview waits only on the owner\'s calls, one per task; the pipeline an
  expect(s.waiting[0].why).toBe('all checks observed passing');
  expect(s.pipeline).toEqual([{stage:'building',count:1},{stage:'queued',count:1}]);
  expect(s.overlaps).toEqual([['t1','t2']]);
- const html=f.renderProject(f.p,f.items,[],'PAVI',s);
+ const html=f.renderProject(f.p,f.items,[],'PAVI',s,undefined,inbox);
  const sec=html.split('id="standing"')[1].split('<details class="disclosure')[0];
- expect(sec).toContain('1 task waiting on you here');
- expect(sec).toContain('all checks observed passing · brief, accept: ');
+ expect(sec).toContain('<p class="overview-figures">10 tasks · 1 waiting on you · last merge 1 d ago</p>');
+ expect(sec).toContain('Waiting on you · 1');
  expect(sec).not.toContain('hand it off or release it');expect(sec).not.toContain('scope overlaps');
- expect(html).toContain('2 tasks in the pipeline: 1 building · 1 queued for a runner</summary>');
+ // The stale notice qualifies Working on the grid and the holder's row.
+ expect(sec).toContain('<span class="state-label">Working (1 stale)</span>');
+ expect(sec).toContain('· <span class="state-word caution">stale</span>');
  expect(html).toContain('1 pair of tasks with overlapping scopes</summary>');
+});
+// t546: the counts by state as the canvas draws them, each a link to the
+// tasks it counts; a submitted task is split by its notice.
+it('the Overview counts every task once by its state word and links each count to the tasks it counts',async()=>{
+ const {stateWords,renderProjectTasks}=await import('../src/ui');
+ const f=await standingFixture();
+ const base=f.items[0] as any;
+ const items=[
+  ...f.items,
+  {...base,id:'t11',title:'Protected change',state:'submitted',owner:'codex/gpt-6'},
+  {...base,id:'t12',title:'Failing change',state:'submitted',owner:'codex/gpt-6'},
+  {...base,id:'t13',title:'Waiting checks',state:'submitted',owner:'codex/gpt-6'},
+  {...base,id:'t14',title:'Accepted',state:'accepted',owner:'codex/gpt-6'},
+  {...base,id:'t15',title:'Stuck',state:'blocked',owner:'codex/gpt-6',blocked:{by:'pavi',reason:'keys',at:base.createdAt,from:'claimed'}},
+  {...base,id:'t16',title:'Dropped',state:'abandoned',owner:null},
+ ] as never[];
+ const inbox=[...f.inbox,
+  {project:'example',itemId:'t11',title:'x',kind:'assess' as const,reason:'protected',weight:80},
+  {project:'example',itemId:'t12',title:'x',kind:'failing' as const,reason:'npm test failed',weight:20},
+ ];
+ const words=stateWords(items,inbox);
+ expect(Object.fromEntries(words)).toEqual({t1:'working',t2:'ready-to-accept',t3:'open',t4:'merged',t5:'merged',t6:'merged',t7:'merged',t8:'merged',t9:'merged',t10:'merged',
+  t11:'needs-review',t12:'checks-failed',t13:'in-review',t14:'ready-to-merge',t15:'blocked',t16:'closed'});
+ // Without the notices a submitted task is In review, never a guessed word.
+ expect(stateWords(items,null).get('t11')).toBe('in-review');
+ const s=f.buildStanding(f.p,items,f.tasks,300,f.att(inbox,items),f.details,f.now);
+ const html=f.renderProject(f.p,items,[],'PAVI',s,undefined,inbox);
+ const grid=html.split('<ul class="state-grid" aria-label="Tasks by state">')[1].split('</ul>')[0];
+ const cells=[...grid.matchAll(/<a href="\/p\/example\/tasks\?state=([a-z-]+)"><span class="state-n (\w+)">(\d+)<\/span><span class="state-label">([^<]+)<\/span><\/a>/g)].map((m)=>[m[1],m[2],Number(m[3]),m[4]]);
+ expect(cells).toEqual([
+  ['open','neutral',1,'Ready to start'],['working','neutral',1,'Working'],['ready-to-accept','go',1,'Ready to accept'],
+  ['needs-review','ask',1,'Needs review'],['checks-failed','fault',1,'Checks failed'],['in-review','neutral',1,'In review'],
+  ['ready-to-merge','go',1,'Ready to merge'],['blocked','caution',1,'Blocked'],['merged','done',7,'Merged'],['closed','done',1,'Closed'],
+ ]);
+ expect(cells.reduce((n,c)=>n+(c[2] as number),0)).toBe(items.length);
+ // Each count's link lists exactly the tasks it counts.
+ const merged=renderProjectTasks(f.p,items,'PAVI',undefined,{word:'merged',words});
+ expect(merged).toContain('<h2 id="state-h">Merged · 7</h2>');
+ expect([...merged.matchAll(/href="\/p\/example\/(t\d+)"/g)].map((m)=>m[1]).sort()).toEqual(['t10','t4','t5','t6','t7','t8','t9']);
+ expect(merged).toContain('<a href="/p/example/tasks">All tasks</a>');
+ const review=renderProjectTasks(f.p,items,'PAVI',undefined,{word:'needs-review',words});
+ expect([...review.matchAll(/href="\/p\/example\/(t\d+)"/g)].map((m)=>m[1])).toEqual(['t11']);
+ expect(renderProjectTasks(f.p,items,'PAVI',undefined,{word:'integrated',words})).toContain('No task is in this state.');
+ // Running links to every working task, and Last five merges to the Activity tab.
+ expect(html).toContain('<a href="/p/example/tasks?state=working">All 1 working</a>');
+ expect(html).toContain('<a href="/p/example/flow">Activity</a>');
+ expect(html).toContain('<a href="/decisions">All 2 waiting</a>');
+});
+it('the Overview lists at most five waiting and five running, and a ship request under Ship requests',async()=>{
+ const f=await standingFixture();
+ const base=f.items[0] as any;
+ const held=[1,2,3,4,5,6,7].map((n)=>({...base,id:`h${n}`,title:`Held ${n}`,state:'claimed',owner:`codex/gpt-${n}`,lastPushAt:`2026-10-05T1${n}:00:00.000Z`}));
+ const blocked=[1,2,3,4,5,6].map((n)=>({...base,id:`b${n}`,title:`Blocked ${n}`,state:'blocked',owner:'codex/gpt-6',blocked:{by:'pavi',reason:'keys',at:base.createdAt,from:'claimed'}}));
+ const shipped={...base,id:'s1',title:'Shipped <x>',state:'merged',owner:null,acceptedHead:head};
+ const items=[...held,...blocked,shipped] as never[];
+ const inbox=[{project:'example',itemId:'s1',title:'Shipped',kind:'ship' as const,reason:'merged with deploy not yet run',weight:75}];
+ const s=f.buildStanding(f.p,items,new Map(),300,f.att(inbox,items),new Map(),new Date('2026-10-05T18:00:00Z'));
+ const html=f.renderProject(f.p,items,[],'PAVI',s,undefined,inbox);
+ const wait=html.split('aria-labelledby="wait-h"')[1].split('</section>')[0];
+ expect(wait).toContain('Waiting on you · 7');
+ expect((wait.match(/<li>/g)||[]).length).toBe(5);
+ expect(wait).toContain('<a href="/decisions">All 7 waiting</a>');
+ const run=html.split('aria-labelledby="run-h"')[1].split('</section>')[0];
+ expect(run).toContain('Running · 7');
+ // Newest push first, and when.
+ expect([...run.matchAll(/href="\/p\/example\/(h\d)"/g)].map((m)=>m[1])).toEqual(['h7','h6','h5','h4','h3']);
+ expect(run).toContain('codex/gpt-7 · pushed 1 h ago');
+ const ship=html.split('aria-labelledby="ship-h"')[1].split('</section>')[0];
+ expect(ship).toContain('href="/p/example/s1">s1</a><span class="row-title">Shipped &lt;x&gt;</span>');
+ expect(ship).toContain('<a href="/p/example/ship">Open Ship</a>');
+ expect(ship).not.toContain('None pending');
 });
 it('since when comes from the task\'s own claim or handoff, and a record that cannot say is reported, not guessed',async()=>{
  const f=await standingFixture();
