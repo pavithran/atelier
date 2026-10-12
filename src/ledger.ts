@@ -59,7 +59,7 @@ import { gateServesTier, pickTierReviewer } from "./review/tier.ts";
 import type { LargeRef } from "./large.ts";
 import { linkVerdict, type Contradicts } from "./models/judgement.ts";
 import { queued as queuedStanding, refreshStanding, type RefreshStanding } from "./refresh/standing.ts";
-import { afterSettle, enqueue, HASH, headMoved, leaseLive, reportedLease, resultKey, takeLease, type RefreshJob, type RefreshLease, type RefreshResult, type RefreshTarget } from "./refresh/queue.ts";
+import { afterRelease, afterSettle, enqueue, HASH, headMoved, leaseLive, renewLease, reportedLease, resultKey, takeLease, type RefreshJob, type RefreshLease, type RefreshResult, type RefreshTarget } from "./refresh/queue.ts";
 import { parseReport } from "./refresh/mechanical.ts";
 import { pickResolver } from "./refresh/resolver.ts";
 import { refreshReview } from "./refresh/review.ts";
@@ -5964,6 +5964,40 @@ export class Ledger extends DurableObject<Env> {
     if (!target?.lease || target.lease.id !== lease) return false;
     this.saveRefreshTarget(id, { ...target, lease: { ...target.lease, tokenId } });
     return true;
+  }
+
+  // The leaseholder keeps its lease through a long run (a resolver's
+  // harness, the required checks): its term starts again from now. Refused
+  // once the lease is no longer its own (it lapsed and another runner took
+  // it, or it settled), so the job stops rather than report under it.
+  renewRefreshLease(id: string, actor: string, leaseId: string): RefreshLease {
+    const target = this.refreshTargetOf(id);
+    const lease = target?.lease;
+    if (!lease || lease.id !== leaseId) throw new RuleError("lease_lost", `${id} has no refresh lease ${leaseId}; it lapsed or another runner took it`, 409);
+    if (lease.by !== actor) throw new RuleError("not_leaseholder", `${id}'s refresh lease is ${lease.by}'s, not ${actor}'s`, 403);
+    const next = renewLease(lease, Date.now());
+    this.saveRefreshTarget(id, { ...target!, lease: next });
+    return next;
+  }
+
+  // The leaseholder gives its lease back with no outcome: a provider's
+  // usage limit stopped its harness, or the job failed before it could
+  // report anything else (a git or detector failure, say). The target is as
+  // it was before the lease (afterRelease), the reason is in the task's log,
+  // and the lease's token is revoked. A lease already gone answers
+  // released: false, so a retry does no harm; one pushing or checking a
+  // recorded head is not given back, since its head is already reported.
+  releaseRefreshLease(id: string, actor: string, leaseId: string, reason: string, providerLimit = false): { item: Item; released: boolean; revoke: string | null } {
+    const at = new Date().toISOString();
+    const item = this.item(id);
+    const target = this.refreshTargetOf(id);
+    const lease = target?.lease;
+    if (!lease || lease.id !== leaseId) return { item, released: false, revoke: null };
+    if (lease.by !== actor) throw new RuleError("not_leaseholder", `${id}'s refresh lease is ${lease.by}'s, not ${actor}'s`, 403);
+    if (lease.checking) throw new RuleError("refresh_recorded", `${id}'s refresh is recorded at ${lease.checking.slice(0, 8)} and waits for its checks; report them with refresh-checked`, 409);
+    this.saveRefreshTarget(id, afterRelease(target!, lease, at));
+    this.log(id, actor, "refresh.released", { job: lease.job, lease: lease.id, mainHead: lease.mainHead, head: lease.expectedHead, reason: cleanReason(reason), ...(providerLimit ? { providerLimit: true } : {}) }, at);
+    return { item, released: true, revoke: lease.tokenId ?? null };
   }
 
   // The leaseholder is about to push `head`, the refreshed merge, to the

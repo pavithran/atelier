@@ -2260,6 +2260,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // lease is taken; and a read token for main. A runner-scoped credential gets
       // no write token for a fork it does not hold, so it takes neither job.
       if (c.token?.runner) throw runnerDenied(c.token);
+      // The leaseholder renews its lease through a long run, or gives it
+      // back with no outcome (a provider's usage limit, a failure before any
+      // report), and the lease's token is revoked.
+      if (typeof body.renew === "string") return json({ lease: await L.renewRefreshLease(id, actor, body.renew) });
+      if (typeof body.release === "string") {
+        const { revoke: token, ...released } = await L.releaseRefreshLease(id, actor, body.release, String(body.reason ?? ""), body.providerLimit === true);
+        if (token) await revoke(env, released.item.fork, token);
+        return json(released);
+      }
       const job = body.job === "resolve" ? "resolve" as const : "refresh" as const;
       const { revoke: lapsed, ...leased } = await L.leaseRefresh(id, actor, typeof body.runner === "string" ? body.runner.slice(0, 80) : null, job);
       if (lapsed) await revoke(env, leased.item.fork, lapsed);

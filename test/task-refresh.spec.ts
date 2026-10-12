@@ -308,3 +308,49 @@ it("the refreshed route verifies the merge on the fork — its head, its parents
   res = await call(name, `items/${id}/evidence`, GPT, evidence, merged([H1, M1]));
   expect(await errorOf(res)).toBe("not_owner");
 });
+
+it("the leaseholder renews its lease through a long run, and gives it back with no outcome: a refresh is queued again, a resolver's goes back to it", async () => {
+  const L = await setup("tr-release", { resolvers: [GPT] });
+  const id = await task(L, "Released lease", "submitted");
+  await L.noteMainHead(M1);
+  const l = await lease(L, id);
+  // Renewed: the term starts again from now, only by its holder and under its id.
+  const renewed = await L.renewRefreshLease(id, INTEGRATOR, l.id);
+  expect(Date.parse(renewed.until)).toBeGreaterThanOrEqual(Date.parse(l.until));
+  expect(renewed.id).toBe(l.id);
+  await refusal(L.renewRefreshLease(id, GPT, l.id), "not_leaseholder");
+  await refusal(L.renewRefreshLease(id, INTEGRATOR, "other"), "lease_lost");
+  // Given back (a detector's failure, say): the reason is logged, the target queued, and a retry does nothing.
+  await refusal(L.releaseRefreshLease(id, GPT, l.id, "x"), "not_leaseholder");
+  expect((await L.releaseRefreshLease(id, INTEGRATOR, l.id, "comparing moved code failed")).released).toBe(true);
+  expect((await queue(L))[0].target).toMatchObject({ state: "queued", lease: null });
+  expect((await events(L, id)).find((e) => e.kind === "refresh.released")?.data).toMatchObject({ job: "refresh", lease: l.id, reason: "comparing moved code failed" });
+  expect((await L.releaseRefreshLease(id, INTEGRATOR, l.id, "again")).released).toBe(false);
+  await refusal(L.renewRefreshLease(id, INTEGRATOR, l.id), "lease_lost");
+  // A resolver's lease given back for a provider's limit leaves the conflict waiting for the same resolver at the same head.
+  const again = await lease(L, id);
+  expect((await L.taskRefreshFailed(id, INTEGRATOR, { ...report(again), outcome: "mechanical", reason: "imports" }, [offer("codex", "gpt-6-astra")])).result.resolver).toBe(GPT);
+  const r = await lease(L, id, GPT, "resolve");
+  const back = await L.releaseRefreshLease(id, GPT, r.id, "codex usage limit: usage limit reached", true);
+  expect(back.released).toBe(true);
+  expect((await queue(L))[0].target).toMatchObject({ state: "resolve", resolver: GPT, expectedHead: H1, lease: null });
+  expect((await events(L, id)).find((e) => e.kind === "refresh.released" && (e.data as { lease?: string }).lease === r.id)?.data).toMatchObject({ job: "resolve", providerLimit: true });
+  const resumed = await lease(L, id, GPT, "resolve");
+  expect(resumed.id).not.toBe(r.id);
+  // A lease checking its recorded head is not given back: its checks are reported instead.
+  await L.refreshPushing(id, GPT, { ...report(resumed), head: R2 });
+  await L.taskRefreshed(id, GPT, { ...report(resumed), head: R2, agent: GPT, transformations: ["import-union"] }, true);
+  await refusal(L.releaseRefreshLease(id, GPT, resumed.id, "check crashed"), "refresh_recorded");
+});
+
+it("a resolver's lease given back while main moved on queues the newer main head", async () => {
+  const L = await setup("tr-release-newer", { resolvers: [GPT] });
+  const id = await task(L, "Newer main", "submitted");
+  await L.noteMainHead(M1);
+  const l = await lease(L, id);
+  await L.taskRefreshFailed(id, INTEGRATOR, { ...report(l), outcome: "mechanical", reason: "imports" }, [offer("codex", "gpt-6-astra")]);
+  const r = await lease(L, id, GPT, "resolve");
+  await L.noteMainHead(M2);
+  await L.releaseRefreshLease(id, GPT, r.id, "limit", true);
+  expect((await queue(L))[0].target).toMatchObject({ state: "queued", mainHead: M2, resolver: null });
+});

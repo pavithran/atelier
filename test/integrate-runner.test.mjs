@@ -144,7 +144,7 @@ test("runIntegrate treats only exit 2 from atelier check as failing checks; anot
 });
 
 test("the runner captures integration-failed's and check's output, as it does the other commands it reads", () => {
-  for (const command of ["integration-failed", "check", "integrated", "read-token", "refreshed", "refresh-failed"]) assert.equal(readsOutput([command]), true, command);
+  for (const command of ["integration-failed", "check", "integrated", "read-token", "refreshed", "refresh-failed", "refresh-lease", "refresh-pushing", "refresh-checked"]) assert.equal(readsOutput([command]), true, command);
   assert.equal(readsOutput(["release"]), false);
 });
 

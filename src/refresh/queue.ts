@@ -159,3 +159,22 @@ export function headMoved(target: RefreshTarget, head: string | null, at: string
   if (!["resolve", "waiting", "returned"].includes(target.state) || !target.expectedHead || target.expectedHead === head) return target;
   return { ...target, state: "queued", updatedAt: at, expectedHead: null, resolver: null, wait: null, report: null };
 }
+
+// The lease its holder renews while its job runs long (a resolver's
+// harness, the required checks at the refreshed head): its term starts
+// again from now, so another runner does not take a lease still at work.
+export function renewLease(lease: RefreshLease, now: number): RefreshLease {
+  return { ...lease, until: new Date(now + LEASE_MS).toISOString() };
+}
+
+// The target after its holder gave the lease back with no outcome (a
+// provider's usage limit stopped its harness, or the job failed before it
+// could say anything else): as it was before the lease was taken, so the
+// same work is offered again. A resolve lease goes back to its resolver at
+// the head its conflicts were found at; a refresh lease, or one overtaken
+// by a newer main head, is queued.
+export function afterRelease(target: RefreshTarget, lease: RefreshLease, at: string): RefreshTarget {
+  const base = { ...target, lease: null, updatedAt: at, expectedHead: null, resolver: null, wait: null, report: null };
+  if (lease.job === "resolve" && target.mainHead === lease.mainHead) return { ...base, state: "resolve", expectedHead: lease.expectedHead, resolver: lease.by };
+  return { ...base, state: "queued" };
+}
