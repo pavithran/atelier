@@ -138,6 +138,7 @@ async function run(t, setup, argv, env = {}) {
     if (agent && !agentRoute(req.method, parts)) { status = 403; body = { error: "owner_token_required", detail: `${req.method} ${req.url} needs the owner token` }; }
     else if (req.url === "/api/config") body = { actor: "codex/gpt-6-astra", ownerActor: "owner" };
     else if (req.url.endsWith("/standing")) body = state.standing ?? standing();
+    else if (req.url === "/api/projects/demo") body = { project: { policy: state.policy ?? { checks: [], protected: [] } } };
     else if (req.url.endsWith("/baseline-head")) body = { head: git(dir, "--git-dir", bare, "rev-parse", "refs/heads/main") };
     else { status = 404; body = { error: "unexpected", detail: `${req.method} ${req.url}` }; }
     res.writeHead(status, { "content-type": "application/json" });
@@ -163,6 +164,21 @@ test("status --project --json prints the standing record and the checkout line f
   assert.deepEqual(read.project.live.map((i) => [i.id, i.since]), [["t1", "2026-10-05T09:00:00.000Z"]]);
   assert.match(read.checkout, /^Checkout: /);
   assert.equal(read.checkout.split("\n").length, 1);
+});
+
+for (const json of [false, true]) test(`status --project reports instruction disagreements${json ? " in JSON" : " in text"} for an agent`, async (t) => {
+  const r = await run(t, ({ checkout }) => {
+    writeFileSync(join(checkout, "AGENTS.md"), "# Rules\nReview is optional for non-authority changes.\n");
+    return { policy: { checks: [], protected: [], execution: {
+      allowed_classes: ["coordinated"], direct: { enabled: false, allowed_path_patterns: [] }, protected_path_patterns: [],
+    } } };
+  }, ["status", "--project", "demo", ...(json ? ["--json"] : [])], { ATELIER_TOKEN: "atl_agent-token", ATELIER_ACTOR: "codex/gpt-6-astra" });
+  assert.equal(r.status, 0, r.output);
+  const text = json ? JSON.parse(r.output).mismatches.join("\n") : r.output;
+  assert.match(text, /AGENTS\.md:2 calls review optional/);
+  assert.match(text, /a coordinated change needs a review from a different model than every contributor/);
+  assert.ok(r.seen.includes("GET /api/projects/demo"));
+  assert.ok(r.seen.every((request) => request.startsWith("GET ")));
 });
 
 for (const failed of ["tasks", "notices"]) {
@@ -199,14 +215,14 @@ test("status --project prints where it stands and says the checkout is in step, 
   assert.match(r.output, /Waiting on /);
   assert.match(r.output, /\nCheckout: in step\. main @ [0-9a-f]{8} holds the baseline's head [0-9a-f]{8}\.(?:\n|$)/);
   // The baseline's head is read from the server; no read token is minted.
-  assert.deepEqual(r.seen, ["GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head"]);
+  assert.deepEqual(r.seen, ["GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head", "GET /api/projects/demo"]);
 });
 
 test("status --project with an agent token reads the baseline's head through a route the allowlist admits", async (t) => {
   const r = await run(t, () => null, undefined, { ATELIER_TOKEN: "atl_agent-token", ATELIER_ACTOR: "codex/gpt-6-astra" });
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /\nCheckout: in step\. main @ [0-9a-f]{8} holds the baseline's head [0-9a-f]{8}\.(?:\n|$)/);
-  assert.deepEqual(r.seen, ["GET /api/config", "GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head"]);
+  assert.deepEqual(r.seen, ["GET /api/config", "GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head", "GET /api/projects/demo"]);
 });
 
 test("status --project says the checkout is out of step when the baseline has moved on", async (t) => {

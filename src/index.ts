@@ -1,3 +1,4 @@
+import { reportLimits, stuckReport, type Snapshot } from "./stuck/report.ts";
 import { parsePostMerge, currentStep } from "./post-merge.ts";
 import { runnerGitRequest } from "./runner-git.ts";
 import { assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed } from "./rules.ts";
@@ -15,7 +16,7 @@ import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, 
 import { briefFor, cleanSummary } from "./brief.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
-import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderStudio, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
+import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanNote, cleanStatus, POOL_FAMILIES, type ModelEntry, type PoolFamily } from "./models/pool";
@@ -327,7 +328,8 @@ function serverToken(env: Env): string | undefined {
   return (env as unknown as { ATELIER_TOKEN?: string }).ATELIER_TOKEN;
 }
 
-// Browser sessions. Signing in with the owner token issues a fresh random id,
+// Browser sessions. Signing in — with the owner token, or behind Access with
+// the owner's assertion (accessSignIn) — issues a fresh random id,
 // sent only in the cookie; the index Durable Object stores its hash with an
 // expiry, as it stores agent tokens, and every browser request looks the hash
 // up there. The server enforces the expiry, so a copied cookie stops working
@@ -352,6 +354,35 @@ async function endSession(req: Request, env: Env): Promise<string> {
   const id = COOKIE.exec(req.headers.get("cookie") ?? "")?.[1];
   if (id) await index(env).endSession(await sha256(id));
   return `atelier=; ${cookieFlags}; Max-Age=0`;
+}
+
+// Whether a browser request came from another site: a foreign Origin, or
+// Fetch Metadata saying so. A request with neither header (no browser sent
+// it) is judged by the rest of the check, as a form post without Origin is.
+function crossSite(req: Request, url: URL): boolean {
+  const origin = req.headers.get("origin");
+  if (origin !== null && origin !== url.origin) return true;
+  const site = req.headers.get("sec-fetch-site");
+  return site !== null && site !== "same-origin" && site !== "none";
+}
+
+// Signing in through Cloudflare Access (t534): called only for a request
+// whose assertion the entry has verified as the owner's and that holds no
+// session. A same-origin request starts the 30-day session and is answered
+// by `serve` with the cookie set; logout ends it as any other. A request from
+// another site starts nothing: a post is refused, and a page load — the hop
+// back from Access's sign-in is one — gets a page that reloads `path` from
+// this origin, where the session starts.
+async function accessSignIn(req: Request, env: Env, url: URL, path: string, serve: () => Promise<Response>): Promise<Response> {
+  if (crossSite(req, url)) {
+    if (req.method !== "GET" && req.method !== "HEAD") return html("Cross-origin form refused.", 403);
+    return html(renderSignInContinue(/^\/(?![/\\])/.test(path) ? path : "/home"));
+  }
+  const cookie = await startSession(env, Date.now());
+  const served = await serve();
+  const res = new Response(served.body, served);
+  res.headers.append("set-cookie", cookie);
+  return res;
 }
 
 async function authorised(req: Request, env: Env): Promise<"api" | "ui" | AgentToken | null> {
@@ -1081,6 +1112,38 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (!ref) throw new RuleError("not_found", "no such route", 404);
   const project = ref.name;
   const L = ledger(env, ref.key);
+
+  if (parts[2] === "stuck" && parts.length === 3 && m === "GET") {
+    requireOwner(env, actor);
+    let limits;
+    try { limits = reportLimits(Object.fromEntries(c.url.searchParams)); }
+    catch (error) { throw new RuleError("bad_limit", String((error as Error).message), 400); }
+    const now = new Date(), unavailable: string[] = [];
+    async function read<T>(source: string, action: () => Promise<T>): Promise<T | null> {
+      try { return await action(); }
+      catch (error) { unavailable.push(`${source}: ${String((error as Error).message ?? error)}`); return null; }
+    }
+    const [snapshot, offers, runs, projects] = await Promise.all([
+      read<Snapshot>("project ledger", () => L.stuckSnapshot()),
+      read("runner offers", () => index(env).runnerOffers()),
+      read("run reports", () => index(env).runs(Number.MAX_SAFE_INTEGER)),
+      read("project index", () => index(env).projects()),
+    ]);
+    if (snapshot) await Promise.all(snapshot.workflows.map(async (w) => {
+      const status = await read(`Workflow ${w.record.instance}`, async () => (await (await env.LANDING_WORKFLOW.get(w.record.instance)).status()).status);
+      w.status = status ?? "unknown";
+      if (status === "unknown") unavailable.push(`Workflow ${w.record.instance}: indeterminate status`);
+    }));
+    const active: string[] = [];
+    let jobsAvailable = projects !== null;
+    if (projects) await Promise.all(projects.map(async (p) => {
+      const other = p.key === ref.key ? snapshot : await read<Snapshot>(`active jobs ${p.name}`, () => ledgerOf(env, p).stuckSnapshot());
+      if (!other) { jobsAvailable = false; return; }
+      for (const i of other.items) if (i.runner && i.owner && i.state === "claimed") active.push(i.runner);
+      for (const r of other.reviews) if (r.runner) active.push(r.runner);
+    }));
+    return json(stuckReport(project, c.url.origin, now, limits, snapshot, offers, runs, jobsAvailable ? active : null, unavailable));
+  }
 
   if (parts[2] === "reviewers") {
     requireOwner(env, actor);
@@ -3055,17 +3118,26 @@ export default {
       // Cloudflare Access in front of the owner's pages (src/access.ts). When
       // the server names its Access team, application and owner, every route
       // that needs a sign-in must carry an Access assertion the Worker verifies
-      // against the team's published keys and the owner's email — /login and its
-      // token form too, so the server token can no longer be tried, let alone
+      // against the team's published keys and the owner's email — /login too,
+      // so the server token can no longer be tried, let alone
       // guessed, without Access's sign-in first (the open form the 2026-10-06
       // audit noted). Never the /api routes, which take bearer tokens the CLI
-      // sends without passing Access; the sign-out form stays open.
+      // sends without passing Access; the sign-out form stays open. A request
+      // that passes is the owner's sign-in, and starts a session (t534).
       const parts = pathname.split("/").filter(Boolean).map(decodeURIComponent);
       const access = accessSettings(env as unknown as Record<string, string | undefined>);
       if (access && parts[0] !== "api" && pathname !== "/logout" && !(await accessVouches(req, access))) {
         return html(renderError("This page is behind Cloudflare Access, whose sign-in this request did not carry. Sign in at the Access prompt and retry.", ""), 401);
       }
       if (pathname === "/login") {
+        // Behind Access the assertion just verified is the owner's sign-in,
+        // and the token form would prove nothing more (t534): /login starts
+        // the session at once, or keeps the one the browser holds, and goes
+        // on to Home. Never for a request from another site (accessSignIn).
+        if (access) {
+          if (await authorised(req, env) === "ui") return Response.redirect(new URL("/home", url).toString(), 303);
+          return await accessSignIn(req, env, url, "/home", async () => new Response(null, { status: 303, headers: { location: "/home" } }));
+        }
         if (req.method === "POST") {
           // A cross-site form post carries another origin and is refused. A
           // post without an Origin header did not come from a browser form,
@@ -3188,6 +3260,12 @@ export default {
         const projectArea = parts[0] === "p" && parts.length >= 2;
         const knownUI = parts.length === 0 || projectArea || ["home", "models", "usage", "projects", "flow", "history", "studio", "decisions", "how", "ui"].includes(parts[0]);
         if (!knownUI) return html("Not found.", 404);
+        // Behind Access, a page the owner opens without a session starts one
+        // and is served as signed in (t534). A form post is not a sign-in:
+        // it is sent to /login, as before, which starts the session there.
+        if (access && (req.method === "GET" || req.method === "HEAD")) {
+          return await accessSignIn(req, env, url, url.pathname + url.search, () => ui({ env, req, url, actor: ownerActor(env), body: null, signedIn: true, access: true }, parts));
+        }
         return Response.redirect(new URL("/login", url).toString(), 303);
       }
       if (typeof how === "object") return how.runner ? json({ error: "runner_forbidden", detail: runnerDenied(how).message }, 403) : html("Agent tokens cannot use browser routes.", 403);

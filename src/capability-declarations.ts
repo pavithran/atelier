@@ -20,4 +20,5 @@ export const CAPABILITY_DECLARATIONS = [
   { name: "reviews.criteria-review.v1", summary: "the criteria-review routes (request, claim, verdict, failure and finding resolution) that review a task's acceptance criteria before its build, and the project policy's requireCriteriaReview" },
   { name: "land.triage.v1", level: 28, summary: "the landing's triage step: the land step route records a triage, a --no-triage bypass and an --override-triage with the head, merge base and criteria binding, the project policy carries the triage model, and a landing Workflow triages before the review" },
   { name: "land.post-merge.v1", level: 27, summary: "durable post-merge runs: the project policy's owner-approved postMerge steps, the post-merge run routes (status, prepare, start, command, finish, retry, skip, reconcile) and the merge and landing reservations that block later merges until a run completes" },
+  { name: "projects.stuck.v1", summary: "the owner-only read-only stuck report, GET /projects/:p/stuck, which atelier stuck reads" },
 ] as const;
