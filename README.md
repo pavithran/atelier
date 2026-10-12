@@ -323,7 +323,7 @@ outside a registered checkout. `done` runs inside the task workspace. It
 pushes, runs the required checks and submits the summary only after checks
 pass and the revision remains unchanged. It stops at the first failed step
 and names that step. The individual steps remain available: `claim`,
-`push`, `update` (rebase onto the baseline), `check [--sandbox] [--merged]`,
+`push`, `update` (take the baseline: a merge that regenerates declared outputs, or a rebase), `check [--sandbox] [--merged]`,
 `report` (a Reported claim), `submit`, `handoff`, `release`, and `block`
 with `unblock` for a task waiting on something outside it.
 

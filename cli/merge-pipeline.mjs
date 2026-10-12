@@ -15,7 +15,7 @@
 //      key through the records driver; generated outputs are left in
 //      conflict by theirs, with no markers.
 //   3. The result is checked against the declarations in the merged tree
-//      (cli/merge-driver.mjs, bin/merge-manifest.json): every declared path
+//      (src/merge-declarations.ts, bin/merge-manifest.json): every declared path
 //      routed to its driver, records well formed with unique keys, registry
 //      keys unique. A source conflict, a record conflict or a duplicate key
 //      stops here, before anything is generated, so no output is written
@@ -34,11 +34,16 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
-import { GENERATED_DRIVER, MANIFEST_PATH, RECORDS_DRIVER, parseManifest, readRecords } from "./merge-driver.mjs";
+import { GENERATED_DRIVER, MANIFEST_PATH, RECORDS_DRIVER, generatorsToRun as pickFor, parseManifest, readRecords } from "../src/merge-declarations.ts";
 import { globToRegExp } from "../src/rules.ts";
 
 export { MANIFEST_PATH, GENERATED_DRIVER, RECORDS_DRIVER };
 const DRIVER_SOURCE = join(dirname(fileURLToPath(import.meta.url)), "merge-driver.mjs");
+// The declarations the driver reads, copied beside it under the name its
+// copy looks for (DECLARATIONS_COPY in cli/merge-driver.mjs).
+const DECLARATIONS_SOURCE = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "merge-declarations.ts");
+const DRIVER_FILES = [["merge-driver.mjs", DRIVER_SOURCE], ["merge-declarations.mts", DECLARATIONS_SOURCE]];
+const staleCopies = (home) => DRIVER_FILES.filter(([name, source]) => { const copy = join(home, name); return !existsSync(copy) || !readFileSync(copy).equals(readFileSync(source)); }).map(([name]) => `the merge driver copy ${join(home, name)}`);
 const GENERATOR_TIMEOUT_MS = Number(process.env.ATELIER_GENERATOR_TIMEOUT ?? 20 * 60_000);
 
 // Git as the pipeline runs it by default: local commands only, never a
@@ -80,7 +85,7 @@ function mergeSettings(driver, node) {
 export function mergeConfigProblems(dir, { git = localGit, node = process.execPath } = {}) {
   const home = atelierGitDir(dir, git), driver = join(home, "merge-driver.mjs");
   const problems = [];
-  if (!existsSync(driver) || !readFileSync(driver).equals(readFileSync(DRIVER_SOURCE))) problems.push(`the merge driver copy ${driver}`);
+  problems.push(...staleCopies(home));
   for (const [key, value] of mergeSettings(driver, node)) {
     const r = git(["config", "--local", "--get", key], { cwd: dir, allowFail: true });
     if (r.status !== 0 || r.stdout.replace(/\n$/, "") !== value) problems.push(key);
@@ -96,7 +101,7 @@ export function installMergeConfig(dir, { git = localGit, node = process.execPat
   if (!missing.length) return [];
   const home = atelierGitDir(dir, git), driver = join(home, "merge-driver.mjs");
   mkdirSync(home, { recursive: true });
-  copyFileSync(DRIVER_SOURCE, driver);
+  for (const [name, source] of DRIVER_FILES) copyFileSync(source, join(home, name));
   for (const [key, value] of mergeSettings(driver, node)) git(["config", "--local", key, value], { cwd: dir });
   const left = mergeConfigProblems(dir, { git, node });
   if (left.length) throw new Error(`the merge configuration could not be installed in ${dir}: ${left.join(", ")}`);
@@ -108,8 +113,7 @@ export function installMergeConfig(dir, { git = localGit, node = process.execPat
 async function installMergeConfigAwaiting(dir, git, node = process.execPath) {
   const home = join(await git(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: dir }), "atelier"), driver = join(home, "merge-driver.mjs");
   const problems = async () => {
-    const left = [];
-    if (!existsSync(driver) || !readFileSync(driver).equals(readFileSync(DRIVER_SOURCE))) left.push(`the merge driver copy ${driver}`);
+    const left = staleCopies(home);
     for (const [key, value] of mergeSettings(driver, node)) {
       const r = await git(["config", "--local", "--get", key], { cwd: dir, allowFail: true });
       if (r.status !== 0 || String(r.stdout ?? "").replace(/\n$/, "") !== value) left.push(key);
@@ -119,7 +123,7 @@ async function installMergeConfigAwaiting(dir, git, node = process.execPath) {
   const missing = await problems();
   if (!missing.length) return [];
   mkdirSync(home, { recursive: true });
-  copyFileSync(DRIVER_SOURCE, driver);
+  for (const [name, source] of DRIVER_FILES) copyFileSync(source, join(home, name));
   for (const [key, value] of mergeSettings(driver, node)) await git(["config", "--local", key, value], { cwd: dir });
   const left = await problems();
   if (left.length) throw new Error(`the merge configuration could not be installed in ${dir}: ${left.join(", ")}`);
@@ -228,14 +232,8 @@ export function generatorsToRun(dir, manifest, ours, theirs, { git = localGit, c
   return pickGenerators(manifest, { mb, a, b, conflicted });
 }
 
-function pickGenerators(manifest, { mb, a, b, conflicted }) {
-  if (!manifest?.generators.length) return [];
-  return manifest.generators.filter((g) => {
-    const inputs = g.inputs.map(globToRegExp);
-    const touches = (path) => g.outputs.includes(path) || inputs.some((re) => re.test(path));
-    return g.outputs.some((o) => conflicted.includes(o)) || !mb || (a.some(touches) && b.some(touches));
-  });
-}
+// The same choice the Worker's merge preview makes (src/merge-declarations.ts).
+const pickGenerators = (manifest, changed) => pickFor(manifest, changed, globToRegExp);
 
 // A merge preview: what merging `theirs` into `ours` would leave, without
 // touching the index or the work tree. Regenerable outputs are kept apart
