@@ -27,4 +27,5 @@ export const CAPABILITY_DECLARATIONS = [
   { name: "land.post-merge.v1", level: 27, summary: "durable post-merge runs: the project policy's owner-approved postMerge steps, the post-merge run routes (status, prepare, start, command, finish, retry, skip, reconcile) and the merge and landing reservations that block later merges until a run completes" },
   { name: "projects.stuck.v1", summary: "the owner-only read-only stuck report, GET /projects/:p/stuck, which atelier stuck reads" },
   { name: "dispatch.orphaned-claims.v1", summary: "a claim whose runner has not polled (or sent a heartbeat) within RUNNER_GONE_MS holds no dispatch: the queue lists it as orphaned on the waiting task, and the stuck report as an orphaned-claim entry" },
+  { name: "reviews.criteria-review.v1", summary: "the criteria-review routes (request, claim, verdict, failure and finding resolution) that review a task's acceptance criteria before its build, and the project policy's requireCriteriaReview" },
 ] as const;

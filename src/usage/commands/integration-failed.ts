@@ -5,7 +5,7 @@ const spec: CommandSpec = {
   capabilities: ["plans.integration.v1"],
   forms: [
     {
-      group: "Agents", line: 4, slot: 40,
+      group: "Agents", line: 5, slot: 40,
       form: "integration-failed ID --part KEY --reason TEXT [--kind conflict|checks]",
       about: "The integrator reports a failed merge, which sends the part back to its builder for rework with the reason. `--kind` says the failure was the part's own, a merge conflict or failing checks, which charges its builder an attempt; without it the builder is charged nothing.",
     },
