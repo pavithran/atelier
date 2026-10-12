@@ -31,7 +31,7 @@ it("renders without a session, with or without a server token, and says it is pu
     expect(body).toContain("public · reads no project data");
     expect(body).not.toContain("<script");
     expect(body).not.toContain("<form");
-    expect(body).not.toContain('class="rail"');
+    expect(body).not.toContain('class="owner-bar"');
     expect(body).not.toContain('href="/p/');
   }
 });
