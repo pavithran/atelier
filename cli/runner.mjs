@@ -15,7 +15,8 @@ import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parse
 import { REVIEW_RENEW_MS } from "../src/rules.ts";
 import { reviewBrief, BRIEF_LIMITS, criteriaCount } from "../src/review/brief.ts";
 import { submission } from "../src/brief.ts";
-import { parseVerdict, VERDICT_LIMITS } from "../src/review/verdict.ts";
+import { parseVerdict, replyFormat, VERDICT_LIMITS } from "../src/review/verdict.ts";
+import { outcomeNote, PREREVIEW_JOB, prereviewBrief, prereviewEnvelope, relevantTests } from "../src/dispatch/prereview.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
 import { checkCapabilities, requiredForJobs } from "../src/route-level.ts";
 import { TERMINAL_TASK_EXITS } from "../src/tokens.ts";
@@ -99,7 +100,13 @@ export function offerFrom(config, name) {
   // t252's fix hands a plain build to any runner with the agents for it, so
   // the loop below passes such builds by when the offer does not name
   // "build" (jobOf).
-  return { runner: name.toLowerCase(), kind: "home", jobs: [...(jobs ?? DEFAULT_JOBS)], agents: agents.map(({ agent, models }) => ({ agent, models })) };
+  // A runner that takes reviews also advertises the pre-review job (t524):
+  // it runs one with the same harness, verdict file and token, so the server
+  // offers pre-reviews only to a runner that names it, and never to one from
+  // before pre-review, which does not.
+  const offer = { runner: name.toLowerCase(), kind: "home", jobs: [...(jobs ?? DEFAULT_JOBS)], agents: agents.map(({ agent, models }) => ({ agent, models })) };
+  if (offer.jobs.includes("review") && !offer.jobs.includes(PREREVIEW_JOB)) offer.jobs.push(PREREVIEW_JOB);
+  return offer;
 }
 
 // The runner's first line at start (runRunner): the jobs it takes, with the
@@ -1400,13 +1407,20 @@ const limitNote = (limit) => `${limit.harness} usage limit until ${new Date(limi
 // skippedBy counts, while a release or a push under one dispatch does not.
 export const taskKey = (task) => JSON.stringify([task.project, task.item.id, task.item.dispatch?.at ?? null]);
 
+// The order a poll's jobs are taken in: the gate's reviews first, in the
+// queue's order (t213), then pre-reviews (t524), then everything else.
+export function orderJobs(tasks) {
+  const job = (task) => task.item.dispatch?.job;
+  return [...tasks.filter((t) => job(t) === "review"), ...tasks.filter((t) => job(t) === PREREVIEW_JOB), ...tasks.filter((t) => job(t) !== "review" && job(t) !== PREREVIEW_JOB)];
+}
+
 // The key a runner's per-process failure cap uses. A build's failures count
 // against the task itself; a review's against the review it answered — its
 // head and its request number — so a new review request or a new head (a
 // later landing) starts the count fresh instead of an earlier landing's
 // failures stranding it (t353).
 export function failureKey(task) {
-  return task.item.dispatch?.job === "review"
+  return task.item.dispatch?.job === "review" || task.item.dispatch?.job === PREREVIEW_JOB
     ? JSON.stringify([task.project, task.item.id, task.item.head, task.item.request])
     : taskKey(task);
 }
@@ -1433,7 +1447,7 @@ export function jobOf(task) {
 // reviewer the brief and the diff, reads the verdict and posts it. A harness
 // that writes no valid verdict keeps the reply on the task and releases the
 // request, so another reviewer may take it.
-export async function runReview(assignment, config, name, runnerIO) {
+export async function runReview(assignment, config, name, runnerIO, preclaimed = null) {
   const { project, item, agent, model, actor } = assignment;
   let brief, diffFile, workspace, verdictFile, request, renewal, renewing = false, renewalFailure, claimedRequest = false, released = false, io = runnerIO;
   const generation = () => request === undefined ? [] : ["--request", String(request)];
@@ -1459,7 +1473,9 @@ export async function runReview(assignment, config, name, runnerIO) {
     // read token for the fork, so the part can be cloned read-only.
     // From the claim on, any error releases the request (see the catch), so a
     // failed review need not wait for its five-minute lease to expire.
-    const claimed = JSON.parse(await io.cli(["review-claim", item.id, "--project", project, "--as", actor, "--runner", name]));
+    // A pre-review job's claim that bound this gate review hands it over
+    // already claimed (runPrereview).
+    const claimed = preclaimed ?? JSON.parse(await io.cli(["review-claim", item.id, "--project", project, "--as", actor, "--runner", name]));
     request = claimed.request;
     claimedRequest = request !== undefined;
     if (request !== undefined) {
@@ -1606,6 +1622,199 @@ export async function runReview(assignment, config, name, runnerIO) {
   } catch (error) {
     io.log(`failed: ${error.message}`);
     if (claimedRequest && !released) await release(error.message);
+    return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
+  } finally {
+    clearInterval(renewal);
+    if (brief) await io.removeBrief(brief);
+    if (diffFile) io.removeDiff(diffFile);
+    if (verdictFile) io.removeFile?.(verdictFile);
+    if (workspace) io.removeTree?.(workspace);
+  }
+}
+
+// A pre-review job (t524, src/dispatch/prereview.ts): while another landing
+// holds the project's lease, a task queued behind it is reviewed against the
+// tree its own landing would test. The runner claims the pre-review through
+// the review claim, clones the task's recorded head into a scratch folder of
+// its own (never the builder's workspace), merges main into it as the
+// landing does (mergeMainAndRegenerate: the route-level raise where both
+// sides raised it, the fixtures regenerated) and records the main head it
+// merged and the tree it prepared; then the reviewer reads a brief naming
+// the merged tree's relevant tests and the commands to run them, the
+// results there are and the evidence there is not, and its verdict goes
+// back through the review route under the pre-review's number, the main
+// head and tree in its envelope. Nothing is pushed. A conflict or a failed
+// preparation is reported as such, a reply with no verdict as malformed,
+// and any other failure as a runner failure, each through review-release
+// with an outcome note: none of them blocks the task or moves it in the
+// queue. A claim that binds a gate review instead (one was asked for the
+// task meanwhile, and goes first) is served as that review.
+export async function runPrereview(assignment, config, name, runnerIO) {
+  const { project, item, agent, model, actor } = assignment;
+  let brief, diffFile, workspace, verdictFile, request, renewal, renewing = false, renewalFailure, claimedRequest = false, ended = false, io = runnerIO;
+  const end = async (note) => {
+    ended = true;
+    try { await io.cli(["review-release", item.id, "--project", project, "--as", actor, "--note", outcomeNote(note), "--request", String(request)]); }
+    catch (error) { io.log(`pre-review release failed: ${error.message}`); }
+  };
+  const failed = (reason, extra = {}) => ({ phase: "failed", reason, ...extra });
+  // An outcome the server records as the merged tree's own (a conflict, a
+  // preparation that failed) or as stale is no failure of this runner's.
+  const settled = (outcome, reason) => ({ phase: "prereviewed", outcome, reason });
+  try {
+    const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
+    if (!entry || actor !== `${agent}/${model}`) throw new Error("queue returned an unsupported assignment");
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(project) || !/^t[0-9]+$/.test(item.id)) throw Object.assign(new Error("queue returned an invalid project or task id"), { skipped: true });
+    // The reviewer's own token, as for a review (reviewToken, t346): a
+    // pre-review verdict is recorded only under it.
+    const credential = reviewToken(config, model, actor, { env: runnerIO.env, ...(runnerIO.readSecret ? { readSecret: runnerIO.readSecret } : {}), ...(runnerIO.ownerTokens ? { ownerTokens: runnerIO.ownerTokens } : {}) });
+    if (credential.refused) throw Object.assign(new Error(credential.refused), { skipped: true });
+    io = { ...runnerIO, cli: (argv, cwd) => runnerIO.cli(argv, cwd, { token: credential.token }) };
+    const claimed = JSON.parse(await io.cli(["review-claim", item.id, "--project", project, "--as", actor, "--runner", name]));
+    if (!claimed.prereview) {
+      io.log(`the claim bound ${item.id}'s gate review, which goes before its pre-review; serving it as the review`);
+      return await runReview(assignment, config, name, runnerIO, claimed);
+    }
+    request = claimed.request;
+    claimedRequest = true;
+    const pre = claimed.prereview;
+    renewal = setInterval(async () => {
+      if (renewing || io.stopped()) return;
+      renewing = true;
+      try { await io.cli(["review-renew", item.id, "--project", project, "--as", actor, "--request", String(request)]); }
+      catch (error) {
+        io.log(`pre-review renewal failed: ${error.message}`);
+        if (error.status === 409) renewalFailure = error;
+      } finally { renewing = false; }
+    }, REVIEW_RENEW_MS);
+    renewal.unref?.();
+    const head = claimed.head;
+    if (!claimed.readToken?.remote || !claimed.target?.remote || !claimed.target?.branch) {
+      await end({ outcome: "preparation", detail: "the claim named no read token for the task's head or for main, so no merged tree could be prepared" });
+      return settled("preparation", "the pre-review claim named no repositories to read");
+    }
+    // A scratch clone of its own, beside the task's workspace and never it,
+    // removed when the job ends; its merge commits are never pushed.
+    workspace = `${io.workspacePath(project, item.id)}-prereview-${randomUUID().slice(0, 8)}`;
+    await io.clone(claimed.readToken.remote, claimed.readToken.token, workspace);
+    if (io.stopped()) throw new Error("interrupted");
+    const git = (args, options = {}) => io.git(args, { cwd: workspace, ...options });
+    if ((await git(["checkout", "--quiet", "--detach", head], { allowFail: true })).status !== 0) {
+      await end({ outcome: "stale", detail: `the task's workspace no longer holds the recorded head ${head.slice(0, 8)}` });
+      return settled("stale", "the recorded head is gone from the workspace");
+    }
+    await git(["config", "user.name", "Atelier pre-review"]);
+    await git(["config", "user.email", "prereview@atelier.invalid"]);
+    const base = { remote: claimed.target.remote, token: claimed.target.token, defaultBranch: claimed.target.branch };
+    const landing = { git: io.git, print: io.log, redact: (text) => redactSecrets(text, [base.token, claimed.readToken.token]), secrets: () => [base.token, claimed.readToken.token] };
+    const guard = () => { if (io.stopped()) throw new Error("interrupted"); };
+    let movedFindings = [], merged;
+    try {
+      merged = await mergeMainAndRegenerate(landing, {
+        dir: workspace, id: item.id, name: project, regenerate: pre.regenerate ?? null, record: async () => {}, guard, d0: null, base,
+        moved: { ok: false, approved: null, again: `atelier land ${item.id}`, resolver: actor, port: async (found) => { movedFindings = found; } },
+        message: (mainHead) => `Pre-review: merge main at ${mainHead.slice(0, 8)} into ${item.id}`,
+      });
+    } catch (error) {
+      if (error.message === "interrupted") throw error;
+      const files = error.data?.conflicts ?? [];
+      if (files.length) {
+        await end({ outcome: "conflict", detail: `merging main at ${String(error.data.mainHead).slice(0, 8)} into ${head.slice(0, 8)} conflicts`, files, main: error.data.mainHead });
+        io.log(`pre-review: main conflicts with ${item.id} in ${files.join(", ")}`);
+        return settled("conflict", `main conflicts with ${item.id}`);
+      }
+      if (error.infrastructure) throw error;
+      await end({ outcome: "preparation", detail: error.message, ...(error.data?.mainHead ? { main: error.data.mainHead } : {}) });
+      return settled("preparation", `the merged tree could not be prepared: ${error.message}`);
+    }
+    guard();
+    const main = merged.mainHead;
+    // The claim is bound to main's head as the baseline held it then; a
+    // baseline that moved before the merge read it gives another tree, and
+    // the server would refuse its verdict, so it is reported stale now.
+    if (pre.binding?.main && main !== pre.binding.main) {
+      await end({ outcome: "stale", detail: `main moved from ${pre.binding.main.slice(0, 8)} to ${main.slice(0, 8)} since the claim`, main });
+      return settled("stale", "main moved since the pre-review was claimed");
+    }
+    const tree = await git(["rev-parse", "HEAD^{tree}"]);
+    const from = await git(["merge-base", head, main]);
+    const changed = (await git(["diff", "--name-only", "-z", from, head], { raw: true })).split("\0").filter(Boolean);
+    const files = (await git(["ls-tree", "-r", "-z", "--name-only", "HEAD"], { raw: true })).split("\0").filter(Boolean);
+    const tests = relevantTests(changed, files);
+    const diff = await io.diff(workspace, from, head);
+    const preparation = [
+      merged.mergedIn ? `Merged main at ${main} into ${head}.` : `Main at ${main} was already merged into ${head}.`,
+      pre.regenerate ? `Regenerated the fixtures with \`${pre.regenerate}\` and committed what changed.` : "The project declares no regenerate command.",
+      ...(movedFindings.length ? [`${movedFindings.length} of the task's edits lie in code main moved to another file; the landing would stop on them: ${movedFindings.map((f) => describeFinding(f)).join("; ")}`] : []),
+    ];
+    const binding = { ...pre.binding, main, tree };
+    const large = diff.length > BRIEF_LIMITS.diff;
+    const text = prereviewBrief({
+      item: claimed.item, project, request, binding, reviewer: actor, contributors: pre.contributors, bar: claimed.reviewBar ?? null,
+      checks: pre.checks ?? [], changed, tests, evidence: claimed.evidence ?? null, preparation, diffFile: REVIEW_DIFF,
+      // The owner's standing decisions bind a pre-reviewer as they bind the gate's.
+      decisions: claimed.decisions ?? null,
+      diffOmitted: large ? `the diff is ${diff.length} characters; read it whole in ${REVIEW_DIFF}` : null, slotNote: testSlotNote,
+      replyFormat: replyFormat(criteriaCount(claimed.item, null)),
+    });
+    brief = await io.brief(workspace, text);
+    diffFile = await io.writeDiff(workspace, diff);
+    verdictFile = io.verdictPath(workspace);
+    const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
+    const dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
+    let result;
+    try {
+      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, diffFile: diffFile.file, verdictFile, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "review", name, project, actor));
+    } finally {
+      if (dataHome) {
+        try { await io.removeDataHome(dataHome); }
+        catch (error) { io.log(`could not remove ${dataHome.dir}: ${error.message}`); }
+      }
+    }
+    if (io.stopped()) throw new Error("interrupted");
+    if (result.timedOut) {
+      await end({ outcome: "timeout", detail: "the reviewer's harness timed out" });
+      return failed("harness timed out", { taskFailure: true });
+    }
+    if (result.code !== 0) {
+      await end({ outcome: "runner", detail: `the reviewer's harness exited ${result.code}` });
+      return failed(`harness exited ${result.code}`, { taskFailure: true });
+    }
+    let reply;
+    try { reply = io.readVerdict(verdictFile); } catch { reply = ""; }
+    const parsed = parseVerdict(reply, criteriaCount(claimed.item, null));
+    if (!parsed.ok) {
+      const kept = await io.brief(workspace, reply.slice(-VERDICT_LIMITS.reply));
+      try {
+        await io.cli(["review-unparsable", item.id, "--project", project, "--as", actor, "--head", head, "--note", parsed.error, "--reply-file", kept.file, "--request", String(request)]);
+        ended = true;
+      } catch (error) {
+        io.log(`could not keep the unparsable pre-review reply: ${error.message}`);
+        await end({ outcome: "malformed", detail: parsed.error });
+      } finally {
+        await io.removeBrief(kept);
+      }
+      return failed(parsed.error, { taskFailure: true });
+    }
+    if (renewalFailure) throw renewalFailure;
+    const argv = ["review", item.id, "--project", project, "--as", actor, "--head", head, parsed.verdict === "approve" ? "--approve" : "--reject", "--note", parsed.summary,
+      "--criteria", claimed.criteria, "--request", String(request), "--findings", JSON.stringify(prereviewEnvelope({ main, tree, findings: parsed.findings }))];
+    try { await io.cli(argv); }
+    catch (error) {
+      // The route refuses a verdict on a head the task has left before the
+      // ledger sees it; the pre-review is then stale, not failed.
+      if (/stale_head|changed since/.test(error.message)) {
+        await end({ outcome: "stale", detail: error.message });
+        return settled("stale", `the task moved while it was pre-reviewed: ${error.message}`);
+      }
+      throw error;
+    }
+    ended = true;
+    io.log(`pre-reviewed ${item.id} at ${head.slice(0, 8)} + main ${main.slice(0, 8)}: ${parsed.verdict}`);
+    return { phase: "reviewed", verdict: parsed.verdict, prereview: true };
+  } catch (error) {
+    io.log(`pre-review failed: ${error.message}`);
+    if (claimedRequest && !ended) await end({ outcome: "runner", detail: error.message });
     return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
   } finally {
     clearInterval(renewal);
@@ -2509,7 +2718,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         // (jobOf), so one kept for reviews passes by the builds a server from
         // before t252's fix still lists, and they stay in the queue for a
         // runner that takes them.
-        const ordered = [...tasks.filter((task) => task.item.dispatch?.job === "review"), ...tasks.filter((task) => task.item.dispatch?.job !== "review")];
+        // Pre-reviews (t524) follow the gate's reviews and come before the
+        // rest: one never takes this runner ahead of a review a landing waits on.
+        const ordered = orderJobs(tasks);
         let ranTask = false;
         const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks });
         for (const task of ordered.filter((task) => passBy(task) === null)) {
@@ -2529,6 +2740,8 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
             ? runPlanTask(task, config, offer.runner, io)
             : task.item.dispatch?.job === "review"
               ? runReview(task, config, offer.runner, io)
+              : task.item.dispatch?.job === PREREVIEW_JOB
+                ? runPrereview(task, config, offer.runner, io)
               : task.item.dispatch?.job === "integrate"
                 ? runIntegrate(task, config, offer.runner, io)
                 : task.item.dispatch?.job === "refresh"
@@ -2544,7 +2757,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           if (outcome && reportRun) {
             try {
               // The report names the job that ran: a plan, a review, or a build.
-              const role = task.item.dispatch?.job === "plan" || task.item.dispatch?.job === "review" ? task.item.dispatch.job : "build";
+              const role = task.item.dispatch?.job === "plan" || task.item.dispatch?.job === "review" ? task.item.dispatch.job : task.item.dispatch?.job === PREREVIEW_JOB ? "review" : "build";
               await reportRun({ actor: task.actor, role, outcome, project: task.project, item: task.item.id, detail: state.detail ?? state.reason }, offer.runner, controller.signal);
               io.log(`reported ${task.project}/${task.item.id} as ${outcome}`);
             } catch (error) { io.log(`could not report ${task.project}/${task.item.id} as ${outcome}: ${error.message}`); }
@@ -2562,7 +2775,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // reviewer has skipped, instead of waiting out the hour (t353). A
           // report the server did not take is kept and tried again each poll
           // (reportSkip), since this review is not run again in this process.
-          if (task.item.dispatch?.job === "review" && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && reportReviewSkip) {
+          if ((task.item.dispatch?.job === "review" || task.item.dispatch?.job === PREREVIEW_JOB) && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && reportReviewSkip) {
             await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note: state.reason });
           }
           // A build or plan job given up under this dispatch, after its
@@ -2570,7 +2783,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // such (t420): the second sends no run report at all (runOutcome).
           // A task the server closed (t476) was not given up.
           const gaveUp = state.terminalState ? null : count === 2 ? "failures" : infrastructureCount === 3 ? "infrastructure" : null;
-          if (task.item.dispatch?.job !== "review" && gaveUp && reportRunSkip) {
+          if (task.item.dispatch?.job !== "review" && task.item.dispatch?.job !== PREREVIEW_JOB && gaveUp && reportRunSkip) {
             const role = task.item.dispatch?.job === "plan" ? "plan" : "build";
             await reportSkip(`run-skip:${key}`, { project: task.project, item: task.item.id, actor: task.actor, role, kind: gaveUp, failures: gaveUp === "failures" ? count : infrastructureCount, note: state.reason ?? "" }, 0, "run");
           }

@@ -675,6 +675,31 @@ test("a row whose landing stopped asking no longer counts: the landing reads the
   assert.equal(f.box.lease, null);
 });
 
+// A pre-review finding of t524's own review: criterion 9 asks landing status
+// to show the waiter's pre-review, and the server's queue row carried it, but
+// the --wait line never said it.
+test("--wait says the landing's own pre-review with the wait line: state, reviewer, binding, findings and recovery", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  f.box.lease = { item: "t2", holder: "owner", at: "2026-10-07T09:00:00.000Z", renewedAt: new Date().toISOString() };
+  const prereview = {
+    request: 1000000004, item: "t1", state: "passed", reviewer: "codex/gpt-6-astra", runner: "home:studio",
+    binding: { head: "e".repeat(40), criteria: "c".repeat(64), contributors: ["claude-code/opus-5.5"], generation: 1, main: "b".repeat(40), tree: "d".repeat(40) },
+    at: "2026-10-07T09:01:00.000Z", claimedAt: "2026-10-07T09:02:00.000Z", settledAt: "2026-10-07T09:05:00.000Z", attempts: 1, outcome: null, detail: null, files: [],
+    verdict: "approve", note: "Looks right.", findings: [{ file: "src/a.ts", line: 3, severity: "follow-up", text: "name the constant" }],
+    detached: false, ownerAction: null, recovery: "none: the queue position stands",
+  };
+  f.box.waiting = [{ item: "t1", holder: "owner", at: "2026-10-07T09:01:00.000Z", renewedAt: new Date().toISOString(), prereview }];
+  f.env = { ATELIER_LAND_POLL_MS: "40" };
+  let freeing = false;
+  f.onOutput = (out) => {
+    if (!freeing && out.includes("Waiting behind owner's landing of t2")) { freeing = true; setTimeout(() => { f.box.lease = null; }, 120); }
+  };
+  const r = await f.run(f.checkout, "land", "t1", "--wait", "--no-review");
+  assert.equal(r.status, 0, r.output);
+  assert.match(r.output, /Waiting behind owner's landing of t2 \(since 2026-10-07 09:00 UTC\); t1 starts as soon as the lease is free\. Its pre-review 1000000004 passed by codex\/gpt-6-astra at eeeeeeee with main bbbbbbbb, 1 finding; recovery: none: the queue position stands\./);
+});
+
 test("--wait gives up behind the landing that queued first, saying it is still first, and leaves the queue", async (t) => {
   const f = await landFixture(t);
   f.box.waiting = [{ item: "t2", holder: "owner", at: "2026-10-07T09:14:00.000Z", renewedAt: new Date().toISOString() }];
