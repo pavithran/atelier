@@ -75,12 +75,14 @@ for (const state of ['missing', 'behind', 'ahead', 'dirty', 'conflicted']) test(
   }
 });
 
-for (const failure of ['unavailable', 'wrong fetched head', 'configuration', 'race', 'owner race', 'state race', 'backup', 'install']) test(`failed ${failure} stops recovery without losing the original`, async t => {
+for (const failure of ['read token', 'unavailable', 'wrong fetched head', 'checkout', 'configuration', 'race', 'owner race', 'state race', 'backup', 'install']) test(`failed ${failure} stops recovery without losing the original`, async t => {
   const f = fixture(t); f.local('reset', '--hard', f.base);
   writeFileSync(join(f.dir, 'precious'), 'keep');
   const git = f.io.git, request = f.io.request;
+  if (failure === 'read token') f.io.request = async () => { throw new Error('read token refused'); };
   if (failure === 'unavailable') f.io.git = (args, opts) => { if (args[0] === 'fetch') throw new Error('SECRET-READ'); return git(args, opts); };
   if (failure === 'wrong fetched head') f.io.git = (args, opts) => git(args[0] === 'fetch' ? [...args.slice(0, -1), 'main'] : args, opts);
+  if (failure === 'checkout') f.io.git = (args, opts) => { if (args[0] === 'checkout') throw new Error('checkout failed'); return git(args, opts); };
   if (failure === 'configuration') f.io.git = (args, opts) => { if (args[0] === 'config') throw new Error('configuration failed'); return git(args, opts); };
   if (failure === 'race') f.io.request = async (...args) => args[0] === 'GET' ? { item: { ...f.detail.item, head: f.base } } : request(...args);
   if (failure === 'owner race') f.io.request = async (...args) => args[0] === 'GET' ? { item: { ...f.detail.item, owner: 'another/builder' } } : request(...args);
@@ -149,4 +151,47 @@ test('repeated replacements use different preserved paths', async t => {
   f.local('reset', '--hard', f.base);
   await prepareRecordedWorkspace(f.io, f.ctx);
   assert.equal(readdirSync(f.root).filter(s => s.startsWith('workspace.backup-')).length, 2);
+});
+
+test('replacement preserves distinct index and working tree bytes and ignored files', async t => {
+  const f = fixture(t);
+  f.local('reset', '--hard', f.base);
+  writeFileSync(join(f.dir, 'work'), 'staged bytes');
+  f.local('add', 'work');
+  writeFileSync(join(f.dir, 'work'), 'unstaged bytes');
+  writeFileSync(join(f.dir, '.git/info/exclude'), 'ignored-local\n');
+  writeFileSync(join(f.dir, 'ignored-local'), 'ignored bytes');
+  const index = readFileSync(join(f.dir, '.git/index'));
+  await prepareRecordedWorkspace(f.io, f.ctx);
+  const backup = f.backup();
+  assert.deepEqual(readFileSync(join(backup, '.git/index')), index);
+  assert.equal(f.io.git(['show', ':work'], { cwd: backup }), 'staged bytes');
+  assert.equal(readFileSync(join(backup, 'work'), 'utf8'), 'unstaged bytes');
+  assert.equal(readFileSync(join(backup, 'ignored-local'), 'utf8'), 'ignored bytes');
+  assert.equal(f.local('status', '--porcelain'), '');
+  assert.equal(existsSync(join(f.dir, 'ignored-local')), false);
+});
+
+test('credential-bearing remotes are refused before fetching or replacing a workspace', async t => {
+  const f = fixture(t), git = f.io.git, request = f.io.request;
+  f.local('reset', '--hard', f.base);
+  let fetched = false;
+  f.io.request = async (...args) => args[0] === 'POST'
+    ? { remote: 'https://SECRET-READ@git.example.invalid/fork.git', token: 'SECRET-READ', defaultBranch: 'main' }
+    : request(...args);
+  f.io.git = (args, opts) => { if (args[0] === 'fetch') fetched = true; return git(args, opts); };
+  await assert.rejects(prepareRecordedWorkspace(f.io, f.ctx), { message: 'invalid fork remote' });
+  assert.equal(fetched, false);
+  assert.equal(f.local('rev-parse', 'HEAD'), f.base);
+  assert.doesNotMatch(readFileSync(join(f.dir, '.git/config'), 'utf8') + f.lines.join(''), /SECRET-READ/);
+  assert.equal(readdirSync(f.root).some(s => /^workspace\.(backup|prepare)-/.test(s)), false);
+});
+
+test('a correctly configured recorded workspace is reused without requesting credentials', async t => {
+  const f = fixture(t);
+  for (const [key, value] of Object.entries({ project: 'proj', item: 't1', actor: 'codex/test' })) f.local('config', `atelier.${key}`, value);
+  assert.equal(await prepareRecordedWorkspace(f.io, f.ctx), false);
+  assert.deepEqual(f.calls, []);
+  assert.equal(f.local('rev-parse', 'HEAD'), f.head);
+  assert.equal(readdirSync(f.root).some(s => /^workspace\.(backup|prepare)-/.test(s)), false);
 });
