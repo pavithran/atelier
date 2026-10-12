@@ -2,7 +2,7 @@ import { test } from "node:test";
 import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
 import assert from "node:assert/strict";
 import {
-  pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
+  ownerPortAllowed, pushActors, assertHandoffTarget, assertReviewAllowed, agentOf, measuredPaths, changeClass, parseAgents, parseExecution, assertClaimable, evidenceAt, gate, globToRegExp, inboxFor, matchesAny, modelKey, modelOf, sameActor,
   assertClaimAllowed, assertCriteriaAllowed, assertEligible, checkFiles, eligibleAgents, foldPath, matchesFolded, overlappingLive, overlappingRefusal, parseRuleError, pathCollisions, repoName, roleRefusal, RuleError, scopesOverlap, scopesOverlapWithin, validActor,
   decisionFor, mergedBlockers, mergedChecksAt, overrideAt, OVERRIDE_REASON_MAX, PROTECTED_NEED, reviewOverrideFor,
   type Evidence, type InboxEntry, type Item, type ProjectPolicy, type Review, type ReviewOverride,
@@ -1045,4 +1045,13 @@ test("review leases expire at five server-clock minutes; renewal cadence is thir
   assert.equal(reviewLeaseExpired(T, start + REVIEW_LEASE_MS + 1), true);
   assert.equal(reviewLeaseExpired(null, start), true);
   assert.equal(reviewLeaseExpired("invalid", start), true);
+});
+
+test("only the project owner can port to an open unclaimed task", () => {
+  assert.equal(ownerPortAllowed(item({ state: "open", owner: null }), "person", "person"), true);
+  assert.equal(ownerPortAllowed(item({ state: "open", owner: null }), "builder", "person"), false);
+  assert.equal(ownerPortAllowed(item({ state: "open", owner: "builder" }), "person", "person"), false);
+  for (const state of ["claimed", "submitted", "accepted", "integrated", "merged", "abandoned", "blocked"] as const) {
+    assert.equal(ownerPortAllowed(item({ state, owner: null }), "person", "person"), false);
+  }
 });
