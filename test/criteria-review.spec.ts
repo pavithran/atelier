@@ -423,6 +423,24 @@ it("the routes: a dispatch is refused until the criteria review the owner asks f
   expect(detail.criteriaReview.resolutions).toHaveLength(1);
   const dispatched = await call("POST", `${P}/items/${id}/dispatch`, "owner", { to: "home" });
   expect(dispatched.status, await dispatched.clone().text()).toBe(200);
+  // The queue route offers the build counted (t438): two reviews reached a
+  // verdict. Claimed, then the runner dies before its first commit: the
+  // route offers the claim back to that runner, counted the same way, and
+  // the brief the runner fetches through the route carries the finding and
+  // the owner's resolution.
+  const builder = { runner: "home:rev", kind: "home", agents: [{ agent: "claude-code", models: ["opus-5.5"] }], jobs: ["build", "review"] };
+  type Offered = { project: string; actor: string; item: { id: string; state: string; owner?: string | null; criteriaReviews?: number } }[];
+  const fresh = await (await call("POST", "/queue", "owner", builder)).json() as Offered;
+  expect(fresh.find((q) => q.project === name)).toMatchObject({ actor: OPUS, item: { id, state: "open", criteriaReviews: 2 } });
+  await ledger(name).claim(id, OPUS, { runner: "home:rev", kind: "home" });
+  const back = await (await call("POST", "/queue", "owner", builder)).json() as Offered;
+  expect(back.find((q) => q.project === name)).toMatchObject({ actor: OPUS, item: { id, state: "claimed", owner: OPUS, criteriaReviews: 2 } });
+  expect((await (await call("POST", "/queue", "owner", { ...builder, runner: "home:other" })).json() as Offered).some((q) => q.project === name)).toBe(false);
+  const opusToken = ((await (await call("POST", "/tokens", "owner", { actor: OPUS, projects: [name] })).json()) as { token: string }).token;
+  const brief = await (await call("GET", `${P}/items/${id}/job-brief`, null, undefined, opusToken)).json() as { job: string; text: string };
+  expect(brief.job).toBe("build");
+  expect(brief.text).toContain("## Review of the acceptance criteria");
+  expect(brief.text).toContain("finding 1: blocking criterion-1 Fast is not a measurement. [resolution: refuted, 200 ms is the measurement]");
   // A failure recorded by the claimant alone; an unclaimed review has none to fail.
   const failed = await call("POST", `${P}/items/${id}/criteria-review-failed`, null, { request: claim2.request, note: "late" }, glmToken);
   expect(failed.status).toBe(409);
