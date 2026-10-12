@@ -181,7 +181,7 @@ ul { padding-left: var(--space-xl); }
 .dec-evidence li { display: grid; grid-template-columns: 112px minmax(0, 1fr) auto; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
 .ev-label { font-weight: 600; color: var(--text-muted); }
 .ev-what { min-width: 0; overflow-wrap: anywhere; }
-.ev-where { font-size: 14px; color: var(--text-muted); text-align: right; }
+.ev-where { font-size: 14px; color: var(--text-muted); text-align: right; max-width: 24ch; }
 .dec-foot { margin: 16px 0 0; }
 .pulse { width: 8px; height: 8px; border-radius: var(--radius-pill); background: var(--observed); align-self: center; animation: breathe 2.4s var(--curve-breathe) infinite; }
 @keyframes breathe { 50% { opacity: .35; } }
