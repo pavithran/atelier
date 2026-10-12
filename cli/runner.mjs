@@ -2159,7 +2159,60 @@ export async function withHeartbeat(job, beat, { intervalMs = HEARTBEAT_MS, log 
   try { return await job(); } finally { clearInterval(timer); }
 }
 
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, version, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile }) {
+// ── reload on deploy (t265) ───────────────────────────────────────────────
+
+// The checkout this CLI runs from: a runner reloads from it after a deploy.
+export const RUNNER_CHECKOUT = fileURLToPath(new URL("..", import.meta.url));
+// Set on the re-executed process, naming the commit the old one ran.
+export const RELOADED_FROM = "ATELIER_RUNNER_RELOADED_FROM";
+const COMMIT = /^[0-9a-f]{40}$/;
+const short = (commit) => commit ? commit.slice(0, 8) : "unknown";
+
+// The runner's checkout through git: its HEAD (null when it cannot be read,
+// an installed copy without .git, say) and whether `ref` contains `commit`
+// (false for a commit the checkout has never fetched). Git that cannot run
+// answers as a failure, never a throw.
+export function runnerCheckout(dir = RUNNER_CHECKOUT, executeChild = execute) {
+  const git = (argv) => executeChild(["git", ...argv], { cwd: dir, capture: true, captureError: true, timeoutMs: 10_000 }).catch(() => ({ code: null }));
+  return {
+    dir,
+    head: async () => {
+      const result = await git(["rev-parse", "--verify", "HEAD^{commit}"]);
+      const head = result.code === 0 ? (result.output ?? "").trim() : "";
+      return COMMIT.test(head) ? head : null;
+    },
+    contains: async (commit, ref) => COMMIT.test(commit) && (await git(["merge-base", "--is-ancestor", commit, ref])).code === 0,
+  };
+}
+
+// Replaces this process with the same command line, run anew from the
+// checkout: exec in place, so the pid stays and launchd keeps the job. A
+// failure (no process.execve, before Node 22.15; the exec refused) throws,
+// and this process runs on.
+export async function reexecSelf(env, { execve = process.execve, argv = process.argv, execArgv = process.execArgv, execPath = process.execPath } = {}) {
+  if (typeof execve !== "function") throw new Error(`this Node (${process.version}) has no process.execve`);
+  // The reload line reaches a piped log before the image is replaced.
+  for (const stream of [process.stdout, process.stderr]) await new Promise((done) => stream.write("", done));
+  execve(execPath, [execPath, ...execArgv, ...argv.slice(1)], env);
+}
+
+// What an idle runner does about the deployed commit: nothing while the
+// server cannot say which it is (no answer, no commit), or while the commit
+// it started from already contains it (the reloaded process, or a checkout
+// ahead of the deploy, so nothing reloads twice); "reload" when the
+// checkout's HEAD now contains it; "behind" until then.
+export async function reloadCheck(started, { version, checkout, signal }) {
+  if (!started || !version || !checkout) return { action: "none" };
+  let answer = null;
+  try { answer = await version(signal); } catch { return { action: "none" }; }
+  const deployed = answer?.commit;
+  if (typeof deployed !== "string" || !COMMIT.test(deployed) || deployed === started) return { action: "none" };
+  if (await checkout.contains(deployed, started)) return { action: "none" };
+  const head = await checkout.head();
+  return { action: head && await checkout.contains(deployed, head) ? "reload" : "behind", deployed, head };
+}
+
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, version, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, reload }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
@@ -2409,6 +2462,37 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // exact jobs is read where the runner runs, not inferred from the
     // queue's silence.
     io.log(jobsLine(offer.jobs));
+    // The commit this process started from (t265), against which an idle
+    // runner compares the deployed one. A --once run never reloads.
+    const reloading = reload && !args.once;
+    const started = reloading ? await reload.checkout.head().catch(() => null) : null;
+    const reloadedFrom = process.env[RELOADED_FROM];
+    delete process.env[RELOADED_FROM];
+    if (reloading && reloadedFrom) line(`reloaded: was ${short(reloadedFrom)}, now ${short(started)}`);
+    if (reloading && !started) line(`the commit this runner started from cannot be read in ${reload.checkout.dir}; it will not reload itself after a deploy`);
+    // The deployed commit last said to be missing from the checkout, and the
+    // one a re-exec failed for: each is said once, and a failed one is not
+    // tried again until the next deploy.
+    let saidBehind = null, failedReload = null;
+    const reloadIfDeployed = async () => {
+      const check = await reloadCheck(started, { version, checkout: reload.checkout, signal: controller.signal });
+      if (controller.signal.aborted || check.action === "none") return;
+      if (check.action === "behind") {
+        if (saidBehind === check.deployed) return;
+        saidBehind = check.deployed;
+        line(`behind: started from ${short(started)}, the server runs ${short(check.deployed)}, and this checkout (${reload.checkout.dir}) at ${short(check.head)} does not contain it; update it (git -C '${reload.checkout.dir}' pull --ff-only) and this runner reloads itself when next idle`);
+        return;
+      }
+      // A skip report not yet taken lives only in this process: the reload
+      // waits until the server has it.
+      if (failedReload === check.deployed || pendingSkips.size) return;
+      line(`reloading: started from ${short(started)}, the server runs ${short(check.deployed)}; re-executing in place (same pid) from ${reload.checkout.dir} at ${short(check.head)}`);
+      try { await reload.reexec({ ...process.env, [RELOADED_FROM]: started }); }
+      catch (error) {
+        failedReload = check.deployed;
+        line(`reload failed: ${error.message}; still running ${short(started)}. Restart this runner by hand to load ${short(check.deployed)}`);
+      }
+    };
     // Pauses a restart finds in the file, said as the runner's status.
     for (const pause of Object.values(limits.pauses)) if (Date.parse(pause.resetAt) > now()) io.log(`still ${pauseLine(pause)}`);
     // Transient queue failures in a row (transientQueueError): the first is
@@ -2547,6 +2631,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           else if (args.once || state.phase !== "failed" || state.taskFailure) break;
         }
         if (!ranTask && !controller.signal.aborted) await sayIdleWhy(ordered.flatMap((task) => { const why = passBy(task); return why ? [{ task: `${task.project}/${task.item.id}`, line: why }] : []; }));
+        // Idle, after a poll that claimed nothing, and only then: no claim,
+        // review, merge, refresh or check of a job is held (t265).
+        if (!ranTask && reloading && !controller.signal.aborted) await reloadIfDeployed();
         state ??= { phase: "idle" };
       } catch (error) { state = nextStep({ phase: "idle" }, { error: error.message }); line(`failed: ${state.reason}`); }
       if (args.once) { if (state.phase === "failed" && !controller.signal.aborted) process.exitCode = 1; break; }

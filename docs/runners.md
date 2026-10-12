@@ -425,6 +425,28 @@ its own (`setsid`) leaves the group and is not ended. SIGINT stops polling and
 interrupts the active child process. A second interrupt kills every group at
 once and exits.
 
+### Reload on deploy
+
+Runners no longer need restarting after a deploy (t265). Between jobs, after
+a poll that claimed nothing, a runner (build, review or the integrator) reads
+the deployed commit from `GET /api/version`. When the commit it started from
+does not contain the deployed one, and the checkout it runs from (the folder
+holding `cli/atelier.mjs`) now does, it logs `runner: reloading: started from
+OLD, the server runs NEW; re-executing in place (same pid) …` and replaces
+itself with the same command line through `process.execve` (Node 22.15 or
+later): the pid stays, so a launchd job stays loaded and is not restarted.
+The new process logs `runner: reloaded: was OLD, now NEW`. Until the checkout
+holds the deployed commit it logs once `runner: behind: …`, with the `git -C
+CHECKOUT pull --ff-only` that updates it, and reloads at its first idle poll
+after the pull. It never reloads mid-job (while it holds a claim, a review, a
+merge, a refresh or a check), nor while a skip report waits to be sent, nor
+under `--once`. A process started from a commit that contains the deployed
+one never reloads, so a reloaded runner, or one whose checkout is ahead of
+the deploy, does not reload again. A version endpoint that does not answer
+or names no commit means no reload. A re-exec that fails logs `runner: reload
+failed: …` and the old process runs on; it is tried again only after the
+next deploy, or restart it by hand.
+
 Save a config at `~/.config/atelier/runner.json`, or select one with `--config PATH`:
 
 ```json

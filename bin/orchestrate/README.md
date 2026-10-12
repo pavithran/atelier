@@ -402,6 +402,18 @@ failing leaves the claim for the owner, as any failed finish does. This needs
 a server at route level 13 (the task's own raise to 6 plus the raises main
 had already merged), which the runner asks for at start.
 
+Runners no longer need restarting after a deploy (t265). An idle runner, the
+integrator included, reads the deployed commit (`GET /api/version`) after
+each poll that claimed nothing and, once its checkout holds that commit,
+re-executes itself in place with the same arguments: the pid stays, so
+launchd keeps the job loaded and does not restart it. It logs `runner:
+reloading: started from OLD, the server runs NEW; …`, and the new process
+`runner: reloaded: was OLD, now NEW`. Pull the checkout after a deploy
+(`git -C CHECKOUT pull --ff-only`); until then the runner logs once `runner:
+behind: …` and keeps running the old code. It never reloads mid-job. A failed
+re-exec logs `runner: reload failed: …` and keeps the old process running;
+restart that one by hand. Details: docs/runners.md, "Reload on deploy".
+
 ## What the agents may and may not do
 
 opencode refuses any read or write outside the workspace, and a refused
