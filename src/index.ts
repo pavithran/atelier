@@ -1810,8 +1810,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review": {
       const item = await L.item(id);
       assertReviewAllowed(item, !!c.token);
-      assertRevision(item, String(body.head ?? ""));
-      if (item.fork && await headOf(env, item.fork) !== item.head) throw new RuleError("stale_head", "the workspace changed; record the push and review again");
+      // A post-merge review judges the recorded landing, not the submitted
+      // head or a workspace that may have moved or disappeared. addReview
+      // validates its merge commit and claimed request together in the Ledger.
+      if (item.state !== "merged") {
+        assertRevision(item, String(body.head ?? ""));
+        if (item.fork && await headOf(env, item.fork) !== item.head) throw new RuleError("stale_head", "the workspace changed; record the push and review again");
+      }
       await L.addReview({
         itemId: id, by: actor, head: String(body.head ?? item.head ?? ""),
         // The criteria binding is the reviewer's own, as given; never the item's.
@@ -1836,13 +1841,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // base-token chooses), so the job can diff from the merge base of the
       // head and that branch rather than from the fork point, which a merge
       // of main into the task leaves behind (t230).
-      if (claim.item.fork) {
+      if (claim.item.fork || claim.item.state === "merged") {
         const p = await L.project();
         const branch = await projectBranch(env, p);
-        const t = await mint(env, claim.item.fork, "read", branch);
+        const landed = landingOf(claim.item, claim.events);
+        const repo = landed?.onPlanBranch ? await baseRepo(env, L, claim.item, p.repo) : p.repo;
+        const t = await mint(env, landed ? repo : claim.item.fork!, "read", branch);
         const b = await mint(env, await baseRepo(env, L, claim.item, p.repo), "read", branch);
         return json({
           ...claim,
+          ...(landed ? { landed } : {}),
           ...(diffRef ? { diffRef } : {}),
           readToken: { remote: t.remote, token: t.token, defaultBranch: t.defaultBranch },
           target: { remote: b.remote, token: b.token, branch: b.defaultBranch },
@@ -2575,7 +2583,10 @@ async function storedReviewDiff(
   if (!item.fork) return null;
   try {
     const p = await L.project();
-    const diff = await itemDiff(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork);
+    const landed = landingOf(item, claim.events);
+    const diff = landed
+      ? await mergedDiff(env.ARTIFACTS, landed.onPlanBranch ? await baseRepo(env, L, item, p.repo) : p.repo, item.fork, landed)
+      : await itemDiff(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork);
     if (!diff) return null;
     const text = renderDiffText(item.id, diff);
     if (text.length <= DIFF_INLINE_MAX) return null;
