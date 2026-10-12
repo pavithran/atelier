@@ -81,6 +81,12 @@ export const BYPASSES = [
   /(?<![.\w$])https?\s*\.\s*(?:request|get)\b/g,
   /\bimport\s*\(\s*["'`]\s*["'`]\s*\)/g, // a dynamic import, whose specifier is blanked: judged below
   /\bnew\s+(?:WebSocket|EventSource|XMLHttpRequest)\b/g,
+  // A module reached by a name the scan cannot read: a dynamic import whose
+  // specifier is not one literal string, Node's built-in module getter, or a
+  // CommonJS require. None names its module where the scan can judge it.
+  /\bimport\s*\((?!\s*["'`]\s*["'`]\s*\))/g,
+  /\bgetBuiltinModule\b/g,
+  /(?<![.\w$])(?:createRequire|require)\s*\(/g,
 ];
 export const NETWORK_MODULE = /^(?:node:)?(?:https?|http2|net|tls|dgram)$|^undici$/;
 
@@ -93,6 +99,7 @@ export function references(source) {
   const at = (index, text) => found.push({ text, index, line: source.slice(0, index).split("\n").length });
   for (const pattern of BYPASSES) {
     for (const m of code.matchAll(pattern)) {
+      if (/^import\s*\($/.test(m[0])) { at(m.index, "import(<not a literal>)"); continue; }
       if (m[0].startsWith("import")) {
         // A dynamic import names its module in a string; judge the original.
         const spec = /^import\s*\(\s*["'`]([^"'`]*)["'`]/.exec(source.slice(m.index))?.[1] ?? "";
