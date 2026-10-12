@@ -1,0 +1,32 @@
+atelier atelier/t538 "Criteria ask for a runtime boundary, not a test that scans for every path"
+accepted head 11944ccc5f8b5198bea1dbdf16371b9f1becb5e5
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR claude-code/sonnet-5.5 (anthropic)
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/sonnet-5.5 2026-10-12T03:26:55.286Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/sonnet-5.5 2026-10-12T03:26:59.527Z
+REVIEW approve by codex/gpt-6-astra at 11944ccc5f8b5198bea1dbdf16371b9f1becb5e5, recorded by codex/gpt-6-astra
+2026-10-12T01:34:17.452Z pavi item.created
+2026-10-12T01:34:24.041Z pavi item.edited
+2026-10-12T01:34:56.786Z pavi item.dispatched
+2026-10-12T01:35:11.613Z claude-code/sonnet-5.5 item.claimed
+2026-10-12T01:36:10.971Z claude-code/sonnet-5.5 fork.created
+2026-10-12T01:36:26.950Z claude-code/sonnet-5.5 item.released
+2026-10-12T01:36:43.716Z claude-code/sonnet-5.5 item.claimed
+2026-10-12T01:51:03.419Z claude-code/sonnet-5.5 push.observed
+2026-10-12T01:56:14.379Z claude-code/sonnet-5.5 evidence.observed
+2026-10-12T01:56:16.719Z claude-code/sonnet-5.5 evidence.observed
+2026-10-12T01:56:17.355Z claude-code/sonnet-5.5 item.submitted
+2026-10-12T03:20:24.488Z pavi land.lease
+2026-10-12T03:20:31.428Z pavi land.merge
+2026-10-12T03:20:42.662Z pavi land.regenerate
+2026-10-12T03:20:49.255Z claude-code/sonnet-5.5 push.observed
+2026-10-12T03:20:50.063Z pavi land.push
+2026-10-12T03:26:56.739Z claude-code/sonnet-5.5 evidence.observed
+2026-10-12T03:26:59.754Z claude-code/sonnet-5.5 evidence.observed
+2026-10-12T03:27:00.233Z pavi land.check
+2026-10-12T03:27:03.134Z pavi review.requested
+2026-10-12T03:27:31.581Z codex/gpt-6-astra review.claimed
+2026-10-12T03:29:01.028Z codex/gpt-6-astra review.approved
+2026-10-12T03:29:05.107Z pavi land.review
+2026-10-12T03:29:05.672Z pavi item.accepted
+2026-10-12T03:29:05.762Z pavi land.accept
