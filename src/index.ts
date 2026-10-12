@@ -1081,6 +1081,19 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // the models live runners offer (src/plans/route.ts). The same call on
     // the index returns the projects to read.
     const projects = (await index(env).askQueue(offer, new Date().toISOString())).filter((p) => inScope(c.token, namesOf(p)));
+    // Every runner's last poll, this one's included, goes to each project,
+    // where a claim whose runner stopped polling holds no other dispatch
+    // (t537, orphanedBy in src/dispatch/rules.ts).
+    const polls = projects.length ? (await index(env).runnerOffers()).map(({ runner, at }) => ({ runner, at })) : [];
+    // A runner mid-job polls nothing, so it POSTs its offer with
+    // `heartbeat: true` while the job runs (cli/runner.mjs): recorded as a
+    // poll is, and passed to every project, it keeps the claim it is
+    // building under holding. It reads no queue and is offered nothing. A
+    // server from before it answers as to a poll, which the runner ignores.
+    if (offer && body.heartbeat === true) {
+      await Promise.all(projects.map((p) => ledgerOf(env, p).recordRunnerPolls(polls).catch(() => {})));
+      return json([]);
+    }
     const indexed = Date.now();
     const unreadable: string[] = [];
     // One call per project reads both its waiting tasks and its open review requests.
@@ -1092,7 +1105,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // it starts new work.
         const L = ledgerOf(env, p);
         if (c.token?.runner && offer) await L.runnerPoll(c.token, offer);
-        const [held, { waiting, reviews }] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), L.queued()]);
+        const [held, { waiting, reviews }] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), L.queued(polls)]);
         return [...held, ...waiting, ...reviews].map((item) => ({ project: p.name, item }));
       }
       catch { unreadable.push(p.name); return []; }
