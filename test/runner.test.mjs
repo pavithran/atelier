@@ -72,9 +72,25 @@ test("offerFrom includes only the server capability shape", () => {
 test("briefFor includes task identity, scope, rules, and commit attribution", () => {
   const brief = briefFor({ ...assignment.item, owner: assignment.actor }, assignment.project);
   for (const text of ["atelier", "t13", "Home runner", ...assignment.item.scope,
-    "Stay in scope", "Write tests", "npm test", "npm run typecheck", "Both must pass",
+    "Stay in scope", "Write tests", "Run the tests for the files you change, and npm run typecheck; both must pass",
     `git commit -m "subject" -m "Agent: ${assignment.actor}"`, "Do not push", "Run no atelier command"]) assert.ok(brief.includes(text), text);
   assert.ok(briefFor(assignment.item, "atelier").includes("Agent: <harness>/<model>"));
+});
+
+// t552: builders ran the full npm test, ten minutes and more; with several
+// runners on one host the load reached 45 to 87, tests timed out, and the
+// builder ended validation_blocked with nothing committed, losing the work
+// (t541, t546, t532, t463). The brief now asks for the changed files' tests and
+// the typecheck, leaves the full suite to the clean-clone checks, and keeps
+// validation_blocked for the builder's own failing tests.
+test("briefFor asks for the changed tests and the typecheck, not the full suite, and a commit when they pass", () => {
+  const brief = briefFor({ ...assignment.item, owner: assignment.actor }, assignment.project);
+  assert.match(brief, /Do not run the full npm test suite unless the task asks for it/);
+  assert.match(brief, /required checks, the full suite among them, in a clean clone/);
+  assert.match(brief, /Never end with finished work uncommitted/);
+  assert.match(brief, /validation_blocked only for a failure in the tests of your own change that you cannot fix/);
+  assert.ok(!brief.includes("Run npm test and npm run typecheck"));
+  assert.ok(brief.indexOf("Never end with finished work uncommitted") < brief.indexOf("Task (from the server"), "the rule comes before the task's data");
 });
 
 test("briefFor carries the owner's dispatch note and says when an earlier attempt is committed", () => {
@@ -2221,6 +2237,10 @@ test("a blocked marker holds back only its own actor's unverified head", async (
 
 test("the build brief asks for a validation_blocked line, and that line is read as blocked", () => {
   assert.match(ROLE_PROMPTS.build, /validation_blocked: why/);
+  // t552: the guide keeps validation_blocked for the builder's own failing tests, and leaves the full suite to the clean clone.
+  assert.match(ROLE_PROMPTS.build, /Only a failure in the tests of your own change that you cannot\nfix is `validation_blocked`/);
+  assert.match(ROLE_PROMPTS.build, /do not\nrun the full suite unless the task asks for it/);
+  assert.match(ROLE_PROMPTS.build, /Never end with finished work uncommitted/);
   assert.match(validationBlockedReport("Implemented the change and committed it.\nvalidation_blocked: vitest could not listen on 127.0.0.1 (EPERM)"), /could not listen/);
   assert.match(validationBlockedReport("Done.\n**validation_blocked:** the sandbox has no network"), /no network/);
 });
@@ -2231,6 +2251,9 @@ test("a report that only mentions checks or validation_blocked in passing does n
     "Added the validation_blocked run outcome, with tests; npm test and npm run typecheck pass.",
     "I could not reproduce the hang without a test, so I added one; all checks pass.",
     "Did not run atelier done; the runner submits. Tests pass.",
+    // t552: the brief tells a builder not to run the full suite, so saying so is a good build.
+    "Ran the changed tests and npm run typecheck; both pass. I did not run the full npm test suite, as the brief asks.",
+    "Didn't run the whole test suite; the clean-clone checks run it.",
     "npm test failed once on an assertion; fixed it and the suite passes.",
   ]) assert.equal(validationBlockedReport(report), null, report);
   for (const report of [
@@ -2239,6 +2262,7 @@ test("a report that only mentions checks or validation_blocked in passing does n
     "npm test failed: listen EPERM: operation not permitted 127.0.0.1",
     "The sandbox prevented vitest from starting.",
     "Didn't run the required checks; network access is disabled.",
+    "I did not run the full suite: vitest fails with listen EPERM in this sandbox.",
   ]) assert.ok(validationBlockedReport(report), report);
 });
 
