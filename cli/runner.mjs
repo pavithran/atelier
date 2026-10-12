@@ -1982,6 +1982,13 @@ export function infrastructureFailureCount(count, state) {
   return state.phase === "failed" && !state.taskFailure && !state.claimRefused && !state.skipped && !state.recorded ? count + 1 : 0;
 }
 
+// A claim that lost the race to a hold (the server's 409 held, t540): the
+// claim the task waits on came back between this runner's offer and its
+// claim. It is not refused for good, so the runner keeps no refusal of it:
+// the queue stops offering the task while the hold stands and offers it
+// again once it clears.
+export const lostToHold = (state) => !!state.claimRefused && /^atelier: held: /m.test(state.reason ?? "");
+
 // Why the runner's loop passes an offered task by, in words with what lets it
 // through, or null when it takes it: a job its offer does not name (jobOf), a
 // claim refused or a task skipped since the task last changed (refusedKey),
@@ -2572,7 +2579,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // itself, independently of the revision-specific refusals that a
           // new dispatch can supersede and of a review's per-request failures.
           if (state.terminalState) terminalTasks.set(taskKey(task), state.terminalState);
-          else if (state.claimRefused || state.skipped) refused.add(refusedKey(task));
+          else if (state.claimRefused && !lostToHold(state) || state.skipped) refused.add(refusedKey(task));
           else if (args.once || state.phase !== "failed" || state.taskFailure) break;
         }
         if (!ranTask && !controller.signal.aborted) await sayIdleWhy(ordered.flatMap((task) => { const why = passBy(task); return why ? [{ task: `${task.project}/${task.item.id}`, line: why }] : []; }));
