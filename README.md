@@ -561,8 +561,10 @@ each holds locally. The project page and `GET
 beside the selected task; Flow draws each task as a thread from main and
 back; History keeps merged and closed tasks with their evidence; Studio
 draws one lane per live task, banded by who held it; Models and Usage show
-the pool, each model's record and spend. Only the owner token signs in to
-the browser.
+the pool, each model's record and spend. On a server without Cloudflare
+Access, only the owner token signs in to the browser; behind Access, the
+owner's Access sign-in starts the session with no token to paste
+(docs/setup.md).
 
 **The public pages.** `/how` explains what Atelier is, draws the loop from
 task to merge, states the rules the code enforces, marks which parts of the
