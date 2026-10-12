@@ -4,7 +4,8 @@
 // mechanical conflict found by the integrator and resolved by a resolver, a
 // resolution outside the transformations, behavioural and uncertain
 // conflicts, a builder's push under the refresh, a refused push, failed
-// checks, a recorded push the server would not take, and an edit in code
+// checks, a recorded push the server would not take, one it recorded with
+// every answer lost, a lease resumed at its recorded head, and an edit in code
 // main moved to another file (t471), which neither job merges; and the
 // lease, renewed through a long run and given back, saying why, when a
 // provider's usage limit stops the resolver or a failure precedes any report.
@@ -56,12 +57,12 @@ function fixture(t, { base = {}, task = {}, main = {} } = {}) {
 // The runner's io for the job, with git run for real and the CLI faked:
 // `answers[verb]` answers a command (a function of its argv), and every
 // call is kept in `calls`.
-function harness(f, { job = "task-refresh", actor = job === "task-resolve" ? "claude-code/opus-5.5" : "atelier/integrator", answers = {}, resolve, checks = [], gitFault, renewMs } = {}) {
+function harness(f, { job = "task-refresh", actor = job === "task-resolve" ? "claude-code/opus-5.5" : "atelier/integrator", answers = {}, resolve, checks = [], gitFault, renewMs, checking } = {}) {
   const calls = [], logs = [], reports = [];
-  const lease = { id: "L1", job: job === "task-resolve" ? "resolve" : "refresh", by: actor, mainHead: f.main, expectedHead: f.task };
+  const lease = { id: "L1", job: job === "task-resolve" ? "resolve" : "refresh", by: actor, mainHead: f.main, expectedHead: f.task, ...(checking ? { checking } : {}) };
   const flag = (argv, name) => argv[argv.indexOf(name) + 1];
   const defaults = {
-    "refresh-lease": (argv) => argv.includes("--renew") ? { lease } : argv.includes("--release") ? { released: true } : ({ lease, workspace: { remote: f.fork, token: "w", defaultBranch: "main" }, baseline: { remote: f.baseline, token: "r", defaultBranch: "main" }, checks, commitIdentity: null }),
+    "refresh-lease": (argv) => argv.includes("--renew") ? { lease } : argv.includes("--release") ? { released: true } : argv.includes("--status") ? { head: f.task, lease: true, checking: null } : ({ lease, workspace: { remote: f.fork, token: "w", defaultBranch: "main" }, baseline: { remote: f.baseline, token: "r", defaultBranch: "main" }, checks, commitIdentity: null }),
     "refresh-pushing": () => ({ ...lease, pushing: {} }),
     refreshed: (argv) => ({ result: { outcome: argv.includes("--head") ? "refreshed" : "held", reason: checks.length && argv.includes("--head") ? "checks pending" : null } }),
     "refresh-failed": (argv) => {
@@ -326,6 +327,48 @@ test("a recorded refresh whose answer was lost is asked again, not taken back", 
   const state = await h.run();
   assert.equal(state.phase, "refreshed");
   assert.equal(forkHead(f), state.head);
+});
+
+test("a refresh the server recorded though both its answers were lost stays on the fork, and its lease is not given back", async (t) => {
+  const f = fixture(t, { task: { "task.txt": "task\n" }, main: { "main.txt": "main\n" } });
+  let recordedHead = f.task;
+  // The server records the refresh each time; the answers never arrive.
+  const h = harness(f, { checks: ["npm test"], answers: { refreshed: (argv) => { recordedHead = argv[argv.indexOf("--head") + 1]; throw new Error("socket hang up"); } } });
+  const answer = h.io.cli;
+  h.io.cli = async (argv) => {
+    if (argv[0] !== "refresh-lease" || !argv.includes("--status")) return answer(argv);
+    h.calls.push(argv);
+    return JSON.stringify({ head: recordedHead, lease: true, checking: recordedHead });
+  };
+  const state = await h.run();
+  assert.equal(state.phase, "failed");
+  assert.notEqual(recordedHead, f.task);
+  assert.equal(forkHead(f), recordedHead, "the push the ledger names is not taken back");
+  assert.deepEqual(released(h), []);
+  assert.ok(h.calls.some((c) => c[0] === "refresh-lease" && c.includes("--status")));
+});
+
+test("a push whose recorded head cannot be read is left on the fork rather than taken back", async (t) => {
+  const f = fixture(t, { task: { "task.txt": "task\n" }, main: { "main.txt": "main\n" } });
+  const h = harness(f, { answers: { refreshed: () => { throw new Error("socket hang up"); } } });
+  const answer = h.io.cli;
+  h.io.cli = async (argv) => { if (argv[0] === "refresh-lease" && argv.includes("--status")) { h.calls.push(argv); throw new Error("socket hang up"); } return answer(argv); };
+  await h.run();
+  assert.notEqual(forkHead(f), f.task);
+  assert.deepEqual(released(h), []);
+});
+
+test("a lease resumed at a recorded head runs only the checks and reports them under it", async (t) => {
+  const f = fixture(t, { task: { "task.txt": "task\n" }, main: { "main.txt": "main\n" } });
+  const recorded = git(f.root, "--git-dir", f.fork, "rev-parse", "main");
+  const h = harness(f, { checks: ["npm test"], checking: recorded });
+  const state = await h.run();
+  assert.deepEqual(state, { phase: "refreshed", head: recorded });
+  assert.deepEqual(h.verbs(), ["refresh-lease", "check", "refresh-checked"]);
+  const checked = h.calls.find((c) => c[0] === "refresh-checked");
+  assert.equal(checked[checked.indexOf("--expected-head") + 1], f.task);
+  assert.ok(checked.includes("--passed"));
+  assert.equal(forkHead(f), recorded);
 });
 
 test("a refused lease is no failure the runner counts", async (t) => {
