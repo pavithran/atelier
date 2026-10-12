@@ -8,7 +8,7 @@ import { actorStanding, modelState, OBSERVED_UNDER, withStanding, type ModelEntr
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
-  preparationPaths,
+  preparationPaths, ownerPortAllowed,
   REVIEW_RENEW_MS, reviewLeaseExpired,
   reviewerAdmission, admissionActor, familyRefusal, modelKey, type ReviewerAdmission,
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
@@ -1813,6 +1813,28 @@ export class Ledger extends DurableObject<Env> {
     });
   }
 
+  // Fence owner reservations separately from claims: porting grants no owner
+  // assignment. Share the token slot so the next claim revokes the port token.
+  reserveOwnerPort(id: string, actor: string) {
+    const item = this.item(id);
+    if (!ownerPortAllowed(item, actor, this.owner)) throw new RuleError("owner_port", "only the project owner may port to an open, unclaimed task", 403);
+    if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
+    const row = this.sql.exec(`SELECT claim_gen, token_id FROM items WHERE id = ?`, id).one();
+    const generation = crypto.randomUUID();
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `owner-port:${id}`, JSON.stringify({ generation, claimGeneration: row.claim_gen }));
+    return { item, generation, replaces: (row.token_id as string | null) ?? null };
+  }
+
+  recordOwnerPortToken(id: string, actor: string, generation: string, replaces: string | null, tokenId: string, expiresAt: string): boolean {
+    if (!ownerPortAllowed(this.item(id), actor, this.owner)) return false;
+    const row = this.sql.exec(`SELECT claim_gen, token_id FROM items WHERE id = ?`, id).one();
+    const reservation = this.runnerMeta<{ generation: string; claimGeneration: number }>(`owner-port:${id}`);
+    if (reservation?.generation !== generation || row.claim_gen !== reservation.claimGeneration || ((row.token_id as string | null) ?? null) !== replaces) return false;
+    this.sql.exec(`UPDATE items SET token_id = ? WHERE id = ?`, tokenId, id);
+    this.log(id, actor, "owner-port.token", { tokenId, expiresAt }, new Date().toISOString());
+    return true;
+  }
+
   // Minting a token waits on Artifacts, and meanwhile the item can be handed
   // off, released, abandoned or claimed again. So the token a claim minted is
   // recorded only while that claim still stands: the claimer owns the item,
@@ -2241,13 +2263,26 @@ export class Ledger extends DurableObject<Env> {
   // paths pass it; the Ledger's own tests, which run no scan, do not.
   recordPush(id: string, actor: string, observedHead: string, reportedHead: string | null, proved = false, lineage: PushLineage = { holdsRecorded: true, rebasedFrom: null }, authors: PushAuthor[] = [], scan = false): Item {
     const item = this.item(id);
-    if (item.state !== "accepted") assertLive(item);
-    assertOwner(item, actor);
+    // The owner may port work to a released fork without taking its claim
+    // or removing its dispatch. The next builder inherits the recorded head.
+    const ownerPort = ownerPortAllowed(item, actor, this.owner);
+    if (!ownerPort) {
+      if (item.state !== "accepted") assertLive(item);
+      assertOwner(item, actor);
+    }
     const landing = this.landing(id);
     if (item.state === "accepted" && landing && item.head !== observedHead) {
       throw new RuleError("landing", `${id} is being merged at ${landing.slice(0, 8)}; push again once it has landed`, 409);
     }
-    if (item.head === observedHead) return item;
+    if (item.head === observedHead) {
+      // The fork notification may have observed this port before the owner's
+      // push request. Still credit the owner, without moving the head again.
+      if (ownerPort && !item.pushActors?.includes(actor)) {
+        this.log(id, actor, "push.observed", { head: observedHead, ...this.otherAuthors(item, authors) }, new Date().toISOString(), proved);
+        return this.item(id);
+      }
+      return item;
+    }
     const rewritten = !!item.head && !lineage.holdsRecorded;
     const unverified = rewritten && lineage.holdsRecorded === null;
     if (rewritten && lineage.rebasedFrom !== item.head) {
@@ -2260,7 +2295,7 @@ export class Ledger extends DurableObject<Env> {
     const reopened = item.state === "accepted";
     this.update(id, {
       head: observedHead, last_push_at: now,
-      state: item.state === "submitted" ? "submitted" : "claimed",
+      state: ownerPort ? "open" : item.state === "submitted" ? "submitted" : "claimed",
       ...(reopened ? { accepted_head: null } : {}),
       ...(scan ? { secret_scan: observedHead } : {}),
     }, now);
