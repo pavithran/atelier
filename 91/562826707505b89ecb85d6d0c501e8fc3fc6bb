@@ -1,0 +1,97 @@
+atelier atelier/t396 "Review a merged task after the fact"
+accepted head 2307e87791f18a3f2c3e9ef04992bef11f789292
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6.1-sol (openai)
+CONTRIBUTOR claude-code/opus-5.5 (anthropic)
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-12T05:04:23.911Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-12T05:04:27.697Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-12T05:16:10.584Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-12T05:16:14.278Z
+REVIEW approve by codex/gpt-6-astra at 2307e87791f18a3f2c3e9ef04992bef11f789292, recorded by codex/gpt-6-astra
+REVIEW approve by opencode/glm-5.3 at 2307e87791f18a3f2c3e9ef04992bef11f789292, recorded by opencode/glm-5.3
+2026-10-09T19:27:12.160Z pavi item.created
+2026-10-09T19:45:53.177Z pavi item.dispatched
+2026-10-10T01:46:13.323Z pavi item.dispatched
+2026-10-10T02:45:26.328Z codex/gpt-6.1-sol item.claimed
+2026-10-10T02:45:35.735Z codex/gpt-6.1-sol fork.created
+2026-10-10T03:05:49.680Z codex/gpt-6.1-sol push.observed
+2026-10-10T03:05:50.955Z atelier/events secret.flagged
+2026-10-10T03:10:54.001Z codex/gpt-6.1-sol evidence.observed
+2026-10-10T03:10:56.782Z codex/gpt-6.1-sol evidence.observed
+2026-10-10T03:10:57.297Z codex/gpt-6.1-sol item.submitted
+2026-10-10T04:55:06.077Z pavi land.lease
+2026-10-10T04:55:20.741Z pavi land.merge
+2026-10-10T06:43:32.380Z pavi land.merge
+2026-10-10T06:43:41.024Z pavi land.regenerate
+2026-10-10T06:43:44.099Z codex/gpt-6.1-sol push.observed
+2026-10-10T06:43:44.945Z atelier/events secret.flagged
+2026-10-10T06:43:45.043Z pavi land.push
+2026-10-10T06:47:00.513Z codex/gpt-6.1-sol evidence.observed
+2026-10-10T06:47:02.865Z codex/gpt-6.1-sol evidence.observed
+2026-10-10T06:47:03.266Z pavi land.check
+2026-10-10T06:47:04.086Z pavi review.requested
+2026-10-10T06:47:04.086Z pavi review.requested
+2026-10-10T06:47:08.083Z claude-code/opus-5.5 review.claimed
+2026-10-10T06:47:09.049Z claude-code/opus-5.5 review.diff
+2026-10-10T06:47:15.055Z codex/gpt-6-astra review.claimed
+2026-10-10T06:47:21.412Z codex/gpt-6-astra review.diff
+2026-10-10T06:49:12.173Z codex/gpt-6-astra review.rejected
+2026-10-10T06:49:20.198Z pavi land.review
+2026-10-10T06:49:32.586Z pavi review.finding
+2026-10-10T06:49:33.650Z pavi item.released
+2026-10-10T06:49:33.650Z pavi item.dispatched
+2026-10-10T06:49:50.768Z claude-code/opus-5.5 review.released
+2026-10-10T06:49:53.382Z codex/gpt-6.1-sol item.claimed
+2026-10-10T06:55:28.023Z atelier/orchestrator review.withdrawn
+2026-10-10T06:55:28.023Z codex/gpt-6.1-sol push.observed
+2026-10-10T06:55:28.957Z atelier/events secret.flagged
+2026-10-10T07:00:27.197Z codex/gpt-6.1-sol evidence.observed
+2026-10-10T07:00:30.328Z codex/gpt-6.1-sol evidence.observed
+2026-10-10T07:00:30.843Z codex/gpt-6.1-sol item.submitted
+2026-10-10T07:00:30.843Z atelier/orchestrator review.requested
+2026-10-10T07:00:30.843Z atelier/orchestrator review.requested
+2026-10-10T07:00:49.155Z claude-code/opus-5.5 review.claimed
+2026-10-10T07:00:49.966Z claude-code/opus-5.5 review.diff
+2026-10-10T07:02:20.776Z claude-code/opus-5.5 review.approved
+2026-10-10T07:02:51.634Z codex/gpt-6-astra review.claimed
+2026-10-10T07:02:52.646Z codex/gpt-6-astra review.diff
+2026-10-10T07:04:13.818Z codex/gpt-6-astra review.rejected
+2026-10-10T08:05:03.536Z pavi land.lease
+2026-10-10T08:05:19.175Z pavi land.merge
+2026-10-10T08:05:28.890Z pavi item.released
+2026-10-10T08:05:28.890Z pavi item.dispatched
+2026-10-10T16:41:44.115Z pavi item.dispatched
+2026-10-10T17:01:02.604Z codex/gpt-6.1-sol item.claimed
+2026-10-10T17:05:44.137Z codex/gpt-6.1-sol push.observed
+2026-10-10T17:05:49.304Z atelier/events secret.flagged
+2026-10-10T17:10:03.559Z codex/gpt-6.1-sol evidence.observed
+2026-10-10T17:10:32.400Z codex/gpt-6.1-sol evidence.observed
+2026-10-10T17:10:33.055Z codex/gpt-6.1-sol item.submitted
+2026-10-11T18:25:02.570Z pavi item.released
+2026-10-11T18:25:02.570Z pavi item.dispatched
+2026-10-12T02:10:48.405Z codex/gpt-6.1-sol item.claimed
+2026-10-12T04:54:33.590Z pavi item.handoff
+2026-10-12T04:58:34.553Z claude-code/opus-5.5 push.observed
+2026-10-12T04:58:35.681Z atelier/events secret.resolved
+2026-10-12T04:58:39.725Z claude-code/opus-5.5 item.submitted
+2026-10-12T05:04:24.752Z claude-code/opus-5.5 evidence.observed
+2026-10-12T05:04:27.978Z claude-code/opus-5.5 evidence.observed
+2026-10-12T05:04:28.536Z claude-code/opus-5.5 item.submitted
+2026-10-12T05:10:24.518Z pavi land.lease
+2026-10-12T05:10:30.530Z pavi land.merge
+2026-10-12T05:10:41.792Z pavi land.regenerate
+2026-10-12T05:10:43.308Z pavi land.push
+2026-10-12T05:16:11.381Z claude-code/opus-5.5 evidence.observed
+2026-10-12T05:16:14.771Z claude-code/opus-5.5 evidence.observed
+2026-10-12T05:16:15.209Z pavi land.check
+2026-10-12T05:16:18.136Z pavi review.requested
+2026-10-12T05:16:18.136Z pavi review.requested
+2026-10-12T05:16:25.261Z opencode/glm-5.3 review.claimed
+2026-10-12T05:16:25.769Z codex/gpt-6-astra review.claimed
+2026-10-12T05:16:26.155Z opencode/glm-5.3 review.diff
+2026-10-12T05:16:26.638Z codex/gpt-6-astra review.diff
+2026-10-12T05:17:56.689Z codex/gpt-6-astra review.approved
+2026-10-12T05:23:55.743Z opencode/glm-5.3 review.approved
+2026-10-12T05:24:09.387Z pavi land.review
+2026-10-12T05:24:10.136Z pavi item.accepted
+2026-10-12T05:24:10.164Z pavi land.accept
