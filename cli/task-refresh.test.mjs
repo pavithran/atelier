@@ -57,9 +57,9 @@ function fixture(t, { base = {}, task = {}, main = {} } = {}) {
 // The runner's io for the job, with git run for real and the CLI faked:
 // `answers[verb]` answers a command (a function of its argv), and every
 // call is kept in `calls`.
-function harness(f, { job = "task-refresh", actor = job === "task-resolve" ? "claude-code/opus-5.5" : "atelier/integrator", answers = {}, resolve, checks = [], gitFault, renewMs, checking } = {}) {
+function harness(f, { job = "task-refresh", actor = job === "task-resolve" ? "claude-code/opus-5.5" : "atelier/integrator", answers = {}, resolve, checks = [], gitFault, renewMs, checking, pushing } = {}) {
   const calls = [], logs = [], reports = [];
-  const lease = { id: "L1", job: job === "task-resolve" ? "resolve" : "refresh", by: actor, mainHead: f.main, expectedHead: f.task, ...(checking ? { checking } : {}) };
+  const lease = { id: "L1", job: job === "task-resolve" ? "resolve" : "refresh", by: actor, mainHead: f.main, expectedHead: f.task, ...(checking ? { checking } : {}), ...(pushing ? { pushing } : {}) };
   const flag = (argv, name) => argv[argv.indexOf(name) + 1];
   const defaults = {
     "refresh-lease": (argv) => argv.includes("--renew") ? { lease } : argv.includes("--release") ? { released: true } : argv.includes("--status") ? { head: f.task, lease: true, checking: null } : ({ lease, workspace: { remote: f.fork, token: "w", defaultBranch: "main" }, baseline: { remote: f.baseline, token: "r", defaultBranch: "main" }, checks, commitIdentity: null }),
@@ -311,13 +311,14 @@ test("checks that fail at the refreshed head are reported, and the task goes bac
   assert.match(checked[checked.indexOf("--reason") + 1], /FAIL npm test/);
 });
 
-test("a push the server would not record is taken back off the fork, only while the fork is still at it", async (t) => {
+test("a pushed head whose report is refused remains fenced for recovery", async (t) => {
   const f = fixture(t, { task: { "task.txt": "task\n" }, main: { "main.txt": "main\n" } });
   const h = harness(f, { answers: { refreshed: () => { throw new Error("head_moved"); } } });
   const state = await h.run();
   assert.equal(state.phase, "failed");
   assert.equal(h.verbs().filter((v) => v === "refreshed").length, 2);
-  assert.equal(forkHead(f), f.task);
+  assert.notEqual(forkHead(f), f.task);
+  assert.deepEqual(released(h), []);
 });
 
 test("a recorded refresh whose answer was lost is asked again, not taken back", async (t) => {
@@ -413,13 +414,13 @@ test("an exception from the moved-code detector is reported as the lease's relea
   assert.equal(forkHead(f), f.task);
 });
 
-test("a push the server would not record is taken back, then its lease given back", async (t) => {
+test("a refused refresh report never starts a rollback or releases the push fence", async (t) => {
   const f = fixture(t, { task: { "task.txt": "task\n" }, main: { "main.txt": "main\n" } });
   const h = harness(f, { answers: { refreshed: () => { throw new Error("head_moved"); } } });
   await h.run();
-  assert.equal(forkHead(f), f.task);
-  assert.equal(released(h).length, 1);
-  assert.deepEqual(h.verbs().slice(-1), ["refresh-lease"]);
+  assert.notEqual(forkHead(f), f.task);
+  assert.equal(released(h).length, 0);
+  assert.ok(!h.verbs().includes("refresh-failed"));
 });
 
 test("a recorded outcome is never followed by a release", async (t) => {
@@ -470,4 +471,56 @@ test("the diff identity ignores line numbers and blob ids", () => {
   assert.equal(diffIdentity(a), diffIdentity(b));
   assert.notEqual(diffIdentity(a), diffIdentity(a.replace("+b", "+c")));
   assert.equal(diffIdentity(""), null);
+});
+
+for (const outcome of ["pushed", "not-pushed", "moved", "unreachable"]) {
+  test(`reconcile a crashed push: ${outcome}`, async (t) => {
+    const f = fixture(t, { task: { "task.txt": "task\n" }, main: { "main.txt": "main\n" } });
+    const first = harness(f);
+    const head = (await first.run()).head;
+    if (outcome === "not-pushed") git(f.work, "push", "--quiet", "--force", f.fork, `${f.task}:refs/heads/main`);
+    if (outcome === "moved") git(f.work, "push", "--quiet", "--force", f.fork, `${f.main}:refs/heads/main`);
+    const h = harness(f, { checks: ["npm test"], pushing: { head, until: new Date(0).toISOString() }, gitFault: (args) => outcome === "unreachable" && args[0] === "ls-remote" });
+    await h.run();
+    assert.ok(!h.verbs().includes("refresh-pushing"));
+    if (outcome === "pushed") {
+      assert.deepEqual(h.verbs(), ["refresh-lease", "refreshed", "check", "refresh-checked"]);
+      assert.equal(forkHead(f), head);
+    } else if (outcome === "unreachable") {
+      assert.ok(!h.verbs().includes("refresh-failed"));
+      assert.equal(forkHead(f), head);
+    } else {
+      assert.deepEqual(h.verbs(), ["refresh-lease", "refresh-failed"]);
+    }
+  });
+}
+
+test("pushes have a bounded execution timeout", async (t) => {
+  const f = fixture(t, { task: { "task.txt": "task\n" }, main: { "main.txt": "main\n" } });
+  const h = harness(f);
+  const run = h.io.git;
+  let pushes = 0;
+  h.io.git = (args, options) => {
+    if (args[0] === "push") { pushes++; assert.equal(options.timeoutMs, 120000); }
+    return run(args, options);
+  };
+  await h.run();
+  assert.equal(pushes, 1);
+});
+
+for (const timeout of [false, true]) test(`a push that changes the fork then ${timeout ? "times out" : "returns an error"} retains its check obligation`, async (t) => {
+  const f = fixture(t, { task: { "task.txt": "task\n" }, main: { "main.txt": "main\n" } });
+  const h = harness(f, { checks: ["npm test"] });
+  const run = h.io.git;
+  h.io.git = async (args, options) => {
+    const result = await run(args, options);
+    if (args[0] !== "push") return result;
+    if (timeout) throw new Error("git push timed out");
+    return { status: 1, stderr: "remote hung up after receiving the commit" };
+  };
+  await h.run();
+  assert.notEqual(forkHead(f), f.task);
+  assert.deepEqual(released(h), []);
+  assert.ok(!h.verbs().includes("refresh-failed"));
+  if (!timeout) assert.deepEqual(h.verbs().slice(-3), ["refreshed", "check", "refresh-checked"]);
 });

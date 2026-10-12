@@ -112,12 +112,21 @@ export function takeLease(target: RefreshTarget, input: { job: RefreshJob; actor
   if (target.lease && leaseLive(target.lease, now)) {
     throw new RuleError("refresh_leased", `${target.item}'s refresh from main at ${target.lease.mainHead.slice(0, 8)} is leased to ${target.lease.by} until ${target.lease.until}`, 409);
   }
+  if (target.lease?.pushing && Date.parse(target.lease.pushing.until) > now) {
+    throw new RuleError("refresh_pushing", `${target.item}'s announced push has not settled`, 409);
+  }
   const was = target.lease?.job ?? (target.state === "resolve" ? "resolve" : "refresh");
   // A lease that lapsed while its holder ran the required checks at the head
   // its refresh recorded resumes there: the same job, merging the same main
   // head from the same starting head, with only the checks left to run.
   const lapsed = target.lease;
-  if (target.state === "leased" && lapsed?.checking && job === lapsed.job && head === lapsed.checking && lapsed.mainHead === target.mainHead) {
+  // An announced push survives a lost report, even if observePush has
+  // already moved the ledger head or a newer main target has arrived.
+  if (target.state === "leased" && lapsed?.pushing) {
+    if (job !== lapsed.job || !input.same(lapsed.by, actor)) throw new RuleError("not_leaseholder", "the announced push must be reconciled by its original actor", 409);
+    return { ...lapsed, id: input.id, runner: input.runner, tokenId: undefined, at: new Date(now).toISOString(), until: new Date(now + LEASE_MS).toISOString() };
+  }
+  if (target.state === "leased" && lapsed?.checking && job === lapsed.job && head === lapsed.checking) {
     if (job === "resolve" && (!target.resolver || !input.same(target.resolver, actor))) throw new RuleError("not_resolver", `${target.item}'s conflict is for ${target.resolver ?? "no resolver"}, not ${actor}`, 403);
     return { id: input.id, job, by: actor, runner: input.runner, mainHead: lapsed.mainHead, expectedHead: lapsed.expectedHead, checking: lapsed.checking, at: new Date(now).toISOString(), until: new Date(now + LEASE_MS).toISOString() };
   }
@@ -172,6 +181,7 @@ export function headMoved(target: RefreshTarget, head: string | null, at: string
   const waiting = ["resolve", "waiting", "returned"].includes(target.state);
   const lapsed = target.state === "leased" && target.lease?.job === "resolve" && !leaseLive(target.lease, now);
   const queuedAgain = { ...target, state: "queued" as const, updatedAt: at, expectedHead: null, resolver: null, wait: null, report: null };
+  if (target.lease?.pushing || (target.lease?.checking === head && head !== null)) return target;
   if (lapsed && target.lease!.mainHead !== target.mainHead) return queuedAgain;
   if (!(waiting || lapsed) || !target.expectedHead || target.expectedHead === head) return target;
   return queuedAgain;
