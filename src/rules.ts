@@ -1879,20 +1879,40 @@ export function repoName(project: string, itemId?: string): string {
   return name;
 }
 
-// Local cache cleanup requires proof that no unpublished work will be lost.
-// A merged item's proof is its accepted head; an abandoned item, which never
-// merges, is proved by the last head Atelier recorded for it, so its workspace
-// goes only when it still sits at that head with nothing else in it.
-export function gcWorkspaceReason(
-  item: Pick<Item, "state" | "head" | "acceptedHead"> | undefined,
-  head: string, dirty: boolean, extraCommits: boolean,
+// Files Git ignores that a build or install makes again, so a finished
+// workspace holding them loses nothing when it goes: dependencies, build
+// output, caches and generated types. Any other ignored file (a harness's
+// logs under .scratch/, a .env, renders) is work Git would not keep (t561).
+const REBUILDABLE_DIRS = new Set(["node_modules", "dist", "build", ".build", "DerivedData", ".cache", "coverage", ".next", ".turbo", "__pycache__", ".pytest_cache"]);
+const REBUILDABLE_FILES = new Set(["worker-configuration.d.ts", ".DS_Store"]);
+
+// The ignored paths (as `git status --ignored=matching` names them, a
+// directory with its trailing slash) that are not rebuildable output.
+export function unkeptIgnored(paths: string[]): string[] {
+  return paths.filter((path) => {
+    const parts = path.replace(/\/$/, "").split("/");
+    const base = parts[parts.length - 1];
+    if (parts.some((part) => REBUILDABLE_DIRS.has(part))) return false;
+    return !REBUILDABLE_FILES.has(base) && !base.endsWith(".tsbuildinfo") && !base.endsWith(".pyc");
+  });
+}
+
+// Whether a finished task's workspace may go (t561), or why it stays.
+// Removal is permanent, so it goes only against proof that nothing is lost:
+// the item merged or was abandoned; its HEAD is a head Atelier recorded (the
+// fork's last head or the merge's accepted head) or is in main; it has no
+// changed or untracked files; the ignored files it holds are all rebuildable
+// output (`ignored` lists the others); and every commit it reaches is under
+// a recorded head or in main.
+export function finishedWorkspaceReason(
+  item: Pick<Item, "state"> | undefined,
+  { atLedgerHead, headInMain, dirty, ignored, extraCommits }: { atLedgerHead: boolean; headInMain: boolean; dirty: boolean; ignored: string[]; extraCommits: boolean },
 ): string | null {
   if (item?.state !== "merged" && item?.state !== "abandoned") return "item is neither merged nor abandoned";
-  const abandoned = item!.state === "abandoned";
-  const proof = abandoned ? item!.head : item!.acceptedHead;
-  if (!proof || head !== proof) return abandoned ? "HEAD is not the last head Atelier recorded" : "HEAD is not the merged head";
+  if (!atLedgerHead && !headInMain) return "HEAD is neither the head Atelier recorded nor in main";
   if (dirty) return "contains changed or untracked files";
-  if (extraCommits) return abandoned ? "contains commits outside the recorded history" : "contains commits outside the merged history";
+  if (ignored.length) return `holds ignored files that are not rebuildable output: ${ignored.slice(0, 5).join(", ")}${ignored.length > 5 ? ` and ${ignored.length - 5} more` : ""}`;
+  if (extraCommits) return "contains commits neither Atelier's record nor main holds";
   return null;
 }
 

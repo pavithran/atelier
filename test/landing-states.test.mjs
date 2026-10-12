@@ -99,7 +99,7 @@ async function landing(t, { fresh = false } = {}) {
   // A new revision of the task, pushed to its fork.
   const revise = (text) => { writeFileSync(join(workspace, 'work.txt'), text); git(workspace, 'commit', '-q', '-am', `Task: ${text.trim()}`); git(workspace, 'push', '-q', 'origin', 'main'); return git(workspace, 'rev-parse', 'HEAD'); };
   const H1 = revise('changed\n');
-  const box = { state: 'accepted', head: H1, acceptedHead: H1, lease: null, gate: null, withdraw: false, failLanding: false, failMerge: false, requests: [] };
+  const box = { state: 'accepted', head: H1, acceptedHead: H1, lease: null, gate: null, withdraw: false, failLanding: false, failMerge: false, failItemAfterMerge: false, requests: [] };
   const server = createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
@@ -109,6 +109,8 @@ async function landing(t, { fresh = false } = {}) {
     if (path === '/api/version') return reply(200, { capabilities: SERVER_CAPABILITIES });
     box.requests.push({ method: req.method, path, body });
     const item = () => ({ id: 't1', title: 'Fixture task', state: box.state, owner: 'codex/test', head: box.head, acceptedHead: box.acceptedHead });
+    // A ledger that stops answering once the merge is recorded (t561).
+    if (path === '/api/projects/proj/items/t1' && req.method === 'GET' && box.failItemAfterMerge && box.state === 'merged') return reply(503, { error: 'temporary', detail: 'ledger down' });
     if (path === '/api/projects/proj/items/t1' && req.method === 'GET') return reply(200, { item: item(), policy: { checks: [], protected: [], commitIdentity: { name: 'Fixture', email: 'fixture@example.invalid', agentEmails: [] } }, gate: { ready: true, outOfScope: [], blockers: [] }, evidence: [], reviews: [], events: [] });
     if (path.endsWith('/baseline-token')) return reply(200, { remote: baseline, token: 'fixture', defaultBranch: 'main' });
     if (path.endsWith('/read-token')) return reply(200, { remote: fork, token: 'fixture', head: box.head, defaultBranch: 'main' });
@@ -227,6 +229,23 @@ test('a merge removes the task\'s workspace once its work is in main, and keeps 
   assert.equal(again.status, 0, again.output);
   assert.ok(again.output.includes(`Removed t1's workspace ${ws}`), again.output);
   assert.ok(!existsSync(ws));
+});
+
+// The ledger failed the read that comes before the workspace's removal, and
+// the merge, already made, exited 4 before what follows it (t561 pre-review).
+test('a ledger that fails after the merge leaves the workspace and does not fail the merge', async (t) => {
+  const f = await landing(t);
+  const ws = join(f.cache, 'work', 'proj', 't1');
+  mkdirSync(join(f.cache, 'work', 'proj'), { recursive: true });
+  f.git(f.p, 'clone', '-q', f.fork, ws);
+  f.git(ws, 'config', 'atelier.project', 'proj'); f.git(ws, 'config', 'atelier.item', 't1');
+  f.box.failItemAfterMerge = true;
+  const r = await f.run('merge', 't1');
+  assert.equal(r.status, 0, r.output);
+  assert.equal(f.box.state, 'merged');
+  assert.ok(r.output.includes("t1's workspace was left in place: temporary: ledger down"), r.output);
+  assert.ok(r.output.includes('The project branch was not pushed to its own remotes.'), r.output);
+  assert.ok(existsSync(ws));
 });
 
 // The server recorded the merge and the process stopped before it removed

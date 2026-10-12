@@ -22,7 +22,9 @@ export default async function mergeCommand() {
   const cleanWorkspace = async (name, id, branch, cwd) => {
     if (!existsSync(join(CACHE, "work", name, id))) return;
     try {
-      const getItem = async () => (await call("GET", I(name, id), undefined, OWNER)).item;
+      // request throws where call would end the command: a ledger that
+      // fails after the merge must not fail it or skip what follows.
+      const getItem = async () => (await request("GET", I(name, id), undefined, OWNER)).item;
       await collectCache({ cache: CACHE, name, items: [await getItem()], getItem, apply: true, only: id, main: { dir: cwd, branch },
         log: (line) => console.log(line.replace(/^REMOVED /, `Removed ${id}'s workspace `).replace(/^KEEP +(.*?): /, `Kept ${id}'s workspace $1: `)) });
     } catch (error) { console.log(`${id}'s workspace was left in place: ${error.message}`); }

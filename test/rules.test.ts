@@ -358,23 +358,32 @@ test("a live task blocks an overlapping claim by one rule in every state, and th
   }
 });
 
-test("gc removes clean workspaces at a head that proves nothing is unpublished", async () => {
-  const { gcWorkspaceReason } = await import("../src/rules.ts");
-  assert.equal(gcWorkspaceReason(item({ state: "merged", acceptedHead: H1 }), H1, false, false), null);
-  // An abandoned item never merges; the last head Atelier recorded is its proof.
-  assert.equal(gcWorkspaceReason(item({ state: "abandoned" }), H1, false, false), null);
-  assert.ok(gcWorkspaceReason(item({ state: "abandoned" }), H1, true, false));
-  assert.ok(gcWorkspaceReason(item({ state: "abandoned" }), H1, false, true));
-  assert.ok(gcWorkspaceReason(item({ state: "abandoned", head: H2 }), H1, false, false));
-  assert.ok(gcWorkspaceReason(item({ state: "abandoned", head: null }), H1, false, false));
-  for (const state of ["open", "claimed", "submitted", "accepted"] as const) {
-    assert.match(gcWorkspaceReason(item({ state, acceptedHead: H1 }), H1, false, false)!, /neither merged nor abandoned/);
+test("a finished workspace goes only against proof that nothing is lost, ignored work included (t561)", async () => {
+  const { finishedWorkspaceReason } = await import("../src/rules.ts");
+  const clean = { atLedgerHead: true, headInMain: false, dirty: false, ignored: [] as string[], extraCommits: false };
+  for (const state of ["merged", "abandoned"] as const) {
+    assert.equal(finishedWorkspaceReason(item({ state }), clean), null, state);
+    assert.equal(finishedWorkspaceReason(item({ state }), { ...clean, atLedgerHead: false, headInMain: true }), null, state);
   }
-  assert.ok(gcWorkspaceReason(undefined, H1, false, false));
-  assert.ok(gcWorkspaceReason(item({ state: "merged" }), H1, false, false));
-  assert.ok(gcWorkspaceReason(item({ state: "merged", acceptedHead: H2 }), H1, false, false));
-  assert.ok(gcWorkspaceReason(item({ state: "merged", acceptedHead: H1 }), H1, true, false));
-  assert.ok(gcWorkspaceReason(item({ state: "merged", acceptedHead: H1 }), H1, false, true));
+  for (const state of ["open", "claimed", "submitted", "accepted"] as const) {
+    assert.match(finishedWorkspaceReason(item({ state }), clean)!, /neither merged nor abandoned/);
+  }
+  assert.match(finishedWorkspaceReason(undefined, clean)!, /neither merged nor abandoned/);
+  assert.match(finishedWorkspaceReason(item({ state: "merged" }), { ...clean, atLedgerHead: false })!, /neither the head Atelier recorded nor in main/);
+  assert.match(finishedWorkspaceReason(item({ state: "merged" }), { ...clean, dirty: true })!, /changed or untracked/);
+  assert.match(finishedWorkspaceReason(item({ state: "merged" }), { ...clean, extraCommits: true })!, /commits neither/);
+  // A harness's logs under .scratch/ were removed without a word (t561 pre-review).
+  assert.equal(finishedWorkspaceReason(item({ state: "merged" }), { ...clean, ignored: [".scratch/", ".env"] }),
+    "holds ignored files that are not rebuildable output: .scratch/, .env");
+  const many = ["a", "b", "c", "d", "e", "f", "g"];
+  assert.match(finishedWorkspaceReason(item({ state: "abandoned" }), { ...clean, ignored: many })!, /: a, b, c, d, e and 2 more$/);
+});
+
+test("only rebuildable output among ignored files lets a finished workspace go (t561)", async () => {
+  const { unkeptIgnored } = await import("../src/rules.ts");
+  assert.deepEqual(unkeptIgnored(["node_modules/", "web/node_modules/", ".cache/", "dist/", "worker-configuration.d.ts", "app/.DS_Store", "tsconfig.tsbuildinfo"]), []);
+  assert.deepEqual(unkeptIgnored([".scratch/", ".env", ".env.local", "renders/", ".wrangler/", ".ai-project-data/", "notes.md"]),
+    [".scratch/", ".env", ".env.local", "renders/", ".wrangler/", ".ai-project-data/", "notes.md"]);
 });
 
 test("gc requires an expired check record and no live process", async () => {
