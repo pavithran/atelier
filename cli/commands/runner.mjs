@@ -71,6 +71,18 @@ export default async function runnerCommand() {
         if (incomplete) console.log(`Could not read: ${incomplete}. Tasks waiting there are not listed.`);
         return res.json();
       },
+      // A busy runner's heartbeat (t537): its offer, marked as a heartbeat,
+      // renews its last poll while a job runs, so the claim it builds under
+      // is not taken for one its runner orphaned. Nothing is offered back.
+      async heartbeat(offer, signal) {
+        await resolveTokenActor();
+        const res = await fetch(server() + "/api/queue", {
+          method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+          headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER, "content-type": "application/json" },
+          body: JSON.stringify({ ...offer, heartbeat: true }),
+        });
+        if (!res.ok) throw new Error(`heartbeat: ${res.status}`);
+      },
       hasPreparation,
       async jobBrief(project, id, actor) {
         await resolveTokenActor();
