@@ -11,8 +11,8 @@ import { signIn } from "./signin.ts";
 // against the keys the team publishes, which jose fetches, so global fetch
 // serves them — while the public pages, the sign-out form and the /api routes,
 // whose bearer tokens never pass Access, stand as before. /login is behind
-// the check with its token form, so the server token can only be tried by
-// whoever Access vouches for as the owner.
+// the check, and the owner's assertion itself starts the session there or on
+// any owner page (t534): behind Access there is no token form at all.
 
 const ISS = "https://atelier-test.cloudflareaccess.com";
 const AUD = "47c6b47feb5b3f0dcbe5f3f7f9e1d2c8";
@@ -75,33 +75,104 @@ it("owner pages are refused without an assertion Access signed for the owner, wi
   } finally { send.mockRestore(); }
 });
 
-it("a signed assertion lets the owner's pages through, and the session still decides what they show", async () => {
+const SESSION = /^atelier=([a-f0-9]{64}); Path=\/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000$/;
+const sessionOf = (res: Response) => SESSION.exec(res.headers.get("set-cookie") ?? "")?.[1];
+
+// t534: behind Access the owner's verified assertion is the sign-in. /login
+// and any owner page start the 30-day session at once, with no token form.
+it("a valid owner assertion starts a session at /login and on any owner page, with no token form", async () => {
   const send = serveKeys();
   try {
     const jwt = await assertion();
-    // Behind Access but not signed in: Home still asks for the token.
-    const door = await get("/home", { "cf-access-jwt-assertion": jwt });
-    expect(door.status).toBe(303);
-    expect(door.headers.get("location")).toBe("https://atelier.test/login");
-    // /login serves behind Access: Access first, the server token after.
-    const form = await get("/login", { "cf-access-jwt-assertion": jwt });
-    expect(form.status).toBe(200);
-    const wrong = await worker.fetch(new Request("https://atelier.test/login", {
-      method: "POST", body: new URLSearchParams({ token: "no" }), headers: { "cf-access-jwt-assertion": jwt }, redirect: "manual",
-    }), bindings);
-    expect(wrong.status).toBe(401);
-    // The sign-in lands on Home, at /home.
-    const right = await worker.fetch(new Request("https://atelier.test/login", {
-      method: "POST", body: new URLSearchParams({ token: TOKEN }), headers: { "cf-access-jwt-assertion": jwt }, redirect: "manual",
-    }), bindings);
-    expect(right.status).toBe(303);
-    expect(right.headers.get("location")).toBe("/home");
-    const cookie = await signIn(TOKEN, bindings, { "cf-access-jwt-assertion": jwt });
-    const home = await get("/home", { cookie, "cf-access-jwt-assertion": jwt });
+    const login = await get("/login", { "cf-access-jwt-assertion": jwt });
+    expect(login.status).toBe(303);
+    expect(login.headers.get("location")).toBe("/home");
+    const id = sessionOf(login);
+    expect(id).toBeTruthy();
+    const home = await get("/home", { cookie: `atelier=${id}`, "cf-access-jwt-assertion": jwt });
     expect(home.status).toBe(200);
+    expect(home.headers.get("set-cookie")).toBeNull();
     expect(await home.text()).toContain("<title>Home · Atelier</title>");
-    const models = await get("/models", { cookie, "cf-access-jwt-assertion": jwt });
+    // Signed in already, /login keeps the session and goes on to Home.
+    const again = await get("/login", { cookie: `atelier=${id}`, "cf-access-jwt-assertion": jwt });
+    expect(again.status).toBe(303);
+    expect(again.headers.get("set-cookie")).toBeNull();
+    // An owner page opened with no session is served signed in, and starts one.
+    const models = await get("/models", { "cf-access-jwt-assertion": jwt, "sec-fetch-site": "none" });
     expect(models.status).toBe(200);
+    const page = await models.text();
+    expect(page).not.toContain('name="token"');
+    expect(page).toContain('action="/logout"');
+    const second = sessionOf(models);
+    expect(second).toBeTruthy();
+    expect(second).not.toBe(id);
+    expect((await get("/usage", { cookie: `atelier=${second}`, "cf-access-jwt-assertion": jwt })).headers.get("set-cookie")).toBeNull();
+    // A token posted at the old form is not needed: the assertion signs in.
+    const posted = await worker.fetch(new Request("https://atelier.test/login", {
+      method: "POST", body: new URLSearchParams({ token: "no" }), headers: { origin: "https://atelier.test", "cf-access-jwt-assertion": jwt }, redirect: "manual",
+    }), bindings);
+    expect(posted.status).toBe(303);
+    expect(sessionOf(posted)).toBeTruthy();
+  } finally { send.mockRestore(); }
+});
+
+it("another email, a forged or expired assertion, or a cross-origin request never starts a session", async () => {
+  const send = serveKeys();
+  try {
+    const forger = await generateKeyPair("RS256");
+    const forged = await new SignJWT({ email: OWNER }).setProtectedHeader({ alg: "RS256", kid: "atelier-test" })
+      .setIssuer(ISS).setAudience(AUD).setIssuedAt().setExpirationTime("5m").sign(forger.privateKey);
+    for (const jwt of [await assertion("5m", "someone.else@example.com"), forged, await assertion("-1m"), "not-a-jwt"]) {
+      for (const path of ["/login", "/home", "/models"]) {
+        const res = await get(path, { "cf-access-jwt-assertion": jwt });
+        expect(res.status, path).toBe(401);
+        expect(res.headers.get("set-cookie"), path).toBeNull();
+      }
+    }
+    const jwt = await assertion();
+    // A form post from another site is refused, and starts nothing.
+    const foreign = await worker.fetch(new Request("https://atelier.test/login", {
+      method: "POST", body: new URLSearchParams({ token: TOKEN }), headers: { origin: "https://evil.test", "cf-access-jwt-assertion": jwt }, redirect: "manual",
+    }), bindings);
+    expect(foreign.status).toBe(403);
+    expect(foreign.headers.get("set-cookie")).toBeNull();
+    // A page load from another site — Access's own hop back is one — gets a
+    // page that reloads the address from this origin, and no session.
+    for (const path of ["/login", "/home", "/p/some-project?tab=1"]) {
+      const res = await get(path, { "cf-access-jwt-assertion": jwt, "sec-fetch-site": "cross-site" });
+      expect(res.status, path).toBe(200);
+      expect(res.headers.get("set-cookie"), path).toBeNull();
+      const body = await res.text();
+      expect(body, path).toContain(`<meta http-equiv="refresh" content="0;url=${path === "/login" ? "/home" : path}">`);
+    }
+    // A form post with no session is no sign-in: it goes to /login, untouched.
+    const add = await worker.fetch(new Request("https://atelier.test/models/add", {
+      method: "POST", headers: { origin: "https://atelier.test", "cf-access-jwt-assertion": jwt }, body: new URLSearchParams({ id: "x/y" }), redirect: "manual",
+    }), bindings);
+    expect(add.status).toBe(303);
+    expect(add.headers.get("location")).toBe("https://atelier.test/login");
+    expect(add.headers.get("set-cookie")).toBeNull();
+  } finally { send.mockRestore(); }
+});
+
+it("logout ends a session Access started", async () => {
+  const send = serveKeys();
+  try {
+    const jwt = await assertion();
+    const id = sessionOf(await get("/login", { "cf-access-jwt-assertion": jwt }));
+    const out = await worker.fetch(new Request("https://atelier.test/logout", {
+      method: "POST", headers: { origin: "https://atelier.test", cookie: `atelier=${id}` }, redirect: "manual",
+    }), bindings);
+    expect(out.status).toBe(303);
+    expect(out.headers.get("location")).toBe("/");
+    expect(out.headers.get("set-cookie")).toContain("Max-Age=0");
+    // The ended session's cookie no longer signs anything in: a form post
+    // with it is sent to /login.
+    const add = await worker.fetch(new Request("https://atelier.test/models/add", {
+      method: "POST", headers: { origin: "https://atelier.test", cookie: `atelier=${id}`, "cf-access-jwt-assertion": jwt }, body: new URLSearchParams({ id: "x/y" }), redirect: "manual",
+    }), bindings);
+    expect(add.status).toBe(303);
+    expect(add.headers.get("location")).toBe("https://atelier.test/login");
   } finally { send.mockRestore(); }
 });
 
@@ -130,6 +201,22 @@ it("an unconfigured server sends a visitor to sign in for Home, and signing in l
   const res = await worker.fetch(new Request("https://atelier.test/home", { redirect: "manual" }), plain);
   expect(res.status).toBe(303);
   expect(res.headers.get("location")).toBe("https://atelier.test/login");
+  // Without Access, /login is the owner token form, as it always was, and an
+  // assertion header — no one checks it here — starts no session.
+  const send = serveKeys();
+  try {
+    const jwt = await assertion();
+    const form = await worker.fetch(new Request("https://atelier.test/login", { headers: { "cf-access-jwt-assertion": jwt }, redirect: "manual" }), plain);
+    expect(form.status).toBe(200);
+    expect(form.headers.get("set-cookie")).toBeNull();
+    expect(await form.text()).toContain('name="token"');
+    const home = await worker.fetch(new Request("https://atelier.test/home", { headers: { "cf-access-jwt-assertion": jwt }, redirect: "manual" }), plain);
+    expect(home.status).toBe(303);
+    expect(home.headers.get("set-cookie")).toBeNull();
+    const wrong = await worker.fetch(new Request("https://atelier.test/login", { method: "POST", body: new URLSearchParams({ token: "no" }), headers: { "cf-access-jwt-assertion": jwt }, redirect: "manual" }), plain);
+    expect(wrong.status).toBe(401);
+    expect(wrong.headers.get("set-cookie")).toBeNull();
+  } finally { send.mockRestore(); }
   const login = await worker.fetch(new Request("https://atelier.test/login", { method: "POST", body: new URLSearchParams({ token: TOKEN }), redirect: "manual" }), plain);
   expect(login.status).toBe(303);
   expect(login.headers.get("location")).toBe("/home");

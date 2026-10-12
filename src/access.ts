@@ -5,13 +5,14 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 // Worker, and vouches for the signed-in request with a JSON Web Token in the
 // Cf-Access-Jwt-Assertion header, signed by the team's keys, which Cloudflare
 // publishes at https://TEAM.cloudflareaccess.com/cdn-cgi/access/certs. The
-// Worker checks that token itself on every owner route, /login and its token
-// form among them (src/index.ts), the pattern cloudflare/cloudflare-os uses,
+// Worker checks that token itself on every owner route, /login among them
+// (src/index.ts), the pattern cloudflare/cloudflare-os uses,
 // so a request that reaches it without Access's vouching — an Access
 // application that no longer covers the server, a forged header on a request
 // that never passed the edge — is refused even when it carries a session
-// cookie. The API routes are left alone: they take bearer tokens, and the
-// CLI's requests do not pass Access.
+// cookie. A request it vouches for is the owner's sign-in, and starts the
+// browser session with no token form (t534). The API routes are left alone:
+// they take bearer tokens, and the CLI's requests do not pass Access.
 
 // The Access configuration: CF_ACCESS_ISS is the team's URL as Access itself
 // reports it in a token's issuer (https://TEAM.cloudflareaccess.com),

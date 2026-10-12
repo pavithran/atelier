@@ -1,0 +1,89 @@
+// Which policy requires a review of a change, said before its checks run
+// (t422), and where a project's recorded policy and its written instructions
+// disagree about reviews. Pure: the CLI reads the files and Git.
+// controllingRule follows changeClass in src/rules.ts, which decides the
+// class; this names the rule that decided it.
+
+import { protectedRuleGroups, classRequirement, matchesFolded, matchesAny, singleFamily, type ChangeClass, type ProjectPolicy } from "./rules.ts";
+
+export interface ControllingRule {
+  kind: ChangeClass;
+  path: string | null;   // the changed path that decided the class
+  glob: string | null;   // the protected glob it matched; null for a coordinated change
+  origin: string;        // which part of the policy holds the glob
+  requirement: string;   // classRequirement of the class
+}
+
+// A policy file as the checkout holds it, for the notice to name.
+export interface PolicySource {
+  file: string;
+  version?: string | null;
+}
+
+export function controllingRule(paths: readonly string[], policy: ProjectPolicy): ControllingRule | null {
+  if (!paths.length) return null;
+  const groups = protectedRuleGroups(policy);
+  for (const [origin, globs] of groups) {
+    for (const path of paths) {
+      const glob = globs.find((g) => matchesFolded(path, [g]));
+      if (glob !== undefined) return { kind: "protected", path, glob, origin, requirement: classRequirement("protected") };
+    }
+  }
+  const direct = policy.execution?.direct;
+  if (direct?.enabled && paths.every((p) => matchesAny(p, direct.allowed_path_patterns))) {
+    return { kind: "direct", path: null, glob: null, origin: "the execution policy's direct paths", requirement: classRequirement("direct") };
+  }
+  const outside = direct?.enabled ? paths.find((p) => !matchesAny(p, direct.allowed_path_patterns)) ?? null : paths[0] ?? null;
+  return { kind: "coordinated", path: outside, glob: null, origin: "the execution policy", requirement: classRequirement("coordinated") };
+}
+
+// The lines `atelier done` and `atelier land` print before the checks run,
+// or null where the change needs no review: a direct change, and a
+// coordinated one in a project without an execution policy, need none.
+// A part of a plan is reviewed whatever its class (reviewNeeded's basis
+// "part"), so `part` keeps the notice for a direct change or a project
+// without an execution policy.
+export function reviewNotice(paths: readonly string[], policy: ProjectPolicy, source?: PolicySource | null | ((rule: ControllingRule) => PolicySource | null), part = false): string[] | null {
+  const rule = controllingRule(paths, policy);
+  if (!rule) return null;
+  if (!part && (rule.kind === "direct" || (rule.kind === "coordinated" && !policy.execution))) return null;
+  const resolved = typeof source === "function" ? source(rule) : rule.origin.includes("execution policy") ? source : null;
+  const controlling = part ? "Atelier's plan-part review rule (src/review/needed.ts: reviewNeeded)" : resolved ? `${resolved.file}${resolved.version ? ` (version ${resolved.version})` : ""}` : rule.origin === "the ship files" ? "Atelier's built-in SHIP_FILES rule (src/rules.ts)" : `the project's recorded policy, as stored on the server (${rule.origin})`;
+  const classWhy = rule.glob !== null
+    ? `${rule.path} matches the protected glob ${rule.glob}, from ${rule.origin}`
+    : rule.kind === "direct"
+      ? `every changed path is within ${rule.origin}`
+      : policy.execution
+        ? `${rule.path ?? "this change"} is not within the execution policy's direct paths`
+        : `${rule.path ?? "this change"} is outside the project's protected paths, and the project has no execution policy`;
+  const why = part ? `this task is a part of a plan, and every part of a plan is reviewed by ${singleFamily(policy) ? `a different ${singleFamily(policy)} model than its contributors (single-family mode)` : "another family than its contributors"} (${classWhy})` : classWhy;
+  return [
+    `A review will be needed before this lands: ${part ? classRequirement("protected", singleFamily(policy)) : rule.requirement}.`,
+    `  Controlling policy: ${controlling}`,
+    `  Rule: ${why}; class ${rule.kind}`,
+  ];
+}
+
+// An instruction file as the checkout holds it.
+export interface Instructions { file: string; text: string }
+
+// Where the written instructions call review optional while the recorded
+// policy requires one: each such line, with the requirement it disagrees
+// with. A heuristic on wording, so it names the line for a person to settle.
+export function reviewDisagreements(policy: ProjectPolicy, instructions: readonly Instructions[]): string[] {
+  const requires: string[] = [];
+  const protectedGlobs = [...new Set(protectedRuleGroups(policy).flatMap(([, globs]) => globs))];
+  if (protectedGlobs.length) requires.push(`a protected change (${protectedGlobs.slice(0, 4).join(", ")}${protectedGlobs.length > 4 ? ", …" : ""}) needs a review from another model family`);
+  if (policy.postMerge) requires.push("the post-merge policy protects all repository paths (**), so every change needs a review from another model family");
+  if (policy.execution?.allowed_classes.includes("coordinated")) requires.push("a coordinated change needs a review from a different model than every contributor");
+  if (!requires.length) return [];
+  const out: string[] = [];
+  for (const { file, text } of instructions) {
+    text.split("\n").forEach((line, i) => {
+      if (/\breview/i.test(line) && /\boptional\b/i.test(line)) {
+        out.push(`${file}:${i + 1} calls review optional ("${line.trim().slice(0, 120)}"), but the recorded policy says ${requires.join("; ")}`);
+      }
+    });
+  }
+  return out;
+}
