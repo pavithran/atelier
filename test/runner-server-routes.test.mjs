@@ -18,7 +18,7 @@ test("every route in the shared helper is one a runner or agent token allows", (
 // found by asking runnerRoute itself. Words are every quoted word in its source;
 // position 1 is the project and position 3 the item id; a final segment runnerRoute
 // accepts for any word is written "*".
-function runnerInventory() {
+function runnerInventory(accepts = runnerRoute) {
   const source = readFileSync(new URL("../src/tokens.ts", import.meta.url), "utf8");
   const body = source.slice(source.indexOf("export function runnerRoute"), source.indexOf("export function runnerDenied"));
   const words = [...new Set([...body.matchAll(/"([a-z][a-z-]*)"/g)].map((m) => m[1]).filter((w) => w !== "GET" && w !== "POST"))];
@@ -33,9 +33,9 @@ function runnerInventory() {
   for (let length = 1; length <= 6; length++) {
     for (const parts of extend([], length)) {
       for (const method of ["GET", "POST"]) {
-        if (!runnerRoute(method, parts, {})) continue;
+        if (!accepts(method, parts, {})) continue;
         const shape = parts.map((p) => p === "demo" ? ":project" : p === "t1" ? ":id" : p);
-        if (length >= 3 && parts[length - 1] !== "x" && runnerRoute(method, [...parts.slice(0, -1), "x"], {})) continue;
+        if (length >= 3 && parts[length - 1] !== "x" && accepts(method, [...parts.slice(0, -1), "x"], {})) continue;
         found.add(`${method} ${shape.map((p, i) => i === length - 1 && p === "x" && length > 1 ? "*" : p).join("/")}`);
       }
     }
@@ -51,14 +51,13 @@ test("the shared helper serves exactly the METHOD + path shapes runnerRoute acce
 });
 
 test("a GET added beside an existing POST of the same path is not served, and the guard sees it", () => {
-  const inventory = runnerInventory();
   const plan = "projects/:project/items/:id/plan";
   assert.ok(RUNNER_ROUTES.some(([m, t]) => m === "POST" && t === plan));
   assert.ok(!RUNNER_ROUTES.some(([m, t]) => m === "GET" && t === plan));
-  // Mutate: runnerRoute that also accepts GET items/:id/plan yields a signature the helper lacks.
+  // Mutate: a runnerRoute that also accepts GET items/:id/plan must make the inventory differ from the helper.
   const mutated = (method, parts, body) => runnerRoute(method, parts, body) || method === "GET" && parts.join("/") === "projects/demo/items/t1/plan";
-  assert.ok(mutated("GET", concrete(plan), {}));
-  const withMutation = [...inventory, `GET ${plan}`].sort();
+  const withMutation = runnerInventory(mutated);
+  assert.ok(withMutation.includes(`GET ${plan}`));
   assert.notDeepEqual(helperSignatures(RUNNER_ROUTES), withMutation);
 });
 
