@@ -2641,9 +2641,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // with `allowFail` the answer is git's own status and output, as the
     // landing's git answers, and otherwise a failure throws with the
     // arguments redacted.
-    git: async (args, { cwd, token, allowFail = false, raw = false, env = null } = {}) => {
+    git: async (args, { cwd, token, allowFail = false, raw = false, env = null, timeoutMs } = {}) => {
       const childEnv = token || env ? { ...(token ? gitAuth(token) : process.env), ...(env ?? {}) } : null;
-      const result = await executeChild(["git", ...args], { cwd, capture: true, captureError: true, signal: controller.signal, step: args[0], ...(childEnv ? { env: childEnv } : {}) });
+      const result = await executeChild(["git", ...args], { cwd, capture: true, captureError: true, signal: controller.signal, step: args[0], timeoutMs, ...(childEnv ? { env: childEnv } : {}) });
       if (result.timedOut) throw new Error(`git ${args[0]} timed out`);
       if (controller.signal.aborted) throw new Error("interrupted");
       const output = result.output ?? "", stderr = result.stderr ?? "";

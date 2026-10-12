@@ -400,9 +400,9 @@ export const RUN_REPORTS = 1000;
 // is routed on, as the Models page reads a project's record.
 const RECORD_EVENTS = 1000;
 
-// How long a refresh's push holds a landing of its task off (t462,
-// refreshPushing): the moment between the leaseholder saying it pushes and
-// the refreshed head being recorded.
+// Recovery waits at least this long after a push announcement. The runner
+// bounds Git pushes to two minutes; landing stays fenced until reconciliation,
+// even after this deadline or the lease expires.
 const REFRESH_PUSH_MS = 5 * 60_000;
 
 // A task's refresh target as the owner reads it (atelier refreshes, t462).
@@ -7171,7 +7171,7 @@ export class Ledger extends DurableObject<Env> {
     // it is not independent of may have come, while it waited. One no longer
     // eligible leaves the conflicts waiting for another, saying why. A lease
     // resuming the checks of a merge already recorded resolves nothing.
-    if (lease.job === "resolve" && !lease.checking) {
+    if (lease.job === "resolve" && !lease.checking && !lease.pushing) {
       const why = resolverRefusal(actor, this.resolverContext(item, item.head!));
       if (why) {
         const wait = `${actor} may no longer resolve it: ${why}`;
@@ -7240,6 +7240,7 @@ export class Ledger extends DurableObject<Env> {
     const lease = target?.lease;
     if (!lease || lease.id !== leaseId) return { item, released: false, revoke: null };
     if (lease.by !== actor) throw new RuleError("not_leaseholder", `${id}'s refresh lease is ${lease.by}'s, not ${actor}'s`, 403);
+    if (lease.pushing) throw new RuleError("refresh_pushing", "the announced push must be reconciled before releasing its lease", 409);
     if (lease.checking) throw new RuleError("refresh_recorded", `${id}'s refresh is recorded at ${lease.checking.slice(0, 8)} and waits for its checks; report them with refresh-checked`, 409);
     this.saveRefreshTarget(id, afterRelease(target!, lease, at));
     this.log(id, actor, "refresh.released", { job: lease.job, lease: lease.id, mainHead: lease.mainHead, head: lease.expectedHead, reason: cleanReason(reason), ...(providerLimit ? { providerLimit: true } : {}) }, at);
@@ -7248,7 +7249,7 @@ export class Ledger extends DurableObject<Env> {
 
   // The leaseholder is about to push `head`, the refreshed merge, to the
   // task's fork. Taken only while the task is still at the head the lease
-  // found and may be refreshed; for the next REFRESH_PUSH_MS no landing of
+  // found and may be refreshed; until the push is reconciled no landing of
   // the task begins (assertNoRefreshPush), so a landing never starts under
   // a push it would then be overtaken by, nor a push under a landing.
   refreshPushing(id: string, actor: string, report: { lease: string; mainHead: string; expectedHead: string; head: string }): RefreshLease {
@@ -7257,9 +7258,15 @@ export class Ledger extends DurableObject<Env> {
     const target = this.refreshTargetOf(id);
     const lease = reportedLease(target, { item: id, actor, ...report });
     if (!HASH.test(report.head)) throw new RuleError("bad_head", "head must be the full hash of the refreshed merge", 400);
+    if (!leaseLive(lease, Date.parse(at))) throw new RuleError("lease_lost", "the refresh lease expired before its push", 409);
+    if (lease.checking) throw new RuleError("refresh_recorded", "the refresh already waits for checks", 409);
     if (item.head !== report.expectedHead) throw new RuleError("head_moved", `${id} moved from ${report.expectedHead.slice(0, 8)} to ${(item.head ?? "").slice(0, 8)} under the lease; nothing may be pushed over it`, 409);
     const standing = this.refreshStandingOf(item, at);
     if (standing.kind !== "eligible") throw new RuleError("refresh_deferred", standing.reason, 409);
+    if (lease.pushing) {
+      if (lease.pushing.head !== report.head) throw new RuleError("refresh_pushing", "another head is already announced", 409);
+      return lease;
+    }
     const next = { ...lease, pushing: { head: report.head, until: new Date(Date.parse(at) + REFRESH_PUSH_MS).toISOString() } };
     this.saveRefreshTarget(id, { ...target!, lease: next, updatedAt: at });
     return next;
@@ -7269,7 +7276,7 @@ export class Ledger extends DurableObject<Env> {
   // the task's fork, for the moment its push takes.
   private assertNoRefreshPush(id: string): void {
     const pushing = this.refreshTargetOf(id)?.lease?.pushing;
-    if (pushing && Date.parse(pushing.until) > Date.now()) {
+    if (pushing) {
       throw new RuleError("refresh_pushing", `a refresh is pushing main merged into ${id} as ${pushing.head.slice(0, 8)}; land again in a moment, once it is recorded`, 409);
     }
   }
@@ -7294,6 +7301,10 @@ export class Ledger extends DurableObject<Env> {
     const item = this.item(id);
     const target = this.refreshTargetOf(id)!;
     const lease = reportedLease(target, { item: id, actor, lease: report.lease, mainHead: report.mainHead, expectedHead: report.expectedHead });
+    const standing = this.refreshStandingOf(item, at);
+    if (standing.kind !== "eligible" && !(standing.kind === "deferred" && standing.busy === "reviewing")) throw new RuleError("refresh_deferred", standing.reason, 409);
+    if (!report.head && (lease.pushing || lease.checking)) throw new RuleError("refresh_pending", "the announced head must be recorded and checked", 409);
+    if (!report.head && item.head !== report.expectedHead) throw new RuleError("head_moved", "the task moved under its refresh", 409);
     if (!report.head) {
       if (lease.job !== "refresh") throw new RuleError("no_head", "a resolver reports the merge it made", 400);
       const result: RefreshResult = { key, item: id, outcome: "held", mainHead: report.mainHead, expectedHead: report.expectedHead, head: null, by: actor, at };
@@ -7313,8 +7324,6 @@ export class Ledger extends DurableObject<Env> {
     if (item.head !== report.expectedHead && item.head !== report.head) {
       throw new RuleError("head_moved", `${id} moved to ${(item.head ?? "").slice(0, 8)} under the refresh; the refresh is not recorded`, 409);
     }
-    const standing = this.refreshStandingOf(item, at);
-    if (standing.kind === "deferred" && standing.busy !== "reviewing") throw new RuleError("refresh_deferred", standing.reason, 409);
     const review = refreshReview({ state: item.state, diffBefore: report.diffBefore ?? null, diffAfter: report.diffAfter ?? null, resolver });
     const accepted = item.state === "accepted" || item.acceptedHead !== null;
     this.update(id, { head: report.head, last_push_at: at, ...(accepted ? { state: "submitted", accepted_head: null } : {}) }, at);

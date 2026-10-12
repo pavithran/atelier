@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { refreshStanding, queued } from "./standing.ts";
-import { afterSettle, checksPending, enqueue, headMoved, leaseLive, LEASE_MS, reportedLease, resultKey, takeLease } from "./queue.ts";
+import { afterSettle, enqueue, headMoved, leaseLive, LEASE_MS, reportedLease, resultKey, takeLease } from "./queue.ts";
 import { parseResolvers, pickResolver, resolverRefusal } from "./resolver.ts";
 import { refreshReview } from "./review.ts";
 import { parseRuleError, sameActor } from "../rules.ts";
@@ -123,8 +123,8 @@ test("a resolver's lease that lapses after main moved on queues the newer main h
   const resolving = afterSettle({ ...target, state: "leased", lease }, lease, "mechanical", at, { resolver: "claude-code/opus-5.5" });
   const resolve = takeLease(resolving, { job: "resolve", actor: "claude-code/opus-5.5", runner: null, head: H("1"), now, id: "L2", same: sameActor });
   const later = now + LEASE_MS + 1, laterAt = new Date(later).toISOString();
-  // Lapsed while resolving, and lapsed while its checks ran at the recorded head.
-  for (const [leased, head] of [[{ ...resolving, state: "leased", lease: resolve }, H("1")], [checksPending({ ...resolving, state: "leased", lease: resolve }, resolve, H("2"), at), H("2")]]) {
+  // Unpushed resolution work may be replaced by the newer main target.
+  for (const [leased, head] of [[{ ...resolving, state: "leased", lease: resolve }, H("1")]]) {
     const moved = enqueue(leased, "t7", H("b"), at).target;
     assert.equal(moved.state, "leased");
     const current = headMoved(moved, head, laterAt, later);
@@ -176,4 +176,29 @@ test("a refreshed head always needs review, and an acceptance never carries to i
   assert.deepEqual([same.acceptanceDropped, same.diffChanged, same.reviewRequired], [false, false, true]);
   assert.match(same.why, /t459/);
   assert.equal(refreshReview({ state: "submitted", diffBefore: null, diffAfter: H("d"), resolver: null }).diffChanged, null);
+});
+
+for (const job of ["refresh", "resolve"]) for (const phase of ["pushing", "checking"]) {
+  test(`${job} recovery preserves ${phase} across newer main and repeated lease expiry`, () => {
+    const by = job === "refresh" ? "atelier/integrator" : "codex/gpt-6-astra";
+    const old = { id: "old", job, by, runner: null, mainHead: H("a"), expectedHead: H("1"), at: new Date(0).toISOString(), until: new Date(1).toISOString(),
+      ...(phase === "pushing" ? { pushing: { head: H("c"), until: new Date(2).toISOString() } } : { checking: H("c") }) };
+    let target = { ...enqueue(null, "t7", H("b"), new Date(0).toISOString()).target, state: "leased", lease: old, resolver: job === "resolve" ? by : null, expectedHead: H("1") };
+    for (const now of [10, LEASE_MS + 20]) {
+      target = headMoved(target, H("c"), new Date(now).toISOString(), now);
+      assert.equal(target.state, "leased");
+      const resumed = takeLease(target, { job, actor: by, runner: null, head: H("c"), now, id: `lease-${now}`, same: sameActor });
+      assert.equal(resumed.expectedHead, H("1"));
+      assert.equal(resumed.mainHead, H("a"));
+      assert.deepEqual(resumed[phase], old[phase]);
+      target = { ...target, lease: resumed };
+    }
+    assert.equal(afterSettle(target, target.lease, "checks", new Date().toISOString()).state, "queued");
+  });
+}
+
+test("an expired lease cannot be replaced before its bounded push window ends", () => {
+  const target = { ...enqueue(null, "t7", H("a"), new Date(0).toISOString()).target, state: "leased",
+    lease: { id: "old", job: "refresh", by: "atelier/integrator", mainHead: H("a"), expectedHead: H("1"), at: new Date(0).toISOString(), until: new Date(1).toISOString(), pushing: { head: H("c"), until: new Date(1000).toISOString() } } };
+  assert.equal(code(() => takeLease(target, { job: "refresh", actor: "atelier/integrator", runner: null, head: H("1"), now: 2, id: "new", same: sameActor })), "refresh_pushing");
 });

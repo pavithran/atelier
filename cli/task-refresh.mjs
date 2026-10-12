@@ -33,11 +33,12 @@
 // verifies on the fork. With required checks, it runs them at the new head
 // (atelier check) and reports them (refresh-checked); a failure goes back
 // to the builder. A lease that lapses while its checks run is taken again
-// at the recorded head, and the next job runs only the checks. A push
-// recorded nowhere is taken back off the fork, with a lease on the head it
-// pushed, so nothing anyone pushed since is lost; the task's recorded head
-// is read first (refresh-lease --status), and a push the server already
-// holds, its answers lost, stays.
+// at the recorded head, and the next job runs only the checks. An announced
+// push with no report retains the landing fence across expiry; the next job
+// reconciles the fork, records the merge and runs its checks before taking
+// any newer main target. Git pushes have a bounded two-minute timeout. A push
+// whose report fails is left fenced for reconciliation, without a rollback
+// that could outlive the lease and race a later landing.
 // Every report names the lease, and a report the server already holds
 // answers the recorded outcome, so a retry does no harm. The lease is
 // renewed while the job runs, and one that ends in no report (a provider's
@@ -51,6 +52,7 @@ import { DETECTOR_ENV, describeFinding, detectMovedEditsAsync } from "../src/mov
 
 const HASH = /^[a-f0-9]{40,64}$/;
 const CHECKS_FAILED = 2;
+export const PUSH_TIMEOUT_MS = 2 * 60_000;
 // How often the leaseholder renews its 30-minute lease (LEASE_MS in
 // src/refresh/queue.ts) while the job runs: a resolver's harness or the
 // required checks can outlast it, and the runner's heartbeat renews only
@@ -101,7 +103,7 @@ export async function runTaskRefresh(assignment, config, name, io) {
   const d = item.dispatch ?? {};
   const job = d.job === "task-resolve" ? "resolve" : "refresh";
   const at = ["--project", project, "--as", actor];
-  let lease = null, dir = null, pushed = null, recorded = false, workspace = null, renewal = null, renewing = false;
+  let lease = null, dir = null, pushed = null, recorded = false, workspace = null, renewal = null, renewing = false, announced = false;
   const report = async (argv) => JSON.parse(await io.cli([argv[0], item.id, ...at, ...argv.slice(1)]) || "{}");
   const leaseArgs = () => ["--lease", lease.id, "--main-head", lease.mainHead, "--expected-head", lease.expectedHead];
   try {
@@ -111,6 +113,7 @@ export async function runTaskRefresh(assignment, config, name, io) {
     }
     const leased = await report(["refresh-lease", "--job", job, "--runner", name]);
     lease = leased.lease;
+    announced = !!lease?.pushing;
     workspace = leased.workspace;
     if (!lease?.id || !HASH.test(lease.mainHead ?? "") || !HASH.test(lease.expectedHead ?? "") || !workspace?.remote || !leased.baseline?.remote) throw new Error("the refresh lease names no lease, heads or repositories");
     const { mainHead, expectedHead } = lease;
@@ -152,6 +155,23 @@ export async function runTaskRefresh(assignment, config, name, io) {
     dir = await io.tempDir(`refresh-${project}-${item.id}-`);
     const git = (args, options = {}) => io.git(args, { cwd: dir, ...options });
     await git(["init", "--quiet"]);
+    // Recover a push whose report was lost before considering whether the
+    // branch already contains main. The server verifies the merge and Agent
+    // line again; only then can its required checks run.
+    if (lease.pushing) {
+      const remote = await git(["ls-remote", workspace.remote, `refs/heads/${workspace.defaultBranch || "main"}`], { token: workspace.token, timeoutMs: PUSH_TIMEOUT_MS });
+      const top = remote.split(/\s+/)[0];
+      if (!HASH.test(top)) throw new Error("cannot reconcile the announced push: no fork head");
+      if (top !== lease.pushing.head) {
+        await report(["refresh-failed", ...leaseArgs(), "--outcome", "superseded", "--reason", "the settled fork does not name the announced refresh"]);
+        recorded = true;
+        return { phase: "failed", reason: "the fork moved", recorded: true };
+      }
+      const refreshed = await report(["refreshed", ...leaseArgs(), "--head", top]);
+      recorded = true;
+      if (refreshed?.result?.reason === "checks pending") return await checkAt(top);
+      return { phase: "refreshed", head: top };
+    }
     const identity = leased.commitIdentity;
     // The project's commit identity (t451), as a claim writes it.
     await git(["config", "user.name", identity?.name || "Atelier"]);
@@ -254,15 +274,25 @@ export async function runTaskRefresh(assignment, config, name, io) {
     const diffBefore = diffIdentity(await git(["diff", "--no-color", mergeBase, expectedHead], { raw: true }));
     const diffAfter = diffIdentity(await git(["diff", "--no-color", mainHead, head], { raw: true }));
     // Said before the push; refused when the task moved or is busy or landing.
-    try { await report(["refresh-pushing", ...leaseArgs(), "--head", head]); }
+    const pushStarted = Date.now();
+    try { await report(["refresh-pushing", ...leaseArgs(), "--head", head]); announced = true; }
     catch (error) {
       await report(["refresh-failed", ...leaseArgs(), "--outcome", "superseded", "--reason", `not pushed: ${error.message}`.slice(0, 400)]).catch(() => {});
       recorded = true;
       return { phase: "failed", reason: `not pushed: ${error.message}`, recorded: true };
     }
     const branch = workspace.defaultBranch || "main";
-    const push = await git(["push", "--quiet", workspace.remote, `${head}:refs/heads/${branch}`], { token: workspace.token, allowFail: true });
+    if (Date.now() - pushStarted >= PUSH_TIMEOUT_MS) throw new Error("push authorization expired before git started");
+    const push = await git(["push", "--quiet", workspace.remote, `${head}:refs/heads/${branch}`], { token: workspace.token, allowFail: true, timeoutMs: PUSH_TIMEOUT_MS });
+    // A transport error may arrive after the remote installed the commit.
+    // Reconcile before declaring the push superseded and dropping its fence.
+    let pushedDespiteError = false;
     if (push.status !== 0) {
+      const top = (await git(["ls-remote", workspace.remote, `refs/heads/${branch}`], { token: workspace.token, timeoutMs: PUSH_TIMEOUT_MS })).split(/\s+/)[0];
+      if (!HASH.test(top)) throw new Error("cannot reconcile the failed push: no fork head");
+      pushedDespiteError = top === head;
+    }
+    if (push.status !== 0 && !pushedDespiteError) {
       // No force: a push in between (the builder's) keeps the fork, and the
       // refresh is tried again from wherever the task is now.
       await report(["refresh-failed", ...leaseArgs(), "--outcome", "superseded", "--reason", `the fork moved under the refresh; the push was refused: ${(push.stderr || "").trim().slice(0, 200)}`]);
@@ -271,8 +301,8 @@ export async function runTaskRefresh(assignment, config, name, io) {
       return { phase: "failed", reason: "the fork moved", recorded: true };
     }
     pushed = head;
-    // Asked twice before the push is taken back: an answer lost on the way
-    // leaves the refresh recorded, and the second ask answers it again.
+    // Retry a lost answer before leaving reconciliation to lease recovery;
+    // a report already recorded answers idempotently.
     const refreshedArgs = ["refreshed", ...leaseArgs(), "--head", head, ...(diffBefore ? ["--diff-before", diffBefore] : []), ...(diffAfter ? ["--diff-after", diffAfter] : []), ...(transformations.length ? ["--transformations", transformations.join(",")] : [])];
     const refreshed = await report(refreshedArgs).catch((error) => { io.log(`recording the refresh failed (${error.message}); asking again`); return report(refreshedArgs); });
     recorded = true;
@@ -281,14 +311,9 @@ export async function runTaskRefresh(assignment, config, name, io) {
     return await checkAt(head);
   } catch (error) {
     io.log(`refresh of ${item.id} failed: ${error.message}`);
-    // A merge pushed and recorded nowhere is taken back off the fork, only
-    // while the fork is still at it. Every answer to the report may have been
-    // lost with the refresh recorded, so the task's head is read first: one
-    // the server already holds as the pushed merge stays, and with checks
-    // pending its lease lapses and the next one resumes them. A head that
-    // cannot be read leaves the push where it is rather than risk taking
-    // back what is recorded.
-    let takenBack = !pushed;
+    // Once a push is announced, retain its fence and let lease recovery
+    // reconcile the fork. Never issue a late rollback: a delayed report
+    // could outlast this lease and race another runner's landing.
     if (pushed && !recorded && workspace) {
       const status = await report(["refresh-lease", "--status", lease.id]).catch((e) => ({ error: e }));
       if (status.error || status.head === pushed) {
@@ -298,13 +323,6 @@ export async function runTaskRefresh(assignment, config, name, io) {
           : `${item.id}'s refresh is recorded at ${short(pushed)}${status.checking ? "; its checks resume under the next lease" : ""}; the push stays`);
       }
     }
-    if (pushed && !recorded && workspace) {
-      const branch = workspace.defaultBranch || "main";
-      const back = await io.git(["push", "--quiet", `--force-with-lease=refs/heads/${branch}:${pushed}`, workspace.remote, `${lease.expectedHead}:refs/heads/${branch}`], { cwd: dir, token: workspace.token, allowFail: true })
-        .catch((e) => ({ status: 1, stderr: e.message }));
-      takenBack = back.status === 0;
-      if (!takenBack) io.log(`taking the push back failed: ${(back.stderr || "").trim()}`);
-    }
     // A lease that ended in no report is given back at once, with why, so
     // the task's log says what stopped it and the same work is offered
     // again, rather than held until the lease lapses: a provider's usage
@@ -312,7 +330,7 @@ export async function runTaskRefresh(assignment, config, name, io) {
     // build's does, and counts toward neither cap), or a failure before any
     // report, a detector's or git's. A push left on the fork keeps its
     // lease, which lapses.
-    if (lease?.id && !recorded && takenBack) {
+    if (lease?.id && !recorded && !announced) {
       clearInterval(renewal);
       try {
         const answer = await report(["refresh-lease", "--release", lease.id, "--reason", error.message.slice(0, 400), ...(error.providerLimit ? ["--provider-limit"] : [])]);
