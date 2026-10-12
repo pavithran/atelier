@@ -28,7 +28,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { agentRoute, callParts, RUNNER_CALLS, RUNNER_COMMANDS, runnerRoute } from "../src/tokens.ts";
+import { agentRoute, callParts, callPath, declaredHelperCall, RUNNER_CALLS, RUNNER_COMMANDS, runnerRoute } from "../src/tokens.ts";
+import { args, call, request, cliState } from "../cli/atelier.mjs";
+import { runnerTransport } from "../cli/runner.mjs";
 // The bypass scanner this file shares with test/runner-routes.test.mjs, which
 // applies the same one to the runner's own modules.
 import { bypasses, codeOnly } from "./runner-routes-scan.test.mjs";
@@ -40,6 +42,62 @@ const KEYWORDS = new Set(["true", "false", "null", "undefined"]);
 // The CLI's transport: the functions a command calls to reach the server,
 // which are followed to no further call site of their own.
 const TRANSPORT = new Set(["call", "request", "postEvidence"]);
+
+test("the helper transport refuses undeclared operations at runtime regardless of call spelling", async (t) => {
+  const before = args._;
+  const login = cliState.loginToken;
+  t.after(() => { args._ = before; cliState.loginToken = login; });
+  args._ = ["claim"];
+  cliState.loginToken = "fixture-owner";
+  const sent = [];
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    sent.push({ url, init });
+    if (url.endsWith("/config")) return Response.json({ runner: "home:fixture" });
+    return Response.json({ ok: true });
+  });
+  for (const spelling of ["call", "call ", "call /* comment */ ", "(call)", "((send) => send)(call)"]) {
+    const invoke = new Function("call", `return ${spelling}("POST", "/runners", {}, "test/actor");`);
+    await assert.rejects(invoke(call), /not a call the runner helpers declare/);
+    await assert.rejects(invoke(request), /not a call the runner helpers declare/);
+  }
+  await assert.rejects(call("GET", "/queue"), /not a call the runner helpers declare/);
+  await assert.rejects(call("POST", "/projects/p/items/t1/claim", { secret: true }), /does not send secret/);
+  const transport = runnerTransport({ server: "https://atelier.test", credential: "fixture" });
+  for (const spelling of ["send", "send ", "send /* comment */ ", "(send)"]) {
+    await assert.rejects(new Function("send", `return ${spelling}("undeclared");`)(transport.send), /not a call the runner declares/);
+  }
+  assert.equal(sent.length, 0, "refusal precedes even the identity request");
+  // A declared request still passes through the actual call/request boundary.
+  const oldServer = cliState.loginServer;
+  t.after(() => { cliState.loginServer = oldServer; });
+  cliState.loginServer = "https://atelier.test";
+  await call("POST", "/projects/p/items/t1/claim", {}, "test/actor");
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].init.method, "POST");
+  cliState.loginToken = "atl_fixture_runner";
+  await assert.rejects(call("POST", "/projects/p/items/t1/review-claim", {}, "test/actor"), /not a call/);
+  assert.equal(sent.length, 2, "only the identity read is sent before learning the token kind");
+  await assert.rejects(call("POST", "/projects/p/items/t1/base-token", { scope: "write" }, "test/actor"), /only requests read scope/);
+  assert.equal(sent.length, 2, "a known runner cannot send agent operations or request write tokens");
+});
+
+test("the runtime helper boundary resolves the same declarations exercised at the gateway", () => {
+  for (const c of RUNNER_CALLS.filter((c) => c.via === "cli" || c.name === "config")) {
+    const path = callPath(c, { project: "p", item: "t1", run: "run:1" });
+    const body = c.method === "GET" ? undefined : {};
+    const resolved = declaredHelperCall(c.method, path, body);
+    assert.equal(resolved.path, c.path);
+    assert.equal(resolved.credential, c.credential);
+    if (c.credential === "runner") {
+      assert.equal(runnerRoute(c.method, callParts(c), {}), true, c.name);
+      assert.doesNotThrow(() => declaredHelperCall(c.method, path, body, true));
+    } else assert.throws(() => declaredHelperCall(c.method, path, body, true), /not a call/);
+  }
+  assert.throws(() => declaredHelperCall("POST", "/projects/p/items/t1/base-token", { scope: "write" }, true), /only requests read scope/);
+  for (const path of ["/projects//items/t1/claim", "/projects/p/items/t1/claim?extra=1", "/projects/p/items/t1/claim/extra"]) {
+    assert.throws(() => declaredHelperCall("POST", path, {}), /not a call/);
+  }
+});
 
 // The body of an exported function of cli/atelier.mjs: from its declaration
 // to the first line that is its closing brace alone.
