@@ -25,14 +25,14 @@ const HOUR = 3_600_000;
 // When the current hold began: the latest claim or handoff of the item. Pushes
 // inside that hold keep it fresh; a push only counts if it happened under the
 // current owner.
-function holdStart(item: Item, events: LedgerEvent[]): string {
+export function holdStart(item: Item, events: LedgerEvent[]): string {
   const holds = events
     .filter((e) => e.itemId === item.id && (e.kind === "item.claimed" || e.kind === "item.handoff"))
     .sort((a, b) => a.at.localeCompare(b.at) || a.seq - b.seq);
   return holds.length ? holds[holds.length - 1].at : item.updatedAt;
 }
 
-function pushObservedAt(item: Item, events: LedgerEvent[]): string | null {
+export function pushObservedAt(item: Item, events: LedgerEvent[]): string | null {
   const pushes = events.filter((e) => e.itemId === item.id && e.kind === "push.observed");
   const latest = pushes.sort((a, b) => a.at.localeCompare(b.at) || a.seq - b.seq).pop();
   return latest ? latest.at : item.lastPushAt;
