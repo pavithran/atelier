@@ -2254,6 +2254,7 @@ test("a report that only mentions checks or validation_blocked in passing does n
     // t552: the brief tells a builder not to run the full suite, so saying so is a good build.
     "Ran the changed tests and npm run typecheck; both pass. I did not run the full npm test suite, as the brief asks.",
     "Didn't run the whole test suite; the clean-clone checks run it.",
+    "The full suite did not run here, as the brief asks; the changed tests pass.",
     "npm test failed once on an assertion; fixed it and the suite passes.",
   ]) assert.equal(validationBlockedReport(report), null, report);
   for (const report of [
@@ -2263,6 +2264,7 @@ test("a report that only mentions checks or validation_blocked in passing does n
     "The sandbox prevented vitest from starting.",
     "Didn't run the required checks; network access is disabled.",
     "I did not run the full suite: vitest fails with listen EPERM in this sandbox.",
+    "Tests did not run: listen EPERM",
   ]) assert.ok(validationBlockedReport(report), report);
 });
 
