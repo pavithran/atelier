@@ -409,7 +409,7 @@ test("plain land: an edit in moved code stops it before the merge, Git unchanged
   const error = await l.land();
   assert.ok(error, "the landing stops");
   assert.match(error.message, /t1's edits lie in code main moved to another file, so the landing stops before merging main; Git and the workspace are unchanged \(task [0-9a-f]{8}, main [0-9a-f]{8}, merge base [0-9a-f]{8}\):\n  - cli\/atelier\.mjs lines 6-11 moved to cli\/commands\/report\.mjs lines 2-7/);
-  assert.match(error.message, /To port them: merge main into the workspace .*atelier dispatch t1 --job merge-main\), make each edit again at its destination, commit, and run atelier land t1 again, which compares afresh\. If a finding is wrong, atelier land t1 --moved-ok records your approval/);
+  assert.match(error.message, /To port them: merge main into the workspace .*atelier dispatch t1 --job merge-main\), make each edit again at its destination, commit, push with atelier push, and run atelier land t1 again, which compares afresh\. If a finding is wrong, atelier land t1 --moved-ok records your approval/);
   unchanged(w, head);
   assert.ok(l.released());
   assert.deepEqual(l.commands, []);
@@ -527,7 +527,7 @@ test("Workflow land: an edit in moved code pauses the Workflow at its conflict s
   const first = landIo(w, { args: { workflow: true }, wf });
   const error = await first.land();
   assert.match(error.message, /t1's edits lie in code main moved to another file/);
-  assert.match(error.message, /The landing Workflow is paused at its conflict stage and has released the lease; no merge was made, so nothing is left to resolve in the index\. Once the edits are ported and committed, run atelier land t1 --workflow again/);
+  assert.match(error.message, /The landing Workflow is paused at its conflict stage and has released the lease; no merge was made, so nothing is left to resolve in the index\. Once the edits are ported, committed and pushed with atelier push, run atelier land t1 --workflow again/);
   assert.match(error.message, /run atelier land t1 --workflow again, which compares afresh/);
   assert.deepEqual(wf.events.map((e) => [e.type, e.payload.round, e.payload.conflict, e.payload.files]), [["workspace", 0, true, ["cli/atelier.mjs", "cli/commands/report.mjs"]]]);
   assert.equal(wf.stage, "conflict");

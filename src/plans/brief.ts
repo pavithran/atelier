@@ -91,6 +91,10 @@ export interface JobBriefInput {
   failure?: CheckFailure | null;               // rework after a failing check
   mergeMain?: { head: string } | null;         // a merge-main part: the main head recorded as dispatch context
   mergePlan?: { head: string } | null;         // a part whose integration conflicted: the plan branch's head the runner merges into the workspace
+  // The section on the reviews of the part's acceptance criteria and the
+  // owner's resolutions of their findings (criteriaFindingsSection in
+  // src/review/criteria.ts, t438); null or absent when none was recorded.
+  criteriaReview?: string | null;
   limits?: Partial<JobBriefLimits> | null;
 }
 
@@ -125,6 +129,7 @@ interface Resolved {
   failure: { claim: string; head: string | null; where: "sandbox" | "runner" | null; output: string; log: LargeRef | null } | null;
   mergeMain?: { head: string };  // left out for any other part, so its hash is as before
   mergePlan?: { head: string };  // left out unless the part's integration conflicted, so other briefs' hashes are as before
+  criteriaReview?: string;       // left out when no criteria review was recorded, so other briefs' hashes are as before
   limits: JobBriefLimits;
 }
 
@@ -148,6 +153,20 @@ export const BUILD_RULES = [
   "- A fix comes with a test that fails without it.",
   "- A change that depends on a platform limit or runtime behaviour local tests cannot reproduce names it in the task, and the project declares a remote smoke check run before and after deploy.",
 ].join("\n");
+
+// What a builder runs before it commits, and when it may report
+// validation_blocked (t552). Builders ran the full suite in their sandbox, ten
+// minutes and more; with several runners on one host the load reached 45 to
+// 87, tests timed out, and the builder ended validation_blocked with nothing
+// committed, so the work was lost and the task looped (t541, t546, t532,
+// t463). The clean-clone checks after the push run the full suite and judge
+// it; the builder runs only what its change touches. The runner's own brief
+// (briefFor in cli/runner.mjs) carries the same sentences.
+export const BUILDER_TESTS = [
+  "Run the tests for the files you change, and the typecheck; both must pass. Do not run the full suite unless the task asks for it: after you finish, Atelier runs the project's required checks, the full suite among them, in a clean clone of your commit.",
+  "When those pass, commit. Never end with finished work uncommitted.",
+  "Report validation_blocked only for a failure in the tests of your own change that you cannot fix, and commit your work before you report it.",
+] as const;
 
 const short = (head: string) => head.slice(0, 8);
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
@@ -254,6 +273,7 @@ function resolve(input: JobBriefInput): Resolved {
     failure: failure ? { claim: failure.claim, head: failure.head ?? null, where: failure.where ?? null, output: failure.output, log: failure.log ?? null } : null,
     mergeMain: input.mergeMain ? { head: input.mergeMain.head } : undefined,
     mergePlan: input.mergePlan ? { head: input.mergePlan.head } : undefined,
+    criteriaReview: input.criteriaReview ? input.criteriaReview : undefined,
     limits: { findings: limit(input.limits?.findings, JOB_BRIEF_LIMITS.findings), output: limit(input.limits?.output, JOB_BRIEF_LIMITS.output) },
   };
 }
@@ -282,6 +302,9 @@ function render(r: Resolved): string {
   );
 
   const merge = r.mergeMain ?? null;
+  // A merge's resolution runs the checks whole: what it may break is not
+  // confined to files it changes.
+  const wholeChecks = !!(merge || r.mergePlan);
   section(
     "## Rules",
     "",
@@ -289,7 +312,8 @@ function render(r: Resolved): string {
       ? "- Work only in this workspace. Change only what resolving the merge needs; main's own changes come with the merge and are not yours to change."
       : "- Work only in this workspace. Change only paths inside the scope below; a changed file outside it is reported to the project owner, and the reviewer judges it as part of the change.",
     ...(merge ? [] : ["- Write tests for new behaviour."]),
-    ...(r.checks.length ? ["- Run the required checks under \"Checks\" before you commit. Every one must pass."] : []),
+    ...(r.checks.length && !wholeChecks ? BUILDER_TESTS.map((line) => `- ${line}`) : []),
+    ...(r.checks.length && wholeChecks ? ["- Run the required checks under \"Checks\" before you commit. Every one must pass."] : []),
     merge
       ? `- Commit the merge with git commit and keep the merge message as it stands; it already ends with the line Agent: ${r.actor ? inline(r.actor) : "<harness>/<model>"}. Any later fix is an ordinary commit with that same final line. Do not start the merge again, abort it, rebase or reset it.`
       : `- Commit your work in this workspace, with this final line in the commit message: Agent: ${r.actor ? inline(r.actor) : "<harness>/<model>"}. For example: git commit -m "subject" -m "Agent: ${r.actor ? inline(r.actor) : "<harness>/<model>"}"`,
@@ -380,10 +404,17 @@ function render(r: Resolved): string {
     section(
       "## Checks",
       "",
-      "The project requires these checks. Run each before you commit; the orchestrator runs them again after you finish, and a part whose checks fail comes back to you with the failing output.",
+      wholeChecks
+        ? "The project requires these checks. Run each before you commit; the orchestrator runs them again after you finish, and a part whose checks fail comes back to you with the failing output."
+        : "The project requires these checks. The orchestrator runs them in a clean clone after you finish, and a part whose checks fail comes back to you with the failing output. Before you commit, run the tests for the files you change and the typecheck, not the full suite.",
       ...r.checks.map((c) => `- ${code(c)}`),
     );
   }
+
+  // What the criteria reviewers found and how the owner answered (t438): the
+  // section is built by criteriaFindingsSection, fenced as it fences, and
+  // carried whole.
+  if (r.criteriaReview) section(r.criteriaReview);
 
   if (r.findings) section(findingsSection(r.findings, r.limits.findings));
 

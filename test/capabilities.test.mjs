@@ -146,7 +146,7 @@ test("a command or job with no declaration needs nothing", () => {
 // set of commands that depend on one; a command dropped from it, or one that
 // starts depending on a capability without declaring it, fails here.
 test("each command that relies on a named capability declares it in its module", () => {
-  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["adopt", "area", "board", "claim", "edit", "init", "integrated", "integration-failed", "land", "merge", "models", "new", "plan", "refresh-failed", "refreshed", "revert", "review", "review-claim", "review-request", "review-unparsable", "start", "stuck", "token", "wrap"]);
+  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["adopt", "area", "board", "claim", "criteria-finding", "criteria-review", "criteria-review-claim", "criteria-review-failed", "criteria-verdict", "edit", "init", "integrated", "integration-failed", "land", "merge", "models", "new", "plan", "push", "refresh-failed", "refreshed", "revert", "review", "review-claim", "review-request", "review-unparsable", "start", "stuck", "token", "wrap"]);
   for (const command of ["integrated", "integration-failed", "refreshed", "refresh-failed"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["plans.integration.v1"], command);
   // land counts the runners that skipped its review request by the request number the answer carries (t353).
   assert.deepEqual(COMMAND_CAPABILITIES.land, ["projects.commit-identity.v1", "land.workflow.v1", "items.brief-criteria.v1", "reviews.criteria-binding.v1", "projects.require-criteria.v1", "reviews.skip.v1", "land.post-merge.v1", "land.triage.v1"]);
@@ -157,7 +157,9 @@ test("each command that relies on a named capability declares it in its module",
   assert.deepEqual(COMMAND_CAPABILITIES.board, ["areas.board.v1"]);
   // stuck reads the owner's stuck report route (t441).
   assert.deepEqual(COMMAND_CAPABILITIES.stuck, ["projects.stuck.v1"]);
-  assert.deepEqual(COMMAND_CAPABILITIES.init, ["projects.commit-identity.v1", "projects.require-criteria.v1", "land.post-merge.v1", "land.triage.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.init, ["projects.commit-identity.v1", "projects.require-criteria.v1", "land.post-merge.v1", "land.triage.v1", "reviews.criteria-review.v1"]);
+  // The criteria review's commands post the criteria-review routes (t438).
+  for (const command of ["criteria-review", "criteria-review-claim", "criteria-verdict", "criteria-review-failed", "criteria-finding"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["reviews.criteria-review.v1"], command);
   for (const command of ["review", "review-claim"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["reviews.criteria-binding.v1"], command);
   // merge posts the owner's review and, for an accepted plan that conflicts with main, the plan refresh route.
   assert.deepEqual(COMMAND_CAPABILITIES.merge, ["projects.commit-identity.v1", "reviews.criteria-binding.v1", "plans.refresh.v1"]);
@@ -168,8 +170,9 @@ test("each command that relies on a named capability declares it in its module",
     const declared = [...new Set([...(spec.capabilities ?? []), ...Object.values(spec.subcommands ?? {}).flatMap((s) => s.capabilities ?? [])])];
     assert.deepEqual(COMMAND_CAPABILITIES[spec.name] ?? [], declared, spec.name);
   }
-  // land alone leaves the check to its handler, for --release-lease's sake.
-  assert.deepEqual(COMMAND_MODULES.filter(({ spec }) => spec.capabilityCheck === "handler").map(({ spec }) => spec.name), ["land"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.push, ["items.owner-port.v1"]);
+  // land exempts --release-lease; push checks only when porting as the owner.
+  assert.deepEqual(COMMAND_MODULES.filter(({ spec }) => spec.capabilityCheck === "handler").map(({ spec }) => spec.name), ["land", "push"]);
 });
 
 test("a subcommand's capabilities are asked only when that subcommand runs", () => {
@@ -207,7 +210,7 @@ test("a module that requires a name no declaration publishes is refused, naming 
 // through the runner's credential and post the integration routes, so the
 // integrator's start check has something to check.
 test("every runner job declares what it needs, the integrator's jobs included", () => {
-  for (const job of [...DEFAULT_JOBS, "review", "integrate", "refresh"]) assert.ok(JOB_CAPABILITIES[job]?.length, `${job} declares nothing`);
+  for (const job of [...DEFAULT_JOBS, "review", "criteria-review", "integrate", "refresh"]) assert.ok(JOB_CAPABILITIES[job]?.length, `${job} declares nothing`);
   assert.deepEqual(requiredForJobs(["integrate", "refresh"]), ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1", "runners.run-skip.v1"]);
   const required = requiredForJobs(["integrate", "refresh"]);
   assert.equal(checkCapabilities({ capabilities: [] }, required).kind, "missing");
@@ -241,7 +244,8 @@ test("the legacy route level is frozen; additions need no numeric allocation", (
 test("post-merge runs are guaranteed from legacy level 27 alone, and init and land require them (t477)", () => {
   assert.deepEqual(CAPABILITIES.filter((c) => c.level === 27).map((c) => c.name), ["land.post-merge.v1"]);
   for (const command of ["init", "land"]) {
-    const upTo27 = COMMAND_CAPABILITIES[command].filter((n) => n !== "land.triage.v1");
+    // init also requires the criteria review, which no legacy level guarantees (t438).
+    const upTo27 = COMMAND_CAPABILITIES[command].filter((n) => n !== "land.triage.v1" && n !== "reviews.criteria-review.v1");
     assert.deepEqual(checkCapabilities({ routeLevel: 26 }, upTo27).missing, ["land.post-merge.v1"], command);
     assert.equal(checkCapabilities({ routeLevel: 27 }, upTo27).ok, true, command);
   }
@@ -250,8 +254,23 @@ test("post-merge runs are guaranteed from legacy level 27 alone, and init and la
 test("the landing's triage is guaranteed from legacy level 28 alone, and init and land require it (t475)", () => {
   assert.deepEqual(CAPABILITIES.filter((c) => c.level === 28).map((c) => c.name), ["land.triage.v1"]);
   for (const command of ["init", "land"]) {
-    assert.deepEqual(checkCapabilities({ routeLevel: 27 }, COMMAND_CAPABILITIES[command]).missing, ["land.triage.v1"], command);
-    assert.equal(checkCapabilities({ routeLevel: 28 }, COMMAND_CAPABILITIES[command]).ok, true, command);
+    const upTo28 = COMMAND_CAPABILITIES[command].filter((n) => n !== "reviews.criteria-review.v1");
+    assert.deepEqual(checkCapabilities({ routeLevel: 27 }, upTo28).missing, ["land.triage.v1"], command);
+    assert.equal(checkCapabilities({ routeLevel: 28 }, upTo28).ok, true, command);
+  }
+});
+
+test("the criteria review job and init require the criteria review by name, which no legacy level guarantees (t438)", () => {
+  assert.equal(CAPABILITIES.find((c) => c.name === "reviews.criteria-review.v1")?.level, undefined);
+  assert.ok(SERVER_CAPABILITIES.includes("reviews.criteria-review.v1"));
+  assert.deepEqual(requiredForJobs(["criteria-review"]), ["reviews.criteria-review.v1", "runners.scoped-token.v1"]);
+  const without = SERVER_CAPABILITIES.filter((n) => n !== "reviews.criteria-review.v1");
+  for (const required of [requiredForJobs(["criteria-review"]), COMMAND_CAPABILITIES.init]) {
+    assert.equal(checkCapabilities({ capabilities: SERVER_CAPABILITIES }, required).ok, true);
+    assert.deepEqual(checkCapabilities({ capabilities: without }, required).missing, ["reviews.criteria-review.v1"]);
+    const legacy = checkCapabilities({ routeLevel: ROUTE_LEVEL + 4 }, required);
+    assert.equal(legacy.kind, "unmapped");
+    assert.deepEqual(legacy.missing, ["reviews.criteria-review.v1"]);
   }
 });
 
@@ -296,8 +315,8 @@ test("main's identity and reviewer admission guarantees keep their legacy bounda
   assert.deepEqual(CAPABILITIES.filter((c) => c.level === 25).map((c) => c.name), ["reviews.admission.v1"]);
   for (const command of ["adopt", "revert", "claim", "start", "wrap", "init", "land", "merge"]) {
     assert.ok(COMMAND_CAPABILITIES[command].includes("projects.commit-identity.v1"), command);
-    // Only what levels up to 24 guarantee: init and land also require the post-merge runs (27, t477) and the triage step (28, t475).
-    const upTo24 = COMMAND_CAPABILITIES[command].filter((n) => n !== "land.post-merge.v1" && n !== "land.triage.v1");
+    // Only what levels up to 24 guarantee: init and land also require the post-merge runs (27, t477) and the triage step (28, t475), and init the criteria review (by name only, t438).
+    const upTo24 = COMMAND_CAPABILITIES[command].filter((n) => n !== "land.post-merge.v1" && n !== "land.triage.v1" && n !== "reviews.criteria-review.v1");
     assert.deepEqual(checkCapabilities({ routeLevel: 23 }, upTo24).missing, ["projects.commit-identity.v1"]);
     assert.equal(checkCapabilities({ routeLevel: 24 }, upTo24).ok, true);
   }
@@ -457,6 +476,7 @@ function invocations(root) {
     { argv: ["token", "store", "--runner", "home:x"], required: ["runners.scoped-token.v1"] },
     { argv: ["area", "list", "--project", "proj"], required: COMMAND_CAPABILITIES.area },
     { argv: ["board", "--project", "proj"], required: COMMAND_CAPABILITIES.board },
+    { argv: ["criteria-review", "t1", "--project", "proj"], required: COMMAND_CAPABILITIES["criteria-review"] },
   ];
 }
 

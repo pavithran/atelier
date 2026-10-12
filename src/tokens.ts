@@ -86,8 +86,12 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
     return section === "baseline-token" && method === "POST" && body.scope !== "write";
   }
   if (section !== "items" || !id) return false;
-  if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "diff", "job-brief"].includes(verb) || parts.length === 6 && ["sandbox", "logs", "diffs"].includes(verb);
-  return method === "POST" && parts.length === 5 && ["claim", "read-token", "base-token", "push", "evidence", "sandbox", "review", "review-claim", "review-renew", "review-release", "review-unparsable", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "block", "unblock"].includes(verb);
+  // criteria-reviews reads where a task's criteria review stands, and
+  // criteria-review-claim, criteria-review and criteria-review-failed are the
+  // criteria reviewer's claim, verdict and failure (t438); asking for one
+  // and resolving its findings stay the owner's.
+  if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "diff", "job-brief", "criteria-reviews"].includes(verb) || parts.length === 6 && ["sandbox", "logs", "diffs"].includes(verb);
+  return method === "POST" && parts.length === 5 && ["claim", "read-token", "base-token", "push", "evidence", "sandbox", "review", "review-claim", "review-renew", "review-release", "review-unparsable", "criteria-review-claim", "criteria-review", "criteria-review-failed", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "block", "unblock"].includes(verb);
 }
 
 // A separate allowlist: runner credentials never inherit an agent's review,

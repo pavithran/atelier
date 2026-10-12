@@ -13,9 +13,12 @@ import { runnerChildEnv, envNameFor, isOwnerSecretName, readSecret } from "./cre
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
 import { REVIEW_RENEW_MS } from "../src/rules.ts";
 import { reviewBrief, BRIEF_LIMITS, criteriaCount } from "../src/review/brief.ts";
+import { deferredCriteria } from "../src/review/criteria.ts";
 import { submission } from "../src/brief.ts";
-import { parseVerdict, VERDICT_LIMITS } from "../src/review/verdict.ts";
+import { parseVerdict, replyFormat, VERDICT_LIMITS } from "../src/review/verdict.ts";
+import { outcomeNote, PREREVIEW_JOB, prereviewBrief, prereviewEnvelope, relevantTests } from "../src/dispatch/prereview.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
+import { BUILDER_TESTS } from "../src/plans/brief.ts";
 import { checkCapabilities, requiredForJobs } from "../src/route-level.ts";
 import { TERMINAL_TASK_EXITS } from "../src/tokens.ts";
 import { rolePrompt, ROLE_PROMPT_MAX } from "../src/usage.ts";
@@ -98,7 +101,13 @@ export function offerFrom(config, name) {
   // t252's fix hands a plain build to any runner with the agents for it, so
   // the loop below passes such builds by when the offer does not name
   // "build" (jobOf).
-  return { runner: name.toLowerCase(), kind: "home", jobs: [...(jobs ?? DEFAULT_JOBS)], agents: agents.map(({ agent, models }) => ({ agent, models })) };
+  // A runner that takes reviews also advertises the pre-review job (t524):
+  // it runs one with the same harness, verdict file and token, so the server
+  // offers pre-reviews only to a runner that names it, and never to one from
+  // before pre-review, which does not.
+  const offer = { runner: name.toLowerCase(), kind: "home", jobs: [...(jobs ?? DEFAULT_JOBS)], agents: agents.map(({ agent, models }) => ({ agent, models })) };
+  if (offer.jobs.includes("review") && !offer.jobs.includes(PREREVIEW_JOB)) offer.jobs.push(PREREVIEW_JOB);
+  return offer;
 }
 
 // The runner's first line at start (runRunner): the jobs it takes, with the
@@ -132,7 +141,9 @@ export function briefFor(item, project) {
     "Rules:",
     "Stay in scope. Work only in this workspace.",
     "Write tests for new behaviour.",
-    "Run npm test and npm run typecheck. Both must pass.",
+    // t552: the tests the change touches and npm run typecheck, not the full
+    // npm test, which the finish's clean-clone checks run (BUILDER_TESTS).
+    ...BUILDER_TESTS.map((line) => line.replace("and the typecheck", "and npm run typecheck").replace("the full suite unless", "the full npm test suite unless")),
     // t302: a local model that finished its work four times lost it to the
     // commit each time — `git add … && git commit -F - <<'EOF' …`, a heredoc
     // and && chain its harness refuses — so the rule names the commands
@@ -248,9 +259,11 @@ export const slotNote = (wrapper) => `Run each test command through the host slo
 export const testSlotNote = slotNote(SLOT_WRAPPER);
 
 // Starts a harness once node is known to be on its PATH (requireNode).
+// Always capture stderr for the adapter limit marker; keep streaming it
+// unless the caller requested private capture (for example, a review).
 export async function startHarness(argv, cwd, env, { capture = false, captureError = false, stream = false, signal, timeoutMs } = {}, executeChild = execute) {
   requireNode(env, cwd);
-  return executeChild(argv, { cwd, signal, timeoutMs, env, stream, ...(capture ? { capture } : {}), ...(captureError ? { captureError } : {}) });
+  return executeChild(argv, { cwd, signal, timeoutMs, env, stream, ...(capture ? { capture } : {}), captureError: true, streamError: !captureError });
 }
 
 // Throws unless `node` resolves on the PATH a harness will run with, since its
@@ -268,6 +281,9 @@ export function requireNode(env, cwd = process.cwd()) {
 
 const cli = fileURLToPath(new URL("./atelier.mjs", import.meta.url));
 const line = (message) => console.log(`runner: ${String(message).replace(/[\r\n]+/g, " ")}`);
+
+// How much of a child's standard error execute() keeps.
+const STDERR_KEEP = 256 * 1024;
 
 // The process groups execute() has started and not yet seen end.
 const liveGroups = new Set();
@@ -290,7 +306,7 @@ export function killGroups() {
 // SIGTERM. The result comes back once the group is gone, so nothing the
 // child started still runs in its folder. A process that leaves the group
 // (setsid) is beyond this.
-export function execute(argv, { cwd, signal, capture = false, captureError = false, stream = false, timeoutMs, env, captureLimit = Infinity, graceMs = 5000 } = {}) {
+export function execute(argv, { cwd, signal, capture = false, captureError = false, stream = false, streamError = false, timeoutMs, env, captureLimit = Infinity, graceMs = 5000 } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("interrupted"));
     const child = spawn(argv[0], argv.slice(1), { cwd, shell: false, detached: true, ...(env ? { env } : {}),
@@ -327,7 +343,7 @@ export function execute(argv, { cwd, signal, capture = false, captureError = fal
     const deadline = timeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; end(); }, timeoutMs);
     signal?.addEventListener("abort", end, { once: true });
     child.stdout?.on("data", (chunk) => { output = (output + chunk).slice(-captureLimit); if (stream) process.stdout.write(chunk); });
-    child.stderr?.on("data", (chunk) => { stderr = (stderr + chunk).slice(-captureLimit); });
+    child.stderr?.on("data", (chunk) => { stderr = (stderr + chunk).slice(-Math.min(captureLimit, STDERR_KEEP)); if (streamError) process.stderr.write(chunk); });
     child.on("error", (e) => { error = e; });
     // Once the child has exited, a deadline not yet passed no longer applies, and what it left in its group goes.
     child.on("exit", () => { clearTimeout(deadline); end(); });
@@ -416,9 +432,12 @@ export function redactGitArgs(args) {
 // a review, a new review request (t353). The queue's review task carries the
 // review request's number in `item.request`, so a refusal of one review
 // request never strands the next landing's, which asks again under its own
-// request and head.
+// request and head. A build refused for its criteria review (t438) is tried
+// again once a review of its criteria reaches a verdict, which changes
+// neither its head nor its updatedAt: the queue counts those verdicts on the
+// item (criteriaReviews), and an approval is always a new one.
 export function refusedKey(task) {
-  return JSON.stringify([task.project, task.item.id, task.item.head, task.item.updatedAt, task.item.request]);
+  return JSON.stringify([task.project, task.item.id, task.item.head, task.item.updatedAt, task.item.request, task.item.criteriaReviews ?? null]);
 }
 
 export function writeBrief(workspace, text) {
@@ -614,7 +633,7 @@ export function removeDataHome({ dir, onExit }) {
 // command fails; every other command's goes to the runner's own output, as
 // the owner watching it expects. The integrate and refresh jobs read check's
 // to say what failed, and log it either way.
-const READS_OUTPUT = new Set(["review-claim", "read-token", "integrated", "integration-failed", "refreshed", "refresh-failed", "base-token", "baseline-token", "check"]);
+const READS_OUTPUT = new Set(["review-claim", "criteria-review-claim", "read-token", "integrated", "integration-failed", "refreshed", "refresh-failed", "base-token", "baseline-token", "check"]);
 export const readsOutput = (argv) => READS_OUTPUT.has(argv[0]);
 
 export async function checked(argv, options, executeChild = execute) {
@@ -972,10 +991,17 @@ export function codexBuildRefusal(entry) {
 // validation_blocked does not hold back a good build.
 const CHECKS = String.raw`(?:required checks?|checks?|tests?|test suite|suite|typecheck|vitest|npm test|npm run [\w:-]+)`;
 const SANDBOX = String.raw`(?:EPERM|EACCES|permission denied|sandbox|no network|network access|ENOTFOUND|EAI_AGAIN)`;
+const RUN_OBJECT = String.raw`(?:(?:the|all|any|full|required|project's|whole|complete)\s+){0,3}${CHECKS}\b`;
 const VALIDATION_BLOCKED = [
   /^[\s*_`>-]*validation[_ ]blocked[*_`]*\s*:/im,
-  new RegExp(String.raw`(?:could not|couldn't|cannot|can't|unable to|not able to|did not|didn't)\s+(?:fully\s+|successfully\s+)?(?:run|execute)\s+(?:(?:the|all|any|full|required|project's|whole|complete)\s+){0,3}${CHECKS}\b`, "i"),
-  new RegExp(String.raw`\b${CHECKS}\s+(?:could not|couldn't|cannot|can't|did not|didn't)\s+(?:be\s+)?(?:run|executed?|start|complete)`, "i"),
+  new RegExp(String.raw`(?:could not|couldn't|cannot|can't|unable to|not able to)\s+(?:fully\s+|successfully\s+)?(?:run|execute)\s+${RUN_OBJECT}`, "i"),
+  // "Did not run" is a blocker only beside the environment that stopped it:
+  // the build brief tells a builder not to run the full suite (t552), and a
+  // report that says it did not is a good build, not a blocked one.
+  new RegExp(String.raw`(?:did not|didn't)\s+(?:fully\s+|successfully\s+)?(?:run|execute)\s+${RUN_OBJECT}[^\n.]{0,80}${SANDBOX}`, "i"),
+  new RegExp(String.raw`\b${CHECKS}\s+(?:could not|couldn't|cannot|can't)\s+(?:be\s+)?(?:run|executed?|start|complete)`, "i"),
+  // The passive "tests did not run" is a blocker only beside the environment too.
+  new RegExp(String.raw`\b${CHECKS}\s+(?:did not|didn't)\s+(?:be\s+)?(?:run|execute|start|complete)[^\n.]{0,80}${SANDBOX}`, "i"),
   new RegExp(String.raw`\b${CHECKS}\b[^\n.]{0,80}\b(?:blocked|failed|fails|errored|refused)\b[^\n.]{0,80}${SANDBOX}`, "i"),
   new RegExp(String.raw`${SANDBOX}[^\n.]{0,60}\b(?:blocked|prevented|stopped)\b[^\n.]{0,40}\b${CHECKS}\b`, "i"),
 ];
@@ -1031,6 +1057,77 @@ export async function alreadyComplete(item, head, merges = [], isAncestor) {
   return { complete: true, why: `the workspace head ${short(head)} is the task's pushed head, ahead of its base ${short(item.base)}` };
 }
 
+// A provider's usage limit (t487). A shipped adapter (bin/harness/limit.mjs)
+// that finds its harness stopped by one ends with exit status
+// PROVIDER_LIMIT_EXIT and, as the last line of its standard error, the marker
+// and a JSON result. The limit is the provider's, not the model's: the job is
+// released to resume, no failure counter moves, no run is reported against
+// the model, and every model of that harness leaves this runner's offers
+// until the reset, `resetAt`, which the result gives. A result with no reset,
+// an unreadable one, one already past and one more than MAX_PAUSE_DAYS away
+// get a pause of FALLBACK_MINUTES (60) from the moment the runner sees the
+// limit; `fallback` says so. The pause is per runner and per harness,
+// kept in a file (limitFileFor) so a restart still honours it; another
+// runner process, or another machine on the same account, is not told.
+const MAX_PAUSE_DAYS = 8;
+// What the adapters (bin/harness/limit.mjs, which cannot be imported here:
+// the CLI is copied without bin/) end with; a test holds the two equal.
+export const PROVIDER_LIMIT_EXIT = 75;
+export const LIMIT_MARKER = "ATELIER_PROVIDER_LIMIT";
+export const FALLBACK_MINUTES = 60;
+
+// The pause a run's result says, or null when it ends in no provider limit:
+// { reason, resetAt (ms), fallback }.
+export function providerLimitOf(result, now = Date.now()) {
+  if (!result || result.timedOut || result.code !== PROVIDER_LIMIT_EXIT) return null;
+  const last = String(result.stderr ?? "").split("\n").map((l) => l.trim()).filter(Boolean).at(-1) ?? "";
+  if (!last.startsWith(`${LIMIT_MARKER} `)) return null;
+  let body;
+  try { body = JSON.parse(last.slice(LIMIT_MARKER.length + 1)); } catch { return null; }
+  if (!body || typeof body !== "object") return null;
+  const reason = oneLine(typeof body.reason === "string" ? body.reason : "").replace(/\s+/g, " ").trim().slice(0, 300) || "usage limit reached";
+  const at = typeof body.resetAt === "string" ? Date.parse(body.resetAt) : NaN;
+  const usable = Number.isFinite(at) && at > now && at <= now + MAX_PAUSE_DAYS * 86_400_000;
+  return { reason, resetAt: usable ? at : now + FALLBACK_MINUTES * 60_000, fallback: !usable };
+}
+
+// Where a runner keeps its pauses: a file of its own under the user's Atelier
+// config directory (ATELIER_CONFIG_DIR, else ~/.config/atelier).
+export function limitFileFor(runner, env = process.env, home = homedir()) {
+  const dir = env.ATELIER_CONFIG_DIR ?? join(home, ".config", "atelier");
+  return join(dir, "runner-limits", `${String(runner).replace(/[^a-z0-9._-]/gi, "-")}.json`);
+}
+
+// The file's pauses by harness, each { harness, reason, resetAt (ISO), since,
+// fallback }, with the recent events; a file that is missing, unreadable or
+// malformed holds none.
+export function readLimits(file) {
+  try {
+    const body = JSON.parse(readFileSync(file, "utf8"));
+    const pauses = {};
+    for (const [harness, p] of Object.entries(body?.pauses ?? {})) {
+      if (p && typeof p === "object" && Number.isFinite(Date.parse(p.resetAt))) pauses[harness] = { harness, reason: String(p.reason ?? ""), resetAt: p.resetAt, since: p.since ?? p.resetAt, fallback: !!p.fallback };
+    }
+    return { pauses, events: Array.isArray(body?.events) ? body.events.slice(-EVENTS_KEEP) : [] };
+  } catch { return { pauses: {}, events: [] }; }
+}
+const EVENTS_KEEP = 20;
+
+export function writeLimits(file, limits) {
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify({ pauses: limits.pauses, events: limits.events.slice(-EVENTS_KEEP) }, null, 2)}\n`, { mode: 0o600 });
+  renameSync(tmp, file);
+}
+
+// How a pause reads in the log and the status: the harness, why, and when it ends.
+export const pauseLine = (p) => `${p.harness} paused until ${p.resetAt}${p.fallback ? ` (no reset time given; the ${FALLBACK_MINUTES}-minute fallback)` : ""}: ${p.reason}`;
+
+// The offer without the models of any paused harness.
+export function unpausedOffer(offer, pauses) {
+  return { ...offer, agents: offer.agents.filter(({ agent }) => !pauses[agent]) };
+}
+
 export async function runTask(assignment, config, name, io) {
   let state = nextStep({ phase: "idle" }, { type: "queue", assignment });
   const advance = (result) => { state = nextStep(state, result); io.log(`${state.phase}${state.reason ? `: ${state.reason}` : ""}`); };
@@ -1050,16 +1147,35 @@ export async function runTask(assignment, config, name, io) {
     await io.writeValidationBlock?.(workspace, { actor, head, detail: blocked, prepared: !!preparation && !preparation.deferred, ...(preparation?.key ? { prepareKey: preparation.key } : {}) });
     throw Object.assign(new Error(blocked), { validationBlocked: true });
   };
+  // The brief context the server alone holds, fetched the same way before
+  // every harness a build starts (t438): a fresh task, one recovered after a
+  // crash before its first commit (held at its recorded head), one sent back
+  // with an earlier attempt committed, a merge job, and the resolution of
+  // main at finish. A part's context is its whole brief; any other task's
+  // adds to the local briefFor what a rejecting review found at its head,
+  // what the criteria reviews found with the owner's resolutions, and the
+  // checks deferred to after deploy. Which of those the task carries is the
+  // server's to know, so the runner asks every time instead of guessing
+  // from the item: a runner started with no way to ask builds an ordinary
+  // task from the local brief alone (a part refuses to start, above).
+  const briefContext = async () => {
+    if (!io.jobBrief) return null;
+    const context = await io.jobBrief(project, item.id, actor);
+    if (!context || typeof context.text !== "string") throw new Error("the server's job brief has no text");
+    return context;
+  };
   const finish = async () => {
     const merged = io.prepareSubmission ? await io.prepareSubmission(assignment, workspace, async (merge) => {
       const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
-      const context = io.jobBrief ? await io.jobBrief(project, item.id, actor) : null;
+      const context = await briefContext();
       const resolution = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${briefFor({ ...item, owner: actor }, project)}\n${context?.text ?? ""}\n${mergeMainSection(merge)}\n\n${conflictsSection(merge)}\n`);
       let dataHome;
       try {
         const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
         dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
         const result = await io.harness(commandFor(entry, { model, briefFile: resolution.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name, project, actor), { capture: true, stream: true });
+        const limit = !io.stopped() ? providerLimitOf(result, (io.now ?? Date.now)()) : null;
+        if (limit) throw Object.assign(new Error(`${agent} usage limit: ${limit.reason}`), { providerLimit: { ...limit, harness: agent } });
         await checkValidationReport(result);
         if (result.timedOut) throw new Error("harness timed out resolving main");
         if (result.code !== 0) throw new Error(`harness exited ${result.code} resolving main`);
@@ -1170,16 +1286,16 @@ export async function runTask(assignment, config, name, io) {
         advance({ type: "finish" });
         return state;
       }
-      // A part's brief comes from the server (GET items/tN/job-brief): the
-      // plan's spec, its checks and any rework to carry. Any other task keeps
-      // the local briefFor below, and a merge-main task's adds the job's own
-      // instructions (mergeMainSection) beside it.
-      const serverBrief = item.kind === "part" ? await io.jobBrief(project, item.id, actor) : null;
-      if (serverBrief && typeof serverBrief.text !== "string") throw new Error("the server's job brief has no text");
-      // A task sent back with an earlier attempt committed keeps briefFor, and
-      // adds the review's findings the server holds for its head, if any.
-      const reworked = !serverBrief && io.jobBrief && item.head && item.base && item.head !== item.base ? await io.jobBrief(project, item.id, actor) : null;
-      if (reworked && typeof reworked.text !== "string") throw new Error("the server's job brief has no text");
+      // Every build fetches its brief context the same way (briefContext),
+      // whatever kind of item the queue offered. A part's brief comes from
+      // the server (GET items/tN/job-brief): the plan's spec, its checks and
+      // any rework to carry. Any other task keeps the local briefFor below
+      // and adds what the server holds for it, if anything, after it; a
+      // merge-main task's adds the job's own instructions (mergeMainSection)
+      // beside it.
+      const context = await briefContext();
+      const serverBrief = item.kind === "part" ? context : null;
+      const reworked = item.kind === "part" ? null : context;
       const local = briefFor({ ...item, owner: actor }, project);
       // A merge-main task's brief (t243) is the local one with the job's own
       // instructions (mergeMainSection) and the conflicts after it.
@@ -1212,6 +1328,8 @@ export async function runTask(assignment, config, name, io) {
         }
       }
     }
+    const limit = result && !io.stopped() ? providerLimitOf(result, (io.now ?? Date.now)()) : null;
+    if (limit) throw Object.assign(new Error(`${agent} usage limit: ${limit.reason}`), { providerLimit: { ...limit, harness: agent } });
     await checkValidationReport(result);
     if (result?.timedOut) throw new Error("harness timed out");
     if (io.stopped()) throw new Error("interrupted");
@@ -1247,12 +1365,20 @@ export async function runTask(assignment, config, name, io) {
     // unchanged head was nothing to submit, as the log does.
     if (already && !already.complete && state.reason === "harness made no new commit") state = { ...state, detail: `${state.reason}: ${already.why}` };
     if (error.validationBlocked) state = { ...state, validationBlocked: true, taskFailure: false, skipped: true };
+    if (error.providerLimit) state = { ...state, providerLimit: error.providerLimit, taskFailure: false };
     if (!claimed && error.skipped) {
       state = { ...state, skipped: true };
       io.log(`skipped: ${error.message}`);
     } else if (!claimed && error.claimRefused) {
       state = { ...state, claimRefused: true };
       io.log(`claim refused: ${error.message}`);
+    } else if (error.providerLimit && claimed) {
+      // The commits stay in the workspace, which the next run resets only to
+      // its own head; the claim goes back so the same work resumes after the reset.
+      try {
+        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(limitNote(error.providerLimit))], workspace, { providerLimit: true });
+        io.log("released: the same work resumes when the provider's limit resets");
+      } catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
     } else if (claimed && state.head && item.kind === "part" && state.taskFailure) {
       // A part whose finish failed is released, not held (docs/orchestrator.md,
       // section 3): the fork keeps the commits, and the plan's tick sends the
@@ -1282,20 +1408,35 @@ export async function runTask(assignment, config, name, io) {
   return state;
 }
 
+// The note a release carries when a provider's limit stopped the job.
+const limitNote = (limit) => `${limit.harness} usage limit until ${new Date(limit.resetAt).toISOString()}: ${limit.reason}`;
+
 // A task's identity for the failure counts: its project, id and dispatch,
 // so dispatching it again starts the count afresh (t420), as the server's
 // skippedBy counts, while a release or a push under one dispatch does not.
 export const taskKey = (task) => JSON.stringify([task.project, task.item.id, task.item.dispatch?.at ?? null]);
 
+// The order a poll's jobs are taken in: the gate's reviews first, in the
+// queue's order (t213), alongside criteria reviews (t438), then
+// pre-reviews (t524), then everything else.
+export function orderJobs(tasks) {
+  const job = (task) => task.item.dispatch?.job;
+  return [...tasks.filter((t) => (job(t) === "review" || job(t) === "criteria-review")), ...tasks.filter((t) => job(t) === PREREVIEW_JOB), ...tasks.filter((t) => job(t) !== "review" && job(t) !== "criteria-review" && job(t) !== PREREVIEW_JOB)];
+}
+
 // The key a runner's per-process failure cap uses. A build's failures count
 // against the task itself; a review's against the review it answered — its
 // head and its request number — so a new review request or a new head (a
 // later landing) starts the count fresh instead of an earlier landing's
-// failures stranding it (t353).
+// failures stranding it (t353). A criteria review's count against that
+// review alone, by its request number (t438): two failed reviews of a
+// task's criteria never skip the task's build, nor the next review the
+// owner asks for after editing them, as counting them under the task did.
 export function failureKey(task) {
-  return task.item.dispatch?.job === "review"
-    ? JSON.stringify([task.project, task.item.id, task.item.head, task.item.request])
-    : taskKey(task);
+  const job = task.item.dispatch?.job;
+  if (job === "review" || job === PREREVIEW_JOB) return JSON.stringify([task.project, task.item.id, task.item.head, task.item.request]);
+  if (job === "criteria-review") return JSON.stringify([task.project, task.item.id, "criteria-review", task.item.request]);
+  return taskKey(task);
 }
 
 // The job an assignment is, as the offer names jobs: the dispatch's own, the
@@ -1320,7 +1461,7 @@ export function jobOf(task) {
 // reviewer the brief and the diff, reads the verdict and posts it. A harness
 // that writes no valid verdict keeps the reply on the task and releases the
 // request, so another reviewer may take it.
-export async function runReview(assignment, config, name, runnerIO) {
+export async function runReview(assignment, config, name, runnerIO, preclaimed = null) {
   const { project, item, agent, model, actor } = assignment;
   let brief, diffFile, workspace, verdictFile, request, renewal, renewing = false, renewalFailure, claimedRequest = false, released = false, io = runnerIO;
   const generation = () => request === undefined ? [] : ["--request", String(request)];
@@ -1346,7 +1487,9 @@ export async function runReview(assignment, config, name, runnerIO) {
     // read token for the fork, so the part can be cloned read-only.
     // From the claim on, any error releases the request (see the catch), so a
     // failed review need not wait for its five-minute lease to expire.
-    const claimed = JSON.parse(await io.cli(["review-claim", item.id, "--project", project, "--as", actor, "--runner", name]));
+    // A pre-review job's claim that bound this gate review hands it over
+    // already claimed (runPrereview).
+    const claimed = preclaimed ?? JSON.parse(await io.cli(["review-claim", item.id, "--project", project, "--as", actor, "--runner", name]));
     request = claimed.request;
     claimedRequest = request !== undefined;
     if (request !== undefined) {
@@ -1414,6 +1557,9 @@ export async function runReview(assignment, config, name, runnerIO) {
       // The owner's standing decisions (src/decisions.ts), as the claim
       // carries them; an older server sends none, and the brief says so.
       decisions: claimed.decisions ?? null,
+      // The reviews of the acceptance criteria themselves and the owner's
+      // resolutions of their findings (t438), as the claim carries them.
+      criteriaReviews: claimed.criteriaReviews ?? null, criteriaResolutions: claimed.criteriaResolutions ?? null, criteriaRev: claimed.criteriaRev ?? null,
       // The item's evidence at the head (t490), ad-hoc checks among it; an
       // older server sends none, and the brief says so.
       evidence: claimed.evidence ?? null,
@@ -1435,6 +1581,13 @@ export async function runReview(assignment, config, name, runnerIO) {
       }
     }
     if (io.stopped()) throw new Error("interrupted");
+    const limit = providerLimitOf(result, (io.now ?? Date.now)());
+    if (limit) {
+      const note = limitNote({ ...limit, harness: agent });
+      await release(note);
+      io.log(`review released: ${note}`);
+      return { phase: "failed", reason: note, providerLimit: { ...limit, harness: agent } };
+    }
     if (result.timedOut) {
       await release("harness timed out");
       return { phase: "failed", reason: "harness timed out", taskFailure: true };
@@ -1449,8 +1602,11 @@ export async function runReview(assignment, config, name, runnerIO) {
     try { reply = io.readVerdict(verdictFile); } catch { reply = ""; }
     // The reply was asked for one CRITERION line per acceptance criterion
     // (the brief's reply format), so the parser is told how many there are
-    // and refuses an approval that misses one or declares one unmet.
-    const parsed = parseVerdict(reply, criteriaCount(claimed.item, claimed.plan));
+    // and refuses an approval that misses one or declares one unmet. The
+    // criteria the criteria review flagged as checks after deploy (t457),
+    // which the brief let the reviewer defer, are named to the parser from
+    // the same claim the brief read them from.
+    const parsed = parseVerdict(reply, criteriaCount(claimed.item, claimed.plan), { deferred: deferredCriteria(claimed.criteriaReviews ?? [], claimed.criteriaRev ?? 0) });
     if (!parsed.ok) {
       // The reply is kept on the task, its last VERDICT_LIMITS.reply
       // characters with the reviewer and the head it judged, as the request
@@ -1486,6 +1642,290 @@ export async function runReview(assignment, config, name, runnerIO) {
   } catch (error) {
     io.log(`failed: ${error.message}`);
     if (claimedRequest && !released) await release(error.message);
+    return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
+  } finally {
+    clearInterval(renewal);
+    if (brief) await io.removeBrief(brief);
+    if (diffFile) io.removeDiff(diffFile);
+    if (verdictFile) io.removeFile?.(verdictFile);
+    if (workspace) io.removeTree?.(workspace);
+  }
+}
+
+// A criteria review job (t438, src/review/criteria.ts): the runner claims the
+// review of a task's acceptance criteria, hands the reviewer the brief the
+// server built (there is no change to clone: the criteria are judged before
+// the build), reads the verdict and posts it bound to the revision, binding
+// and review the claim gave. A harness that stops, times out or writes a
+// reply no verdict can be read from records the failure on the review, which
+// approves nothing, so the criteria may be asked about again.
+export async function runCriteriaReview(assignment, config, name, runnerIO) {
+  const { project, item, agent, model, actor } = assignment;
+  let brief, diffFile, workspace, verdictFile, claimed = null, settled = false, io = runnerIO;
+  const fail = async (reason) => {
+    settled = true;
+    try { await io.cli(["criteria-review-failed", item.id, "--project", project, "--as", actor, "--request", String(claimed.request), "--note", releaseNote(reason)]); }
+    catch (error) { io.log(`could not record the criteria review's failure: ${error.message}`); }
+  };
+  try {
+    const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
+    if (!entry || actor !== `${agent}/${model}`) throw new Error("queue returned an unsupported assignment");
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(project) || !/^t[0-9]+$/.test(item.id)) throw Object.assign(new Error("queue returned an invalid project or task id"), { skipped: true });
+    // The reviewer's own token (reviewToken, t346) goes on every CLI call of
+    // this job, as it does on a review's.
+    const credential = reviewToken(config, model, actor, { env: runnerIO.env, ...(runnerIO.readSecret ? { readSecret: runnerIO.readSecret } : {}), ...(runnerIO.ownerTokens ? { ownerTokens: runnerIO.ownerTokens } : {}) });
+    if (credential.refused) throw Object.assign(new Error(credential.refused), { skipped: true });
+    io = { ...runnerIO, cli: (argv, cwd) => runnerIO.cli(argv, cwd, { token: credential.token }) };
+    const answer = JSON.parse(await io.cli(["criteria-review-claim", item.id, "--project", project, "--as", actor, "--runner", name]));
+    if (typeof answer?.brief !== "string" || !Number.isInteger(answer.request) || !Number.isInteger(answer.rev) || typeof answer.criteria !== "string") {
+      throw new Error("the server's criteria review claim has no brief, revision, binding or request");
+    }
+    claimed = answer;
+    // The reviewer reads no code, so it works in an empty folder of its own
+    // beside the task's workspace, removed when the job ends; a harness
+    // confined to its workspace still finds its brief and diff beside it.
+    workspace = `${io.workspacePath(project, item.id)}-criteria-${randomUUID().slice(0, 8)}`;
+    io.makeDir?.(workspace);
+    if (io.stopped()) throw new Error("interrupted");
+    brief = await io.brief(workspace, `${roleText("review", workspace)}\n\n${claimed.brief}`);
+    // A review command names a diff file; this job has no diff, and says so
+    // in the file it hands over in its place.
+    diffFile = await io.brief(workspace, "There is no diff: this review judges the task's acceptance criteria, not a change. Read the brief.\n");
+    verdictFile = io.verdictPath(workspace);
+    const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
+    const dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
+    let result;
+    try {
+      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, diffFile: diffFile.file, verdictFile, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "review", name));
+    } finally {
+      if (dataHome) {
+        try { await io.removeDataHome(dataHome); }
+        catch (error) { io.log(`could not remove ${dataHome.dir}: ${error.message}`); }
+      }
+    }
+    if (io.stopped()) throw new Error("interrupted");
+    if (result.timedOut) {
+      await fail("harness timed out");
+      return { phase: "failed", reason: "harness timed out", taskFailure: true };
+    }
+    if (result.code !== 0) {
+      await fail(`harness exited ${result.code}`);
+      return { phase: "failed", reason: `harness exited ${result.code}`, taskFailure: true };
+    }
+    let reply;
+    try { reply = io.readVerdict(verdictFile); } catch { reply = ""; }
+    // The brief asks for no CRITERION lines: the reply judges the criteria,
+    // it does not prove them met. It asks for CHECK lines (t457), one per
+    // criterion the builder cannot verify in its workspace, and those are
+    // read and posted with the verdict.
+    const parsed = parseVerdict(reply, 0, { checks: true });
+    if (!parsed.ok) {
+      await fail(parsed.error);
+      io.log(`criteria review failed: ${parsed.error}`);
+      return { phase: "failed", reason: parsed.error, taskFailure: true };
+    }
+    const argv = ["criteria-verdict", item.id, "--project", project, "--as", actor, "--rev", String(claimed.rev), "--criteria", claimed.criteria, "--request", String(claimed.request),
+      parsed.verdict === "approve" ? "--approve" : "--reject", "--note", parsed.summary];
+    if (parsed.findings.length) argv.push("--findings", JSON.stringify(parsed.findings));
+    if (parsed.checks.length) argv.push("--checks", JSON.stringify(parsed.checks));
+    await io.cli(argv);
+    io.log(`reviewed the acceptance criteria: ${parsed.verdict}`);
+    return { phase: "reviewed", verdict: parsed.verdict };
+  } catch (error) {
+    io.log(`failed: ${error.message}`);
+    if (claimed && !settled) await fail(error.message);
+    return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
+  } finally {
+    if (brief) await io.removeBrief(brief);
+    if (diffFile) await io.removeBrief(diffFile);
+    if (verdictFile) io.removeFile?.(verdictFile);
+    if (workspace) io.removeTree?.(workspace);
+  }
+}
+
+// A pre-review job (t524, src/dispatch/prereview.ts): while another landing
+// holds the project's lease, a task queued behind it is reviewed against the
+// tree its own landing would test. The runner claims the pre-review through
+// the review claim, clones the task's recorded head into a scratch folder of
+// its own (never the builder's workspace), merges main into it as the
+// landing does (mergeMainAndRegenerate: the route-level raise where both
+// sides raised it, the fixtures regenerated) and records the main head it
+// merged and the tree it prepared; then the reviewer reads a brief naming
+// the merged tree's relevant tests and the commands to run them, the
+// results there are and the evidence there is not, and its verdict goes
+// back through the review route under the pre-review's number, the main
+// head and tree in its envelope. Nothing is pushed. A conflict or a failed
+// preparation is reported as such, a reply with no verdict as malformed,
+// and any other failure as a runner failure, each through review-release
+// with an outcome note: none of them blocks the task or moves it in the
+// queue. A claim that binds a gate review instead (one was asked for the
+// task meanwhile, and goes first) is served as that review.
+export async function runPrereview(assignment, config, name, runnerIO) {
+  const { project, item, agent, model, actor } = assignment;
+  let brief, diffFile, workspace, verdictFile, request, renewal, renewing = false, renewalFailure, claimedRequest = false, ended = false, io = runnerIO;
+  const end = async (note) => {
+    ended = true;
+    try { await io.cli(["review-release", item.id, "--project", project, "--as", actor, "--note", outcomeNote(note), "--request", String(request)]); }
+    catch (error) { io.log(`pre-review release failed: ${error.message}`); }
+  };
+  const failed = (reason, extra = {}) => ({ phase: "failed", reason, ...extra });
+  // An outcome the server records as the merged tree's own (a conflict, a
+  // preparation that failed) or as stale is no failure of this runner's.
+  const settled = (outcome, reason) => ({ phase: "prereviewed", outcome, reason });
+  try {
+    const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
+    if (!entry || actor !== `${agent}/${model}`) throw new Error("queue returned an unsupported assignment");
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(project) || !/^t[0-9]+$/.test(item.id)) throw Object.assign(new Error("queue returned an invalid project or task id"), { skipped: true });
+    // The reviewer's own token, as for a review (reviewToken, t346): a
+    // pre-review verdict is recorded only under it.
+    const credential = reviewToken(config, model, actor, { env: runnerIO.env, ...(runnerIO.readSecret ? { readSecret: runnerIO.readSecret } : {}), ...(runnerIO.ownerTokens ? { ownerTokens: runnerIO.ownerTokens } : {}) });
+    if (credential.refused) throw Object.assign(new Error(credential.refused), { skipped: true });
+    io = { ...runnerIO, cli: (argv, cwd) => runnerIO.cli(argv, cwd, { token: credential.token }) };
+    const claimed = JSON.parse(await io.cli(["review-claim", item.id, "--project", project, "--as", actor, "--runner", name]));
+    if (!claimed.prereview) {
+      io.log(`the claim bound ${item.id}'s gate review, which goes before its pre-review; serving it as the review`);
+      return await runReview(assignment, config, name, runnerIO, claimed);
+    }
+    request = claimed.request;
+    claimedRequest = true;
+    const pre = claimed.prereview;
+    renewal = setInterval(async () => {
+      if (renewing || io.stopped()) return;
+      renewing = true;
+      try { await io.cli(["review-renew", item.id, "--project", project, "--as", actor, "--request", String(request)]); }
+      catch (error) {
+        io.log(`pre-review renewal failed: ${error.message}`);
+        if (error.status === 409) renewalFailure = error;
+      } finally { renewing = false; }
+    }, REVIEW_RENEW_MS);
+    renewal.unref?.();
+    const head = claimed.head;
+    if (!claimed.readToken?.remote || !claimed.target?.remote || !claimed.target?.branch) {
+      await end({ outcome: "preparation", detail: "the claim named no read token for the task's head or for main, so no merged tree could be prepared" });
+      return settled("preparation", "the pre-review claim named no repositories to read");
+    }
+    // A scratch clone of its own, beside the task's workspace and never it,
+    // removed when the job ends; its merge commits are never pushed.
+    workspace = `${io.workspacePath(project, item.id)}-prereview-${randomUUID().slice(0, 8)}`;
+    await io.clone(claimed.readToken.remote, claimed.readToken.token, workspace);
+    if (io.stopped()) throw new Error("interrupted");
+    const git = (args, options = {}) => io.git(args, { cwd: workspace, ...options });
+    if ((await git(["checkout", "--quiet", "--detach", head], { allowFail: true })).status !== 0) {
+      await end({ outcome: "stale", detail: `the task's workspace no longer holds the recorded head ${head.slice(0, 8)}` });
+      return settled("stale", "the recorded head is gone from the workspace");
+    }
+    await git(["config", "user.name", "Atelier pre-review"]);
+    await git(["config", "user.email", "prereview@atelier.invalid"]);
+    const base = { remote: claimed.target.remote, token: claimed.target.token, defaultBranch: claimed.target.branch };
+    const landing = { git: io.git, print: io.log, redact: (text) => redactSecrets(text, [base.token, claimed.readToken.token]), secrets: () => [base.token, claimed.readToken.token] };
+    const guard = () => { if (io.stopped()) throw new Error("interrupted"); };
+    let movedFindings = [], merged;
+    try {
+      merged = await mergeMainAndRegenerate(landing, {
+        dir: workspace, id: item.id, name: project, regenerate: pre.regenerate ?? null, record: async () => {}, guard, d0: null, base,
+        moved: { ok: false, approved: null, again: `atelier land ${item.id}`, resolver: actor, port: async (found) => { movedFindings = found; } },
+        message: (mainHead) => `Pre-review: merge main at ${mainHead.slice(0, 8)} into ${item.id}`,
+      });
+    } catch (error) {
+      if (error.message === "interrupted") throw error;
+      const files = error.data?.conflicts ?? [];
+      if (files.length) {
+        await end({ outcome: "conflict", detail: `merging main at ${String(error.data.mainHead).slice(0, 8)} into ${head.slice(0, 8)} conflicts`, files, main: error.data.mainHead });
+        io.log(`pre-review: main conflicts with ${item.id} in ${files.join(", ")}`);
+        return settled("conflict", `main conflicts with ${item.id}`);
+      }
+      if (error.infrastructure) throw error;
+      await end({ outcome: "preparation", detail: error.message, ...(error.data?.mainHead ? { main: error.data.mainHead } : {}) });
+      return settled("preparation", `the merged tree could not be prepared: ${error.message}`);
+    }
+    guard();
+    const main = merged.mainHead;
+    // The claim is bound to main's head as the baseline held it then; a
+    // baseline that moved before the merge read it gives another tree, and
+    // the server would refuse its verdict, so it is reported stale now.
+    if (pre.binding?.main && main !== pre.binding.main) {
+      await end({ outcome: "stale", detail: `main moved from ${pre.binding.main.slice(0, 8)} to ${main.slice(0, 8)} since the claim`, main });
+      return settled("stale", "main moved since the pre-review was claimed");
+    }
+    const tree = await git(["rev-parse", "HEAD^{tree}"]);
+    const from = await git(["merge-base", head, main]);
+    const changed = (await git(["diff", "--name-only", "-z", from, head], { raw: true })).split("\0").filter(Boolean);
+    const files = (await git(["ls-tree", "-r", "-z", "--name-only", "HEAD"], { raw: true })).split("\0").filter(Boolean);
+    const tests = relevantTests(changed, files);
+    const diff = await io.diff(workspace, from, head);
+    const preparation = [
+      merged.mergedIn ? `Merged main at ${main} into ${head}.` : `Main at ${main} was already merged into ${head}.`,
+      pre.regenerate ? `Regenerated the fixtures with \`${pre.regenerate}\` and committed what changed.` : "The project declares no regenerate command.",
+      ...(movedFindings.length ? [`${movedFindings.length} of the task's edits lie in code main moved to another file; the landing would stop on them: ${movedFindings.map((f) => describeFinding(f)).join("; ")}`] : []),
+    ];
+    const binding = { ...pre.binding, main, tree };
+    const large = diff.length > BRIEF_LIMITS.diff;
+    const text = prereviewBrief({
+      item: claimed.item, project, request, binding, reviewer: actor, contributors: pre.contributors, bar: claimed.reviewBar ?? null,
+      checks: pre.checks ?? [], changed, tests, evidence: claimed.evidence ?? null, preparation, diffFile: REVIEW_DIFF,
+      // The owner's standing decisions bind a pre-reviewer as they bind the gate's.
+      decisions: claimed.decisions ?? null,
+      diffOmitted: large ? `the diff is ${diff.length} characters; read it whole in ${REVIEW_DIFF}` : null, slotNote: testSlotNote,
+      replyFormat: replyFormat(criteriaCount(claimed.item, null)),
+    });
+    brief = await io.brief(workspace, text);
+    diffFile = await io.writeDiff(workspace, diff);
+    verdictFile = io.verdictPath(workspace);
+    const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
+    const dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
+    let result;
+    try {
+      result = await io.harness(commandFor(entry, { model, briefFile: brief.file, diffFile: diffFile.file, verdictFile, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "review", name, project, actor));
+    } finally {
+      if (dataHome) {
+        try { await io.removeDataHome(dataHome); }
+        catch (error) { io.log(`could not remove ${dataHome.dir}: ${error.message}`); }
+      }
+    }
+    if (io.stopped()) throw new Error("interrupted");
+    if (result.timedOut) {
+      await end({ outcome: "timeout", detail: "the reviewer's harness timed out" });
+      return failed("harness timed out", { taskFailure: true });
+    }
+    if (result.code !== 0) {
+      await end({ outcome: "runner", detail: `the reviewer's harness exited ${result.code}` });
+      return failed(`harness exited ${result.code}`, { taskFailure: true });
+    }
+    let reply;
+    try { reply = io.readVerdict(verdictFile); } catch { reply = ""; }
+    const parsed = parseVerdict(reply, criteriaCount(claimed.item, null));
+    if (!parsed.ok) {
+      const kept = await io.brief(workspace, reply.slice(-VERDICT_LIMITS.reply));
+      try {
+        await io.cli(["review-unparsable", item.id, "--project", project, "--as", actor, "--head", head, "--note", parsed.error, "--reply-file", kept.file, "--request", String(request)]);
+        ended = true;
+      } catch (error) {
+        io.log(`could not keep the unparsable pre-review reply: ${error.message}`);
+        await end({ outcome: "malformed", detail: parsed.error });
+      } finally {
+        await io.removeBrief(kept);
+      }
+      return failed(parsed.error, { taskFailure: true });
+    }
+    if (renewalFailure) throw renewalFailure;
+    const argv = ["review", item.id, "--project", project, "--as", actor, "--head", head, parsed.verdict === "approve" ? "--approve" : "--reject", "--note", parsed.summary,
+      "--criteria", claimed.criteria, "--request", String(request), "--findings", JSON.stringify(prereviewEnvelope({ main, tree, findings: parsed.findings }))];
+    try { await io.cli(argv); }
+    catch (error) {
+      // The route refuses a verdict on a head the task has left before the
+      // ledger sees it; the pre-review is then stale, not failed.
+      if (/stale_head|changed since/.test(error.message)) {
+        await end({ outcome: "stale", detail: error.message });
+        return settled("stale", `the task moved while it was pre-reviewed: ${error.message}`);
+      }
+      throw error;
+    }
+    ended = true;
+    io.log(`pre-reviewed ${item.id} at ${head.slice(0, 8)} + main ${main.slice(0, 8)}: ${parsed.verdict}`);
+    return { phase: "reviewed", verdict: parsed.verdict, prereview: true };
+  } catch (error) {
+    io.log(`pre-review failed: ${error.message}`);
+    if (claimedRequest && !ended) await end({ outcome: "runner", detail: error.message });
     return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}) };
   } finally {
     clearInterval(renewal);
@@ -1852,13 +2292,22 @@ export function skipRetryPolls(misses) {
 // (t273): it is no task failure and no infrastructure failure, so the loop
 // keeps serving the item's jobs.
 export function failureCount(count, state) {
+  if (state.providerLimit) return count;
   return count + (state.phase === "failed" && state.taskFailure && !state.claimRefused && !state.skipped && !state.recorded ? 1 : 0);
 }
 
 export function infrastructureFailureCount(count, state) {
+  if (state.providerLimit) return count;
   if (state.terminalState) return count;
   return state.phase === "failed" && !state.taskFailure && !state.claimRefused && !state.skipped && !state.recorded ? count + 1 : 0;
 }
+
+// A claim that lost the race to a hold (the server's 409 held, t540): the
+// claim the task waits on came back between this runner's offer and its
+// claim. It is not refused for good, so the runner keeps no refusal of it:
+// the queue stops offering the task while the hold stands and offers it
+// again once it clears.
+export const lostToHold = (state) => !!state.claimRefused && /^atelier: held: /m.test(state.reason ?? "");
 
 // Why the runner's loop passes an offered task by, in words with what lets it
 // through, or null when it takes it: a job its offer does not name (jobOf), a
@@ -1958,6 +2407,8 @@ export async function runPlanTask(assignment, config, name, io) {
     }
     if (result.timedOut) throw planHarnessFailure(result, "timed out");
     if (io.stopped()) throw new Error("interrupted");
+    const limit = providerLimitOf(result, (io.now ?? Date.now)());
+    if (limit) throw Object.assign(new Error(limitNote({ ...limit, harness: agent })), { providerLimit: { ...limit, harness: agent } });
     if (result.code !== 0) throw planHarnessFailure(result, `exited ${result.signal ?? result.code}`);
     let document;
     try { document = readFileSync(planFile, "utf8"); }
@@ -1980,7 +2431,8 @@ export async function runPlanTask(assignment, config, name, io) {
       return state;
     }
     state = { phase: "failed", reason: error.message };
-    state.taskFailure = taskFailure && !error.infrastructure && !io.stopped();
+    state.taskFailure = taskFailure && !error.infrastructure && !error.providerLimit && !io.stopped();
+    if (error.providerLimit) state.providerLimit = error.providerLimit;
     if (error.claimRefused) state.claimRefused = true;
     if (error.skipped) state.skipped = true;
     if (error.detail) state.detail = error.detail;
@@ -1995,7 +2447,7 @@ export async function runPlanTask(assignment, config, name, io) {
     if (!state.terminalState && (claimed || (claimAttempted && !state.claimRefused && !state.skipped))) {
       const note = state.phase === "failed" ? state.reason : "plan job done";
       try {
-        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", note], workspace);
+        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", note], workspace, { providerLimit: !!state.providerLimit });
         io.log(state.phase === "failed" ? "released: the plan job is back in the queue" : "released: the plan job is done");
       } catch (releaseError) { io.log(`claim not released: release failed: ${releaseError.message}`); }
     }
@@ -2013,6 +2465,7 @@ export async function runPlanTask(assignment, config, name, io) {
 // was refused, by the harness or its provider; a plan job whose harness
 // failed before posting a plan failed as a harness, not as an invalid proposal.
 export function runOutcome(state) {
+  if (state.providerLimit) return null;
   if (state.validationBlocked) return "validation_blocked";
   if (state.phase !== "failed" || !state.taskFailure || state.claimRefused || state.skipped) return null;
   if (state.reason === "harness timed out") return "timed-out";
@@ -2026,7 +2479,170 @@ export function runOutcome(state) {
 // is logged and the loop goes on.
 // `reportRunSkip(body, runner, signal)` says a build or plan job is given up
 // under its dispatch, kept and tried again as a review skip is (reportSkip).
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, version, idleWhy, api }) {
+// How often a busy runner renews its last poll (t537): the index rewrites
+// an unchanged offer at most once a minute (askQueue), well inside the
+// RUNNER_GONE_MS after which a claim's runner counts as gone.
+export const HEARTBEAT_MS = 60_000;
+
+// Runs a job while `beat` renews the runner's last poll every `intervalMs`,
+// one beat in flight at a time. A beat that fails is said once per job and
+// does not fail the job; with no `beat` (a CLI without it) the job runs alone.
+export async function withHeartbeat(job, beat, { intervalMs = HEARTBEAT_MS, log = () => {}, stopped = () => false } = {}) {
+  if (!beat) return job();
+  let beating = false, said = false;
+  const timer = setInterval(async () => {
+    if (beating || stopped()) return;
+    beating = true;
+    try { await beat(); }
+    catch (error) { if (!said && !stopped()) { said = true; log(`heartbeat failed: ${error.message}`); } }
+    finally { beating = false; }
+  }, intervalMs);
+  timer.unref?.();
+  try { return await job(); } finally { clearInterval(timer); }
+}
+
+// ── reload on deploy (t265) ───────────────────────────────────────────────
+
+// The checkout this CLI runs from: a runner reloads from it after a deploy.
+export const RUNNER_CHECKOUT = fileURLToPath(new URL("..", import.meta.url));
+// Set on the re-executed process, naming the commit the old one ran.
+export const RELOADED_FROM = "ATELIER_RUNNER_RELOADED_FROM";
+const COMMIT = /^[0-9a-f]{40}$/;
+const short = (commit) => commit ? commit.slice(0, 8) : "unknown";
+
+// The runner's checkout through git: its HEAD (null when it cannot be read,
+// an installed copy without .git, say) and whether `ref` contains `commit`
+// (false for a commit the checkout has never fetched). Git that cannot run
+// answers as a failure, never a throw.
+export function runnerCheckout(dir = RUNNER_CHECKOUT, executeChild = execute) {
+  const git = (argv) => executeChild(["git", ...argv], { cwd: dir, capture: true, captureError: true, timeoutMs: 10_000 }).catch(() => ({ code: null }));
+  return {
+    dir,
+    head: async () => {
+      const result = await git(["rev-parse", "--verify", "HEAD^{commit}"]);
+      const head = result.code === 0 ? (result.output ?? "").trim() : "";
+      return COMMIT.test(head) ? head : null;
+    },
+    contains: async (commit, ref) => COMMIT.test(commit) && (await git(["merge-base", "--is-ancestor", commit, ref])).code === 0,
+  };
+}
+
+// A replacement signals readiness only after runner initialization, and waits
+// for the old process to release it before polling. No job can overlap the
+// handoff. These APIs work on every supported Node, without process.execve.
+export const RELOAD_HANDOFF = "ATELIER_RUNNER_HANDOFF";
+export const RELOAD_TARGET = "ATELIER_RUNNER_RELOAD_TARGET";
+export async function runnerReady() {
+  if (!process.env[RELOAD_HANDOFF]) return;
+  delete process.env[RELOAD_HANDOFF];
+  if (!process.connected || !process.send) throw new Error("reload IPC channel is missing");
+  // Losing the waiting parent (including SIGKILL) ends this runner too.
+  process.once("disconnect", () => process.kill(process.pid, "SIGHUP"));
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("reload release timed out")), 60_000);
+    process.on("message", function release(message) {
+      if (message?.type !== "runner-release") return;
+      clearTimeout(timer);
+      process.off("message", release);
+      process.channel?.unref();
+      resolve();
+    });
+    process.send({ type: "runner-ready" }, (error) => {
+      if (error) { clearTimeout(timer); reject(error); }
+    });
+  });
+}
+
+// Only explicitly configured supervisors may restart on exit. GUI apps also
+// inherit XPC_SERVICE_NAME; it does not promise that this runner restarts.
+export function runnerSupervised(env) {
+  return env.ATELIER_RUNNER_SUPERVISED === "1";
+}
+
+// Without a supervisor, remain an attached waiting parent. Temporarily own
+// signals so the idle runner's second-interrupt handler cannot orphan a child.
+// A startup failure kills and reaps the replacement before restoring polling.
+export async function reexecSelf(env, { argv = process.argv, execArgv = process.execArgv, execPath = process.execPath, readyTimeoutMs = 60_000 } = {}) {
+  if (runnerSupervised(env)) {
+    console.log(`runner: supervisor restart: was ${short(env[RELOADED_FROM])}, target ${short(env[RELOAD_TARGET])}`);
+    process.exit(0);
+  }
+  const child = spawn(execPath, [...execArgv, ...argv.slice(1)], {
+    // Isolate terminal group signals: the parent forwards each one exactly once.
+    detached: true,
+    env: { ...env, [RELOAD_HANDOFF]: "1" },
+    stdio: ["inherit", "inherit", "inherit", "ipc"],
+  });
+  const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
+  const previous = signals.map((signal) => process.rawListeners(signal));
+  let interrupted = null, ready = false, releasing = false, failure;
+  const forwards = signals.map((signal) => () => {
+    interrupted ??= signal;
+    child.kill(signal);
+  });
+  signals.forEach((signal, i) => {
+    process.removeAllListeners(signal);
+    process.on(signal, forwards[i]);
+  });
+  const cleanupChild = () => child.kill("SIGKILL");
+  process.once("exit", cleanupChild);
+  try {
+    await new Promise((resolve, reject) => {
+      const fail = (error) => {
+        if (failure) return;
+        failure = error;
+        clearTimeout(timer);
+        if (child.pid) child.kill("SIGKILL");
+        else reject(error);
+      };
+      const timer = setTimeout(() => fail(new Error("replacement runner readiness timed out")), readyTimeoutMs);
+      child.on("error", fail);
+      child.once("exit", (code, signal) => {
+        clearTimeout(timer);
+        if (ready || interrupted) {
+          const exitSignal = signal ?? interrupted;
+          process.exit(exitSignal ? { SIGINT: 130, SIGTERM: 143, SIGHUP: 129, SIGKILL: 137 }[exitSignal] ?? 1 : code ?? 1);
+        }
+        reject(failure ?? new Error(`replacement runner exited before ready (${signal ?? code})`));
+      });
+      child.on("message", (message) => {
+        if (failure || releasing || message?.type !== "runner-ready") return;
+        releasing = true;
+        // Even an interrupted startup needs release so its aborted runner
+        // loop can finish. It must not wait out the readiness deadline.
+        child.send({ type: "runner-release" }, (error) => {
+          if (error) { fail(error); return; }
+          clearTimeout(timer);
+          ready = true;
+        });
+      });
+    });
+  } finally {
+    process.off("exit", cleanupChild);
+    signals.forEach((signal, i) => {
+      process.off(signal, forwards[i]);
+      for (const listener of previous[i]) process.on(signal, listener);
+    });
+  }
+}
+
+// What an idle runner does about the deployed commit: nothing while the
+// server cannot say which it is (no answer, no commit), or while the commit
+// it started from already contains it (the reloaded process, or a checkout
+// ahead of the deploy, so nothing reloads twice); "reload" when the
+// checkout's HEAD now contains it; "behind" until then.
+export async function reloadCheck(started, { version, checkout, signal }) {
+  if (!started || !version || !checkout) return { action: "none" };
+  let answer = null;
+  try { answer = await version(signal); } catch { return { action: "none" }; }
+  const deployed = answer?.commit;
+  if (typeof deployed !== "string" || !COMMIT.test(deployed) || deployed === started) return { action: "none" };
+  if (await checkout.contains(deployed, started)) return { action: "none" };
+  const head = await checkout.head();
+  return { action: head && await checkout.contains(deployed, head) ? "reload" : "behind", deployed, head };
+}
+
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, version, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, reload }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
@@ -2058,6 +2674,34 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // Tasks closed under this runner (t476), by taskKey: their exact state,
   // kept for this process so no later poll takes them again.
   const refused = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map();
+  // The harnesses a provider's usage limit has paused (providerLimitOf), kept
+  // in a file so a restart honours them. A harness is paused for the whole
+  // runner process: every model of it leaves the offer until its reset.
+  const limitPath = limitFile ?? limitFileFor(offer.runner);
+  let limits = readLimits(limitPath);
+  const saveLimits = () => {
+    try { writeLimits(limitPath, limits); }
+    catch (error) { io.log(`could not keep the provider-limit pauses in ${limitPath}: ${error.message}`); }
+  };
+  // Pauses whose reset has come are lifted, and said so.
+  const liftExpired = () => {
+    const lifted = Object.values(limits.pauses).filter((p) => Date.parse(p.resetAt) <= now());
+    for (const p of lifted) { delete limits.pauses[p.harness]; io.log(`resumed: ${p.harness} usage limit reset at ${p.resetAt}; its models are offered again`); }
+    if (lifted.length) saveLimits();
+  };
+  const pauseHarness = (task, state) => {
+    const limit = state.providerLimit, at = now();
+    const held = limits.pauses[limit.harness];
+    const resetAt = new Date(Math.max(limit.resetAt, held ? Date.parse(held.resetAt) : 0)).toISOString();
+    const pause = { harness: limit.harness, reason: limit.reason, resetAt, since: held?.since ?? new Date(at).toISOString(), fallback: limit.fallback && (!held || held.fallback) };
+    limits.pauses[limit.harness] = pause;
+    const job = task.item.dispatch?.job === "plan" || task.item.dispatch?.job === "review" ? task.item.dispatch.job : jobOf(task);
+    limits.events = [...limits.events, { at: new Date(at).toISOString(), kind: "provider-limit", harness: pause.harness, job, project: task.project, item: task.item.id, ...(task.item.request !== undefined ? { request: task.item.request } : {}), resetAt, fallback: limit.fallback, reason: pause.reason }].slice(-EVENTS_KEEP);
+    saveLimits();
+    // An infrastructure event: the provider's, not the model's, so no run is
+    // reported and neither failure count moves.
+    io.log(`infrastructure event: provider limit on ${pause.harness} during ${job} of ${task.project}/${task.item.id}; ${pauseLine(pause)}`);
+  };
   // Review skip reports the server has not taken yet (t353), by the review's
   // refusal key: the report's body, how many tries in a row have failed, and
   // the poll (`polls`, counting the answered ones) on which it is next due.
@@ -2102,6 +2746,8 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   const io = {
     removeFile: (file) => rmSync(file, { force: true }),
     removeTree: (dir) => rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }),
+    // The empty folder a criteria review job works in (runCriteriaReview).
+    makeDir: (dir) => mkdirSync(dir, { recursive: true }),
     workspacePath, hasPreparation, log: line, stopped: () => controller.signal.aborted,
     // `options.token` (a review job's, t346) is the Atelier token this one
     // call authenticates with, handed to the CLI as ATELIER_TOKEN in the
@@ -2110,19 +2756,19 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     cli: async (argv, cwd, options = {}) => {
       // Lease control calls stay in the runner so shutdown can give each
       // request its own deadline, independent of the aborted child signal.
-      if (["review-renew", "review-release", "review-unparsable"].includes(argv[0]) && argv.includes("--request")) {
+      if ((argv[0] === "release" && options.providerLimit) || (["review-renew", "review-release", "review-unparsable"].includes(argv[0]) && argv.includes("--request"))) {
         // The CLI hands its own helpers in (api): inside `atelier runner`, a
         // dynamic import of atelier.mjs waits on that module's unfinished
         // top-level await, and Node exits 13 with nothing left to run (t505).
         const { server, I } = api ?? await import("./atelier.mjs");
         const value = (flag) => argv[argv.indexOf(flag) + 1];
-        const body = { request: Number(value("--request")), note: argv.includes("--note") ? value("--note") : "" };
+        const body = { ...(options.providerLimit ? { providerLimit: true } : { request: Number(value("--request")) }), note: argv.includes("--note") ? value("--note") : "" };
         if (argv[0] === "review-unparsable") {
           body.head = value("--head");
           body.reply = readFileSync(value("--reply-file"), "utf8");
         }
         const response = await fetch(`${server()}/api${I(value("--project"), argv[1])}/${argv[0]}`, {
-          method: "POST", redirect: "error", headers: { authorization: `Bearer ${options.token}`, "x-atelier-actor": value("--as"), "content-type": "application/json" },
+          method: "POST", redirect: "error", headers: { authorization: `Bearer ${options.token ?? credential}`, "x-atelier-actor": value("--as"), "content-type": "application/json" },
           body: JSON.stringify(body), signal: AbortSignal.timeout(5000),
         });
         if (!response.ok) throw Object.assign(new Error(`${argv[0]}: ${response.status}`), { status: response.status });
@@ -2131,7 +2777,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       return checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, capture: readsOutput(argv), claim: argv[0] === "claim",
         env: runnerChildEnv(process.env, offer.runner, credential, options.token),
         step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
-        ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild);
+        ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable" || argv[0] === "criteria-review-failed") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild);
     },
     prepareSubmission: (assignment, workspace, resolve) => prepareBuildSubmission(assignment, workspace, io, resolve),
     // Git as the landing's merge of main calls it (mergeMainAndRegenerate in
@@ -2230,7 +2876,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     abortMerge: (cwd) => checked(["git", "merge", "--abort"], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild),
     // The workspace half of a rollback; runIntegrate and runRefresh push it with atelier push --rollback.
     rollback: (cwd, before) => checked(["git", "reset", "--hard", before], { cwd, capture: true, captureError: true, signal: controller.signal, step: "rollback" }, executeChild),
-    writeDiff, removeDiff, verdictPath, readVerdict,
+    writeDiff, removeDiff, verdictPath, readVerdict, now,
     ...taskIO,
   };
   try {
@@ -2248,6 +2894,44 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // exact jobs is read where the runner runs, not inferred from the
     // queue's silence.
     io.log(jobsLine(offer.jobs));
+    // The commit this process started from (t265), against which an idle
+    // runner compares the deployed one. A --once run never reloads.
+    const reloading = reload && !args.once;
+    const started = reloading ? await reload.checkout.head().catch(() => null) : null;
+    const target = process.env[RELOAD_TARGET];
+    delete process.env[RELOAD_TARGET];
+    if (target && (!started || !await reload.checkout.contains(target, started))) {
+      throw new Error("replacement checkout no longer contains the deployed commit");
+    }
+    const reloadedFrom = process.env[RELOADED_FROM];
+    delete process.env[RELOADED_FROM];
+    if (reloading && reloadedFrom) line(`reloaded: was ${short(reloadedFrom)}, now ${short(started)}`);
+    if (reloading && !started) line(`the commit this runner started from cannot be read in ${reload.checkout.dir}; it will not reload itself after a deploy`);
+    // The deployed commit last said to be missing from the checkout, and the
+    // one a re-exec failed for: each is said once, and a failed one is not
+    // tried again until the next deploy.
+    let saidBehind = null, failedReload = null;
+    const reloadIfDeployed = async () => {
+      const check = await reloadCheck(started, { version, checkout: reload.checkout, signal: controller.signal });
+      if (controller.signal.aborted || check.action === "none") return;
+      if (check.action === "behind") {
+        if (saidBehind === check.deployed) return;
+        saidBehind = check.deployed;
+        line(`behind: started from ${short(started)}, the server runs ${short(check.deployed)}, and this checkout (${reload.checkout.dir}) at ${short(check.head)} does not contain it; update it (git -C '${reload.checkout.dir}' pull --ff-only) and this runner reloads itself when next idle`);
+        return;
+      }
+      // A skip report not yet taken lives only in this process: the reload
+      // waits until the server has it.
+      if (failedReload === check.deployed || pendingSkips.size) return;
+      line(`reloading: started from ${short(started)}, the server runs ${short(check.deployed)}; starting replacement runner from ${reload.checkout.dir} at ${short(check.head)}`);
+      try { await reload.reexec({ ...process.env, [RELOADED_FROM]: started, [RELOAD_TARGET]: check.deployed }); }
+      catch (error) {
+        failedReload = check.deployed;
+        line(`reload failed: ${error.message}; still running ${short(started)}. Restart this runner by hand to load ${short(check.deployed)}`);
+      }
+    };
+    // Pauses a restart finds in the file, said as the runner's status.
+    for (const pause of Object.values(limits.pauses)) if (Date.parse(pause.resetAt) > now()) io.log(`still ${pauseLine(pause)}`);
     // Transient queue failures in a row (transientQueueError): the first is
     // logged, the rest are quiet until the queue answers again, and each
     // lengthens the wait before the next poll (queueBackoffMs).
@@ -2258,10 +2942,10 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // server gives this runner's poll asked with `why` (idleWhy), so an idle
     // runner says once what holds each one, and stays quiet until that
     // changes. A server that will not say is said too, once.
-    let lastWhy = null;
+    let lastWhy = null, pollOffer = offer;
     const sayIdleWhy = async (passed) => {
       let waiting = [], unread = null;
-      if (idleWhy) { try { waiting = await idleWhy(offer, controller.signal); } catch (error) { if (controller.signal.aborted) return; unread = error.message; } }
+      if (idleWhy) { try { waiting = await idleWhy(pollOffer, controller.signal); } catch (error) { if (controller.signal.aborted) return; unread = error.message; } }
       const own = new Set(passed.map((p) => p.task));
       const reasons = [...passed, ...(Array.isArray(waiting) ? waiting : []).filter((q) => q?.item?.why?.length && !own.has(`${q.project}/${q.item.id}`))
         .flatMap((q) => q.item.why.map((r) => ({ task: `${q.project}/${q.item.id}`, line: r.line })))];
@@ -2274,11 +2958,14 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       for (const r of reasons) line(`  ${r.task}  ${r.line}`);
       if (unread) line(`found nothing to claim; the server's reasons for the dispatches waiting could not be read (${unread}), so atelier status names them.`);
     };
+    await runnerReady();
     while (!controller.signal.aborted) {
       let state;
       try {
+        liftExpired();
         let tasks;
-        try { tasks = await queue(offer, controller.signal); }
+        pollOffer = unpausedOffer(offer, limits.pauses);
+        try { tasks = await queue(pollOffer, controller.signal); }
         catch (error) {
           if (controller.signal.aborted || !transientQueueError(error)) throw error;
           misses++;
@@ -2308,34 +2995,49 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         // (jobOf), so one kept for reviews passes by the builds a server from
         // before t252's fix still lists, and they stay in the queue for a
         // runner that takes them.
-        const ordered = [...tasks.filter((task) => task.item.dispatch?.job === "review"), ...tasks.filter((task) => task.item.dispatch?.job !== "review")];
+        // Pre-reviews (t524) follow the gate's reviews and come before the
+        // rest: one never takes this runner ahead of a review a landing waits on.
+        const ordered = orderJobs(tasks);
         let ranTask = false;
         const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks });
         for (const task of ordered.filter((task) => passBy(task) === null)) {
           // A poll can contain the same task more than once. Recheck after
           // each job, since filtering the batch preceded its terminal result.
-          if (terminalTasks.has(taskKey(task))) continue;
+          if (terminalTasks.has(taskKey(task)) || limits.pauses[task.agent]) continue;
           // A task this runner may take is not an idle poll.
           ranTask = true;
           // A dispatch carrying job: "plan" asks for the plan job, one
           // carrying "review" for the review job, "integrate" for the
           // integrate job and "refresh" for the refresh job
           // (docs/orchestrator.md, sections 2, 4 and 5); anything else is building.
-          state = task.item.dispatch?.job === "plan"
-            ? await runPlanTask(task, config, offer.runner, io)
+          // Polls stop while the job runs, so a heartbeat renews this
+          // runner's last poll meanwhile (t537): without it a build longer
+          // than RUNNER_GONE_MS would orphan its own claim.
+          state = await withHeartbeat(() => task.item.dispatch?.job === "plan"
+            ? runPlanTask(task, config, offer.runner, io)
             : task.item.dispatch?.job === "review"
-              ? await runReview(task, config, offer.runner, io)
-              : task.item.dispatch?.job === "integrate"
-                ? await runIntegrate(task, config, offer.runner, io)
-                : task.item.dispatch?.job === "refresh"
-                  ? await runRefresh(task, config, offer.runner, io)
-                  : await runTask(task, config, offer.runner, io);
+              ? runReview(task, config, offer.runner, io)
+              : task.item.dispatch?.job === "criteria-review"
+                ? runCriteriaReview(task, config, offer.runner, io)
+                : task.item.dispatch?.job === PREREVIEW_JOB
+                  ? runPrereview(task, config, offer.runner, io)
+                : task.item.dispatch?.job === "integrate"
+                  ? runIntegrate(task, config, offer.runner, io)
+                  : task.item.dispatch?.job === "refresh"
+                    ? runRefresh(task, config, offer.runner, io)
+                    : runTask(task, config, offer.runner, io), heartbeat && (() => heartbeat(offer, controller.signal)), { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
           if (controller.signal.aborted) break;
+          if (state.providerLimit) {
+            pauseHarness(task, state);
+            if (args.once) break;
+            continue;
+          }
           const outcome = runOutcome(state);
           if (outcome && reportRun) {
             try {
-              // The report names the job that ran: a plan, a review, or a build.
-              const role = task.item.dispatch?.job === "plan" || task.item.dispatch?.job === "review" ? task.item.dispatch.job : "build";
+              // The report names the job that ran: a plan, a review (a
+              // criteria review counts as one), or a build.
+              const role = task.item.dispatch?.job === "plan" || task.item.dispatch?.job === "review" ? task.item.dispatch.job : (task.item.dispatch?.job === "criteria-review" || task.item.dispatch?.job === PREREVIEW_JOB) ? "review" : "build";
               await reportRun({ actor: task.actor, role, outcome, project: task.project, item: task.item.id, detail: state.detail ?? state.reason }, offer.runner, controller.signal);
               io.log(`reported ${task.project}/${task.item.id} as ${outcome}`);
             } catch (error) { io.log(`could not report ${task.project}/${task.item.id} as ${outcome}: ${error.message}`); }
@@ -2353,15 +3055,17 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // reviewer has skipped, instead of waiting out the hour (t353). A
           // report the server did not take is kept and tried again each poll
           // (reportSkip), since this review is not run again in this process.
-          if (task.item.dispatch?.job === "review" && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && reportReviewSkip) {
+          if ((task.item.dispatch?.job === "review" || task.item.dispatch?.job === PREREVIEW_JOB) && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && reportReviewSkip) {
             await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note: state.reason });
           }
           // A build or plan job given up under this dispatch, after its
           // failed runs or infrastructure failures in a row, is reported as
           // such (t420): the second sends no run report at all (runOutcome).
-          // A task the server closed (t476) was not given up.
+          // A task the server closed (t476) was not given up. A criteria
+          // review (t438) records its own failure, criteria-review-failed,
+          // as the code review has its skip, so neither goes to run-skip.
           const gaveUp = state.terminalState ? null : count === 2 ? "failures" : infrastructureCount === 3 ? "infrastructure" : null;
-          if (task.item.dispatch?.job !== "review" && gaveUp && reportRunSkip) {
+          if (task.item.dispatch?.job !== "review" && task.item.dispatch?.job !== "criteria-review" && task.item.dispatch?.job !== PREREVIEW_JOB && gaveUp && reportRunSkip) {
             const role = task.item.dispatch?.job === "plan" ? "plan" : "build";
             await reportSkip(`run-skip:${key}`, { project: task.project, item: task.item.id, actor: task.actor, role, kind: gaveUp, failures: gaveUp === "failures" ? count : infrastructureCount, note: state.reason ?? "" }, 0, "run");
           }
@@ -2370,10 +3074,13 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // itself, independently of the revision-specific refusals that a
           // new dispatch can supersede and of a review's per-request failures.
           if (state.terminalState) terminalTasks.set(taskKey(task), state.terminalState);
-          else if (state.claimRefused || state.skipped) refused.add(refusedKey(task));
+          else if (state.claimRefused && !lostToHold(state) || state.skipped) refused.add(refusedKey(task));
           else if (args.once || state.phase !== "failed" || state.taskFailure) break;
         }
         if (!ranTask && !controller.signal.aborted) await sayIdleWhy(ordered.flatMap((task) => { const why = passBy(task); return why ? [{ task: `${task.project}/${task.item.id}`, line: why }] : []; }));
+        // Idle, after a poll that claimed nothing, and only then: no claim,
+        // review, merge, refresh or check of a job is held (t265).
+        if (!ranTask && reloading && !controller.signal.aborted) await reloadIfDeployed();
         state ??= { phase: "idle" };
       } catch (error) { state = nextStep({ phase: "idle" }, { error: error.message }); line(`failed: ${state.reason}`); }
       if (args.once) { if (state.phase === "failed" && !controller.signal.aborted) process.exitCode = 1; break; }
