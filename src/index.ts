@@ -721,11 +721,11 @@ function singleFamilyArg(value: unknown): PoolFamily | null {
 // A transient failure is retried (artifactsStep). A token whose answer was
 // lost stays unrecorded and unreturned, so its plaintext reaches no one,
 // as a caller's own retry would leave it.
-async function mint(env: Env, repo: string, scope: "read" | "write", branch: string) {
+async function mint(env: Env, repo: string, scope: "read" | "write", branch: string, ttl = scope === "write" ? WRITE_TTL : READ_TTL) {
   return artifactsStep(`make a ${scope} token for ${repo}`, async () => {
     using r = await env.ARTIFACTS.get(repo);
     const info = await r.info();
-    const t = await r.createToken(scope, scope === "write" ? WRITE_TTL : READ_TTL);
+    const t = await r.createToken(scope, ttl);
     return { remote: info.remote, token: t.plaintext, tokenId: t.id, expiresAt: t.expiresAt, defaultBranch: branch };
   }, (err) => NOT_FOUND.test(codeOf(err)));
 }
@@ -1628,6 +1628,21 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // machine it runs (t451); null when the project names none yet.
         commitIdentity: p.policy.commitIdentity ?? null,
       });
+    }
+    case "owner-port-token": {
+      requireOwner(env, actor);
+      const { item, generation, replaces } = await L.reserveOwnerPort(id, actor);
+      await revoke(env, item.fork, replaces);
+      const t = await mint(env, item.fork!, "write", await projectBranch(env, await L.project()), 300);
+      try {
+        if (!await L.recordOwnerPortToken(id, actor, generation, replaces, t.tokenId, t.expiresAt)) {
+          throw new RuleError("claim_superseded", `${id} changed while the port token was made; no token was issued`, 409);
+        }
+      } catch (error) {
+        await revoke(env, item.fork, t.tokenId);
+        throw error;
+      }
+      return json({ remote: t.remote, token: t.token, expiresAt: t.expiresAt, defaultBranch: t.defaultBranch });
     }
     case "read-token": {
       const item = await L.item(id);
