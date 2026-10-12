@@ -1292,7 +1292,7 @@ test("CLI distinguishes server claim refusals from unknown failures without netw
       // No agent token here: the actor is never looked up.
       tokenActor: undefined, resolveTokenActor: async () => {}, terminalTaskExit,
       server: () => "https://unused", apiToken: () => "unused",
-      fetch: async () => ({ ok: false, status, text: async () => JSON.stringify(answer) }),
+      serverFetch: async () => ({ ok: false, status, text: async () => JSON.stringify(answer) }),
       die: (message, code) => { throw Object.assign(new Error(message), { code }); },
     });
     await assert.rejects(call(method, path, {}, "codex/model"), (error) => error.code === expected && error.message === `${answer.error}: ${answer.detail}`);
