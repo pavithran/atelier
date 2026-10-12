@@ -1,0 +1,56 @@
+atelier atelier/t540 "The queue and the claim judge an orphaned claim from the same runner polls"
+accepted head afc9fa90a2e9e92d47fbcd0e961d30d6c595242a
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR claude-code/opus-5.5 (anthropic)
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-12T10:14:54.350Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-12T10:14:56.888Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-12T10:31:15.230Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-12T10:31:18.563Z
+REVIEW approve by codex/gpt-6-astra at afc9fa90a2e9e92d47fbcd0e961d30d6c595242a, recorded by codex/gpt-6-astra
+2026-10-12T08:43:52.307Z pavi item.created
+2026-10-12T08:43:52.907Z pavi item.dispatched
+2026-10-12T09:02:27.806Z claude-code/opus-5.5 item.claimed
+2026-10-12T09:03:13.113Z claude-code/opus-5.5 fork.created
+2026-10-12T09:18:28.127Z claude-code/opus-5.5 push.observed
+2026-10-12T09:31:20.651Z claude-code/opus-5.5 evidence.observed
+2026-10-12T09:31:23.067Z claude-code/opus-5.5 evidence.observed
+2026-10-12T09:31:23.648Z claude-code/opus-5.5 item.submitted
+2026-10-12T09:36:03.384Z pavi item.released
+2026-10-12T09:36:03.384Z pavi item.dispatched
+2026-10-12T09:36:24.469Z claude-code/opus-5.5 item.claimed
+2026-10-12T09:43:29.316Z claude-code/opus-5.5 push.observed
+2026-10-12T09:49:07.825Z claude-code/opus-5.5 evidence.observed
+2026-10-12T09:49:10.096Z claude-code/opus-5.5 evidence.observed
+2026-10-12T09:49:10.536Z claude-code/opus-5.5 item.submitted
+2026-10-12T09:50:19.412Z pavi land.lease
+2026-10-12T09:50:23.856Z pavi land.merge
+2026-10-12T09:50:34.843Z pavi land.regenerate
+2026-10-12T09:50:35.915Z pavi land.push
+2026-10-12T09:56:40.999Z claude-code/opus-5.5 evidence.observed
+2026-10-12T09:56:43.887Z claude-code/opus-5.5 evidence.observed
+2026-10-12T09:56:44.322Z pavi land.check
+2026-10-12T09:56:47.195Z pavi review.requested
+2026-10-12T09:57:07.908Z codex/gpt-6-astra review.claimed
+2026-10-12T09:58:52.002Z codex/gpt-6-astra review.rejected
+2026-10-12T09:59:03.835Z pavi land.review
+2026-10-12T09:59:25.168Z pavi review.finding
+2026-10-12T09:59:25.796Z pavi item.released
+2026-10-12T09:59:25.796Z pavi item.dispatched
+2026-10-12T09:59:44.814Z claude-code/opus-5.5 item.claimed
+2026-10-12T10:09:18.414Z claude-code/opus-5.5 push.observed
+2026-10-12T10:14:54.756Z claude-code/opus-5.5 evidence.observed
+2026-10-12T10:14:57.027Z claude-code/opus-5.5 evidence.observed
+2026-10-12T10:14:57.459Z claude-code/opus-5.5 item.submitted
+2026-10-12T10:23:34.108Z pavi land.lease
+2026-10-12T10:24:22.484Z pavi land.merge
+2026-10-12T10:24:34.712Z pavi land.regenerate
+2026-10-12T10:24:35.812Z pavi land.push
+2026-10-12T10:31:15.597Z claude-code/opus-5.5 evidence.observed
+2026-10-12T10:31:18.720Z claude-code/opus-5.5 evidence.observed
+2026-10-12T10:31:19.140Z pavi land.check
+2026-10-12T10:31:22.229Z pavi review.requested
+2026-10-12T10:31:28.897Z codex/gpt-6-astra review.claimed
+2026-10-12T10:33:14.496Z codex/gpt-6-astra review.approved
+2026-10-12T10:33:23.780Z pavi land.review
+2026-10-12T10:33:24.599Z pavi item.accepted
+2026-10-12T10:33:24.624Z pavi land.accept
