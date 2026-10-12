@@ -34,7 +34,7 @@ import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderB
 import { addTally, buildStory, emptyTally, VENDOR_NAMES, type Story } from "./graph";
 import { buildPulse } from "./pulse";
 import { projectKind } from "./kind";
-import { assign, parseRunner, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
+import { assign, parseRunner, unclaimed, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
 import { attentionFor } from "./attention.ts";
 import { readStanding, type StandingSource } from "./standing-read.ts";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
@@ -1041,7 +1041,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // the project's core files hold carrying `held`, the live item it waits on;
   // a runner POSTs what it can run and gets back the tasks it may claim, with
   // the name to claim under, leaving out every held one (coreHold in
-  // src/dispatch/rules.ts).
+  // src/dispatch/rules.ts). A runner that finds nothing to claim POSTs its
+  // offer with `why: true` (t420), and gets back the listing GET gives, its
+  // token's projects only, each dispatch with why it is not being taken and
+  // those for another runner said as such: a runner token may not GET it.
+  // A runner token gets each entry as id, title, dispatch (its note left
+  // out) and why alone, and only its own refusals and skips among the
+  // reasons: the full item is what GET items/tN refuses it with 403.
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const offer = m === "POST" ? runnerOffer(body) : null;
     if (c.token?.runner && (!offer || offer.runner !== c.token.runner)) throw runnerDenied(c.token);
@@ -1076,7 +1082,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // the claim a dead run left behind is settled before new work starts.
     const queued = lists.flat().sort((a, b) => Number(isHeld(b.item)) - Number(isHeld(a.item)) ||
       (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
-    const result = offer
+    const result = offer && body.why !== true
       ? queued.flatMap(({ project, item }) => {
           if ("held" in item && item.held) return [];
           const a = item.dispatch ? assign(item.dispatch, offer) : null;
@@ -1085,7 +1091,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // as another's claim (claim guards the runner name; assign the actor).
           return a && (!c.token?.runner || !["integrate", "refresh"].includes(item.dispatch?.job ?? "")) && (!c.token || c.token.runner || a.actor === actor) && (!isHeld(item) || item.owner === a.actor) ? [{ project, item, ...a }] : [];
         })
-      : queued;
+      : await queueWhy(env, queued.filter(({ item }) => !isHeld(item)), offer, c.token?.runner ? c.token.runner : null);
     // A project that could not be read is named, so a missing task is never silent.
     const res = json(result);
     if (unreadable.length) res.headers.set("x-atelier-incomplete", unreadable.sort().join(","));
@@ -1868,6 +1874,26 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       await L.recordReviewSkip(id, request, head, runner.runner, actor, String(body.note ?? ""), !!c.token);
       return json({ skipped: true });
     }
+    // A runner's word that it gives up a dispatched build or plan job under
+    // its current dispatch (t420): after its failed runs (`failures`), or
+    // after workspace, git or harness failures in a row (`infrastructure`),
+    // which send no run report. Authorised as review-skip is: the owner
+    // token the runner holds, or a runner token for a job its poll was
+    // offered, under that job's actor. Kept on the task, so status and show
+    // name the runner that passes it by and the command that releases it.
+    case "run-skip": {
+      if (!c.token?.runner) requireOwner(env, actor);
+      const runner = parseRunner(req.headers.get("x-atelier-runner"));
+      if (!runner) throw new RuleError("bad_runner", "a run skip names its runner in X-Atelier-Runner", 400);
+      const kind = body.kind;
+      if (kind !== "failures" && kind !== "infrastructure") throw new RuleError("bad_kind", "a run skip's kind is failures or infrastructure", 400);
+      const failures = body.failures;
+      if (typeof failures !== "number" || !Number.isInteger(failures) || failures < 1 || failures > 1000) throw new RuleError("bad_failures", "a run skip names how many failures it gave up after", 400);
+      // Under a runner token the job's actor is the caller, checked at the gateway.
+      const by = c.token?.runner ? actor : String(body.actor ?? "");
+      if (!validActor(by)) throw new RuleError("bad_actor", "a run skip names the harness/model the job ran under", 400);
+      return json({ kept: await L.recordRunSkip(id, runner.runner, by, kind, failures, String(body.note ?? "")) });
+    }
     // t407: a reviewer's reply parseVerdict could not read is kept on the
     // task, its last VERDICT_LIMITS.reply characters with the reviewer and
     // the head, as the request the reviewer claimed is released. The runner
@@ -2566,8 +2592,10 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
   // The jobs the runner runs, build among them; an ask naming none is an
   // older runner's, which takes builds (missingJob in src/dispatch/rules.ts).
   const jobs = Array.isArray(body.jobs) ? body.jobs.filter((j): j is string => typeof j === "string") : [];
+  // When the runner's process started, which an older runner does not say.
+  const started = typeof body.started === "string" && Number.isFinite(Date.parse(body.started)) ? new Date(body.started).toISOString() : null;
   return {
-    runner: r.runner, kind: r.kind, jobs,
+    runner: r.runner, kind: r.kind, jobs, ...(started ? { started } : {}),
     agents: agents.flatMap((a) => {
       const x = a as { agent?: unknown; models?: unknown };
       return typeof x.agent === "string" && Array.isArray(x.models)
@@ -2581,6 +2609,45 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
 // heldJobs lists it: the queue offers it back to its holder alone.
 function isHeld(item: Item): boolean {
   return item.state === "claimed" && !!item.owner;
+}
+
+// Why each queued dispatch the owner's listing shows is not being taken,
+// attached as `why` so `atelier status` and `atelier show` say it: the core
+// file hold, overlap refusal and refused claims the Ledger already read
+// beside it, the live runners that gave it up after failing it (from the run
+// reports), and the model or job no live runner offers (unclaimed in
+// src/dispatch/rules.ts); asked by one runner (`offer`), also a dispatch
+// meant for another. A review request is listed apart, so it carries none.
+async function queueWhy(env: Env, queued: { project: string; item: Item & { held?: CoreHold; overlap?: OverlapRefusal; refusals?: ClaimRefusal[]; skips?: RunSkip[] } }[], offer: RunnerOffer | null = null, runner: string | null = null): Promise<{ project: string; item: (Item | RunnerWhyItem) & { why?: UnclaimedReason[] } }[]> {
+  // Each waiting dispatch's build runs since it was dispatched, read task by
+  // task, so the newest reports of other tasks never push its failures out.
+  const asks = queued.flatMap(({ project, item }) => item.dispatch && item.dispatch.job !== "review" ? [{ project, item: item.id, since: item.dispatch.at }] : []);
+  const [offers, runs] = await Promise.all([index(env).runnerOffers(), asks.length ? index(env).buildRunsSince(asks) : []]);
+  // Asked under a runner token, the reasons are built from that runner's own
+  // refusals, skips and run reports only, and each entry is cut to what the
+  // runner prints (runnerWhyItem): another runner's refusal or failure, and
+  // the task's brief and note, are the owner's to read.
+  const mine = <T extends { runner: string }>(list: readonly T[] | undefined) => list && runner ? list.filter((r) => r.runner === runner) : list ?? null;
+  const reports = mine(runs.map((r) => ({ project: r.project, item: r.item, role: r.role, outcome: r.outcome, runner: r.runner, at: r.at }))) ?? [];
+  return queued.map(({ project, item }) => {
+    if (item.dispatch?.job === "review") return { project, item: runner ? runnerWhyItem(item, undefined) : item };
+    const why = unclaimed(item, { held: item.held ?? null, overlap: item.overlap ?? null, refusals: mine(item.refusals), skips: mine(item.skips), offers, runs: reports, project, offer });
+    if (runner) return { project, item: runnerWhyItem(item, why) };
+    // Always carried, empty when nothing holds it, so the CLI can tell this
+    // listing from an older server's, which carries `held` alone.
+    return { project, item: { ...item, why } };
+  });
+}
+
+// What a runner token's why poll carries of a waiting dispatch: no more than
+// it prints (the id and the reasons) and the dispatch it was not offered,
+// without the dispatch's note, which a plain poll gives only the runner it
+// offers the task to.
+interface RunnerWhyItem { id: string; title: string; dispatch: { to: string; agent: string | null; model: string | null; job: string | null } | null; why?: UnclaimedReason[] }
+function runnerWhyItem(item: Item, why: UnclaimedReason[] | undefined): RunnerWhyItem {
+  const d = item.dispatch;
+  const dispatch = d ? { to: d.to, agent: d.agent, model: d.model, job: d.job ?? null } : null;
+  return { id: item.id, title: item.title, dispatch, ...(why ? { why } : {}) };
 }
 
 // The portfolio's notices, each project's read on its own: a project whose
@@ -3221,6 +3288,18 @@ export default {
         // reaches the project as the current one does, for a token limited to
         // either, and the answer names the project as it is called now.
         const ref = parts[1] === "projects" && parts[2] !== undefined ? await resolveProject(env, parts[2]) : null;
+        // A claim refused a runner is kept on the task (noteClaimRefusal), so
+        // status and show name it (t420): the runner passes the task by
+        // until it changes, and said so only in its own log. Recording it
+        // never hides the refusal itself.
+        const claimRunner = req.method === "POST" && ref && parts[3] === "items" && /^t[0-9]+$/.test(parts[4] ?? "") && parts[5] === "claim" && parts.length === 6
+          ? token?.runner ?? parseRunner(req.headers.get("x-atelier-runner"))?.runner ?? null : null;
+        const noteRefusal = async (error: unknown) => {
+          const rule = parseRuleError(error);
+          if (!claimRunner || !ref || !rule || rule.status >= 500) return;
+          try { await ledger(env, ref.key).noteClaimRefusal(parts[4], claimRunner, actor, rule.code, rule.detail, token?.runner ? token : undefined); }
+          catch (e) { console.error("claim refusal not recorded", String(e)); }
+        };
         if (token?.runner) {
           const input = body as Record<string, unknown>;
           if (!runnerRoute(req.method, parts.slice(1), input) || ref && !inScope(token, ref.names)) throw runnerDenied(token);
@@ -3232,7 +3311,13 @@ export default {
             // a run report for the review is; the runner never holds a
             // review as a job of its own, so assertRunnerJob cannot judge it.
             if (parts[5] === "review-skip") await ledger(env, ref.key).assertRunnerReport(token, parts[4], actor, "review");
-            else await ledger(env, ref.key).assertRunnerJob(token, parts[4], actor, parts[5] === "claim");
+            // A run skip (t420) is the runner's report of a build or plan job
+            // its poll was offered, checked as that job's run report is.
+            else if (parts[5] === "run-skip") await ledger(env, ref.key).assertRunnerReport(token, parts[4], actor, input.role === "plan" ? "plan" : "build");
+            else {
+              try { await ledger(env, ref.key).assertRunnerJob(token, parts[4], actor, parts[5] === "claim"); }
+              catch (error) { await noteRefusal(error); throw error; }
+            }
             // The authenticated runner, never a caller-selected identity, goes to the atomic claim.
             req = new Request(req.url, { method: req.method, headers: new Headers(req.headers) });
             req.headers.set("x-atelier-runner", token.runner);
@@ -3253,6 +3338,7 @@ export default {
         try {
           res = await api({ env, req, url, actor, body, token, ref, acting, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
         } catch (error) {
+          await noteRefusal(error);
           if (token?.runner && parseRuleError(error)?.status === 403) throw runnerDenied(token);
           throw error;
         }
