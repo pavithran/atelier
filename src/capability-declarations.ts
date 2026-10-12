@@ -1,6 +1,8 @@
 // One capability per line, without level for new entries. Existing levels are legacy metadata.
 // Git unions independent additions; buildCapabilities validates names.
 export const CAPABILITY_DECLARATIONS = [
+  { name: "items.owner-port.v1", summary: "owner-only short-lived write credentials for an open unclaimed task fork, without claiming it" },
+  { name: "reviews.post-merge.v1", summary: "review requests and verdicts audit recorded merges and file linked defects for blocking findings" },
   { name: "plans.integration.v1", level: 6, summary: "the integrated, integration-failed, refreshed and refresh-failed routes a plan's integrator posts" },
   { name: "plans.refresh.v1", level: 6, summary: "the plan refresh route, which atelier plan refresh and atelier merge post to take main into a plan's branch" },
   { name: "land.workflow.v1", level: 14, summary: "the landing-workflow routes behind atelier land --workflow" },
@@ -18,7 +20,10 @@ export const CAPABILITY_DECLARATIONS = [
   { name: "reviews.lease.v1", level: 26, summary: "five-minute review claim leases: review-renew, and release, unparsable and verdicts naming the claim generation (--request)" },
   { name: "areas.board.v1", level: 23, summary: "the board snapshot, every task grouped by function area, which atelier board and the project page read" },
   { name: "reviews.criteria-review.v1", summary: "the criteria-review routes (request, claim, verdict, failure and finding resolution) that review a task's acceptance criteria before its build, and the project policy's requireCriteriaReview" },
+  { name: "models.standing.v1", summary: "the pool's standing: atelier models set (POST /models/ID/set), and PUT /models takes state, roles and tier" },
+  { name: "runners.run-skip.v1", summary: "the run-skip route a runner posts for a job other than a review it gives up after its failures, and the queue poll with why: true that says why each dispatch waits" },
   { name: "land.triage.v1", level: 28, summary: "the landing's triage step: the land step route records a triage, a --no-triage bypass and an --override-triage with the head, merge base and criteria binding, the project policy carries the triage model, and a landing Workflow triages before the review" },
   { name: "land.post-merge.v1", level: 27, summary: "durable post-merge runs: the project policy's owner-approved postMerge steps, the post-merge run routes (status, prepare, start, command, finish, retry, skip, reconcile) and the merge and landing reservations that block later merges until a run completes" },
   { name: "projects.stuck.v1", summary: "the owner-only read-only stuck report, GET /projects/:p/stuck, which atelier stuck reads" },
+  { name: "dispatch.orphaned-claims.v1", summary: "a claim whose runner has not polled (or sent a heartbeat) within RUNNER_GONE_MS holds no dispatch: the queue lists it as orphaned on the waiting task, and the stuck report as an orphaned-claim entry" },
 ] as const;

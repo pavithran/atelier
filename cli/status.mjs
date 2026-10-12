@@ -219,17 +219,34 @@ function reviewQueue(waiting, name, offers) {
     }));
 }
 
-// What each queued job of one project that the core files hold waits on, by
-// item id, from the queue's entries (GET /queue).
-function heldIn(waiting, name) {
+// Why each queued job of one project is not being taken, by item id, from the
+// queue's entries (GET /queue): the server attaches `why`, the reasons in
+// words (unclaimed in src/dispatch/rules.ts), for the owner's listing.
+function whyIn(waiting, name, offers) {
   return new Map((waiting.queue ?? [])
-    .filter((q) => q.project === name && q.item?.held && q.item.dispatch?.job !== "review")
-    .map((q) => [q.item.id, q.item.held]));
+    .filter((q) => q.project === name && q.item?.id && q.item.dispatch?.job !== "review")
+    .map((q) => [q.item.id, queueReasons(q.item, offers, waiting.now)])
+    .filter(([, why]) => why.length));
+}
+
+// The reasons one queue entry carries. A server from before t420 sends no
+// `why`, only `held`, the core-file hold, so against one the hold is said as
+// it said it then, and a model no live runner offers is worked out here from
+// the offers, as status did before the server said it; show, which reads no
+// offers, says the hold alone.
+export function queueReasons(item, offers = null, now = new Date()) {
+  if (Array.isArray(item.why)) return item.why;
+  const out = [];
+  if (item.held) out.push({ kind: "held", line: heldLine(item, item.held) });
+  const dead = offers && item.dispatch && (item.dispatch.agent || item.dispatch.model) ? unoffered(item.dispatch, offers, now) : null;
+  if (dead) out.push({ kind: "unoffered", line: unofferedLine(dead) });
+  return out;
 }
 
 // A held job's line: what it waits on, and how it goes ahead — once every
 // blocker stops holding (a claimed one submits or is released, a landing
-// ends), or at once, for a task, by the owner's override. A plan's part takes no override: the plan dispatches it.
+// ends), or at once, for a task, by the owner's override. A plan's part takes
+// no override: the plan dispatches it.
 function heldLine(item, held) {
   const next = item.kind === "part" ? "" : `, or at once with atelier dispatch ${item.id} --overlap-ok`;
   return `Held: ${holdText(held)}; ${holdRelease(held)}${next}.`;
@@ -256,11 +273,7 @@ export function formatStatus(views, waiting = {}) {
     const working = items.filter((i) => (i.state === "claimed" || i.state === "submitted") && !theirs.has(i.id));
     const queued = items.filter((i) => i.state === "open" && !i.owner && i.dispatch && !theirs.has(i.id));
     const reviews = reviewQueue(waiting, v.name, offers);
-    const held = heldIn(waiting, v.name);
-    const deadBuilds = new Map(queued
-      .filter((i) => offers && (i.dispatch.agent || i.dispatch.model))
-      .map((i) => [i.id, unoffered(i.dispatch, offers, now)])
-      .filter(([, dead]) => dead !== null));
+    const why = whyIn(waiting, v.name, offers);
     lines.push(v.title ? `${v.title} (${v.name})` : v.name);
     if (v.policy?.familyMode?.single) lines.push(`  ${singleFamilyLine(v.policy.familyMode.single)}`);
     if (!a.owner.length) {
@@ -290,9 +303,7 @@ export function formatStatus(views, waiting = {}) {
       lines.push("  Waiting for a runner");
       for (const i of queued) {
         lines.push(`    ${i.id}  for ${runnerOf(i.dispatch)}  ${i.title}`);
-        if (held.has(i.id)) lines.push(`      ${heldLine(i, held.get(i.id))}`);
-        const dead = deadBuilds.get(i.id);
-        if (dead) lines.push(`      ${unofferedLine(dead)}`);
+        for (const reason of why.get(i.id) ?? []) lines.push(`      ${reason.line}`);
       }
       for (const r of reviews) {
         lines.push(`    ${r.id}  review by ${r.reviewer}  ${r.title}`);

@@ -97,6 +97,27 @@ test("the pick asks the previous round's reviewer first, passes over refused, pa
 // company than the authors even in single-family mode, where no other
 // company's model may touch the project, and a criteria review bound by its
 // claim was the one review request whose company nobody judged.
+test("the pick passes over a model the owner's standing holds from reviewing, and says why", () => {
+  const held: [string, Partial<ModelEntry>, RegExp][] = [
+    ["paused", { state: "paused", stateAt: T, note: "AI Studio down" }, /paused since 2026-10-10 \(the owner's standing\): AI Studio down/],
+    ["reserved", { state: "reserved", stateAt: T, note: "astra's credits" }, /reserved since 2026-10-10 \(the owner's standing\): astra's credits/],
+    ["build-only", { roles: ["build"] }, /not a reviewer; its roles are build/],
+  ];
+  for (const [name, change, why] of held) {
+    // glm is first by model id; held, the pick passes to gpt and says why.
+    const pick = pickCriteriaReviewer({ authors: ["owner"], pool: [entry("glm-5.3", "zcode", change), entry("gpt-6-astra", "codex")], policy });
+    assert.equal(pick.reviewer?.actor, GPT, name);
+    assert.equal(pick.passedOver.length, 1, name);
+    assert.match(pick.passedOver[0].reasons.join("; "), why, name);
+    // Held alone, the refusal names the standing.
+    const none = pickCriteriaReviewer({ authors: ["owner"], pool: [entry("glm-5.3", "zcode", change)], policy });
+    assert.equal(none.reviewer, null, name);
+    assert.match(none.unpicked ?? "", why, name);
+  }
+  // A model whose roles include review is picked as before.
+  assert.equal(pickCriteriaReviewer({ authors: ["owner"], pool: [entry("glm-5.3", "zcode", { roles: ["review"] })], policy }).reviewer?.actor, GLM);
+});
+
 test("under single-family mode the criteria reviewer is a different model of that company, never another company's", () => {
   const single: ProjectPolicy = { ...policy, familyMode: { single: "anthropic", by: "owner", at: T } };
   assert.equal(criteriaIndependenceRefusal(SONNET, [OPUS], "owner", "anthropic"), null);

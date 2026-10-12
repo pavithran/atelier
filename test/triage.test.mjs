@@ -338,10 +338,12 @@ test("a triage model the pool refuses, or a task with no criteria, stops before 
 });
 
 test("criteria that change while the model triages are triaged again before the submission, and a change after the submission stops before the review request, saying the task is submitted (t475)", async (t) => {
-  // The item is read once as the landing starts (the post-merge resume
-  // check, t477), then before the triage, after it (changed: triage again),
-  // before the second, after it, and so on.
-  const during = landing(t, { args: { triage: "codex/gpt-6-astra", "no-review": true }, criteria: (reads) => (reads < 4 ? CRITERIA : [...CRITERIA, "A third"]), answers: [allMet(2), allMet(3)] });
+  // Change the criteria as the first model answers, independently of the
+  // workspace and lease revalidation reads that precede the triage.
+  let changed = false;
+  const during = landing(t, { args: { triage: "codex/gpt-6-astra", "no-review": true }, criteria: () => (changed ? [...CRITERIA, "A third"] : CRITERIA), answers: [allMet(2), allMet(3)] });
+  const answer = during.io.triage;
+  during.io.triage = async ask => { const result = await answer(ask); changed = true; return result; };
   await runLand(during.io);
   assert.equal(during.asked.length, 2);
   assert.match(during.asked[1].brief, /3\. A third/);
@@ -412,7 +414,7 @@ test("without an injected harness the triage runs through the harness's own adap
   const scratch = resolve(".scratch"); mkdirSync(scratch, { recursive: true });
   const bin = mkdtempSync(join(scratch, "triage-claude-")); t.after(() => rmSync(bin, { recursive: true, force: true }));
   const fake = (name, body) => { const file = join(bin, name); writeFileSync(file, `#!/bin/sh\n${body}\n`); chmodSync(file, 0o755); return file; };
-  const answering = fake("claude-ok", `cat > "${join(bin, "prompt.txt")}"\nprintf '%s\\n' "$*" > "${join(bin, "argv.txt")}"\necho '${allMet().replace(/\n/g, " ")}'`);
+  const answering = fake("claude-ok", `cat > "${join(bin, "prompt.txt")}"\nprintf '%s\\n' "$*" > "${join(bin, "argv.txt")}"\nprintf '%s\\n' '${JSON.stringify({ type: "result", is_error: false, result: allMet() })}'`);
   const l = landing(t, { args: { triage: "claude-code/opus-5.5", "no-review": true } });
   delete l.io.triage;
   l.io.triageTimeoutMs = 60_000;

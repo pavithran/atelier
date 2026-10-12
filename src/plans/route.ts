@@ -31,7 +31,7 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import { liveOffers, offering, offeredActors, type Dispatch, type Offering, type SeenOffer } from "../dispatch/rules.ts";
-import { familyOf, type ModelEntry, type PoolFamily } from "../models/pool.ts";
+import { actorStanding, familyOf, standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import { buildRecord, type ActorRecord, type ModelRecord } from "../models/record.ts";
 import { MODEL_PROFILES, type Family, type Harness, type ModelProfile, type TaskKind } from "../models/registry.ts";
 import { outcomesOf, reliabilityLine, tiebreak, type Reliability } from "../models/reliability.ts";
@@ -94,6 +94,20 @@ export interface PartRoute {
   // Set when the plan tick replaced the reviewer routed at approval: who was
   // routed and why that reviewer could no longer review the part.
   reviewerChange?: { from: string | null; reason: string; at: string };
+}
+
+// A part's saved routing with the owner's standing as the pool has it now:
+// a builder or alternate since paused, reserved or kept from building is
+// left out, so the plan tick never dispatches it. With none left the part is
+// unrouted, and the reason says who was held and why. Every plan dispatch
+// reads its route through this (Ledger.tick).
+export function standingRoute(route: PartRoute, pool: readonly ModelEntry[]): PartRoute {
+  const routed = [route.builder, ...route.alternates].filter((c): c is Choice => c !== null);
+  const held = routed.map((c) => actorStanding(pool, c.actor, "build")).filter((why): why is string => why !== null);
+  if (!held.length) return route;
+  const free = routed.filter((c) => !actorStanding(pool, c.actor, "build"));
+  const [builder = null, ...alternates] = free;
+  return { ...route, builder, alternates, unrouted: builder ? route.unrouted : `every routed builder is held: ${held.join("; ")}. Reroute it with atelier plan reroute` };
 }
 
 // A size M part needs this much context, or a window the registry does not know.
@@ -245,6 +259,14 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
   if (status?.state === "refused") both.push(`status refused, reported by ${status.by} at ${status.at}${status.detail ? `: ${status.detail}` : ""}`);
   else passed.push(status ? `Status ${status.state}, reported by ${status.by} at ${status.at}` : "Status not checked yet");
 
+  // The owner's standing on the entry, apart from the runner's report: a
+  // paused or reserved model takes no part, and its note says why; the jobs
+  // the entry may take bind each role alone, so a review-only model is never
+  // a builder and a build-only one never a reviewer.
+  const heldBuild = standingRefusal(entry, "build");
+  const heldReview = standingRefusal(entry, "review");
+  if (!heldBuild && !heldReview) passed.push("The owner's standing is available");
+
   const { allowPaid, spend } = ctx.input;
   if (!paidPerToken(entry)) passed.push(`No per-token cost (${entry.provider})`);
   else if (!allowPaid) both.push(`paid per token (${entry.provider}); the plan was not approved with allowPaid`);
@@ -291,7 +313,9 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
 
   const refusal = claimRefusal(actor, ctx.input.policy);
   const build = refusal ? [...both, refusal] : [...both];
+  if (heldBuild) build.push(heldBuild);
   const review = ctx.governed && !hasRole(actor, ctx.input.policy, "assessor") ? [...both, `${actor} needs an available agent with the assessor role`] : [...both];
+  if (heldReview) review.push(heldReview);
   // The offer the review job asks of a runner: a review is claimed only by
   // a runner that offers the job and can claim as the model, so a reviewer
   // no live runner so offers would wait forever, whatever runner names the

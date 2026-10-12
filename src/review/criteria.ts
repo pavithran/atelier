@@ -35,7 +35,7 @@
 // format lets its CRITERION line say deferred (replyFormat in
 // src/review/verdict.ts), and nobody rejects the task for it.
 
-import type { ModelEntry, PoolFamily } from "../models/pool.ts";
+import { standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import type { Choice } from "../plans/route.ts";
 import type { PlanPart } from "../plans/schema.ts";
 import { actorFamily, assertEligible, companyRefusal, DEFAULT_OWNER, familyRefusal, hasRole, modelKey, parseRuleError, sameActor, singleFamily, type Finding, type PostDeployCheck, type ProjectPolicy } from "../rules.ts";
@@ -236,6 +236,10 @@ export function pickCriteriaReviewer(input: CriteriaPickInput): CriteriaReviewer
       const refusal = eligibility(actor, input.policy, owner);
       if (refusal) failed.push(`${refusal}, so the ledger would refuse its review`);
     }
+    // The owner's standing (paused, reserved, kept from reviewing) is the
+    // one check every pick makes (standingRefusal, src/models/pool.ts).
+    const standing = standingRefusal(entry, "review");
+    if (standing) failed.push(standing);
     const status = entry.status;
     if (status?.state === "refused") failed.push(`status refused, reported by ${status.by} at ${status.at}${status.detail ? `: ${status.detail}` : ""}`);
     else passed.push(status ? `Status ${status.state}, reported by ${status.by} at ${status.at}` : "Status not checked yet");
