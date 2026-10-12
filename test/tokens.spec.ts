@@ -141,7 +141,7 @@ it("refuses every owner route before any project or Artifacts operation", async 
   const { token } = await issue();
   const routes: [string, string, object?][] = [
     ["POST", "/tokens", { actor: ACTOR }], ["GET", "/tokens"], ["DELETE", "/tokens/id"],
-    ["GET", "/models"], ["PUT", "/models/model", {}], ["DELETE", "/models/model"], ["POST", "/models/model/status", {}],
+    ["GET", "/models"], ["PUT", "/models/model", {}], ["DELETE", "/models/model"], ["POST", "/models/model/status", {}], ["POST", "/models/model/set", {}],
     ["PUT", "/projects/absent", {}], ["DELETE", "/projects/absent"],
     ["POST", "/projects/absent/items", { title: "New task" }],
     ["POST", "/projects/absent/baseline-token", { scope: "write" }],
