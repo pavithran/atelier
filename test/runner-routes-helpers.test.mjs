@@ -10,7 +10,9 @@
 //   in cli/atelier.mjs (postEvidence wraps `request`); a bare fetch, an
 //   http(s) request or a socket in a command's module, or in any helper of
 //   cli/atelier.mjs it reaches (imported, or named by one it reaches), is a
-//   bypass and fails here, save serverVersion's declared preflight read;
+//   bypass and fails here, save serverVersion's declared preflight read
+//   (the scanner is test/runner-routes-scan.test.mjs, shared with the
+//   runner's own modules);
 // - every call's method and path is one the table declares as a cli call,
 //   so a command that starts calling an undeclared route fails npm test
 //   until the route is declared (and, by the other file, allowed and
@@ -27,6 +29,9 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { agentRoute, callParts, RUNNER_CALLS, RUNNER_COMMANDS, runnerRoute } from "../src/tokens.ts";
+// The bypass scanner this file shares with test/runner-routes.test.mjs, which
+// applies the same one to the runner's own modules.
+import { bypasses, codeOnly } from "./runner-routes-scan.test.mjs";
 
 const read = (path) => readFileSync(resolve(path), "utf8");
 const ATELIER = read("cli/atelier.mjs");
@@ -105,82 +110,6 @@ function callSites(source, where) {
     sites.push({ where, method, path: declared, keys, text: `${method} ${path.trim()}` });
   }
   return sites;
-}
-
-// A source with its strings, template text and comments blanked to spaces,
-// so a word in a message or a git argument ("fetch") is not read as code,
-// while a template's ${...} stays code. A "/" where an operand is due starts
-// a regular expression, blanked like a string.
-function codeOnly(source) {
-  let out = "", i = 0;
-  const stack = []; // one entry per open ${ in a template: its brace depth
-  let depth = 0, last = "";
-  const blank = (to) => { out += source.slice(i, to).replace(/[^\n]/g, " "); i = to; };
-  const template = () => {
-    // From just inside a template's text to its end or to a "${".
-    let j = i;
-    while (j < source.length && source[j] !== "`" && !(source[j] === "$" && source[j + 1] === "{")) j += source[j] === "\\" ? 2 : 1;
-    blank(j);
-    if (source[i] === "`") { out += "`"; i++; last = "`"; return; }
-    out += "${"; i += 2; stack.push(depth); depth = 0; last = "{";
-  };
-  while (i < source.length) {
-    const ch = source[i], next = source[i + 1];
-    if (ch === "/" && next === "/") { const j = source.indexOf("\n", i); blank(j < 0 ? source.length : j); continue; }
-    if (ch === "/" && next === "*") { const j = source.indexOf("*/", i + 2); blank(j < 0 ? source.length : j + 2); continue; }
-    if (ch === '"' || ch === "'") {
-      let j = i + 1;
-      while (j < source.length && source[j] !== ch && source[j] !== "\n") j += source[j] === "\\" ? 2 : 1;
-      out += ch; i++; blank(j); out += source[i] ?? ""; i++; last = ch; continue;
-    }
-    if (ch === "`") { out += "`"; i++; template(); continue; }
-    if (ch === "/" && (last === "" || "(,=:[!&|?{};+-*%<>~^".includes(last) || /\b(?:return|typeof|case|of|in)$/.test(out.trimEnd()))) {
-      let j = i + 1, cls = false;
-      while (j < source.length && source[j] !== "\n" && (cls || source[j] !== "/")) { if (source[j] === "\\") j++; else if (source[j] === "[") cls = true; else if (source[j] === "]") cls = false; j++; }
-      out += "/"; i++; blank(j); out += "/"; i++;
-      while (/[a-z]/.test(source[i] ?? "")) out += source[i++];
-      last = "/regex"; continue;
-    }
-    if (ch === "{") depth++;
-    if (ch === "}") {
-      if (depth === 0 && stack.length) { depth = stack.pop(); out += "}"; i++; template(); continue; }
-      depth--;
-    }
-    out += ch; i++;
-    if (!/\s/.test(ch)) last = ch;
-  }
-  return out;
-}
-
-// Every way a source could reach a server other than the CLI's transport:
-// fetch (called, aliased or read off globalThis), node's http and https
-// clients and the modules that hold them, undici, a socket, a WebSocket, an
-// EventSource or an XMLHttpRequest. Read on code only, so a string or a
-// comment naming one is not a bypass.
-const BYPASSES = [
-  /(?<![.\w$])fetch\b/g,
-  /\bglobalThis\s*\.\s*fetch\b/g,
-  /(?<![.\w$])https?\s*\.\s*(?:request|get)\b/g,
-  /\bimport\s*\(\s*["'`]\s*["'`]\s*\)/g, // a dynamic import, whose specifier is blanked: judged below
-  /\bnew\s+(?:WebSocket|EventSource|XMLHttpRequest)\b/g,
-];
-const NETWORK_MODULE = /^(?:node:)?(?:https?|http2|net|tls|dgram)$|^undici$/;
-function bypasses(source) {
-  const code = codeOnly(source);
-  const found = [];
-  for (const pattern of BYPASSES) {
-    for (const m of code.matchAll(pattern)) {
-      if (m[0].startsWith("import")) {
-        // A dynamic import names its module in a string; judge the original.
-        const spec = /^import\s*\(\s*["'`]([^"'`]*)["'`]/.exec(source.slice(m.index))?.[1] ?? "";
-        if (NETWORK_MODULE.test(spec)) found.push(`import("${spec}")`);
-        continue;
-      }
-      found.push(source.slice(m.index, m.index + m[0].length + 1).trim());
-    }
-  }
-  for (const m of source.matchAll(/^\s*import\b[^;]*?from\s*["']([^"']+)["']/gm)) if (NETWORK_MODULE.test(m[1])) found.push(`import from "${m[1]}"`);
-  return found;
 }
 
 // The top-level declarations of cli/atelier.mjs, by name: a function from

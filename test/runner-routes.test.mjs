@@ -11,8 +11,14 @@
 //    added call that is not allowed fails.
 // 2. The source. The runner's own calls go through runnerTransport in
 //    cli/runner.mjs, the only fetch in the runner; cli/commands/runner.mjs
-//    makes no call of its own; every atelier command the runner spawns is a
-//    command the table declares, and the spawn refuses any other at run time.
+//    makes no call of its own. One scanner (test/runner-routes-scan.test.mjs,
+//    the same the spawned commands' check uses) reads both modules for every
+//    form of a server reach, bare, property, aliased or computed, and the
+//    mutation cases try each form; every atelier command the runner spawns
+//    is a command the table declares, and the spawn refuses any other at run
+//    time. Under the gateway, the runner process runs with a fetch that
+//    throws unless called from runnerTransport (fetchGuard), so a form the
+//    scan cannot read fails at run time.
 // 3. The gateway. The real Worker and Ledger run under Miniflare, with a
 //    stub Artifacts worker and a stub check container standing in for the
 //    external services and nothing standing in for authorization. A scoped
@@ -29,15 +35,17 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { agentRoute, callParts, callPath, declaredCall, RUNNER_CALLS, RUNNER_COMMANDS, runnerRoute, sha256, tokenOptions } from "../src/tokens.ts";
 import { OFFER_LIVE_MS } from "../src/dispatch/rules.ts";
 import { ROUTE_LEVEL, checkCapabilities, requiredForJobs } from "../src/route-level.ts";
 import { helperCommand, runnerTransport } from "../cli/runner.mjs";
+import { bypasses, codeOnly, references } from "./runner-routes-scan.test.mjs";
 
 const read = (path) => readFileSync(resolve(path), "utf8");
 
@@ -167,19 +175,50 @@ test("the transport sends a declared call as declared, and refuses an undeclared
 
 // ── 2. the source ──────────────────────────────────────────────────────────
 
-test("the runner reaches the server only through the transport, and every call and command it makes is declared", () => {
-  const runner = read("cli/runner.mjs"), command = read("cli/commands/runner.mjs");
-  // One bare fetch in the runner, inside runnerTransport; none in the command.
-  const bare = /(?<![.\w])fetch\(/g;
-  const transport = runner.slice(runner.indexOf("export function runnerTransport("), runner.indexOf("export function helperCommand("));
-  assert.equal(runner.match(bare)?.length, 1, "cli/runner.mjs makes a server call outside runnerTransport");
-  assert.equal(transport.match(bare)?.length, 1);
-  assert.equal(command.match(bare), null, "cli/commands/runner.mjs calls fetch itself");
-  for (const bypass of [/\bpostAsRunner\b/, /(?<![.\w])call\(/, /(?<![.\w])request\(/, /\bresolveTokenActor\b/]) assert.doesNotMatch(command, bypass, "cli/commands/runner.mjs bypasses the transport");
+// The runner's own modules: cli/runner.mjs, whose runnerTransport holds the
+// one fetch the runner makes, and cli/commands/runner.mjs, which wires it.
+// One scanner (test/runner-routes-scan.test.mjs, shared with the spawned
+// commands' check in test/runner-routes-helpers.test.mjs) reads every form
+// of a server reach on code only: fetch bare, aliased or destructured, as a
+// property of any object (globalThis, self, window, io), as a computed
+// member, node's http clients and network modules, sockets. Inside
+// runnerTransport the references are exactly the default binding
+// (fetch = globalThis.fetch) and the one call; outside it the runner keeps
+// its git fetch helper alone, io.fetch, declared once in runRunner's io as
+// a `git fetch` through checked() and never bound to anything but that io
+// or runnerIO; the command module keeps none. A reference in any other form
+// fails here (the mutation cases below try each), and fetchGuard, under the
+// gateway, catches at run time a form the scan cannot read.
+const TRANSPORT_START = "export function runnerTransport(", TRANSPORT_END = "export function helperCommand(";
+const GIT_FETCH = /^\s*fetch: \(cwd, remote, token, head\) => checked\(\["git", "fetch", /;
+// Where runnerTransport lies in cli/runner.mjs: as offsets and as lines.
+function transportBounds(runner) {
+  const start = runner.indexOf(TRANSPORT_START), end = runner.indexOf(TRANSPORT_END, start);
+  assert.ok(start >= 0 && end > start, "runnerTransport or helperCommand is gone from cli/runner.mjs; update this check");
+  return { start, end, from: runner.slice(0, start).split("\n").length, to: runner.slice(0, end).split("\n").length - 1 };
+}
+// The source check, over the two modules' texts, so a mutation can be tried.
+function runnerSourceCheck(runner, command) {
+  const { start, end } = transportBounds(runner);
+  const transport = runner.slice(start, end);
+  assert.deepEqual(bypasses(transport), ["fetch", "globalThis.fetch", "fetch("], "runnerTransport's fetch references are its default binding and one call; anything more is a second way to the server");
+  // Outside the transport, blanked in place so every line keeps its number.
+  const outside = runner.slice(0, start) + transport.replace(/[^\n]/g, " ") + runner.slice(end);
+  const lines = runner.split("\n");
+  const gitHelper = (r) => r.text === "io.fetch(" || (r.text === "fetch:" && GIT_FETCH.test(lines[r.line - 1]));
+  const found = references(outside), stray = found.filter((r) => !gitHelper(r));
+  assert.ok(stray.length === 0, `cli/runner.mjs reaches the server outside runnerTransport (a transport bypass): ${stray.map((r) => `${r.line}: ${r.text}`).join(", ")}`);
+  assert.equal(found.filter((r) => r.text === "fetch:").length, 1, "the git fetch helper is declared once, in runRunner's io");
+  const code = codeOnly(runner), bound = /\bio\s*=(?!=)(?!\s*(?:runnerIO\b|\{))/.exec(code);
+  assert.ok(!bound, `io is bound to something other than runRunner's io or runnerIO, so io.fetch is no longer the git helper: line ${code.slice(0, bound?.index).split("\n").length}`);
+  const reaches = bypasses(command);
+  assert.ok(reaches.length === 0, `cli/commands/runner.mjs reaches the server outside runnerTransport (a transport bypass): ${reaches.join(", ")}`);
+  const commandCode = codeOnly(command);
+  for (const bypass of [/\bpostAsRunner\b/, /(?<![.\w])call\(/, /(?<![.\w])request\(/, /\bresolveTokenActor\b/]) assert.doesNotMatch(commandCode, bypass, "cli/commands/runner.mjs bypasses runnerTransport through the CLI's own transport");
   // Every name sent is declared as the runner's own, and every such name is sent.
   const sent = new Set([...`${runner}\n${command}`.matchAll(/\bsend\("([a-z-]+)"/g)].map((m) => m[1]));
   const own = new Set(RUNNER_CALLS.filter((c) => c.via === "runner").map((c) => c.name));
-  assert.deepEqual([...sent].sort(), [...own].sort());
+  assert.deepEqual([...sent].sort(), [...own].sort(), "the names the runner sends and the calls RUNNER_CALLS declares as its own (via: \"runner\") disagree");
   // Every atelier command the runner spawns is declared, and every declared command is spawned.
   const spawned = new Set([...runner.matchAll(/\["([a-z-]+)", (?:item\.(?:plan \?\? )?id|partId)/g)].map((m) => m[1]));
   // A lease call (leaseCall, t351) is the runner's own, sent through the
@@ -189,6 +228,63 @@ test("the runner reaches the server only through the transport, and every call a
   assert.deepEqual([...spawned].sort(), [...RUNNER_COMMANDS].sort());
   // The spawn refuses an undeclared command at run time, before anything runs.
   assert.match(runner, /cli: \(argv, cwd, options = \{\}\) => leaseCall\(argv, options, api\) \?\? checked\(\[process\.execPath, cli, \.\.\.argv\][^\n]*helperCommand\(argv\)/);
+}
+
+test("the runner reaches the server only through the transport, and every call and command it makes is declared", () => {
+  runnerSourceCheck(read("cli/runner.mjs"), read("cli/commands/runner.mjs"));
+});
+
+// Each form of a server reach, added to either module, fails the check:
+// into the runner outside the transport (the first line of helperCommand)
+// and into the command module at its end. The forms the earlier regex let
+// through (globalThis.fetch, self.fetch, window.fetch, an alias) are here
+// with the rest.
+test("a server reach added to either runner module, in any form, fails the source check", () => {
+  const runner = read("cli/runner.mjs"), command = read("cli/commands/runner.mjs");
+  const intoRunner = (line) => { assert.ok(runner.includes(`${TRANSPORT_END}argv) {\n`)); return runner.replace(`${TRANSPORT_END}argv) {\n`, `${TRANSPORT_END}argv) {\n  ${line}\n`); };
+  const intoCommand = (line) => `${command}\n${line}\n`;
+  const FORMS = [
+    ['await fetch(server() + "/api/runners");', /fetch\(/],
+    ['await globalThis.fetch(server() + "/api/runners");', /globalThis\.fetch/],
+    ['await self.fetch(server() + "/api/runners");', /self\.fetch/],
+    ['await window.fetch(server() + "/api/runners");', /window\.fetch/],
+    ['await globalThis?.fetch(server() + "/api/runners");', /globalThis\?\.fetch/],
+    ["const f = fetch;", /fetch;/],
+    ["const { fetch: f } = globalThis;", /fetch:/],
+    ["const f = globalThis.fetch;", /globalThis\.fetch/],
+    ['await globalThis["fetch"](server() + "/api/runners");', /\["fetch"\]/],
+    ["const f = globalThis['fetch'];", /\['fetch'\]/],
+    ['const { request } = await import("node:https");', /import\("node:https"\)/],
+    ['await import("undici");', /import\("undici"\)/],
+    ["https.request(new URL(server()));", /https\.request/],
+    ["http.get(server());", /http\.get/],
+    ["new WebSocket(server());", /new WebSocket/],
+    ["new EventSource(server());", /new EventSource/],
+    ["new XMLHttpRequest();", /new XMLHttpRequest/],
+  ];
+  for (const [line, form] of FORMS) {
+    assert.throws(() => runnerSourceCheck(intoRunner(line), command), form, `cli/runner.mjs lets through: ${line}`);
+    assert.throws(() => runnerSourceCheck(runner, intoCommand(line)), form, `cli/commands/runner.mjs lets through: ${line}`);
+  }
+  // A static import of a network module, at the top of either module.
+  assert.throws(() => runnerSourceCheck(`import { request } from "node:http";\n${runner}`, command), /import from "node:http"/);
+  assert.throws(() => runnerSourceCheck(runner, `import { request } from "node:http";\n${command}`), /import from "node:http"/);
+  // A fetch in a string, a comment or a git argument is not a reach.
+  assert.doesNotThrow(() => runnerSourceCheck(intoRunner('const words = ["fetch", `git fetch ${argv[0]}`]; // fetch(url)'), command));
+  // The git helper's name, rebound, declared again or bound to a global, is
+  // no longer the git helper; a call through it is the one form let through.
+  assert.throws(() => runnerSourceCheck(intoRunner("io.fetch = globalThis.fetch;"), command), /io\.fetch/);
+  assert.throws(() => runnerSourceCheck(intoRunner("const io = { fetch: (url) => fetch(url) };"), command), /fetch/);
+  assert.throws(() => runnerSourceCheck(intoRunner("const io = globalThis;"), command), /io is bound to something other than/);
+  assert.doesNotThrow(() => runnerSourceCheck(intoRunner("await io.fetch(cwd, remote, token, head);"), command));
+  // A second fetch inside the transport is caught as well.
+  assert.ok(runner.includes("    let data = null;\n"));
+  assert.throws(() => runnerSourceCheck(runner.replace("    let data = null;\n", "    await fetch(`${base}/api/runners`);\n    let data = null;\n"), command), /runnerTransport's fetch references/);
+  // A call sent through the transport under a name the table does not
+  // declare as the runner's own fails, in either module: undeclared, or
+  // declared as a spawned command's (claim).
+  assert.throws(() => runnerSourceCheck(runner, intoCommand('await transport.send("frobnicate", {}, { actor: OWNER });')), /frobnicate/);
+  assert.throws(() => runnerSourceCheck(intoRunner('await api.send("claim", { project, item }, { actor });'), command), /claim/);
 });
 
 // ── 3. the gateway ─────────────────────────────────────────────────────────
@@ -665,6 +761,63 @@ function cliEnv(token, dir, extra = {}) {
   return env;
 }
 const cli = (args, env, cwd) => spawnSync(process.execPath, [CLI, ...args], { encoding: "utf8", env, cwd, timeout: 120_000 });
+
+// The runtime guard (fetchGuard): every `atelier runner` below runs with
+// globalThis.fetch replaced, before its first module loads (--import), by
+// one that answers a call made from inside runnerTransport, by the file and
+// the line range read from cli/runner.mjs, and throws for any other caller.
+// A server reach in a form the source check above cannot read, handed along
+// as a value or read off the global by name, fails the runner at run time,
+// and its output names the caller. The guard takes itself out of
+// NODE_OPTIONS as it loads: the commands the runner spawns (claim, release
+// and the rest) hold the CLI's own transport, judged by
+// test/runner-routes-helpers.test.mjs, not this one.
+const RUNNER_FILE = pathToFileURL(realpathSync(resolve("cli/runner.mjs"))).href;
+const GUARD_NAME = "fetch-guard.mjs";
+function fetchGuardSource(runner) {
+  const { from, to } = transportBounds(runner);
+  return `// Written by test/runner-routes.test.mjs (fetchGuard): in this process, fetch
+// answers only a call made from runnerTransport, cli/runner.mjs lines ${from}-${to}.
+const real = globalThis.fetch;
+const FILE = ${JSON.stringify(RUNNER_FILE)};
+Object.defineProperty(globalThis, "fetch", { configurable: true, writable: true, value: function fetch(...args) {
+  const caller = (new Error().stack ?? "").split("\\n")[2] ?? "";
+  const at = /(?:\\((.*):(\\d+):\\d+\\)|at (.*):(\\d+):\\d+)\\s*$/.exec(caller);
+  const file = at ? at[1] ?? at[3] : "", line = at ? Number(at[2] ?? at[4]) : 0;
+  if (file === FILE && line >= ${from} && line <= ${to}) return real.apply(this, args);
+  throw new Error("fetch outside runnerTransport: " + caller.trim());
+} });
+const options = (process.env.NODE_OPTIONS ?? "").split(" ").filter((o) => o && !(o.startsWith("--import=") && o.endsWith("/${GUARD_NAME}")));
+if (options.length) process.env.NODE_OPTIONS = options.join(" "); else delete process.env.NODE_OPTIONS;
+`;
+}
+const guardDir = realpathSync(mkdtempSync(join(tmpdir(), "runner-routes-guard-")));
+writeFileSync(join(guardDir, GUARD_NAME), fetchGuardSource(read("cli/runner.mjs")));
+const guardURL = pathToFileURL(join(guardDir, GUARD_NAME)).href;
+after(() => rmSync(guardDir, { recursive: true, force: true }));
+// The environment an `atelier runner` under test runs in: the CLI's, with the guard preloaded.
+const runnerEnv = (token, dir, extra = {}) => cliEnv(token, dir, { ...extra, NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${guardURL}`].filter(Boolean).join(" ") });
+const unguarded = (out) => assert.doesNotMatch(out.stdout + out.stderr, /fetch outside runnerTransport/, "the runner reached the server outside runnerTransport");
+
+test("the runtime guard refuses a fetch outside runnerTransport, in forms the source check cannot read, and answers one through it", () => {
+  const run = (script) => spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", env: { ...process.env, NODE_OPTIONS: `--import=${guardURL}` }, timeout: 60_000 });
+  const version = JSON.stringify(`${url.origin}/api/version`);
+  for (const form of [`await fetch(${version});`, `await globalThis.fetch(${version});`, `const f = Reflect.get(globalThis, "fetch"); await f(${version});`,
+    `const go = (get) => get(${version}); await go(fetch);`, `const { runnerTransport } = await import(${JSON.stringify(RUNNER_FILE)}); await runnerTransport({ server: ${JSON.stringify(url.origin)}, fetch: (u) => fetch(u) }).send("version");`]) {
+    const refused = run(form);
+    assert.equal(refused.status, 1, `${form}\n${refused.stdout}${refused.stderr}`);
+    assert.match(refused.stderr, /fetch outside runnerTransport: at /, form);
+  }
+  // Through the transport, the real answer; and the guard is gone from the
+  // environment the process would hand its children.
+  const through = run(`const { runnerTransport } = await import(${JSON.stringify(RUNNER_FILE)}); const res = await runnerTransport({ server: ${JSON.stringify(url.origin)} }).send("version"); console.log(res.status, res.data.routeLevel, JSON.stringify(process.env.NODE_OPTIONS ?? null));`);
+  assert.equal(through.status, 0, through.stdout + through.stderr);
+  assert.equal(through.stdout.trim(), `200 ${ROUTE_LEVEL} null`);
+  // The guard's range is the transport's: a transport moved or renamed fails
+  // the source check before any runner runs with a stale guard.
+  const { from, to } = transportBounds(read("cli/runner.mjs"));
+  assert.match(read(join(guardDir, GUARD_NAME)), new RegExp(`line >= ${from} && line <= ${to}`));
+});
 function scratch(t) {
   const dir = mkdtempSync(join(tmpdir(), "runner-routes-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -677,17 +830,19 @@ test("atelier runner polls the real server under its runner token and exits 0 wh
   const dir = scratch(t);
   const config = join(dir, "runner.json");
   writeFileSync(config, JSON.stringify({ jobs: ["build"], agents: [{ agent: "codex", models: ["gpt-6-astra"], command: ["true", "{model}", "{brief_file}", "{workspace}"] }] }));
-  const idle = cli(["runner", "--name", RUNNER, "--once", "--config", config], cliEnv(token, dir));
+  const idle = cli(["runner", "--name", RUNNER, "--once", "--config", config], runnerEnv(token, dir));
   assert.equal(idle.status, 0, idle.stdout + idle.stderr);
   assert.match(idle.stdout, /^runner: jobs: build \(not plan, merge-main, merge-main-task, merge-plan, review\)\n/);
   assert.doesNotMatch(idle.stdout + idle.stderr, /failed|runner_forbidden/);
+  unguarded(idle);
   const offers = await expect(call("GET", "/runners"), 200, "runners");
   assert.deepEqual(offers.find((o) => o.runner === RUNNER)?.jobs, ["build"], "the CLI's poll recorded its offer");
   assert.ok(!(idle.stdout + idle.stderr).includes(token.token), "the token reached the output");
   // The same token under another runner's name is refused on the first call, and the runner ends.
-  const other = cli(["runner", "--name", "home:other", "--once", "--config", config], cliEnv(token, dir, { ATELIER_RUNNER_NAME: "home:other" }));
+  const other = cli(["runner", "--name", "home:other", "--once", "--config", config], runnerEnv(token, dir, { ATELIER_RUNNER_NAME: "home:other" }));
   assert.equal(other.status, 1, other.stdout + other.stderr);
   assert.match(other.stdout, /runner: failed: (queue|config): 403/);
+  unguarded(other);
   assert.ok(!(other.stdout + other.stderr).includes(token.token));
 });
 
@@ -697,9 +852,10 @@ test("atelier runner polls the real server under an agent token and exits 0 when
   const dir = scratch(t);
   const config = join(dir, "runner.json");
   writeFileSync(config, JSON.stringify({ jobs: ["build"], agents: [{ agent: "codex", models: ["gpt-6-astra"], command: ["true", "{model}", "{brief_file}", "{workspace}"] }] }));
-  const idle = cli(["runner", "--name", RUNNER, "--once", "--config", config], cliEnv(agent, dir));
+  const idle = cli(["runner", "--name", RUNNER, "--once", "--config", config], runnerEnv(agent, dir));
   assert.equal(idle.status, 0, idle.stdout + idle.stderr);
   assert.doesNotMatch(idle.stdout + idle.stderr, /failed|actor_mismatch|403/);
+  unguarded(idle);
   const offers = await expect(call("GET", "/runners"), 200, "runners");
   assert.deepEqual(offers.find((o) => o.runner === RUNNER)?.jobs, ["build"], "the agent token's poll recorded its offer");
   assert.ok(!(idle.stdout + idle.stderr).includes(agent.token), "the token reached the output");
@@ -715,9 +871,10 @@ test("atelier runner reports a review skip through the real route under its runn
   // A reviewer with no agent token named under `tokens` is refused before
   // the claim (reviewToken), and the refusal is reported as a skip.
   writeFileSync(config, JSON.stringify({ jobs: ["review"], agents: [{ agent: "claude-code", models: ["opus-5.5"], command: ["true", "{model}", "{brief_file}", "{workspace}", "{diff_file}", "{verdict_file}"] }] }));
-  const run = cli(["runner", "--name", RUNNER, "--once", "--config", config], cliEnv(token, dir));
+  const run = cli(["runner", "--name", RUNNER, "--once", "--config", config], runnerEnv(token, dir));
   assert.equal(run.status, 1, run.stdout + run.stderr);
   assert.match(run.stdout, /runner: failed: no agent token for claude-code\/opus-5\.5/, run.stderr);
+  unguarded(run);
   assert.match(run.stdout, new RegExp(`runner: reported the review skip for ${p.name}/${job.id}`));
   assert.deepEqual((await p.L.reviewSkips(job.id, job.request)).map((s) => s.runner), [RUNNER]);
   assert.ok(!(run.stdout + run.stderr).includes(token.token));
