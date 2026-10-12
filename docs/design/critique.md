@@ -183,10 +183,10 @@ Measured ([contrast.md](contrast.md)): `--m-anthropic` 4.15, `--m-openai`
 4.03, `--m-google` 4.49 and `--m-qwen` 3.88 on `--inset`; `--m-openai`
 4.46 and `--m-qwen` 4.29 on the sheet. These colour text in `.lane .who
 strong`, `.journey .n` and the legends. Every role token passes in both
-schemes. → **P14**. Palette B (brief §1.1, t367 at 7d64b297) sets new
-light family colours that measure 5.30 or more on every light surface, so
-its contrast half is met by t367 for these five families once it merges. Standing
-decision d9 goes further: company colours only inside charts, so the
+schemes. → **P14**. The Night palette (brief §1.1, d24) has light
+family colours in `src/layout.css` that measure 5.35 or more on every light
+surface ([contrast.md](contrast.md)), so its contrast half is met for these
+five families. Standing decision d9 goes further: company colours only inside charts, so the
 redesign drops the family swatches, lane edges and file-list stripes and
 names agents in text colour; the mockups follow it.
 

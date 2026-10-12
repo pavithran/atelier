@@ -74,9 +74,9 @@ only a list of tasks.
 ## Evidence always says where
 
 Wherever a check is reported as passed, the page says whether Atelier ran it
-in a Cloudflare container or the agent's machine ran it: in the decision line
+in a Cloudflare container or a runner ran it in a clean clone: in the decision line
 ("Checks passed in a Cloudflare container"), and in each check's row. Under a
-project's sandbox-only policy, a check that ran only on an agent's machine is
+project's sandbox-only policy, a check that ran only on a runner is
 shown as waiting, with the reason. Reports are labelled as reported and never
 read as passing.
 
@@ -91,9 +91,9 @@ colour never carries status alone.
 | Handed off | double chevron, signal colour |
 | Pushed | vertical tick |
 | Check passed in a Cloudflare container | filled circle |
-| Check passed on the agent's machine | open circle |
+| Check passed on a runner, in a clean clone | open circle |
 | Check failed | cross |
-| Reported, not verified | dashed circle |
+| Reported (an agent's own run; not verified) | dashed circle |
 | Submitted | open diamond |
 | Approved | upward triangle |
 | Changes requested | downward triangle |
