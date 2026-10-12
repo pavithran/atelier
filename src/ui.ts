@@ -44,7 +44,7 @@ import type { PartRoute } from "./plans/route.ts";
 // refreshes itself, in seconds, or nothing for the scrubber alone.
 export interface Live { nonce: string; refresh?: number }
 import {
-  bindingOf, changeClass, confirmationAt, contributorsOf, countingReviews, DEFAULT_OWNER, decisionFor, evidenceAt, independentApproval, latestReviews, mergedByOverride, mergedChecksAt, NO_OWNER_FACTOR, OVERRIDE_CONFIRMATION_MS, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey, singleFamily,
+  bindingOf, changeClass, confirmationAt, contributorsOf, countingReviews, DEFAULT_OWNER, decisionFor, evidenceAt, independentApproval, latestReviews, mergedByOverride, mergedChecksAt, NO_OWNER_FACTOR, OVERRIDE_CONFIRMATION_MS, OVERRIDE_REASON_MAX, overrideAt, protectedNeed, REASON_MAX, recordedText, stateLabel, modelOf, modelKey, singleFamily,
   type Finding, type Evidence, type FamilyMode, type Gate, type InboxEntry, type Item, type ItemState, type MergedCheckView, type OwnerFactor, type ProjectPolicy, type Review, type UnparsableReply,
 } from "./rules";
 import { STEPS, TAGLINE, TAKEAWAYS, type Verb } from "./how-data.ts";
@@ -233,9 +233,10 @@ function pipelineDisclosure(a: Attention, projectTitle?: string, waitsFor: Map<s
     <p class="meta">The orchestrator, runners and reviewers move these; none waits on you.</p><ul class="home-rows">${rows}</ul></details>`;
 }
 
-function overlapDisclosure(a: Attention): string {
+// `projectTitle` names the project where the page lists more than one.
+function overlapDisclosure(a: Attention, projectTitle?: string): string {
   if (!a.overlaps.length) return "";
-  return `<details class="disclosure overlaps"><summary>${plural(a.overlaps.length, "pair")} of tasks with overlapping scopes</summary>
+  return `<details class="disclosure overlaps"><summary>${projectTitle ? `${e(projectTitle)} · ` : ""}${plural(a.overlaps.length, "pair")} of tasks with overlapping scopes</summary>
     <ul class="home-rows">${a.overlaps.map(([x, y]) => `<li><a href="${href("p", a.project, x)}">${e(x)}</a> and <a href="${href("p", a.project, y)}">${e(y)}</a> name overlapping paths</li>`).join("")}</ul>
     <p class="meta">Expect a merge conflict when the second lands; nothing waits on you.</p></details>`;
 }
@@ -319,18 +320,10 @@ export function renderSignInContinue(path: string): string {
 }
 
 // ── decisions ──────────────────────────────────────────────────────────────
-
-function floorStrip(floor: Floor | undefined, now: Date): string {
-  if (!floor?.benches.length) return "";
-  const rows = floor.benches.slice(0, 4).map((b) => `<li><a href="/studio#${e(b.project)}-${e(b.item.id)}">
-    <span class="pulse" aria-hidden="true"></span><strong>${e(b.model)}</strong><span class="meta strip-harness">${e(b.harness)}</span>
-    <span class="strip-task">${e(b.item.id)} · ${e(b.item.title)}</span><span class="meta strip-ago">${e(ago(b.lastActivity, now))}</span></a></li>`).join("");
-  const more = floor.benches.length > 4 ? `<li class="meta">and ${floor.benches.length - 4} more</li>` : "";
-  return `<section class="floor-strip" aria-label="Agents at work">
-  <h2 class="section-title"><a href="/studio">On the floor</a></h2>
-  <ul>${rows}${more}</ul>
-</section>`;
-}
+// One column of what waits on the owner, grouped by project, and the selected
+// task's detail beside it: its state, why, the owner's actions and the
+// evidence behind them (the canvas's Decisions artboard, PAVI's d29). Below
+// about 700 px the two are separate views (layout.css).
 
 // The task's own thread: just its events, as a story of one. Nothing is drawn
 // when the record holds no claim for it (an older record cut at the read limit).
@@ -339,26 +332,135 @@ function taskStory(project: string, d: Detail): Story | null {
   return s.threads.length ? s : null;
 }
 
-// A waiting decision as a card: the row that selects it, the brief in one line,
-// the task's thread in miniature with each review as an edge, and a link to the task page.
-// A plan's own call (approve-plan, decide-plan) carries its decision in its
-// reason, which the card shows in place of the item's brief: the brief reads
-// the plan item as a task, and knows nothing of its proposal or its parts.
-function decisionCard(row: string, project: string, d: Detail, lead?: OwnerTask): string {
-  const brief = briefFor(d, d.events);
-  const b = lead && (lead.call === "approve-plan" || lead.call === "decide-plan")
-    ? { ...brief, recommendation: { verdict: "decide" as const, reason: lead.why } } : brief;
+// An owner call as the state its task stands in, in the plan's one name per
+// state (docs/design/brief.md §5) where it has one, with its colour role:
+// gold what waits on the owner, green go, orange caution, red a fault.
+const CALL_STATE: Record<OwnerTask["call"], [string, string]> = {
+  "clear-secret": ["Secret flagged", "bad"],
+  unblock: ["Blocked", "ask"],
+  "decide-plan": ["Plan blocked", "bad"],
+  "approve-plan": ["Plan to approve", "signal"],
+  accept: ["Ready to accept", "go"],
+  override: ["Needs review", "signal"],
+  ship: ["To ship", "signal"],
+  "start-runner": ["No runner", "bad"],
+};
+
+function decisionRow(project: string, t: OwnerTask, current: boolean): string {
+  const [word, tone] = CALL_STATE[t.call];
+  return `<li><a class="decision-row${current ? " selected" : ""}" href="${selectedHref(project, t.id)}"${current ? ' aria-current="true"' : ""}>
+    <span class="dec-id">${e(t.id)}</span><span class="dec-title">${e(t.title)}</span><span class="dec-state ${tone}">${e(word)}</span><span class="dec-why">${e(t.sentence)}</span></a></li>`;
+}
+
+// What the orchestrator, runners and reviewers move, folded: per project its
+// count by stage, then each task. None of it waits on the owner.
+function orchestratorDisclosure(attention: Attention[], names: Map<string, string>, waitsFor: Map<string, string>): string {
+  const busy = attention.filter((a) => a.pipeline.length);
+  const total = busy.reduce((n, a) => n + a.pipeline.length, 0);
+  if (!total) return "";
+  const groups = busy.map((a) => {
+    const counts = stageCounts(a).map(([s, n]) => `${n} ${STAGE_LABEL[s]}`).join(" · ");
+    const rows = a.pipeline.map((t) => `<li><a href="${href("p", a.project, t.id)}">${e(t.title)}</a><span class="meta">${e(t.id)} · ${e(STAGE_LABEL[t.stage])}${waitsFor.has(`${a.project}/${t.id}`) ? `, for ${e(waitsFor.get(`${a.project}/${t.id}`)!)}` : ""}${t.notices.length ? ` · ${t.notices.map((k) => e(KIND[k][0])).join(", ")}` : ""}</span></li>`).join("");
+    return `<h3 class="dec-project">${e(names.get(a.project) ?? a.project)} · ${counts}</h3><ul class="home-rows">${rows}</ul>`;
+  }).join("");
+  return `<details class="disclosure pipeline"><summary>Handled by the orchestrator · ${total}</summary>${groups}</details>`;
+}
+
+// Where a check ran, in the evidence list's words.
+const PLACE: Record<"sandbox" | "runner", string> = { sandbox: "Cloudflare container", runner: "Runner, clean clone" };
+const evidenceRow = (label: string, tone: string, what: string, where = "") =>
+  `<li><span class="ev-label ${tone}">${e(label)}</span><span class="ev-what">${what}</span><span class="ev-where">${where}</span></li>`;
+
+// The selected task. Its state and why are the task page's (taskPage), or the
+// owner call's word when the task waits on the owner, so the row and the
+// detail say one thing. Each action is the task page's own: the same form,
+// posted to the same route, or the same command, or a link to the page.
+function decisionDetail({ project: p, detail: d, diff }: ReviewContext, lead?: OwnerTask): string {
+  const { item, gate } = d;
   const owner = d.ownerActor ?? DEFAULT_OWNER;
-  const story = taskStory(project, d);
-  const thread = story
-    ? `<div class="stage-scroll card-thread">${drawStory(story, owner, { mini: true, replaySeconds: 0, href: taskHref(project) })}</div>`
+  const single = singleFamily(d.policy);
+  const presentation = taskPage(d);
+  const decision = decisionFor(item, d.policy, d.evidence, d.reviews, owner);
+  const [word, tone] = lead ? CALL_STATE[lead.call] : [presentation.title, decision.tone];
+  // A plan's own call carries its decision in its reason, as the plan item's
+  // presentation reads it as a task and knows nothing of its proposal.
+  const why = lead && (lead.call === "approve-plan" || lead.call === "decide-plan") ? lead.why : presentation.detail;
+  const taskHref = href("p", p.name, item.id);
+  const action = (verb: string) => href("ui", p.name, item.id, verb);
+  const revision = `<input type="hidden" name="head" value="${e(item.head ?? "")}"><input type="hidden" name="criteria" value="${e(bindingOf(item).criteria)}">`;
+  const live = item.state === "claimed" || item.state === "submitted";
+  const evidenceVisible = !!diff && diff !== "unavailable" && diff.head === item.head;
+  const binding = bindingOf(item);
+  const counted = countingReviews(d.reviews, binding, d.policy, owner);
+
+  const evidenceNotice = live && item.head && !evidenceVisible
+    ? `<div class="notice" role="status"><h3>${diff && diff !== "unavailable" ? "The displayed revision has changed" : "Changes are unavailable"}</h3>
+      <p>Approval and acceptance are unavailable until the displayed changes match this task’s recorded revision. <a href="${taskHref}">Reload this task</a>.</p></div>`
     : "";
-  return `<li class="decision-card" data-task="${e(project)}/${e(d.item.id)}">${row}
-    <div class="card-body">
-      <p class="card-brief">${tag(b.recommendation.verdict, VERDICT_TONE[b.recommendation.verdict])}<span>${e(b.recommendation.reason)}</span></p>
-      ${thread}
-      <p class="meta card-links">${lead ? actionLink(lead) : `<a href="${href("p", project, d.item.id)}">Open the task page</a>`}</p>
-    </div></li>`;
+  const ask = `<details class="ask-reviewer"><summary class="button primary">Ask a reviewer</summary>
+      <div class="merge-command"><p>In the registered checkout, run:</p>
+      <pre tabindex="0">${e(`atelier land ${item.id} --project ${shell(p.name)}`)}</pre>
+      <p class="meta">The landing merges main into the workspace, runs the required checks, requests the review from ${single ? `a different ${single} model from every contributor (single-family mode)` : "a model of another family than every contributor"}, or the one <code>--reviewer</code> names, waits for its verdict, then accepts and merges.</p></div></details>`;
+  const primary = evidenceVisible && decision.action === "accept"
+    ? `<form method="post" action="${action("accept")}">${revision}<button class="primary">Accept revision</button></form>`
+    : decision.action === "review" && !counted.some((r) => !r.approve)
+      ? ask
+      : item.state === "blocked" && item.blocked
+        ? `<form method="post" action="${action("unblock")}">${revision}<button class="primary">Unblock</button></form>`
+        : lead?.call === "ship"
+          ? `<a class="button primary" href="${e(lead.href)}">Open Ship</a>`
+          : "";
+  const merge = decision.action === "merge"
+    ? `<div class="merge-command"><p>In the registered checkout, run:</p>
+      <pre tabindex="0">${e(`atelier merge ${item.id} --project ${shell(p.name)} --head ${item.acceptedHead}`)}</pre>
+      <p class="meta">This merges the approved revision and records the result. It does not deploy.</p></div>`
+    : "";
+  const actions = `<div class="actions dec-actions">${primary}${item.head ? `<a class="button" href="${taskHref}#changes">Review the diff</a>` : ""}<a class="dec-open" href="${taskHref}">Open the task</a></div>`;
+
+  // The evidence: each required check at this head with where and when it
+  // last ran, the diff in figures, and the review the gate counts.
+  const view = evidenceAt(d.policy, d.evidence, item.head);
+  const checks = view.checks.map((c) => {
+    const last = d.evidence
+      .filter((x) => x.head === item.head && x.claim === c.claim && x.grade === "observed" && !x.merged && !x.notApplicable && (!d.policy.sandboxOnly || x.where === "sandbox"))
+      .sort((a, b) => a.at.localeCompare(b.at)).at(-1);
+    const [label, t] = c.grade === "pending" ? ["Waiting", "ask"] : c.passed ? ["Passed", "go"] : ["Failed", "bad"];
+    return evidenceRow(label, t, `<code>${e(c.claim)}</code>`, last ? `${e(PLACE[last.where ?? "runner"])} · ${when(last.at)}` : "");
+  }).join("") + view.notApplicable.map((claim) => evidenceRow("Not applicable", "", `<code>${e(claim)}</code>`)).join("");
+  const files = diff && diff !== "unavailable" ? diff.files : [];
+  const changed = diff === "unavailable"
+    ? evidenceRow("Diff", "", "Could not be read just now")
+    : diff && item.head
+      ? evidenceRow("Diff", "", `${plural(files.length, "file")}${diff.truncated ? " or more" : ""}, +${files.reduce((n, f) => n + f.added, 0)} −${files.reduce((n, f) => n + f.removed, 0)}${gate.outOfScope.length ? ` · ${gate.outOfScope.length} outside its scope` : ""}`)
+      : "";
+  const current = latestReviews(d.reviews, binding).filter((r) => counted.includes(r));
+  const reviews = current.length
+    ? current.map((r) => evidenceRow(r.approve ? "Approved" : "Sent back", r.approve ? "go" : "bad", e(r.note || "No note provided."), `${e(r.by)} · ${when(r.at)}`)).join("")
+    : gate.overridden
+      ? evidenceRow("Overridden", "ask", e(gate.overridden.reason), `${e(gate.overridden.by)} · ${when(gate.overridden.at)}`)
+      : gate.needsAssessor
+        ? evidenceRow("Review", "signal", `None yet. ${e(cap(gate.requirement ?? protectedNeed(single)))}.`)
+        : "";
+  const evidence = item.head
+    ? `${checks || changed || reviews ? `<ul class="dec-evidence">${checks}${changed}${reviews}</ul>` : ""}${checks ? "" : `<p class="meta">${view.notApplicable.length ? "No required check applies to this revision." : "This project requires no checks."}</p>`}`
+    : `<p class="meta">Nothing pushed yet.</p>`;
+
+  // The override is the task page's form, among its actions at the top; this
+  // links to the page while the missing independent review is all that
+  // blocks and the page offers the form.
+  const overridable = evidenceVisible && item.state === "submitted" && !!item.head && gate.needsAssessor && gate.blockers.length === 1 && !d.policy.noOverride && (d.ownerFactor ?? null) !== null;
+  const footer = overridable ? `<p class="meta dec-foot">No reviewer available? As a last resort, <a href="${taskHref}">record an override</a> on the task page.</p>` : "";
+
+  return `<p class="context">${e(titleOf(p))} · ${e(item.id)}${item.owner ? ` · ${e(item.owner)}` : ""}</p>
+  <h2 id="sel-h">${e(item.title)}</h2>
+  <p class="dec-word ${tone}">${e(word)}</p>
+  <p class="dec-because">${e(why)}</p>
+  ${presentation.unknowns.map((x) => `<p class="meta">${e(x)}</p>`).join("")}
+  ${evidenceNotice}${secretNotice(item, revision, action)}
+  ${actions}${merge}
+  <h3 class="dec-project">Evidence</h3>
+  ${evidence}
+  ${footer}`;
 }
 
 export function renderInbox(
@@ -367,27 +469,24 @@ export function renderInbox(
   ownerName: string | null = null,
   selected?: ReviewContext,
   projectViews: ProjectView[] = [],
-  floor?: Floor,
-  now = new Date(),
   queued: { project: ProjectRecord; item: Item }[] = [],
   latest?: { story: Story; owner: string },
-  details: Map<string, Detail> = new Map(),
   live?: Live,
 ): string {
   const names = titleMap(projects);
-  // What waits on the owner, one row per task, placed by attentionFor; what
-  // the pipeline carries and overlapping scopes stay in disclosures below.
+  // What waits on the owner, one row per task, placed by attentionFor and
+  // grouped by project; what the pipeline carries and overlapping scopes stay
+  // folded below.
   const own = attention.flatMap((a) => a.owner.map((t) => ({ project: a.project, t })));
-  const rows = own.map(({ project, t }) => {
-    const current = selected?.project.name === project && selected.detail.item.id === t.id;
-    const row = `<a class="decision-row${current ? " selected" : ""}" href="${selectedHref(project, t.id)}"${current ? ' aria-current="true"' : ""}>
-      ${icon("decisions")}<span><strong>${e(t.title)}</strong><span class="meta">${e(names.get(project) ?? project)} · ${e(t.id)}</span><span class="meta">${e(t.sentence)}</span></span>${callTag(t)}${icon("arrow")}</a>`;
-    const detail = details.get(`${project}/${t.id}`);
-    return detail ? decisionCard(row, project, detail, t) : `<li>${row}<p class="meta card-links">${actionLink(t)}</p></li>`;
+  const isSelected = (project: string, id: string) => selected?.project.name === project && selected.detail.item.id === id;
+  const groups = attention.filter((a) => a.owner.length).map((a) => {
+    const title = names.get(a.project) ?? a.project;
+    return `<section class="dec-group" aria-label="${e(title)}"><h2 class="dec-project">${e(title)} · ${a.owner.length}</h2>
+    <ul class="decision-list">${a.owner.map((t) => decisionRow(a.project, t, isSelected(a.project, t.id))).join("")}</ul></section>`;
   }).join("");
   // A queued task's row names the runner it waits for.
   const waitsFor = new Map(queued.map(({ project, item }) => [`${project.name}/${item.id}`, describeDispatch(item.dispatch!)]));
-  const elsewhere = attention.map((a) => pipelineDisclosure(a, names.get(a.project) ?? a.project, waitsFor) + overlapDisclosure(a)).join("");
+  const elsewhere = orchestratorDisclosure(attention, names, waitsFor) + attention.map((a) => overlapDisclosure(a, names.get(a.project) ?? a.project)).join("");
   const unknown = attention.map(unknownNotice).join("");
   // The projects not read in full, by title: the list says it may be
   // incomplete, and so does the resting panel beside it.
@@ -395,14 +494,9 @@ export function renderInbox(
     .map((n) => names.get(n) ?? n);
   const incomplete = notRead.length > 0;
 
-  const lead = own.length
-    ? `${own.length} task${own.length === 1 ? " needs" : "s need"} your attention.`
-    : incomplete ? "Nothing is known to be waiting on you; more may be waiting." : "Nothing is waiting on you.";
-  const queue = `<section class="queue">
-  <header><h1>Decisions</h1><p class="lead">${lead}</p></header>
-  ${floorStrip(floor, now)}
-  <h2 class="section-title">Needs your attention</h2>
-  ${rows ? `<ul class="decision-list">${rows}</ul>` : incomplete ? '<div class="empty"><h3>The list may be incomplete.</h3><p>Some records could not be read. Refresh to try again.</p></div>' : `<div class="empty"><h3>You’re clear.</h3><p>New reviews and blockers will appear here. <a href="/studio">Watch the studio</a>.</p></div>`}
+  const queue = `<section class="queue" aria-labelledby="dec-h">
+  <h1 id="dec-h">Decisions · ${own.length}</h1>
+  ${groups || (incomplete ? '<div class="empty"><h3>The list may be incomplete.</h3><p>Nothing is known to be waiting on you; more may be waiting. Refresh to try again.</p></div>' : `<div class="empty"><h3>You’re clear.</h3><p>Nothing is waiting on you. <a href="/studio">Watch the studio</a>.</p></div>`)}
   ${unknown}
   ${elsewhere}
   ${projectViews.some((p) => p.unavailable) ? '<p role="status" class="error">Some projects could not be read. Refresh to try again; this list may be incomplete.</p>' : ""}
@@ -414,8 +508,9 @@ export function renderInbox(
   const back = selected
     ? `<a class="review-back" href="/decisions">${icon("back")}<span>All decisions</span></a>`
     : "";
+  const lead = selected && own.find(({ project, t }) => isSelected(project, t.id))?.t;
   const sheet = selected
-    ? `<section class="review-sheet" id="review" aria-label="Selected task">${back}${reviewBody(selected)}</section>`
+    ? `<section class="review-sheet decision-detail" id="review" aria-labelledby="sel-h">${back}${decisionDetail(selected, lead)}</section>`
     : latest?.story.threads.length
       ? `<section class="review-sheet resting has-graph" aria-label="Latest work">${restingGraph(latest.story, latest.owner, notRead)}</section>`
       : `<section class="review-sheet resting"><div>${icon("check")}<h2>Space to focus.</h2><p>Select a decision to see the changes, the evidence, and your next action.</p><a href="/studio">Watch the studio</a></div></section>`;
@@ -2037,6 +2132,28 @@ function submissionRounds(d: Detail): string {
       </details>`).join("") : "<p>Submission history is unavailable.</p>"}</section>`;
 }
 
+// A standing secret flag (t332) names its file and line, never the value,
+// and offers the one way on: the owner clears it with a reason, which is
+// recorded. A scan still pending for the head blocks the same way, with
+// nothing to clear: it completes on the next push event retry or `atelier push`.
+// The task page and the Decisions detail draw the same notice and form.
+function secretNotice(item: Item, revision: string, action: (verb: string) => string): string {
+  const secrets = (item.secret ?? []).filter((f) => f.head === item.head && !f.cleared);
+  const scanPending = !!item.head && item.secretScan === item.head;
+  return scanPending
+    ? `<div class="notice" role="status"><h3>Secret scan pending</h3>
+        <p class="meta">The push at <code>${e(item.head!.slice(0, 8))}</code> has not been scanned for key patterns yet. Acceptance and merge are refused until the scan completes; it is retried on its own, and <code>atelier push</code> runs it again.</p></div>`
+    : secrets.length
+    ? `<div class="notice" role="status"><h3>Secret flagged</h3>
+        <ul>${secrets.map((f) => `<li><code>${e(f.file)}${f.unscanned ? "" : `:${f.line}`}</code>${f.unscanned ? ` not scanned${f.reason ? `: ${e(f.reason)}` : ""}` : ""}</li>`).join("")}</ul>
+        <p class="meta">A key pattern was found in the added lines. Acceptance and merge are refused until it is cleared. Clear it only after checking the line is not a real secret; the reason you give is recorded.</p>
+        <form class="stack" method="post" action="${action("clear-secret")}">${revision}
+          <label>Why is this line not a secret?<textarea name="note" required rows="2" maxlength="${REASON_MAX}"></textarea></label>
+          <button class="primary">Clear the flag</button>
+        </form></div>`
+    : "";
+}
+
 function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext): string {
   const { item, gate } = d;
   // The company the project runs on alone (t394), named wherever the page
@@ -2187,25 +2304,7 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
         </form></details>`
     : "";
 
-  // A standing secret flag (t332) names its file and line, never the value,
-  // and offers the one way on: the owner clears it with a reason, which is
-  // recorded.
-  const secrets = (item.secret ?? []).filter((f) => f.head === item.head && !f.cleared);
-  // A scan still pending for the head blocks the same way, with nothing to
-  // clear: it completes on the next push event retry or `atelier push`.
-  const scanPending = !!item.head && item.secretScan === item.head;
-  const secretBox = scanPending
-    ? `<div class="notice" role="status"><h3>Secret scan pending</h3>
-        <p class="meta">The push at <code>${e(item.head!.slice(0, 8))}</code> has not been scanned for key patterns yet. Acceptance and merge are refused until the scan completes; it is retried on its own, and <code>atelier push</code> runs it again.</p></div>`
-    : secrets.length
-    ? `<div class="notice" role="status"><h3>Secret flagged</h3>
-        <ul>${secrets.map((f) => `<li><code>${e(f.file)}${f.unscanned ? "" : `:${f.line}`}</code>${f.unscanned ? ` not scanned${f.reason ? `: ${e(f.reason)}` : ""}` : ""}</li>`).join("")}</ul>
-        <p class="meta">A key pattern was found in the added lines. Acceptance and merge are refused until it is cleared. Clear it only after checking the line is not a real secret; the reason you give is recorded.</p>
-        <form class="stack" method="post" action="${action("clear-secret")}">${revision}
-          <label>Why is this line not a secret?<textarea name="note" required rows="2" maxlength="${REASON_MAX}"></textarea></label>
-          <button class="primary">Clear the flag</button>
-        </form></div>`
-    : "";
+  const secretBox = secretNotice(item, revision, action);
 
   // A blocked task shows who blocked it, why, and the one way on; any task
   // that is waiting, in progress or in review offers the block form.
