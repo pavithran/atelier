@@ -214,13 +214,56 @@ export interface CoreHold extends CoreBlocker {
   warning?: boolean;
   chains?: { path: string[]; deadlock: boolean }[];
   claimRefusal?: string;
+  orphaned?: OrphanedClaim[];
 }
 export const CORE_HOLD_WARNING_MS = 30 * 60_000;
 
+// A claim whose claiming runner stopped polling (t537): the claim names the
+// runner (item.runner) and the runner's last poll is the one /api/runners
+// records (SeenOffer.at, putRunnerOffer on the index). Past RUNNER_GONE_MS,
+// with the minute of timestamp coarsening (OFFER_REFRESH_MS) the idle-runner
+// check allows, the claim is orphaned and holds no other dispatch; atelier
+// dispatch ID gives it to a live runner. A claim made by hand names no
+// runner and holds as before, and so does one whose runner the polls do not
+// list, since an absent record never shows a runner gone. A poll after the
+// limit restores the hold. A runner mid-job polls nothing, so it sends a
+// heartbeat while the job runs (cli/runner.mjs), which records its offer as
+// a poll does: a long build keeps its claim's hold.
+export interface RunnerPolls {
+  polls: readonly { runner: string; at: string }[];
+}
+
+// The one limit both the hold (the ledger) and atelier stuck judge an
+// orphaned claim by, whatever --runner-poll-minutes the stuck report is
+// asked with: the stuck report's default runnerPollMinutes is this.
+export const RUNNER_GONE_MS = 5 * 60_000;
+
+export interface OrphanedClaim extends CoreBlocker {
+  runner: string;
+  lastPoll: string;
+  // A plan's part is recovered through its plan, never by dispatch.
+  kind?: Item["kind"];
+  // The project the claim is in, set by the ledger that found it, so its
+  // recovery names that project wherever the hold is printed (a listing of
+  // every project's queue or status included).
+  project?: string;
+}
+
+export function orphanedBy(o: Pick<Item, "state" | "runner">, runners: RunnerPolls | null | undefined, now = Date.now()): { runner: string; lastPoll: string } | null {
+  if (!runners || o.state !== "claimed" || !o.runner) return null;
+  const runner = o.runner.toLowerCase();
+  const last = runners.polls.filter((p) => p.runner.toLowerCase() === runner && Number.isFinite(Date.parse(p.at))).map((p) => p.at).sort().at(-1);
+  if (!last || now - Date.parse(last) - OFFER_REFRESH_MS <= RUNNER_GONE_MS) return null;
+  return { runner: o.runner, lastPoll: last };
+}
+
 // Claimed builders and the holder of a live landing lease serialize core
 // edits. Submission alone holds nothing. Plan jobs, same-plan work and the
-// owner's overlap override keep their existing exemptions.
-export function coreBlockers(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null = null, now = Date.now()): CoreBlocker[] {
+// owner's overlap override keep their existing exemptions. A claim its
+// runner orphaned holds nothing (coreOrphans names it instead), though the
+// holder of a live landing lease holds whatever its runner does.
+type Overlap = CoreBlocker & { item: Item; landing: boolean };
+function coreOverlaps(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null, now: number): Overlap[] {
   const d = item.dispatch;
   if (!d || d.overlapOk || !coreFiles?.length || item.kind === "plan") return [];
   if (d.job !== undefined && d.job !== "merge-main") return [];
@@ -230,22 +273,39 @@ export function coreBlockers(item: Item, items: readonly Item[], coreFiles: read
     if (o.state !== "claimed" && !landing) return [];
     if (o.kind === "plan" && o.state === "claimed") return [];
     const core = scopesOverlapWithin(item.scope, o.scope, [...coreFiles]);
-    return core ? [{ id: o.id, owner: o.owner, state: o.state, title: o.title, core }] : [];
+    return core ? [{ id: o.id, owner: o.owner, state: o.state, title: o.title, core, item: o, landing }] : [];
   });
 }
 
-export function coreHold(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null = null, now = Date.now()): CoreHold | null {
-  return coreBlockers(item, items, coreFiles, lease, now)[0] ?? null;
+const blockerOf = ({ item: _, landing: __, ...b }: Overlap): CoreBlocker => b;
+const orphan = (b: Overlap, runners: RunnerPolls | null, now: number) => b.landing ? null : orphanedBy(b.item, runners, now);
+
+export function coreBlockers(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null = null, now = Date.now(), runners: RunnerPolls | null = null): CoreBlocker[] {
+  return coreOverlaps(item, items, coreFiles, lease, now).filter((b) => !orphan(b, runners, now)).map(blockerOf);
+}
+
+// The claims that would hold the dispatch but for their runner having
+// stopped polling, each with the runner and its last poll.
+export function coreOrphans(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null = null, now = Date.now(), runners: RunnerPolls | null = null): OrphanedClaim[] {
+  if (!runners) return [];
+  return coreOverlaps(item, items, coreFiles, lease, now).flatMap((b) => {
+    const gone = orphan(b, runners, now);
+    return gone ? [{ ...blockerOf(b), ...gone, ...(b.item.kind ? { kind: b.item.kind } : {}) }] : [];
+  });
+}
+
+export function coreHold(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null = null, now = Date.now(), runners: RunnerPolls | null = null): CoreHold | null {
+  return coreBlockers(item, items, coreFiles, lease, now, runners)[0] ?? null;
 }
 
 // Active builders do not wait on other builders merely because their scopes
 // intersect. Follow their declared part dependencies; queued work also waits
 // on its core blockers. Completed dependencies no longer obstruct a path.
-export function holdGraph(items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null, now = Date.now()): Map<string, string[]> {
+export function holdGraph(items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null, now = Date.now(), runners: RunnerPolls | null = null): Map<string, string[]> {
   const done = (i: Item) => ["integrated", "merged", "abandoned"].includes(i.state);
   return new Map(items.filter((i) => !done(i)).map((i) => {
     const deps = i.plan ? items.filter((p) => p.plan === i.plan && p.partKey && i.deps?.includes(p.partKey) && !done(p)).map((p) => p.id) : [];
-    const core = i.state === "open" && !i.owner ? coreBlockers(i, items, coreFiles, lease, now).map((b) => b.id) : [];
+    const core = i.state === "open" && !i.owner ? coreBlockers(i, items, coreFiles, lease, now, runners).map((b) => b.id) : [];
     return [i.id, [...new Set([...core, ...deps])]];
   }));
 }
@@ -265,11 +325,32 @@ export function blockerChains(id: string, graph: ReadonlyMap<string, readonly st
   return paths;
 }
 
-export function holdText(h: CoreHold): string {
+export function holdText(h: CoreHold, project?: string): string {
   const blockers = (h.blockers ?? [h]).map((b) => `${b.id} (${b.state}${b.owner ? ` by ${b.owner}` : ""}): both scopes reach core file ${b.core}`).join("; ");
   const age = h.elapsedMs === undefined ? "" : `; held for ${Math.floor(h.elapsedMs / 60_000)}m ${Math.floor(h.elapsedMs / 1000) % 60}s`;
   const chains = (h.chains ?? []).filter((c) => c.deadlock || c.path.length > 2).map((c) => `; ${c.deadlock ? "deadlock" : "blocked chain"}: ${c.path.join(" -> ")}`).join("");
-  return `${h.warning ? "WARNING: core-file hold; " : ""}waits on ${blockers}${age}${chains}${h.claimRefusal ? `; separate claim refusal: ${h.claimRefusal}` : ""}`;
+  return `${h.warning ? "WARNING: core-file hold; " : ""}waits on ${blockers}${age}${chains}${h.claimRefusal ? `; separate claim refusal: ${h.claimRefusal}` : ""}${h.orphaned?.length ? `; ${orphanText(h.orphaned, project)}` : ""}`;
+}
+
+// The claims a dispatch no longer waits on because their runners stopped
+// polling, in words, each with its recovery: dispatching the orphaned task
+// again releases the claim and offers it to a live runner; a plan's part,
+// which ordinary dispatch refuses, is released and retried through its plan,
+// as the stuck report recovers one. A listing of several projects names the
+// orphan's own, so the command never acts on a task of the same id elsewhere.
+// One shell word: bare when it holds only safe characters, else single-quoted
+// (a quote inside closed, escaped and reopened), so a project name with a
+// space or a shell metacharacter is passed whole and never run.
+export const shellWord = (word: string): string => /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
+export function orphanRecovery(o: Pick<OrphanedClaim, "id" | "kind" | "project">, project?: string): string {
+  const name = o.project ?? project;
+  const flag = name ? ` --project ${shellWord(name)}` : "";
+  return o.kind
+    ? `atelier release ${o.id}${flag} --note "Requeue work its runner orphaned"; atelier plan retry ${o.id}${flag}`
+    : `atelier dispatch ${o.id}${flag}`;
+}
+export function orphanText(orphaned: readonly OrphanedClaim[], project?: string): string {
+  return orphaned.map((o) => `${o.id} (${o.state}${o.owner ? ` by ${o.owner}` : ""}) is orphaned, not a blocker: its runner ${o.runner} last polled at ${o.lastPoll.slice(0, 16).replace("T", " ")} UTC, so its claim on core file ${o.core} holds nothing; recover it with ${orphanRecovery(o, project)}`).join("; ");
 }
 
 // When the hold lifts: once every blocker stops holding. A claimed item stops

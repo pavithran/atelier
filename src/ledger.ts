@@ -25,7 +25,7 @@ import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./c
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX, TEXT_CONTROLS } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
-import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, overrideDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type RunnerKind, type RunnerOffer, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
+import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, overrideDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
@@ -168,7 +168,7 @@ type Row = Record<string, SqlStorageValue>;
 
 // A dispatched open task as the queue answers it: the core-file hold with every
 // blocker, the separate claim refusal, and what t420 adds for the owner's listing.
-type Waiting = Item & { held?: CoreHold; claimRefusal?: string; overlap?: OverlapRefusal; refusals?: ClaimRefusal[]; skips?: RunSkip[] };
+type Waiting = Item & { held?: CoreHold; orphaned?: OrphanedClaim[]; claimRefusal?: string; overlap?: OverlapRefusal; refusals?: ClaimRefusal[]; skips?: RunSkip[] };
 
 // What an init asks for. A field present replaces the project's current
 // value; a field absent keeps it. `reset` starts from the defaults, as a
@@ -1657,7 +1657,7 @@ export class Ledger extends DurableObject<Env> {
     }
     if (claim && (item.state === "open" && !item.owner || item.state === "claimed" && item.owner === actor && item.runner === token.runner) && item.dispatch && !["review", "integrate", "refresh"].includes(item.dispatch.job ?? "")) {
       const offer = this.runnerMeta<SeenOffer>(`runner-offer:${token.id}`);
-      if (offer && liveOffers([offer]).length && assign(item.dispatch, offer)?.actor === actor && !coreHold(item, this.items(), this.project().policy.coreFiles, this.projectLanding())) return;
+      if (offer && liveOffers([offer]).length && assign(item.dispatch, offer)?.actor === actor && !coreHold(item, this.items(), this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls())) return;
     }
     throw runnerDenied(token);
   }
@@ -1876,7 +1876,7 @@ export class Ledger extends DurableObject<Env> {
     const items = this.items();
     assertDispatchClaimable(item, items, this.project().policy, d, this.owner);
     const retained = input.overlapOk === true && !!item.dispatch;
-    const released = retained && item.state === "open" && !item.owner ? coreHold(item, items, this.project().policy.coreFiles, this.projectLanding()) : null;
+    const released = retained && item.state === "open" && !item.owner ? coreHold(item, items, this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls()) : null;
     const held = this.holds(item);
     if (held) {
       this.dropToken(id, token);
@@ -1906,7 +1906,7 @@ export class Ledger extends DurableObject<Env> {
     // refused before anything is written; an unchanged one comes back as it
     // stands, since the check made it.
     const d = this.standingDispatch(kept, "build", kept.by, kept.at);
-    const released = coreHold(item, items, policy.coreFiles, this.projectLanding());
+    const released = coreHold(item, items, policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls());
     if (JSON.stringify(d) !== JSON.stringify(item.dispatch)) {
       const at = new Date().toISOString();
       this.setDispatch(id, d, at);
@@ -2005,10 +2005,10 @@ export class Ledger extends DurableObject<Env> {
   private dispatchWaiting(pushHistory = false): Waiting[] {
     const rows = this.sql.exec(`SELECT * FROM items WHERE state = 'open' AND (owner IS NULL OR owner = '') AND dispatch IS NOT NULL AND dispatch != '' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
     const open = rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)) : [];
-    const policy = this.project().policy, lease = this.projectLanding(), now = Date.now();
+    const project = this.project(), policy = project.policy, projectName = project.name, lease = this.projectLanding(), now = Date.now(), runners = this.runnerPolls();
     const live = open.length && policy.coreFiles?.length ? this.sql.exec(`SELECT * FROM items WHERE state = 'claimed' OR id = ? ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`, lease?.item ?? "").toArray().map(toItem) : [];
     const all = policy.refuseOverlap || [...open, ...live].some((i) => i.deps?.length) ? this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem) : [...open, ...live];
-    const graph = holdGraph(all, policy.coreFiles, lease, now);
+    const graph = holdGraph(all, policy.coreFiles, lease, now, runners);
     const saved = this.sql.exec(`SELECT value FROM meta WHERE key = 'core-holds'`).toArray()[0];
     const previous: Record<string, { since: string; expires?: number }> = saved ? JSON.parse(saved.value as string) : {};
     const current: typeof previous = {};
@@ -2016,15 +2016,17 @@ export class Ledger extends DurableObject<Env> {
       const d = i.dispatch!;
       const claimant = d.agent && d.model ? `${d.agent}/${d.model}` : "\u0000dispatch";
       const claimRefusal = policy.refuseOverlap ? overlappingRefusal(i, all, claimant) : null;
-      const blockers = coreBlockers(i, live, policy.coreFiles, lease, now);
-      if (!blockers.length) return { ...i, ...(claimRefusal ? { claimRefusal } : {}) };
+      const blockers = coreBlockers(i, live, policy.coreFiles, lease, now, runners);
+      const orphaned = coreOrphans(i, live, policy.coreFiles, lease, now, runners).map((o) => ({ ...o, project: projectName }));
+      const gone = orphaned.length ? { orphaned } : {};
+      if (!blockers.length) return { ...i, ...gone, ...(claimRefusal ? { claimRefusal } : {}) };
       const old = previous[i.id];
       const since = old && (old.expires === undefined || old.expires > now) ? old.since : new Date(now).toISOString();
       const expires = blockers.every((b) => b.state !== "claimed") && lease ? Date.parse(lease.renewedAt ?? lease.at) + LANDING_LEASE_EXPIRY_MS : undefined;
       current[i.id] = { since, ...(expires === undefined ? {} : { expires }) };
       const elapsedMs = Math.max(0, now - Date.parse(since));
-      const held: CoreHold = { ...blockers[0], blockers, since, elapsedMs, warning: elapsedMs >= CORE_HOLD_WARNING_MS, chains: blockerChains(i.id, graph), ...(claimRefusal ? { claimRefusal } : {}) };
-      return { ...i, held, ...(claimRefusal ? { claimRefusal } : {}) };
+      const held: CoreHold = { ...blockers[0], blockers, since, elapsedMs, warning: elapsedMs >= CORE_HOLD_WARNING_MS, chains: blockerChains(i.id, graph), ...(claimRefusal ? { claimRefusal } : {}), ...gone };
+      return { ...i, held, ...gone, ...(claimRefusal ? { claimRefusal } : {}) };
     });
     if (JSON.stringify(previous) !== JSON.stringify(current)) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('core-holds', ?)`, JSON.stringify(current));
     return result;
@@ -2033,8 +2035,29 @@ export class Ledger extends DurableObject<Env> {
   // Both halves of the queue in one call, as a runner's poll reads them:
   // the open tasks waiting (waiting) and the open review requests
   // (reviewWaiting).
-  queued(): { waiting: Waiting[]; reviews: (Item & { request: number })[] } {
+  // The queue route passes the runners' last polls as the index records
+  // them (/api/runners), which are kept here for every reading of the hold.
+  queued(polls?: readonly { runner: string; at: string }[]): { waiting: Waiting[]; reviews: (Item & { request: number })[] } {
+    if (polls) this.recordRunnerPolls(polls);
     return { waiting: this.waiting(), reviews: this.reviewWaiting() };
+  }
+
+  // The runners' last polls as the queue route last read them from the
+  // index (t537): a claim whose runner has not polled for longer than
+  // RUNNER_GONE_MS holds no other dispatch (orphanedBy in
+  // src/dispatch/rules.ts). The project's ledger cannot read the index
+  // while it answers, so the copy is kept here, rewritten as polls and a
+  // busy runner's heartbeats change it; none kept, as before the first poll
+  // since t537, orphans nothing.
+  recordRunnerPolls(polls: readonly { runner: string; at: string }[]): void {
+    const value = JSON.stringify(polls.map(({ runner, at }) => ({ runner, at })));
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'runner-polls'`).toArray()[0];
+    if (row?.value !== value) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('runner-polls', ?)`, value);
+  }
+
+  private runnerPolls(): RunnerPolls | null {
+    const polls = this.runnerMeta<{ runner: string; at: string }[]>("runner-polls");
+    return polls ? { polls } : null;
   }
 
   // What runners said of dispatched tasks they pass by, by item id (t420):
@@ -2102,7 +2125,7 @@ export class Ledger extends DurableObject<Env> {
     if (!liveOffers([offer]).length) return `the offer token ${token.id} last polled with is no longer live`;
     const assigned = assign(d, offer)?.actor;
     if (assigned !== actor) return assigned ? `its offer assigns this dispatch to ${assigned}, not ${actor}` : `its offer does not cover this dispatch (${describe(d)})`;
-    const held = coreHold(item, this.items(), this.project().policy.coreFiles);
+    const held = coreHold(item, this.items(), this.project().policy.coreFiles, null, Date.now(), this.runnerPolls());
     return held ? `the core files hold it: it ${holdText(held)}` : null;
   }
 
