@@ -3598,7 +3598,9 @@ export class Ledger extends DurableObject<Env> {
   // stale report as stale; anything else unavailable, asked again within
   // the attempts' bound when it may clear. A report for a request that is no
   // longer the reporter's claim changes nothing, so a report delivered twice
-  // is applied once. A skip may come before any claim.
+  // is applied once. A skip may come before any claim, from the reviewer
+  // the request asks or, as a runner holding the owner's token reports it
+  // (cli/commands/runner.mjs, reportReviewSkip), from the owner.
   private prereviewOutcome(itemId: string, actor: string, request: number, note: OutcomeNote, proved: boolean, head?: string): { released: boolean } {
     const admission = reviewerAdmission(actor, this.project().policy);
     if (admission) actor = admissionActor(actor, admission);
@@ -3609,7 +3611,7 @@ export class Ledger extends DurableObject<Env> {
     const binding = JSON.parse(row.binding as string) as PrereviewBinding;
     if (head !== undefined && head !== binding.head) throw new RuleError("bad_head", `pre-review request ${request} of ${itemId} is at ${binding.head.slice(0, 8)}, not ${head.slice(0, 8)}`, 409);
     const d = row.dispatch ? JSON.parse(row.dispatch as string) as Dispatch : null;
-    const mine = row.state === "claimed" ? sameActor(row.claimedBy as string, actor) : note.outcome === "skipped" && row.state === "open" && !!d && askedOf(d, actor);
+    const mine = row.state === "claimed" ? sameActor(row.claimedBy as string, actor) : note.outcome === "skipped" && row.state === "open" && !!d && (askedOf(d, actor) || sameActor(actor, this.owner));
     if (!mine) return { released: false };
     const at = new Date().toISOString();
     const result = { outcome: note.outcome, detail: note.detail, ...(note.files?.length ? { files: note.files } : {}), by: actor };
@@ -4354,10 +4356,12 @@ export class Ledger extends DurableObject<Env> {
       }
       assertOwner(item, actor);
       const rejection = this.reviewsFor(id).filter((r) => !r.approve && r.head === item.head).at(-1) ?? null;
-      // A blocking pre-review at this head (t524) sends its findings the same way.
-      const findings = (rejection ? reviewFindings(rejection) : null) ?? this.prereviewFindings(id, item.head);
-      const text = findings ? findingsSection(findings) : "";
-      return { job: findings ? "rework" : "build", text, hash: await sha256(text) };
+      // A blocking pre-review at this head (t524) sends its findings the same
+      // way, beside a gate rejection's, each under its own reviewer: the
+      // pre-review's are what fenced the landing, so neither hides the other.
+      const sections = [this.prereviewFindings(id, item.head), rejection ? reviewFindings(rejection) : null].filter((f): f is ReviewFindings => f !== null);
+      const text = sections.map((f) => findingsSection(f)).join("\n\n");
+      return { job: sections.length ? "rework" : "build", text, hash: await sha256(text) };
     }
     assertOwner(item, actor);
     const project = this.project();

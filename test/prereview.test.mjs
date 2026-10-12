@@ -246,6 +246,22 @@ test("a pre-review merges main into a scratch clone of the recorded head, briefs
   assert.ok(calls.filter((c) => c.argv).every((c) => c.token === FAKE_TOKEN), "the reviewer's own token on every call");
 });
 
+// Gate review of t524 at 247d6987: the pre-review brief dropped the owner's
+// standing decisions the claim carries, which the gate's brief renders.
+test("the pre-review brief carries the owner's standing decisions from the claim, and says so when there are none", async (t) => {
+  const r = repos(t);
+  const decision = { id: "d3", text: "Queue order is FIFO by arrival.", quote: "keep it FIFO", at: "2026-10-01T00:00:00.000Z" };
+  const { io, calls } = fixture(r, { claim: prereviewClaim(r, { decisions: [decision] }) });
+  await runPrereview(assignment(r.head), config, "home:studio", io);
+  const brief = calls.find((c) => c.brief).brief;
+  assert.match(brief, /## Standing decisions\n\nThese are the project owner's standing decisions/);
+  assert.match(brief, /- d3 \(2026-10-01\): Queue order is FIFO by arrival\. The owner's words: “keep it FIFO”/);
+  const none = repos(t);
+  const bare = fixture(none, { claim: prereviewClaim(none, { decisions: undefined }) });
+  await runPrereview(assignment(none.head), config, "home:studio", bare.io);
+  assert.match(bare.calls.find((c) => c.brief).brief, /## Standing decisions[\s\S]*The project owner has recorded no standing decision/);
+});
+
 test("a conflict with main is reported as a conflict, with its files, and no reviewer runs", async (t) => {
   const r = repos(t, { conflict: true });
   const { io, calls } = fixture(r);
