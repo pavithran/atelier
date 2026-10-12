@@ -334,8 +334,12 @@ export function holdText(h: CoreHold, project?: string): string {
 // which ordinary dispatch refuses, is released and retried through its plan,
 // as the stuck report recovers one. A listing of several projects names the
 // orphan's own, so the command never acts on a task of the same id elsewhere.
+// One shell word: bare when it holds only safe characters, else single-quoted
+// (a quote inside closed, escaped and reopened), so a project name with a
+// space or a shell metacharacter is passed whole and never run.
+export const shellWord = (word: string): string => /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
 export function orphanRecovery(o: Pick<OrphanedClaim, "id" | "kind">, project?: string): string {
-  const flag = project ? ` --project ${project}` : "";
+  const flag = project ? ` --project ${shellWord(project)}` : "";
   return o.kind
     ? `atelier release ${o.id}${flag} --note "Requeue work its runner orphaned"; atelier plan retry ${o.id}${flag}`
     : `atelier dispatch ${o.id}${flag}`;

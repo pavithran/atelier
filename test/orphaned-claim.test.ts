@@ -171,3 +171,18 @@ test("an orphan's recovery names its project, and a part's goes through its plan
   const hold = holdText({ id: "t500", owner: null, state: "claimed", title: "Live", core: "src/**", orphaned: [orphanPart] }, "atelier");
   assert.match(hold, /atelier plan retry t463 --project atelier/);
 });
+
+// gpt-6-astra's review at 097df317: the project is one shell word, so a name
+// with a space or a metacharacter selects that project and runs nothing.
+test("an orphan's recovery quotes its project as one shell word", () => {
+  const held = claim("home:studio-5");
+  const waiting = item("t358");
+  const [task] = coreOrphans(waiting, [held, waiting], core, null, NOW, polls(CLAIMED));
+  const run = (cmd: string) => spawnSync("/bin/sh", ["-c", `set -- ${cmd.replace(/^atelier /, "")}; printf '%s\\n' "$@"`], { encoding: "utf8" });
+  for (const name of ["my project", "a;exit 3", "it's $(printf x)", "plain-name"]) {
+    const recovery = orphanText([task], name).replace(/^.*recover it with /, "");
+    const r = run(recovery);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(r.stdout.trimEnd().split("\n"), ["dispatch", "t463", "--project", name]);
+  }
+});
