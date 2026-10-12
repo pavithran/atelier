@@ -62,7 +62,7 @@
   --texture-blend: normal;
 }
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-scheme="night"]) {
     color-scheme: light;
 
     /* Structure */
@@ -188,7 +188,7 @@
   --texture-blend: multiply;
 }
 @media (prefers-color-scheme: light) {
-  :root[data-theme="graphite"] {
+  :root[data-theme="graphite"]:not([data-scheme="night"]) {
     color-scheme: light;
 
     /* Structure */
@@ -314,7 +314,7 @@
   --texture-blend: multiply;
 }
 @media (prefers-color-scheme: light) {
-  :root[data-theme="slate"] {
+  :root[data-theme="slate"]:not([data-scheme="night"]) {
     color-scheme: light;
 
     /* Structure */

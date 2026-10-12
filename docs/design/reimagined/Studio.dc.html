@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Activity · Now</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#07090c}
+a{color:#ffdf8f}a:hover{color:#fff0c7}
+summary{cursor:pointer;list-style:none}summary::-webkit-details-marker{display:none}
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.35}}
+@media (prefers-reduced-motion: reduce){*{animation:none !important}}
+</style>
+</helmet>
+<div style="background: #07090c; color: #eef2f5; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 15px; line-height: 1.5; min-height: 100vh">
+  <header style="background: #0a0e13; border-bottom: 1px solid #1c232c">
+    <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 24px; padding: 10px 32px">
+      <a href="Decisions.dc.html" style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 22px; color: #ffffff; text-decoration: none">Atelier</a>
+      <nav aria-label="Atelier" style="display: flex; flex-wrap: wrap; gap: 4px; flex: 1 1 auto">
+        <a href="Decisions.dc.html" style="color: #eef2f5; text-decoration: none; padding: 10px 12px; border-radius: 8px">Decisions <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #07090c; background: #ffd166; border-radius: 999px; padding: 1px 7px">14</span></a>
+        <a href="Overview.dc.html" style="color: #eef2f5; text-decoration: none; padding: 10px 12px; border-radius: 8px">Projects</a>
+        <a href="Studio.dc.html" aria-current="page" style="color: #ffffff; text-decoration: none; padding: 10px 12px; border-radius: 8px; background: #121a24">Activity</a>
+      </nav>
+      <details><summary style="padding: 10px 12px; border: 1px solid #2c3744; border-radius: 8px">Project ▾</summary></details>
+      <details><summary style="padding: 10px 12px; border-radius: 8px; color: #8f9cab">Owner ▾</summary></details>
+    </div>
+  </header>
+
+  <main style="max-width: 1360px; margin: 0 auto; padding: 28px 32px 48px">
+    <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 14px 24px">
+      <h1 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 40px; letter-spacing: -0.03em; line-height: 1">Now · 9 working</h1>
+      <nav aria-label="Activity" style="display: flex; gap: 4px; background: #0c1015; border: 1px solid #1c232c; border-radius: 999px; padding: 4px; font-size: 14px">
+        <a href="Studio.dc.html" aria-current="page" style="color: #07090c; background: #eef2f5; text-decoration: none; padding: 8px 14px; border-radius: 999px; font-weight: 600">Now</a>
+        <a href="Activity.dc.html" style="color: #eef2f5; text-decoration: none; padding: 8px 14px; border-radius: 999px">Flow</a>
+        <a href="#merges" style="color: #eef2f5; text-decoration: none; padding: 8px 14px; border-radius: 999px">Merges</a>
+      </nav>
+      <button type="button" aria-pressed="false" style="font: inherit; font-size: 14px; display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 16px; border: 1px solid #2c3744; border-radius: 999px; background: transparent; color: #eef2f5; cursor: pointer"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: #5fe08f; animation: breathe 2.4s ease-in-out infinite"></span>Live · Pause</button>
+    </div>
+
+    <section aria-label="Lanes on a shared time axis" style="margin-top: 24px; background: #0c1015; border: 1px solid #1c232c; border-radius: 16px; padding: 16px 24px; overflow-x: auto">
+      <div style="min-width: 960px">
+        <div style="display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 20px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #7d8a98; padding-bottom: 8px; border-bottom: 1px solid #2c3744">
+          <span>task · holder · state</span>
+          <div style="display: grid; grid-template-columns: repeat(6, minmax(0, 1fr))"><span>06:00</span><span>07:00</span><span>08:00</span><span>09:00</span><span>10:00</span><span>11:00 UTC</span></div>
+        </div>
+        <sc-for list="{{lanes}}" as="l" hint-placeholder-count="6">
+          <div style="display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 20px; align-items: center; padding: 12px 0; border-bottom: 1px solid #1c232c">
+            <div style="min-width: 0">
+              <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis"><a href="#task" style="font-family: 'IBM Plex Mono', monospace; color: #eef2f5">{{l.id}}</a> {{l.title}}</div>
+              <div style="font-size: 13px"><span style="font-family: 'IBM Plex Mono', monospace; color: #8f9cab">{{l.holder}}</span> · <span style="color: {{l.rc}}">{{l.state}}</span></div>
+            </div>
+            <div style="position: relative; height: 22px">
+              <span style="position: absolute; top: 9px; height: 4px; border-radius: 2px; left: {{l.s}}%; right: 0; background: {{l.bg}}"></span>
+              <sc-for list="{{l.marks}}" as="m" hint-placeholder-count="2">
+                <span aria-hidden="true" style="position: absolute; top: 0; left: {{m.l}}%; width: 22px; height: 22px; margin-left: -11px; display: flex; align-items: center; justify-content: center; font-family: 'IBM Plex Mono', monospace; font-size: 15px; line-height: 1; color: {{m.c}}">{{m.ch}}</span>
+              </sc-for>
+              <span style="position: absolute; top: 5px; right: -6px; width: 12px; height: 12px; border-radius: 50%; background: {{l.head}}; animation: breathe 1.8s ease-in-out infinite"></span>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </section>
+
+    <div style="margin-top: 14px; display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: #c9d1d9">
+      <sc-for list="{{families}}" as="f" hint-placeholder-count="5">
+        <span style="display: flex; align-items: center; gap: 6px"><span style="width: 16px; height: 4px; border-radius: 2px; background: {{f.c}}"></span>{{f.name}}</span>
+      </sc-for>
+      <span style="color: #8f9cab">· □ claimed · | pushed · ● check observed · × check failed · ▽ sent back · dashed: no push for 12 h</span>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const C = { claude: '#ff8a5b', gpt: '#3fe0b0', glm: '#6f9bff', gemini: '#ff8fcf', qwen: '#b5e55c' };
+    const R = { neutral: '#eef2f5', caution: '#ffb547', fault: '#ff4d74' };
+    const mk = (l, ch, c) => ({ l, ch, c: c || '#eef2f5' });
+    const dash = (c) => `repeating-linear-gradient(90deg, ${c} 0 6px, transparent 6px 11px)`;
+    const lane = (id, title, holder, state, rc, c, s, marks, stale) => ({ id, title, holder, state, rc, s, marks, bg: stale ? dash(c) : c, head: stale ? '#2c3744' : c });
+    const lanes = [
+      lane('t182', 'Multi-currency trial balance export', 'claude-code/opus-5.5', 'Working', R.neutral, C.claude, 8, [mk(8, '□'), mk(30, '|'), mk(58, '|'), mk(64, '●', '#5fe08f'), mk(92, '|')]),
+      lane('t196', 'Reject postings to archived accounts', 'opencode/qwen-4', 'Working', R.neutral, C.qwen, 40, [mk(40, '□'), mk(71, '|'), mk(90, '|')]),
+      lane('t197', 'Round half-even in currency conversion', 'codex/gpt-6-astra', 'Sent back', R.fault, C.gpt, 2, [mk(2, '□'), mk(20, '|'), mk(38, '●', '#5fe08f'), mk(55, '▽', '#ff4d74'), mk(84, '|')]),
+      lane('t188', 'Lock entries after the period closes', 'opencode/glm-5.3', 'Checks failed', R.fault, C.glm, 24, [mk(24, '□'), mk(48, '|'), mk(77, '×', '#ff4d74')]),
+      lane('t199', 'Export trial balance as CSV', 'antigravity/gemini-3.1-pro', 'Working', R.neutral, C.gemini, 62, [mk(62, '□'), mk(88, '|')]),
+      lane('t163', 'Migrate balances to integer cents', 'zcode/glm-5.3', 'Working · stale 2 d', R.caution, C.glm, 0, [mk(0, '□')], true),
+    ];
+    const families = [{ name: 'Claude', c: C.claude }, { name: 'GPT', c: C.gpt }, { name: 'GLM', c: C.glm }, { name: 'Gemini', c: C.gemini }, { name: 'Qwen', c: C.qwen }];
+    return { lanes, families };
+  }
+}
+</script>
+</body>
+</html>
