@@ -4,7 +4,7 @@ const spec: CommandSpec = {
   name: "decide",
   forms: [
     {
-      group: "Owner", line: 3, slot: 10,
+      group: "Owner", line: 4, slot: 10,
       form: "decide \"text\" --quote \"owner's words\" [--project P] [--as H/M]",
       about: "The project owner records a standing decision for the project, dated, with the owner's own words it rests on: another company reviews everywhere, the review bar, a spend limit, no overrides. Only the owner's token records one; `--as` names the harness/model recording it for the owner, kept beside the owner. Every review brief of the project and `atelier guide --role orchestrate` carry the decisions that stand, marked as decisions a reviewer must not overrule.",
     },
