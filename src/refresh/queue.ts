@@ -20,6 +20,7 @@
 // head it started from and the main head it merged — and a report repeated
 // under the same key answers the recorded outcome without changing anything,
 // so a runner that retries after a lost answer does no harm.
+import { INTEGRATOR } from "../plans/state.ts";
 import { RuleError } from "../rules.ts";
 import type { ConflictReport } from "./mechanical.ts";
 
@@ -37,8 +38,10 @@ export interface RefreshLease {
   until: string;
   // Set while the leaseholder pushes the refreshed merge (refreshPushing in
   // src/ledger.ts), and while it runs the required checks at the head its
-  // refresh recorded (`checking`).
-  pushing?: { head: string; until: string };
+  // refresh recorded (`checking`). `pushing` names who announced the push
+  // and in which job, since the integrator may reconcile another's push
+  // (takeLease) and the merge's Agent line is still the announcer's.
+  pushing?: { head: string; until: string; by?: string; job?: RefreshJob };
   checking?: string;
   // The id of the fork write token minted for the lease, revoked when it settles.
   tokenId?: string;
@@ -121,10 +124,16 @@ export function takeLease(target: RefreshTarget, input: { job: RefreshJob; actor
   // head from the same starting head, with only the checks left to run.
   const lapsed = target.lease;
   // An announced push survives a lost report, even if observePush has
-  // already moved the ledger head or a newer main target has arrived.
+  // already moved the ledger head or a newer main target has arrived. Its
+  // announcer may reconcile it, and so may the integrator, whatever job
+  // announced it: reconciling only reads the fork and records the head, so
+  // a resolver no runner offers any more never leaves the task fenced.
   if (target.state === "leased" && lapsed?.pushing) {
-    if (job !== lapsed.job || !input.same(lapsed.by, actor)) throw new RuleError("not_leaseholder", "the announced push must be reconciled by its original actor", 409);
-    return { ...lapsed, id: input.id, runner: input.runner, tokenId: undefined, at: new Date(now).toISOString(), until: new Date(now + LEASE_MS).toISOString() };
+    const own = job === lapsed.job && input.same(lapsed.by, actor);
+    const integrator = job === "refresh" && input.same(actor, INTEGRATOR);
+    if (!own && !integrator) throw new RuleError("not_leaseholder", `${target.item}'s announced push is reconciled by ${lapsed.by} or ${INTEGRATOR}, not ${actor}`, 409);
+    const pushing = { ...lapsed.pushing, by: lapsed.pushing.by ?? lapsed.by, job: lapsed.pushing.job ?? lapsed.job };
+    return { ...lapsed, job, by: actor, pushing, id: input.id, runner: input.runner, tokenId: undefined, at: new Date(now).toISOString(), until: new Date(now + LEASE_MS).toISOString() };
   }
   if (target.state === "leased" && lapsed?.checking && job === lapsed.job && head === lapsed.checking) {
     if (job === "resolve" && (!target.resolver || !input.same(target.resolver, actor))) throw new RuleError("not_resolver", `${target.item}'s conflict is for ${target.resolver ?? "no resolver"}, not ${actor}`, 403);

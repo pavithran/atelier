@@ -401,8 +401,9 @@ export const RUN_REPORTS = 1000;
 const RECORD_EVENTS = 1000;
 
 // Recovery waits at least this long after a push announcement. The runner
-// bounds Git pushes to two minutes; landing stays fenced until reconciliation,
-// even after this deadline or the lease expires.
+// bounds Git pushes to two minutes; landing stays fenced until the push is
+// reconciled (by its announcer or the integrator) or the owner releases it
+// with a reason, even after this deadline or the lease expires.
 const REFRESH_PUSH_MS = 5 * 60_000;
 
 // A task's refresh target as the owner reads it (atelier refreshes, t462).
@@ -7128,7 +7129,9 @@ export class Ledger extends DurableObject<Env> {
           this.log(item.id, ORCHESTRATOR, "refresh.resolver", { resolver: pick.actor, provider: pick.provider, mainHead: target.mainHead }, at);
         }
       }
-      const job = target.state === "queued" || (target.state === "leased" && target.lease?.job === "refresh") ? "task-refresh" as const
+      // A lapsed lease's announced push is the integrator's to reconcile,
+      // whoever announced it (takeLease).
+      const job = target.state === "queued" || (target.state === "leased" && (target.lease?.job === "refresh" || !!target.lease?.pushing)) ? "task-refresh" as const
         : target.state === "resolve" || (target.state === "leased" && target.lease?.job === "resolve") ? "task-resolve" as const : null;
       if (!job || (offer && !(offer.jobs ?? []).includes(job))) continue;
       const [agent, model] = job === "task-resolve" && target.resolver ? [target.resolver.slice(0, target.resolver.indexOf("/")), target.resolver.slice(target.resolver.indexOf("/") + 1)] : ["atelier", "integrator"];
@@ -7215,10 +7218,11 @@ export class Ledger extends DurableObject<Env> {
     return next;
   }
 
-  // What a leaseholder whose report went unanswered reads before it takes
-  // a push back off the fork: the task's head as recorded now, and whether
-  // its lease is still live and waiting on checks at a recorded head. A
-  // head that is already the one it pushed is recorded, and stays.
+  // What a leaseholder whose report went unanswered reads to say where its
+  // push stands: the task's head as recorded now, and whether its lease is
+  // still live and waiting on checks at a recorded head. A push is never
+  // taken back; one not yet recorded stays fenced until the next lease
+  // reconciles it (takeLease, in src/refresh/queue.ts).
   refreshLeaseStatus(id: string, actor: string, leaseId: string): { head: string | null; lease: boolean; checking: string | null } {
     const item = this.item(id);
     const lease = this.refreshTargetOf(id)?.lease;
@@ -7233,18 +7237,39 @@ export class Ledger extends DurableObject<Env> {
   // and the lease's token is revoked. A lease already gone answers
   // released: false, so a retry does no harm; one pushing or checking a
   // recorded head is not given back, since its head is already reported.
+  // The owner alone may release an announced push nobody reconciled, once
+  // its lease has lapsed and the push's window has passed, saying why: the
+  // landing fence then ends, the refresh is queued again, and what the fork
+  // holds is the owner's to check (releasePushFence).
   releaseRefreshLease(id: string, actor: string, leaseId: string, reason: string, providerLimit = false): { item: Item; released: boolean; revoke: string | null } {
     const at = new Date().toISOString();
     const item = this.item(id);
     const target = this.refreshTargetOf(id);
     const lease = target?.lease;
     if (!lease || lease.id !== leaseId) return { item, released: false, revoke: null };
+    if (lease.pushing && actor === this.owner && !sameActor(lease.by, actor)) return this.releasePushFence(item, target!, lease, reason, at);
     if (lease.by !== actor) throw new RuleError("not_leaseholder", `${id}'s refresh lease is ${lease.by}'s, not ${actor}'s`, 403);
     if (lease.pushing) throw new RuleError("refresh_pushing", "the announced push must be reconciled before releasing its lease", 409);
     if (lease.checking) throw new RuleError("refresh_recorded", `${id}'s refresh is recorded at ${lease.checking.slice(0, 8)} and waits for its checks; report them with refresh-checked`, 409);
     this.saveRefreshTarget(id, afterRelease(target!, lease, at));
     this.log(id, actor, "refresh.released", { job: lease.job, lease: lease.id, mainHead: lease.mainHead, head: lease.expectedHead, reason: cleanReason(reason), ...(providerLimit ? { providerLimit: true } : {}) }, at);
     return { item, released: true, revoke: lease.tokenId ?? null };
+  }
+
+  // The owner ends a fence no refresh reconciled: refused while the lease
+  // is live or the push's window is open, since its holder may still be
+  // pushing, and without a reason. The target settles as superseded, so the
+  // task is refreshed again from the head the ledger records.
+  private releasePushFence(item: Item, target: RefreshTarget, lease: RefreshLease, reason: string, at: string): { item: Item; released: boolean; revoke: string | null } {
+    const why = cleanReason(reason), now = Date.parse(at), pushing = lease.pushing!;
+    if (!why) throw new RuleError("reason_required", `say why ${item.id}'s announced push is released: --reason TEXT`, 400);
+    if (leaseLive(lease, now) || Date.parse(pushing.until) > now) {
+      const until = new Date(Math.max(Date.parse(lease.until), Date.parse(pushing.until))).toISOString();
+      throw new RuleError("refresh_leased", `${lease.by} may still be pushing ${pushing.head.slice(0, 8)} to ${item.id}'s fork; its lease and push window end at ${until}, and the push may be released after that`, 409);
+    }
+    this.saveRefreshTarget(item.id, afterSettle(target, lease, "superseded", at));
+    this.log(item.id, this.owner, "refresh.push_released", { lease: lease.id, head: pushing.head, announcedBy: pushing.by ?? lease.by, mainHead: lease.mainHead, from: lease.expectedHead, reason: why }, at);
+    return { item: this.item(item.id), released: true, revoke: lease.tokenId ?? null };
   }
 
   // The leaseholder is about to push `head`, the refreshed merge, to the
@@ -7267,17 +7292,21 @@ export class Ledger extends DurableObject<Env> {
       if (lease.pushing.head !== report.head) throw new RuleError("refresh_pushing", "another head is already announced", 409);
       return lease;
     }
-    const next = { ...lease, pushing: { head: report.head, until: new Date(Date.parse(at) + REFRESH_PUSH_MS).toISOString() } };
+    const next = { ...lease, pushing: { head: report.head, until: new Date(Date.parse(at) + REFRESH_PUSH_MS).toISOString(), by: lease.by, job: lease.job } };
     this.saveRefreshTarget(id, { ...target!, lease: next, updatedAt: at });
     return next;
   }
 
-  // Called where a landing begins: refused while a refresh is pushing to
-  // the task's fork, for the moment its push takes.
+  // Called where a landing begins: refused while a refresh's announced push
+  // to the task's fork is not reconciled, however long that takes, saying
+  // who announced it, when its lease lapses and the integrator reconciles
+  // it, and the owner's command that releases it.
   private assertNoRefreshPush(id: string): void {
-    const pushing = this.refreshTargetOf(id)?.lease?.pushing;
-    if (pushing) {
-      throw new RuleError("refresh_pushing", `a refresh is pushing main merged into ${id} as ${pushing.head.slice(0, 8)}; land again in a moment, once it is recorded`, 409);
+    const lease = this.refreshTargetOf(id)?.lease;
+    const pushing = lease?.pushing;
+    if (lease && pushing) {
+      const live = leaseLive(lease, Date.now());
+      throw new RuleError("refresh_pushing", `${pushing.by ?? lease.by} announced a push of main merged into ${id} as ${pushing.head.slice(0, 8)} and has not recorded it; ${live ? `its lease runs until ${lease.until}, then ${INTEGRATOR} reconciles the push` : `its lease lapsed, and ${INTEGRATOR}'s next refresh job reconciles the push`}. The owner may release it once the lease lapses: atelier refresh-lease ${id} --release ${lease.id} --reason TEXT`, 409);
     }
   }
 
@@ -7315,9 +7344,11 @@ export class Ledger extends DurableObject<Env> {
     }
     // The merge commit's Agent line names who made it: the integrator for a
     // clean merge, the leased resolver for a resolved one, and no one else.
-    const resolver = lease.job === "resolve" ? lease.by : null;
-    if (!report.agent || !sameActor(report.agent, lease.job === "resolve" ? lease.by : INTEGRATOR)) {
-      throw new RuleError("bad_agent", `the refreshed merge's Agent line names ${report.agent ?? "nobody"}, not ${lease.job === "resolve" ? lease.by : INTEGRATOR}, who made it`, 409);
+    // A push the integrator reconciles was made by whoever announced it.
+    const madeIn = lease.pushing?.job ?? lease.job, maker = madeIn === "resolve" ? lease.pushing?.by ?? lease.by : INTEGRATOR;
+    const resolver = madeIn === "resolve" ? maker : null;
+    if (!report.agent || !sameActor(report.agent, maker)) {
+      throw new RuleError("bad_agent", `the refreshed merge's Agent line names ${report.agent ?? "nobody"}, not ${maker}, who made it`, 409);
     }
     // The fork's head may have been recorded already, from the push event
     // (observePush); any other head is a push the lease did not make.
