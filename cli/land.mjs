@@ -17,7 +17,7 @@ import { criteriaOf } from "../src/criteria.ts";
 import { decideTriage, parseTriage, recordedTriage, resolveTriage, sameBinding, triageBrief, triageCriteria, triageLines, triageModelRefusal, triageRecord } from "../src/review/triage.ts";
 import { WORKSPACE_REASON_MAX, effectiveFailures, failureDetail, failureSummary, resolveFailures } from "../src/check-failure.ts";
 import { DETECTOR_ENV, describeAmbiguous, describeFinding, detectMovedEditsAsync, findingKey } from "../src/moved-code.ts";
-import { appendMovedCodeRecord } from "./landing.mjs";
+import { appendMovedCodeRecord, prepareRecordedWorkspace } from "./landing.mjs";
 import { workspaceNotice } from "./review-notice.mjs";
 
 // atelier land (t187): the project owner lands one task whole, taking the
@@ -113,8 +113,8 @@ import { workspaceNotice } from "./review-notice.mjs";
 // Workflow's too, whose push runs here, and again after a --wait) a token
 // that has lapsed or lapses within TOKEN_WINDOW_MS is refreshed, and a push
 // still refused as expired is refreshed and tried once more. A refresh re-claims
-// the task as its current holder, or its workspace's builder when released,
-// never as the owner, whose claim would take the task over.
+// the task as its current holder, never changing claim ownership; an
+// unclaimed task cannot be reclaimed just to obtain credentials.
 //
 // Before the review is asked for, a landing with a triage model (t475:
 // --triage H/M, else the project's triage setting; neither is none) has
@@ -331,7 +331,7 @@ export async function runLand(io) {
   const refuse = (message) => die(message + heldNote);
   const preflight = async (throwing = false) => {
     const no = (message) => { if (throwing) throw new StepError(message + heldNote); refuse(message); };
-    const d = await request("GET", itemPath);
+    const d = throwing ? await request("GET", itemPath) : detail;
     if (["merged", "abandoned"].includes(d.item.state)) no(`${id} is ${d.item.state}; there is nothing to land.`);
     // A plan's branch holds only the integrator's recorded integrations and
     // refreshes; the merge of main a landing makes would put a commit beside
@@ -341,6 +341,8 @@ export async function runLand(io) {
     // its workspace work is behind it, and the landing goes on from the
     // acceptance (the merge the Workflow waits for).
     if (d.item.state === "accepted" && !workflow) no(`${id} is accepted at ${short(d.item.acceptedHead)}; merge it with: atelier merge ${id}.`);
+    const prepared = await prepareRecordedWorkspace(io, { dir, itemPath, detail: d, dryRun });
+    if (dryRun && prepared) return d;
     if (!existsSync(join(dir, ".git"))) no(`${id} has no workspace on this Mac (${dir}); it has nothing to land. Run atelier claim ${id} --as H/M first, or land a task that has one.`);
     const held = { project: git(["config", "--local", "atelier.project"], { cwd: dir, allowFail: true }).stdout?.trim(), item: git(["config", "--local", "atelier.item"], { cwd: dir, allowFail: true }).stdout?.trim() };
     if (held.project !== name || held.item !== id) no(`${dir} is not ${id}'s workspace (its Git config names ${held.project ?? "no project"}/${held.item ?? "no item"}); land ${id} from the machine holding its workspace.`);
@@ -351,7 +353,8 @@ export async function runLand(io) {
     if (git(["status", "--porcelain"], { cwd: dir })) no(`${id}'s workspace has uncommitted changes; commit or set them aside before landing.`);
     return d;
   };
-  const d0 = await preflight();
+  let d0 = await preflight();
+  if (d0.item.head) print(`Landing ${id} from recorded source ${d0.item.head}.`);
   // A reviewer who contributed to the task can never review it, whatever the
   // change class, so the ledger's answer is known before the lease is taken
   // or a check runs (t354). Same-family contributors are left to the server:
@@ -528,7 +531,7 @@ export async function runLand(io) {
     for (;;) {
       if (queued) {
         await queue();
-        await preflight(true);
+        d0 = await preflight(true);
         // The wait can outlast the token checked before it.
         await ensureWorkspaceToken(io, { dir, id, itemPath, item: d0.item });
       }
@@ -638,6 +641,7 @@ export async function runLand(io) {
     // workspace, so their output is their own and a failure still ends the
     // landing here, with the lease released and the step recorded.
     const step = (kind, argv, cwd, data = {}) => { guardLease(); return landStep(io, record, kind, argv, cwd, data); };
+    await recordedHeadStillStands(io, itemPath, d0.item.head);
     await pushRefreshing(io, { dir, id, itemPath }, () => step("push", ["push"], dir, { head }));
     print(`Pushed ${short(head)} to ${id}'s fork.`);
     // The triage, before the checks and the submission (t475): each can
@@ -787,7 +791,9 @@ export async function runLand(io) {
     // losing it stops here rather than merge beside the landing that holds
     // the lease now (t232).
     await renewBeforePublish();
+    await recordedHeadStillStands(io, itemPath, head);
     await step("accept", ["accept", id], p.path);
+    await recordedHeadStillStands(io, itemPath, head);
     const mergeHead = () => git(["rev-parse", `refs/heads/${p.branch}`], { cwd: p.path });
     await step("merged", ["merge", id], p.path, () => ({ mergeCommit: mergeHead() }));
     print(`${id} landed: merged as ${short(mergeHead())}.`);
@@ -803,6 +809,12 @@ export async function runLand(io) {
 }
 
 // ── the pieces both landings share (t280) ──────────────────────────────────
+
+export async function recordedHeadStillStands(io, itemPath, expected) {
+  if (!expected) return;
+  const { item } = await io.request("GET", itemPath);
+  if (item.head !== expected) throw new StepError(`${io.id}'s recorded head changed from ${expected} to ${item.head ?? "none"}; landing stopped, retry from the recorded head`);
+}
 
 // A land.* step recorder: a ledger that cannot take the record warns and
 // the landing goes on, for the record is not the step.
@@ -1004,10 +1016,9 @@ async function runTriageModel(io, { harness, model, brief, diff, dir, timeoutMs 
 // the server refreshes a claim only for `item.owner === actor`, and to any
 // other name a claim is a takeover. The workspace's own atelier.actor must
 // be that holder too, so a workspace left by an earlier holder is never
-// given the current one's token. A released task is claimed for the
-// workspace's builder, withdrawing any waiting dispatch first. The
-// holder's runner rides along, as the server refuses a re-claim from any
-// runner but the one holding the task. The new token replaces the old one
+// given the current one's token. An unclaimed task stops without changing
+// ownership or dispatch. The holder's runner rides along, as the server
+// refuses a re-claim from any runner but the one holding the task. The new token replaces the old one
 // in the workspace (the old one is revoked by the claim) and its expiry is
 // recorded. Answers the new expiry.
 async function refreshWorkspaceToken(io, { dir, id, itemPath }) {
@@ -1017,15 +1028,7 @@ async function refreshWorkspaceToken(io, { dir, id, itemPath }) {
   if (!recorded || (item?.owner && !sameActor(item.owner, recorded))) {
     throw new StepError(`${id} is held by ${holder ?? "nobody"} and its workspace was claimed by ${recorded ?? "no recorded actor"}, so the landing cannot refresh the token for its holder`);
   }
-  if (!item.owner) {
-    const head = io.git(["rev-parse", "--verify", "HEAD"], { cwd: dir, allowFail: true });
-    if (head.status !== 0 || !head.stdout?.trim()) throw new StepError(`${id}'s workspace has no committed head to land`);
-    if (item.dispatch) {
-      await io.request("POST", `${itemPath}/undispatch`, {});
-      io.print(`Withdrew ${id}'s waiting dispatch so its committed workspace can land.`);
-    }
-    io.print(`Claiming ${id} for its workspace's builder ${holder} before refreshing the write token…`);
-  }
+  if (!item.owner) throw new StepError(`${id} is unclaimed; landing cannot claim it or withdraw its dispatch to obtain write credentials`);
   const r = await io.request("POST", `${itemPath}/claim`, {}, holder, item.owner && item.runner ? { "x-atelier-runner": item.runner } : {});
   if (typeof r?.workspace?.token !== "string" || !r.workspace.token) throw new StepError(`the re-claim of ${id} as ${holder} returned no workspace token`);
   // The remote the claim answered is origin's one destination before the
@@ -1106,8 +1109,8 @@ function adoptWorkspaceRemote(io, { dir, id, holder }, remote) {
 
 // Before the landing takes the lease: a write token that has lapsed or
 // lapses within TOKEN_WINDOW_MS is refreshed, and one that cannot be stops
-// the landing here before the lease. Released tasks need a new claim even
-// before expiry, since release revokes their tokens. The expiry is recorded at each
+// the landing here before the lease. Release revokes tokens, so unclaimed
+// tasks stop without being re-claimed. The expiry is recorded at each
 // claim (recordTokenExpiry in cli/atelier.mjs); the server keeps none it
 // could answer later, so a workspace claimed before that was recorded has
 // an unknown expiry, which is refreshed once — the refresh records it, and
@@ -1423,7 +1426,7 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
         // cannot reach main. The holder is named, for a task that has one.
         const holder = typeof d0?.item?.owner === "string" && d0.item.owner.includes("/") ? d0.item.owner : null;
         throw new StepError(conflicts.length
-          ? `the merge of main at ${short(mainHead)} into ${id}'s workspace stops on conflicts in:\n${conflicts.join("\n")}\n${reason ? `Taking either side and regenerating did not settle them: ${reason}. ` : ""}The merge is left in the workspace for you to resolve: cd ${JSON.stringify(dir)}, fix the files, git add, git commit. Then run atelier land ${id} again. Or send them back to the task's builder${holder ? `, ${holder},` : ""} to resolve in this workspace: atelier dispatch ${id} --job merge-main${holder ? ` --agent ${holder.split("/")[0]} --model ${holder.split("/")[1]}` : ""}; its runner merges main at ${short(mainHead)} into the workspace again and leaves the conflicts for the builder to resolve and commit, and then atelier land ${id} again.`
+          ? `the merge of main at ${short(mainHead)} into ${id}'s workspace stops on conflicts in:\n${conflicts.join("\n")}\n${reason ? `Taking either side and regenerating did not settle them: ${reason}. ` : ""}The merge is left in the workspace for you to resolve: cd ${JSON.stringify(dir)}, fix the files, git add, git commit, then atelier push to record the resolution. Then run atelier land ${id} again. Or send them back to the task's builder${holder ? `, ${holder},` : ""} to resolve in this workspace: atelier dispatch ${id} --job merge-main${holder ? ` --agent ${holder.split("/")[0]} --model ${holder.split("/")[1]}` : ""}; its runner merges main at ${short(mainHead)} into the workspace again and leaves the conflicts for the builder to resolve and commit, and then atelier land ${id} again.`
           : `the merge of main at ${short(mainHead)} into ${id}'s workspace failed:\n${(r.stderr || r.stdout).trim()}\nNothing was merged; git left the workspace as it was.`, data);
       }
     }
@@ -1667,8 +1670,12 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, triage, move
       workedRound = round;
       const stop = heartbeat();
       try {
+        const current = await io.request("GET", itemPath);
+        await prepareRecordedWorkspace(io, { dir, itemPath, detail: current });
+        await ensureWorkspaceToken(io, { dir, id, itemPath, item: current.item });
         const merged = await mergeMainAndRegenerate(io, { dir, id, name, regenerate, record, guard, d0, moved });
         guard();
+        await recordedHeadStillStands(io, itemPath, current.item.head);
         await pushRefreshing(io, { dir, id, itemPath }, () => { guard(); return landStep(io, record, "push", ["push"], dir, () => ({ head: merged.head })); });
         // The triage, before the checks and before the head is reported:
         // the Workflow submits and asks for the review only once it has the
@@ -1710,7 +1717,7 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, triage, move
         die(conflicts && error.data.moved
           ? `${error.message}\nThe landing Workflow is paused at its conflict stage and has released the lease; no merge was made, so nothing is left to resolve in the index. Once the edits are ported and committed, run atelier land ${id} --workflow again: it resumes this landing and compares afresh (with --moved-ok, it records your approval of the findings it detects and goes on).`
           : conflicts
-          ? `${error.message}\nThe landing Workflow is paused at its conflict stage and has released the lease. Once the conflicts are resolved and committed, run atelier land ${id} --workflow again: it resumes this landing.`
+          ? `${error.message}\nThe landing Workflow is paused at its conflict stage and has released the lease. Once the conflicts are resolved, committed and pushed with atelier push, run atelier land ${id} --workflow again: it resumes this landing.`
           : error.message);
       } finally { stop(); }
     }
