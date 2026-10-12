@@ -513,7 +513,7 @@ it("the merge steps atelier land posts reach the ledger whole through the land r
   // them against this fixture, so a field it sends that the ledger refuses
   // fails here rather than as a warning in a real landing.
   const post = (body: Record<string, unknown>) => worker.fetch(new Request(`https://atelier.test/api/projects/${project}/items/${id}/land`, {
-    method: "POST", headers: { authorization: "Bearer land-routes-token", "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify(body),
+    method: "POST", headers: { authorization: `Bearer ${token.ATELIER_TOKEN}`, "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify(body),
   }), token);
   for (const [name, body] of Object.entries(MERGE_STEPS)) {
     const r = await post(body);
