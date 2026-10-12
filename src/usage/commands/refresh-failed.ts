@@ -5,7 +5,7 @@ const spec: CommandSpec = {
   capabilities: ["plans.integration.v1"],
   forms: [
     {
-      group: "Agents", line: 4, slot: 60,
+      group: "Agents", line: 5, slot: 60,
       form: "refresh-failed ID --main-head SHA --reason TEXT [--kind conflict|checks]",
       about: "The integrator reports a refresh that conflicted or failed the plan's checks, after rolling the branch back. It is recorded on the plan with the reason and charges no part's builder; the tick does not try it again for that main head.",
     },

@@ -369,7 +369,7 @@ uses; that folder serves an opencode entry with a custom `command`.
 
 ## Home runner
 
-`atelier runner --name home:NAME [--once] [--config PATH] [--integrate]` polls the queue every 30 seconds, claims one eligible job, and runs its configured harness. A runner offers `build`, `plan`, `merge-main`, `merge-main-task` and `merge-plan` jobs for every harness in its config, and `review` when its config lists it. A build or plan job runs the harness in the claimed workspace; a review job clones the head into a folder of its own, reads the diff and writes a verdict. The task brief is kept outside the workspace. A runner with `--integrate` runs no harness and takes no config: it offers only the `integrate` and `refresh` jobs, merging each part onto its plan's branch as `atelier/integrator`. Before its first poll every runner reads `GET /api/version` and refuses to start while the server lacks a capability one of the jobs it offers declares (`JOB_CAPABILITIES`, `src/route-level.ts`; the integrator's jobs need `projects.commit-identity.v1`, `plans.integration.v1` and `runners.scoped-token.v1`; the review job needs the review skip, `reviews.skip.v1` and `reviews.skip-as-runner.v1`, beside the binding and the unparsable route; every other job, the integrator's included, needs the run skip it reports a job it gives up to, `runners.run-skip.v1`), naming the missing capabilities and the deploy to run, so a runner that would fail its calls one by one stops at once instead. The runner gives each opencode run a data folder of
+`atelier runner --name home:NAME [--once] [--config PATH] [--integrate]` polls the queue every 30 seconds, claims one eligible job, and runs its configured harness. A runner offers `build`, `plan`, `merge-main`, `merge-main-task` and `merge-plan` jobs for every harness in its config, and `review` and `criteria-review` when its config lists them. A build or plan job runs the harness in the claimed workspace; a review job clones the head into a folder of its own, reads the diff and writes a verdict. A criteria-review job (t438, `runCriteriaReview`) judges a task's acceptance criteria before it is built, so there is no change to clone: the runner claims the review with `criteria-review-claim`, writes the brief the server built into an empty folder of its own, hands the harness a `{diff_file}` that says there is no diff and a `{verdict_file}`, and posts the verdict with `criteria-verdict`, bound to the criteria revision, binding and review number the claim gave, so a verdict on criteria that changed while the harness ran is refused rather than counted. A harness that fails, times out or writes a reply no verdict can be read from records the failure with `criteria-review-failed`, which approves nothing, and the review may be asked for again. The queue offers open criteria reviews beside code reviews, each under its own `request` number, and the runner takes them ahead of builds as it takes reviews. The task brief is kept outside the workspace. A runner with `--integrate` runs no harness and takes no config: it offers only the `integrate` and `refresh` jobs, merging each part onto its plan's branch as `atelier/integrator`. Before its first poll every runner reads `GET /api/version` and refuses to start while the server lacks a capability one of the jobs it offers declares (`JOB_CAPABILITIES`, `src/route-level.ts`; the integrator's jobs need `projects.commit-identity.v1`, `plans.integration.v1` and `runners.scoped-token.v1`; the review job needs the review skip, `reviews.skip.v1` and `reviews.skip-as-runner.v1`, beside the binding and the unparsable route; the criteria-review job needs the criteria-review routes, `reviews.criteria-review.v1`; every other job, the integrator's included, needs the run skip it reports a job it gives up to, `runners.run-skip.v1`), naming the missing capabilities and the deploy to run, so a runner that would fail its calls one by one stops at once instead. The runner gives each opencode run a data folder of
 its own (`XDG_DATA_HOME`) beside the workspace, removed as the harness ends,
 however it ends: opencode processes sharing
 `~/.local/share/opencode/opencode.db` deadlock on it. The shipped
@@ -387,10 +387,17 @@ named variable that holds the owner's Atelier token is withheld, and the
 runner says so. After a successful harness exit with a new commit,
 the runner calls `finish` to push, run required checks, and submit. Failure
 releases a claim only when no new commit was made. Otherwise the claim stays
-in place for inspection. Two counters are kept for each project and task id,
+in place for inspection. A provider's usage limit is the exception: the claim
+is released even with commits, which stay in the workspace, so the same work
+resumes after the reset (see [Provider usage limits](#provider-usage-limits)). Two counters are kept for each project and task id,
 across revision changes. The task counter never resets. Two task failures,
 including harness failures and finish failures other than exit 4, skip the
-task for the rest of the process. A separate counter skips it after three consecutive infrastructure failures,
+task for the rest of the process. A review's failures count under the review
+it answered (its head and request number), and a criteria review's under that
+review's request number (`failureKey` in `cli/runner.mjs`), never under the
+task: two failed reviews of a task's criteria skip that review alone, and the
+task's build, and the next criteria review the owner asks for after editing
+them, are still taken. A separate counter skips it after three consecutive infrastructure failures,
 including claim errors other than refusals, workspace preparation errors,
 HEAD read errors after successful harness exits, and finish exit 4. This
 counter resets on a task failure, success, claim refusal or validation skip. Claim refusals and validation skips do not
@@ -423,6 +430,44 @@ its own (`setsid`) leaves the group and is not ended. SIGINT stops polling and
 interrupts the active child process. A second interrupt kills every group at
 once and exits.
 
+### Reload on deploy
+
+Runners no longer need restarting after a deploy (t265). Between jobs, after
+a poll that claimed nothing, a runner (build, review or the integrator) reads
+the deployed commit from `GET /api/version`. When the commit it started from
+does not contain the deployed one, and the checkout it runs from (the folder
+holding `cli/atelier.mjs`) now does, it logs `runner: reloading: started from
+OLD, the server runs NEW; starting replacement runner …` and spawns the
+same command line with the same environment. The replacement initializes,
+signals ready over IPC, and waits for the old process to release it before
+polling for work. The old process waits for the attached replacement to exit
+and forwards every SIGINT, SIGTERM and SIGHUP, including during startup.
+The replacement has its own process group so terminal signals reach it once.
+It has a new pid; Ctrl-C and session end still stop it.
+The new process logs `runner: reloaded: was OLD, now NEW`. Until the checkout
+holds the deployed commit it logs once `runner: behind: …`, with the `git -C
+CHECKOUT pull --ff-only` that updates it, and reloads at its first idle poll
+after the pull. It never reloads mid-job (while it holds a claim, a review, a
+merge, a refresh or a check), nor while a skip report waits to be sent, nor
+under `--once`. A process started from a commit that contains the deployed
+one never reloads, so a reloaded runner, or one whose checkout is ahead of
+the deploy, does not reload again. A version endpoint that does not answer
+or names no commit means no reload. A re-exec that fails logs `runner: reload
+failed: …` and the old process runs on; it is tried again only after the
+next deploy, or restart it by hand.
+
+Reloading works on all supported Node versions (24 and later), without
+`process.execve`. If spawning fails, initialization exits, or readiness takes
+longer than 60 seconds, the old runner logs the failure and keeps running.
+A replacement that times out is killed before the old runner resumes.
+For supervisors configured to restart on exit (including launchd with
+KeepAlive), explicitly set `ATELIER_RUNNER_SUPERVISED=1`. The idle runner
+then logs the old and target commits and exits; the supervisor starts the
+same command from the updated checkout, without a competing child.
+`XPC_SERVICE_NAME` alone does not enable this mode. The supervisor owns
+startup failures in this mode. Terminal runners retain the readiness fallback
+described above; losing their waiting parent also stops the replacement.
+
 Save a config at `~/.config/atelier/runner.json`, or select one with `--config PATH`:
 
 ```json
@@ -453,7 +498,7 @@ runner starts the command inside the review clone, which need not hold it.
 
 Agent ids are `opencode`, `claude-code`, `codex`, `zcode`, `gemini-cli` or `antigravity`. Set model ids
 and command arguments to match the installed harness. Commands are argv
-arrays with `{model}` and `{brief_file}` placeholders. For a build job, `{workspace}` is the claimed workspace. For a plan job, `{plan_file}` is where the harness writes the plan document. For a review job, `{diff_file}` is the diff to review and `{verdict_file}` is where the harness writes its verdict. The runner invokes them directly without a shell. The example requires that
+arrays with `{model}` and `{brief_file}` placeholders. For a build job, `{workspace}` is the claimed workspace. For a plan job, `{plan_file}` is where the harness writes the plan document. For a review job, `{diff_file}` is the diff to review and `{verdict_file}` is where the harness writes its verdict; a criteria-review job uses the same two, with a `{diff_file}` that says there is no diff, so a config listing `criteria-review` names a command with `{verdict_file}`. The runner invokes them directly without a shell. The example requires that
 model to be configured in opencode. `env` is optional: the names of the
 runner's variables this harness also gets, such as a provider key it reads or
 `XDG_CONFIG_HOME`; a name starting with `ATELIER_` is refused. A runner started
@@ -651,11 +696,18 @@ is a refusal, not a request to silently weaken an adapter's confinement.
 
 Build stdout is captured while it streams. A final report that required checks
 could not run records `validation_blocked` rather than a model test failure.
-The build brief asks for a `validation_blocked: why` line; a report that says
-it unasked counts only when it names the checks beside the failure to run them
-("could not run npm test", "the tests could not be run") or an environment
-error beside a failed check ("npm test failed: listen EPERM"). Mentioning
-`validation_blocked` or "did not run any atelier command" in passing does not.
+The build brief tells a builder to run the tests for the files it changes and
+the typecheck, not the full suite, which the clean-clone checks after the push
+run; to commit when those pass; and to report `validation_blocked: why` only for
+a failure in its own change's tests that it cannot fix (t552). A builder that
+ran the full suite on a loaded host saw it time out and ended
+`validation_blocked` with nothing committed, losing the work. A report that
+says it unasked counts only when it names the checks beside the failure to run
+them ("could not run npm test", "the tests could not be run") or an environment
+error beside a failed check ("npm test failed: listen EPERM"). "Did not run"
+counts only beside such an error, since not running the full suite is what the
+brief asks. Mentioning `validation_blocked` or "did not run any atelier
+command" in passing does not.
 This outcome is excluded from the model reliability penalty.
 The runner does not call `finish`, so it does not push that build. The task page
 shows the report above clean-clone results, with the actor, runner and reason.
@@ -669,3 +721,41 @@ after the head moved, runs its harness and the checks as usual.
 After fixing the harness and running the required checks successfully, the
 operator can remove this marker to resume. Changing the command configuration
 alone does not clear a blocked validation report or prove that checks passed.
+
+### Provider usage limits
+
+The shipped adapters (`bin/harness/atelier-*.mjs`) read a provider's usage
+limit from the harness's captured output and end with exit status **75** and,
+as the last line of standard error, `ATELIER_PROVIDER_LIMIT {json}` naming the
+harness, the reason and the reset instant. A runner config's own command is
+judged by its exit status alone; only these adapters emit it.
+
+Only a nonzero exit can report a limit. The adapters request structured output
+and inspect Claude's `result` with `is_error: true`, Codex's `error` event,
+opencode's `error` event with an `APIError`, or antigravity's provider error
+with code 429 or status `RESOURCE_EXHAUSTED`. Answer text, generic JSON error
+examples, plain diagnostics, authentication errors and timeouts are not limits.
+A zero exit never pauses the runner, regardless of its output.
+
+For build, merge-main, plan and review jobs the runner records an infrastructure
+event, changes no model reliability and neither failure counter, keeps the
+commits and the dispatch and request details, and releases the claim (a plan
+part's release is not an attempt). It pauses every model of that harness in the
+runner process and leaves them out of queue offers until the reset; other
+harnesses continue, and the harness resumes by itself with no redispatch. The
+pause is kept across runner restarts; the log and runner status show the
+harness, the reason and the reset instant. Other runner processes and shared
+accounts are not coordinated.
+
+The reset is read from an epoch, an explicit offset, or a relative duration
+("in 2 hours", "retry after 120"); an unzoned date or time is read in the
+message's named zone or the runner's (`TZ`), and a time alone means its next
+occurrence. A message with no reset, one that cannot be read (an unknown zone,
+February 31st), a dated reset already past, or one more than eight days
+away (`MAX_PAUSE_DAYS`) pauses the harness for the **60-minute fallback**,
+counted from when the runner saw the limit.
+
+To tell a limit from an answer, the adapter reads the harness's whole output:
+a build, plan or review run under it is piped rather than inherited, so what
+the harness printed reaches the runner's log once the harness ends, not as it
+is written.

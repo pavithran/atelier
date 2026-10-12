@@ -461,6 +461,7 @@ test("parseVerdict: the format the brief asks for, exactly as REPLY_FORMAT shows
   assert.deepEqual(ok(example), {
     ok: true, verdict: "approve", summary: "One sentence on what you checked and what you found.",
     findings: [{ file: "src/example.ts", line: 12, severity: "follow-up", text: "What is wrong, and why it matters." }],
+    checks: [],
   });
   // The format a change with criteria is asked for (replyFormat) carries the
   // same lines and one CRITERION line, and its own example parses with the
@@ -471,6 +472,7 @@ test("parseVerdict: the format the brief asks for, exactly as REPLY_FORMAT shows
   assert.deepEqual(ok(asked, 1), {
     ok: true, verdict: "approve", summary: "One sentence on what you checked and what you found.",
     findings: [{ file: "src/example.ts", line: 12, severity: "follow-up", text: "What is wrong, and why it matters." }],
+    checks: [],
   });
 });
 
@@ -501,7 +503,7 @@ test("parseVerdict: refuses an approval whose criteria are missing, unmet or mis
   // A line for a criterion the brief does not carry, one that is not a
   // statement of met or unmet, one with no proof, and two that disagree.
   refusedWith(["VERDICT: APPROVE", "SUMMARY: One.", met(1), "CRITERION 3: met — Extra."].join("\n"), /CRITERION 3 is not one of the 2 acceptance criteria the brief numbers/, 2);
-  refusedWith(["VERDICT: APPROVE", "SUMMARY: One.", met(1), "CRITERION 2: maybe — Ran it."].join("\n"), /a CRITERION line gives the criterion's number, met or unmet, and how it was proved/, 2);
+  refusedWith(["VERDICT: APPROVE", "SUMMARY: One.", met(1), "CRITERION 2: maybe — Ran it."].join("\n"), /a CRITERION line gives the criterion's number, met, unmet or deferred, and how it was proved/, 2);
   refusedWith(["VERDICT: APPROVE", "SUMMARY: One.", met(1), "CRITERION 2: met"].join("\n"), /a CRITERION line ends with how the criterion was proved/, 2);
   refusedWith(["VERDICT: APPROVE", "SUMMARY: One.", met(1), `${met(2)}\nCriterion 2: unmet — Actually it fails.`].join("\n"), /proves criterion 2 both met and unmet/, 2);
   // The same criterion proved met twice is one answer.

@@ -24,7 +24,7 @@ export default async function runnerCommand() {
   if (args._[1] === "setup") return setupRunner();
   if (args.discover === true) return discoverModels();
   if (args.usage === true) return reportUsage();
-  const { runRunner } = await import("../runner.mjs");
+  const { reexecSelf, runRunner, runnerCheckout } = await import("../runner.mjs");
   // The runner's own server calls for plan jobs and parts, as the queue's:
   // fetches under the runner's token, naming the assignment's actor. They
   // throw rather than die, so the runner's loop decides what a failure
@@ -37,8 +37,12 @@ export default async function runnerCommand() {
       credential: apiToken(),
       api: { server, I },
       workspacePath,
-      // The server's route level against the CLI's, checked once at start:
-      // a server behind this CLI would fail the runner's calls one by one.
+      // An idle runner reloads itself from this checkout once it holds the
+      // deployed commit (t265), handing off to an initialized replacement.
+      reload: { checkout: runnerCheckout(), reexec: reexecSelf },
+      // The server's route level against the CLI's, checked at start: a
+      // server behind this CLI would fail the runner's calls one by one. An
+      // idle runner reads it again for the deployed commit (t265).
       // A server that cannot be read is refused as land refuses it, with
       // the same "does not answer" message (GET /api/version is public).
       async version(signal) {
@@ -70,6 +74,18 @@ export default async function runnerCommand() {
         const incomplete = res.headers.get("x-atelier-incomplete");
         if (incomplete) console.log(`Could not read: ${incomplete}. Tasks waiting there are not listed.`);
         return res.json();
+      },
+      // A busy runner's heartbeat (t537): its offer, marked as a heartbeat,
+      // renews its last poll while a job runs, so the claim it builds under
+      // is not taken for one its runner orphaned. Nothing is offered back.
+      async heartbeat(offer, signal) {
+        await resolveTokenActor();
+        const res = await fetch(server() + "/api/queue", {
+          method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+          headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER, "content-type": "application/json" },
+          body: JSON.stringify({ ...offer, heartbeat: true }),
+        });
+        if (!res.ok) throw new Error(`heartbeat: ${res.status}`);
       },
       hasPreparation,
       async jobBrief(project, id, actor) {

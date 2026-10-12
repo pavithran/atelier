@@ -17,7 +17,7 @@ import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, 
 import { briefFor, cleanSummary } from "./brief.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
-import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type ShownProject, type Standing } from "./ui";
+import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, type ModelEntry, type PoolFamily } from "./models/pool";
@@ -35,6 +35,7 @@ import { addTally, buildStory, emptyTally, VENDOR_NAMES, type Story } from "./gr
 import { buildPulse } from "./pulse";
 import { projectKind } from "./kind";
 import { assign, parseRunner, unclaimed, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
+import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
 import { attentionFor } from "./attention.ts";
 import { readStanding, type StandingSource } from "./standing-read.ts";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
@@ -721,11 +722,11 @@ function singleFamilyArg(value: unknown): PoolFamily | null {
 // A transient failure is retried (artifactsStep). A token whose answer was
 // lost stays unrecorded and unreturned, so its plaintext reaches no one,
 // as a caller's own retry would leave it.
-async function mint(env: Env, repo: string, scope: "read" | "write", branch: string) {
+async function mint(env: Env, repo: string, scope: "read" | "write", branch: string, ttl = scope === "write" ? WRITE_TTL : READ_TTL) {
   return artifactsStep(`make a ${scope} token for ${repo}`, async () => {
     using r = await env.ARTIFACTS.get(repo);
     const info = await r.info();
-    const t = await r.createToken(scope, scope === "write" ? WRITE_TTL : READ_TTL);
+    const t = await r.createToken(scope, ttl);
     return { remote: info.remote, token: t.plaintext, tokenId: t.id, expiresAt: t.expiresAt, defaultBranch: branch };
   }, (err) => NOT_FOUND.test(codeOf(err)));
 }
@@ -1081,6 +1082,19 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // the models live runners offer (src/plans/route.ts). The same call on
     // the index returns the projects to read.
     const projects = (await index(env).askQueue(offer, new Date().toISOString())).filter((p) => inScope(c.token, namesOf(p)));
+    // Every runner's last poll, this one's included, goes to each project,
+    // where a claim whose runner stopped polling holds no other dispatch
+    // (t537, orphanedBy in src/dispatch/rules.ts).
+    const polls = projects.length ? (await index(env).runnerOffers()).map(({ runner, at }) => ({ runner, at })) : [];
+    // A runner mid-job polls nothing, so it POSTs its offer with
+    // `heartbeat: true` while the job runs (cli/runner.mjs): recorded as a
+    // poll is, and passed to every project, it keeps the claim it is
+    // building under holding. It reads no queue and is offered nothing. A
+    // server from before it answers as to a poll, which the runner ignores.
+    if (offer && body.heartbeat === true) {
+      await Promise.all(projects.map((p) => ledgerOf(env, p).recordRunnerPolls(polls).catch(() => {})));
+      return json([]);
+    }
     const indexed = Date.now();
     const unreadable: string[] = [];
     // One call per project reads both its waiting tasks and its open review requests.
@@ -1091,8 +1105,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // over settles it, finishing the commits the dead run made, before
         // it starts new work.
         const L = ledgerOf(env, p);
-        if (c.token?.runner && offer) await L.runnerPoll(c.token, offer);
-        const [held, { waiting, reviews }] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), L.queued()]);
+        // A runner token's poll records the polls and its offer, and is
+        // answered from them in the same call. The claim check reads the
+        // same record of the polls, kept current by every poll and
+        // heartbeat, so it judges an orphaned claim as the queue does (t540).
+        const queue = c.token?.runner && offer ? await L.runnerPoll(c.token, offer, polls) : null;
+        const [held, { waiting, reviews }] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), queue ?? L.queued(polls)]);
         return [...held, ...waiting, ...reviews].map((item) => ({ project: p.name, item }));
       }
       catch { unreadable.push(p.name); return []; }
@@ -1150,12 +1168,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       try { return await action(); }
       catch (error) { unavailable.push(`${source}: ${String((error as Error).message ?? error)}`); return null; }
     }
-    const [snapshot, offers, runs, projects] = await Promise.all([
-      read<Snapshot>("project ledger", () => L.stuckSnapshot()),
+    // The runner offers are read first and recorded in the project's ledger
+    // as its snapshot is taken, so the report judges orphaned claims with the
+    // polls the queue and the claim check read at that moment (t540).
+    const [offers, runs, projects] = await Promise.all([
       read("runner offers", () => index(env).runnerOffers()),
       read("run reports", () => index(env).runs(Number.MAX_SAFE_INTEGER)),
       read("project index", () => index(env).projects()),
     ]);
+    const snapshot = await read<Snapshot>("project ledger", () => L.stuckSnapshot(offers?.map(({ runner, at }) => ({ runner, at }))));
     if (snapshot) await Promise.all(snapshot.workflows.map(async (w) => {
       const status = await read(`Workflow ${w.record.instance}`, async () => (await (await env.LANDING_WORKFLOW.get(w.record.instance)).status()).status);
       w.status = status ?? "unknown";
@@ -1236,6 +1257,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       ...(has("eligible") ? { eligible: asStrings(body.eligible, "eligible") } : {}),
       ...(has("refuseOverlap") ? { refuseOverlap: Boolean(body.refuseOverlap) } : {}),
       ...(has("requireCriteria") ? { requireCriteria: Boolean(body.requireCriteria) } : {}),
+      ...(has("requireCriteriaReview") ? { requireCriteriaReview: Boolean(body.requireCriteriaReview) } : {}),
       // The core-file globs the queue holds overlapping dispatches on; [] clears them.
       ...(has("coreFiles") ? { coreFiles: asStrings(body.coreFiles, "coreFiles") } : {}),
       ...(has("sandboxOnly") ? { sandboxOnly: Boolean(body.sandboxOnly) } : {}),
@@ -1455,6 +1477,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // part's (docs/orchestrator.md, sections 2 and 3). An agent token reaches
   // it (agentRoute), and the Ledger gives it to the holder alone.
   if (verb === "job-brief" && parts.length === 5 && m === "GET") return json(await L.jobBrief(id, actor));
+  // Where the review of the item's acceptance criteria stands (t438): the
+  // status, every criteria review and every resolution of a finding.
+  if (verb === "criteria-reviews" && parts.length === 5 && m === "GET") return json(await L.criteriaReviewView(id));
   if (verb === "sandbox" && parts[5] && m === "GET") {
     // A run id is `${key}:${item}:${head}:${ms}`, and a project's key may
     // hold a colon (only new names are refused one), so the prefix alone can
@@ -1615,6 +1640,21 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // machine it runs (t451); null when the project names none yet.
         commitIdentity: p.policy.commitIdentity ?? null,
       });
+    }
+    case "owner-port-token": {
+      requireOwner(env, actor);
+      const { item, generation, replaces } = await L.reserveOwnerPort(id, actor);
+      await revoke(env, item.fork, replaces);
+      const t = await mint(env, item.fork!, "write", await projectBranch(env, await L.project()), 300);
+      try {
+        if (!await L.recordOwnerPortToken(id, actor, generation, replaces, t.tokenId, t.expiresAt)) {
+          throw new RuleError("claim_superseded", `${id} changed while the port token was made; no token was issued`, 409);
+        }
+      } catch (error) {
+        await revoke(env, item.fork, t.tokenId);
+        throw error;
+      }
+      return json({ remote: t.remote, token: t.token, expiresAt: t.expiresAt, defaultBranch: t.defaultBranch });
     }
     case "read-token": {
       const item = await L.item(id);
@@ -1845,11 +1885,25 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         ...(body.request !== undefined ? { request: Number(body.request) } : {}),
         approve: Boolean(body.approve), note: String(body.note ?? ""), at: new Date().toISOString(),
         ...(body.findings !== undefined ? { findings: body.findings } : {}),
+        // A pre-review verdict is judged against main's head as the baseline
+        // holds it now, which only the Worker can read (t524).
+        ...(isPrereviewRequest(Number(body.request)) ? { mainNow: await mainHeadOf(env, L) } : {}),
       }, c.url.origin, !!c.token, "api");
       return json(await L.detail(id));
     }
     case "review-claim": {
-      const claim = await L.claimReview(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token) as unknown as ReviewClaim;
+      // A pre-review claim is bound to main's head as the baseline holds it
+      // now (t524), which the Ledger cannot read: it refuses with main_unread,
+      // having changed nothing, and the claim is made again with the head
+      // read here. Any other claim never reads the baseline.
+      const runner = parseRunner(req.headers.get("x-atelier-runner"));
+      let claim: ReviewClaim;
+      try {
+        claim = await L.claimReview(id, actor, runner, !!c.token) as unknown as ReviewClaim;
+      } catch (err) {
+        if (parseRuleError(err)?.code !== "main_unread") throw err;
+        claim = await L.claimReview(id, actor, runner, !!c.token, await mainHeadOf(env, L)) as unknown as ReviewClaim;
+      }
       // The review's diff, kept in R2 by reference when the change is too
       // large for a brief (t284): the claim hands the reference to the
       // runner, and the brief carries it instead of the diff's text. The
@@ -2243,7 +2297,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       await L.checkRelease(id, actor, note);
       const before = await L.item(id);
       await revoke(env, before.fork, oldToken);
-      const item = await L.release(id, actor, note, !!c.token, oldToken);
+      // Only a runner credential can exempt this release from plan attempts;
+      // neither an actor nor a free-text note establishes infrastructure failure.
+      const item = await L.release(id, actor, note, !!c.token, oldToken, !!c.token?.runner && body.providerLimit === true);
       return json(item);
     }
     case "accept": {
@@ -2344,6 +2400,44 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const { head, index, verdict, note } = cleanFinding(body);
       const { review, by, event } = await L.addFinding(id, actor, head, index, verdict, note, { reviewSeq: body.reviewSeq, reviewer: body.reviewer }, c.acting ?? null);
       return json({ id, head, index, verdict, review, by, event, ...(c.acting ? { acting: c.acting } : {}) }, 201);
+    }
+    // Criteria review (t438, src/review/criteria.ts): the owner asks for a
+    // review of the task's acceptance criteria, naming the reviewer or
+    // letting the pool pick one of another family than every model author.
+    case "criteria-review-request": {
+      requireOwner(env, actor);
+      const reviewer = body.reviewer === undefined || body.reviewer === null || body.reviewer === "" ? null : String(body.reviewer);
+      return json(await L.requestCriteriaReview(id, actor, reviewer, await index(env).models(), !!c.token));
+    }
+    // The reviewer's runner claims the open criteria review and gets the
+    // brief, the revision and binding its verdict must name, and the review's id.
+    case "criteria-review-claim":
+      return json(await L.claimCriteriaReview(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token));
+    // The reviewer's verdict on the criteria review it claimed, bound to the
+    // revision and binding the claim gave; a stale one is refused.
+    case "criteria-review": {
+      if (typeof body.rev !== "number" || !Number.isInteger(body.rev)) throw new RuleError("bad_request", "rev must be the revision the criteria review claim gave", 400);
+      if (typeof body.request !== "number" || !Number.isInteger(body.request)) throw new RuleError("bad_request", "request must be the criteria review's id, as the claim gave it", 400);
+      return json(await L.addCriteriaReview({
+        itemId: id, by: actor, rev: body.rev, criteria: String(body.criteria ?? ""), request: body.request,
+        approve: Boolean(body.approve), summary: String(body.note ?? body.summary ?? ""),
+        ...(body.findings !== undefined ? { findings: body.findings } : {}),
+        ...(body.checks !== undefined ? { checks: body.checks } : {}),
+      }, !!c.token));
+    }
+    // A claimed criteria review that reached no verdict: the harness failed,
+    // timed out or wrote a reply no verdict could be read from.
+    case "criteria-review-failed": {
+      if (typeof body.request !== "number" || !Number.isInteger(body.request)) throw new RuleError("bad_request", "request must be the criteria review's id, as the claim gave it", 400);
+      return json(await L.failCriteriaReview(id, actor, body.request, String(body.note ?? ""), !!c.token));
+    }
+    // The owner's answer to one finding of a criteria review.
+    case "criteria-finding": {
+      requireOwner(env, actor);
+      if (typeof body.review !== "number" || !Number.isInteger(body.review)) throw new RuleError("bad_finding", "--review must be the criteria review's id", 400);
+      if (typeof body.index !== "number" || !Number.isInteger(body.index) || body.index < 1) throw new RuleError("bad_finding", "--index must be the finding's position in the review, one based", 400);
+      const note = String(body.note ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+      return json(await L.resolveCriteriaFinding(id, actor, body.review, body.index, String(body.verdict ?? ""), note), 201);
     }
   }
   throw new RuleError("not_found", "no such route", 404);
@@ -2647,17 +2741,23 @@ function isHeld(item: Item): boolean {
   return item.state === "claimed" && !!item.owner;
 }
 
+// A review request in the queue: a gate review, or a pre-review (t524),
+// which the queue lists beside them. Neither is a build, so neither carries
+// a build's reasons for not being taken.
+const reviewJob = (item: Item): boolean => item.dispatch?.job === "review" || item.dispatch?.job === PREREVIEW_JOB;
+
 // Why each queued dispatch the owner's listing shows is not being taken,
 // attached as `why` so `atelier status` and `atelier show` say it: the core
 // file hold, overlap refusal and refused claims the Ledger already read
 // beside it, the live runners that gave it up after failing it (from the run
 // reports), and the model or job no live runner offers (unclaimed in
 // src/dispatch/rules.ts); asked by one runner (`offer`), also a dispatch
-// meant for another. A review request is listed apart, so it carries none.
+// meant for another. A review or pre-review request is listed apart, so it
+// carries none.
 async function queueWhy(env: Env, queued: { project: string; item: Item & { held?: CoreHold; overlap?: OverlapRefusal; refusals?: ClaimRefusal[]; skips?: RunSkip[] } }[], offer: RunnerOffer | null = null, runner: string | null = null): Promise<{ project: string; item: (Item | RunnerWhyItem) & { why?: UnclaimedReason[] } }[]> {
   // Each waiting dispatch's build runs since it was dispatched, read task by
   // task, so the newest reports of other tasks never push its failures out.
-  const asks = queued.flatMap(({ project, item }) => item.dispatch && item.dispatch.job !== "review" ? [{ project, item: item.id, since: item.dispatch.at }] : []);
+  const asks = queued.flatMap(({ project, item }) => item.dispatch && !reviewJob(item) ? [{ project, item: item.id, since: item.dispatch.at }] : []);
   const [offers, runs] = await Promise.all([index(env).runnerOffers(), asks.length ? index(env).buildRunsSince(asks) : []]);
   // Asked under a runner token, the reasons are built from that runner's own
   // refusals, skips and run reports only, and each entry is cut to what the
@@ -2666,7 +2766,7 @@ async function queueWhy(env: Env, queued: { project: string; item: Item & { held
   const mine = <T extends { runner: string }>(list: readonly T[] | undefined) => list && runner ? list.filter((r) => r.runner === runner) : list ?? null;
   const reports = mine(runs.map((r) => ({ project: r.project, item: r.item, role: r.role, outcome: r.outcome, runner: r.runner, at: r.at }))) ?? [];
   return queued.map(({ project, item }) => {
-    if (item.dispatch?.job === "review") return { project, item: runner ? runnerWhyItem(item, undefined) : item };
+    if (reviewJob(item)) return { project, item: runner ? runnerWhyItem(item, undefined) : item };
     const why = unclaimed(item, { held: item.held ?? null, overlap: item.overlap ?? null, refusals: mine(item.refusals), skips: mine(item.skips), offers, runs: reports, project, offer });
     if (runner) return { project, item: runnerWhyItem(item, why) };
     // Always carried, empty when nothing holds it, so the CLI can tell this
@@ -2932,6 +3032,68 @@ async function projectViews(env: Env): Promise<{ projects: ProjectRecord[]; view
   return { projects, views };
 }
 
+// A request that failed, answered for its audience: the API in JSON, a page
+// with the error page.
+function failed(err: unknown, req: Request, url: URL, pathname: string, env: Env): Response {
+  const rule = parseRuleError(err);
+  // The error page keeps the owner's name on the pages only the owner
+  // reads; the public pages keep it to themselves (finding 18).
+  const who = ["/", "/how", "/showcase", "/login", "/live.js"].includes(pathname) ? null : ownerName(env);
+  // Go back leads the owner to Home and anyone else to the public front.
+  const back = who === null ? "/" : "/home";
+  if (rule) {
+    return url.pathname.startsWith("/api/")
+      ? json({ error: rule.code, detail: rule.detail }, rule.status)
+      : html(renderError(rule.detail, back, who), rule.status);
+  }
+  // An Error logged as an object reaches Workers Logs as a stack with no
+  // message, so the line names the request, the code and the message.
+  console.error(errorLine(`${req.method} ${pathname}`, err));
+  // A Durable Object reset or overloaded says a retry may cure it.
+  if (retryableByRuntime(err)) {
+    const detail = "Atelier was briefly unable to reach its records; try again";
+    return url.pathname.startsWith("/api/") ? json({ error: "unavailable", detail }, 503) : html(renderError(detail, back, who), 503);
+  }
+  return url.pathname.startsWith("/api/") ? json({ error: "internal", detail: "The operation could not be completed. Retry or inspect the server logs." }, 500) : html(renderError("Atelier could not complete this request. Refresh to retry; no success has been confirmed.", back, who),500);
+}
+
+// What waits on the owner in each project, placed by attentionFor from the
+// project's inbox: the Decisions list and the bar's count read this one.
+async function ownerAttention(env: Env, views: ProjectView[], now: Date) {
+  const [offers, pool] = await Promise.all([offersOf(env), poolOf(env)]);
+  return Promise.all(views.map(async (v) => {
+    if (v.unavailable) return attentionFor(v.project.name, null, null, offers, now);
+    const inbox = await ledgerOf(env, v.project).inbox(now.toISOString(), pool).catch(() => null);
+    return attentionFor(v.project.name, v.items, inbox, offers, now);
+  }));
+}
+
+// The owner's bar on every owner page (src/ui.ts page): the Decisions count,
+// one per task waiting on the owner as the Decisions list counts them, said
+// as uncertain where a project was not read in full, and the projects for
+// the switcher with their task and waiting counts. Under /p/NAME the bar's
+// project row is drawn from the address when the page's body drew none, as
+// an error or an empty repository does not. A page whose bar cannot be read
+// is still served, with no count and no list.
+async function withShell(env: Env, url: URL, res: Response): Promise<Response> {
+  if (!(res.headers.get("content-type") ?? "").startsWith("text/html")) return res;
+  const body = await res.text();
+  if (!hasShell(body)) return new Response(body, res);
+  const shell = await (async (): Promise<Shell> => {
+    const { views } = await projectViews(env);
+    const attention = await ownerAttention(env, views, new Date());
+    const [first, name, ...rest] = url.pathname.split("/").slice(1).map((part) => { try { return decodeURIComponent(part); } catch { return part; } });
+    const at = first === "p" ? views.find((v) => v.project.name === name)?.project : undefined;
+    return {
+      here: at ? { project: at, ...projectPageAt(rest.filter(Boolean)) } : null,
+      waiting: attention.reduce((n, a) => n + a.owner.length, 0),
+      incomplete: views.some((v) => v.unavailable) || attention.some((a) => a.unknown.length > 0),
+      projects: views.map((v, i) => ({ name: v.project.name, title: titleOf(v.project), tasks: v.unavailable ? null : v.items.length, waiting: v.unavailable ? null : attention[i].owner.length })),
+    };
+  })().catch((err) => { console.error(errorLine("owner bar", err)); return null; });
+  return new Response(shell ? fillShell(body, shell) : body, res);
+}
+
 // Home, the portfolio: each project's card reads its recent record (the two
 // weeks of moves), its own inbox (what waits on the owner there) and the
 // showcase setting, which the card carries.
@@ -3048,12 +3210,7 @@ async function decisionsPage(c: Ctx, live: { nonce: string; refresh: number }): 
       return buildStory(v.project.name, v.items, events, owner, events.length >= STORY_EVENTS, titleOf(v.project));
     } catch { return null; }
   };
-  const [offers, pool] = await Promise.all([offersOf(env), poolOf(env)]);
-  const attention = await Promise.all(views.map(async (v) => {
-    if (v.unavailable) return attentionFor(v.project.name, null, null, offers, now);
-    const inbox = await ledgerOf(env, v.project).inbox(now.toISOString(), pool).catch(() => null);
-    return attentionFor(v.project.name, v.items, inbox, offers, now);
-  }));
+  const attention = await ownerAttention(env, views, now);
   const first = attention.flatMap((a) => a.owner.map((t) => ({ project: a.project, itemId: t.id })));
   const queued = views.flatMap((v) => v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch).map((item) => ({ project: v.project, item })));
   const projectName = c.url.searchParams.get("project") ?? first[0]?.project;
@@ -3332,7 +3489,10 @@ export default {
           ? token?.runner ?? parseRunner(req.headers.get("x-atelier-runner"))?.runner ?? null : null;
         const noteRefusal = async (error: unknown) => {
           const rule = parseRuleError(error);
-          if (!claimRunner || !ref || !rule || rule.status >= 500) return;
+          // A claim that lost the race to a hold (held, t540) is no
+          // refusal: the queue stops offering the task while the hold
+          // stands, and offers it again once it clears.
+          if (!claimRunner || !ref || !rule || rule.status >= 500 || rule.code === "held") return;
           try { await ledger(env, ref.key).noteClaimRefusal(parts[4], claimRunner, actor, rule.code, rule.detail, token?.runner ? token : undefined); }
           catch (e) { console.error("claim refusal not recorded", String(e)); }
         };
@@ -3351,7 +3511,11 @@ export default {
             // its poll was offered, checked as that job's run report is.
             else if (parts[5] === "run-skip") await ledger(env, ref.key).assertRunnerReport(token, parts[4], actor, input.role === "plan" ? "plan" : "build");
             else {
-              try { await ledger(env, ref.key).assertRunnerJob(token, parts[4], actor, parts[5] === "claim"); }
+              // A claim is judged from the runners' polls as the index has
+              // them now, recorded first in the project's one record of them
+              // (t540), as the queue, atelier queue and atelier stuck judge.
+              const polls = parts[5] === "claim" ? (await index(env).runnerOffers()).map(({ runner, at }) => ({ runner, at })) : undefined;
+              try { await ledger(env, ref.key).assertRunnerJob(token, parts[4], actor, parts[5] === "claim", polls); }
               catch (error) { await noteRefusal(error); throw error; }
             }
             // The authenticated runner, never a caller-selected identity, goes to the atomic claim.
@@ -3400,35 +3564,18 @@ export default {
         // and is served as signed in (t534). A form post is not a sign-in:
         // it is sent to /login, as before, which starts the session there.
         if (access && (req.method === "GET" || req.method === "HEAD")) {
-          return await accessSignIn(req, env, url, url.pathname + url.search, () => ui({ env, req, url, actor: ownerActor(env), body: null, signedIn: true, access: true }, parts));
+          return await accessSignIn(req, env, url, url.pathname + url.search, async () => withShell(env, url, await ui({ env, req, url, actor: ownerActor(env), body: null, signedIn: true, access: true }, parts).catch((err) => failed(err, req, url, pathname, env))));
         }
         return Response.redirect(new URL("/login", url).toString(), 303);
       }
       if (typeof how === "object") return how.runner ? json({ error: "runner_forbidden", detail: runnerDenied(how).message }, 403) : html("Agent tokens cannot use browser routes.", 403);
       // Every request past the check above is one Access vouched for, where
       // the server names its Access team.
-      return await ui({ env, req, url, actor: ownerActor(env), body: null, signedIn: how === "ui", access: access !== null }, parts);
+      // An owner page that fails is answered with the error page in the
+      // same bar, filled as every owner page is.
+      return await withShell(env, url, await ui({ env, req, url, actor: ownerActor(env), body: null, signedIn: how === "ui", access: access !== null }, parts).catch((err) => failed(err, req, url, pathname, env)));
     } catch (err) {
-      const rule = parseRuleError(err);
-      // The error page keeps the owner's name on the pages only the owner
-      // reads; the public pages keep it to themselves (finding 18).
-      const who = ["/", "/how", "/showcase", "/login", "/live.js"].includes(pathname) ? null : ownerName(env);
-      // Go back leads the owner to Home and anyone else to the public front.
-      const back = who === null ? "/" : "/home";
-      if (rule) {
-        return url.pathname.startsWith("/api/")
-          ? json({ error: rule.code, detail: rule.detail }, rule.status)
-          : html(renderError(rule.detail, back, who), rule.status);
-      }
-      // An Error logged as an object reaches Workers Logs as a stack with no
-      // message, so the line names the request, the code and the message.
-      console.error(errorLine(`${req.method} ${pathname}`, err));
-      // A Durable Object reset or overloaded says a retry may cure it.
-      if (retryableByRuntime(err)) {
-        const detail = "Atelier was briefly unable to reach its records; try again";
-        return url.pathname.startsWith("/api/") ? json({ error: "unavailable", detail }, 503) : html(renderError(detail, back, who), 503);
-      }
-      return url.pathname.startsWith("/api/") ? json({ error: "internal", detail: "The operation could not be completed. Retry or inspect the server logs." }, 500) : html(renderError("Atelier could not complete this request. Refresh to retry; no success has been confirmed.", back, who),500);
+      return failed(err, req, url, pathname, env);
     }
   },
 } satisfies ExportedHandler<Env>;

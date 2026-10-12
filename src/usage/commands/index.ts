@@ -13,6 +13,11 @@ import command_board from "./board.ts";
 import command_check from "./check.ts";
 import command_check_log from "./check-log.ts";
 import command_claim from "./claim.ts";
+import command_criteria_finding from "./criteria-finding.ts";
+import command_criteria_review from "./criteria-review.ts";
+import command_criteria_review_claim from "./criteria-review-claim.ts";
+import command_criteria_review_failed from "./criteria-review-failed.ts";
+import command_criteria_verdict from "./criteria-verdict.ts";
 import command_decide from "./decide.ts";
 import command_decisions from "./decisions.ts";
 import command_defect from "./defect.ts";
@@ -91,6 +96,11 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/check.ts", spec: command_check },
   { path: "src/usage/commands/check-log.ts", spec: command_check_log },
   { path: "src/usage/commands/claim.ts", spec: command_claim },
+  { path: "src/usage/commands/criteria-finding.ts", spec: command_criteria_finding },
+  { path: "src/usage/commands/criteria-review.ts", spec: command_criteria_review },
+  { path: "src/usage/commands/criteria-review-claim.ts", spec: command_criteria_review_claim },
+  { path: "src/usage/commands/criteria-review-failed.ts", spec: command_criteria_review_failed },
+  { path: "src/usage/commands/criteria-verdict.ts", spec: command_criteria_verdict },
   { path: "src/usage/commands/decide.ts", spec: command_decide },
   { path: "src/usage/commands/decisions.ts", spec: command_decisions },
   { path: "src/usage/commands/defect.ts", spec: command_defect },
