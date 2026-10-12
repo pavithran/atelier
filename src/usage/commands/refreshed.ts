@@ -5,7 +5,7 @@ const spec: CommandSpec = {
   capabilities: ["plans.integration.v1"],
   forms: [
     {
-      group: "Agents", line: 4, slot: 50,
+      group: "Agents", line: 5, slot: 50,
       form: "refreshed ID --main-head SHA [--merge-commit SHA]",
       about: "The integrator reports a refresh: main's head, the one the refresh job names, merged into the plan's branch. The server checks the merge commit against the branch before recording it, and it becomes the commit later parts fork from and later integrations build on. Without `--merge-commit` the branch already held main's head, which the server checks.",
     },

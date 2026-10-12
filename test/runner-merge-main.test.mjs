@@ -285,9 +285,13 @@ test("a merge-main task offered back held, its resolution committed, is finished
   assert.deepEqual(calls.filter((c) => c.argv).map((c) => c.argv[0]), ["claim", "finish"]);
 });
 
-test("a merge-main task whose workspace already holds main runs the harness on what came back", async (t) => {
+test("a merge-main task whose workspace already holds main runs the harness on what came back, with the server's context in its brief", async (t) => {
+  // The merge job fetches its brief context as every build does (t438): the
+  // criteria reviews' findings the server holds come between the local brief
+  // and the job's own instructions.
+  const context = "## Review of the acceptance criteria\n\nfinding 1: blocking criterion-1 Fast is not a measurement. [resolution: refuted, 200 ms]";
   const { r, job, io, calls } = fixture(t, {
-    kind: "task", conflict: false,
+    kind: "task", conflict: false, findings: context,
     harness: (cwd) => { commit(cwd, "c.txt", "fix\n", "fix"); return { code: 0 }; },
   });
   git(r.workspace, "fetch", "-q", r.baseline, r.main);
@@ -297,6 +301,9 @@ test("a merge-main task whose workspace already holds main runs the harness on w
   const brief = calls.find((c) => c.brief).brief;
   assert.ok(brief.endsWith("The workspace already holds main at " + r.main.slice(0, 8) + "; no merge was left in progress.\n"));
   assert.ok(brief.includes("## Resolve the merge of main"), brief);
+  assert.ok(calls.some((c) => c.jobBrief), "the merge job fetched its context");
+  assert.ok(brief.includes("npm test") && brief.includes(context), brief);
+  assert.ok(brief.indexOf("npm test") < brief.indexOf(context) && brief.indexOf(context) < brief.indexOf("## Resolve the merge of main"));
 });
 
 test("a merge-main task dispatch with a malformed head is skipped before any claim, and a part still needs its plan", async (t) => {
