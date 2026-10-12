@@ -274,6 +274,13 @@ test("a server reach added to either runner module, in any form, fails the sourc
     ["new WebSocket(server());", /new WebSocket/],
     ["new EventSource(server());", /new EventSource/],
     ["new XMLHttpRequest();", /new XMLHttpRequest/],
+    // Modules named where the scan cannot read them (the pre-review of
+    // 4d82bf99 reached a server with each, past the runtime fetch guard).
+    ['process.getBuiltinModule("node:https").request(new URL(server()));', /getBuiltinModule/],
+    ['createRequire(import.meta.url)("node:http");', /createRequire\(/],
+    ['require("node:http");', /require\(/],
+    ['await import("node:" + "http");', /import\(<not a literal>\)/],
+    ['const m = "undici"; await import(m);', /import\(<not a literal>\)/],
   ];
   for (const [line, form] of FORMS) {
     assert.throws(() => runnerSourceCheck(intoRunner(line), command), form, `cli/runner.mjs lets through: ${line}`);
