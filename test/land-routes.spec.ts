@@ -702,3 +702,38 @@ it("an explicit --reviewer that is a tier model of another family serves the tie
   expect((await L.reviewRequests(id)).filter((r) => r.tier)).toEqual([]);
   expect((await L.reviewWaiting()).map((i) => `${i.dispatch!.agent}/${i.dispatch!.model}`)).toEqual([GPT]);
 });
+
+it("the owner ports an unclaimed fork without claiming it, and is a contributor", async () => {
+  const L = await setup("land-owner-port");
+  const id = (await L.newItem("Port before dispatch", [], "owner")).id;
+  await L.claim(id, OPUS);
+  await L.setFork(id, "port-fork", H0, OPUS);
+  await L.recordPush(id, OPUS, "1".repeat(40), null);
+  await L.release(id, OPUS, "Ready for a port");
+  const before = await L.item(id);
+  await refusal(L.recordPush(id, GPT, "2".repeat(40), null), "closed", /open/);
+  const port = await L.recordPush(id, "owner", "2".repeat(40), null, true);
+  expect(port).toMatchObject({ owner: null, state: "open", head: "2".repeat(40), dispatch: before.dispatch });
+  expect(port.pushActors).toContain("owner");
+  expect((await events(L, id)).find(e => e.kind === "push.observed" && e.actor === "owner")).toMatchObject({ actor: "owner", data: { head: "2".repeat(40) } });
+  await L.claim(id, GPT);
+  expect((await L.item(id)).head).toBe(port.head);
+  await refusal(L.recordPush(id, "owner", "3".repeat(40), null), "not_owner", /does not own/);
+  await L.release(id, GPT, "Blocked port");
+  await L.block(id, "owner", "Needs input");
+  await refusal(L.recordPush(id, "owner", "3".repeat(40), null), "blocked", /Needs input/);
+});
+
+it("an owner port is credited even if the fork notification recorded its head first", async () => {
+  const L = await setup("land-owner-port-seen");
+  const id = (await L.newItem("Port already observed", [], "owner")).id;
+  await L.claim(id, OPUS);
+  await L.setFork(id, "port-seen-fork", H0, OPUS);
+  await L.recordPush(id, OPUS, "1".repeat(40), null);
+  await L.release(id, OPUS, "Port follows");
+  // The recorded head already matches, as when the notification wins the race.
+  await L.recordPush(id, "owner", "1".repeat(40), null, true);
+  await L.recordPush(id, "owner", "1".repeat(40), null, true);
+  expect((await L.item(id)).pushActors).toContain("owner");
+  expect((await events(L, id)).filter(e => e.kind === "push.observed" && e.actor === "owner")).toHaveLength(1);
+});
