@@ -202,6 +202,45 @@ button.primary:hover { background: var(--signal-hot); border-color: var(--signal
   text-decoration: underline; text-underline-offset: 4px;
 }
 .new-task > summary:hover { color: var(--signal); text-decoration-thickness: 2px; background: none; }
+/* The override's disclosure (t457) is a native details on a row of its own,
+   apart from the buttons, and reads as a disclosure: no button border, a
+   chevron that turns when it opens and a hint that changes from "show" to
+   "hide". Safari draws its own marker unless the webkit one is hidden. */
+.override-disclosure { flex-basis: 100%; max-width: 100%; border-top: 1px solid var(--line); padding-top: var(--space-md); }
+.override-disclosure > summary {
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-sm); list-style: none;
+  min-height: var(--ctl-h); padding: 6px 0; border: 0; background: none; color: var(--text);
+  font-weight: 600; cursor: pointer; text-decoration: underline; text-underline-offset: 4px;
+}
+.override-disclosure > summary::-webkit-details-marker { display: none; }
+.override-disclosure > summary:hover { color: var(--signal-hot); }
+.disclosure-marker {
+  display: inline-block; flex: none; width: .55em; height: .55em; margin: 0 .2em;
+  border-right: 2px solid currentColor; border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg); transition: transform var(--motion-tap) var(--curve-tap);
+}
+.override-disclosure[open] > summary .disclosure-marker { transform: rotate(45deg); }
+.disclosure-hint { font-weight: 400; text-decoration: none; }
+.override-disclosure .when-open, .override-disclosure[open] .when-closed { display: none; }
+.override-disclosure[open] .when-open { display: inline; }
+.override-disclosure > form { margin-top: var(--space-lg); padding-left: var(--space-lg); border-left: 2px solid var(--line); }
+.override-disclosure h4 { margin: 0; }
+@media (prefers-reduced-motion: reduce) { .disclosure-marker { transition: none; } }
+/* Where the owner's decision stands (t457): the four parts, each labelled,
+   and the one next move, beside the actions. */
+.owner-state { margin: var(--space-xl) 0 0; }
+.owner-state dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px var(--space-lg); margin: 0; font-size: 14px; }
+.owner-state dl > div { display: contents; }
+.owner-state dt { color: var(--text-muted); font-weight: 600; }
+.owner-state dd { margin: 0; overflow-wrap: anywhere; }
+.next-action { margin: var(--space-md) 0 0; font-size: 15px; }
+.approval-recorded { flex-basis: 100%; margin: 0; color: var(--text); }
+.approval-recorded strong { color: var(--observed); }
+.form-error { font-size: 14px; margin: var(--space-sm) 0 0; max-width: 60ch; }
+.kept-note { flex-basis: 100%; max-width: 60ch; }
+.kept-note p { margin: var(--space-sm) 0 0; }
+.kept-note blockquote { margin: 4px 0 0; padding-left: var(--space-sm); border-left: 3px solid var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 700px) { .owner-state dl { grid-template-columns: 1fr; gap: 2px; } .owner-state dd { margin-bottom: var(--space-sm); } }
 .revision { margin-bottom: var(--space-xl); }
 .review-nav { display: flex; flex-wrap: wrap; gap: 12px 28px; border-block: 1px solid var(--line); padding: var(--space-lg) 4px; margin: 30px 0 var(--space-xxl); }
 .review-nav a { color: var(--text); font-size: 14px; text-decoration: none; }

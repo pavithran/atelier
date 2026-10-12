@@ -15,7 +15,7 @@ import { DISPATCH_NOTE_MAX, notePreview, TEXT_CONTROLS } from "./text.ts";
 import { appliesText, checkClasses, classText, type CheckClass } from "./checks.ts";
 import theme from "./theme.css";
 import layout from "./layout.css";
-import type { ProjectRecord, LedgerEvent } from "./ledger";
+import type { ProjectRecord, LedgerEvent, ReviewerAvailability } from "./ledger";
 import type { FileChange, ItemDiff, Landed } from "./diff";
 import { ago, position, splitActor, staggers, type Bench, type Floor, type MarkKind } from "./floor";
 import { briefFor, submission, type Verdict } from "./brief";
@@ -43,7 +43,7 @@ import type { PartRoute } from "./plans/route.ts";
 // refreshes itself, in seconds, or nothing for the scrubber alone.
 export interface Live { nonce: string; refresh?: number }
 import {
-  bindingOf, confirmationAt, DEFAULT_OWNER, decisionFor, evidenceAt, latestReviews, mergedByOverride, mergedChecksAt, NO_OWNER_FACTOR, OVERRIDE_CONFIRMATION_MS, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey, singleFamily,
+  bindingOf, changeClass, confirmationAt, contributorsOf, countingReviews, DEFAULT_OWNER, decisionFor, evidenceAt, independentApproval, latestReviews, mergedByOverride, mergedChecksAt, NO_OWNER_FACTOR, OVERRIDE_CONFIRMATION_MS, OVERRIDE_REASON_MAX, overrideAt, REASON_MAX, recordedText, stateLabel, modelOf, modelKey, singleFamily,
   type Finding, type Evidence, type FamilyMode, type Gate, type InboxEntry, type Item, type ItemState, type MergedCheckView, type OwnerFactor, type ProjectPolicy, type Review, type UnparsableReply,
 } from "./rules";
 import { STEPS, TAGLINE, TAKEAWAYS, type Verb } from "./how-data.ts";
@@ -168,6 +168,10 @@ export interface Detail {
   // server with neither, which offers no override form. Unset where the
   // page is drawn without a server, as a null.
   ownerFactor?: OwnerFactor | null;
+  // A submission from this page that was refused (t457): the form it came
+  // from, the refusal's words and the reason the owner typed, which the
+  // form keeps. A confirmation secret is never carried back.
+  formError?: FormError;
   item: Item;
   policy: ProjectPolicy;
   evidence: Evidence[];
@@ -178,6 +182,7 @@ export interface Detail {
   gate: Gate;
   events: LedgerEvent[];
 }
+export interface FormError { verb: "approve" | "reject" | "accept" | "override" | "allow-override"; message: string; note?: string }
 // `full` is set on the task's own page, the one place that shows the task's
 // brief and acceptance criteria; every other view shows its short title.
 export interface ReviewContext { project: ProjectRecord; detail: Detail; diff: ItemDiff | "unavailable" | null; thread?: boolean; full?: boolean }
@@ -1711,11 +1716,26 @@ export function renderHistory(views: ProjectView[], ownerName: string | null = n
 </div>`, "Home", ownerName);
 }
 
+// Whether a qualifying reviewer was available when the owner overrode the
+// independent review, as review.overridden keeps it (t457). An override
+// recorded before availability was kept says that it was not recorded.
+function availabilityText(a: unknown): string {
+  const r = (a ?? {}) as Partial<ReviewerAvailability>;
+  if (r.known === true) {
+    const at = typeof r.at === "string" ? `, ${when(r.at)}` : "";
+    return r.reviewer
+      ? `Reviewer availability: ${r.reviewer} qualified and was available (${str(r.source)}${at})`
+      : `Reviewer availability: no qualifying reviewer was available (${str(r.source)}${at})`;
+  }
+  if (r.known === false) return `Reviewer availability: unknown, ${str(r.why)}${typeof r.at === "string" ? ` (${when(r.at)})` : ""}`;
+  return "Reviewer availability: unknown, not recorded with this override";
+}
+
 function eventTable(events: LedgerEvent[], withItem = false): string {
   if (!events.length) return '<p class="empty">No activity recorded yet.</p>';
   return `<ol class="timeline">${events.map((v) => `<li><span class="timeline-dot"></span><div>
     <strong>${e(v.kind.replaceAll(".", " ").replaceAll("_", " "))}</strong>${withItem && v.itemId ? ` · ${e(v.itemId)}` : ""}
-    <p class="meta">${e(v.actor)}${v.proved ? " · token proved" : ""} · ${when(v.at)}</p>
+    <p class="meta">${e(v.actor)}${v.proved ? " · token proved" : ""} · ${when(v.at)}</p>${v.kind === "review.overridden" ? `<p class="meta">${e(availabilityText(v.data.availability))}</p>` : ""}
     <details><summary>Details</summary><pre>${e(JSON.stringify(v.data, null, 2))}</pre></details></div></li>`).join("")}</ol>`;
 }
 
@@ -1821,6 +1841,185 @@ function threadBlock(p: ProjectRecord, d: Detail): string {
 
 const shell = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
 
+// ── where the owner's decision stands (t457) ───────────────────────────────
+// On 2026-10-10 the owner's approval was recorded and the page looked the
+// same, so it read as a button that did nothing. The task page now says, beside
+// its actions and from the record alone, four separate things, and the one next
+// move or what it waits for:
+//
+//   approval      the owner's latest review at this head and criteria. It is
+//                 the owner's own opinion and never the independent review.
+//   independent   a review from a qualifying model, the owner's override of it,
+//                 or that this change needs none.
+//   permission    `atelier accept --override-review` from the command line:
+//                 active (revision, expiry), expired, consumed, invalidated by
+//                 a new revision or a page override, never given, forbidden
+//                 or not confirmable.
+//   acceptance    accepted, ready, not ready (blockers), unavailable while the
+//                 changes shown are not the recorded revision, or terminal.
+//
+// Each cell is plain text with its tone; nothing here records anything.
+export type StateTone = "go" | "ask" | "bad" | "";
+export interface StateCell { label: string; text: string; tone: StateTone }
+export interface OwnerState {
+  approval: StateCell & { review: Review | null };
+  independent: StateCell;
+  permission: StateCell & { status: "active" | "expired" | "consumed" | "invalidated" | "none" | "forbidden" | "unconfirmable" | "not-applicable" };
+  acceptance: StateCell;
+  next: { kind: "next" | "waiting" | "complete"; text: string };
+}
+
+// The CLI permission as the record shows it. The Ledger clears a permission
+// when any override is made, from the command line (which consumes it) or
+// from this page (which leaves it unused and ends it), so a cleared one is
+// read from the events: an `override.allowed` followed by a
+// `review.overridden`, whose `confirmed` says which. Expired is said only
+// once its time has passed.
+function permissionState(d: Detail, now: number, owner: string): OwnerState["permission"] {
+  const { item } = d;
+  const label = "Command-line permission";
+  const cell = (status: OwnerState["permission"]["status"], text: string, tone: StateTone = "") => ({ label, status, text, tone });
+  const events = [...d.events].sort((a, b) => a.seq - b.seq);
+  const allowed = events.filter((v) => v.kind === "override.allowed").at(-1);
+  const spent = allowed && events.find((v) => v.seq > allowed.seq && v.kind === "review.overridden");
+  if (spent && str(spent.data.head) === item.head) {
+    return spent.data.confirmed === "command line"
+      ? cell("consumed", `Consumed by the command-line override at ${short(item.head)}, ${when(spent.at)}; it allows nothing more`)
+      : cell("invalidated", `Invalidated by your override on this page at ${short(item.head)}, ${when(spent.at)}; it was never used`);
+  }
+  // A permission given before the project turned on noOverride stays on the
+  // record, but the Ledger refuses its use, so it is said to be prohibited,
+  // never active.
+  const active = confirmationAt(item, now, owner);
+  if (active && d.policy.noOverride) return cell("forbidden", `Prohibited by policy: given for revision ${short(active.head)} until ${when(active.until)}, but this project now refuses every override, so it allows nothing`, "bad");
+  if (active) return cell("active", `Active for revision ${short(active.head)} until ${when(active.until)}, for one override`, "ask");
+  // A permission spent at an earlier revision says nothing about this one.
+  const standing = item.overrideConfirmation ?? (allowed && !spent ? { head: str(allowed.data.head), until: str(allowed.data.until) } : null);
+  if (standing && standing.head !== item.head) return cell("invalidated", `Invalidated: given for revision ${short(standing.head)}, and the revision has changed since`);
+  if (standing && standing.until && Date.parse(standing.until) <= now) return cell("expired", `Expired ${when(standing.until)}, unused`);
+  if (standing) return cell("invalidated", "Invalidated: no longer on record, so it allows nothing");
+  if (d.policy.noOverride) return cell("forbidden", "Forbidden: this project refuses every override");
+  if (item.state !== "submitted" || !d.gate.needsAssessor) return cell("not-applicable", "Not given; there is no missing independent review to override");
+  if ((d.ownerFactor ?? null) === null) return cell("unconfirmable", "Unavailable: this server takes no owner confirmation");
+  return cell("none", "Not given");
+}
+
+export function ownerState(d: Detail, evidenceVisible: boolean, now = Date.now()): OwnerState {
+  const { item, gate } = d;
+  const owner = d.ownerActor ?? DEFAULT_OWNER;
+  const binding = bindingOf(item);
+  // Every review-based reading below — the owner's own, a rejection, a
+  // send-back — takes the reviews the gate counts: a reviewer who has since
+  // lost the authority to review is no more heard here than there.
+  const latest = countingReviews(d.reviews, binding, d.policy, owner);
+  const mine = latest.find((r) => r.by === owner) ?? null;
+  const live = item.state === "claimed" || item.state === "submitted";
+  const decision = decisionFor(item, d.policy, d.evidence, d.reviews, owner);
+
+  // A review of an earlier head or of criteria since changed no longer
+  // stands, and the page says so rather than show it as current.
+  const stale = !mine && d.reviews.some((r) => r.by === owner && !r.withdrawn && (r.head !== item.head || r.criteria !== binding.criteria));
+  const approval: OwnerState["approval"] = {
+    label: "Your approval", review: mine,
+    ...(mine?.approve
+      ? { text: `Approved by you at ${short(mine.head)}, ${when(mine.at)}`, tone: "go" as const }
+      : mine
+        ? { text: `You requested changes at ${short(mine.head)}, ${when(mine.at)}`, tone: "ask" as const }
+        : !item.head
+          ? { text: "No revision to approve yet", tone: "" as const }
+          : { text: stale ? "Not given at this revision; your earlier review was of another revision or other criteria" : "Not given", tone: "" as const }),
+  };
+
+  const overridden = overrideAt(item, owner);
+  const voided = !!overridden && !!d.policy.noOverride && item.state !== "merged";
+  const changed = evidenceAt(d.policy, d.evidence, item.head).changedPaths;
+  // The approval credited as the independent review is the one the gate
+  // itself would count: an authorised reviewer's latest at this head and
+  // criteria that passes independentApproval for the change's class, the
+  // latest of them when several do. An earlier approval of a contributor's
+  // own family is never named in its place.
+  const kind = changed === null ? null : changeClass(changed, d.policy);
+  const reviewed = kind === "protected" || (d.policy.execution !== undefined && kind === "coordinated") ? kind : null;
+  const contributors = contributorsOf(item);
+  const independentReview = reviewed
+    ? countingReviews(d.reviews, binding, d.policy, owner).filter((r) => independentApproval(r, reviewed, contributors, owner, singleFamily(d.policy))).sort((a, b) => b.at.localeCompare(a.at))[0]
+    : undefined;
+  const independentRejection = latest.find((r) => r.by !== owner && !r.approve);
+  const independent: StateCell = { label: "Independent review", ...(
+    overridden && !voided ? { text: `Overridden by you, ${when(overridden.at)}: not a review`, tone: "ask" as const }
+    : independentRejection ? { text: `Rejected by ${independentRejection.by} at ${short(independentRejection.head)}`, tone: "bad" as const }
+    : gate.needsAssessor ? { text: decision.action === "review" ? "Required, not yet given" : "Required and not yet given; your approval does not count as it", tone: "ask" as const }
+    : independentReview ? { text: `Approved by ${independentReview.by}`, tone: "go" as const }
+    : !item.head ? { text: "No revision to review yet", tone: "" as const }
+    : changed === null && live ? { text: "Pending: the changed paths are not yet observed", tone: "ask" as const }
+    : { text: "Not required for this change", tone: "" as const }) };
+
+  const permission = permissionState(d, now, owner);
+
+  const secretHeld = !!item.head && (item.secretScan === item.head || (item.secret ?? []).some((f) => f.head === item.head && !f.cleared));
+  const blockers = gate.blockers.length;
+  const acceptance: StateCell = { label: "Acceptance", ...(
+    item.state === "merged" ? { text: item.acceptedHead ? `Accepted at ${short(item.acceptedHead)}` : "Accepted", tone: "go" as const }
+    : item.state === "abandoned" ? { text: "Closed without merging", tone: "" as const }
+    : item.state === "accepted" ? { text: `Accepted at ${short(item.acceptedHead)}; not yet merged`, tone: "go" as const }
+    : item.state === "integrated" ? { text: `Integrated into ${item.plan ?? "its plan"}${item.head ? ` at ${short(item.head)}` : ""}; lands with the plan`, tone: "go" as const }
+    : item.state === "blocked" ? { text: "Not possible while the task is blocked", tone: "ask" as const }
+    : live && item.head && !evidenceVisible ? { text: "Unavailable until the changes shown match the recorded revision", tone: "ask" as const }
+    : item.state !== "submitted" ? { text: "Not submitted yet", tone: "" as const }
+    : gate.ready ? { text: "Not yet recorded; nothing blocks it", tone: "go" as const }
+    : { text: `Not ready: ${plural(blockers, "blocker")}`, tone: "bad" as const }) };
+
+  // The headline above states the state and its reason; this line gives only
+  // the move that follows, or who it waits on, never the state again (t498).
+  const sentBack = item.state === "submitted" && latest.some((r) => !r.approve);
+  const holder = item.owner ? `the task owner, ${item.owner}` : "the task owner";
+  const holderMid = item.owner ? `${holder},` : holder;
+  const next: OwnerState["next"] =
+    item.state === "merged" || item.state === "abandoned" ? { kind: "complete", text: "Nothing waits on you." }
+    : item.state === "blocked" ? { kind: "next", text: "Unblock the task once what it waits on is settled." }
+    : item.state === "accepted" ? { kind: "next", text: "Merging, with the command below." }
+    : item.state === "integrated" ? { kind: "waiting", text: `For ${item.plan ?? "its plan"} to land: this part is submitted and integrated into the plan's branch, and is accepted and merged with the plan, not on its own.` }
+    : live && item.head && !evidenceVisible ? { kind: "next", text: "Reload this task; approval and acceptance wait until the changes shown match the recorded revision." }
+    : secretHeld ? { kind: item.secretScan === item.head ? "waiting" : "next", text: item.secretScan === item.head ? "For the secret scan of this revision to complete." : "Check the flagged line and clear the flag if it is not a secret." }
+    : decision.action === "accept" ? { kind: "next", text: "Accept revision, below; the merge command follows." }
+    : item.state === "submitted" && mine && !mine.approve && !gate.needsAssessor && gate.blockers.length === 1 ? { kind: "next", text: "Approve the revision if your concern is met; otherwise wait for the task owner's next push." }
+    // A rejection at this revision blocks whatever review is asked next, so
+    // the way on is a new revision, not a landing (which asks for a review).
+    : sentBack ? { kind: "waiting", text: `For ${holderMid} to address the review and push a new revision; a landing then asks for a fresh review.` }
+    : decision.action === "review" ? { kind: "next", text: "Run the landing command below." }
+    : item.state === "open" ? { kind: item.dispatch ? "waiting" : "next", text: item.dispatch ? "For a runner to claim the task." : "Send the task to an agent, or wait for one to claim it." }
+    : { kind: "waiting", text: `For ${holder}.` };
+
+  return { approval, independent, permission, acceptance, next };
+}
+
+const NEXT_LABEL: Record<OwnerState["next"]["kind"], string> = { next: "Next", waiting: "Waiting", complete: "Done" };
+
+function ownerStateBlock(s: OwnerState): string {
+  const row = (c: StateCell) => `<div><dt>${e(c.label)}</dt><dd${c.tone ? ` class="${c.tone}"` : ""}>${e(c.text)}</dd></div>`;
+  // The owner's own approval, once recorded, is said here once, beside the
+  // actions below it, with its short head and zoned time (t457); Approve is
+  // then not offered again.
+  const mine = s.approval.review;
+  const approval = mine?.approve
+    ? `<div><dt>${e(s.approval.label)}</dt><dd class="go"><span class="approval-recorded" role="status"><strong>Approved by you</strong> at <code>${e(short(mine.head))}</code> · <time datetime="${e(mine.at)}">${e(stamp(mine.at))}</time></span></dd></div>`
+    : row(s.approval);
+  return `<section class="owner-state" aria-label="Where this revision stands">
+  <dl>${approval}${[s.independent, s.permission, s.acceptance].map(row).join("")}</dl>
+  <p class="next-action"><strong>${NEXT_LABEL[s.next.kind]}:</strong> ${e(s.next.text)}</p>
+</section>`;
+}
+
+// A refused submission, beside the form it came from: what was refused, that
+// nothing was recorded, and the way on. Linked to the form's button.
+function formErrorText(err: FormError | undefined, verb: FormError["verb"], reload: string): string {
+  if (err?.verb !== verb) return "";
+  // The Ledger's refusals are clauses ("this task changed since…"); drawn as
+  // a sentence, leaving one that opens on a task id ("t1's…") as it is.
+  const said = /^[a-z]+[\s,;:]/.test(err.message) ? err.message.charAt(0).toUpperCase() + err.message.slice(1) : err.message;
+  return `<p class="error form-error" role="alert" id="error-${verb}">${e(/[.!?]$/.test(said) ? said : `${said}.`)} Nothing was recorded from this attempt. <a href="${reload}">Reload this task</a> to see its current revision, then try again.</p>`;
+}
+
 function submissionRounds(d: Detail): string {
   const { rounds } = taskPage(d);
   return `<section class="review-section" aria-label="Submission rounds"><h3>Submission rounds</h3>
@@ -1852,27 +2051,37 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   const mergedChecks = diff && diff !== "unavailable" && diff.main ? mergedChecksAt(d.policy, d.evidence, item.head, diff.main.head) : undefined;
 
   const reject = live && item.head
-    ? `<details class="request-changes"><summary>Request changes</summary>
+    ? `<details class="request-changes"${d.formError?.verb === "reject" ? " open" : ""}><summary>Request changes</summary>
       <form class="stack" method="post" action="${action("reject")}">${revision}
-        <label>What needs to change?<textarea name="note" required rows="3" maxlength="2000"></textarea></label>
-        <button>Send review</button>
+        <label>What needs to change?<textarea name="note" required rows="3" maxlength="2000">${e(d.formError?.verb === "reject" ? d.formError.note ?? "" : "")}</textarea></label>
+        <button${d.formError?.verb === "reject" ? ' aria-describedby="error-reject"' : ""}>Send review</button>${formErrorText(d.formError, "reject", href("p", p.name, item.id))}
       </form></details>`
     : "";
   const evidenceNotice = live && item.head && !evidenceVisible
     ? `<div class="notice" role="status"><h3>${diff && diff !== "unavailable" ? "The displayed revision has changed" : "Changes are unavailable"}</h3>
       <p>Approval and acceptance are unavailable until the displayed changes match this task’s recorded revision. <a href="${href("p", p.name, item.id)}">Reload this task</a>. If the revision changed, the task owner should run <code>atelier push</code> and rerun checks.</p></div>`
     : "";
-  const reviewWanted = decision.action === "review" || latestReviews(d.reviews, bindingOf(item)).some((r) => !r.approve);
+  const counted = countingReviews(d.reviews, bindingOf(item), d.policy, d.ownerActor ?? DEFAULT_OWNER);
+  const reviewWanted = decision.action === "review" || counted.some((r) => !r.approve);
   // While the gate needs the independent review, the owner's approval cannot
   // satisfy it — the decision line and the protected note below both say so —
   // so Approve records the owner's own opinion as a secondary action, never
   // the primary one. Where the owner's approval counts, on a revision a review
   // at this head sent back, it stays primary.
-  const approve = evidenceVisible && live && item.head && reviewWanted
-    ? `<form method="post" action="${action("approve")}">${revision}<button${gate.needsAssessor ? "" : ' class="primary"'}>Approve revision</button></form>`
+  // The owner's own approval at this head and criteria, once recorded, is
+  // said once, in the owner-state block just above the actions, and Approve
+  // is not offered again while it approves (t457): a press that changed
+  // nothing on the page read as failed.
+  const state = ownerState(d, evidenceVisible);
+  const mine = state.approval.review;
+  const reload = href("p", p.name, item.id);
+  const fail = (verb: FormError["verb"]) => formErrorText(d.formError, verb, reload);
+  const described = (verb: FormError["verb"]) => d.formError?.verb === verb ? ` aria-describedby="error-${verb}"` : "";
+  const approve = evidenceVisible && live && item.head && reviewWanted && !mine?.approve
+    ? `<form method="post" action="${action("approve")}">${revision}<button${gate.needsAssessor ? "" : ' class="primary"'}${described("approve")}>Approve revision</button>${fail("approve")}</form>`
     : "";
   const accept = evidenceVisible && decision.action === "accept"
-    ? `<form method="post" action="${action("accept")}">${revision}<button class="primary">Accept revision</button></form>`
+    ? `<form method="post" action="${action("accept")}">${revision}<button class="primary"${described("accept")}>Accept revision</button>${fail("accept")}</form>`
     : "";
   // The owner's override, offered only while the missing independent review
   // is the one thing blocking this revision, since it waives that and nothing
@@ -1899,17 +2108,23 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
     : overridable && factor === null
     ? `<p class="meta">An override of the independent review needs the owner's own confirmation, which ${e(NO_OWNER_FACTOR)}; then reopen this page. The owner token alone, and the session it signs in, cannot confirm one.</p>`
     : overridable
-    ? `<details class="request-changes"><summary>Accept without an independent review</summary>
+    // A native disclosure (t457), drawn as one and not as a button: a marker
+    // that turns and words that change when it opens. Opening it submits
+    // nothing; each of its two forms has its own explicit button. A refused
+    // override reopens it with the reason kept and the secret never refilled.
+    ? `<details class="override-disclosure"${d.formError?.verb === "override" || d.formError?.verb === "allow-override" ? " open" : ""}><summary><span class="disclosure-marker" aria-hidden="true"></span>Accept without an independent review <span class="meta disclosure-hint"><span class="when-closed">show the override and command-line permission</span><span class="when-open">hide</span></span></summary>
       <form class="stack" method="post" action="${action("override")}">${revision}
-        <label>Why is no independent review possible?<textarea name="note" required rows="3" maxlength="${OVERRIDE_REASON_MAX}"></textarea></label>${confirmField}
+        <h4>Override and accept</h4>
+        <label>Why are you overriding the independent review?<textarea name="note" required rows="3" maxlength="${OVERRIDE_REASON_MAX}">${e(d.formError?.verb === "override" ? d.formError.note ?? "" : "")}</textarea></label>${confirmField}
         <p class="meta">This records your override and its reason on the task and in the inbox, and accepts the revision. It is not a review. ${confirmWords}</p>
-        <button>Override the review and accept</button>
+        <button${described("override")}>Override the review and accept</button>${fail("override")}
       </form>
-      <form class="stack" method="post" action="${action("allow-override")}">${revision}${confirmField}
+      <form class="stack" method="post" action="${action("allow-override")}">${revision}
+        <h4>Command-line permission</h4>${confirmField}
         <p class="meta">${allowed
           ? `You allowed an override from the command line for this revision until ${e(when(allowed.until))}: <code>atelier accept ${e(item.id)} --override-review "reason"</code> is taken until then, once.`
-          : `Or allow <code>atelier accept ${e(item.id)} --override-review "reason"</code> from the command line for this revision, for ${OVERRIDE_CONFIRMATION_MS / 60000} minutes and one override; without it the command is refused.`}</p>
-        <button>${allowed ? "Allow it again from now" : "Allow an override from the command line"}</button>
+          : `Or allow <code>atelier accept ${e(item.id)} --override-review "reason"</code> from the command line for this revision, for ${OVERRIDE_CONFIRMATION_MS / 60000} minutes and one override; without it the command is refused.`} Allowing it approves, overrides and accepts nothing by itself.</p>
+        <button${described("allow-override")}>${allowed ? "Allow it again from now" : "Allow an override from the command line"}</button>${fail("allow-override")}
       </form></details>`
     : "";
   // The primary action while the gate waits for the independent review is the
@@ -1917,7 +2132,7 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   // (it requests the review and waits for its verdict), or waiting for one.
   // The owner's Approve cannot satisfy the gate, so it is not that action,
   // and the override above stays the way on when no reviewer qualifies.
-  const askReview = decision.action === "review"
+  const askReview = decision.action === "review" && !counted.some((r) => !r.approve)
     ? `<div class="merge-command"><p>To move this task, ask ${single ? `a different ${single} model (single-family mode)` : "a model of another family"} to review the revision. In the registered checkout, run:</p>
       <pre tabindex="0">${e(`atelier land ${item.id} --project ${shell(p.name)}`)}</pre>
       <p class="meta">The landing merges main into the workspace, runs the required checks, requests this review — from the model <code>--reviewer</code> names, or one ${single ? `that is a different ${single} model from every contributor` : "of another family than every contributor"} — and waits for its verdict, then accepts and merges. Until then the task waits.</p></div>`
@@ -1937,6 +2152,15 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
         <p class="meta">For a merge refused because the project's protected paths, eligible agents, overlap rule or checks changed since this acceptance: checks the gate again under the policy as it is now and records a new acceptance of this revision.</p>
         <button>Accept this revision again</button>
       </form></details>`
+    : "";
+  // A refused form the page no longer draws (an Accept refused as not ready,
+  // an override the project now forbids) has its refusal said first among
+  // the actions, so no refusal is lost, and the reason typed into it is shown
+  // beside it, unrecorded, so it can be copied rather than typed again.
+  const unplaced = d.formError && ![approve, accept, override, reject].some((f) => f.includes(`id="error-${d.formError!.verb}"`))
+    ? formErrorText(d.formError, d.formError.verb, reload) + (d.formError.note
+      ? `<div class="kept-note"><p class="meta">The reason you typed, which was not recorded:</p><blockquote>${e(d.formError.note)}</blockquote></div>`
+      : "")
     : "";
 
   // An open task can be sent to a runner; a queued one shows who it waits for.
@@ -2001,7 +2225,8 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   <p class="review-description">${e(presentation.detail)}</p>
   ${presentation.unknowns.map(x => `<p class="meta">${e(x)}</p>`).join("")}
   ${evidenceNotice}
-  <div class="actions">${approve}${accept}${override}${reject}${dispatchBox}${blockBox}</div>
+  ${ownerStateBlock(state)}
+  <div class="actions">${unplaced}${approve}${accept}${override}${reject}${dispatchBox}${blockBox}</div>
   ${secretBox}
   ${askReview}${merge}${reaccept}
   <p class="meta revision">${item.head ? `Revision <code>${short(item.head)}</code>` : "No revision pushed yet"}${item.owner ? ` · ${e(item.owner)}` : ""}</p>
@@ -2101,16 +2326,20 @@ ${submissionRounds(d)}
       <p class="meta">Reported, not verified; these never satisfy a required check.</p>
       ${view.reports.map((r) => `<p>${tag("Reported")} ${e(r.claim)} <span class="meta">${e(r.by)}</span></p>`).join("")}</details>`
     : "";
-  const reviews = latestReviews(d.reviews, bindingOf(item)).map((r) => `<div class="review-note">${tag(r.approve ? "Approved" : "Changes requested", r.approve ? "go" : "ask")}
-    <p>${e(r.note || "No note provided.")}</p><p class="meta">${r.tier ? "tier review · " : r.topTier ? "gate review, top tier · " : ""}${e(r.by)} · ${when(r.at)}${recordedText(r, d.ownerActor ?? DEFAULT_OWNER) ? ` · ${e(recordedText(r, d.ownerActor ?? DEFAULT_OWNER)!)}` : ""}</p></div>`).join("");
+  // A review by someone no longer authorised to review stays on the record,
+  // but marked as not counted, as the gate does not count it.
+  const counting = new Set(countingReviews(d.reviews, bindingOf(item), d.policy, d.ownerActor ?? DEFAULT_OWNER));
+  const reviews = latestReviews(d.reviews, bindingOf(item)).map((r) => `<div class="review-note">${tag(r.approve ? "Approved" : "Changes requested", r.approve ? "go" : "ask")}${counting.has(r) ? "" : ` ${tag("Not counted")}`}
+    <p>${e(r.note || "No note provided.")}</p><p class="meta">${counting.has(r) ? "" : "not counted: the reviewer is no longer authorised to review this project · "}${r.tier ? "tier review · " : r.topTier ? "gate review, top tier · " : ""}${e(r.by)} · ${when(r.at)}${recordedText(r, d.ownerActor ?? DEFAULT_OWNER) ? ` · ${e(recordedText(r, d.ownerActor ?? DEFAULT_OWNER)!)}` : ""}</p></div>`).join("");
   const overridden = overrideAt(item, d.ownerActor ?? DEFAULT_OWNER);
   // An override recorded before the project forbade overrides (t371) counts
   // for nothing on a task still in hand, as gate counts none; a merged task's
   // went in on it, and keeps its label.
   const voided = !!overridden && !!d.policy.noOverride && item.state !== "merged";
+  const overrideEvent = overridden ? d.events.filter((v) => v.kind === "review.overridden" && str(v.data.head) === overridden.head).sort((a, b) => a.seq - b.seq).at(-1) : undefined;
   const overrideNote = overridden
     ? `<div class="review-note">${tag(voided ? "Override not counted" : "Review overridden", "ask")}
-    <p>${e(overridden.reason)}</p><p class="meta">${e(overridden.by)} · ${when(overridden.at)} · the project owner's override, not a review${voided ? "; this project now forbids overrides, so the change waits for its independent review" : ""}</p></div>`
+    <p>${e(overridden.reason)}</p><p class="meta">${e(overridden.by)} · ${when(overridden.at)} · the project owner's override, not a review${voided ? "; this project now forbids overrides, so the change waits for its independent review" : ""}</p>${overrideEvent ? `<p class="meta">${e(availabilityText(overrideEvent.data.availability))}</p>` : ""}</div>`
     : "";
   const blockers = live && !gate.ready
     ? `<details class="disclosure"><summary>Readiness details</summary><ul>${gate.blockers.map((b) => `<li>${e(b)}</li>`).join("")}</ul></details>`
