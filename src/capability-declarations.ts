@@ -1,5 +1,7 @@
 // One capability per line, without level for new entries. Existing levels are legacy metadata.
-// Git unions independent additions; buildCapabilities validates names.
+// Atelier's records driver (merge=atelier-records, t463) unites independent
+// additions by name where Atelier merges, and plain Git merges this file as
+// text; buildCapabilities validates names either way.
 export const CAPABILITY_DECLARATIONS = [
   { name: "items.owner-port.v1", summary: "owner-only short-lived write credentials for an open unclaimed task fork, without claiming it" },
   { name: "reviews.post-merge.v1", summary: "review requests and verdicts audit recorded merges and file linked defects for blocking findings" },

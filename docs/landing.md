@@ -194,9 +194,16 @@ The steps in between:
    **Adding a route.** Add one unique `family.behaviour.vN` declaration,
    with a summary and no `level`, to `src/capability-declarations.ts`, and
    name it in the consuming command or runner job's requirements. The server
-   publishes it automatically. Do not raise `ROUTE_LEVEL`. Independent
-   declarations merge in either order through the file's `merge=union`
-   attribute; the capabilities test refuses duplicate names after merging.
+   publishes it automatically. Do not raise `ROUTE_LEVEL`. `.gitattributes`
+   routes the file to `merge=atelier-records`, and `bin/merge-manifest.json`
+   declares it a record file keyed by `name`. In a clone Atelier manages
+   (every merge goes through the pipeline in step 2 below), independent
+   declarations unite by name in either order, and a name both sides added
+   differently, edited or deleted stays in conflict for resolution. In a
+   clone without Atelier's setup, Git knows no `atelier-records` driver and
+   merges the file as ordinary text, so additions on neighbouring lines
+   conflict and are resolved by hand; either way the capabilities test
+   refuses duplicate names after merging.
    A server missing the name is refused with the same deploy-first remedy,
    even if it reports a higher route level.
 
@@ -214,7 +221,34 @@ The steps in between:
    runner job but the review requires it, so a runner refuses a server that
    reports only a route level and starts on one that publishes the name.
 
-2. Main is fetched into the task's workspace and merged with `--no-ff`. On
+2. Main is fetched into the task's workspace and merged with `--no-ff`
+   through the merge pipeline (`cli/merge-pipeline.mjs`), the same one
+   every merge Atelier makes goes through: the owner's merge onto the
+   baseline, `atelier update`, a runner's merge-main, integrate and refresh
+   merges, and the speculative merge `atelier check --merged` checks.
+   `bin/merge-manifest.json` declares each generator (its name, its command
+   as an argument list, the source inputs it reads and the outputs it
+   writes), the record files that unite by key, and the registries whose
+   entry files (one per command or route declaration) must keep unique keys;
+   `.gitattributes` routes each declared output to `merge=atelier-generated`
+   and each record file to `merge=atelier-records`. The pipeline first
+   installs those drivers in the clone's own Git config (a fresh clone has
+   none; without them Git would merge the paths as plain text), then merges
+   the sources. Record files unite by key, while a key both sides changed
+   differently, an edit against a deletion or a duplicate registry key stays
+   a conflict. Generated outputs are left in conflict, unmarked, until every
+   source has merged: a source or record conflict stops the merge there,
+   with nothing generated, and the preview (`--dry-run`) and the stop both
+   list source conflicts apart from regenerable outputs. Once the sources
+   merge, each generator whose inputs or outputs both sides changed runs
+   twice; a failing command, a missing output, a write outside its outputs
+   or a second run that changes anything stops the merge. Output identical
+   to one side is valid. The merge commit names which generators ran and
+   what each output matches, the generator's log is kept under the clone's
+   Git directory, and the landing's `land.merge` record carries the same
+   provenance (`regenerated`). The regenerated head is pushed, so its checks
+   and review are of the final output; nothing carries over from the head
+   before. On
    conflicts the landing stops, leaves the merge in the workspace for the
    owner to resolve, and names the files. After resolving and committing,
    run `atelier push` in the workspace to record the resolution before running

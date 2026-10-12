@@ -288,8 +288,14 @@ const LAND_STEPS = new Set(["lease", "merge", "regenerate", "push", "check", "su
 // cut to its first entries by the ledger itself, which adds the count of the
 // whole list beside it (`fromMainCount`, cutLandLists below), so no caller
 // sends those counts.
-const LAND_DATA: Record<string, "string" | "boolean" | "strings"> = {
+const LAND_DATA: Record<string, "string" | "boolean" | "strings" | "levels" | "regenerated"> = {
   head: "string", mergeCommit: "string", fromMain: "strings", conflicts: "strings",
+  // A merge's main head, and the route levels where main and the task each
+  // raised it (t248: base, main, task, what the merge left, what was set).
+  mainHead: "string", routeLevel: "levels",
+  // The merge pipeline's conflicts by kind and what it regenerated (t463):
+  // each generator's name, what each output now matches and its log's hash.
+  source: "strings", generated: "strings", regenerated: "regenerated",
   resolvedBy: "string", reviewer: "string", verdict: "string", command: "string",
   reason: "string", changed: "boolean", failed: "boolean", skipped: "boolean", requested: "boolean",
   runners: "strings",
@@ -299,15 +305,50 @@ const LAND_DATA: Record<string, "string" | "boolean" | "strings"> = {
 };
 export const LAND_JSON_MAX = 4000;
 
+const LAND_KIND_TEXT: Record<string, string> = {
+  string: "text", boolean: "true or false", strings: "a list of commit hashes or paths",
+  levels: "route levels by name (base, main, task, was, set)",
+  regenerated: "a list of generators, each with its name, outputs (path and what it matches), log and logSha",
+};
+const ROUTE_LEVEL_KEYS = ["base", "main", "task", "was", "set"];
+const MATCHES = new Set(["ours", "theirs", "neither side"]);
+
+function cleanLevels(value: unknown): Record<string, number> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (!entries.every(([k, v]) => ROUTE_LEVEL_KEYS.includes(k) && Number.isInteger(v) && (v as number) >= 0)) return null;
+  return Object.fromEntries(entries) as Record<string, number>;
+}
+
+function cleanRegenerated(value: unknown): Array<Record<string, unknown>> | null {
+  if (!Array.isArray(value) || value.length > 50) return null;
+  const text = (v: unknown, max: number) => typeof v === "string" ? v.slice(0, max) : null;
+  const out: Array<Record<string, unknown>> = [];
+  for (const g of value as Array<Record<string, unknown>>) {
+    if (!g || typeof g !== "object" || !Array.isArray(g.outputs) || g.outputs.length > 50) return null;
+    const name = text(g.name, 200), log = text(g.log, 500), logSha = text(g.logSha, 64);
+    if (name === null || log === null || logSha === null) return null;
+    const outputs: Array<{ path: string; matches: string }> = [];
+    for (const o of g.outputs as Array<Record<string, unknown>>) {
+      if (!o || typeof o.path !== "string" || typeof o.matches !== "string" || !MATCHES.has(o.matches)) return null;
+      outputs.push({ path: o.path.slice(0, 200), matches: o.matches });
+    }
+    out.push({ name, outputs, log, logSha });
+  }
+  return out;
+}
+
 function cleanLandData(data: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(data ?? {})) {
     const kind = LAND_DATA[key];
     if (!kind) throw new RuleError("bad_field", `${key} is not a field a landing step records`, 400);
+    const shaped = kind === "levels" ? cleanLevels(value) : kind === "regenerated" ? cleanRegenerated(value) : null;
     if (kind === "string" && typeof value === "string") out[key] = value.slice(0, 500);
     else if (kind === "boolean" && typeof value === "boolean") out[key] = value;
     else if (kind === "strings" && Array.isArray(value) && value.length <= 200 && value.every((s) => typeof s === "string")) out[key] = value.slice(0, 200).map((s) => s.slice(0, 200));
-    else throw new RuleError("bad_field", `${key} must be ${kind === "strings" ? "a list of commit hashes or paths" : kind === "boolean" ? "true or false" : "text"}`, 400);
+    else if (shaped) out[key] = shaped;
+    else throw new RuleError("bad_field", `${key} must be ${LAND_KIND_TEXT[kind]}`, 400);
   }
   cutLandLists(out);
   return out;
@@ -322,12 +363,12 @@ function cleanLandData(data: Record<string, unknown>): Record<string, unknown> {
 // head. A record with nothing left to cut is refused as before.
 function cutLandLists(out: Record<string, unknown>): void {
   const lists = Object.keys(out).filter((k) => Array.isArray(out[k]));
-  const whole = new Map(lists.map((k) => [k, (out[k] as string[]).length]));
-  const longest = () => lists.filter((k) => (out[k] as string[]).length > 0).sort((a, b) => (out[b] as string[]).length - (out[a] as string[]).length)[0];
+  const whole = new Map(lists.map((k) => [k, (out[k] as unknown[]).length]));
+  const longest = () => lists.filter((k) => (out[k] as unknown[]).length > 0).sort((a, b) => (out[b] as unknown[]).length - (out[a] as unknown[]).length)[0];
   while (JSON.stringify(out).length > LAND_JSON_MAX) {
     const key = longest();
     if (!key) throw new RuleError("too_long", `a landing step records at most ${LAND_JSON_MAX} characters; shorten the lists`, 400);
-    const list = out[key] as string[];
+    const list = out[key] as unknown[];
     list.length--;
     out[`${key}Count`] = whole.get(key)!;
   }
