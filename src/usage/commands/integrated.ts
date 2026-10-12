@@ -5,7 +5,7 @@ const spec: CommandSpec = {
   capabilities: ["plans.integration.v1"],
   forms: [
     {
-      group: "Agents", line: 4, slot: 30,
+      group: "Agents", line: 5, slot: 30,
       form: "integrated ID --part KEY --merge-commit SHA",
       about: "The integrator reports a verified merge of one part onto the plan's branch; the server checks the commit against the branch before recording it.",
     },
