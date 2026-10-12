@@ -1730,6 +1730,8 @@ export async function runPrereview(assignment, config, name, runnerIO) {
     const text = prereviewBrief({
       item: claimed.item, project, request, binding, reviewer: actor, contributors: pre.contributors, bar: claimed.reviewBar ?? null,
       checks: pre.checks ?? [], changed, tests, evidence: claimed.evidence ?? null, preparation, diffFile: REVIEW_DIFF,
+      // The owner's standing decisions bind a pre-reviewer as they bind the gate's.
+      decisions: claimed.decisions ?? null,
       diffOmitted: large ? `the diff is ${diff.length} characters; read it whole in ${REVIEW_DIFF}` : null, slotNote: testSlotNote,
       replyFormat: replyFormat(criteriaCount(claimed.item, null)),
     });

@@ -205,6 +205,30 @@ it("a fresh blocking verdict takes the waiter out at once, fences CLI and Workfl
   expect(await queueIds(L)).toEqual([t3, t4, t2]);
 });
 
+// Gate review of t524 at 247d6987: a gate rejection at the same head took
+// the rework brief, and the pre-review findings that fenced the task were
+// read only when there was none.
+it("the rework brief carries both a gate rejection at the head and the blocking pre-review, each under its reviewer", async () => {
+  const { L, t1, t2 } = await landing("pre-both");
+  // The gate rejected t2 at its head in an earlier landing.
+  await L.addReview({ itemId: t2, by: SONNET, head: head(2), criteria: ((await L.detail(t2)) as unknown as { criteria: string }).criteria, approve: false, note: "The gate's summary.", at: new Date().toISOString(), findings: [{ file: "src/b.ts", line: 9, severity: "blocking", text: "the gate's own defect" }] } as never, undefined, true, "api");
+  const queued = await queueIds(L);
+  if (!queued.includes(t2)) await L.queueProjectLanding(t2, "owner");
+  await L.renewProjectLanding(t1, "owner");
+  const open = (await views(L, t2)).find((v) => v.state === "open");
+  expect(open, JSON.stringify(await views(L, t2))).toBeTruthy();
+  const c = await claim(L, t2);
+  await verdict(L, t2, c, false, [BLOCKING]);
+  const brief = await L.jobBrief(t2, OPUS);
+  expect(brief.job).toBe("rework");
+  expect(brief.text).toContain("the queue loses a waiter");
+  expect(brief.text).toContain(`Pre-review ${c.request}`);
+  expect(brief.text).toContain("the gate's own defect");
+  expect(brief.text).toContain(`${GPT} reviewed`);
+  expect(brief.text).toContain(`${SONNET} reviewed`);
+  expect(brief.text.indexOf("the queue loses a waiter")).toBeLessThan(brief.text.indexOf("the gate's own defect"));
+});
+
 // Pre-review findings of t524's own review: the owner's queue listing gave a
 // pre-review entry a build's "not taken" reasons (queueWhy took every job
 // that was not "review" for a build), and criterion 9's state, binding,
@@ -355,6 +379,32 @@ it("conflicts, failed preparation, malformed replies, skips and runner failures 
   // comment at PREREVIEW_RETRY_MS once said every retryable result waited).
   await q.L.queueProjectLanding(q.t2, "owner");
   expect((await views(q.L, q.t2)).map((v) => [v.state, v.attempts])).toEqual([["open", 2], ["unavailable", 1]]);
+});
+
+// Gate review of t524 at 247d6987: a runner holding the owner's token sends
+// its skip as the owner (cli/commands/runner.mjs, reportReviewSkip), and the
+// pre-review branch took only the asked reviewer's, so the route said
+// skipped while the request stayed open.
+it("a runner's skip under the owner's token, before any claim, records the unavailable result through the route", async () => {
+  const project = "pre-owner-skip";
+  const { L, t2 } = await landing(project);
+  const s = (await views(L, t2))[0];
+  expect(s.state).toBe("open");
+  const res = await worker.fetch(new Request(`https://atelier.test/api/projects/${project}/items/${t2}/review-skip`, {
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-runner": RUNNER.runner, "content-type": "application/json" },
+    body: JSON.stringify({ head: head(2), request: s.request, note: "capped" }),
+  }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
+  expect(res.status, await res.clone().text()).toBe(200);
+  expect((await views(L, t2))[0]).toMatchObject({ state: "unavailable", outcome: "skipped", detail: expect.stringMatching(/home:studio skipped it: capped/) });
+  // The waiter keeps its place, and a second report changes nothing.
+  expect((await queueIds(L))[0]).toBe(t2);
+  await L.recordReviewSkip(t2, s.request, head(2), RUNNER.runner, "owner", "capped", true);
+  expect((await events(L, t2)).filter((e) => e.kind === "prereview.unavailable")).toHaveLength(1);
+  // Anyone else's skip of an open request is still not applied.
+  const q = await landing(`${project}-2`);
+  const o = (await views(q.L, q.t2))[0];
+  await q.L.recordReviewSkip(q.t2, o.request, head(2), RUNNER.runner, SONNET, "", true);
+  expect((await views(q.L, q.t2))[0].state).toBe("open");
 });
 
 it("a gate review is never displaced: none is asked beside it, and the claim binds the gate's first", async () => {

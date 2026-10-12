@@ -25,6 +25,7 @@
 
 import { landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "../landing-lease.ts";
 import { sameActor, type Evidence, type Finding } from "../rules.ts";
+import { DECISIONS_HEADING, DECISIONS_RULE, NO_DECISIONS, decisionLines, type Decision } from "../decisions.ts";
 
 // The job a runner names in its offer to be given pre-reviews, and the job a
 // pre-review dispatch carries. A runner that does not advertise it is never
@@ -313,6 +314,10 @@ export interface PrereviewBriefInput {
   // on the task's own tree, never the merged one), or null from a server
   // that sent none.
   evidence: { runs: readonly Evidence[] } | null;
+  // The owner's standing decisions (src/decisions.ts), as the claim carries
+  // them, which bind this reviewer as they bind the gate's; null or absent
+  // from a server that sent none, rendered as the gate's brief renders it.
+  decisions?: readonly Pick<Decision, "id" | "text" | "quote" | "at">[] | null;
   // What the runner's preparation did: the route level it raised, whether
   // the fixtures were regenerated, conflicts settled by regeneration.
   preparation: string[];
@@ -378,6 +383,12 @@ export function prereviewBrief(input: PrereviewBriefInput): string {
     "## The change",
     "",
     `The diff from the merge base with main to the task's head is in ${input.diffFile}.`,
+    "",
+    `## ${DECISIONS_HEADING}`,
+    "",
+    DECISIONS_RULE,
+    "",
+    ...(input.decisions?.length ? decisionLines(input.decisions).map(line1) : [NO_DECISIONS]),
     "",
     "## The bar",
     "",
