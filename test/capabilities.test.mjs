@@ -178,7 +178,11 @@ test("a subcommand's capabilities are asked only when that subcommand runs", () 
   assert.deepEqual(requiredForCommand("models", "add"), []);
   assert.deepEqual(requiredForCommand("models", "note"), ["models.note.v1"]);
   assert.deepEqual(requiredForCommand("models", "show"), ["models.note.v1"]);
-  assert.deepEqual(COMMAND_CAPABILITIES.models, ["reviews.admission.v1", "models.note.v1"]);
+  // set posts the pool's standing (t389); add needs it only when it gives --state, --roles or --tier.
+  assert.deepEqual(requiredForCommand("models", "set"), ["models.standing.v1"]);
+  assert.deepEqual(requiredForCommand("models", "add", { harness: "codex" }), []);
+  for (const flag of ["state", "roles", "tier"]) assert.deepEqual(requiredForCommand("models", "add", { [flag]: "x" }), ["models.standing.v1"], flag);
+  assert.deepEqual(COMMAND_CAPABILITIES.models, ["reviews.admission.v1", "models.note.v1", "models.standing.v1"]);
   assert.deepEqual(requiredForCommand("token", "issue"), ["runners.scoped-token.v1"]);
   assert.deepEqual(requiredForCommand("token", "store"), ["runners.scoped-token.v1"]);
   assert.deepEqual(requiredForCommand("token", "ls"), []);
@@ -259,6 +263,17 @@ test("atelier stuck requires the stuck report by name, which no legacy level gua
   const legacy = checkCapabilities({ routeLevel: ROUTE_LEVEL + 2 }, COMMAND_CAPABILITIES.stuck);
   assert.equal(legacy.kind, "unmapped");
   assert.deepEqual(legacy.missing, ["projects.stuck.v1"]);
+});
+
+test("models set requires the pool's standing by name, which no legacy level guarantees (t389)", () => {
+  assert.equal(CAPABILITIES.find((c) => c.name === "models.standing.v1")?.level, undefined);
+  assert.ok(SERVER_CAPABILITIES.includes("models.standing.v1"));
+  const set = requiredForCommand("models", "set");
+  assert.equal(checkCapabilities({ capabilities: SERVER_CAPABILITIES }, set).ok, true);
+  assert.deepEqual(checkCapabilities({ capabilities: SERVER_CAPABILITIES.filter((n) => n !== "models.standing.v1") }, set).missing, ["models.standing.v1"]);
+  const legacy = checkCapabilities({ routeLevel: ROUTE_LEVEL + 3 }, set);
+  assert.equal(legacy.kind, "unmapped");
+  assert.deepEqual(legacy.missing, ["models.standing.v1"]);
 });
 
 test("every job but the review requires the run skip by name, which no legacy level guarantees (t420)", () => {
