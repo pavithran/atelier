@@ -104,3 +104,16 @@ it("the Decisions badge is the number the Decisions list says waits on the owner
   await L(name).block("t3", "owner", "needs the owner");
   expect(badge(await html("/home"))).toBe(String(listed + 1));
 });
+
+// The shell's pre-review: the pages a tab holds (Plans, Log, Ship) must stay
+// reachable from the bar, linked under their tab while it is current.
+it("each tab that holds a page links to it from the bar", async () => {
+  await project("shell-held");
+  const cookie = await signIn(TOKEN, testEnv);
+  for (const [tabPath, held] of [["tasks", "plans"], ["settings", "ship"], ["plans", "plans"], ["ship", "ship"]] as const) {
+    const res = await worker.fetch(new Request(`https://atelier.test/p/shell-held/${tabPath}`, { headers: { cookie }, redirect: "manual" }), testEnv);
+    expect(res.status, tabPath).toBe(200);
+    const html = await res.text();
+    expect(bar(html), `/p/shell-held/${tabPath}`).toContain(`href="/p/shell-held/${held}"`);
+  }
+});
