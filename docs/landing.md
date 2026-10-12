@@ -181,7 +181,8 @@ The steps in between:
    `models admit`, `withdraw` and `reviewers` require `reviews.admission.v1`;
    `init` and `land` require the durable post-merge runs, `land.post-merge.v1`
    (t477), and `land --post-merge` asks for that one alone; they also
-   require the landing's triage step, `land.triage.v1` (t475). The home runner checks the
+   require the landing's triage step, `land.triage.v1` (t475); `stuck` requires
+   the stuck report, `projects.stuck.v1` (t441). The home runner checks the
    union of its jobs' (`JOB_CAPABILITIES`, `src/route-level.ts`) before its
    first poll, the integrator's `integrate` and `refresh` jobs included;
    the review job's include the review claim leases (`reviews.lease.v1`) and the review skip (`reviews.skip.v1`,
