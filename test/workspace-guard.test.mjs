@@ -55,6 +55,10 @@ function fixture(t, { unclaimed = false, portCapability = true, portFailure = fa
     git(dir, "clone", "-q", forks[id], workspaces[id]);
     identity(workspaces[id]);
     for (const [k, v] of Object.entries({ project: "demo", item: id, actor: "codex/test", branch: "main" })) git(workspaces[id], "config", "--local", `atelier.${k}`, v);
+    if (unclaimed) {
+      git(workspaces[id], "config", `url.${forks[id]}.insteadOf`, `https://fork.test/${id}.git`);
+      git(workspaces[id], "config", `http.https://fork.test/${id}.git.extraHeader`, "Authorization: Bearer revoked-claim-secret");
+    }
   }
 
   writeFileSync(join(dir, "config.json"), JSON.stringify({ server: "https://fake.invalid", owner: "owner", ownerName: "Pavi", projects: { demo: { path: checkout, branch: "main" } } }));
@@ -67,9 +71,13 @@ import { syncBuiltinESMExports } from "node:module";
 const spawn = childProcess.spawnSync;
 childProcess.spawnSync = (cmd, args, opts) => {
   if (${unclaimed} && cmd === "git" && args[0] === "push") {
-    const count = Number(opts.env.GIT_CONFIG_COUNT ?? 0);
-    const headers = Array.from({ length: count }, (_, i) => opts.env["GIT_CONFIG_KEY_" + i] === "http.extraHeader" ? opts.env["GIT_CONFIG_VALUE_" + i] : "");
-    if (!headers.includes("Authorization: Bearer fresh-owner-port-secret")) throw new Error("owner push did not use its fresh credential");
+    const remote = args.at(-2);
+    const configured = spawn("git", ["config", "--get-urlmatch", "http.extraHeader", remote], opts);
+    const headers = configured.stdout.trimEnd().split("\\n");
+    // Git's empty value resets all earlier extra headers, including the
+    // released claim's token, before the fresh owner credential is added.
+    const effective = headers.slice(headers.lastIndexOf("") + 1);
+    if (configured.status !== 0 || effective.length !== 1 || effective[0] !== "Authorization: Bearer fresh-owner-port-secret") throw new Error("owner push did not replace its revoked credential");
     if (${portFailure}) return { status: 1, stdout: "", stderr: "rejected fresh-owner-port-secret" };
   }
   return spawn(cmd, args, opts);
@@ -90,7 +98,7 @@ globalThis.fetch = async (url, options = {}) => {
   else if (m) {
     const [, id, verb] = /^items\\/([^/]+)(?:\\/(.*))?$/.exec(m[1]) ?? [];
     if (verb === "push") data = { ...item(id), head: body.head };
-    else if (verb === "owner-port-token") data = { remote: FORKS[id], token: "fresh-owner-port-secret", defaultBranch: "main" };
+    else if (verb === "owner-port-token") data = { remote: "https://fork.test/" + id + ".git", token: "fresh-owner-port-secret", defaultBranch: "main" };
     else if (verb === "read-token") data = { remote: FORKS[id], token: "fake-fork-token", defaultBranch: "main", head: forkHead(id), base: BASE };
     else if (verb === "base-token") data = { remote: BASELINE, token: "fake-baseline-token", defaultBranch: "main" };
     else data = { item: item(id), policy: { checks: ["exit 0"], protected: [], sandboxOnly: false }, gate: { ready: true, blockers: [] }, evidence: [], reviews: [], events: [], acceptanceProtected: [] };
@@ -199,6 +207,7 @@ test("the owner can push an unclaimed task workspace without changing its config
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.equal(f.forkMain("t1"), head);
   assert.equal(f.git(dir, "config", "atelier.actor"), "codex/test");
+  assert.equal(f.git(dir, "config", "http.https://fork.test/t1.git.extraHeader"), "Authorization: Bearer revoked-claim-secret");
   assert.equal(f.writes().filter(x => x.path.endsWith("/push")).length, 1);
   assert.equal(f.writes().filter(x => x.path.endsWith("/claim")).length, 0);
   assert.equal(f.writes().filter(x => x.path.endsWith("/owner-port-token")).length, 1);
