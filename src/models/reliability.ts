@@ -275,6 +275,7 @@ function replay(
   const builtAt = new Map<string, Map<string, string>>();     // item, head: who submitted that revision
   const lastBuilder = new Map<string, string>();               // item: who submitted or merged it last
   const reviewedHeads = new Map<string, Set<string>>();        // item: revisions a model reviewed
+  const landed = new Set<string>();
   const approvedAt = new Map<string, { reviewer: string; head: string }[]>();
   const firstReview = new Set<string>();                       // item and builder model already counted
   const ownerSeen = new Set<string>();                         // item and revision the owner approved
@@ -423,7 +424,15 @@ function replay(
         }
         if (!approve) built.rejections.push({ project, item, by: actor, note: str(data.note), at: event.at });
       }
-      reviewedHeads.set(item, (reviewedHeads.get(item) ?? new Set()).add(head));
+      const heads = reviewedHeads.get(item) ?? new Set();
+      if (landed.has(item) && !heads.has(head)) {
+        for (const b of credited) {
+          const built = get(b, project);
+          if (!heads.size) built.mergedReviewed++;
+          built.rounds++;
+        }
+      }
+      reviewedHeads.set(item, heads.add(head));
     } else if (kind === "review.unparsable") {
       // A reply no verdict could be read from, kept on the task (t407): a
       // review that never reached a verdict, counted against the reviewer
@@ -431,6 +440,7 @@ function replay(
       // event, so nothing here reads it back.
       if (isAgent(actor, owner)) get(actor, project).unfinishedReviews++;
     } else if (kind === "item.merged") {
+      landed.add(item);
       const builder = agentOnly(holder?.serving ?? lastBuilder.get(item));
       holders.delete(item);
       if (!builder) continue;
@@ -456,7 +466,7 @@ function replay(
       const cause = { project, item, by: actor, note: str(data.note), at: event.at };
       for (const b of creditedOf(item, head)) get(b, project).defects.push(cause);
       for (const a of approvedAt.get(item) ?? []) {
-        if (a.head === head) {
+        if (a.head === head || a.head === data.mergeCommit) {
           get(a.reviewer, project).contradicted.push(cause);
           binOf(a.reviewer, k).contradicted++;
         }

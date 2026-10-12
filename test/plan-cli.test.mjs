@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 // `atelier plan` against a stand-in server on 127.0.0.1, as the other CLI
 // tests run: the server answers each plan route with a canned reply and logs
@@ -35,6 +36,9 @@ async function fixture(t) {
   const server = createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) raw += chunk;
     const body = raw ? JSON.parse(raw) : undefined;
+    // plan refresh checks the server's capabilities first (t458); the stub
+    // publishes every one, and the check is not among the requests read.
+    if (req.url === "/api/version") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ capabilities: SERVER_CAPABILITIES })); }
     requests.push({ method: req.method, path: req.url, actor: req.headers["x-atelier-actor"], body });
     let status = 200, data = { error: "not_found", detail: "no such route" };
     const p = req.url;

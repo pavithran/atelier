@@ -10,6 +10,31 @@
 
 export type Lane = "owner" | "agent" | "reviewer";
 
+// The life of a task in five verbs, the words the app, the README, the docs
+// and the video share. They are labels only: the commands keep their names
+// (`start`, `push`, `check`, `review`, `land`, `merge`).
+export type Verb = "Claim" | "Fork" | "Prove" | "Review" | "Land";
+
+export interface Verbed {
+  verb: Verb;
+  // The step in a few words, as the video says it.
+  line: string;
+  // What the step means here, in a sentence or two.
+  about: string;
+}
+
+export const STEPS: Verbed[] = [
+  { verb: "Claim", line: "One holder per task.", about: "An agent claims an open task with `atelier start`. The project's Durable Object grants it atomically, so a second claimant is refused." },
+  { verb: "Fork", line: "Every task its own fork.", about: "The claim forks the baseline into a workspace for that task alone, with one write token for its holder. The agent commits and pushes there, never to the project." },
+  { verb: "Prove", line: "Atelier runs the tests.", about: "The required checks run on a clean clone of exactly the pushed head, and only those Observed results count; what an agent says it ran is shown and never counted." },
+  { verb: "Review", line: "Another company reviews, or in single-family mode another model.", about: "A change to a protected path needs an approval from a model of another family than every contributor by default; a project set to single-family mode takes a different model of its one company from every contributor, and says so wherever the review shows. No one reviews their own work." },
+  { verb: "Land", line: "One landing at a time, with a receipt.", about: "The owner accepts one exact head through the gate and it merges, one landing per project at a time, with the task's record attached as a git note." },
+];
+
+// Where a page sums the five steps up, it says these three words.
+export const TAKEAWAYS = "Proven. Reviewed. Recorded.";
+export const TAGLINE = "Git keeps the code. Atelier brings the receipts.";
+
 export interface Step {
   name: string;
   lane: Lane;
@@ -29,7 +54,7 @@ export const LOOP: Step[] = [
   {
     name: "Task", lane: "owner", command: "new", moves: "a new task",
     records: ["Task and scope", "recorded; the", "task is open"],
-    detail: "The project owner creates the task with `atelier new \"title\" --scope 'src/**'`. The scope is the paths the task intends to touch. Overlapping live scopes are flagged in the inbox, and a project whose policy says so refuses a claim that overlaps another. A project that names core files holds a dispatch in the queue while its scope overlaps a live item's within one.",
+    detail: "The project owner creates the task with `atelier new \"title\" --scope 'src/**'`. The scope is the paths the task intends to touch. Overlapping live scopes are flagged in the inbox, and a project whose policy says so refuses a claim that overlaps another. A project that names core files holds a dispatch in the queue while its scope overlaps, within one, the scope of a claimed item or of the item a live landing lease names.",
   },
   {
     name: "Claim", lane: "agent", command: "start", moves: "a claim",
@@ -85,6 +110,8 @@ export const TERMS: Term[] = [
 
 export interface Rule {
   title: string;
+  // The step of the five it guards; /how lists the rules under it.
+  verb: Verb;
   // What the code does.
   enforced: string;
   // Why, in one sentence.
@@ -95,64 +122,64 @@ export interface Rule {
 
 export const RULES: Rule[] = [
   {
-    title: "One owner per task",
+    title: "One owner per task", verb: "Claim",
     enforced: "A task has at most one owner. The project's Durable Object handles one request at a time, so when two agents claim a task the second is refused. Ownership changes only through a recorded event: a claim, a handoff, a release, an abandonment or a merge.",
     why: "Two agents writing to one workspace overwrite each other, and nobody could say afterwards who did what.",
     where: [{ file: "src/rules.ts", symbol: "assertClaimable" }, { file: "src/rules.ts", symbol: "assertOwner" }],
   },
   {
-    title: "Separate forks for agents",
+    title: "Separate forks for agents", verb: "Fork",
     enforced: "A claim forks the baseline into a repository for that task, and the claimant's write token covers that repository alone. Only the owner token can obtain a write token for the baseline; an agent token is refused.",
     why: "A wrong or abandoned change in one workspace cannot touch the baseline or another task's work.",
     where: [{ file: "src/tokens.ts", symbol: "agentRoute" }],
   },
   {
-    title: "One write token per workspace",
+    title: "One write token per workspace", verb: "Fork",
     enforced: "A claim revokes the workspace's earlier write token before it mints a new one, so only one is live. The token lasts eight hours, and a handoff, a release or an abandonment revokes it.",
     why: "An agent that has handed work on or given it up must not be able to keep pushing to it.",
     where: [{ file: "src/index.ts", symbol: "revoke" }],
   },
   {
-    title: "Observed evidence only",
+    title: "Observed evidence only", verb: "Prove",
     enforced: "`atelier check` runs each required check on a clean clone of the head Artifacts holds and posts the result as a check. The Worker stores a check as Observed and a report as Reported, and the gate counts Observed results only. A required check with no Observed result at the head is Pending and blocks acceptance. Under `sandboxOnly`, only results from a Cloudflare container count. A check run with `--merged`, on the head's merge with main as it is now, is recorded against both revisions and never counts as the head's own check; it blocks acceptance only when it fails after main moved past the head the passing checks were recorded against.",
     why: "An agent's own statement that its tests pass is not evidence; the owner needs results taken from a clean clone of the head, though only a container result is produced by Atelier itself, and a local Observed result is posted by the machine that ran it.",
     where: [{ file: "src/rules.ts", symbol: "evidenceAt" }, { file: "src/rules.ts", symbol: "gate" }, { file: "src/rules.ts", symbol: "mergedBlockers" }],
   },
   {
-    title: "Evidence bound to a head",
+    title: "Evidence bound to a head", verb: "Prove",
     enforced: "A result, a review and an acceptance each name the head they apply to. Atelier refuses a result or a review for any head but the task's current one, reads the head from Artifacts instead of taking the agent's word for it, and withdraws acceptance when a push moves the head.",
     why: "An approval of one revision must not authorise another, and a pass at one revision says nothing about the next.",
     where: [{ file: "src/rules.ts", symbol: "assertRevision" }, { file: "src/ledger.ts", symbol: "recordPush" }],
   },
   {
-    title: "Independent review of protected paths",
-    enforced: "A change that touches a protected path needs an approving review from a model of another family than every model that contributed to the task, in every project, with or without a ControlPlane policy. The family is read from the model's name, and a family Atelier does not recognise never qualifies, in a reviewer or in a contributor. The project owner's approval is not this review; the owner accepts and merges. Nor is a tier review's approval: a project's review tier reviews beside this review, and its rejection blocks like any other. When no reviewer qualifies, the owner can override the review while accepting, giving a reason: the override is recorded as an event of its own, never as a review, counts only at that head, and the task page and the inbox show it with its reason. An override needs the owner's own confirmation, a factor no agent holds, never the owner token alone, which an agent session may hold, nor the browser session that token signs in: the task page's override form carries the factor, the owner's Cloudflare Access identity where the pages are behind Access, else the server's confirmation secret (OVERRIDE_SECRET), typed into the form and never given to a session; a server with neither can confirm no override. `atelier accept --override-review` is taken only within 15 minutes of the owner pressing Allow an override from the command line on that page with that factor, once per permission. Each project page and `atelier status` count the merges that went in by override and link each. A project set up with `atelier init --no-override` refuses every override, and counts none recorded before the setting. The protected paths are those the project lists (by default `AGENTS.md`, `CLAUDE.md`, `wrangler.*` and `.atelier/prompts/**`, the role prompts) and what a required check executes: the scripts it runs, the recipe files of make and just, the manifest and configuration a package manager or build tool runs scripts from, and the local binary npx would run. Under a ControlPlane policy a coordinated change, one that is neither protected nor direct, needs a review from a model different from every contributor's, under any harness name, and the owner's approval is not that review either.",
-    why: "The model that wrote a change to the files that instruct agents or grade their work must not approve it, and nor should a model of its family, which is likely to share its blind spots.",
+    title: "Independent review of protected paths", verb: "Review",
+    enforced: "By default, a change that touches a protected path needs an approving review from a model of another family than every model that contributed to the task, in every project, with or without a ControlPlane policy. The family is read from the model's name, and under the default rule a family Atelier does not recognise never qualifies, in a reviewer or in a contributor. The project owner's approval is not this review; the owner accepts and merges. Nor is a tier review's approval: a project's review tier reviews beside this review, and its rejection blocks like any other. When no reviewer qualifies, the owner can override the review while accepting, giving a reason: the override is recorded as an event of its own, never as a review, counts only at that head, and the task page and the inbox show it with its reason. An override needs the owner's own confirmation, a factor no agent holds, never the owner token alone, which an agent session may hold, nor the browser session that token signs in: the task page's override form carries the factor, the owner's Cloudflare Access identity where the pages are behind Access, else the server's confirmation secret (OVERRIDE_SECRET), typed into the form and never given to a session; a server with neither can confirm no override. `atelier accept --override-review` is taken only within 15 minutes of the owner pressing Allow an override from the command line on that page with that factor, once per permission. Each project page and `atelier status` count the merges that went in by override and link each. A project set up with `atelier init --no-override` refuses every override, and counts none recorded before the setting. The protected paths are those the project lists (by default `AGENTS.md`, `CLAUDE.md`, `wrangler.*` and `.atelier/prompts/**`, the role prompts) and what a required check executes: the scripts it runs, the recipe files of make and just, the manifest and configuration a package manager or build tool runs scripts from, and the local binary npx would run. Under a ControlPlane policy a coordinated change, one that is neither protected nor direct, needs a review from a model different from every contributor's, under any harness name, and the owner's approval is not that review either. A project may opt out of the cross-company rule with `atelier init --single-family COMPANY`: building and reviewing then use that company's models alone, routing, dispatch and the landing pick no other, and a review counts when the reviewer is a different model of the company from every contributor; a model never counts as reviewer of a change it contributed to, in either mode, and `--no-override` refuses overrides in either mode. The mode is shown on the project page, in `atelier status`, in every review brief and in each merge's provenance note, so nobody takes such a review for a cross-company one, and `atelier init --cross-family` returns to the default; either switch is recorded with who made it and when.",
+    why: "The model that wrote a change to the files that instruct agents or grade their work must not approve it, and nor should a model of its family, which is likely to share its blind spots; where a client allows one company's models alone, a different model of that company is the most independence there is, and the mode is named everywhere so nobody mistakes it for the stronger rule.",
     where: [{ file: "src/rules.ts", symbol: "changeClass" }, { file: "src/rules.ts", symbol: "checkFiles" }, { file: "src/rules.ts", symbol: "independentApproval" }, { file: "src/rules.ts", symbol: "reviewOverrideFor" }],
   },
   {
-    title: "No self-review",
+    title: "No self-review", verb: "Review",
     enforced: "The task's current owner cannot record a review of it. Everyone who has held the task or pushed to its workspace stays a contributor, so a review by any of them never counts as the independent one.",
     why: "A review by the author checks nothing.",
     where: [{ file: "src/ledger.ts", symbol: "addReview" }, { file: "src/rules.ts", symbol: "pushActors" }],
   },
   {
-    title: "Owner acceptance and merge",
+    title: "Owner acceptance and merge", verb: "Land",
     enforced: "Only the project owner can accept or merge. Acceptance is refused unless the task is in the submitted state and the gate is clear: every required check Observed passing at the current head, the changed paths measured, no rejection at that head, and a qualifying review where one is required, or the owner's recorded override of it. The merge lands only the accepted head, and the ledger records it only when the merge commit is found on the baseline with the accepted head as a parent.",
     why: "Work enters the project only by the owner's decision, made on evidence for one exact revision.",
     where: [{ file: "src/rules.ts", symbol: "gate" }, { file: "src/ledger.ts", symbol: "beginLanding" }],
   },
   {
-    title: "Tokens scoped to an actor",
+    title: "Tokens scoped to an actor", verb: "Claim",
     enforced: "An agent token binds every request to one actor: a request that names another actor is refused. The token expires (after 30 days unless set, and at most 365), can be limited to named projects, and opens only the agent workflow of claiming, pushing, posting results and reports, reviewing, submitting, handing off, releasing and reading, with these routes by name: `block`, `unblock`, `queue`, `sandbox`, `plan`, `integrated`, `integration-failed`, `refreshed` and `refresh-failed`. The Ledger still takes several of them only from the task's holder. Creating tasks, accepting, merging, dispatching, the model pool, project settings and token management need the owner token, and agent tokens cannot sign in to the browser.",
     why: "A leaked or misused agent token can act only as its own actor, in its own projects, and cannot decide for the owner.",
     where: [{ file: "src/tokens.ts", symbol: "agentRoute" }, { file: "src/tokens.ts", symbol: "tokenActive" }, { file: "src/tokens.ts", symbol: "inScope" }],
   },
   {
-    title: "Core files are built one change at a time",
-    enforced: "A project's policy may name core files (`atelier init --core GLOB`). While a queued dispatch's scope overlaps, within a core file, the scope of a live item (claimed, submitted or accepted), the queue offers it to no runner and the owner's listing names the item it waits on; it is offered once that item merges or is abandoned. Items of one plan never hold each other, since the plan orders overlapping parts by their dependencies. The owner lets one task's dispatch through with `atelier dispatch ID --overlap-ok`. With no core files, nothing is held.",
+    title: "Core files are built one change at a time", verb: "Land",
+    enforced: "A project's policy may name core files (`atelier init --core GLOB`). While a queued dispatch's scope overlaps, within a core file, the scope of a claimed item or of the item named by a live landing lease (unexpired, its item not yet merged or abandoned), the queue offers it to no runner and the owner's listing names every item it waits on. A submitted or accepted item that is not landing holds nothing. The dispatch is offered once each claimed blocker submits or is released and each landing ends. Items of one plan never hold each other, since the plan orders overlapping parts by their dependencies; a claimed plan item holds nothing, and the plan, integrate, refresh and review jobs are never held. The owner lets one task's dispatch through with `atelier dispatch ID --overlap-ok`. With no core files, nothing is held.",
     why: "Tasks built at once on the same hot files stop each other's landings on merge conflicts.",
-    where: [{ file: "src/dispatch/rules.ts", symbol: "coreHold" }, { file: "src/ledger.ts", symbol: "waiting" }],
+    where: [{ file: "src/dispatch/rules.ts", symbol: "coreBlockers" }, { file: "src/ledger.ts", symbol: "waiting" }],
   },
 ];
 
@@ -215,7 +242,7 @@ export const ORCHESTRATOR: Part[] = [
   },
   {
     name: "Part routing", stage: "t15, build step 3", built: true,
-    what: "`src/plans/route.ts` chooses a builder, two alternates and a reviewer from another model family for each part, from the model pool and the ledger's record, with each model's reliability across every project breaking ties. It leaves out refused models, and paid models unless the owner allows them. A model no live runner offers cannot build or review at all, since no runner could claim its dispatch (`offeredActors` in `src/dispatch/rules.ts`), and a reviewer is routed besides only to a model a live runner offers for the review job (`offering` in `src/dispatch/rules.ts`, which counts a model only when a runner that offers the job lists it, so a model only a build runner offers never reviews, the t210 case of 2026-10-07); when no runner is live the pool stands and the routing says so with a warning.",
+    what: "`src/plans/route.ts` chooses a builder, two alternates and a reviewer for each part. By default the reviewer is from another model family; in single-family mode all picks belong to the selected company and the reviewer is a different model from every contributor. Picks come from the model pool and the ledger's record, with each model's reliability across every project breaking ties. It leaves out refused models, and paid models unless the owner allows them. A model no live runner offers cannot build or review at all, since no runner could claim its dispatch (`offeredActors` in `src/dispatch/rules.ts`), and a reviewer is routed besides only to a model a live runner offers for the review job (`offering` in `src/dispatch/rules.ts`, which counts a model only when a runner that offers the job lists it, so a model only a build runner offers never reviews, the t210 case of 2026-10-07); when no runner is live the pool stands and the routing says so with a warning.",
     files: ["src/plans/route.ts"],
     code: [{ file: "src/plans/route.ts", symbol: "routeParts" }, { file: "src/dispatch/rules.ts", symbol: "offering" }],
   },
@@ -251,19 +278,19 @@ export const ORCHESTRATOR: Part[] = [
   },
   {
     name: "Review rules", stage: "t39, build step 8", built: true,
-    what: "`src/review/` decides when a submission gets an automatic review, and how the review is asked for and read. `reviewNeeded` asks for one once every required check is observed passing at the head and the changed paths are measured, unless that head already has an approval that suffices, a rejection awaiting rework, an open request or, outside a plan, the owner's override. The owner's approval never suffices. Every part of a plan is reviewed; any other task only when the gate needs an independent review. `pickReviewer` takes a model whose family is recognised and differs from every contributor's, available, not refused and paid only when allowed, and names each model it passed over and why. `reviewBrief` writes what the reviewer reads, fencing quoted text so it cannot pose as instructions; it states the project's review bar (`atelier init --review-bar`, or the default bar) before the reply format, and from the second review on lists each earlier finding with the owner's verdict and note, saying a refuted finding is repeated only with new evidence quoting the code. `parseVerdict` reads the reply and refuses one that states no verdict, states both, or gives findings that contradict its verdict; a rejection needs a blocking finding. A project with a review tier (`atelier init --review-tier H/M,H/M`) has every protected change reviewed by the tier too, most with one review: `pickReviewer` asks the tier's models first for the gate's review, and a tier model of another family than every contributor gives both (`gateServesTier`), its review marked as the gate review, top tier. Only when the gate's reviewer is outside the tier is a separate tier request asked beside it: `pickTierReviewer` takes the first tier model that did not build the change and is not the gate's reviewer, whatever its family. A tier rejection sends the change back as any rejection does; a separate tier approval never satisfies the gate, and a landing never waits for a tier review, whose open request the acceptance withdraws.",
+    what: "`src/review/` decides when a submission gets an automatic review, and how the review is asked for and read. `reviewNeeded` asks for one once every required check is observed passing at the head and the changed paths are measured, unless that head already has an approval that suffices, a rejection awaiting rework, an open request or, outside a plan, the owner's override. The owner's approval never suffices. Every part of a plan is reviewed; any other task only when the gate needs an independent review. `pickReviewer` takes a model whose family is recognised and, by default, differs from every contributor's; in single-family mode it takes a different model of the selected company from every contributor. The model must be available, not refused and paid only when allowed, and names each model it passed over and why. `reviewBrief` writes what the reviewer reads, fencing quoted text so it cannot pose as instructions; it states the project's review bar (`atelier init --review-bar`, or the default bar) before the reply format, and from the second review on lists each earlier finding with the owner's verdict and note, saying a refuted finding is repeated only with new evidence quoting the code. `parseVerdict` reads the reply and refuses one that states no verdict, states both, or gives findings that contradict its verdict; a rejection needs a blocking finding. A project with a review tier (`atelier init --review-tier H/M,H/M`) has every protected change reviewed by the tier too, most with one review: `pickReviewer` asks the tier's models first for the gate's review, and a tier model qualifying under the project's family mode gives both (`gateServesTier`), its review marked as the gate review, top tier. Only when the gate's reviewer is outside the tier is a separate tier request asked beside it: `pickTierReviewer` takes the first tier model that did not build the change and is not the gate's reviewer, whatever its family in the default mode, but only of the selected company in single-family mode. If no tier model qualifies, no separate tier review is requested. A tier rejection sends the change back as any rejection does; a separate tier approval never satisfies the gate, and a landing never waits for a tier review, whose open request the acceptance withdraws.",
     files: ["src/review/needed.ts", "src/review/reviewer.ts", "src/review/brief.ts", "src/review/verdict.ts", "src/review/tier.ts"],
     code: [{ file: "src/review/needed.ts", symbol: "reviewNeeded" }, { file: "src/review/reviewer.ts", symbol: "pickReviewer" }, { file: "src/review/brief.ts", symbol: "reviewBrief" }, { file: "src/review/verdict.ts", symbol: "parseVerdict" }, { file: "src/review/tier.ts", symbol: "gateServesTier" }, { file: "src/review/tier.ts", symbol: "pickTierReviewer" }],
   },
   {
     name: "Review requests and runner job", stage: "t39, build steps 9 and 10", built: true,
-    what: "The ledger keeps review requests: its tick asks one for each submitted part whose checks pass and whose paths are measured, routed by `pickReviewer` to a model of another family than every contributor, and the queue offers them as `review` jobs to a home runner whose config lists that job. The runner's `runReview` claims one, clones the part read-only, gives the model the review brief and the diff, and posts the verdict with its findings. `cli/agy-review.mjs` is the review command for the antigravity harness: it runs Antigravity's CLI on the brief and the diff and writes the reply to the verdict file. A rejection with blocking findings sends the part back to its builder for rework, and a harness that writes no valid verdict releases the request. Each runner's offer is recorded as it asks the queue for work (`putRunnerOffer`), and a dispatch no live runner offers, which could never be claimed however long it waits, is said as that by `unoffered`: `atelier land` while it waits for a verdict, `atelier plan show` for a routed review and `atelier status` for the queue, each naming what the live runners offer instead.",
+    what: "The ledger keeps review requests: its tick asks one for each submitted part whose checks pass and whose paths are measured, routed by `pickReviewer` to a model of another family than every contributor by default, or a different model of the selected company from every contributor in single-family mode, and the queue offers them as `review` jobs to a home runner whose config lists that job. The runner's `runReview` claims one, clones the part read-only, gives the model the review brief and the diff, and posts the verdict with its findings. `cli/agy-review.mjs` is the review command for the antigravity harness: it runs Antigravity's CLI on the brief and the diff and writes the reply to the verdict file. A rejection with blocking findings sends the part back to its builder for rework, and a harness that writes no valid verdict releases the request. Each runner's offer is recorded as it asks the queue for work (`putRunnerOffer`), and a dispatch no live runner offers, which could never be claimed however long it waits, is said as that by `unoffered`: `atelier land` while it waits for a verdict, `atelier plan show` for a routed review and `atelier status` for the queue, each naming what the live runners offer instead.",
     files: ["src/ledger.ts", "cli/runner.mjs", "cli/agy-review.mjs", "test/review-requests.spec.ts", "test/review-runner.test.mjs", "test/agy-review.test.mjs"],
     code: [{ file: "src/ledger.ts", symbol: "review_requests" }, { file: "src/ledger.ts", symbol: "reviewTick" }, { file: "src/index.ts", symbol: "review-claim" }, { file: "cli/runner.mjs", symbol: "runReview" }, { file: "cli/runner.mjs", symbol: "verdict_file" }, { file: "src/dispatch/rules.ts", symbol: "unoffered" }, { file: "src/ledger.ts", symbol: "putRunnerOffer" }],
   },
   {
     name: "Integration rules", stage: "t16, build step 11", built: true,
-    what: "`src/plans/integrate.ts` holds the rules for merging parts into a plan's branch. `integrationBlockers` lets a part in only when it is submitted, every part it depends on has landed, and its head carries an approval from a model of another family than its builders; the owner's approval is not one, and a part takes no override. `verifyIntegration` accepts the integrator's merge commit only when it has exactly two parents, sits on the branch's first-parent line, and merges the part's head onto the integration head, the branch's head as the ledger last recorded it. `rollbackFor` says how a failed integration is undone, and refuses when that would discard commits it did not make. `planGate` adds to the plan task's gate: every part integrated or abandoned before integration, at least one integrated, each integrated part approved at the head that was integrated, and the branch's head at the integration head. There the parts' reviews are the plan's review, so the plan task asks no independent review of its own and the integrator's merges are not compared with any reviewer.",
+    what: "`src/plans/integrate.ts` holds the rules for merging parts into a plan's branch. `integrationBlockers` lets a part in only when it is submitted, every part it depends on has landed, and its head carries an approval from a model of another family than its contributors by default, or a different model of the selected company from every contributor in single-family mode; the owner's approval is not one, and a part takes no override. `verifyIntegration` accepts the integrator's merge commit only when it has exactly two parents, sits on the branch's first-parent line, and merges the part's head onto the integration head, the branch's head as the ledger last recorded it. `rollbackFor` says how a failed integration is undone, and refuses when that would discard commits it did not make. `planGate` adds to the plan task's gate: every part integrated or abandoned before integration, at least one integrated, each integrated part approved at the head that was integrated, and the branch's head at the integration head. There the parts' reviews are the plan's review, so the plan task asks no independent review of its own and the integrator's merges are not compared with any reviewer.",
     files: ["src/plans/integrate.ts"],
     code: [{ file: "src/plans/integrate.ts", symbol: "integrationBlockers" }, { file: "src/plans/integrate.ts", symbol: "verifyIntegration" }, { file: "src/plans/integrate.ts", symbol: "rollbackFor" }, { file: "src/plans/integrate.ts", symbol: "planGate" }],
   },
@@ -275,7 +302,7 @@ export const ORCHESTRATOR: Part[] = [
   },
   {
     name: "Landing a single task", stage: "t187, outside the plan flow", built: true,
-    what: "`atelier land ID` lands one task whole, from the owner's machine. It takes the project's landing lease on the server (`beginProjectLanding`), so one landing runs at a time, merges main into the task's workspace with `--no-ff` and stops on conflicts, naming the files, regenerates the project's fixtures when its policy says how, then pushes, runs the required checks and submits, each as the CLI's own command. It asks the server for the review the gate needs through the `review-request` route (`requestReview`), which picks a model of another family than every contributor, or takes the one `--reviewer` names, and queues a review job; it waits for the verdict, then accepts and merges. Each step, its duration and the commits that came from main are recorded as `land.*` events (`landEvent`), and the lease is released when the landing ends, by a failure too. `--no-review` leaves the task submitted for the owner to settle, and `--dry-run` prints the steps without changing anything.",
+    what: "`atelier land ID` lands one task whole, from the owner's machine. It takes the project's landing lease on the server (`beginProjectLanding`), so one landing runs at a time, merges main into the task's workspace with `--no-ff` and stops on conflicts, naming the files, regenerates the project's fixtures when its policy says how, then pushes, runs the required checks and submits, each as the CLI's own command. It asks the server for the review the gate needs through the `review-request` route (`requestReview`), which picks a model of another family than every contributor by default, or a different model of the selected company from every contributor in single-family mode, or takes the one `--reviewer` names subject to the same restrictions, and queues a review job; it waits for the verdict, then accepts and merges. Each step, its duration and the commits that came from main are recorded as `land.*` events (`landEvent`), and the lease is released when the landing ends, by a failure too. `--no-review` leaves the task submitted for the owner to settle, and `--dry-run` prints the steps without changing anything.",
     files: ["cli/land.mjs", "test/land.test.mjs", "test/land-routes.spec.ts"],
     code: [{ file: "cli/land.mjs", symbol: "runLand" }, { file: "src/index.ts", symbol: "landing-lease" }, { file: "src/index.ts", symbol: "review-request" }, { file: "src/ledger.ts", symbol: "beginProjectLanding" }, { file: "src/ledger.ts", symbol: "requestReview" }, { file: "src/ledger.ts", symbol: "landEvent" }, { file: "src/usage.ts", symbol: "land ID" }],
   },

@@ -5,9 +5,12 @@ import { createServer } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 // atelier models note and models show, against a stub server that answers as
-// the pool does: entries carry their notes, oldest first (t406).
+// the pool does: entries carry their notes, oldest first (t406). The stub
+// publishes every capability, so the CLI's check before each command
+// (t458) passes and is not among the requests the tests read.
 
 const cli = resolve("cli/atelier.mjs");
 const NOTE = { at: "2026-10-09T10:00:00.000Z", by: "owner", text: "Commits without the full suite.", item: "t406", project: "atelier" };
@@ -23,6 +26,7 @@ async function stub(t, answer) {
   const server = createServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
+    if (req.url === "/api/version") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ capabilities: SERVER_CAPABILITIES })); }
     requests.push({ method: req.method, path: req.url, body: raw ? JSON.parse(raw) : undefined });
     const { status = 200, data } = answer(req.method, req.url);
     res.writeHead(status, { "content-type": "application/json" });
@@ -107,4 +111,23 @@ test("models lists the pool with each model's notes beneath its line, oldest fir
     "  2026-10-09 by owner on atelier/t406: Commits without the full suite.",
     "cloud gemini-cli/gemini-3  google  not checked",
   ]);
+});
+
+test("models admit and withdraw address one project's reviewer admission with a reason", async (t) => {
+  const record = { id: "Qwen3-Coder-Next", active: true, by: "owner", at: NOTE.at, reason: "Qualified locally" };
+  const f = await stub(t, (method) => ({ data: { ...record, active: method === "PUT" } }));
+  for (const sub of ["admit", "withdraw"]) {
+    const result = await f.run(["models", sub, "studio-review", "--project", "alpha", "--reason", record.reason]);
+    assert.equal(result.status, 0, result.output);
+    assert.match(result.output, /Qwen3-Coder-Next: reviewer .* in alpha by owner/);
+  }
+  assert.deepEqual(f.requests, ["PUT", "DELETE"].map((method) => ({ method, path: "/api/projects/alpha/reviewers/studio-review", body: { reason: record.reason } })));
+});
+
+test("reviewer admission needs a reason before sending a request", async (t) => {
+  const f = await stub(t, () => ({ data: {} }));
+  const result = await f.run(["models", "admit", "Qwen3-Coder-Next", "--project", "alpha"]);
+  assert.equal(result.status, 1);
+  assert.match(result.output, /--reason TEXT/);
+  assert.deepEqual(f.requests, []);
 });

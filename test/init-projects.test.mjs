@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 const cli = resolve("cli/atelier.mjs");
 
@@ -24,6 +25,8 @@ else if (!process.argv.includes('push')) process.exit(2);
   writeFileSync(preload, `import { appendFileSync } from 'node:fs';
 let policy = { checks: [], protected: ['manual/**'] };
 globalThis.fetch = async (url, options) => {
+  // The capability check before init (t458) reads the version; it is not a call the tests read.
+  if (new URL(url).pathname === '/api/version') return Response.json({ capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
   appendFileSync(process.env.TEST_CALLS, JSON.stringify({ url, ...options }) + '\\n');
   if (process.env.TEST_REFUSE) return Response.json({ error: 'live_work', detail: 'live work' }, { status: 409 });
   const renamed = /\\/projects\\/([^/]+)\\/rename$/.exec(url);
@@ -34,6 +37,7 @@ globalThis.fetch = async (url, options) => {
   if (options.method === 'PUT') policy = { ...policy, ...JSON.parse(options.body) };
   return Response.json(options.method === 'DELETE' ? { removed: true } : {
     project: { repo: 'weblog', policy: { ...policy, ...(process.env.TEST_APPROVED ? { approval: process.env.TEST_APPROVED } : {}) } },
+    item: { state: 'open', owner: null, dispatch: null },
     remote: 'https://git.test/weblog', token: 'test-token',
     baseline: { remote: 'https://git.test/weblog', token: 'test-token' }
   });

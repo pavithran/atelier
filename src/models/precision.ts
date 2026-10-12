@@ -54,9 +54,20 @@ const isReviewer = (actor: string, owner: string | null) => actor !== owner && a
 // from the same task id in another project). `owner` is never a reviewer
 // model: a finding of the owner's own review is left out.
 export function buildPrecision(projects: readonly { project: string; events: readonly LedgerEvent[] }[], window: PrecisionWindow, owner: string | null = null): PrecisionRecord {
-  // The newest verdict on each finding: project, item, head, reviewer, index.
-  const newest = new Map<string, { seq: number; at: string; by: string; verdict: string }>();
+  // The newest verdict on each finding: project, item, head, reviewer, index
+  // and, when the verdict names it, the review's sequence.
+  const newest = new Map<string, { seq: number; at: string; by: string; verdict: string; review?: number }>();
+  const named: { legacy: string; seq: number; review: number }[] = [];
   for (const { project, events } of projects) {
+    // The review events at each item and head, where the events given
+    // include them, to place a legacy verdict on its review. The events may
+    // come in any order (the ledger lists them newest first).
+    const reviews = new Map<string, number[]>();
+    for (const ev of events) {
+      if ((ev.kind !== "review.approved" && ev.kind !== "review.rejected") || ev.itemId === null) continue;
+      const at = `${ev.itemId} ${str(ev.data.head)}`;
+      reviews.set(at, [...(reviews.get(at) ?? []), ev.seq]);
+    }
     for (const ev of events) {
       if (ev.kind !== "review.finding" || ev.itemId === null) continue;
       const d = ev.data;
@@ -66,10 +77,23 @@ export function buildPrecision(projects: readonly { project: string; events: rea
       if (!isReviewer(by, owner)) continue;
       const verdict = str(d.verdict);
       if (verdict !== "confirmed" && verdict !== "fixed" && verdict !== "refuted") continue;
-      const key = `${project} ${ev.itemId} ${str(d.head)} ${by.toLowerCase()} ${String(d.index)}`;
+      // A verdict naming its review (t486) is on that review's finding alone;
+      // one from before keeps the key it always had, and was on the newest
+      // review at its head when recorded, as `atelier finding` chose then.
+      const position = `${project} ${ev.itemId} ${str(d.head)} ${by.toLowerCase()} ${String(d.index)}`;
+      const key = typeof d.review === "number" ? `${position} ${d.review}` : position;
+      const review = typeof d.review === "number" ? undefined : (reviews.get(`${ev.itemId} ${str(d.head)}`) ?? []).reduce<number | undefined>((m, s) => (s < ev.seq && (m === undefined || s > m) ? s : m), undefined);
       const seen = newest.get(key);
-      if (!seen || ev.seq > seen.seq) newest.set(key, { seq: ev.seq, at: ev.at, by, verdict });
+      if (!seen || ev.seq > seen.seq) newest.set(key, { seq: ev.seq, at: ev.at, by, verdict, ...(review === undefined ? {} : { review }) });
+      if (typeof d.review === "number") named.push({ legacy: position, seq: ev.seq, review: d.review });
     }
+  }
+  // A verdict naming its review replaces an older one on that finding that
+  // named none, so a finding judged again is counted once; where the legacy
+  // verdict's review is known, only a verdict naming that same review does.
+  for (const n of named) {
+    const old = newest.get(n.legacy);
+    if (old && old.seq < n.seq && (old.review === undefined || old.review === n.review)) newest.delete(n.legacy);
   }
   const models = new Map<string, ReviewerPrecision>();
   for (const v of newest.values()) {

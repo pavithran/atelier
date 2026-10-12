@@ -1,8 +1,12 @@
 import { env } from "cloudflare:workers";
-import { introspectWorkflow, introspectWorkflowInstance } from "cloudflare:test";
+import { introspectWorkflow, introspectWorkflowInstance, runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
-import type { LedgerEvent } from "../src/ledger.ts";
+import { LANDING_DETAIL_MAX, type ReviewClaim, type Ledger, type LedgerEvent } from "../src/ledger.ts";
+import { putLarge } from "../src/large.ts";
+import { effectiveFailures, failureSummary, resolveFailures } from "../src/check-failure.ts";
+import type { Evidence } from "../src/rules.ts";
+import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 
 // The landing Workflow (t280, src/landing-workflow.ts) run in workerd against
 // the real Ledger Durable Object, with the Workflows test helpers standing in
@@ -51,6 +55,26 @@ async function pushedTask(project: string, instance: string) {
 
 const observed = (L: ReturnType<typeof ledger>, id: string, head: string) =>
   L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["README.md"] } as never);
+
+it("container Workflow checks pass the declared preparation to their runner", async () => {
+  const project = "wf-preparation", instance = "wf-preparation-1";
+  const { L, id } = await pushedTask(project, instance);
+  const prepare = { command: "npm ci", inputs: ["package.json"], outputs: ["node_modules"], declaration: { command: "npm ci", by: "command" as const } };
+  const record = await L.project();
+  await L.setProject({ ...record, policy: { ...record.policy, checks: ["npm test"], prepare } }, "owner");
+  await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, instance);
+  await wf.modify(async (m) => {
+    await m.disableSleeps();
+    await m.mockStepResult({ name: "confirm the fork's head" }, { head: H1 });
+    await m.mockStepResult({ name: "read the check run #0" }, { status: "failed", error: "test stopped after request" });
+  });
+  await env.LANDING_WORKFLOW.create({ id: instance, params: params(project, id) });
+  await send(instance, "workspace", { round: 0, head: H1, mainHead: null, mergedIn: false });
+  await wf.waitForStatus("errored");
+  const runId = `${project}:${id}:${H1.slice(0, 12)}:wf-${instance}`;
+  const state = await env.RUNNER.get(env.RUNNER.idFromName(runId)).state();
+  expect(state?.request.prepare).toEqual(prepare);
+});
 const params = (project: string, item: string) => ({ project, key: project, item, actor: "owner", pollMs: 10, mergePollMs: 10 });
 const kinds = async (L: ReturnType<typeof ledger>, id: string) => ((await L.events(id)) as unknown as LedgerEvent[]).map((e) => e.kind);
 const send = async (instance: string, type: string, payload: unknown) => (await env.LANDING_WORKFLOW.get(instance)).sendEvent({ type, payload });
@@ -307,6 +331,103 @@ it("local checks: a failing observed check ends the landing, recorded, with the 
   expect((await L.item(id)).state).not.toBe("submitted");
 });
 
+// ── the failure summary the Workflow writes (t436) ──────────────────────────
+// A landing whose checks fail ends with the summary every landing prints
+// (src/check-failure.ts), read from the Ledger's evidence and the stored
+// log in R2, after the line naming the failed checks; the Ledger keeps the
+// error as the stage's detail, LANDING_DETAIL_MAX characters at most, and
+// the summary is fitted to that size so the cut never drops a failed check
+// or the check-log line.
+
+// The vitest output of a check whose two tests failed: the whole log a
+// container stored in R2, of which the inline tail holds the end.
+const VITEST = [
+  " RUN  v4.1.11 /work", "",
+  " ❯ test/sample.spec.ts (3 tests | 2 failed) 8ms",
+  "   ✓ adds numbers 1ms",
+  "   × fails: the cap is enforced 4ms",
+  "   × a suite > fails inside: names are read 1ms", "",
+  " FAIL  test/sample.spec.ts > fails: the cap is enforced",
+  "AssertionError: expected 1 to be 2",
+  " FAIL  test/sample.spec.ts > a suite > fails inside: names are read",
+  "Error: boom", "",
+  " Test Files  1 failed (1)",
+  "      Tests  2 failed | 1 passed (3)",
+].join("\n") + "\n";
+
+it("local checks: the landing ends with the failure summary every landing prints, its tests read from the stored log, whole within the record", async () => {
+  const project = "wf-local-summary", instance = "wf-local-summary-1";
+  const { L, id } = await localTask(project, instance);
+  const stored = await putLarge(env.LARGE, "logs", project, id, VITEST);
+  expect(stored).not.toBeNull();
+  await check(L, id, "npm test", false, { where: "sandbox", by: "atelier/sandbox", run: "k:1", outputTail: "      Tests  2 failed | 1 passed (3)\n[atelier] ran in a Cloudflare container in 9s, exit 1", log: stored });
+  await check(L, id, "npm run types", false, { outputTail: "src/a.ts(1,1): error TS2322: Type 'string' is not assignable to type 'number'.\n" });
+  await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, instance);
+  await wf.modify(async (m) => { await m.disableSleeps(); });
+  await env.LANDING_WORKFLOW.create({ id: instance, params: local(project, id) });
+  await send(instance, "workspace", { round: 0, head: H1, mainHead: null, mergedIn: false });
+  await wf.waitForStatus("errored");
+  const detail = (await L.landingWorkflowOf(id))?.detail ?? "";
+  // The summary fit the record: the detail ends as the summary does, uncut.
+  expect(detail.length).toBeLessThanOrEqual(LANDING_DETAIL_MAX);
+  const lines = detail.split("\n");
+  expect(lines[0]).toBe(`the required checks failed at aaaaaaaa in a clean clone on the machine holding the workspace: npm test; npm run types. The merge of main stays in the workspace; fix the failures, commit, and run atelier land ${id} --workflow again.`);
+  expect(lines[1]).toBe("Failed checks at aaaaaaaa, as the gate reads them (the latest counting run of each required check at this head):");
+  expect(lines[2]).toMatch(/^ {2}`npm test` failed in a Cloudflare container at \d{4}-\d\d-\d\d \d\d:\d\d UTC: evidence #\d+, run k:1, attempt 1 of 1 at this head$/);
+  expect(lines[3]).toBe("    failing tests (vitest): test/sample.spec.ts > fails: the cap is enforced; test/sample.spec.ts > a suite > fails inside: names are read");
+  expect(lines[4]).toBe(`    log: whole log, stored (${stored!.bytes} bytes, ${stored!.sha256.slice(0, 12)}); 11 lines, whole:`);
+  expect(detail).toContain("\n      FAIL  test/sample.spec.ts > fails: the cap is enforced\n");
+  expect(detail).not.toContain("[atelier] ran in");
+  expect(detail).toMatch(/\n {2}`npm run types` failed on a runner, in a clean clone at .*: evidence #\d+, attempt 1 of 1 at this head\n {4}failing tests: none named \(the output holds 1 TypeScript error, which name no test\)\n {4}log: whole output, inline; 1 line, whole:\n {6}src\/a\.ts\(1,1\): error TS2322/);
+  expect(lines.at(-1)).toBe(`  Whole logs of every attempt at this head: atelier check-log ${id}`);
+  expect(await L.readProjectLanding()).toBeNull();
+  expect((await L.item(id)).state).not.toBe("submitted");
+});
+
+it("container checks: a summary too long for the record is fitted to it, so every failed check and the check-log line are kept", async () => {
+  const project = "wf-container-summary", instance = "wf-container-summary-1";
+  const L = ledger(project);
+  const claims = ["npm test", "npm run types", "npm run lint"];
+  const record = { name: project, repo: `${project}--baseline`, policy: { checks: claims, protected: [] }, createdAt: new Date().toISOString() };
+  await L.setProject(record, "owner");
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
+  const id = (await L.newItem("Land with the checks run in a container", [], "owner")).id;
+  await L.claim(id, OPUS); await L.setFork(id, `${project}--${id}`, H0, OPUS); await L.recordPush(id, OPUS, H1, H1);
+  await L.setLandingWorkflow(id, instance, "owner", "container");
+  // What the container run recorded: three failures, each naming fifty
+  // tests in an inline tail longer than a container keeps whole; said in
+  // full, far over the record's size.
+  const tail = (claim: string) => `${Array.from({ length: 50 }, (_, i) => `not ok ${i + 1} - ${claim} test ${i + 1} ${"#".repeat(80)}`).join("\n")}\n[atelier] ran in a Cloudflare container in 9s, exit 1`;
+  for (const claim of claims) await check(L, id, claim, false, { where: "sandbox", by: "atelier/sandbox", run: "r:1", outputTail: tail(claim) });
+  const unfitted = failureSummary(id, H1, await resolveFailures(effectiveFailures(record.policy, (await L.evidenceFor(id)) as Evidence[], H1), async () => null));
+  expect(unfitted.length).toBeGreaterThan(2 * LANDING_DETAIL_MAX);
+  await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, instance);
+  await wf.modify(async (m) => {
+    await m.disableSleeps();
+    await m.mockStepResult({ name: "run the required checks in a Cloudflare container" }, { none: false, t0: Date.now(), runId: "r", seconds: 1 });
+    await m.mockStepResult({ name: "read the check run #0" }, { status: "done", error: "", recorded: true, results: claims.map((claim) => ({ claim, passed: false, outputTail: "" })) });
+  });
+  await env.LANDING_WORKFLOW.create({ id: instance, params: params(project, id) });
+  await send(instance, "workspace", { round: 0, head: H1, mainHead: H2, mergedIn: true });
+  await wf.waitForStatus("errored");
+  // The record holds the whole error, fitted: every check, then the check-log line, uncut.
+  const detail = (await L.landingWorkflowOf(id))?.detail ?? "";
+  expect(detail.length).toBeLessThanOrEqual(LANDING_DETAIL_MAX);
+  expect(detail.length).toBeGreaterThan(LANDING_DETAIL_MAX - 400);
+  expect(detail.startsWith(`the required checks failed at aaaaaaaa in the Cloudflare container: ${claims.join("; ")}. The merge of main stays in the workspace; fix the failures, commit, and run atelier land ${id} --workflow again.\nFailed checks at aaaaaaaa, as the gate reads them (the latest counting run of each required check at this head):\n`)).toBe(true);
+  for (const claim of claims) {
+    expect(detail).toMatch(new RegExp(`\n {2}\`${claim}\` failed in a Cloudflare container at [^\n]*: evidence #\\d+, run r:1, attempt 1 of 1 at this head\n {4}failing tests \\(tap, read from a tail of the output, so names cut with the rest are not listed\\): ${claim} test 1(?:;| )[^\n]*; and \\d+ more\n {4}log: inline tail only \\(a container keeps its last 4,000 characters inline, and this output was longer\\); `));
+  }
+  expect(detail).toMatch(/for this summary's size/);
+  expect(detail).not.toMatch(/And \d+ more failed checks/);
+  expect(detail.endsWith(`\n  Whole logs of every attempt at this head: atelier check-log ${id}`)).toBe(true);
+  const events = (await L.events(id)) as unknown as LedgerEvent[];
+  expect(events.find((e) => e.kind === "land.check")?.data).toMatchObject({ failed: true, reason: claims.join(", ") });
+  expect(await L.readProjectLanding()).toBeNull();
+  expect(await L.landingWorkflowOf(id)).toMatchObject({ stage: "failed" });
+  expect((await L.item(id)).state).not.toBe("submitted");
+});
+
 it("the landing-workflow route records the checks mode it starts with, keeps container for a start that names none, and refuses another", async () => {
   const project = "wf-route-checks";
   const L = ledger(project);
@@ -334,6 +455,70 @@ it("the landing-workflow route records the checks mode it starts with, keeps con
   // The stage the Workflow writes keeps the mode, so an executor attaching later reads it.
   await until(() => L.landingWorkflowOf(ids[0]), (r) => r?.stage === "workspace");
   expect(await L.landingWorkflowOf(ids[0])).toMatchObject({ stage: "workspace", checks: "local" });
+});
+
+// t353: a review request every runner that offers the reviewer has skipped
+// will never be claimed; the landing says so by runner name instead of
+// waiting out the review timeout.
+it("says by runner name when every runner that offers the reviewer has skipped", async () => {
+  const project = "wf-skip";
+  const L = ledger(project);
+  const record = { name: project, repo: `${project}--baseline`, policy: { checks: [], protected: ["README.md"] }, createdAt: new Date().toISOString() };
+  await L.setProject(record, "owner");
+  const index = env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  await index.registerProject(record);
+  const id = (await L.newItem("Protected", [], "owner")).id;
+  await L.claim(id, OPUS);
+  await L.setFork(id, `${project}--${id}`, H0, OPUS);
+  await L.recordPush(id, OPUS, H1, H1);
+  await observed(L, id, H1);
+  // A reviewer of another family, offered for review by a single runner.
+  await index.putModel({ id: "gpt-6-astra", harness: "codex", where: "cloud", provider: "subscription", aliases: [], family: familyOf("gpt-6-astra"), note: "", addedBy: "owner", addedAt: new Date().toISOString() } satisfies ModelEntry);
+  await index.putRunnerOffer({ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }] }, new Date().toISOString());
+  await L.setLandingWorkflow(id, "wf-skip-1", "owner");
+  await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, "wf-skip-1");
+  await wf.modify(async (m) => {
+    await m.disableSleeps();
+    await m.mockStepResult({ name: "confirm the fork's head" }, { head: H1 });
+    await m.mockStepResult({ name: "wait for the merge #0" }, true);
+  });
+  await env.LANDING_WORKFLOW.create({ id: "wf-skip-1", params: { ...params(project, id), pollMs: 10, reviewTimeoutMs: 30_000 } });
+  await send("wf-skip-1", "workspace", { round: 0, head: H1, mainHead: null, mergedIn: false });
+  // The review is requested; then the one runner that offers the reviewer
+  // skips it, under the request's own number as the queue gave it.
+  await until(async () => ((await L.events(id)) as unknown as LedgerEvent[]).some((e) => e.kind === "review.requested"), (v) => v);
+  const [{ request }] = await L.reviewWaiting();
+  await L.recordReviewSkip(id, request, H1, "home:studio", "owner", "no agent token");
+  await wf.waitForStatus("errored");
+  expect(await L.landingWorkflowOf(id)).toMatchObject({ stage: "failed" });
+  expect((await L.landingWorkflowOf(id))?.detail).toMatch(/every runner that offers codex\/gpt-6-astra for the review of t\d+ at aaaaaaaa has skipped it: home:studio\. .* or run atelier land t\d+ --workflow again, which asks the review anew for the runners to serve$/);
+  expect(await L.readProjectLanding()).toBeNull();
+
+  // The landing run again asks with the live offers: the request every
+  // runner skipped is withdrawn and asked anew under a new number, which the
+  // runner has not skipped, so its wait is not stranded by the earlier
+  // landing's skip; a skip of the new request ends it the same way.
+  await L.setLandingWorkflow(id, "wf-skip-2", "owner");
+  await using again = await introspectWorkflowInstance(env.LANDING_WORKFLOW, "wf-skip-2");
+  await again.modify(async (m) => {
+    await m.disableSleeps();
+    await m.mockStepResult({ name: "confirm the fork's head" }, { head: H1 });
+    await m.mockStepResult({ name: "wait for the merge #0" }, true);
+  });
+  await env.LANDING_WORKFLOW.create({ id: "wf-skip-2", params: { ...params(project, id), pollMs: 10, reviewTimeoutMs: 30_000 } });
+  await send("wf-skip-2", "workspace", { round: 0, head: H1, mainHead: null, mergedIn: false });
+  await until(async () => ((await L.events(id)) as unknown as LedgerEvent[]).filter((e) => e.kind === "review.requested").length, (n) => n === 2);
+  const withdrawn = ((await L.events(id)) as unknown as LedgerEvent[]).find((e) => e.kind === "review.withdrawn");
+  expect(withdrawn).toMatchObject({ data: { head: H1, reviewer: "codex/gpt-6-astra", request, runners: ["home:studio"] } });
+  const [renewed] = await L.reviewWaiting();
+  expect(renewed.request).toBeGreaterThan(request);
+  expect(await L.reviewSkips(id, renewed.request)).toEqual([]);
+  await until(() => L.landingWorkflowOf(id), (r) => r?.stage === "review");
+  expect((await L.landingWorkflowOf(id))?.detail).toMatch(/Reviewer: codex\/gpt-6-astra\. .*was withdrawn: every runner that offers codex\/gpt-6-astra had skipped it \(home:studio\)/);
+  await L.recordReviewSkip(id, renewed.request, H1, "home:studio", "owner", "no agent token, still");
+  await again.waitForStatus("errored");
+  expect((await L.landingWorkflowOf(id))?.detail).toMatch(/every runner that offers codex\/gpt-6-astra for the review of t\d+ at aaaaaaaa has skipped it: home:studio/);
+  expect(await L.readProjectLanding()).toBeNull();
 });
 
 it("fourteen simultaneous lease waiters remain readable through repeated polls and all finish in queue order", async () => {
@@ -429,35 +614,49 @@ function workflowRequest(project: string, id: string, method = "POST") {
   });
 }
 
-it("does not remember a failed create and can retry the landing", async () => {
+it("remembers a failed create and reconciles the landing after the grace period", async () => {
   const project = "wf-create-retry";
   const { L, id } = await pushedTask(project, "expired-before-create");
+  await L.setLandingWorkflowStage(id, "expired-before-create", "failed", 0);
   let creates = 0;
   const binding = {
     ...workflowBinding(),
     get: async () => { throw new Error("instance.not_found"); },
     create: async (options: Parameters<typeof env.LANDING_WORKFLOW.create>[0]) => {
       creates++;
-      // Neither a stale record nor the new id may be recorded before success.
-      expect(await L.landingWorkflowOf(id)).toBeNull();
+      // The new ID is claimed before create and retained on failure,
+      // so retry reconciles the same claim rather than a new successor.
+      expect((await L.landingWorkflowOf(id))?.instance).toBe(options?.id);
       if (creates === 1) throw new Error("internal error");
       return env.LANDING_WORKFLOW.create(options);
     },
   };
   const testEnv = { ...env, ATELIER_TOKEN: TOKEN, LANDING_WORKFLOW: binding } as typeof env;
   expect((await worker.fetch(workflowRequest(project, id), testEnv)).status).toBe(500);
-  expect(await L.landingWorkflowOf(id)).toBeNull();
+  const claim = await L.landingWorkflowOf(id);
+  expect(claim).toMatchObject({ checks: "local", stage: "lease" });
+  expect((await worker.fetch(workflowRequest(project, id), testEnv)).status).toBe(503);
+  expect(creates).toBe(1);
+  await runInDurableObject(L, async (_instance, state) => {
+    const key = `landing-workflow:${id}`;
+    const record = JSON.parse(state.storage.sql.exec(`SELECT value FROM meta WHERE key = ?`, key).one().value as string);
+    state.storage.sql.exec(`UPDATE meta SET value = ? WHERE key = ?`, JSON.stringify({ ...record, at: new Date(Date.now() - 120_000).toISOString() }), key);
+  });
   const response = await worker.fetch(workflowRequest(project, id), testEnv);
-  expect(response.status).toBe(201);
+  expect(response.status).toBe(200);
   const result = await response.json() as { instance: string };
+  expect(result.instance).toBe(claim!.instance);
   expect(await L.landingWorkflowOf(id)).toMatchObject({ instance: result.instance, checks: "local" });
   await until(() => L.landingWorkflowOf(id), (r) => r?.stage === "workspace");
   expect(creates).toBe(2);
 });
 
-it("replaces an instance missing from the real binding while keeping its queue place", async () => {
-  const project = "wf-expired-restart";
-  const { L, id } = await pushedTask(project, "wf-expired-missing");
+it.each(["failed", "done"] as const)("replaces a missing instance at %s without an observed status, keeping its queue place", async (stage) => {
+  const project = `wf-expired-restart-${stage}`;
+  const old = `wf-expired-missing-${stage}`;
+  const { L, id } = await pushedTask(project, old);
+  await L.setLandingWorkflowStage(id, old, stage, 0);
+  expect((await L.landingWorkflowOf(id))?.lastStatus).toBeUndefined();
   const blocker = (await L.newItem("Hold lease", [], "owner")).id;
   await L.beginProjectLanding(blocker, "owner");
   await L.queueProjectLanding(id, "owner");
@@ -465,7 +664,7 @@ it("replaces an instance missing from the real binding while keeping its queue p
   const response = await worker.fetch(workflowRequest(project, id), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
   expect(response.status).toBe(201);
   const result = await response.json() as { instance: string };
-  expect(result.instance).not.toBe("wf-expired-missing");
+  expect(result.instance).not.toBe(old);
   expect(await L.landingWorkflowOf(id)).toMatchObject({ instance: result.instance });
   expect((await L.readLandingQueue()).map((row) => ({ item: row.item, at: row.at })))
     .toEqual(before.map((row) => ({ item: row.item, at: row.at })));
@@ -512,9 +711,10 @@ it("twelve multi-hour lease waiters remain readable at the stretched poll cadenc
   expect(await L.readLandingQueue()).toHaveLength(12);
 });
 
-it("does not replace an existing handle when status fails, even with a missing-instance error", async () => {
-  const project = "wf-status-failure";
+it.each(["lease", "failed", "done"] as const)("does not replace an existing handle at %s when status fails, even with a missing-instance error", async (stage) => {
+  const project = `wf-status-failure-${stage}`;
   const { L, id } = await pushedTask(project, "wf-status-existing");
+  await L.setLandingWorkflowStage(id, "wf-status-existing", stage, 0);
   let creates = 0;
   const testEnv = { ...env, ATELIER_TOKEN: TOKEN, LANDING_WORKFLOW: {
     ...workflowBinding(),
@@ -538,7 +738,7 @@ it("fences stale-record clearing to the owner and the instance read", async () =
   expect(await L.landingWorkflowOf(id)).toBeNull();
 });
 
-it("retries its first stage when execution starts before create returns and replaces a terminal record", async () => {
+it("runs its first stage when execution starts before create returns and replaces a terminal record", async () => {
   const project = "wf-create-race";
   const { L, id } = await pushedTask(project, "wf-old-terminal");
   const testEnv = { ...env, ATELIER_TOKEN: TOKEN, LANDING_WORKFLOW: {
@@ -546,10 +746,10 @@ it("retries its first stage when execution starts before create returns and repl
     get: async () => statusHandle(async () => ({ status: "errored" })),
     create: async (options: Parameters<typeof env.LANDING_WORKFLOW.create>[0]) => {
       const instance = await env.LANDING_WORKFLOW.create(options);
-      // Let the new Workflow reach its first stage before recording its id.
+      // Let the new Workflow reach its first stage before create returns;
+      // its id was claimed before the create (t430).
       await new Promise((r) => setTimeout(r, 200));
-      expect((await L.landingWorkflowOf(id))?.instance).toBe("wf-old-terminal");
-      expect(await L.readProjectLanding()).toBeNull();
+      expect((await L.landingWorkflowOf(id))?.instance).toBe(options?.id);
       return instance;
     },
   } } as typeof env;
@@ -559,3 +759,53 @@ it("retries its first stage when execution starts before create returns and repl
   expect(await until(() => L.landingWorkflowOf(id), (r) => r?.stage === "workspace"))
     .toMatchObject({ instance: result.instance, stage: "workspace" });
 });
+
+
+for (const ending of ["approve", "reject", "timeout", "lease-loss"] as const) {
+it(`t485: the recovered landing ignores obsolete skips and preserves ${ending}`, async () => {
+  const project = `wf-review-restart-${ending}`, instance = `${project}-1`;
+  const { L, id } = await pushedTask(project, instance);
+  const reviewer = "codex/gpt-6-astra";
+  const index = env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  await index.putModel({ id: "gpt-6-astra", harness: "codex", where: "cloud", provider: "subscription", aliases: [], family: familyOf("gpt-6-astra"), note: "", addedBy: "owner", addedAt: new Date().toISOString() });
+  await index.putRunnerOffer({ runner: "home:studio", kind: "home", jobs: ["review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }] }, new Date().toISOString());
+  await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, instance);
+  await wf.modify(async (m) => {
+    await m.disableSleeps();
+    await m.mockStepResult({ name: "confirm the fork's head" }, { head: H1 });
+    await m.mockStepResult({ name: "wait for the merge #0" }, true);
+  });
+  await env.LANDING_WORKFLOW.create({ id: instance, params: { ...params(project, id), reviewer, reviewTimeoutMs: ending === "timeout" ? 1000 : 60_000 } });
+  await send(instance, "workspace", { round: 0, head: H1, mainHead: null, mergedIn: false });
+  await until(() => L.reviewWaiting(), (rows) => rows.length > 0);
+  const old = await L.claimReview(id, reviewer, { runner: "home:studio", kind: "home" }, true) as unknown as ReviewClaim;
+  // Fake only the review lease clock inside this Ledger call. The landing
+  // keeps its original lease and deadline, as with a real review restart.
+  await runInDurableObject(L, (ledger: Ledger, state: DurableObjectState) => {
+    const start = Date.parse(state.storage.sql.exec(`SELECT claimedAt FROM review_requests WHERE id = ?`, old.request).one().claimedAt as string);
+    const realNow = Date.now;
+    try {
+      Date.now = () => start + 40 * 60_000;
+      expect(ledger.reviewWaiting()[0].request).not.toBe(old.request);
+    } finally { Date.now = realNow; }
+  });
+  await L.recordReviewSkip(id, old.request, H1, "home:studio", "owner", "late skip from the dead runner");
+  const successor = await L.claimReview(id, reviewer, { runner: "home:studio", kind: "home" }, true) as unknown as ReviewClaim;
+  expect(successor.request).not.toBe(old.request);
+  // Let the Workflow read the obsolete skip before an approval arrives.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(await L.landingWorkflowOf(id)).toMatchObject({ instance, stage: "review" });
+  if (ending === "approve" || ending === "reject") {
+    await L.addReview({ itemId: id, by: reviewer, head: H1, criteria: successor.criteria, request: successor.request, approve: ending === "approve", note: "Recovered verdict", at: new Date().toISOString() }, undefined, true);
+  } else if (ending === "lease-loss") {
+    await L.cancelProjectLanding(id, "owner");
+  }
+  await wf.waitForStatus(ending === "approve" ? "complete" : "errored");
+  expect(await L.landingWorkflowOf(id)).toMatchObject({ instance, stage: ending === "approve" ? "done" : "failed" });
+  expect((await L.item(id)).state).toBe(ending === "approve" ? "accepted" : "submitted");
+  if (ending !== "approve") {
+    const detail = (await L.landingWorkflowOf(id))!.detail;
+    expect(detail).toMatch(ending === "reject" ? /rejected/ : ending === "timeout" ? /no verdict.*within/ : /lease/);
+  }
+});
+}

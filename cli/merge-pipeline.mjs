@@ -42,6 +42,9 @@ const GENERATOR_TIMEOUT_MS = Number(process.env.ATELIER_GENERATOR_TIMEOUT ?? 20 
 // Git as the pipeline runs it by default: local commands only, never a
 // prompt. Callers pass their own (the CLI's, with its hooks and identity
 // handling); either answers the result with allowFail, else the output.
+// mergeThrough awaits every answer, so a caller's git may answer a promise
+// (a runner's, which runs each command as a child under its stop signal);
+// the other exports are synchronous and take a synchronous git.
 export function localGit(args, opts = {}) {
   const r = spawnSync("git", args, { cwd: opts.cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: "0", ...opts.env }, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
   if (opts.allowFail) return r;
@@ -98,6 +101,29 @@ export function installMergeConfig(dir, { git = localGit, node = process.execPat
   return missing;
 }
 
+// The same installation through a git that may answer promises, as
+// mergeThrough runs it.
+async function installMergeConfigAwaiting(dir, git, node = process.execPath) {
+  const home = join(await git(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: dir }), "atelier"), driver = join(home, "merge-driver.mjs");
+  const problems = async () => {
+    const left = [];
+    if (!existsSync(driver) || !readFileSync(driver).equals(readFileSync(DRIVER_SOURCE))) left.push(`the merge driver copy ${driver}`);
+    for (const [key, value] of mergeSettings(driver, node)) {
+      const r = await git(["config", "--local", "--get", key], { cwd: dir, allowFail: true });
+      if (r.status !== 0 || String(r.stdout ?? "").replace(/\n$/, "") !== value) left.push(key);
+    }
+    return left;
+  };
+  const missing = await problems();
+  if (!missing.length) return [];
+  mkdirSync(home, { recursive: true });
+  copyFileSync(DRIVER_SOURCE, driver);
+  for (const [key, value] of mergeSettings(driver, node)) await git(["config", "--local", key, value], { cwd: dir });
+  const left = await problems();
+  if (left.length) throw new Error(`the merge configuration could not be installed in ${dir}: ${left.join(", ")}`);
+  return missing;
+}
+
 // The declarations a tree holds: the work tree's (`rev` undefined) or a
 // revision's. null where the project declares none.
 export function readManifest(dir, { git = localGit, rev } = {}) {
@@ -130,10 +156,10 @@ export function classify(paths, manifest) {
 
 // Each declared path not routed to its driver in .gitattributes, read as
 // Git reads it in `dir`: a path routed elsewhere would be merged as text.
-function routingProblems(dir, manifest, git) {
+async function routingProblems(dir, manifest, git) {
   const want = [...outputsOf(manifest)].map((p) => [p, GENERATED_DRIVER]).concat([...recordPaths(manifest)].map((p) => [p, RECORDS_DRIVER]));
   if (!want.length) return [];
-  const r = git(["check-attr", "-z", "merge", "--", ...want.map(([p]) => p)], { cwd: dir, raw: true });
+  const r = await git(["check-attr", "-z", "merge", "--", ...want.map(([p]) => p)], { cwd: dir, raw: true });
   const parts = r.split("\0"), got = new Map();
   for (let i = 0; i + 2 < parts.length; i += 3) got.set(parts[i], parts[i + 2]);
   return want.filter(([p, driver]) => got.get(p) !== driver).map(([p, driver]) => `${p} is declared in ${MANIFEST_PATH} but .gitattributes routes it to merge=${got.get(p) ?? "unspecified"}, not merge=${driver}`);
@@ -148,7 +174,7 @@ function declarationProblems(manifest, read, list, skip = new Set()) {
     if (skip.has(record.path)) continue;
     const text = read(record.path);
     if (text === null) continue;
-    for (const p of readRecords(text, record.pattern).problems) problems.push(`${record.path}: ${p}`);
+    for (const p of readRecords(text, record.pattern, record.framed).problems) problems.push(`${record.path}: ${p}`);
   }
   for (const registry of manifest?.registries ?? []) {
     const match = registry.files ? globToRegExp(registry.files) : null;
@@ -179,6 +205,16 @@ const treeReader = (dir, tree, git) => ({
 
 const changedBetween = (dir, git, from, to) => git(["diff", "--no-renames", "--name-only", "-z", from, to], { cwd: dir, raw: true }).split("\0").filter(Boolean);
 
+// The merge base of `ours` and `theirs` (null where they have none) and
+// the paths each side changed since it, through a git that may answer
+// promises.
+async function sidesChanged(dir, git, ours, theirs) {
+  const base = await git(["merge-base", ours, theirs], { cwd: dir, allowFail: true });
+  const mb = base.status === 0 ? String(base.stdout ?? "").trim() : null;
+  const changed = async (to) => (await git(["diff", "--no-renames", "--name-only", "-z", mb, to], { cwd: dir, raw: true })).split("\0").filter(Boolean);
+  return { mb, a: mb ? await changed(ours) : [], b: mb ? await changed(theirs) : [] };
+}
+
 // The generators a merge of `ours` and `theirs` must run: those whose
 // inputs or outputs both sides changed since their merge base, so the
 // merged tree holds a combination neither side generated.
@@ -187,6 +223,11 @@ export function generatorsToRun(dir, manifest, ours, theirs, { git = localGit, c
   const base = git(["merge-base", ours, theirs], { cwd: dir, allowFail: true });
   const mb = base.status === 0 ? base.stdout.trim() : null;
   const a = mb ? changedBetween(dir, git, mb, ours) : [], b = mb ? changedBetween(dir, git, mb, theirs) : [];
+  return pickGenerators(manifest, { mb, a, b, conflicted });
+}
+
+function pickGenerators(manifest, { mb, a, b, conflicted }) {
+  if (!manifest?.generators.length) return [];
   return manifest.generators.filter((g) => {
     const inputs = g.inputs.map(globToRegExp);
     const touches = (path) => g.outputs.includes(path) || inputs.some((re) => re.test(path));
@@ -239,8 +280,8 @@ function hashPath(dir, path) {
 // Every path Git sees as changed or untracked in the work tree, with its
 // status and content hash: two snapshots differ exactly where something
 // wrote between them.
-function snapshot(dir, git) {
-  const entries = git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"], { cwd: dir, raw: true }).split("\0").filter(Boolean);
+async function snapshot(dir, git) {
+  const entries = (await git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"], { cwd: dir, raw: true })).split("\0").filter(Boolean);
   return new Map(entries.map((e) => [e.slice(3), `${e.slice(0, 2)}:${hashPath(dir, e.slice(3))}`]));
 }
 
@@ -253,7 +294,7 @@ async function defaultRun(argv, { cwd, env }) {
 // One generator, run twice in the merge's work tree. Answers its record,
 // or { stop } with the reason the merge cannot go on.
 async function regenerate(dir, generator, { git, run, logDir, stamp, ours, theirs }) {
-  const before = snapshot(dir, git);
+  const before = await snapshot(dir, git);
   const log = join(logDir, `${stamp}-${generator.name}.log`);
   const header = `generator: ${generator.name}\ncommand: ${JSON.stringify(generator.command)}\nours: ${ours}\ntheirs: ${theirs}\n`;
   const runs = [];
@@ -263,7 +304,7 @@ async function regenerate(dir, generator, { git, run, logDir, stamp, ours, their
     runs.push(`--- run ${pass}: ${r.error ? r.error.message : `exit ${r.status}`}\n${r.stdout ?? ""}${r.stderr ?? ""}`);
     writeFileSync(log, `${header}${runs.join("\n")}\n`);
     if (r.error || r.status !== 0) return { stop: `the generator ${generator.name} (${generator.command.join(" ")}) failed on run ${pass} (${r.error ? r.error.message : `exit ${r.status}`}); its log is ${log}`, log };
-    const now = snapshot(dir, git);
+    const now = await snapshot(dir, git);
     if (pass === 1) {
       const wrote = differences(before, now);
       const unexpected = wrote.filter((p) => !generator.outputs.includes(p));
@@ -276,12 +317,13 @@ async function regenerate(dir, generator, { git, run, logDir, stamp, ours, their
       if (drift.length) return { stop: `the generator ${generator.name} is not deterministic: run again on its own output it changed ${drift.join(", ")}; its log is ${log}`, log };
     }
   }
-  git(["add", "--", ...generator.outputs], { cwd: dir });
-  const blob = (rev, path) => { const r = git(["rev-parse", "--verify", "--quiet", `${rev}:${path}`], { cwd: dir, allowFail: true }); return r.status === 0 ? r.stdout.trim() : null; };
-  const outputs = generator.outputs.map((path) => {
-    const now = git(["hash-object", "--", path], { cwd: dir });
-    return { path, matches: now === blob(ours, path) ? "ours" : now === blob(theirs, path) ? "theirs" : "neither side" };
-  });
+  await git(["add", "--", ...generator.outputs], { cwd: dir });
+  const blob = async (rev, path) => { const r = await git(["rev-parse", "--verify", "--quiet", `${rev}:${path}`], { cwd: dir, allowFail: true }); return r.status === 0 ? String(r.stdout ?? "").trim() : null; };
+  const outputs = [];
+  for (const path of generator.outputs) {
+    const now = await git(["hash-object", "--", path], { cwd: dir });
+    outputs.push({ path, matches: now === await blob(ours, path) ? "ours" : now === await blob(theirs, path) ? "theirs" : "neither side" });
+  }
   const logSha = createHash("sha256").update(readFileSync(log)).digest("hex");
   return { name: generator.name, command: generator.command, outputs, log, logSha };
 }
@@ -326,67 +368,65 @@ export function provenanceLines({ regenerated = [], records = [] }) {
 //                a declaration is misrouted); the merge was aborted.
 //   "failed"     Git could not start the merge; { reason }
 export async function mergeThrough(dir, target, { git = localGit, message, commit = true, leave = false, verify = true, generate = true, config = [], run = defaultRun, log = () => {} } = {}) {
-  installMergeConfig(dir, { git });
+  await installMergeConfigAwaiting(dir, git);
   const c = config.flatMap(([k, v]) => ["-c", `${k}=${v}`]);
-  const ours = git(["rev-parse", "HEAD"], { cwd: dir });
-  const theirs = git(["rev-parse", target], { cwd: dir });
-  const r = git([...c, "merge", "--no-ff", "--no-commit", "--no-edit", target], { cwd: dir, allowFail: true });
-  const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd: dir });
+  const ours = await git(["rev-parse", "HEAD"], { cwd: dir });
+  const theirs = await git(["rev-parse", target], { cwd: dir });
+  const r = await git([...c, "merge", "--no-ff", "--no-commit", "--no-edit", ...(message ? ["-m", message] : []), target], { cwd: dir, allowFail: true });
+  const gitDir = await git(["rev-parse", "--absolute-git-dir"], { cwd: dir });
   // No merge in progress: Git found `target` already merged, or could not
   // start the merge at all.
   if (!existsSync(join(gitDir, "MERGE_HEAD"))) {
     if (r.status === 0) return { state: "held" };
-    git(["merge", "--abort"], { cwd: dir, allowFail: true });
-    return { state: "failed", reason: (r.stderr || r.stdout || "").trim() || `git merge exited ${r.status}` };
+    await git(["merge", "--abort"], { cwd: dir, allowFail: true });
+    return { state: "failed", reason: String(r.stderr || r.stdout || "").trim() || `git merge exited ${r.status}` };
   }
-  const abort = () => { if (git(["merge", "--abort"], { cwd: dir, allowFail: true }).status !== 0) git(["reset", "--hard", ours], { cwd: dir, allowFail: true }); };
-  const conflicted = git(["diff", "--name-only", "--diff-filter=U", "-z"], { cwd: dir, raw: true }).split("\0").filter(Boolean);
+  const abort = async () => { if ((await git(["merge", "--abort"], { cwd: dir, allowFail: true })).status !== 0) await git(["reset", "--hard", ours], { cwd: dir, allowFail: true }); };
+  const conflicted = (await git(["diff", "--name-only", "--diff-filter=U", "-z"], { cwd: dir, raw: true })).split("\0").filter(Boolean);
   let manifest = null;
   const problems = [];
-  try { manifest = readManifest(dir, { git }); }
+  try { manifest = readManifest(dir); }
   catch (error) { if (!conflicted.includes(MANIFEST_PATH)) problems.push(error.message); }
   const sorted = classify(conflicted, manifest);
-  const routing = manifest ? routingProblems(dir, manifest, git) : [];
-  if (routing.length) { abort(); return { state: "stopped", reason: routing.join("; "), ...sorted }; }
+  const routing = manifest ? await routingProblems(dir, manifest, git) : [];
+  if (routing.length) { await abort(); return { state: "stopped", reason: routing.join("; "), ...sorted }; }
   const reader = workTreeReader(dir);
   problems.push(...declarationProblems(manifest, reader.read, reader.list, new Set(conflicted)));
   if (sorted.source.length || sorted.records.length || problems.length) {
-    if (!leave) abort();
+    if (!leave) await abort();
     return { state: "conflicts", ...sorted, problems, manifest };
   }
   // The sources merged: each conflicted output takes a side to start from
   // (ours, or theirs where ours deleted it), which its generator rewrites.
   for (const path of sorted.generated) {
-    if (git(["checkout", "--ours", "--", path], { cwd: dir, allowFail: true }).status !== 0
-      && git(["checkout", "--theirs", "--", path], { cwd: dir, allowFail: true }).status !== 0) git(["rm", "--quiet", "--cached", "--ignore-unmatch", "--", path], { cwd: dir });
-    else git(["add", "--", path], { cwd: dir });
+    if ((await git(["checkout", "--ours", "--", path], { cwd: dir, allowFail: true })).status !== 0
+      && (await git(["checkout", "--theirs", "--", path], { cwd: dir, allowFail: true })).status !== 0) await git(["rm", "--quiet", "--cached", "--ignore-unmatch", "--", path], { cwd: dir });
+    else await git(["add", "--", path], { cwd: dir });
   }
   const regenerated = [];
-  const generators = generatorsToRun(dir, manifest, ours, theirs, { git, conflicted });
+  const changed = manifest?.generators.length || manifest?.records.length ? await sidesChanged(dir, git, ours, theirs) : { mb: null, a: [], b: [] };
+  const generators = pickGenerators(manifest, { ...changed, conflicted });
   if (generators.length && !generate) {
-    abort();
+    await abort();
     return { state: "stopped", reason: `the merge needs ${generators.map((g) => g.name).join(", ")} to regenerate ${generators.flatMap((g) => g.outputs).join(", ")}, and this merge runs no generator`, ...sorted, regenerated };
   }
   if (generators.length) {
-    const logDir = join(atelierGitDir(dir, git), "merge-logs");
+    const logDir = join(await git(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: dir }), "atelier", "merge-logs");
     mkdirSync(logDir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     for (const generator of generators) {
       log(`Regenerating ${generator.outputs.join(", ")} with ${generator.command.join(" ")} (${generator.name})…`);
       const done = await regenerate(dir, generator, { git, run, logDir, stamp, ours, theirs });
-      if (done.stop) { abort(); return { state: "stopped", reason: done.stop, ...sorted, regenerated }; }
+      if (done.stop) { await abort(); return { state: "stopped", reason: done.stop, ...sorted, regenerated }; }
       regenerated.push(done);
     }
   }
-  if (git(["diff", "--name-only", "--diff-filter=U"], { cwd: dir })) { abort(); return { state: "stopped", reason: "paths were still unmerged after regeneration", ...sorted, regenerated }; }
+  if (await git(["diff", "--name-only", "--diff-filter=U"], { cwd: dir })) { await abort(); return { state: "stopped", reason: "paths were still unmerged after regeneration", ...sorted, regenerated }; }
   // The record files both sides changed: those the records driver united.
-  const based = git(["merge-base", ours, theirs], { cwd: dir, allowFail: true });
-  const mb = based.status === 0 ? based.stdout.trim() : null;
-  const a = mb ? changedBetween(dir, git, mb, ours) : [], b = mb ? changedBetween(dir, git, mb, theirs) : [];
-  const records = (manifest?.records ?? []).map((rec) => rec.path).filter((path) => a.includes(path) && b.includes(path));
+  const records = (manifest?.records ?? []).map((rec) => rec.path).filter((path) => changed.a.includes(path) && changed.b.includes(path));
   const lines = provenanceLines({ regenerated, records });
   const result = { state: "merged", ours, theirs, regenerated, records, generated: sorted.generated, provenance: lines, manifest };
   if (!commit) return result;
-  git([...c, "commit", "--quiet", ...(verify ? [] : ["--no-verify"]), "-m", withProvenance(message ?? `Merge ${theirs}`, lines)], { cwd: dir });
-  return { ...result, head: git(["rev-parse", "HEAD"], { cwd: dir }) };
+  await git([...c, "commit", "--quiet", ...(verify ? [] : ["--no-verify"]), "-m", withProvenance(message ?? `Merge ${theirs}`, lines)], { cwd: dir });
+  return { ...result, head: await git(["rev-parse", "HEAD"], { cwd: dir }) };
 }

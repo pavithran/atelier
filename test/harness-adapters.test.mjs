@@ -61,6 +61,8 @@ fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv, input, cwd: p
 const answer = "VERDICT: APPROVE\\nSUMMARY: fine";
 const at = argv.indexOf("--output-last-message");
 if (at !== -1) fs.writeFileSync(argv[at + 1], answer);
+else if (argv.includes("--format") && argv[argv.indexOf("--format") + 1] === "json") process.stdout.write(JSON.stringify({ type: "text", part: { text: answer } }));
+else if (argv.includes("-p") && argv[argv.indexOf("--output-format") + 1] === "json") process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: answer }));
 else if (argv.includes("--output-format") && argv[argv.indexOf("--output-format") + 1] === "json") process.stdout.write(JSON.stringify({ response: answer }));
 else process.stdout.write(answer);
 `);
@@ -89,17 +91,66 @@ function setup(t) {
   return { dir, ws, record, fake, brief, diff, providers, store };
 }
 
-function run(harness, s, { model, review = false, plan = false, env: extraEnv = {} }) {
+function run(harness, s, { model, review = false, plan = false, env: extraEnv = {}, timeout = 10_000, secretStore = "file" }) {
   const verdict = join(s.dir, "verdict.md");
   const args = [model, s.brief, s.ws, plan ? join(s.ws, "plan.json") : "undefined", review ? s.diff : "undefined", review ? verdict : "undefined"];
   // The store is named as the runner's default command names it: the runner
   // gives a harness no ATELIER_ variable.
-  const extra = harness === "opencode" ? ["--providers", s.providers, "--secret-store", "file", "--secrets-dir", s.store] : [];
+  const extra = harness === "opencode" ? ["--providers", s.providers, "--secret-store", secretStore, "--secrets-dir", s.store] : [];
   const env = { PATH: process.env.PATH, HOME: s.dir, [OVERRIDE[harness]]: s.fake,
     CF_AIG_METADATA: gatewayMetadata("t9", review ? "review" : "build", "home:mbp"), ...extraEnv };
-  const r = spawnSync(process.execPath, [join(repo, "bin", "harness", ADAPTERS[harness]), ...extra, ...args], { encoding: "utf8", env });
+  const r = spawnSync(process.execPath, [join(repo, "bin", "harness", ADAPTERS[harness]), ...extra, ...args], {
+    encoding: "utf8", env, timeout, killSignal: "SIGKILL",
+  });
+  const diagnostic = `${harness} adapter: ${r.error?.code ?? "exit"}, status ${r.status}, signal ${r.signal}\nstderr:\n${r.stderr ?? ""}`;
+  assert.ok(!r.error, diagnostic);
+  assert.equal(r.status, 0, diagnostic);
   return { r, seen: JSON.parse(readFileSync(s.record, "utf8")), verdict };
 }
+
+test("a stalled adapter fails with its name, signal and stderr before reading its record", (t) => {
+  const s = setup(t);
+  // Stall before runAdapter (and before any harness child can be orphaned).
+  const preload = join(s.dir, "stall.cjs");
+  writeFileSync(preload, 'require("node:fs").writeSync(2, "fake adapter startup stalled\\n"); process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);');
+  // A preload with a live handle alone would still start the adapter. Block
+  // module loading synchronously, as a stuck startup read would do.
+  writeFileSync(preload, '\nAtomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);', { flag: "a" });
+  assert.throws(() => run("opencode", s, {
+    model: "deepseek-v4-pro", timeout: 2_000, env: { NODE_OPTIONS: `--require=${preload}` },
+  }), (error) => {
+    assert.match(error.message, /opencode adapter: ETIMEDOUT, status null, signal SIGKILL/);
+    assert.match(error.message, /stderr:\nfake adapter startup stalled/);
+    assert.doesNotMatch(error.message, /ENOENT/);
+    return true;
+  });
+});
+
+test("opencode bounds a credential read that stalls before the harness starts", (t) => {
+  const s = setup(t);
+  // Force the native backend even on Linux, using a fake security command.
+  // No owner credentials or installed harness are required in a clean clone.
+  const security = join(s.dir, "security");
+  writeFileSync(security, `#!${process.execPath}
+require("node:fs").writeFileSync(${JSON.stringify(join(s.dir, "credential-started"))}, "started");
+process.stderr.write("DUMMY-private-credential-output");
+process.on("SIGTERM", () => {});
+setInterval(() => {}, 1000);
+`);
+  chmodSync(security, 0o755);
+  assert.throws(() => run("opencode", s, {
+    model: "deepseek-v4-pro", secretStore: "keychain", env: { PATH: s.dir },
+  }), (error) => {
+    assert.match(error.message, /opencode adapter: exit, status 1, signal null/);
+    assert.match(error.message, /credential command security timed out after 5000 ms \(signal SIGKILL\)/);
+    assert.doesNotMatch(error.message, /DUMMY-private-credential-output|ENOENT/);
+    return true;
+  });
+  assert.equal(readFileSync(join(s.dir, "credential-started"), "utf8"), "started");
+  assert.throws(() => readFileSync(s.record), /ENOENT/, "the harness never started");
+  // Explicit file stores must continue to bypass even a stuck native store.
+  assert.equal(run("opencode", s, { model: "deepseek-v4-pro", env: { PATH: s.dir } }).seen.env.DEEPSEEK_API_KEY, "DUMMY-deepseek");
+});
 
 for (const [harness, model] of [["claude-code", "opus-5.5"], ["codex", "gpt-6-astra"], ["opencode", "deepseek-v4-pro"], ["antigravity", "gemini-3.1-pro"]]) {
   test(`the ${harness} adapter gives a build its prompt, rules and brief, on standard input and never as an argument`, (t) => {
@@ -143,7 +194,7 @@ test("the harnesses are started with their own permission rules", (t) => {
   const agy = run("antigravity", s, { model: "gemini-3.1-pro" }).seen.argv;
   assert.equal(agy[agy.indexOf("--model") + 1], "gemini-3.1-pro-high");
   assert.ok(agy.includes("--sandbox"));
-  assert.deepEqual(run("opencode", s, { model: "deepseek-v4-pro" }).seen.argv, ["run", "--model", "deepseek-api/deepseek-v4-pro"]);
+  assert.deepEqual(run("opencode", s, { model: "deepseek-v4-pro" }).seen.argv, ["run", "--model", "deepseek-api/deepseek-v4-pro", "--format", "json"]);
   assert.equal(claudeModel("sonnet-5.5"), "claude-sonnet-5-5");
   assert.equal(claudeModel("claude-fable-5-1"), "claude-fable-5-1");
 });

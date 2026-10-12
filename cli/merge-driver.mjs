@@ -16,14 +16,21 @@
 //               with a unique key. Both sides' records are united by key;
 //               a key both sides added differently, edited differently, or
 //               one side edited and the other deleted stays in conflict.
+//               A framed record file ("framed": true) holds its records as
+//               one unbroken run of complete lines between a fixed header
+//               and footer, the lines its key pattern does not match: a
+//               list of one-line entries in source, each well formed alone,
+//               such as src/capability-declarations.ts. Its frame merges
+//               whole, a side's change taken only where the other left it.
 //   registries  folders whose files are each one entry (a command, a
 //               route): adding an entry adds a file, so independent
 //               additions never touch the same file. Keys are read from the
 //               files and must be unique across the folder.
 //
 // A structured declaration (JSON, JavaScript, TypeScript, YAML, TOML) is
-// never a record file: union of its lines would not keep it well formed,
-// so it belongs in a registry, one entry per file.
+// never a plain record file: union of its lines would not keep it well
+// formed, so it belongs in a registry, one entry per file, or, where each
+// entry is one complete line in a fixed frame, in a framed record file.
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -78,11 +85,12 @@ export function parseManifest(text) {
   const records = list("records").map((r, i) => {
     const where = `record file ${r?.path ?? `#${i + 1}`}`;
     if (!plainPath(r?.path)) problems.push(`${where} needs a plain file path`);
-    else if (STRUCTURED.test(r.path)) problems.push(`${where} is a structured file; union of its lines would not keep it well formed, so declare it as a registry of one file per entry`);
+    else if (STRUCTURED.test(r.path) && r.framed !== true) problems.push(`${where} is a structured file; union of its lines would not keep it well formed, so declare it as a registry of one file per entry, or as framed where each record is one complete line`);
     else if (owners.has(r.path)) problems.push(`${r.path} is declared by both ${owners.get(r.path)} and ${where}`);
     else owners.set(r.path, where);
+    if (r?.framed !== undefined && typeof r.framed !== "boolean") problems.push(`${where}'s framed must be true or false`);
     const re = keyPattern(r?.key ?? "^(\\S+)", where, problems);
-    return { path: r?.path, key: r?.key ?? "^(\\S+)", pattern: re };
+    return { path: r?.path, key: r?.key ?? "^(\\S+)", pattern: re, framed: r?.framed === true };
   });
   const registries = list("registries").map((g, i) => {
     const where = `registry ${g?.name ?? `#${i + 1}`}`;
@@ -103,19 +111,23 @@ export function parseManifest(text) {
 
 // One record file's lines keyed. A blank line, a line the pattern names no
 // key in, a duplicate key and a missing final newline are each a problem:
-// the record format has no room for them, and a merge would hide them.
-export function readRecords(text, pattern) {
-  const records = new Map(), problems = [];
+// the record format has no room for them, and a merge would hide them. In
+// a framed file the lines before the first record are its head and those
+// after the last its tail; a keyless line between records is a problem.
+export function readRecords(text, pattern, framed = false) {
+  const records = new Map(), problems = [], head = [], tail = [];
   if (text && !text.endsWith("\n")) problems.push("the file does not end with a newline");
   const lines = text ? text.replace(/\n$/, "").split("\n") : [];
   lines.forEach((line, i) => {
     if (/^(<<<<<<<|=======|>>>>>>>)( |$)/.test(line)) { problems.push(`line ${i + 1} is a conflict marker`); return; }
-    const key = pattern.exec(line)?.[1];
-    if (!line.trim() || !key) { problems.push(`line ${i + 1} holds no record key`); return; }
+    const key = line.trim() ? pattern.exec(line)?.[1] : undefined;
+    if (framed && !key) { (records.size ? tail : head).push(line); return; }
+    if (!key) { problems.push(`line ${i + 1} holds no record key`); return; }
+    if (tail.length) { problems.push(`line ${i + 1} is a record after the frame's closing lines`); return; }
     if (records.has(key)) { problems.push(`the key ${key} appears twice (lines ${records.get(key).at} and ${i + 1})`); return; }
     records.set(key, { line, at: i + 1 });
   });
-  return { records, problems };
+  return { records, problems, head: head.join("\n"), tail: tail.join("\n") };
 }
 
 // The three-way union of a record file, by key. A key one side alone
@@ -125,11 +137,26 @@ export function readRecords(text, pattern) {
 // same whichever side is ours. Answers { text, conflicts, problems }:
 // `problems` are records a side holds that break the format (and so cannot
 // be merged at all), `conflicts` the keys left for a person to resolve.
-export function mergeRecords(base, ours, theirs, pattern) {
-  const [o, a, b] = [base, ours, theirs].map((text) => readRecords(text, pattern));
+// A framed file keeps its records' order: the base's, then the keys added
+// on either side in key order, so it too is the same whichever side is
+// ours, and its head and tail each take the one side that changed them.
+export function mergeRecords(base, ours, theirs, pattern, framed = false) {
+  const [o, a, b] = [base, ours, theirs].map((text) => readRecords(text, pattern, framed));
   const problems = [...a.problems.map((p) => `ours: ${p}`), ...b.problems.map((p) => `theirs: ${p}`), ...o.problems.map((p) => `base: ${p}`)];
-  const keys = [...new Set([...o.records.keys(), ...a.records.keys(), ...b.records.keys()])].sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));
+  const byKey = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
+  const keys = framed
+    ? [...o.records.keys(), ...[...new Set([...a.records.keys(), ...b.records.keys()])].filter((k) => !o.records.has(k)).sort(byKey)]
+    : [...new Set([...o.records.keys(), ...a.records.keys(), ...b.records.keys()])].sort(byKey);
   const out = [], conflicts = [];
+  // A frame part both sides changed differently stays in conflict.
+  const frame = (part, name) => {
+    const [was, mine, yours] = [o, a, b].map((side) => side[part]);
+    if (mine === yours || was === yours) return mine === "" ? [] : mine.split("\n");
+    if (was === mine) return yours === "" ? [] : yours.split("\n");
+    conflicts.push(`the frame's ${name}: edited differently on both sides`);
+    return ["<<<<<<< ours", ...(mine === "" ? [] : mine.split("\n")), "=======", ...(yours === "" ? [] : yours.split("\n")), ">>>>>>> theirs"];
+  };
+  if (framed) out.push(...frame("head", "opening lines"));
   for (const key of keys) {
     const [was, mine, yours] = [o, a, b].map((side) => side.records.get(key)?.line);
     if (mine === yours) { if (mine !== undefined) out.push(mine); continue; }
@@ -139,6 +166,7 @@ export function mergeRecords(base, ours, theirs, pattern) {
     conflicts.push(`${key}: ${what}`);
     out.push("<<<<<<< ours", ...(mine === undefined ? [] : [mine]), "=======", ...(yours === undefined ? [] : [yours]), ">>>>>>> theirs");
   }
+  if (framed) out.push(...frame("tail", "closing lines"));
   return { text: out.length ? `${out.join("\n")}\n` : "", conflicts, problems };
 }
 
@@ -167,7 +195,7 @@ function main([kind, base, ours, theirs, path]) {
   if (kind !== "records") { process.stderr.write(`atelier merge driver: unknown kind ${kind}\n`); return 2; }
   const { record, why } = declaredRecords(path);
   if (!record) { process.stderr.write(`atelier: ${why}; ${path} is left in conflict\n`); return 1; }
-  const merged = mergeRecords(read(base), read(ours), read(theirs), record.pattern);
+  const merged = mergeRecords(read(base), read(ours), read(theirs), record.pattern, record.framed);
   if (merged.problems.length) {
     process.stderr.write(`atelier: ${path} breaks the record format, so it is left in conflict:\n${merged.problems.map((p) => `  ${p}`).join("\n")}\n`);
     return 1;

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { redactGitArgs } from "../runner.mjs";
 import { runLand } from "../land.mjs";
-import { OWNER, apiToken, args, cfg, die, git, itemArg, project, recordTokenExpiry, redact, request, server, storeWorkspaceToken, workspacePath, workspaceTokens } from "../atelier.mjs";
+import { OWNER, apiToken, args, cfg, die, git, itemArg, logReader, project, recordTokenExpiry, redact, request, server, storeWorkspaceToken, workspacePath, workspaceTokens } from "../atelier.mjs";
 
 // The project owner lands one task whole: the lease on the server, the
 // merge of main into the task's workspace, the project's fixture
@@ -47,9 +47,11 @@ export default async function landCommand() {
   };
   try {
     await runLand({
-      args, name, id, p, request, git: gitOrThrow, die,
+      args, name, id, p, request, git: gitOrThrow, die, owner: OWNER,
       print: (line) => console.log(line),
-      workspacePath, atelier: fileURLToPath(new URL("../atelier.mjs", import.meta.url)), env: process.env,
+      // A stored check log by its reference, for the failure summary (t436).
+      readLog: logReader(name, id),
+      workspacePath, atelier: fileURLToPath(new URL("../atelier.mjs", import.meta.url)), env: { ...process.env, ATELIER_TEST_PRIORITY: "release" },
       redact, secrets: () => [apiToken(), ...workspaceTokens(workspace)],
       // The token a landing's re-claim minted, kept as claimWorkspace keeps
       // one: the old header replaced before the fetch, the expiry recorded.

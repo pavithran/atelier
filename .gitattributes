@@ -7,3 +7,7 @@ src/usage/commands/index.ts merge=atelier-generated
 test/fixtures/cli/help.txt merge=atelier-generated
 test/fixtures/cli/usage.json merge=atelier-generated
 test/fixtures/cli/guide.txt merge=atelier-generated
+# One capability per line (t522): independent additions unite by key through
+# the records driver, a framed record file in the manifest; a name both
+# sides added, edited or deleted differently stays in conflict.
+src/capability-declarations.ts merge=atelier-records

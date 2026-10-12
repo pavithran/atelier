@@ -136,6 +136,46 @@ test("records: independent additions unite by key; a key added twice, an edit ag
   assert.match(git(f.dir, "log", "-1", "--format=%B"), /Atelier-Records-Merged: routes\.tsv, united by key/);
 });
 
+// A framed record file: one-line entries between a fixed header and
+// footer, as src/capability-declarations.ts holds its capabilities.
+const CAPS_KEY = /^  \{ name: "([^"]+)",/;
+const caps = (...names) => `// header\nexport const CAPS = [\n${names.map((n) => `  { name: "${n}", summary: "${n}" },\n`).join("")}] as const;\n`;
+
+test("framed records: independent additions unite between the unchanged frame in either order; duplicate, conflicting and deleted-against-edited keys need resolving", async (t) => {
+  const base = caps("b.one.v1", "a.two.v1");
+  const merged = mergeRecords(base, caps("b.one.v1", "a.two.v1", "z.ours.v1"), caps("b.one.v1", "a.two.v1", "c.theirs.v1"), CAPS_KEY, true);
+  // The base keeps its order; the additions follow it, in key order.
+  assert.deepEqual(merged, { text: caps("b.one.v1", "a.two.v1", "c.theirs.v1", "z.ours.v1"), conflicts: [], problems: [] });
+  assert.equal(mergeRecords(base, caps("b.one.v1", "a.two.v1", "c.theirs.v1"), caps("b.one.v1", "a.two.v1", "z.ours.v1"), CAPS_KEY, true).text, merged.text);
+  // One side's change to the frame is taken; both changing it differently is a conflict.
+  const renamed = (text) => text.replace("CAPS =", "CAPABILITIES =");
+  assert.equal(mergeRecords(base, renamed(base), caps("b.one.v1", "a.two.v1", "c.new.v1"), CAPS_KEY, true).text, renamed(caps("b.one.v1", "a.two.v1", "c.new.v1")));
+  assert.deepEqual(mergeRecords(base, renamed(base), base.replace("CAPS =", "OTHER ="), CAPS_KEY, true).conflicts, ["the frame's opening lines: edited differently on both sides"]);
+  assert.deepEqual(mergeRecords(base, caps("b.one.v1", "a.two.v1", "c.x.v1"), base.replace("] as const;\n", '  { name: "c.x.v1", summary: "other" },\n] as const;\n'), CAPS_KEY, true).conflicts, ["c.x.v1: added by both sides with different records"]);
+  assert.deepEqual(mergeRecords(base, caps("b.one.v1"), base.replace('summary: "a.two.v1"', 'summary: "edited"'), CAPS_KEY, true).conflicts, ["a.two.v1: deleted on one side and edited on the other"]);
+  assert.deepEqual(mergeRecords(base, caps("b.one.v1", "a.two.v1", "b.one.v1"), base, CAPS_KEY, true).problems, ["ours: the key b.one.v1 appears twice (lines 3 and 5)"]);
+  assert.deepEqual(mergeRecords(base, base.replace("] as const;\n", '] as const;\n  { name: "late.one.v1", summary: "x" },\n'), base, CAPS_KEY, true).problems, ["ours: line 6 is a record after the frame's closing lines"]);
+
+  // Through Git: the records driver unites a TypeScript file declared framed.
+  const manifest = { ...MANIFEST, records: [...MANIFEST.records, { path: "caps.ts", framed: true, key: CAPS_KEY.source }] };
+  const f = fixture(t, { manifest, attributes: `${ATTRIBUTES}caps.ts merge=atelier-records\n`, extra: { "caps.ts": base } });
+  sides(f, { "caps.ts": caps("b.one.v1", "a.two.v1", "c.theirs.v1") }, { "caps.ts": caps("b.one.v1", "a.two.v1", "z.ours.v1") });
+  const r = await mergeThrough(f.dir, "theirs", { message: "m" });
+  assert.equal(r.state, "merged", JSON.stringify(r));
+  assert.equal(readFileSync(join(f.dir, "caps.ts"), "utf8"), merged.text);
+  assert.match(git(f.dir, "log", "-1", "--format=%B"), /Atelier-Records-Merged: caps\.ts, united by key/);
+});
+
+test("framed records: a name both sides add differently stops the merge for resolution", async (t) => {
+  const manifest = { ...MANIFEST, records: [{ path: "caps.ts", framed: true, key: CAPS_KEY.source }] };
+  const f = fixture(t, { manifest, attributes: "out/index.txt merge=atelier-generated\ncaps.ts merge=atelier-records\n", extra: { "caps.ts": caps("a.one.v1") } });
+  sides(f, { "caps.ts": caps("a.one.v1").replace("] as const;", '  { name: "b.new.v1", summary: "theirs" },\n] as const;') }, { "caps.ts": caps("a.one.v1", "b.new.v1") });
+  const r = await mergeThrough(f.dir, "theirs", { message: "m", leave: true });
+  assert.equal(r.state, "conflicts");
+  assert.deepEqual(r.records, ["caps.ts"]);
+  assert.match(readFileSync(join(f.dir, "caps.ts"), "utf8"), /^<{7} ours\n  \{ name: "b\.new\.v1", summary: "b\.new\.v1" \},\n={7}\n.*theirs.*\n>{7} theirs\n\] as const;\n$/m);
+});
+
 test("a record key both sides add differently is a conflict left for resolution", async (t) => {
   const f = fixture(t);
   sides(f, { "routes.tsv": "/a\tA\n/b\tB\n/c\ttheirs\n" }, { "routes.tsv": "/a\tA\n/b\tB\n/c\tours\n" });
@@ -248,6 +288,9 @@ test("a declared path .gitattributes does not route to its driver stops the merg
 
 test("the manifest is checked whole: structured record files, outputs declared twice and keys without a capture group are refused", () => {
   assert.throws(() => parseManifest(JSON.stringify({ version: 1, records: [{ path: "routes.json" }] })), /routes\.json is a structured file; .*declare it as a registry of one file per entry/);
+  // A structured file is a record file only when declared framed.
+  assert.equal(parseManifest(JSON.stringify({ version: 1, records: [{ path: "routes.json", framed: true, key: "^  \"(\\S+)\"" }] })).records[0].framed, true);
+  assert.throws(() => parseManifest(JSON.stringify({ version: 1, records: [{ path: "routes.tsv", framed: "yes" }] })), /framed must be true or false/);
   assert.throws(() => parseManifest(JSON.stringify({ version: 1, generators: [{ name: "a", command: ["x"], inputs: ["s/**"], outputs: ["o"] }, { name: "b", command: ["y"], inputs: ["s/**"], outputs: ["o"] }] })), /o is declared by both generator a and generator b/);
   assert.throws(() => parseManifest(JSON.stringify({ version: 1, registries: [{ name: "r", dir: "d", key: "name" }] })), /has no capture group/);
   assert.throws(() => parseManifest(JSON.stringify({ version: 1, generators: [{ name: "a", command: "make", inputs: [], outputs: ["o/*"] }] })), /command as a list of words[\s\S]*source inputs[\s\S]*not one plain file path/);

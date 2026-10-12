@@ -66,6 +66,7 @@ import { join, resolve } from 'node:path';
 
 import { buildHistory, savePairs } from '../cli/fresh.mjs';
 import { landingDir, landingJournal, landingJournalFile } from '../cli/landing.mjs';
+import { SERVER_CAPABILITIES } from '../src/route-level.ts';
 
 // The owner's checkout, its baseline and a task's fork with the task's first
 // revision, served by a stand-in ledger whose answers come from `box`: the
@@ -103,10 +104,12 @@ async function landing(t, { fresh = false } = {}) {
     let raw = '';
     for await (const chunk of req) raw += chunk;
     const body = raw ? JSON.parse(raw) : {}, path = new URL(req.url, 'http://x').pathname;
-    box.requests.push({ method: req.method, path, body });
     const reply = (status, answer) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(answer)); };
+    // merge checks the server's capabilities first (t458).
+    if (path === '/api/version') return reply(200, { capabilities: SERVER_CAPABILITIES });
+    box.requests.push({ method: req.method, path, body });
     const item = () => ({ id: 't1', title: 'Fixture task', state: box.state, owner: 'codex/test', head: box.head, acceptedHead: box.acceptedHead });
-    if (path === '/api/projects/proj/items/t1' && req.method === 'GET') return reply(200, { item: item(), policy: { checks: [], protected: [] }, gate: { ready: true, outOfScope: [], blockers: [] }, evidence: [], reviews: [], events: [] });
+    if (path === '/api/projects/proj/items/t1' && req.method === 'GET') return reply(200, { item: item(), policy: { checks: [], protected: [], commitIdentity: { name: 'Fixture', email: 'fixture@example.invalid', agentEmails: [] } }, gate: { ready: true, outOfScope: [], blockers: [] }, evidence: [], reviews: [], events: [] });
     if (path.endsWith('/baseline-token')) return reply(200, { remote: baseline, token: 'fixture', defaultBranch: 'main' });
     if (path.endsWith('/read-token')) return reply(200, { remote: fork, token: 'fixture', head: box.head, defaultBranch: 'main' });
     // The stand-in lets every cancel through, so what refuses one here is the CLI.
