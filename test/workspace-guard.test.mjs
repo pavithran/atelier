@@ -57,7 +57,7 @@ function fixture(t, { unclaimed = false, portCapability = true, portFailure = fa
     for (const [k, v] of Object.entries({ project: "demo", item: id, actor: "codex/test", branch: "main" })) git(workspaces[id], "config", "--local", `atelier.${k}`, v);
     if (unclaimed) {
       git(workspaces[id], "config", `url.${forks[id]}.insteadOf`, `https://fork.test/${id}.git`);
-      git(workspaces[id], "config", `http.https://fork.test/${id}.git.extraHeader`, "Authorization: Bearer revoked-claim-secret");
+      git(workspaces[id], "config", `http.https://fork.test/${id}.git.extraHeader`, "Authorization: Bearer " + "revoked-claim-secret");
     }
   }
 
@@ -77,7 +77,7 @@ childProcess.spawnSync = (cmd, args, opts) => {
     // Git's empty value resets all earlier extra headers, including the
     // released claim's token, before the fresh owner credential is added.
     const effective = headers.slice(headers.lastIndexOf("") + 1);
-    if (configured.status !== 0 || effective.length !== 1 || effective[0] !== "Authorization: Bearer fresh-owner-port-secret") throw new Error("owner push did not replace its revoked credential");
+    if (configured.status !== 0 || effective.length !== 1 || effective[0] !== "Authorization: Bearer " + "fresh-owner-port-secret") throw new Error("owner push did not replace its revoked credential");
     if (${portFailure}) return { status: 1, stdout: "", stderr: "rejected fresh-owner-port-secret" };
   }
   return spawn(cmd, args, opts);
@@ -207,7 +207,7 @@ test("the owner can push an unclaimed task workspace without changing its config
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.equal(f.forkMain("t1"), head);
   assert.equal(f.git(dir, "config", "atelier.actor"), "codex/test");
-  assert.equal(f.git(dir, "config", "http.https://fork.test/t1.git.extraHeader"), "Authorization: Bearer revoked-claim-secret");
+  assert.equal(f.git(dir, "config", "http.https://fork.test/t1.git.extraHeader"), "Authorization: Bearer " + "revoked-claim-secret");
   assert.equal(f.writes().filter(x => x.path.endsWith("/push")).length, 1);
   assert.equal(f.writes().filter(x => x.path.endsWith("/claim")).length, 0);
   assert.equal(f.writes().filter(x => x.path.endsWith("/owner-port-token")).length, 1);

@@ -8,7 +8,7 @@ const spec: CommandSpec = {
     {
       group: "Agents", line: 2, slot: 30,
       form: "push [--force | --rollback]",
-      about: "Pushes the workspace to the task's fork, then asks the Worker to read the head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. It refuses, pushing nothing, when the workspace's branch is not the one the fork's HEAD names, since Atelier reads only that one. After `update`, `--force` pushes with a lease. `--rollback` returns the fork to an earlier commit of the recorded history, as the plan integrator does after a failed integration.",
+      about: "Pushes the workspace to the task's fork, then asks the Worker to read the head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. It refuses, pushing nothing, when the workspace's branch is not the one the fork's HEAD names, since Atelier reads only that one. After `update`, `--force` pushes with a lease. `--rollback` returns the fork to an earlier commit of the recorded history, as the plan integrator does after a failed integration. The project owner may push an open, unclaimed task's workspace with `--as owner`: the push asks for a short-lived write token for that fork alone, recorded as the owner's.",
     },
   ],
   flags: { force: true, rollback: true },
