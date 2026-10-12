@@ -53,9 +53,9 @@ test("gc previews, then removes only clean closed clones; preserves all local wo
   assert.ok(existsSync(clean));
   await collectCache({ ...f.options, apply: true, cwd: current });
   assert.ok(!existsSync(clean));
-  assert.ok(!existsSync(ignored), "ignored files alone do not hold a workspace");
   assert.ok(!existsSync(abandoned), "a clean abandoned workspace at its recorded head goes");
-  for (const dir of [active, dirty, untracked, branch, ahead, current, foreign, abandonedMoved, busy, submodules]) assert.ok(existsSync(dir), dir);
+  // An ignored file that is not rebuildable output holds a workspace (t561).
+  for (const dir of [active, dirty, ignored, untracked, branch, ahead, current, foreign, abandonedMoved, busy, submodules]) assert.ok(existsSync(dir), dir);
 });
 
 test("gc rechecks server state and local files before removal", async (t) => {
@@ -113,6 +113,23 @@ test("a finished workspace goes once its HEAD is in main or the recorded head, a
   intoMain(unrecorded, "local");
   await collectCache({ ...f.options, apply: true, main, log: () => {} });
   assert.ok(!existsSync(unrecorded));
+});
+
+// A harness's logs under .scratch/, which every workspace's .git/info/exclude
+// ignores, went with the workspace without a word (t561 pre-review).
+test("a finished workspace holding ignored files other than rebuildable output is kept and named", async (t) => {
+  const f = fixture(t), ws = f.workspace("t1"), lines = [];
+  writeFileSync(join(ws, ".git", "info", "exclude"), ".scratch/\nnode_modules/\n.env\n");
+  mkdirSync(join(ws, "node_modules", "dep"), { recursive: true }); writeFileSync(join(ws, "node_modules", "dep", "index.js"), "");
+  mkdirSync(join(ws, ".scratch"));
+  // An empty .scratch/ and node_modules hold nothing to lose.
+  await collectCache({ ...f.options, apply: false, log: (l) => lines.push(l) });
+  assert.ok(lines.includes(`WOULD REMOVE ${ws}`), lines.join("\n"));
+  writeFileSync(join(ws, ".scratch", "harness.log"), "agent log\n"); writeFileSync(join(ws, ".env"), "local\n");
+  lines.length = 0;
+  await collectCache({ ...f.options, apply: true, log: (l) => lines.push(l) });
+  assert.ok(existsSync(join(ws, ".scratch", "harness.log")));
+  assert.ok(lines.includes(`KEEP    ${ws}: holds ignored files that are not rebuildable output: .env, .scratch/`), lines.join("\n"));
 });
 
 test("a pass for one task touches only its workspace and no check clone", async (t) => {

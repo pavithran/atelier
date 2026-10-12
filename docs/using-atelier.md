@@ -171,7 +171,9 @@ that is how Atelier improves.
   while another task's checks run.
 - A merge removes the task's workspace once its work is in main; `atelier
   clean --project NAME` removes those of other finished tasks the same way,
-  and keeps and names any holding changed files or commits main lacks.
+  for good, and keeps and names any holding changed files, ignored files
+  that are not rebuildable (`.scratch/` logs, a `.env`) or commits main
+  lacks.
 - Do not edit inside an agent's workspace while its agent runs. Wait for it,
   or hand the task off with `atelier handoff ID --to H/M`.
 - `atelier wrap "summary"` is for work done directly in your own checkout:

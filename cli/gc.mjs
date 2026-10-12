@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { gcCheckReason } from "../src/rules.ts";
+import { finishedWorkspaceReason, gcCheckReason, unkeptIgnored } from "../src/rules.ts";
 
 const markerPath = (dir) => `${dir}.atelier.json`;
 export { markerPath };
@@ -39,16 +39,12 @@ export function inMain(main, commits) {
   catch { return false; }
 }
 
-// Whether a finished task's workspace may go (t561), or why it stays. Its
-// HEAD is the head Atelier recorded (the fork's last head, or the merge's
-// accepted head) or is in main, its tracked and untracked files are as
-// committed, and it holds no commit outside the recorded history and main.
-export function finishedWorkspaceReason(item, { atLedgerHead, headInMain, dirty, extraCommits }) {
-  if (item?.state !== "merged" && item?.state !== "abandoned") return "item is neither merged nor abandoned";
-  if (!atLedgerHead && !headInMain) return "HEAD is neither the head Atelier recorded nor in main";
-  if (dirty) return "contains changed or untracked files";
-  if (extraCommits) return "contains commits neither Atelier's record nor main holds";
-  return null;
+// Whether a directory holds any file, at any depth: an empty .scratch/ that
+// Git names as ignored holds nothing to lose.
+function holdsFile(path) {
+  const st = lstatSync(path);
+  if (!st.isDirectory()) return true;
+  return readdirSync(path).some((name) => holdsFile(join(path, name)));
 }
 
 function workspaceReason(dir, name, id, item, cwd, main) {
@@ -61,9 +57,13 @@ function workspaceReason(dir, name, id, item, cwd, main) {
         git(dir, ["config", "--local", "atelier.item"]) !== id ||
         realpathSync(git(dir, ["rev-parse", "--show-toplevel"])) !== dir) return "workspace identity does not match";
     const head = git(dir, ["rev-parse", "HEAD"]);
-    // Files git ignores (node_modules, generated types) are not unpublished
-    // work, so --ignored is absent and they do not hold a workspace.
     const dirty = !!git(dir, ["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"]);
+    // Ignored files are kept unless rebuildable (node_modules, build output,
+    // generated types): removal is permanent, and a harness's logs under
+    // .scratch/ or a .env would go without a word (t561).
+    const ignoredPaths = git(dir, ["status", "--porcelain", "-z", "--ignored=matching", "--untracked-files=normal"]).split("\0")
+      .filter((l) => l.startsWith("!! ")).map((l) => l.slice(3));
+    const ignored = unkeptIgnored(ignoredPaths).filter((path) => holdsFile(join(dir, path)));
     // The heads Atelier recorded: the fork's last head and the accepted head
     // of a merge. Every commit the workspace can reach, by a ref or the
     // reflog, is under one of them or else in main; only the tips of what
@@ -75,7 +75,7 @@ function workspaceReason(dir, name, id, item, cwd, main) {
     const tips = outside.map(([c]) => c).filter((c) => !parents.has(c));
     if (git(dir, ["worktree", "list", "--porcelain"]).split("\n").filter((s) => s.startsWith("worktree ")).length !== 1) return "has linked worktrees";
     const atLedgerHead = ledger.includes(head);
-    return finishedWorkspaceReason(item, { atLedgerHead, headInMain: !atLedgerHead && inMain(main, [head]), dirty, extraCommits: !inMain(main, tips) });
+    return finishedWorkspaceReason(item, { atLedgerHead, headInMain: !atLedgerHead && inMain(main, [head]), dirty, ignored, extraCommits: !inMain(main, tips) });
   } catch { return "Git inspection failed"; }
 }
 
