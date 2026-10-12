@@ -436,8 +436,9 @@ OLD, the server runs NEW; starting replacement runner …` and spawns the
 same command line with the same environment. The replacement initializes,
 signals ready over IPC, and waits for the old process to release it before
 polling for work. The old process waits for the attached replacement to exit
-and forwards SIGINT, SIGTERM and SIGHUP, including during startup. The
-replacement has a new pid; Ctrl-C and session end still stop it.
+and forwards every SIGINT, SIGTERM and SIGHUP, including during startup.
+The replacement has its own process group so terminal signals reach it once.
+It has a new pid; Ctrl-C and session end still stop it.
 The new process logs `runner: reloaded: was OLD, now NEW`. Until the checkout
 holds the deployed commit it logs once `runner: behind: …`, with the `git -C
 CHECKOUT pull --ff-only` that updates it, and reloads at its first idle poll
@@ -454,10 +455,11 @@ Reloading works on all supported Node versions (24 and later), without
 `process.execve`. If spawning fails, initialization exits, or readiness takes
 longer than 60 seconds, the old runner logs the failure and keeps running.
 A replacement that times out is killed before the old runner resumes.
-Under launchd (`XPC_SERVICE_NAME`), the idle runner instead logs the old
-and target commits and exits; KeepAlive starts the same command from the
-updated checkout, without a competing child. For other supervisors configured
-to restart on exit, set `ATELIER_RUNNER_SUPERVISED=1`. The supervisor owns
+For supervisors configured to restart on exit (including launchd with
+KeepAlive), explicitly set `ATELIER_RUNNER_SUPERVISED=1`. The idle runner
+then logs the old and target commits and exits; the supervisor starts the
+same command from the updated checkout, without a competing child.
+`XPC_SERVICE_NAME` alone does not enable this mode. The supervisor owns
 startup failures in this mode. Terminal runners retain the readiness fallback
 described above; losing their waiting parent also stops the replacement.
 
