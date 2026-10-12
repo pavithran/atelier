@@ -112,10 +112,12 @@ export function requiredForCommand(command: string, word?: string, flags: Readon
 // carries the criteria; the review job posts the binding, keeps an
 // unparsable reply and reports a review it will not serve as the job's
 // actor (reviews.skip.v1, reviews.skip-as-runner.v1); the integrate and
-// refresh jobs post the integration routes (plans.integration.v1). Every
-// job but the review reports one it gives up to run-skip (runners.run-skip.v1,
-// t420); the queue's why poll, which the same capability names, is only
-// read for the idle message, so the review job does not require it.
+// refresh jobs post the integration routes (plans.integration.v1); the
+// criteria-review job claims and answers the criteria-review routes
+// (reviews.criteria-review.v1, t438). Every job but the two reviews reports
+// one it gives up to run-skip (runners.run-skip.v1, t420); the queue's why
+// poll, which the same capability names, is only read for the idle message,
+// so the review jobs do not require it.
 export const JOB_CAPABILITIES: Readonly<Record<string, readonly CapabilityName[]>> = {
   build: ["projects.commit-identity.v1", "items.brief-criteria.v1", "runners.scoped-token.v1", "runners.run-skip.v1"],
   plan: ["projects.commit-identity.v1", "items.brief-criteria.v1", "runners.scoped-token.v1", "runners.run-skip.v1"],
@@ -123,6 +125,7 @@ export const JOB_CAPABILITIES: Readonly<Record<string, readonly CapabilityName[]
   "merge-main-task": ["projects.commit-identity.v1", "runners.scoped-token.v1", "runners.run-skip.v1"],
   "merge-plan": ["projects.commit-identity.v1", "runners.scoped-token.v1", "runners.run-skip.v1"],
   review: ["reviews.post-merge.v1", "projects.commit-identity.v1", "reviews.criteria-binding.v1", "reviews.lease.v1", "reviews.unparsable.v1", "reviews.skip.v1", "reviews.skip-as-runner.v1", "runners.scoped-token.v1"],
+  "criteria-review": ["reviews.criteria-review.v1", "runners.scoped-token.v1"],
   integrate: ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1", "runners.run-skip.v1"],
   refresh: ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1", "runners.run-skip.v1"],
   "task-refresh": ["projects.commit-identity.v1", "refresh.tasks.v1", "runners.run-skip.v1"],

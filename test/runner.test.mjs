@@ -275,6 +275,61 @@ test("a held job whose workspace is at the recorded head runs the harness again"
   assert.ok(!logs.some((l) => l.startsWith("resumed:")));
 });
 
+// t438: a build recovered after a crash before its first commit is offered
+// back held at its recorded head, and runs the harness again. Its brief
+// carries what the server holds for the task, the criteria reviews' findings,
+// the owner's resolutions and the checks after deploy, fetched the same way
+// as for every other build item the queue can offer: fresh, counted or not,
+// or sent back with an earlier attempt committed. (A merge-main job's is in
+// test/runner-merge-main.test.mjs.)
+test("every build the queue can offer fetches the server's brief context before the harness, a crash recovery included", async () => {
+  const context = "## Review of the acceptance criteria\n\nfinding 1: blocking criterion-1 Fast is not a measurement. [resolution: refuted, 200 ms]\n\n### Checks after deploy\n\ncriterion-2: the project owner's check. Signing in needs a real account.";
+  const withContext = (options = {}, text = context) => {
+    const f = fixture(options);
+    f.io.jobBrief = async (project, id, actor) => { f.calls.push({ jobBrief: [project, id, actor] }); return { job: "build", text, hash: "h" }; };
+    return f;
+  };
+  for (const [name, item] of [
+    ["fresh", { ...assignment.item, state: "open", owner: null }],
+    ["fresh, with reviews counted", { ...assignment.item, state: "open", owner: null, criteriaReviews: 2 }],
+    ["sent back with an earlier attempt committed", { ...assignment.item, state: "open", owner: null, head: "before", base: "base", dispatch: { note: "address the findings" } }],
+    ["recovered after a crash before its first commit", heldItem({ head: "before", base: "before" })],
+    ["recovered after a crash, with reviews counted", heldItem({ head: "before", criteriaReviews: 2 })],
+    ["recovered after a crash, with nothing counted", heldItem({ head: "before" })],
+  ]) {
+    const { io, calls } = withContext();
+    const state = await runTask({ ...assignment, item }, config, "home:studio", io);
+    assert.equal(state.phase, "submitted", `${name}: ${state.reason}`);
+    assert.deepEqual(calls.filter((c) => c.jobBrief).map((c) => c.jobBrief), [["atelier", "t13", assignment.actor]], `${name}: one fetch`);
+    const fetched = calls.findIndex((c) => c.jobBrief), written = calls.findIndex((c) => c.brief), ran = calls.findIndex((c) => c.harness);
+    assert.ok(fetched < written && written < ran, `${name}: the context is fetched before the brief is written and the harness starts`);
+    const brief = calls[written].brief;
+    assert.ok(brief.includes("npm test"), `${name}: the local brief stays`);
+    assert.ok(brief.includes(context), `${name}: the brief carries the server's context`);
+    assert.ok(brief.indexOf("npm test") < brief.indexOf(context), `${name}: the context follows the local brief`);
+  }
+  // A server that holds nothing for the task leaves the local brief as it is.
+  const bare = withContext({}, "");
+  assert.equal((await runTask(assignment, config, "home:studio", bare.io)).phase, "submitted");
+  assert.ok(bare.calls.find((c) => c.brief).brief.endsWith(briefFor({ ...assignment.item, owner: assignment.actor }, assignment.project)));
+  // A recovered build whose workspace is ahead of the recorded head runs no
+  // harness, so it needs no context either.
+  const resumed = withContext();
+  assert.equal((await runTask({ ...assignment, item: heldItem({ head: "recorded" }) }, config, "home:studio", resumed.io)).phase, "submitted");
+  assert.ok(!resumed.calls.some((c) => c.jobBrief || c.harness || c.brief));
+  // A context that cannot be read is the server's failure, not the model's,
+  // for a recovered build as for a fresh one: nothing starts, the claim is released.
+  for (const item of [assignment.item, heldItem({ head: "before" })]) {
+    const unread = fixture({ head: "before" });
+    unread.io.jobBrief = async () => { throw Object.assign(new Error("the job brief could not be read: 503"), { infrastructure: true }); };
+    const state = await runTask({ ...assignment, item }, config, "home:studio", unread.io);
+    assert.equal(state.phase, "failed");
+    assert.equal(state.taskFailure, false);
+    assert.ok(!unread.calls.some((c) => c.harness || c.brief));
+    assert.ok(unread.calls.some((c) => c.argv?.[0] === "release"));
+  }
+});
+
 test("an open task is never finished without the harness, however far its workspace is ahead", async () => {
   for (const item of [{ state: "open", owner: null, head: "recorded" }, { head: "recorded" }, { state: "claimed", owner: "codex/other", head: "recorded" }]) {
     const { io, calls } = fixture();
@@ -1111,6 +1166,41 @@ test("runner skips refused revisions across polls and tries the next offered tas
   assert.deepEqual(claimed, ["t13", "t14", "t13"]);
 });
 
+// t438: a build refused for its criteria review is taken once a review
+// approves the criteria, though the approval changes neither its head nor
+// its updatedAt. Before the queue's verdict count was in refusedKey, the
+// runner passed the recovered claim by until it restarted.
+test("a build refused for its criteria review is taken once a review approves them, its head and updatedAt unchanged", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-queue-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  t.mock.method(console, "log", () => {});
+  const held = { ...assignment, item: { ...assignment.item, state: "claimed", owner: assignment.actor, head: "a".repeat(40), updatedAt: "one", criteriaReviews: 1 } };
+  const approved = { ...held, item: { ...held.item, criteriaReviews: 2 } };
+  const { io } = fixture();
+  const claimed = [];
+  io.cli = async (argv) => {
+    if (argv[0] === "claim") {
+      claimed.push(argv[1]);
+      if (claimed.length === 1) throw Object.assign(new Error("atelier: criteria_unreviewed: t13 cannot be claimed: this project requires a review of the acceptance criteria before a build, and none approves them as they are now\n"), { claimRefused: true });
+    }
+  };
+  let polls = 0;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
+    async queue() {
+      polls++;
+      if (polls <= 2) return [held];
+      if (polls === 3) return [approved];
+      process.emit("SIGTERM");
+      return [];
+    },
+  });
+  // Refused, passed by while unchanged, then taken once approved.
+  assert.deepEqual(claimed, ["t13", "t13"]);
+});
+
 // t540: a claim that lost the race to a hold (409 held) is not a refusal;
 // the runner keeps no refusal of the task and claims it at a later poll that
 // offers it, unchanged, where a refused claim passes it by.
@@ -1261,6 +1351,18 @@ test("a review's failure cap is keyed by the review it answered, so a new reques
   // The refusal key ends on a new review request too, at the same head.
   assert.notEqual(refusedKey(review), refusedKey({ ...review, item: { ...review.item, request: 2 } }));
   assert.equal(refusedKey(review), refusedKey({ ...review, item: { ...review.item, request: 1 } }));
+});
+
+test("a criteria review's failure cap is keyed by its request, apart from the task's build and from the next review (t438)", () => {
+  const criteria = { ...assignment, item: { ...assignment.item, request: 1, dispatch: { job: "criteria-review" } } };
+  // Two failed reviews of the criteria never count against the build of the
+  // same task, which has no request, nor against a code review of it.
+  assert.notEqual(failureKey(criteria), failureKey(assignment));
+  assert.notEqual(failureKey(criteria), failureKey({ ...assignment, item: { ...assignment.item, head: "a".repeat(40), request: 1, dispatch: { job: "review" } } }));
+  // The same review, offered again, keeps its count; the review the owner
+  // asks for after editing the criteria starts fresh.
+  assert.equal(failureKey(criteria), failureKey({ ...criteria, item: { ...criteria.item, updatedAt: "later" } }));
+  assert.notEqual(failureKey(criteria), failureKey({ ...criteria, item: { ...criteria.item, request: 2 } }));
 });
 
 test("runner remembers unsupported project names and claims the task behind them", async (t) => {
@@ -1596,7 +1698,7 @@ test("jobs is the exact list a runner offers, and unknown job names are refused"
     assert.match(errors, /jobs/, JSON.stringify(jobs));
   }
   assert.match(parseConfig({ agents: [reviewer], jobs: ["integrate"] }).errors.join(" "), /the integrator's alone/);
-  assert.match(parseConfig({ agents: [reviewer], jobs: ["other"] }).errors.join(" "), /build, plan, merge-main, merge-main-task, merge-plan, review and task-resolve/);
+  assert.match(parseConfig({ agents: [reviewer], jobs: ["other"] }).errors.join(" "), /build, plan, merge-main, merge-main-task, merge-plan, review, criteria-review and task-resolve/);
   // The offer carries the parsed names, trimmed and deduped as parseConfig has them.
   assert.deepEqual(offerFrom({ agents: [reviewer], jobs: [" review ", "review"] }, "home:rev").jobs, ["review", "prereview"]);
 });

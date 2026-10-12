@@ -33,6 +33,11 @@ export interface Item {
   lastPushAt: string | null;
   dispatch?: Dispatch | null; // set while the task waits for a runner; kept as the record once claimed
   runner?: string | null;     // the runner that holds the claim, if a runner claimed it
+  // How many reviews of the item's acceptance criteria reached a verdict or
+  // failed (t438), set on every build item the queue offers (Ledger.waiting
+  // and Ledger.heldJobs), so the server's brief, which carries their
+  // findings, is known to hold something before the build starts.
+  criteriaReviews?: number;
   reviewOverride?: ReviewOverride | null; // the owner's latest override; it counts only at the head it names
   // The owner's standing permission for an override from the command line
   // (t371): given on the task's page under the owner's own sign-in, for one
@@ -289,6 +294,21 @@ export interface Finding {
   text: string;
 }
 
+// A criterion the builder cannot verify in its workspace (t457): one that
+// needs a signed-in browser, production data, a deployed service or a human
+// step. A criteria review (src/review/criteria.ts) flags it as a check after
+// deploy, the project owner's (a human step) or the orchestrator's (a check a
+// script runs against the deployed project), rather than rejecting it; the
+// build brief tells the builder not to claim it verified, and the code
+// review marks it deferred rather than unmet. `criterion` numbers it as the
+// briefs do: the task's own criteria first, then the plan's for the part.
+export interface PostDeployCheck {
+  criterion: number;
+  by: "owner" | "orchestrator";
+  text: string;
+}
+export const CHECK_BY: readonly PostDeployCheck["by"][] = ["owner", "orchestrator"];
+
 export interface Review {
   itemId: string;
   by: string;
@@ -468,6 +488,13 @@ export interface ProjectPolicy {
   // --require-criteria`): a review judges a change against them, so a task
   // without them has nothing to bind its review to.
   requireCriteria?: boolean;
+  // Every build is dispatched and claimed only while a criteria review
+  // approves the task's acceptance criteria as they are now (`atelier init
+  // --require-criteria-review`, src/review/criteria.ts): a model of another
+  // family than every model that wrote them judges them before the build.
+  // Planner and review jobs are exempt; merge, integrate and refresh jobs
+  // keep their own gates.
+  requireCriteriaReview?: boolean;
   // Globs of the files only one live item at a time may change: the queue
   // holds a dispatch whose scope overlaps a live item's within one of them
   // (coreHold in src/dispatch/rules.ts). Absent or empty, nothing is held.
