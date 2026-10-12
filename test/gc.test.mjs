@@ -73,8 +73,10 @@ test("a finished workspace goes once its HEAD is in main or the recorded head, a
   // The project's checkout, whose main takes commits from the workspaces.
   const checkout = join(f.cache, "checkout");
   mkdirSync(checkout); f.git(checkout, "init", "-b", "main");
+  f.git(checkout, "config", "user.name", "Test"); f.git(checkout, "config", "user.email", "test@example.invalid");
   const main = { dir: checkout, branch: "main" };
-  const intoMain = (dir, rev = "HEAD") => { f.git(checkout, "fetch", "-q", dir, rev); f.git(checkout, "reset", "-q", "--hard", "FETCH_HEAD"); };
+  // Main keeps what it took before: each workspace's history is merged in.
+  const intoMain = (dir, rev = "HEAD") => { f.git(checkout, "fetch", "-q", dir, rev); f.git(checkout, "merge", "-q", "--allow-unrelated-histories", "--no-edit", "FETCH_HEAD"); };
   // Merged, its HEAD behind the accepted head (main went on through the fork).
   const behind = f.workspace("t1");
   f.git(behind, "commit", "--allow-empty", "-m", "Accepted");
@@ -100,7 +102,7 @@ test("a finished workspace goes once its HEAD is in main or the recorded head, a
   assert.ok(!existsSync(recorded));
 
   await collectCache({ ...f.options, apply: true, main, log: (l) => lines.push(l) });
-  for (const dir of [behind, side]) assert.ok(!existsSync(dir), dir);
+  for (const dir of [behind, side]) assert.ok(!existsSync(dir), lines.join("\n"));
   for (const dir of [unrecorded, dirty, ahead]) assert.ok(existsSync(dir), dir);
   assert.ok(lines.includes(`KEEP    ${unrecorded}: contains commits neither Atelier's record nor main holds`), lines.join("\n"));
   assert.ok(lines.includes(`KEEP    ${dirty}: contains changed or untracked files`));
