@@ -218,8 +218,10 @@ The steps in between:
    conflicts the landing stops, leaves the merge in the workspace for the
    owner to resolve, and names the files. After resolving and committing,
    run `atelier push` in the workspace to record the resolution before running
-   `atelier land t9` again. A rerun prepares from the recorded head and preserves
-   an unpushed resolution in a separate backup workspace. The conflicts can also go
+   `atelier land t9` again. A rerun before that push stops before taking the
+   lease, naming the commits the recorded head lacks and `atelier push`; only a
+   workspace that has diverged from the recorded head is moved to a backup, and
+   land names the backup and the commits it holds. The conflicts can also go
    back to the task's builder instead: `atelier dispatch t9 --job merge-main`
    (naming the holder with `--agent` and `--model`, as the message the
    landing prints says) sends the task to a runner, whose merge-main job
