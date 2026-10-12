@@ -507,7 +507,9 @@ renewal of the lease asks what is missing: one request per waiter and
 binding (its recorded head, the criteria binding, its contributors and how
 many merges main has had), never a second for the same binding. A waiter
 whose landing stops asking, gives up its place or closes is no longer
-pre-reviewed.
+pre-reviewed: the queue's list of jobs and the claim check this themselves,
+so a waiter that expired is never offered to a runner even when no landing
+call has come since. While no lease is live, a pending pre-review waits.
 
 The reviewer is picked as a gate reviewer is picked: from the pool's models
 (an admitted reviewer included), of another family than every contributor,
@@ -517,8 +519,11 @@ that a live runner offers for the `prereview` job count. A runner whose config t
 nothing is asked. A task with a gate review request open gets no
 pre-review, and a runner takes the gate's reviews before any pre-review.
 
-The runner clones the task's recorded head into a scratch folder of its
-own, merges main into it as `atelier land` does, raising the route level
+The claim binds the request to main's head as the server reads it from the
+baseline then; a claim made while it cannot be read is refused and the
+request stays open. The runner clones the task's recorded head into a
+scratch folder of its own, merges that main into it as `atelier land` does
+(a baseline that moved before the merge makes the pre-review stale), raising the route level
 and regenerating the fixtures, and records the main head it merged and the
 tree it prepared. The reviewer's brief names the merged tree's tests for the
 changed files, the project's required checks to run there, the task's
@@ -529,7 +534,11 @@ The result is pre-review evidence only. It does not satisfy or reject the
 gate, answer a review request or count a round, and the landing never waits
 for it. It is checked before it is applied: a verdict whose head, main,
 criteria or contributors moved, or that came after its claim was lost, is
-recorded as stale and changes nothing.
+recorded as stale and changes nothing. Main counts as moved when the
+baseline's head, read again when the verdict arrives, is not the main the
+tree was prepared from, whatever moved it (a merge, or `atelier sync`
+pushing without one). A rejection that names no blocking finding, or an
+approval that names one, is a malformed reply, however it was posted.
 
 | Result | What it does | Next step |
 | --- | --- | --- |

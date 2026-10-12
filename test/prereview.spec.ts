@@ -80,12 +80,14 @@ async function refusal(p: Promise<unknown>, code: string, detail?: RegExp): Prom
 
 const views = async (L: L, id: string) => (await L.prereviewsFor(id)) as unknown as PrereviewView[];
 const events = async (L: L, id: string) => (await L.events(id)) as unknown as LedgerEvent[];
-const claim = async (L: L, id: string, actor = GPT) => (await L.claimReview(id, actor, RUNNER, true)) as unknown as ReviewClaim;
+// The claim and the verdict carry main's head as the Worker read it from the
+// baseline (MAIN unless a test moves it).
+const claim = async (L: L, id: string, actor = GPT, main: string | null = MAIN) => (await L.claimReview(id, actor, RUNNER, true, main)) as unknown as ReviewClaim;
 const envelope = (findings: unknown[] = [], main = MAIN, tree = TREE) => ({ prereview: { main, tree }, findings });
 const BLOCKING = { file: "src/a.ts", line: 3, severity: "blocking", text: "the queue loses a waiter" };
 
-async function verdict(L: L, id: string, c: ReviewClaim, approve: boolean, findings: unknown[] = [], opts: { proved?: boolean; by?: string; main?: string } = {}) {
-  await L.addReview({ itemId: id, by: opts.by ?? GPT, head: c.head, criteria: c.criteria, request: c.request, approve, note: approve ? "Looks right." : "It breaks.", at: new Date().toISOString(), findings: envelope(findings, opts.main) as never }, undefined, opts.proved ?? true, "api");
+async function verdict(L: L, id: string, c: ReviewClaim, approve: boolean, findings: unknown[] = [], opts: { proved?: boolean; by?: string; main?: string; mainNow?: string | null } = {}) {
+  await L.addReview({ itemId: id, by: opts.by ?? GPT, head: c.head, criteria: c.criteria, request: c.request, approve, note: approve ? "Looks right." : "It breaks.", at: new Date().toISOString(), findings: envelope(findings, opts.main) as never, mainNow: opts.mainNow === undefined ? MAIN : opts.mainNow } as never, undefined, opts.proved ?? true, "api");
 }
 
 const queueIds = async (L: L) => ((await L.readLandingQueue()) as { item: string }[]).map((w) => w.item);
@@ -393,4 +395,151 @@ it("a runner token polled a pre-review is granted what a review job is, never a 
   await L.runnerPoll(token, { runner: RUNNER.runner, kind: "home", jobs: ["review", "prereview"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }] });
   await L.assertRunnerReport(token, t2, GPT, "review");
   await refusal(L.assertRunnerReport(token, t2, GPT, "build"), "runner_forbidden");
+});
+
+// Rework of t524's gate review (gpt-6-astra at b25c44f3), three findings.
+
+// (1) Main's freshness: the request is bound to main's head as read at its
+// claim, and a verdict is applied only while the baseline's head is still
+// the main it merged — whatever moved it, a merge or a push that records
+// none (atelier sync).
+it("a verdict prepared against a main the baseline has since left is stale and fences nothing, though no merge was recorded", async () => {
+  const MOVED = "e".repeat(40);
+  const { L, t2, t3 } = await landing("pre-main-sha");
+  // A claim where main's head could not be read is refused; the request stays open.
+  await refusal(claim(L, t2, GPT, null), "main_unread");
+  expect((await views(L, t2))[0].state).toBe("open");
+  const c = await claim(L, t2);
+  expect(c.prereview?.binding.main).toBe(MAIN);
+  expect((await views(L, t2))[0].binding.main).toBe(MAIN);
+  const generation = await L.mergeGeneration();
+  // The baseline moved to MOVED by a push the ledger recorded no merge for.
+  await verdict(L, t2, c, false, [BLOCKING], { mainNow: MOVED });
+  expect(await L.mergeGeneration()).toBe(generation);
+  expect((await views(L, t2))[0]).toMatchObject({ state: "stale", detail: expect.stringMatching(/main moved to eeeeeeee/) });
+  expect((await L.detail(t2) as unknown as { prereviewFence: unknown }).prereviewFence).toBeNull();
+  expect(await queueIds(L)).toContain(t2);
+  // A tree prepared from another main than the claim was bound to is stale too.
+  const c3 = await claim(L, t3, GPT, MOVED);
+  await verdict(L, t3, c3, false, [BLOCKING], { main: MAIN, mainNow: MAIN });
+  expect((await views(L, t3))[0]).toMatchObject({ state: "stale", detail: expect.stringMatching(/not eeeeeeee/) });
+  expect(await queueIds(L)).toContain(t3);
+  // So is a verdict for which main's head could not be read.
+  const d = await landing("pre-main-unread");
+  const cd = await claim(d.L, d.t2);
+  await verdict(d.L, d.t2, cd, false, [BLOCKING], { mainNow: null });
+  expect((await views(d.L, d.t2))[0]).toMatchObject({ state: "stale", detail: expect.stringMatching(/could not be read/) });
+  expect(await queueIds(d.L)).toContain(d.t2);
+});
+
+it("a claimed pre-review whose main the ledger has since seen move is stale at the next sweep", async () => {
+  const { L, t1, t2 } = await landing("pre-main-sweep");
+  await claim(L, t2);
+  await L.noteMainHead("e".repeat(40));
+  await L.renewProjectLanding(t1, "owner");
+  expect((await views(L, t2)).at(-1)).toMatchObject({ state: "stale", detail: expect.stringMatching(/main moved from cccccccc to eeeeeeee since the claim/) });
+});
+
+// (2) A verdict whose word and findings disagree is checked by the ledger,
+// not only by the runner's text parser: it is malformed and fences nothing.
+it("a rejection with no blocking finding, or an approval with one, is malformed: unavailable, and the waiter keeps its place", async () => {
+  const { L, t2, t3, t4 } = await landing("pre-contradiction");
+  const c2 = await claim(L, t2);
+  await verdict(L, t2, c2, false, []);
+  expect((await views(L, t2))[0]).toMatchObject({ state: "unavailable", outcome: "malformed", detail: expect.stringMatching(/rejects but names no blocking finding/) });
+  const c3 = await claim(L, t3);
+  await verdict(L, t3, c3, true, [BLOCKING]);
+  expect((await views(L, t3))[0]).toMatchObject({ state: "unavailable", outcome: "malformed", detail: expect.stringMatching(/approves but names a blocking finding/) });
+  for (const id of [t2, t3]) expect((await L.detail(id) as unknown as { prereviewFence: unknown; item: { state: string } })).toMatchObject({ prereviewFence: null, item: { state: "submitted" } });
+  expect(await queueIds(L)).toEqual([t2, t3, t4]);
+  // The API forwards the payload as posted; the ledger refuses it all the same.
+  const c = await landing("pre-contradiction-api");
+  const cc = await claim(c.L, c.t2);
+  await c.L.addReview({ itemId: c.t2, by: GPT, head: cc.head, criteria: cc.criteria, request: cc.request, approve: false, note: "No.", at: new Date().toISOString(), findings: envelope([{ file: "a", line: 1, severity: "follow-up", text: "nit" }]) as never, mainNow: MAIN } as never, undefined, true, "api");
+  expect((await views(c.L, c.t2))[0]).toMatchObject({ state: "unavailable", outcome: "malformed" });
+  expect(await queueIds(c.L)).toContain(c.t2);
+  // A malformed result may clear: it is asked again within the bound.
+  await L.queueProjectLanding(t2, "owner");
+  expect((await views(L, t2))[0]).toMatchObject({ state: "open", attempts: 2 });
+});
+
+// (3) Eligibility is judged when the queue lists a pre-review and when a
+// runner claims it, not only when a landing call sweeps.
+it("an expired waiter's pre-review is neither offered nor claimable, though no landing call has swept since", async () => {
+  const { L, t2, t3 } = await landing("pre-expired");
+  expect((await views(L, t3))[0].state).toBe("open");
+  // t3's landing stops asking: its row ages past the expiry with no landing call.
+  await runInDurableObject(L as unknown as DurableObjectStub<Ledger>, async (_instance: Ledger, state: DurableObjectState) => {
+    const row = state.storage.sql.exec(`SELECT value FROM meta WHERE key = 'landing-queue'`).one();
+    const rows = (JSON.parse(row.value as string) as { item: string; renewedAt: string }[]).map((w) => w.item === t3 ? { ...w, at: "2026-01-01T00:00:00.000Z", renewedAt: "2026-01-01T00:00:00.000Z" } : w);
+    state.storage.sql.exec(`UPDATE meta SET value = ? WHERE key = 'landing-queue'`, JSON.stringify(rows));
+  });
+  const listed = async () => ((await L.queued()) as unknown as { reviews: { id: string; dispatch: Dispatch }[] }).reviews.filter((r) => r.dispatch.job === "prereview").map((r) => r.id);
+  expect(await listed()).toEqual([t2]);
+  expect((await views(L, t3))[0]).toMatchObject({ state: "withdrawn", detail: expect.stringMatching(/left the landing queue/) });
+  await refusal(claim(L, t3), "no_review");
+  // A claim reached before any listing is refused too, and ends the request.
+  const b = await landing("pre-expired-claim");
+  await runInDurableObject(b.L as unknown as DurableObjectStub<Ledger>, async (_instance: Ledger, state: DurableObjectState) => {
+    const row = state.storage.sql.exec(`SELECT value FROM meta WHERE key = 'landing-queue'`).one();
+    const rows = (JSON.parse(row.value as string) as { item: string }[]).map((w) => w.item === b.t2 ? { ...w, at: "2026-01-01T00:00:00.000Z", renewedAt: "2026-01-01T00:00:00.000Z" } : w);
+    state.storage.sql.exec(`UPDATE meta SET value = ? WHERE key = 'landing-queue'`, JSON.stringify(rows));
+  });
+  await refusal(claim(b.L, b.t2), "not_eligible", /left the landing queue/);
+  expect((await views(b.L, b.t2))[0].state).toBe("withdrawn");
+});
+
+it("a lapsed lease takes every pre-review out of reach without ending it, until a live lease brings it back", async () => {
+  const { L, t1, t2 } = await landing("pre-lapsed");
+  // The holder stops renewing; the waiters keep asking (their rows are fresh).
+  await runInDurableObject(L as unknown as DurableObjectStub<Ledger>, async (_instance: Ledger, state: DurableObjectState) => {
+    const row = state.storage.sql.exec(`SELECT value FROM meta WHERE key = 'landing-lease'`).one();
+    state.storage.sql.exec(`UPDATE meta SET value = ? WHERE key = 'landing-lease'`, JSON.stringify({ ...JSON.parse(row.value as string), at: "2026-01-01T00:00:00.000Z", renewedAt: "2026-01-01T00:00:00.000Z" }));
+  });
+  expect(((await L.queued()) as unknown as { reviews: { dispatch: Dispatch }[] }).reviews.filter((r) => r.dispatch.job === "prereview")).toEqual([]);
+  await refusal(claim(L, t2), "not_eligible", /no landing holds a live lease/);
+  expect((await views(L, t2))[0].state).toBe("open");
+  await L.renewProjectLanding(t1, "owner");
+  expect((await claim(L, t2)).prereview?.binding.main).toBe(MAIN);
+});
+
+// Through the Worker's routes: the claim binds main's head as the baseline
+// holds it, and the verdict is judged against the baseline's head when it
+// arrives, so a baseline pushed without a recorded merge leaves the result
+// stale. The baseline here is a stand-in whose head the test moves.
+it("the routes bind the claim to the baseline's head and judge the verdict against it as it is when the verdict comes", async () => {
+  const project = "pre-main-route";
+  const { L, t2 } = await landing(project);
+  let baseline = MAIN;
+  const heads: Record<string, () => string> = { [`${project}--baseline`]: () => baseline, [`fork-${t2}`]: () => head(2) };
+  const artifacts = {
+    async get(name: string) {
+      return {
+        async log() { return heads[name] ? [{ hash: heads[name](), parents: [] }] : []; },
+        async info() { return { remote: `https://artifacts.test/${name}.git`, defaultBranch: "main" }; },
+        async createToken() { return { plaintext: `tok-${name}`, id: `id-${name}`, expiresAt: new Date(Date.now() + 3_600_000).toISOString() }; },
+        [Symbol.dispose]() {},
+      };
+    },
+  };
+  const bindings = { ...env, ATELIER_TOKEN: TOKEN, ARTIFACTS: artifacts } as unknown as typeof env;
+  const call = (token: string, actor: string, path: string, body: unknown, runner?: string) => worker.fetch(new Request(`https://atelier.test/api/projects/${project}${path}`, {
+    method: "POST", headers: { authorization: `Bearer ${token}`, "x-atelier-actor": actor, "content-type": "application/json", ...(runner ? { "x-atelier-runner": runner } : {}) }, body: JSON.stringify(body),
+  }), bindings);
+  const minted = await worker.fetch(new Request("https://atelier.test/api/tokens", {
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ actor: GPT, projects: [project] }),
+  }), bindings);
+  expect(minted.status).toBe(201);
+  const token = ((await minted.json()) as { token: string }).token;
+  const res = await call(token, GPT, `/items/${t2}/review-claim`, {}, RUNNER.runner);
+  expect(res.status, await res.clone().text()).toBe(200);
+  const c = (await res.json()) as ReviewClaim;
+  expect(c.prereview?.binding.main).toBe(MAIN);
+  // The baseline moves, as atelier sync pushes it, with no merge recorded.
+  baseline = "e".repeat(40);
+  const posted = await call(token, GPT, `/items/${t2}/review`, { head: c.head, criteria: c.criteria, request: c.request, approve: false, note: "It breaks.", findings: envelope([BLOCKING]) });
+  expect(posted.status, await posted.clone().text()).toBe(200);
+  expect((await views(L, t2))[0]).toMatchObject({ state: "stale", detail: expect.stringMatching(/main moved to eeeeeeee since the tree was prepared from cccccccc/) });
+  expect(await queueIds(L)).toContain(t2);
+  expect((await L.detail(t2) as unknown as { prereviewFence: unknown }).prereviewFence).toBeNull();
 });

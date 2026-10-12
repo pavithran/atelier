@@ -1608,6 +1608,13 @@ export async function runPrereview(assignment, config, name, runnerIO) {
     }
     guard();
     const main = merged.mainHead;
+    // The claim is bound to main's head as the baseline held it then; a
+    // baseline that moved before the merge read it gives another tree, and
+    // the server would refuse its verdict, so it is reported stale now.
+    if (pre.binding?.main && main !== pre.binding.main) {
+      await end({ outcome: "stale", detail: `main moved from ${pre.binding.main.slice(0, 8)} to ${main.slice(0, 8)} since the claim`, main });
+      return settled("stale", "main moved since the pre-review was claimed");
+    }
     const tree = await git(["rev-parse", "HEAD^{tree}"]);
     const from = await git(["merge-base", head, main]);
     const changed = (await git(["diff", "--name-only", "-z", from, head], { raw: true })).split("\0").filter(Boolean);
