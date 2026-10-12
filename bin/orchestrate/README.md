@@ -412,7 +412,10 @@ reloading: started from OLD, the server runs NEW; …`, and the new process
 (`git -C CHECKOUT pull --ff-only`); until then the runner logs once `runner:
 behind: …` and keeps running the old code. It never reloads mid-job. A failed
 re-exec logs `runner: reload failed: …` and keeps the old process running;
-restart that one by hand. Details: docs/runners.md, "Reload on deploy".
+restart that one by hand. Reloading in place needs Node 26.1 or later (an
+older Node aborts on a failed exec): there a runner logs once `runner: reload
+skipped: …` and still needs restarting after a deploy. Details:
+docs/runners.md, "Reload on deploy".
 
 ## What the agents may and may not do
 

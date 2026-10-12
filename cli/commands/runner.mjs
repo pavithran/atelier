@@ -24,7 +24,7 @@ export default async function runnerCommand() {
   if (args._[1] === "setup") return setupRunner();
   if (args.discover === true) return discoverModels();
   if (args.usage === true) return reportUsage();
-  const { reexecSelf, runRunner, runnerCheckout } = await import("../runner.mjs");
+  const { reexecSelf, reexecUnsupported, runRunner, runnerCheckout } = await import("../runner.mjs");
   // The runner's own server calls for plan jobs and parts, as the queue's:
   // fetches under the runner's token, naming the assignment's actor. They
   // throw rather than die, so the runner's loop decides what a failure
@@ -38,8 +38,9 @@ export default async function runnerCommand() {
       api: { server, I },
       workspacePath,
       // An idle runner reloads itself from this checkout once it holds the
-      // deployed commit (t265): exec in place, the pid kept.
-      reload: { checkout: runnerCheckout(), reexec: reexecSelf },
+      // deployed commit (t265): exec in place, the pid kept, on a Node whose
+      // failed exec throws rather than aborts.
+      reload: { checkout: runnerCheckout(), reexec: reexecSelf, unsupported: reexecUnsupported },
       // The server's route level against the CLI's, checked at start: a
       // server behind this CLI would fail the runner's calls one by one. An
       // idle runner reads it again for the deployed commit (t265).
