@@ -222,7 +222,7 @@ it('the flow tells who did what, escapes what agents wrote, and links each task'
 });
 it('decisions at rest show the latest graph, and the old resting sheet when there is none',()=>{
  const s=story();
- expect(renderInbox([],[project],'PAVI',undefined,[],undefined,new Date(),[],{story:s,owner:'pavi'})).toContain('See the whole flow');
+ expect(renderInbox([],[project],'PAVI',undefined,[],[],{story:s,owner:'pavi'})).toContain('See the whole flow');
  expect(renderInbox([],[project],'PAVI')).toContain('Space to focus.');
 });
 it('the flow headline counts only the projects whose threads are drawn',()=>{
@@ -237,7 +237,7 @@ it('the flow headline counts only the projects whose threads are drawn',()=>{
 it('a cut record says so where the graph rests',()=>{
  const partial=buildStory('example',[{...detail().item,id:'t1',state:'merged'}],[
   ev(1,'t1','codex/gpt-6','item.claimed')].reverse(),'pavi',true);
- expect(renderInbox([],[project],'PAVI',undefined,[],undefined,new Date(),[],{story:partial,owner:'pavi'}))
+ expect(renderInbox([],[project],'PAVI',undefined,[],[],{story:partial,owner:'pavi'}))
   .toContain('the most recent part of the record');
 });
 // A live page: the policy names one nonce, every script tag carries it and
@@ -691,36 +691,111 @@ it('the thread is left off when the record holds no claim, and the note when the
  const html=renderItem(project,merged,'PAVI',null);
  expect(html).toContain('id="thread"');expect(html).not.toContain('<g class="g-note');
 });
-it('Decisions draws one card per task waiting on the owner, each with its brief, a mini-thread and the link to act',()=>{
+// ── Decisions as a split view (t545) ──
+const other:ProjectRecord={...project,name:'other',title:'Other <b>Co</b>'};
+const shown=(d:Detail,files:{added:number,removed:number}[]=[{added:3,removed:1}])=>({head:d.item.head!,base:'b'.repeat(40),files:files.map((f,i)=>({path:`src/f${i}.ts`,status:'modified' as const,hunks:[],...f})),truncated:false});
+// A project with no protected path, where a passing check makes a submitted task ready to accept.
+const open:ProjectRecord={...project,policy:{checks:['npm test'],protected:[]}};
+const ready=()=>{const d=threaded('t1','First');d.policy=open.policy;d.events=[];d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[]};return d;};
+it('Decisions groups what waits on the owner by project, one row per task with its id, title, state word and why',()=>{
  const a=threaded('t1','First'),b=threaded('t2','Second <i>x</i>');
  b.item.state='blocked';b.item.blocked={by:'codex/gpt-6',reason:'keys',at:time,from:'claimed'};
- const att=place([a.item,b.item],[{itemId:'t2',kind:'blocked'},{itemId:'t1',kind:'accept'}]);
- const html=renderInbox([att],[project],'PAVI',undefined,[],undefined,new Date(),[],undefined,new Map([['example/t1',a],['example/t2',b]]));
- expect(html.match(/class="decision-card"/g)).toHaveLength(2);
- expect(html.match(/<svg class="graph compact mini"/g)).toHaveLength(2);
+ const html=renderInbox([place([a.item,b.item],[{itemId:'t2',kind:'blocked'},{itemId:'t1',kind:'accept'}]),place([{...a.item,id:'t7',title:'Elsewhere'}],[{itemId:'t7',kind:'accept',project:'other'}],'other')],[project,other],'PAVI');
+ expect(html).toContain('<h1 id="dec-h">Decisions · 3</h1>');
+ expect(html).toContain('<h2 class="dec-project">example · 2</h2>');
+ expect(html).toContain('<h2 class="dec-project">Other &lt;b&gt;Co&lt;/b&gt; · 1</h2>');
+ expect(html.indexOf('dec-project">example')).toBeLessThan(html.indexOf('dec-project">Other'));
  // Unblocking comes before accepting in the rule's precedence.
- expect(html.indexOf('data-task="example/t2"')).toBeLessThan(html.indexOf('data-task="example/t1"'));
- expect(html).toContain('href="/decisions?project=example&task=t1#review"');
- expect(html).toContain('href="/p/example/t1">Open the task page</a>');
- expect(html).toContain('Accept the revision, whose required checks all passed at its head.');
- expect(html).toContain('Settle what blocks it, then unblock it so it goes on.');
- expect(html).toContain('class="card-brief"');
- expect(html).toContain('2 tasks need your attention.');
- expect(html).toContain('Second &lt;i&gt;x&lt;/i&gt;');expect(html).not.toContain('<i>x</i>');
+ expect(html.indexOf('task=t2#review')).toBeLessThan(html.indexOf('task=t1#review'));
+ expect(html).toContain('<span class="dec-id">t2</span><span class="dec-title">Second &lt;i&gt;x&lt;/i&gt;</span><span class="dec-state ask">Blocked</span><span class="dec-why">Settle what blocks it, then unblock it so it goes on.</span>');
+ expect(html).toContain('<span class="dec-id">t1</span><span class="dec-title">First</span><span class="dec-state go">Ready to accept</span><span class="dec-why">Accept the revision, whose required checks all passed at its head.</span>');
+ expect(html).toContain('href="/decisions?project=other&task=t7#review"');
+ expect(html).not.toContain('<i>x</i>');
+ // The cards, their mini-threads and the floor strip are gone.
+ expect(html).not.toContain('decision-card');expect(html).not.toContain('<svg class="graph');expect(html).not.toContain('floor-strip');
 });
-it('a waiting task without its record stays a plain row with its action link, and an empty inbox renders as before',()=>{
- const att=place([threaded('t1','First').item],[{itemId:'t1',kind:'accept'}]);
- const plain=renderInbox([att],[project],'PAVI');
- expect(plain).toContain('class="decision-row"');expect(plain).not.toContain('class="decision-card"');
- expect(plain).toContain('<p class="meta card-links"><a href="/p/example/t1">Open the task page</a></p>');
+it('the selected task\'s detail sits beside the list with its state, why, evidence and the task page\'s own Accept form',()=>{
+ const d=ready();
+ const att=place([d.item],[{itemId:'t1',kind:'accept'}]);
+ const html=renderInbox([att],[open],'PAVI',{project:open,detail:d,diff:shown(d)});
+ expect(html).toContain('class="desk has-selection"');
+ expect(html).toContain('<a class="decision-row selected" href="/decisions?project=example&task=t1#review" aria-current="true">');
+ const sheet=html.slice(html.indexOf('<section class="review-sheet decision-detail" id="review" aria-labelledby="sel-h">'));
+ expect(sheet.length).toBeLessThan(html.length);
+ expect(html.indexOf('class="queue"')).toBeLessThan(html.indexOf('<section class="review-sheet decision-detail"'));
+ expect(sheet).toContain('<p class="context">example · t1 · claude-code/opus-5.5</p>');
+ expect(sheet).toContain('<h2 id="sel-h">First</h2>');
+ expect(sheet).toContain('<p class="dec-word go">Ready to accept</p>');
+ expect(sheet).toContain('<p class="dec-because">Required checks passed for this revision. Accept it to prepare the local merge.</p>');
+ // Accept posts the very form the task page posts, to the same route, with the same revision and criteria.
+ const page=renderItem(open,d,'PAVI',shown(d));
+ const form=/<form method="post" action="\/ui\/example\/t1\/accept">.*?<\/form>/s.exec(page)![0];
+ expect(sheet).toContain(form);
+ expect(form).toContain(`name="head" value="${head}"`);expect(form).toContain('<button class="primary">Accept revision</button>');
+ expect(sheet).toContain('<a class="button" href="/p/example/t1#changes">Review the diff</a>');
+ expect(page).toContain('id="changes"');
+ expect(sheet).toContain('<a class="dec-open" href="/p/example/t1">Open the task</a>');
+ // The evidence: the check with where and when it ran, the diff in figures, and no review row when none is needed.
+ expect(sheet).toContain(`<li><span class="ev-label go">Passed</span><span class="ev-what"><code>npm test</code></span><span class="ev-where">Runner, clean clone · ${stamp(time)}</span></li>`);
+ expect(sheet).toContain('<span class="ev-what">1 file, +3 −1</span>');
+ expect(sheet).not.toContain('ev-label signal');
+ expect(sheet).not.toContain('Ask a reviewer');
+});
+it('the detail counts every changed file and says what lies outside the scope',()=>{
+ const d=ready();d.gate={...d.gate,outOfScope:['docs/x.md']};
+ const html=renderInbox([],[open],'PAVI',{project:open,detail:d,diff:{...shown(d,[{added:2,removed:0},{added:1,removed:4}]),truncated:true}});
+ expect(html).toContain('<span class="ev-what">2 files or more, +3 −4 · 1 outside its scope</span>');
+ const unread=renderInbox([],[open],'PAVI',{project:open,detail:d,diff:'unavailable'});
+ expect(unread).toContain('<span class="ev-what">Could not be read just now</span>');
+ // Not shown at the recorded revision: no Accept, and the notice says why.
+ expect(unread).not.toContain('Accept revision');expect(unread).toContain('Changes are unavailable');
+});
+it('a protected change asks for a reviewer with the landing command, and links to the task page\'s override as a last resort',()=>{
+ const d=detail();d.item.title='Rotate the key';
+ const html=renderInbox([],[project],'PAVI',{project,detail:d,diff:shown(d)});
+ const sheet=html.slice(html.indexOf('<section class="review-sheet decision-detail"'));
+ expect(sheet).toContain('<p class="dec-word ask">Waiting for an independent review</p>');
+ expect(sheet).toContain('<summary class="button primary">Ask a reviewer</summary>');
+ expect(sheet).toContain("atelier land t1 --project &#39;example&#39;");
+ // The task page draws the same command for the same state.
+ expect(renderItem(project,d,'PAVI',shown(d))).toContain("atelier land t1 --project &#39;example&#39;");
+ expect(sheet).toContain('<span class="ev-label signal">Review</span><span class="ev-what">None yet. Touches a protected path; needs approval from a model of another family than every contributor.</span>');
+ expect(sheet).toContain('As a last resort, <a href="/p/example/t1">record an override</a> on the task page.');
+ expect(renderItem(project,d,'PAVI',shown(d))).toContain('<details class="override-disclosure"><summary>');
+ // No override link where the task page offers no override form.
+ const forbidden={...d,policy:{...d.policy,noOverride:true}};
+ expect(renderInbox([],[project],'PAVI',{project,detail:forbidden,diff:shown(d)})).not.toContain('record an override');
+ expect(renderInbox([],[project],'PAVI',{project,detail:{...d,ownerFactor:null},diff:shown(d)})).not.toContain('record an override');
+ // A review that counts is shown in its place.
+ const reviewed={...d,reviews:[{itemId:'t1',head,criteria:NO_CRITERIA,approve:false,by:'zcode/glm-5.3',note:'<b>fix</b> it',at:time}]};
+ const sent=renderInbox([],[project],'PAVI',{project,detail:reviewed,diff:shown(d)});
+ expect(sent).toContain(`<span class="ev-label bad">Sent back</span><span class="ev-what">&lt;b&gt;fix&lt;/b&gt; it</span><span class="ev-where">zcode/glm-5.3 · ${stamp(time)}</span>`);
+ expect(sent).not.toContain('Ask a reviewer');
+});
+it('a blocked task\'s detail offers the task page\'s own Unblock form, and a merged task\'s ship call opens Ship',()=>{
+ const d=threaded('t2','Blocked one');d.item.state='blocked';d.item.blocked={by:'codex/gpt-6',reason:'waits on keys',at:time,from:'claimed'};
+ const att=place([d.item],[{itemId:'t2',kind:'blocked'}]);
+ const html=renderInbox([att],[project],'PAVI',{project,detail:d,diff:shown(d)});
+ const form=/<form method="post" action="\/ui\/example\/t2\/unblock">.*?<\/form>/s.exec(renderItem(project,d,'PAVI',shown(d)))![0];
+ expect(html.slice(html.indexOf('<section class="review-sheet decision-detail"'))).toContain(form);
+ expect(html).toContain('<p class="dec-word ask">Blocked</p>');
+ expect(html).toContain('<p class="dec-because">codex/gpt-6 blocked it: waits on keys. It keeps its owner and workspace, and nothing moves until it is unblocked.</p>');
+ const m=threaded('t3','Shipped');m.item.state='merged';m.item.acceptedHead=head;
+ const ship=renderInbox([place([m.item],[{itemId:'t3',kind:'ship'}])],[project],'PAVI',{project,detail:m,diff:null});
+ expect(ship).toContain('<p class="dec-word signal">To ship</p>');
+ expect(ship).toContain('<a class="button primary" href="/p/example/ship">Open Ship</a>');
+});
+it('a task with nothing pushed has no diff to review and says so under Evidence',()=>{
+ const d=detail();d.item.head=null;d.item.state='claimed';d.evidence=[];
+ const html=renderInbox([],[project],'PAVI',{project,detail:d,diff:null});
+ expect(html).not.toContain('Review the diff');expect(html).toContain('Nothing pushed yet.');
+ expect(html).toContain('<a class="dec-open" href="/p/example/t1">Open the task</a>');
+});
+it('an empty inbox counts nothing and says so; a selected decision carries a back link, and without one the list stands alone',()=>{
  const empty=renderInbox([],[project],'PAVI');
- expect(empty).toContain('You’re clear.');expect(empty).toContain('Nothing is waiting on you.');expect(empty).not.toContain('class="decision-card"');
- const selected=renderInbox([att],[project],'PAVI',{project,detail:threaded(),diff:null},[],undefined,new Date(),[],undefined,new Map([['example/t1',threaded()]]));
- expect(selected).toContain('aria-current="true"');expect(selected).toContain('aria-label="Selected task"');
-});
-it('a selected decision marks the desk and carries a back link; without one, the list stands alone',()=>{
+ expect(empty).toContain('Decisions · 0');expect(empty).toContain('You’re clear.');expect(empty).toContain('Nothing is waiting on you.');
  const att=place([threaded('t1','First').item],[{itemId:'t1',kind:'accept'}]);
- const selected=renderInbox([att],[project],'PAVI',{project,detail:threaded(),diff:null},[],undefined,new Date(),[],undefined,new Map([['example/t1',threaded()]]));
+ const selected=renderInbox([att],[project],'PAVI',{project,detail:threaded(),diff:null});
  expect(selected).toContain('class="desk has-selection"');
  expect(selected).toContain('class="review-back" href="/decisions"');
  expect(selected).toContain('>All decisions</span>');
@@ -729,23 +804,23 @@ it('a selected decision marks the desk and carries a back link; without one, the
  expect(rest).not.toContain('class="desk has-selection"');
  expect(rest).not.toContain('class="review-back"');
 });
-it('Decisions lists only the owner\'s calls under Needs your attention; the pipeline and overlapping scopes sit in disclosures',()=>{
+it('Decisions lists only the owner\'s calls; what the orchestrator handles and overlapping scopes are folded below',()=>{
   const it=(id:string,state:string,title:string)=>({...detail().item,id,state,title});
   const att=place([it('t1','submitted','Accept me'),it('t2','accepted','Merge me'),it('t3','claimed','Stale me'),it('t4','submitted','Assess me')],[
     {itemId:'t1',kind:'accept'},{itemId:'t2',kind:'merge'},{itemId:'t3',kind:'stale'},{itemId:'t4',kind:'assess'},
     {itemId:'t1',kind:'overlap',reason:'scope overlaps t3 (codex/gpt-6)'},
   ]);
   const html=renderInbox([att],[project],'PAVI');
-  const needs=html.indexOf('Needs your attention');
+  const list=html.indexOf('class="decision-list"');
   const pipeline=html.indexOf('<details class="disclosure pipeline">');
   const overlaps=html.indexOf('<details class="disclosure overlaps">');
-  expect(needs).toBeGreaterThan(-1);expect(pipeline).toBeGreaterThan(needs);expect(overlaps).toBeGreaterThan(pipeline);
+  expect(list).toBeGreaterThan(-1);expect(pipeline).toBeGreaterThan(list);expect(overlaps).toBeGreaterThan(pipeline);
   expect(html.indexOf('Accept me')).toBeLessThan(pipeline);
   for(const t of ['Merge me','Stale me','Assess me'])expect(html.indexOf(t)).toBeGreaterThan(pipeline);
-  expect(html).toContain('3 tasks in the pipeline: 1 in review · 1 accepted · 1 building</summary>');
+  expect(html).toContain('<summary>Handled by the orchestrator · 3</summary><h3 class="dec-project">example · 1 in review · 1 accepted · 1 building</h3>');
   expect(html).toContain('1 pair of tasks with overlapping scopes</summary>');
   expect(html.slice(0,pipeline)).not.toContain('overlap');
-  expect(html).toContain('1 task needs your attention.');
+  expect(html).toContain('Decisions · 1</h1>');
   // A task carrying an own call and other notices is one row.
   expect(html.match(/task=t1#review/g)).toHaveLength(1);
 });

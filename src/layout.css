@@ -139,30 +139,50 @@ code, .mono, pre { font: 13px/1.65 var(--font-mono); }
 .where.local { color: var(--text-muted); }
 
 /* ── decisions ─────────────────────────────────────────────────────────── */
-.desk { display: grid; grid-template-columns: minmax(280px, .8fr) minmax(0, 1.3fr); gap: 28px; }
+.desk { display: grid; grid-template-columns: minmax(300px, 540px) minmax(0, 1fr); gap: 28px; align-items: start; }
 .queue { min-width: 0; }
-.queue header { padding: 0 var(--space-md) var(--space-md); }
+.queue h1 { font-size: 40px; line-height: 1; letter-spacing: -.03em; margin: 0 0 18px; }
 ul { padding-left: var(--space-xl); }
 .decision-list, .task-list { list-style: none; margin: 0; padding: 0; }
+/* The list: a project's name as a small mono label, then one row per task,
+   its id, title and state on the first line and why under the title. */
+.dec-group { margin: 0 0 18px; }
+.dec-project { margin: 0 0 6px; font: 500 12px/1.5 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-muted); }
+.dec-group .decision-list { border-top: 1px solid var(--line); }
+.decision-list > li { border-bottom: 1px solid var(--line); }
 .decision-row {
-  display: grid; grid-template-columns: 22px minmax(0, 1fr) auto 16px; gap: 14px; align-items: center;
-  padding: var(--space-xl) 14px; border-radius: var(--radius-small); text-decoration: none; color: var(--text); margin: 4px 0;
+  display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; gap: 2px 12px; align-items: baseline;
+  padding: 11px 12px; min-height: 44px; text-decoration: none; color: var(--text);
 }
-.decision-row:hover, .decision-row.selected { background: var(--selection); }
-.decision-row strong { font-weight: 600; line-height: 1.4; display: block; }
-.decision-row .meta { display: block; margin-top: 3px; }
-.decision-row > svg:last-child { width: 16px; }
-.decision-row:not(:has(> .tag)) { grid-template-columns: 22px minmax(0, 1fr) 16px; }
-
-.floor-strip ul { list-style: none; margin: 0; padding: 0; }
-.floor-strip li > a {
-  display: grid; grid-template-columns: 10px auto auto minmax(0, 1fr) auto; gap: 10px; align-items: baseline;
-  padding: 10px 14px; border-radius: var(--radius-small); color: var(--text); text-decoration: none;
-}
-.floor-strip li > a:hover { background: var(--selection); }
-.floor-strip strong { font: 18px var(--font-display); color: var(--text-bright); }
-.strip-task { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
-.floor-strip li.meta { padding: 4px 14px 0 34px; }
+.decision-row:hover { background: var(--surface-raised); }
+.decision-row.selected { background: var(--inset); box-shadow: inset 3px 0 0 var(--signal); }
+.dec-id { font-family: var(--font-mono); }
+.dec-title { min-width: 0; overflow-wrap: anywhere; }
+.dec-state { font-weight: 500; white-space: nowrap; }
+.dec-why { grid-column: 2 / -1; font-size: 14px; color: var(--text-muted); }
+.dec-state.signal, .dec-word.signal, .ev-label.signal { color: var(--signal); }
+.queue > .disclosure { border-top: 1px solid var(--line); padding-top: 10px; }
+.queue > .disclosure .dec-project { margin-top: var(--space-lg); }
+/* The selected task: context, title, state word, why, actions, evidence. */
+.review-sheet.decision-detail { padding: 28px 32px; border-radius: 16px; background: var(--surface-raised); }
+.decision-detail .context { font: 13px/1.5 var(--font-mono); margin: 0; }
+.decision-detail h2 { font: 800 34px/1.08 var(--font-display); letter-spacing: -.025em; color: var(--text-bright); overflow-wrap: anywhere; margin: 8px 0 18px; }
+.dec-word { margin: 0; font-size: 22px; font-weight: 600; }
+.dec-because { margin: 6px 0 20px; max-width: 60ch; color: var(--text); overflow-wrap: anywhere; }
+.dec-actions { gap: 10px; margin: 0 0 var(--space-xl); align-items: center; }
+.dec-actions .button, .dec-actions button { min-height: 44px; }
+.dec-actions .dec-open { display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; color: var(--text); }
+.ask-reviewer > summary { list-style: none; }
+.ask-reviewer > summary::-webkit-details-marker { display: none; }
+.ask-reviewer[open] { flex-basis: 100%; }
+.ask-reviewer .merge-command { margin: var(--space-md) 0 0; }
+.decision-detail .dec-project { margin-top: 28px; margin-bottom: 8px; }
+.dec-evidence { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+.dec-evidence li { display: grid; grid-template-columns: 112px minmax(0, 1fr) auto; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
+.ev-label { font-weight: 600; color: var(--text-muted); }
+.ev-what { min-width: 0; overflow-wrap: anywhere; }
+.ev-where { font-size: 14px; color: var(--text-muted); text-align: right; }
+.dec-foot { margin: 16px 0 0; }
 .pulse { width: 8px; height: 8px; border-radius: var(--radius-pill); background: var(--observed); align-self: center; animation: breathe 2.4s var(--curve-breathe) infinite; }
 @keyframes breathe { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .pulse { animation: none; } html { scroll-behavior: auto; } }
@@ -190,8 +210,8 @@ button, .button, .request-changes > summary {
   transition: background var(--motion-tap) var(--curve-tap);
 }
 button:hover, .button:hover, .request-changes > summary:hover { background: var(--inset); }
-button.primary { background: var(--signal); border-color: var(--signal); color: var(--on-accent); }
-button.primary:hover { background: var(--signal-hot); border-color: var(--signal-hot); }
+button.primary, .button.primary { background: var(--signal); border-color: var(--signal); color: var(--on-accent); }
+button.primary:hover, .button.primary:hover { background: var(--signal-hot); border-color: var(--signal-hot); }
 .request-changes { max-width: 100%; }
 .request-changes[open] { flex-basis: 100%; }
 /* A summary that opens an inline form reads as a link, not a button; the
@@ -402,24 +422,24 @@ main:has(.login-backdrop) { overflow-x: clip; }
   main { padding: 56px 48px; }
   .desk { gap: 38px; }
   .review-sheet { padding: 40px; }
+  .review-sheet.decision-detail { padding: 28px 32px; }
 }
 @media (max-width: 1180px) {
   :root { --rail-w: 176px; --bench-w: 220px; }
   .rail { padding: 28px var(--space-md); }
   main { padding: 32px 22px; }
-  .desk { grid-template-columns: minmax(240px, .75fr) minmax(0, 1.25fr); gap: 18px; }
-  .decision-row { grid-template-columns: 20px minmax(0, 1fr) 16px; padding: var(--space-lg) 10px; gap: 10px; }
-  .decision-row > .tag { grid-column: 2; grid-row: 2; justify-self: start; }
-  .decision-row > svg:last-child { grid-column: 3; grid-row: 1; }
+  .desk { grid-template-columns: minmax(260px, .8fr) minmax(0, 1.2fr); gap: 18px; }
+  .decision-row { grid-template-columns: 44px minmax(0, 1fr); }
+  .dec-state, .dec-why { grid-column: 2; }
   .review-sheet { padding: var(--space-xxl); }
   .review-header h2 { font-size: 32px; }
   h1 { font-size: 48px; }
 }
 @media (max-width: 900px) {
   .desk { grid-template-columns: 1fr; }
-  .queue header, .queue .section-title { padding-left: 0; margin-left: 0; }
-  .decision-row { grid-template-columns: 22px minmax(0, 1fr) auto 16px; }
-  .decision-row > .tag, .decision-row > svg:last-child { grid-column: auto; grid-row: auto; }
+  .decision-row { grid-template-columns: 52px minmax(0, 1fr) auto; }
+  .dec-state { grid-column: auto; }
+  .dec-why { grid-column: 2 / -1; }
   .review-sheet { margin-top: 10px; }
   .lane { grid-template-columns: 1fr; gap: var(--space-md); }
   .axis-labels { margin-left: 0; }
@@ -441,11 +461,14 @@ main:has(.login-backdrop) { overflow-x: clip; }
   .lead { font-size: 17px; }
   .review-sheet { padding: var(--space-xl) var(--space-lg); }
   .review-header h2 { font-size: 30px; }
-  .decision-row { grid-template-columns: 20px minmax(0, 1fr) 16px; padding: 14px 10px; }
-  .decision-row > .tag { grid-column: 2; grid-row: 2; justify-self: start; }
-  .decision-row > svg:last-child { grid-column: 3; grid-row: 1; }
-  .floor-strip li > a { grid-template-columns: 10px auto minmax(0, 1fr); row-gap: 2px; }
-  .floor-strip .strip-task, .floor-strip .strip-ago { grid-column: 2 / -1; }
+  .queue h1 { font-size: 34px; }
+  .decision-row { grid-template-columns: 44px minmax(0, 1fr); padding: 11px 8px; }
+  .dec-state, .dec-why { grid-column: 2; }
+  .review-sheet.decision-detail { padding: var(--space-xl) var(--space-lg); }
+  .decision-detail h2 { font-size: 28px; }
+  .dec-actions > *, .dec-actions .button { width: 100%; justify-content: center; text-align: center; }
+  .dec-evidence li { grid-template-columns: 96px minmax(0, 1fr); }
+  .ev-where { grid-column: 2; text-align: left; }
   .task-list a { grid-template-columns: minmax(0, 1fr) 20px; gap: 10px; }
   .task-list a .tag { grid-column: 1; justify-self: start; }
   .task-list a time { display: none; }
@@ -466,7 +489,7 @@ main:has(.login-backdrop) { overflow-x: clip; }
 
 /* ── display type and stage ─────────────────────────────────────────────────── */
 h1, .brand { font-weight: 800; letter-spacing: -.04em; }
-.review-header h2, .floor-strip strong { font-weight: 700; letter-spacing: -.02em; }
+.review-header h2 { font-weight: 700; letter-spacing: -.02em; }
 .rail { background: var(--shell); }
 .review-sheet { background: radial-gradient(1000px 360px at 30% 0%, var(--inset) 0%, var(--sheet) 62%); }
 
@@ -759,15 +782,6 @@ button.quiet:hover { color: var(--text); border-color: var(--line-bright); }
 .g-edge.reject > path { stroke-dasharray: 3 3; }
 .g-edge g path { fill: var(--c); }
 .g-edge .ring { fill: none; stroke: var(--fault); stroke-width: 1.8; }
-.decision-card { background: var(--sheet); border: 1px solid var(--line); border-radius: var(--radius-medium); margin: 0 0 12px; min-width: 0; overflow: hidden; }
-.decision-card > .decision-row { margin: 0; border-radius: 0; }
-.card-body { padding: 0 14px 12px; min-width: 0; }
-.card-brief { display: flex; gap: 10px; align-items: baseline; margin: 0 0 6px; font-size: 14px; color: var(--text-muted); }
-.card-brief .tag { flex: none; }
-.card-brief span:last-child { min-width: 0; overflow-wrap: anywhere; }
-.card-thread { padding: 0; margin: 0 -4px 4px; }
-.card-links { margin: 0; }
-@media (max-width: 720px) { .card-body { padding: 0 10px 10px; } }
 
 /* ── merge preview: the task against main as it is now ───────────────────── */
 .merge-preview { margin: 8px 0 12px; }
