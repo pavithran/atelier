@@ -754,14 +754,22 @@ test("the integrator refuses a server lacking its jobs' capabilities and polls n
     }), expected, JSON.stringify(version));
     assert.equal(polls, 0, `${JSON.stringify(version)}: a runner that refuses at start never polls`);
   }
-  for (const version of [{ routeLevel: ROUTE_LEVEL }, { capabilities: ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1"] }, { capabilities: [...SERVER_CAPABILITIES, "future.thing.v1"] }]) {
+  // A server from before the task refresh (t462) keeps its integrator, with
+  // the task-refresh job left out of the offer.
+  for (const [version, jobs] of [
+    [{ routeLevel: ROUTE_LEVEL }, ["integrate", "refresh"]],
+    [{ capabilities: ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1"] }, ["integrate", "refresh"]],
+    [{ capabilities: [...SERVER_CAPABILITIES, "future.thing.v1"] }, ["integrate", "refresh", "task-refresh"]],
+  ]) {
     let polls = 0;
+    const offers = [];
     await runRunner(integrator, {
       workspacePath: () => { throw new Error("no task should be claimed"); },
       version: async () => version,
-      async queue() { polls++; return []; },
+      async queue(offer) { polls++; offers.push(offer.jobs); return []; },
     });
     assert.equal(polls, 1, JSON.stringify(version));
+    assert.deepEqual(offers, [jobs], JSON.stringify(version));
   }
   assert.match(versionRefusal({ routeLevel: 5 }, ["integrate"]), /plans\.integration\.v1/);
   assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL }, ["integrate", "refresh"]), null);
@@ -1440,7 +1448,7 @@ test("jobs is the exact list a runner offers, and unknown job names are refused"
     assert.match(errors, /jobs/, JSON.stringify(jobs));
   }
   assert.match(parseConfig({ agents: [reviewer], jobs: ["integrate"] }).errors.join(" "), /the integrator's alone/);
-  assert.match(parseConfig({ agents: [reviewer], jobs: ["other"] }).errors.join(" "), /build, plan, merge-main, merge-main-task, merge-plan and review/);
+  assert.match(parseConfig({ agents: [reviewer], jobs: ["other"] }).errors.join(" "), /build, plan, merge-main, merge-main-task, merge-plan, review and task-resolve/);
   // The offer carries the parsed names, trimmed and deduped as parseConfig has them.
   assert.deepEqual(offerFrom({ agents: [reviewer], jobs: [" review ", "review"] }, "home:rev").jobs, ["review"]);
 });
@@ -1476,7 +1484,7 @@ test("at start the runner says the jobs it takes and the jobs it leaves", async 
     taskIO: { log: (s) => logs.push(s) },
     queue: async () => [],
   });
-  assert.deepEqual(logs, ["jobs: integrate, refresh (not build, plan, merge-main, merge-main-task, merge-plan, review)"]);
+  assert.deepEqual(logs, ["jobs: integrate, refresh, task-refresh (not build, plan, merge-main, merge-main-task, merge-plan, review)"]);
   assert.equal(jobsLine([...DEFAULT_JOBS, "review"]), `jobs: ${[...DEFAULT_JOBS, "review"].join(", ")}`);
 });
 

@@ -190,14 +190,14 @@ test("the plan flow's text fits its boxes and lanes at the drawn size", () => {
 // home runner takes, and those are the jobs the runner offers by default:
 // build and plan with the merge jobs such a build needs (DEFAULT_JOBS in
 // cli/runner-config.mjs; a config's jobs names exactly the jobs it takes
-// instead), review when the config lists it, and integrate and refresh for a
-// runner started with --integrate.
+// instead), review when the config lists it, and integrate, refresh and the
+// task refresh (t462) for a runner started with --integrate.
 test("the layers diagram shows a goal entering as a plan and the runner's jobs", () => {
   const runner = read("cli/runner.mjs");
   assert.match(runner, /jobs: \[\.\.\.\(jobs \?\? DEFAULT_JOBS\)\]/);
   assert.match(read("cli/runner-config.mjs"), /DEFAULT_JOBS = \["build", "plan", "merge-main", "merge-main-task", "merge-plan"\]/);
   assert.match(runner, /dispatch carrying job: "plan"[\s\S]{0,80}carrying "review"/);
-  assert.match(runner, /jobs: \["integrate", "refresh"\]/);
+  assert.match(runner, /jobs: \["integrate", "refresh", "task-refresh"\]/);
   for (const t of [LAYERS_LABEL, LAYERS_CAPTION]) {
     assert.match(t, /atelier plan "goal"/, t);
     assert.match(t, /build, plan and review jobs|build and plan jobs, and review jobs/, t);

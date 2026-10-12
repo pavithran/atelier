@@ -119,6 +119,8 @@ export const JOB_CAPABILITIES: Readonly<Record<string, readonly CapabilityName[]
   review: ["projects.commit-identity.v1", "reviews.criteria-binding.v1", "reviews.lease.v1", "reviews.unparsable.v1", "reviews.skip.v1", "reviews.skip-as-runner.v1", "runners.scoped-token.v1"],
   integrate: ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1"],
   refresh: ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1"],
+  "task-refresh": ["projects.commit-identity.v1", "refresh.tasks.v1"],
+  "task-resolve": ["projects.commit-identity.v1", "refresh.tasks.v1"],
 };
 
 export const requiredForJobs = (jobs: readonly string[]): string[] => [...new Set(jobs.flatMap((job) => JOB_CAPABILITIES[job] ?? []))];

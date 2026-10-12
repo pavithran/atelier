@@ -456,6 +456,10 @@ export interface ProjectPolicy {
   // for a tier model that did not build the change, whatever its family.
   // Absent or empty, no tier review is asked for.
   reviewTier?: string[];
+  // The frontier models, as harness/model actors in the owner's order, that
+  // may resolve a refresh's mechanical conflicts (`atelier init --resolver`,
+  // src/refresh/resolver.ts). Absent or empty, such a conflict waits.
+  resolvers?: string[];
   protected: string[];      // globs whose changes need an independent assessor
   eligible?: string[];      // harness families allowed to act (e.g. "claude"); empty or absent means any
   refuseOverlap?: boolean;  // refuse a claim whose scope overlaps another live item
@@ -575,6 +579,11 @@ export function pushActors(events: { actor: string; kind: string; data: Record<s
       // actor's work: it joins the contributors the gate compares.
       for (const a of pushAuthors(event.data)) actors.add(a.actor);
     }
+    // A refresh whose conflicts a resolver resolved (t462) is that
+    // resolver's work too: it joins the contributors, under the identity
+    // its merge commit's Agent line names. A clean refresh, a merge with no
+    // model in it, adds no one.
+    if (event.kind === "item.refreshed" && typeof event.data.resolver === "string" && validActor(event.data.resolver) && event.data.resolver.includes("/")) actors.add(event.data.resolver);
   }
   return [...actors];
 }

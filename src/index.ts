@@ -33,6 +33,7 @@ import { addTally, buildStory, emptyTally, VENDOR_NAMES, type Story } from "./gr
 import { buildPulse } from "./pulse";
 import { projectKind } from "./kind";
 import { assign, parseRunner, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
+import { parseResolvers } from "./refresh/resolver.ts";
 import { attentionFor } from "./attention.ts";
 import { readStanding, type StandingSource } from "./standing-read.ts";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
@@ -828,6 +829,43 @@ async function mainHeadOf(env: Env, L: ReturnType<typeof ledger>): Promise<strin
   try { return await headOf(env, (await L.project()).repo); } catch { return null; }
 }
 
+// A task's refresh as its leaseholder reports it (t462): with a head, the
+// merge it pushed, verified on the fork — the fork's head, with the head the
+// lease found as its first parent and the lease's main head as its second —
+// and the Agent line its message ends with, which the Ledger matches to who
+// made it; with none, the finding that the task's head already holds main,
+// verified the same way. The Ledger records it only under the live lease.
+async function taskRefreshed(env: Env, L: ReturnType<typeof ledger>, id: string, actor: string, body: Record<string, any>): Promise<unknown> {
+  const mainHead = String(body.mainHead ?? ""), expectedHead = String(body.expectedHead ?? "");
+  const head = body.head === undefined || body.head === null ? null : String(body.head);
+  const hash = /^[a-f0-9]{40,64}$/;
+  if (!hash.test(mainHead) || !hash.test(expectedHead) || (head !== null && !hash.test(head))) throw new RuleError("bad_head", "mainHead, expectedHead and head must be full commit hashes", 400);
+  const item = await L.item(id);
+  if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace`, 409);
+  let agent: string | null = null;
+  if (head) {
+    using repo = await env.ARTIFACTS.get(item.fork);
+    const log = await repo.log({ limit: 20 });
+    const commit = log.find((c) => c.hash === head);
+    const reasons = [
+      ...(log[0]?.hash !== head ? [`${head.slice(0, 8)} is not the fork's head${log[0] ? ` (${log[0].hash.slice(0, 8)} is)` : ""}`] : []),
+      ...(!commit ? [] : commit.parents?.length !== 2 || commit.parents[0] !== expectedHead || commit.parents[1] !== mainHead
+        ? [`${head.slice(0, 8)}'s parents are ${(commit.parents ?? []).map((p) => p.slice(0, 8)).join(", ") || "none"}, not the task's head ${expectedHead.slice(0, 8)} then main's ${mainHead.slice(0, 8)}`] : []),
+    ];
+    if (reasons.length) throw new RuleError("unverified_merge", `the refresh does not hold: ${reasons.join("; ")}`, 409);
+    agent = agentLine(commit?.message ?? "");
+  } else {
+    const top = await headOf(env, item.fork);
+    const held = top === expectedHead && (await holdsCommit(env, item.fork, expectedHead, mainHead)).holds === true;
+    if (!held) throw new RuleError("unverified_merge", `${id}'s fork is not at ${expectedHead.slice(0, 8)} holding main's head ${mainHead.slice(0, 8)}, and no merge was reported`, 409);
+  }
+  const transformations = Array.isArray(body.transformations) ? body.transformations.filter((t: unknown): t is string => typeof t === "string").map((t: string) => t.slice(0, 40)) : [];
+  const patch = (v: unknown) => (typeof v === "string" && hash.test(v) ? v : null);
+  const r = await L.taskRefreshed(id, actor, { lease: String(body.lease ?? ""), mainHead, expectedHead, head, agent, diffBefore: patch(body.diffBefore), diffAfter: patch(body.diffAfter), transformations }, true);
+  if (r.revoke) await revoke(env, item.fork, r.revoke);
+  return r;
+}
+
 // A predicted conflict between a part and its plan's branch, before the
 // integrator is sent to merge it (docs/orchestrator.md, section 5). Null when
 // no conflict is predicted or the branch cannot be read, so a failure to read
@@ -1064,8 +1102,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // it starts new work.
         const L = ledgerOf(env, p);
         if (c.token?.runner && offer) await L.runnerPoll(c.token, offer);
-        const [held, { waiting, reviews }] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), L.queued()]);
-        return [...held, ...waiting, ...reviews].map((item) => ({ project: p.name, item }));
+        // The task refresh's jobs (t462) are offered to a runner that names them.
+        const refreshing = !!offer && (offer.jobs ?? []).some((j) => j === "task-refresh" || j === "task-resolve");
+        const [held, { waiting, reviews }, refreshes] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), L.queued(), refreshing ? L.refreshJobs(offer) : Promise.resolve([])]);
+        return [...held, ...waiting, ...reviews, ...refreshes].map((item) => ({ project: p.name, item }));
       }
       catch { unreadable.push(p.name); return []; }
     }));
@@ -1081,7 +1121,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // A held job is offered only as the claim it already is: the
           // assignment must name its holder, or the re-claim would be refused
           // as another's claim (claim guards the runner name; assign the actor).
-          return a && (!c.token?.runner || !["integrate", "refresh"].includes(item.dispatch?.job ?? "")) && (!c.token || c.token.runner || a.actor === actor) && (!isHeld(item) || item.owner === a.actor) ? [{ project, item, ...a }] : [];
+          return a && (!c.token?.runner || !["integrate", "refresh", "task-refresh", "task-resolve"].includes(item.dispatch?.job ?? "")) && (!c.token || c.token.runner || a.actor === actor) && (!isHeld(item) || item.owner === a.actor) ? [{ project, item, ...a }] : [];
         })
       : queued;
     // A project that could not be read is named, so a missing task is never silent.
@@ -1170,6 +1210,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       ...(has("triage") ? { triage: triageArg(body.triage) } : {}),
       // The top review tier: harness/model actors, or [] or "" to clear it.
       ...(has("reviewTier") ? { reviewTier: body.reviewTier === null ? [] : parseReviewTier(body.reviewTier) } : {}),
+      // The resolvers of refreshes' mechanical conflicts (t462): harness/model
+      // frontier actors, or [] or "" to clear them.
+      ...(has("resolvers") ? { resolvers: body.resolvers === null ? [] : (() => {
+        try { return parseResolvers(body.resolvers); } catch (error) { throw new RuleError("bad_resolver", `${(error as Error).message}; --resolver takes frontier harness/model actors, such as claude-code/opus-5.5,codex/gpt-6-astra, or "" to clear them`, 400); }
+      })() } : {}),
       ...(has("protected") ? { protected: asStrings(body.protected, "protected") } : {}),
       ...(has("agents") ? { agents: parseAgents(body.agents) } : {}),
       ...(has("execution") ? { execution: parseExecution(body.execution) } : {}),
@@ -1261,6 +1306,17 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   }
   if (parts[2] === "baseline-head" && parts.length === 3 && m === "GET") {
     return json({ head: await headOf(env, (await L.project()).repo) });
+  }
+  // The task refresh queue (t462): GET lists each task's target with its
+  // standing — why a busy or blocked one waits — and its last outcome; POST
+  // (the owner's) reads main's head now and queues it for every task that
+  // should take it, as a recorded merge does.
+  if (parts[2] === "refreshes" && parts.length === 3) {
+    if (m === "GET") return json(await L.refreshQueue());
+    requireOwner(env, actor);
+    const main = await headOf(env, (await L.project()).repo);
+    if (!main) throw new RuleError("empty", "main has no commits", 409);
+    return json(await L.queueRefreshes(actor, main));
   }
   if (parts[2] === "owners" && m === "GET") return json(await L.owners());
   if (parts[2] === "standing" && parts.length === 3 && m === "GET") return json(await standingOf(env, ref.key));
@@ -1610,7 +1666,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // counts the latest one, so only the task's holder records it: anyone
       // else could pass or fail another agent's task. The sandbox route,
       // open to any caller in scope, runs the checks and records them itself.
-      if (check && actor !== item.owner) {
+      // The holder of a task refresh's lease runs the required checks at the
+      // head its refresh recorded (t462), and records them as the holder would.
+      if (check && actor !== item.owner && !(await L.refreshChecker(id, actor, String(body.head ?? item.head ?? "")))) {
         throw new RuleError("not_owner", `${actor} does not hold ${id}, so it cannot record ${id}'s checks: only its holder, ${item.owner ?? "nobody"}, can. To have Atelier run them, use atelier check ${id} --sandbox`, 403);
       }
       // A merged check ran on the merge of the head with a main head the
@@ -2066,7 +2124,45 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (main) await L.noteMainHead(main);
       return json(await L.integratePart(id, actor, partKey, mergeCommit, true, holdsMain));
     }
+    case "refresh-lease": {
+      // A task refresh's lease (t462, src/refresh/): the integrator's for a
+      // task-refresh job, a resolver's for a task-resolve job. The answer
+      // carries a write token for the task's fork, the one live beside its
+      // holder's, revoked when the lease settles or, lapsed, when the next
+      // lease is taken; and a read token for main. A runner-scoped credential gets
+      // no write token for a fork it does not hold, so it takes neither job.
+      if (c.token?.runner) throw runnerDenied(c.token);
+      const job = body.job === "resolve" ? "resolve" as const : "refresh" as const;
+      const { revoke: lapsed, ...leased } = await L.leaseRefresh(id, actor, typeof body.runner === "string" ? body.runner.slice(0, 80) : null, job);
+      if (lapsed) await revoke(env, leased.item.fork, lapsed);
+      const p = await L.project();
+      const branch = await projectBranch(env, p);
+      const w = await mint(env, leased.item.fork!, "write", branch);
+      if (!await L.recordRefreshToken(id, leased.lease.id, w.tokenId)) {
+        await revoke(env, leased.item.fork, w.tokenId);
+        throw new RuleError("lease_lost", `${id}'s refresh lease changed while its token was made; no token was issued`, 409);
+      }
+      const b = await mint(env, p.repo, "read", branch);
+      return json({
+        ...leased, workspace: { remote: w.remote, token: w.token, expiresAt: w.expiresAt, defaultBranch: w.defaultBranch },
+        baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
+        regenerate: p.policy.regenerate ?? null, checks: p.policy.checks, commitIdentity: p.policy.commitIdentity ?? null,
+      });
+    }
+    case "refresh-pushing": {
+      // The leaseholder pushes the refreshed merge next; no landing of the
+      // task begins until it is recorded (t462).
+      return json(await L.refreshPushing(id, actor, { lease: String(body.lease ?? ""), mainHead: String(body.mainHead ?? ""), expectedHead: String(body.expectedHead ?? ""), head: String(body.head ?? "") }));
+    }
+    case "refresh-checked": {
+      // The refreshed head's required checks ran, by the leaseholder (t462).
+      const r = await L.refreshChecked(id, actor, { lease: String(body.lease ?? ""), mainHead: String(body.mainHead ?? ""), expectedHead: String(body.expectedHead ?? ""), passed: body.passed === true, reason: String(body.reason ?? "") });
+      if (r.revoke) await revoke(env, (await L.item(id)).fork, r.revoke);
+      return json(r);
+    }
     case "refreshed": {
+      // A task's refresh (t462) names its lease; a plan's does not.
+      if (body.lease !== undefined) return json(await taskRefreshed(env, L, id, actor, body));
       // The integrator reports a refresh: main's head merged into the plan's
       // branch, verified against the branch's log as an integration is
       // (verifyRefresh), or, with no merge commit, found already held there.
@@ -2087,6 +2183,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.refreshed(id, actor, mainHead, mergeCommit, true));
     }
     case "refresh-failed": {
+      // A task's refresh (t462) that ended without a new head names its
+      // lease: its conflicts went to a resolver or back to the builder, or
+      // the task moved under it.
+      if (body.lease !== undefined) {
+        const r = await L.taskRefreshFailed(id, actor, { lease: String(body.lease), mainHead: String(body.mainHead ?? ""), expectedHead: String(body.expectedHead ?? ""), outcome: String(body.outcome ?? ""), reason: String(body.reason ?? ""), report: body.report }, await index(env).runnerOffers());
+        if (r.revoke) await revoke(env, (await L.item(id)).fork, r.revoke);
+        return json(r);
+      }
       // The integrator reports a refresh that conflicted or failed the plan's
       // checks. The Worker checks the branch was restored to its integration
       // head first, as for a failed integration. No part is charged.

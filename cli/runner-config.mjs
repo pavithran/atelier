@@ -17,7 +17,9 @@ export const DEFAULT_FINISH_TIMEOUT_MS = 60 * 60_000;
 // for reviews alone (t252) and a config that wants both lists "build" and its
 // kin beside "review".
 export const DEFAULT_JOBS = ["build", "plan", "merge-main", "merge-main-task", "merge-plan"];
-const JOB_NAMES = new Set([...DEFAULT_JOBS, "review"]);
+// task-resolve, a resolver's job on a refresh's mechanical conflicts (t462),
+// is taken only by a runner whose config names it, as review is.
+const JOB_NAMES = new Set([...DEFAULT_JOBS, "review", "task-resolve"]);
 
 const HARNESSES = ["opencode", "claude-code", "codex", "zcode", "gemini-cli", "antigravity"];
 const MODEL = /^[a-z0-9][a-z0-9._:-]{0,63}$/i;
@@ -159,8 +161,8 @@ export function parseConfig(json, { configPath, env } = {}) {
     else {
       jobs = [...new Set(value.jobs.map((j) => j.trim()))];
       for (const job of jobs) {
-        if (job === "integrate" || job === "refresh") errors.push(`jobs cannot list "${job}": the integrate and refresh jobs are the integrator's alone (atelier runner --integrate, which takes no config)`);
-        else if (!JOB_NAMES.has(job)) errors.push(`jobs cannot list "${job}": the jobs are build, plan, merge-main, merge-main-task, merge-plan and review`);
+        if (job === "integrate" || job === "refresh" || job === "task-refresh") errors.push(`jobs cannot list "${job}": the integrate, refresh and task-refresh jobs are the integrator's alone (atelier runner --integrate, which takes no config)`);
+        else if (!JOB_NAMES.has(job)) errors.push(`jobs cannot list "${job}": the jobs are build, plan, merge-main, merge-main-task, merge-plan, review and task-resolve`);
       }
     }
   }
