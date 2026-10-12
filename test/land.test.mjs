@@ -2109,10 +2109,29 @@ for (const state of ["missing", "stale", "ahead"]) test(`land reconstructs a ${s
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
   assert.ok(r.output.includes(`Prepared t1 at recorded source ${head}`), r.output);
+  const take = f.box.requests.findIndex(x => x.path.endsWith("/landing-lease") && x.method === "POST" && !x.body.cancel);
+  const read = f.box.requests.findIndex(x => x.path.endsWith("/read-token"));
+  assert.ok(take >= 0 && read > take, "recovery fetch follows lease acquisition");
   if (state !== "missing") assert.match(r.output, /Preserved t1's previous workspace at .*backup-/);
   assert.equal(existsSync(join(dir, "local-only")), false);
   assert.equal(f.box.states.t1, "merged");
   const steps = f.posts("/land").map(x => x.body.step);
   for (const step of ["push", "check", "review", "accept", "merged"]) assert.ok(steps.includes(step), steps.join(", "));
   assert.deepEqual(f.posts("/claim").map(x => x.as), ["codex/test"]);
+});
+
+for (const wait of [false, true]) test(`workspace recovery waits for the lease (wait: ${wait})`, async t => {
+  const f = await landFixture(t);
+  const dir = f.workspace("t1");
+  git(dir, "reset", "--hard", "HEAD^");
+  writeFileSync(join(dir, "precious"), "unpublished notes");
+  const before = git(dir, "rev-parse", "HEAD");
+  f.box.lease = { item: "t2", holder: "owner", at: new Date().toISOString(), renewedAt: new Date().toISOString() };
+  f.env = { ATELIER_LAND_POLL_MS: "10", ATELIER_LAND_WAIT_TIMEOUT: "150" };
+  const r = await f.run(f.checkout, "land", "t1", ...(wait ? ["--wait"] : []));
+  assert.equal(r.status, 1, r.output);
+  assert.equal(git(dir, "rev-parse", "HEAD"), before);
+  assert.equal(readFileSync(join(dir, "precious"), "utf8"), "unpublished notes");
+  assert.equal(f.posts("/read-token").length, 0);
+  assert.doesNotMatch(r.output, /Preserved|Prepared/);
 });
