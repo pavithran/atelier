@@ -448,3 +448,18 @@ it("a resolver the policy dropped while the conflict waited for it is refused it
   await refusal(L.leaseRefresh(id, GPT, null, "resolve"), "not_resolver", /configured resolver set/);
   expect((await queue(L))[0].target.state).toBe("waiting");
 });
+
+it("a resolver's lease that lapses after main moved on queues the newer main for the integrator, which the resolver may not take", async () => {
+  const L = await setup("tr-lapsed-main", { resolvers: [GPT] });
+  const id = await task(L, "Main moved", "submitted");
+  await L.noteMainHead(M1);
+  const l = await lease(L, id);
+  await L.taskRefreshFailed(id, INTEGRATOR, { ...report(l), outcome: "mechanical", reason: "imports" }, [offer("codex", "gpt-6-astra")]);
+  await lease(L, id, GPT, "resolve");
+  await L.noteMainHead(M2);
+  await lapse(L, id);
+  const [job] = await L.refreshJobs();
+  expect(job.dispatch).toMatchObject({ job: "task-refresh", agent: "atelier", model: "integrator", head: M2 });
+  await refusal(L.leaseRefresh(id, GPT, null, "resolve"), "not_resolving");
+  expect(await lease(L, id)).toMatchObject({ job: "refresh", mainHead: M2, expectedHead: H1 });
+});

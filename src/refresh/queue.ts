@@ -164,12 +164,17 @@ export function afterSettle(target: RefreshTarget, lease: RefreshLease, outcome:
 // A target whose task moved on from the head it was waiting at (a builder's
 // push after a conflict was returned, say) is queued again; so is one whose
 // resolver's lease lapsed after the task moved, which no resolver could
-// take again. The lapsed lease is kept so the next lease revokes its token.
+// take again, and one whose resolver's lease lapsed after main moved on:
+// the newer main head is the integrator's to merge and classify first, as
+// a lease given back then is (afterRelease), never a resolver's to merge
+// unexamined. The lapsed lease is kept so the next lease revokes its token.
 export function headMoved(target: RefreshTarget, head: string | null, at: string, now = Date.parse(at)): RefreshTarget {
   const waiting = ["resolve", "waiting", "returned"].includes(target.state);
   const lapsed = target.state === "leased" && target.lease?.job === "resolve" && !leaseLive(target.lease, now);
+  const queuedAgain = { ...target, state: "queued" as const, updatedAt: at, expectedHead: null, resolver: null, wait: null, report: null };
+  if (lapsed && target.lease!.mainHead !== target.mainHead) return queuedAgain;
   if (!(waiting || lapsed) || !target.expectedHead || target.expectedHead === head) return target;
-  return { ...target, state: "queued", updatedAt: at, expectedHead: null, resolver: null, wait: null, report: null };
+  return queuedAgain;
 }
 
 // The target once its lease's refresh is recorded at `head` and its holder
