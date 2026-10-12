@@ -5,12 +5,11 @@
 import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
-import { OFFER_REFRESH_MS } from "../src/dispatch/rules.ts";
-import { REPORT_DEFAULTS } from "../src/stuck/report.ts";
+import { OFFER_REFRESH_MS, RUNNER_GONE_MS } from "../src/dispatch/rules.ts";
 import type { Item } from "../src/rules.ts";
 
 const A = "codex/gpt-6-astra", TOKEN = "orphaned-claim-token";
-const LIMIT = REPORT_DEFAULTS.runnerPollMinutes * 60_000;
+const LIMIT = RUNNER_GONE_MS;
 const index = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 const api = (path: string, method = "GET", body?: unknown, token = TOKEN) => worker.fetch(new Request(`https://atelier.test/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": token === TOKEN ? "owner" : A, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
 
@@ -38,7 +37,13 @@ async function setup(name: string, runner: string | null) {
     const queue = await res.json() as { project: string; item: Item & { held?: { id: string; orphaned?: unknown[] }; orphaned?: { id: string; runner: string; lastPoll: string }[] } }[];
     return queue.find((q) => q.project === name && q.item.id === "t2")!.item;
   };
-  return { L, offered, listed };
+  // The claiming runner's heartbeat while its job runs (cli/runner.mjs).
+  const beat = async () => {
+    const res = await api("/queue", "POST", { runner, agents: [{ agent: "codex", models: ["gpt-6-astra"] }], heartbeat: true }, token);
+    expect(res.status).toBe(200);
+    return res.json() as Promise<unknown[]>;
+  };
+  return { L, offered, listed, beat };
 }
 
 const polled = (runner: string, ms: number) => index().putRunnerOffer({ runner, kind: "home", agents: [] }, new Date(Date.now() - ms).toISOString());
@@ -75,4 +80,23 @@ it("a claim made by hand keeps its hold however long runners have been gone", as
   const item = await listed();
   expect(item.held?.id).toBe("t1");
   expect(item.orphaned).toBeUndefined();
+});
+
+// The owner's pre-review of t537: a live runner mid-build polls nothing, so
+// without its heartbeat a build longer than the limit orphaned its own claim.
+it("a long build keeps its hold: the busy runner's heartbeat renews its last poll", async () => {
+  const name = "orphaned-claim-busy", runner = "home:orphaned-busy";
+  const { L, offered, listed, beat } = await setup(name, runner);
+  // The build has run past the limit since the runner's last poll.
+  await polled(runner, LIMIT + OFFER_REFRESH_MS + 60_000);
+  expect(await offered()).toContain("t2");
+  // Its heartbeat reads no queue and is offered nothing, but restores the
+  // hold in every reading of it, the project's ledger's own included.
+  expect(await beat()).toEqual([]);
+  expect((await L.waiting())[0].held?.id).toBe("t1");
+  expect(await offered()).not.toContain("t2");
+  expect((await listed()).held?.id).toBe("t1");
+  // The heartbeat keeps the claim: it is still t1's, under the runner.
+  const item = await L.item("t1");
+  expect([item.state, item.runner]).toEqual(["claimed", runner]);
 });

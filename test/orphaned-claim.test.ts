@@ -1,6 +1,7 @@
 // t537: a claim whose claiming runner stopped polling holds no other
 // dispatch. Its runner's last poll (as /api/runners records it) older than
-// the stuck report's runnerPollMinutes, with OFFER_REFRESH_MS of coarsening,
+// RUNNER_GONE_MS, the stuck report's default runnerPollMinutes, with
+// OFFER_REFRESH_MS of coarsening,
 // orphans the claim: the core-file hold passes it by, atelier queue's held:
 // line names it orphaned with the recovery, and atelier stuck lists it.
 import { test } from "node:test";
@@ -8,11 +9,11 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { coreHold, coreOrphans, holdGraph, holdText, makeDispatch, OFFER_REFRESH_MS, orphanedBy, orphanText, type RunnerPolls } from "../src/dispatch/rules.ts";
+import { coreHold, coreOrphans, holdGraph, holdText, makeDispatch, OFFER_REFRESH_MS, orphanedBy, orphanText, RUNNER_GONE_MS, type RunnerPolls } from "../src/dispatch/rules.ts";
 import { REPORT_DEFAULTS, reportLimits, stuckReport } from "../src/stuck/report.ts";
 import type { Item } from "../src/rules.ts";
 
-const LIMIT = REPORT_DEFAULTS.runnerPollMinutes * 60_000;
+const LIMIT = RUNNER_GONE_MS;
 const CLAIMED = "2026-10-10T20:51:00.000Z";
 const NOW = Date.parse("2026-10-12T01:51:00.000Z"); // about 29 hours later
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -21,7 +22,7 @@ const item = (id: string, over: Partial<Item> = {}): Item => ({
   acceptedHead: null, createdAt: CLAIMED, updatedAt: CLAIMED, lastPushAt: null, dispatch: makeDispatch({}, "owner", CLAIMED), ...over,
 });
 const claim = (runner: string | null) => item("t463", { state: "claimed", owner: "opencode/glm-5.3-flash", runner });
-const polls = (at: string, runner = "home:studio-5"): RunnerPolls => ({ polls: [{ runner, at }], limitMs: LIMIT });
+const polls = (at: string, runner = "home:studio-5"): RunnerPolls => ({ polls: [{ runner, at }] });
 const core = ["src/dispatch/rules.ts"];
 
 test("a runner gone past the limit orphans its claim, which holds nothing", () => {
@@ -47,7 +48,7 @@ test("a runner that resumes polling restores the hold", () => {
   assert.equal(coreHold(waiting, [held], core, null, NOW, back)?.id, "t463");
   assert.deepEqual(coreOrphans(waiting, [held], core, null, NOW, back), []);
   // Of several records for one runner, the newest poll counts.
-  const both: RunnerPolls = { polls: [{ runner: "home:studio-5", at: CLAIMED }, { runner: "home:studio-5", at: iso(NOW - 30_000) }], limitMs: LIMIT };
+  const both: RunnerPolls = { polls: [{ runner: "home:studio-5", at: CLAIMED }, { runner: "home:studio-5", at: iso(NOW - 30_000) }] };
   assert.equal(coreHold(waiting, [held], core, null, NOW, both)?.id, "t463");
 });
 
@@ -79,7 +80,7 @@ test("the t463 case: the runner stopped after claiming, and six dispatches wait 
   }
   // Beside a live blocker, the hold's own text names the orphan as such.
   const live = item("t500", { state: "claimed", owner: "codex/gpt-6", runner: "home:studio-1" });
-  const fresh: RunnerPolls = { polls: [{ runner: "home:studio-5", at: CLAIMED }, { runner: "home:studio-1", at: iso(NOW - 1000) }], limitMs: LIMIT };
+  const fresh: RunnerPolls = { polls: [{ runner: "home:studio-5", at: CLAIMED }, { runner: "home:studio-1", at: iso(NOW - 1000) }] };
   const hold = coreHold(waiting[0], [held, live], core, null, NOW, fresh)!;
   assert.equal(hold.id, "t500");
   const text = holdText({ ...hold, orphaned: coreOrphans(waiting[0], [held, live], core, null, NOW, fresh) });
@@ -111,9 +112,23 @@ test("atelier stuck lists the orphaned claim with its runner, last poll and atel
   assert.deepEqual(back.entries.filter((e) => e.kind === "orphaned-claim"), []);
   const byHand = stuckReport("atelier", "https://example.org", observed, reportLimits(), snapshot([claim(null), ...waiting]), [offer("home:studio-5", CLAIMED)], [], []);
   assert.deepEqual(byHand.entries.filter((e) => e.kind === "orphaned-claim"), []);
-  // The limit is the report's runnerPollMinutes.
-  const wide = stuckReport("atelier", "https://example.org", observed, reportLimits({ runnerPollMinutes: 30 * 60 }), snapshot([held]), [offer("home:studio-5", CLAIMED)], [], []);
-  assert.deepEqual(wide.entries.filter((e) => e.kind === "orphaned-claim"), []);
+});
+
+// The stuck report and the hold judge a claim orphaned by one limit,
+// RUNNER_GONE_MS, the report's default runnerPollMinutes:
+// --runner-poll-minutes moves only the idle-runner limit.
+test("atelier stuck and the hold agree on an orphaned claim whatever --runner-poll-minutes says", () => {
+  assert.equal(REPORT_DEFAULTS.runnerPollMinutes * 60_000, RUNNER_GONE_MS);
+  const held = claim("home:studio-5"), waiting = item("t358");
+  const at = (ms: number) => [offer("home:studio-5", iso(NOW - ms))];
+  for (const sinceMs of [60_000, RUNNER_GONE_MS + OFFER_REFRESH_MS, RUNNER_GONE_MS + OFFER_REFRESH_MS + 1, 3 * RUNNER_GONE_MS, 29 * 3_600_000]) {
+    const holds = !!coreHold(waiting, [held], core, null, NOW, { polls: at(sinceMs) });
+    for (const runnerPollMinutes of [0.5, 5, 30 * 60]) {
+      const r = stuckReport("atelier", "https://example.org", observed, reportLimits({ runnerPollMinutes }), snapshot([held, waiting]), at(sinceMs), [], ["home:studio-5"]);
+      const orphaned = r.entries.some((e) => e.kind === "orphaned-claim" && e.subject === "t463");
+      assert.equal(orphaned, !holds, `${sinceMs} ms since the last poll, --runner-poll-minutes ${runnerPollMinutes}`);
+    }
+  }
 });
 
 // atelier queue prints the orphan on the held: line, with or without a live blocker.

@@ -1065,6 +1065,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // where a claim whose runner stopped polling holds no other dispatch
     // (t537, orphanedBy in src/dispatch/rules.ts).
     const polls = projects.length ? (await index(env).runnerOffers()).map(({ runner, at }) => ({ runner, at })) : [];
+    // A runner mid-job polls nothing, so it POSTs its offer with
+    // `heartbeat: true` while the job runs (cli/runner.mjs): recorded as a
+    // poll is, and passed to every project, it keeps the claim it is
+    // building under holding. It reads no queue and is offered nothing. A
+    // server from before it answers as to a poll, which the runner ignores.
+    if (offer && body.heartbeat === true) {
+      await Promise.all(projects.map((p) => ledgerOf(env, p).recordRunnerPolls(polls).catch(() => {})));
+      return json([]);
+    }
     const indexed = Date.now();
     const unreadable: string[] = [];
     // One call per project reads both its waiting tasks and its open review requests.

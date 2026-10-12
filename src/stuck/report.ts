@@ -1,12 +1,12 @@
 // Diagnostics are observations only. Unknown data never establishes absence.
 import type { Item } from "../rules.ts";
 import type { LedgerEvent, LandingWorkflowRecord } from "../ledger.ts";
-import { coreHold, coreOrphans, OFFER_REFRESH_MS, orphanedBy, type RunnerPolls, type SeenOffer } from "../dispatch/rules.ts";
+import { coreHold, coreOrphans, OFFER_REFRESH_MS, orphanedBy, RUNNER_GONE_MS, type RunnerPolls, type SeenOffer } from "../dispatch/rules.ts";
 import { landingLeaseLapsed, type LandingLease } from "../landing-lease.ts";
 import type { RunReport } from "../models/reliability.ts";
 import { detectStuck, holdStart, pushObservedAt } from "./rules.ts";
 
-export const REPORT_DEFAULTS = { noPushHours: 6, unansweredHours: 24, leaseWaitMinutes: 30, conflictWaitMinutes: 30, coreHoldMinutes: 30, runnerPollMinutes: 5, reviewAnswerHours: 2 };
+export const REPORT_DEFAULTS = { noPushHours: 6, unansweredHours: 24, leaseWaitMinutes: 30, conflictWaitMinutes: 30, coreHoldMinutes: 30, runnerPollMinutes: RUNNER_GONE_MS / 60_000, reviewAnswerHours: 2 };
 export type ReportLimits = typeof REPORT_DEFAULTS;
 export function reportLimits(values: Record<string, unknown> = {}): ReportLimits {
   const limits = { ...REPORT_DEFAULTS };
@@ -53,8 +53,11 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
   };
   // The runners' last polls, as /api/runners records them, judge a claim
   // orphaned by its runner (t537): it holds no dispatch, so no core hold is
-  // reported against it, and it is reported itself.
-  const runners: RunnerPolls | null = offers ? { polls: offers, limitMs: limits.runnerPollMinutes * 60_000 } : null;
+  // reported against it, and it is reported itself. The judgement is the
+  // ledger's own, at RUNNER_GONE_MS: --runner-poll-minutes sets only the
+  // idle-runner limit, so the report never calls a claim orphaned that
+  // still holds, or the reverse.
+  const runners: RunnerPolls | null = offers ? { polls: offers } : null;
   if (snapshot) {
     const { items, events, lease, workflows, reviews } = snapshot;
     const live = items.filter((i) => i.state !== "blocked");

@@ -220,17 +220,23 @@ export const CORE_HOLD_WARNING_MS = 30 * 60_000;
 
 // A claim whose claiming runner stopped polling (t537): the claim names the
 // runner (item.runner) and the runner's last poll is the one /api/runners
-// records (SeenOffer.at, putRunnerOffer on the index). Past the stuck
-// report's runnerPollMinutes, with the minute of timestamp coarsening
-// (OFFER_REFRESH_MS) the idle-runner check allows, the claim is orphaned and
-// holds no other dispatch; atelier dispatch ID gives it to a live runner. A
-// claim made by hand names no runner and holds as before, and so does one
-// whose runner the polls do not list, since an absent record never shows a
-// runner gone. A poll after the limit restores the hold.
+// records (SeenOffer.at, putRunnerOffer on the index). Past RUNNER_GONE_MS,
+// with the minute of timestamp coarsening (OFFER_REFRESH_MS) the idle-runner
+// check allows, the claim is orphaned and holds no other dispatch; atelier
+// dispatch ID gives it to a live runner. A claim made by hand names no
+// runner and holds as before, and so does one whose runner the polls do not
+// list, since an absent record never shows a runner gone. A poll after the
+// limit restores the hold. A runner mid-job polls nothing, so it sends a
+// heartbeat while the job runs (cli/runner.mjs), which records its offer as
+// a poll does: a long build keeps its claim's hold.
 export interface RunnerPolls {
   polls: readonly { runner: string; at: string }[];
-  limitMs: number;
 }
+
+// The one limit both the hold (the ledger) and atelier stuck judge an
+// orphaned claim by, whatever --runner-poll-minutes the stuck report is
+// asked with: the stuck report's default runnerPollMinutes is this.
+export const RUNNER_GONE_MS = 5 * 60_000;
 
 export interface OrphanedClaim extends CoreBlocker {
   runner: string;
@@ -241,7 +247,7 @@ export function orphanedBy(o: Pick<Item, "state" | "runner">, runners: RunnerPol
   if (!runners || o.state !== "claimed" || !o.runner) return null;
   const runner = o.runner.toLowerCase();
   const last = runners.polls.filter((p) => p.runner.toLowerCase() === runner && Number.isFinite(Date.parse(p.at))).map((p) => p.at).sort().at(-1);
-  if (!last || now - Date.parse(last) - OFFER_REFRESH_MS <= runners.limitMs) return null;
+  if (!last || now - Date.parse(last) - OFFER_REFRESH_MS <= RUNNER_GONE_MS) return null;
   return { runner: o.runner, lastPoll: last };
 }
 
