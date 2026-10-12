@@ -1159,6 +1159,41 @@ test("runner skips refused revisions across polls and tries the next offered tas
   assert.deepEqual(claimed, ["t13", "t14", "t13"]);
 });
 
+// t438: a build refused for its criteria review is taken once a review
+// approves the criteria, though the approval changes neither its head nor
+// its updatedAt. Before the queue's verdict count was in refusedKey, the
+// runner passed the recovered claim by until it restarted.
+test("a build refused for its criteria review is taken once a review approves them, its head and updatedAt unchanged", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-queue-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  t.mock.method(console, "log", () => {});
+  const held = { ...assignment, item: { ...assignment.item, state: "claimed", owner: assignment.actor, head: "a".repeat(40), updatedAt: "one", criteriaReviews: 1 } };
+  const approved = { ...held, item: { ...held.item, criteriaReviews: 2 } };
+  const { io } = fixture();
+  const claimed = [];
+  io.cli = async (argv) => {
+    if (argv[0] === "claim") {
+      claimed.push(argv[1]);
+      if (claimed.length === 1) throw Object.assign(new Error("atelier: criteria_unreviewed: t13 cannot be claimed: this project requires a review of the acceptance criteria before a build, and none approves them as they are now\n"), { claimRefused: true });
+    }
+  };
+  let polls = 0;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
+    async queue() {
+      polls++;
+      if (polls <= 2) return [held];
+      if (polls === 3) return [approved];
+      process.emit("SIGTERM");
+      return [];
+    },
+  });
+  // Refused, passed by while unchanged, then taken once approved.
+  assert.deepEqual(claimed, ["t13", "t13"]);
+});
+
 // t540: a claim that lost the race to a hold (409 held) is not a refusal;
 // the runner keeps no refusal of the task and claims it at a later poll that
 // offers it, unchanged, where a refused claim passes it by.
