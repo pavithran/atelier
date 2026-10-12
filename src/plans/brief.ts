@@ -154,6 +154,20 @@ export const BUILD_RULES = [
   "- A change that depends on a platform limit or runtime behaviour local tests cannot reproduce names it in the task, and the project declares a remote smoke check run before and after deploy.",
 ].join("\n");
 
+// What a builder runs before it commits, and when it may report
+// validation_blocked (t552). Builders ran the full suite in their sandbox, ten
+// minutes and more; with several runners on one host the load reached 45 to
+// 87, tests timed out, and the builder ended validation_blocked with nothing
+// committed, so the work was lost and the task looped (t541, t546, t532,
+// t463). The clean-clone checks after the push run the full suite and judge
+// it; the builder runs only what its change touches. The runner's own brief
+// (briefFor in cli/runner.mjs) carries the same sentences.
+export const BUILDER_TESTS = [
+  "Run the tests for the files you change, and the typecheck; both must pass. Do not run the full suite unless the task asks for it: after you finish, Atelier runs the project's required checks, the full suite among them, in a clean clone of your commit.",
+  "When those pass, commit. Never end with finished work uncommitted.",
+  "Report validation_blocked only for a failure in the tests of your own change that you cannot fix, and commit your work before you report it.",
+] as const;
+
 const short = (head: string) => head.slice(0, 8);
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const visible = (c: string) => `<U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}>`;
@@ -288,6 +302,9 @@ function render(r: Resolved): string {
   );
 
   const merge = r.mergeMain ?? null;
+  // A merge's resolution runs the checks whole: what it may break is not
+  // confined to files it changes.
+  const wholeChecks = !!(merge || r.mergePlan);
   section(
     "## Rules",
     "",
@@ -295,7 +312,8 @@ function render(r: Resolved): string {
       ? "- Work only in this workspace. Change only what resolving the merge needs; main's own changes come with the merge and are not yours to change."
       : "- Work only in this workspace. Change only paths inside the scope below; a changed file outside it is reported to the project owner, and the reviewer judges it as part of the change.",
     ...(merge ? [] : ["- Write tests for new behaviour."]),
-    ...(r.checks.length ? ["- Run the required checks under \"Checks\" before you commit. Every one must pass."] : []),
+    ...(r.checks.length && !wholeChecks ? BUILDER_TESTS.map((line) => `- ${line}`) : []),
+    ...(r.checks.length && wholeChecks ? ["- Run the required checks under \"Checks\" before you commit. Every one must pass."] : []),
     merge
       ? `- Commit the merge with git commit and keep the merge message as it stands; it already ends with the line Agent: ${r.actor ? inline(r.actor) : "<harness>/<model>"}. Any later fix is an ordinary commit with that same final line. Do not start the merge again, abort it, rebase or reset it.`
       : `- Commit your work in this workspace, with this final line in the commit message: Agent: ${r.actor ? inline(r.actor) : "<harness>/<model>"}. For example: git commit -m "subject" -m "Agent: ${r.actor ? inline(r.actor) : "<harness>/<model>"}"`,
@@ -386,7 +404,9 @@ function render(r: Resolved): string {
     section(
       "## Checks",
       "",
-      "The project requires these checks. Run each before you commit; the orchestrator runs them again after you finish, and a part whose checks fail comes back to you with the failing output.",
+      wholeChecks
+        ? "The project requires these checks. Run each before you commit; the orchestrator runs them again after you finish, and a part whose checks fail comes back to you with the failing output."
+        : "The project requires these checks. The orchestrator runs them in a clean clone after you finish, and a part whose checks fail comes back to you with the failing output. Before you commit, run the tests for the files you change and the typecheck, not the full suite.",
       ...r.checks.map((c) => `- ${code(c)}`),
     );
   }
