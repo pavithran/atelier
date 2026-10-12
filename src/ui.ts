@@ -1576,6 +1576,14 @@ const PROJECT_TABS: [label: string, sub: string][] = [
   ["Settings", "settings"],
 ];
 const TAB_OF: Record<string, string> = { Plans: "Tasks", Log: "Code", Flow: "Activity", Ship: "Settings" };
+// The pages a tab holds, linked under it while it is current, so each stays
+// one click from the bar (the shell's pre-review: without these links no
+// page reached /plans, /log or /ship).
+const HELD: Record<string, [label: string, sub: string][]> = {
+  Tasks: [["Plans", "plans"]],
+  Code: [["Log", "log"]],
+  Settings: [["Ship", "ship"]],
+};
 
 // `active` is the page's own name, a tab's or one it holds; `crumb` ends the
 // location instead of it, as a task's id does on the task's page. The row is
@@ -1587,7 +1595,8 @@ export function projectTabs(p: ProjectRecord, active: string, crumb?: string): s
   return `${ROW2[0]}${encodeURIComponent(titleOf(p))}-->
   <div class="bar-row project-row">
     <p class="crumb"><a href="${href("p", p.name)}">${e(titleOf(p))}</a> › <span>${e(crumb ?? (active === "Flow" ? "Activity" : active))}</span></p>
-    <nav aria-label="Project">${tabs}</nav>
+    <nav aria-label="Project">${tabs}</nav>${HELD[tab] ? `
+    <nav aria-label="${tab} holds" class="held">${HELD[tab].map(([label, sub]) => `<a href="${href("p", p.name, sub)}"${label === active ? ' aria-current="page"' : ""}>${label}</a>`).join("")}</nav>` : ""}
   </div>${ROW2[1]}`;
 }
 
