@@ -71,7 +71,7 @@ it("an anonymised project's names, titles, paths, commands, notes and addresses 
   expect(body).toContain("<dt>merged, all time</dt><dd>0</dd>");
   expect(body).toContain("<dt>sent back, last two weeks</dt><dd>1</dd>");
   expect(body).toContain("<dt>in progress, last two weeks</dt><dd>1</dd>");
-  expect(body).toContain('class="pulse-graph"');
+  expect(body).toContain('class="pulse-graph bars"');
   expect(body).toContain(">GPT<");
   expect(body).toContain(">GLM<");
   // The sign-in page draws the same anonymised activity behind its form.

@@ -2,6 +2,7 @@ import { expect, it } from "vitest";
 import layout from "../src/layout.css";
 import { buildStory, type Story } from "../src/graph.ts";
 import { buildImported } from "../src/import/history.ts";
+import { buildPulse } from "../src/pulse.ts";
 import { foldMoves, renderShowcase, type ShownProject } from "../src/ui.ts";
 
 // The public showcase as the d29 canvas draws it (t544, Main.dc.html): the
@@ -13,7 +14,7 @@ import { foldMoves, renderShowcase, type ShownProject } from "../src/ui.ts";
 const at = (d: number, h: number, m = 0) => new Date(Date.UTC(2026, 9, d, h, m)).toISOString();
 const ev = (seq: number, when: string, actor: string, kind: string, itemId: string, data: Record<string, unknown> = {}) => ({ seq, at: when, actor, kind, itemId, data });
 
-function seeded(): { built: Story; idle: Story; anon: Story } {
+function seeded(): { built: Story; idle: Story; anon: Story; evs: unknown[] } {
   const evs = [
     ev(1, at(4, 9), "pavi", "item.created", "t1"),
     ev(2, at(4, 9), "pavi", "item.created", "t2"),
@@ -35,7 +36,7 @@ function seeded(): { built: Story; idle: Story; anon: Story } {
   const anon = buildStory("secret-name", [{ id: "t1", title: "Secret task title", state: "claimed" }] as never,
     [ev(2, at(3, 9, 1), "codex/gpt-6-astra", "item.claimed", "t1"), ev(1, at(3, 9), "pavi", "item.created", "t1")] as never,
     "pavi", false, "an iOS app", { redact: true, ownerLabel: "PAVI", anon: true });
-  return { built, idle, anon };
+  return { built, idle, anon, evs };
 }
 
 const card = (s: Story, mode: "named" | "anonymous" = "named", allTimeMerged?: number): ShownProject =>
@@ -145,4 +146,22 @@ it("keeps every touch target 44 px, stacks at phone width and never scrolls side
   expect(phone).toMatch(/@media \(max-width: 720px\) \{[\s\S]*\.runs-on > div \{ grid-template-columns: 1fr;/);
   expect(layout).toMatch(/\.feed p \{[^}]*overflow-wrap: anywhere/);
   expect(layout).toMatch(/\.show-story \.stage-scroll \{ overflow-x: auto; \}/);
+});
+
+it("stays in Night on any device, under the canvas's ruled bar, with each card's days as text under its bars", () => {
+  const html = page();
+  expect(html).toMatch(/^<!doctype html><html lang="en" data-theme="night" data-scheme="night">/);
+  expect(html).toContain('<meta name="color-scheme" content="dark">');
+  expect(html).toContain('<body class="public show-page">');
+  expect(html).toContain('<nav aria-label="Elsewhere"><a href="/how">How it works</a><a href="https://github.com/pavithran/atelier">Source on GitHub</a><a href="/login">Sign in</a></nav>');
+  expect(layout).toMatch(/\.show-page \.public-bar \{[^}]*border-bottom: 1px solid var\(--line\)/);
+  expect(layout).toMatch(/\.show-page \.public-bar nav a\[href="\/login"\] \{[^}]*border: 1px solid var\(--line-bright\)/);
+  // The column is the canvas's 1200 px inside 32 px of padding.
+  expect(layout).toMatch(/\.show-section \{ max-width: 1264px;[^}]*padding: 48px 32px; box-sizing: border-box/);
+  const { built: story, evs } = seeded();
+  const drawn = renderShowcase([story], story.tally, "pavi", "PAVI", false, new Map(), [{ ...card(story), pulse: buildPulse(evs as never, "pavi", new Date(at(5, 12))) }]);
+  const built = section(drawn, "portfolio-h").split('id="card-1"')[1].split("</li>\n")[0];
+  expect(built).toMatch(/<svg class="pulse-graph bars" viewBox="0 0 280 69" preserveAspectRatio="none" role="img" aria-label="Moves per day over the last two weeks: [^"]+">/);
+  expect(built).not.toContain("<text");
+  expect(built).toMatch(/<p class="pulse-axis" aria-hidden="true"><span>22 Sept<\/span><span>5 Oct<\/span><\/p>/);
 });
