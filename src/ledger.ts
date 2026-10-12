@@ -72,6 +72,14 @@ export interface LedgerEvent {
   data: Record<string, unknown>;
 }
 
+// Whether a reviewer that qualified was available when the owner overrode the
+// independent review (t457), kept in review.overridden: the reviewer the
+// source offered (null: none qualified), where it was looked for and when;
+// or, when it could not be looked for, an explicit unknown and why.
+export type ReviewerAvailability =
+  | { known: true; reviewer: string | null; source: string; at: string }
+  | { known: false; reviewer: null; source: string; at: string; why: string };
+
 // What a review claim returns: the part, the head under review, the review
 // need (null when it no longer holds), the plan account for the brief, the
 // part's events for the builder's summary and the owner's verdicts on earlier
@@ -385,6 +393,12 @@ function companyRoute(route: PartRoute, single: PoolFamily | null): PartRoute {
 
 // Whether the project's policy lets `actor` review, as namedActor judged it
 // when the owner named it; the policy may have changed since.
+// The owner's page names the criteria it showed beside the head; a decision
+// made from it stands only while they are still the item's (t457).
+function assertShownCriteria(item: Item, shown: string): void {
+  if (shown !== criteriaOf(item)) throw new RuleError("stale_criteria", `${item.id}'s acceptance criteria changed since you opened this page; reload it and read them again`, 409);
+}
+
 function mayAssess(actor: string, policy: ProjectPolicy, owner: string): boolean {
   try {
     assertEligible(actor, policy, owner, "assessor");
@@ -2494,15 +2508,20 @@ export class Ledger extends DurableObject<Env> {
   // is refused, naming how to confirm, before anything is written; the owner
   // token alone, which an agent session holds, never confirms, and nor does
   // a browser session, which that token buys. A project that forbids
-  // overrides refuses every override first.
-  // `acting` is the harness/model that recorded the override for the owner
-  // (src/models/judgement.ts), kept on review.overridden; the authority to
-  // override stays the owner's.
-  accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string, confirmedBy?: OwnerFactor, acting: string | null = null): Item {
+  // overrides refuses every override first. `availability`, the reviewer the
+  // route found available as the override was made, is kept with it; an
+  // override made without one says so, as unknown (t457). `criteria`, the
+  // binding of the acceptance criteria the owner's page showed, is checked
+  // here, with the head, in the same step as the write: criteria changed
+  // while the route was away (checking the revision, looking for a
+  // reviewer) refuse the acceptance rather than accept under criteria the
+  // owner never read (t457).
+  accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string, confirmedBy?: OwnerFactor, availability?: ReviewerAvailability, criteria?: string, acting: string | null = null): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner accepts", 403);
     if (note !== undefined) assertLength(note, NOTE_MAX, "the acceptance note");
     const item = this.item(id);
     if (expected !== undefined) assertRevision(item, expected);
+    if (criteria !== undefined) assertShownCriteria(item, criteria);
     const project = this.project(), policy = project.policy;
     const evidence = this.evidenceFor(id), reviews = this.reviewsFor(id);
     const current: Item = item.state === "accepted" ? { ...item, state: "submitted" } : item;
@@ -2541,6 +2560,7 @@ export class Ledger extends DurableObject<Env> {
       this.log(id, actor, "review.overridden", {
         head: item.head, reason: override.override.reason, waived: override.waived, contributors: override.contributors,
         confirmed: confirmedBy ? "page" : "command line", confirmedAt: override.override.confirmedAt, ...(factor ? { factor } : {}),
+        availability: availability ?? { known: false, reviewer: null, source: "none", at, why: "no reviewer was looked for as the override was made" },
         ...(acting ? { acting } : {}),
       }, at);
     }
@@ -2570,14 +2590,16 @@ export class Ledger extends DurableObject<Env> {
   // --override-review REASON` within that time does, and spends it. A
   // project that forbids overrides refuses it; so does a task that is not
   // submitted, or one whose gate is not missing the independent review,
-  // since there would be nothing to allow.
-  confirmOverride(id: string, actor: string, expected: string | undefined, factor: OwnerFactor): Item {
+  // since there would be nothing to allow. `criteria`, the binding the page
+  // showed, is checked here as accept checks it (t457).
+  confirmOverride(id: string, actor: string, expected: string | undefined, factor: OwnerFactor, criteria?: string): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner allows an override", 403);
     if (factor !== "access" && factor !== "secret") throw new RuleError("override_unconfirmed", "an override is allowed only with the owner's Access identity or the confirmation secret", 403);
     const policy = this.project().policy;
     assertOverridesAllowed(policy);
     const item = this.item(id);
     if (expected !== undefined) assertRevision(item, expected);
+    if (criteria !== undefined) assertShownCriteria(item, criteria);
     if (item.state !== "submitted" || !item.head) throw new RuleError("not_submitted", `${id} is ${item.state}; an override is allowed only on a submitted revision`, 409);
     const g = gate({ ...item, reviewOverride: null }, policy, this.evidenceFor(id), this.reviewsFor(id), this.owner);
     if (!g.needsAssessor) throw new RuleError("override_unneeded", `${id} at ${item.head.slice(0, 8)} is not missing an independent review, so there is nothing to allow an override of`);
