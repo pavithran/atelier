@@ -199,7 +199,7 @@ it("the landing-lease route takes, renews and cancels the lease for the owner, a
   const TOKEN = "land-routes-token";
   const token = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
   const post = (body: Record<string, unknown>) => worker.fetch(new Request(`https://atelier.test/api/projects/${project}/landing-lease`, {
-    method: "POST", headers: { authorization: "Bearer land-routes-token", "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify(body),
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify(body),
   }), token);
   const took = await post({ item: a });
   expect(took.status).toBe(200);
