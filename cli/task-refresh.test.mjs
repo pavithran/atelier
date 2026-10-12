@@ -4,12 +4,13 @@
 // mechanical conflict found by the integrator and resolved by a resolver, a
 // resolution outside the transformations, behavioural and uncertain
 // conflicts, a builder's push under the refresh, a refused push, failed
-// checks, and a recorded push the server would not take.
+// checks, a recorded push the server would not take, and an edit in code
+// main moved to another file (t471), which neither job merges.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { diffIdentity, runTaskRefresh } from "./task-refresh.mjs";
 
@@ -31,7 +32,7 @@ function fixture(t, { base = {}, task = {}, main = {} } = {}) {
   const commit = (files, message) => {
     for (const [path, text] of Object.entries(files)) {
       if (text === null) git(work, "rm", "--quiet", path);
-      else { writeFileSync(join(work, path), text); git(work, "add", path); }
+      else { mkdirSync(dirname(join(work, path)), { recursive: true }); writeFileSync(join(work, path), text); git(work, "add", path); }
     }
     git(work, "commit", "--quiet", "--allow-empty", "-m", message);
     return git(work, "rev-parse", "HEAD");
@@ -189,6 +190,81 @@ test("a file the task deleted and main changed is uncertain, and goes back to th
   assert.equal(h.reports[0].kind, "uncertain");
   assert.match(h.reports[0].files[0].why, /task deleted or renamed/);
 });
+
+// t471's t437-after-t426 fixture (test/moved-code.test.mjs): t426 moved the
+// report handler to cli/commands/report.mjs and t437 edited it where it was.
+// Git merges the edit cleanly into the loader left behind, so once main is
+// merged a landing's comparison, whose merge base is then main's head, finds
+// nothing: the refresh compares before it merges.
+const ATELIER = `const commands = {
+  async status() {
+    console.log("status");
+  },
+  async report() {
+    const r = await call("POST", "/evidence", { claim: args._[2] });
+    if (r.refused) {
+      console.log("refused");
+    }
+
+    console.log("reported");
+  },
+  async show() {
+    console.log("show");
+  },
+};
+`;
+const T437 = ATELIER.replace('    }\n\n    console.log("reported");', '    }\n    if (r.stale) process.exitCode = 1;\n\n    console.log("reported");');
+const T426 = `const loaded = {};
+const commands = {
+  async status() {
+    console.log("status");
+  },
+  async report() {
+    if (!loaded.report) {
+      loaded.report = await import("./commands/report.mjs");
+    }
+
+    return loaded.report.default();
+  },
+  async show() {
+    console.log("show");
+  },
+};
+`;
+const REPORT = `export default async function report() {
+  const r = await call("POST", "/evidence", { claim: args._[2] });
+  if (r.refused) {
+    console.log("refused");
+  }
+
+  console.log("reported");
+}
+`;
+const MOVED = { base: { "cli/atelier.mjs": ATELIER }, task: { "cli/atelier.mjs": T437 }, main: { "cli/atelier.mjs": T426, "cli/commands/report.mjs": REPORT } };
+
+for (const job of ["task-refresh", "task-resolve"]) {
+  test(`${job}: an edit in code main moved to another file goes back to the builder before the merge, and nothing is pushed (t471)`, async (t) => {
+    const f = fixture(t, MOVED);
+    // The regression: Git's merge is clean, so without the comparison the
+    // refresh would push it and hide the finding from the landing.
+    const probe = join(f.root, "probe");
+    git(f.root, "clone", "--quiet", f.fork, probe);
+    git(probe, "fetch", "--quiet", f.baseline, f.main);
+    git(probe, "merge", "--quiet", "--no-edit", f.main);
+    const h = harness(f, { job, resolve: () => { throw new Error("no resolver runs on a moved-code finding"); } });
+    const state = await h.run();
+    assert.deepEqual([state.phase, state.returned, state.recorded], ["failed", true, true]);
+    assert.deepEqual(h.verbs(), ["refresh-lease", "refresh-failed"]);
+    const failed = h.calls.find((c) => c[0] === "refresh-failed");
+    assert.equal(failed[failed.indexOf("--outcome") + 1], "returned");
+    assert.match(failed[failed.indexOf("--reason") + 1], /^1 edit in code main moved to another file: cli\/atelier\.mjs .* moved to cli\/commands\/report\.mjs/);
+    const [report] = h.reports;
+    assert.deepEqual([report.base, report.head, report.main, report.kind], [f.base, f.task, f.main, "behavioural"]);
+    assert.deepEqual(report.files.map((x) => x.path), ["cli/atelier.mjs"]);
+    assert.match(report.files[0].why, /cli\/commands\/report\.mjs/);
+    assert.equal(forkHead(f), f.task);
+  });
+}
 
 test("a builder's push under the refresh is never overwritten: the refresh's push fails and it is queued again", async (t) => {
   const f = fixture(t, { task: { "task.txt": "task\n" }, main: { "main.txt": "main\n" } });

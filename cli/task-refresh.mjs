@@ -14,6 +14,9 @@
 //     a resolver, or the refresh waits for one and says why.
 //   - It conflicts otherwise (behavioural, or uncertain): returned to the
 //     builder with the merge base, both heads, the paths and the hunks.
+//   - Before either job merges, the task's edits are compared with code
+//     main moved to another file (src/moved-code.ts, t471); a finding is
+//     returned to the builder the same way, and nothing is merged or pushed.
 // task-resolve, a resolver's (a home runner offering the job): takes the
 // lease the server routed to it, merges again the same way, runs its
 // harness on the conflicts with a brief naming the transformations, and
@@ -37,6 +40,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { TRANSFORMATIONS, classifyConflicts, conflictReport, verifyResolution } from "../src/refresh/mechanical.ts";
+import { DETECTOR_ENV, describeFinding, detectMovedEditsAsync } from "../src/moved-code.ts";
 
 const HASH = /^[a-f0-9]{40,64}$/;
 const CHECKS_FAILED = 2;
@@ -70,6 +74,14 @@ export function resolverBrief(item, files) {
     ...files.flatMap((f) => [`- ${f.path}: ${f.why}`, ...f.hunks.map((h) => `  - at line ${h.line}: ${h.transformation}, ${h.why}`)]),
     "",
   ].join("\n");
+}
+
+// The report a moved-code finding goes back to the builder with: each
+// finding's source and destination as a behavioural file, since porting an
+// edit to where main moved its code is the builder's decision.
+export function movedReport(input, findings) {
+  const files = findings.map((f) => ({ path: f.source.path, kind: "behavioural", why: describeFinding(f), hunks: [] }));
+  return conflictReport(input, files);
 }
 
 export async function runTaskRefresh(assignment, config, name, io) {
@@ -108,6 +120,22 @@ export async function runTaskRefresh(assignment, config, name, io) {
       return { phase: "refreshed", held: true };
     }
     const mergeBase = await git(["merge-base", expectedHead, mainHead]);
+    // The task's edits against code main moved to another file (t471),
+    // compared before either job merges: once main is merged its head is
+    // the merge base, and a landing compares nothing. Git merges such an
+    // edit cleanly into the file main left behind, so a finding is the
+    // builder's to port: it goes back with the paths, and nothing is pushed.
+    const moved = await detectMovedEditsAsync((args) => git(args, { raw: true, env: DETECTOR_ENV }), { task: expectedHead, main: mainHead, mergeBase });
+    if (moved.findings.length) {
+      const conflict = movedReport({ base: mergeBase, head: expectedHead, main: mainHead }, moved.findings);
+      const file = join(await io.tempDir(`refresh-report-${item.id}-`), "report.json");
+      writeFileSync(file, JSON.stringify(conflict));
+      const n = moved.findings.length;
+      await report(["refresh-failed", ...leaseArgs(), "--outcome", "returned", "--report", file, "--reason", `${n} edit${n === 1 ? "" : "s"} in code main moved to another file: ${describeFinding(moved.findings[0])}`.slice(0, 400)]);
+      recorded = true;
+      io.log(`${item.id}'s edits lie in code main at ${short(mainHead)} moved to another file (${n} finding${n === 1 ? "" : "s"}); returned to its builder, nothing pushed`);
+      return { phase: "failed", reason: "edits in moved code", recorded: true, returned: true };
+    }
     const message = `Merge main at ${short(mainHead)} into ${item.id}\n\nAgent: ${actor}`;
     const merged = await git(["-c", "merge.conflictStyle=diff3", "merge", "--no-ff", "--no-edit", "-m", message, mainHead], { allowFail: true });
     const conflicted = (await git(["diff", "--name-only", "--diff-filter=U", "-z"], { raw: true })).split("\0").filter(Boolean);
