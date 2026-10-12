@@ -1,7 +1,7 @@
 {
   "generatedBy": "scripts/design/capture.ts",
-  "source": "46b9a057ae6b10351bc3a3824a181c4ac75d717d",
-  "sourceDirty": true,
+  "source": "d3528348e7c91c6fbacb3474bc4c87120fcbdcaf",
+  "sourceDirty": false,
   "browser": {
     "name": "chromium",
     "version": "156.0.8078.4",
@@ -756,7 +756,7 @@
             {
               "tag": "a",
               "label": "",
-              "width": 227,
+              "width": 226,
               "height": 22
             },
             {
