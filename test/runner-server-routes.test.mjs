@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { agentRoute, runnerRoute } from "../src/tokens.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
-import { RUNNER_ROUTES, serveRunner } from "./helpers/runner-server.mjs";
+import { RUNNER_ROUTES, routeKey, serveRunner } from "./helpers/runner-server.mjs";
 
 // The shared fake runner server (test/helpers/runner-server.mjs) must serve
 // every route the Worker's runnerRoute allows a runner token. When runnerRoute
@@ -61,12 +61,11 @@ test("a GET added beside an existing POST of the same path is not served, and th
   assert.notDeepEqual(helperSignatures(RUNNER_ROUTES), withMutation);
 });
 
-test("the server answers each listed route, and only those", async (t) => {
+test("the server answers each listed route", async (t) => {
   const server = await serveRunner();
   t.after(server.close);
   const call = async (method, path) => (await fetch(`${server.url}/api/${path}`, { method, ...(method === "POST" ? { body: "{}" } : {}) })).status;
   for (const [method, template] of RUNNER_ROUTES) assert.equal(await call(method, concrete(template).join("/")), 200, `${method} ${template}`);
-  assert.equal(await call("POST", "projects/demo/items/t1/unknown"), 404);
 });
 
 test("answers override a route, by item verb or by template", async (t) => {
@@ -83,4 +82,23 @@ test("the version answer publishes the server's capabilities beside its route le
   const version = await (await fetch(`${server.url}/api/version`)).json();
   assert.equal(version.routeLevel, ROUTE_LEVEL);
   assert.deepEqual(version.capabilities, [...SERVER_CAPABILITIES]);
+});
+
+for (const [method, path] of [
+  ["POST", "projects/demo/items/t1/unknown"],
+  ["GET", "projects/demo/items/t1/plan"],
+  ["DELETE", "projects/demo/items/t1/plan"],
+]) test(`unexpected request fails the fake server: ${method} ${path}`, async () => {
+  assert.throws(() => routeKey(method, path.split("/")), /Unexpected runner request/);
+  const server = await serveRunner();
+  try {
+    await assert.rejects(fetch(`${server.url}/api/${path}`, { method }), /fetch failed/);
+  } finally {
+    // Closing must fail too, even when the runner catches the failed request.
+    await assert.rejects(server.close(), (error) => {
+      assert.match(error.message, /Unexpected runner request/);
+      assert.ok(error.message.includes(`${method} ${path}`));
+      return true;
+    });
+  }
 });
