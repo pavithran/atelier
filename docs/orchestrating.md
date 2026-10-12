@@ -52,6 +52,18 @@ points at it and states the review path (it does not edit the file).
   name is found by the reviewer instead, a round at a time: on 10 October
   one task took three review rounds and another five, each over a case the
   criteria left unstated.
+- When a criterion requires that every path be guarded (every write of an
+  owner, every call that needs a check), ask for a runtime boundary, never
+  for a test that scans the source for the paths. Ask for one guarded entry
+  point that does the write and checks the guard, and for the low-level
+  write to refuse any call that does not come through it, tested by calling
+  the low-level write directly. A text scan can never prove that no path is
+  missed: on 11 October t389's criterion 4 said "a test enumerates those
+  paths and fails if one is added without the check", the builder wrote a
+  scanner of regular expressions for owner writes, and the reviewer rejected
+  ten rounds in a row, each time over a form the scanner missed (the last
+  was `const fields = { owner: to }; this.update(id, fields)`). A runtime
+  boundary is closed by construction, so the review has one thing to check.
 - Before asking for the independent review, read the diff against the
   criteria yourself. Your reading does not count at the gate; it catches the
   plain misses before the expensive review does.
