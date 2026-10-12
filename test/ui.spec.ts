@@ -59,6 +59,37 @@ it('merged tasks show completion without actionable approval or a misleading clo
  const html=renderItem(project,d,'PAVI',null);
  expect(html).toContain('Merged into the project');expect(html).not.toContain('Approve revision');expect(html).not.toContain('Readiness details');expect(html).not.toContain('Close task without merging');
 });
+it('the task page shows the five steps with the current one marked, read from the task\'s recorded state and its observed checks',()=>{
+ const steps=(html:string)=>{const ol=html.slice(html.indexOf('<ol class="task-steps"'),html.indexOf('</ol>',html.indexOf('<ol class="task-steps"')));return [...ol.matchAll(/<li class="(\w+)"( aria-current="step")?><b>(\w+)<\/b>/g)].map((m)=>`${m[3]}:${m[1]}${m[2]?'*':''}`);};
+ const at=(patch:Partial<Detail['item']>,evidence?:Detail['evidence'])=>{const d=detail();Object.assign(d.item,patch);if(evidence)d.evidence=evidence;return steps(renderItem(project,d,'PAVI',null));};
+ const failed=[{...detail().evidence[0],passed:false}];
+ expect(at({state:'open',owner:null,fork:null,head:null})).toEqual(['Claim:current*','Fork:todo','Prove:todo','Review:todo','Land:todo']);
+ expect(at({state:'claimed',head:null})).toEqual(['Claim:done','Fork:current*','Prove:todo','Review:todo','Land:todo']);
+ // A fresh fork records its base as its head (Ledger.setFork): Fork stays current until a push moves the head off the base.
+ expect(at({state:'claimed',head:'b'.repeat(40)},[])).toEqual(['Claim:done','Fork:current*','Prove:todo','Review:todo','Land:todo']);
+ expect(at({state:'abandoned',head:'b'.repeat(40)},[])).toEqual(['Claim:done','Fork:todo','Prove:todo','Review:todo','Land:todo']);
+ expect(at({state:'claimed'})).toEqual(['Claim:done','Fork:done','Prove:current*','Review:todo','Land:todo']);
+ // Submitted with a failing check is still proving; with every required check observed passing, it is in review.
+ expect(at({state:'submitted'},failed)).toEqual(['Claim:done','Fork:done','Prove:current*','Review:todo','Land:todo']);
+ expect(at({state:'submitted'},[])).toEqual(['Claim:done','Fork:done','Prove:current*','Review:todo','Land:todo']);
+ expect(at({state:'submitted'})).toEqual(['Claim:done','Fork:done','Prove:done','Review:current*','Land:todo']);
+ expect(at({state:'accepted',acceptedHead:head})).toEqual(['Claim:done','Fork:done','Prove:done','Review:done','Land:current*']);
+ expect(at({state:'merged',acceptedHead:head})).toEqual(['Claim:done','Fork:done','Prove:done','Review:done','Land:done']);
+ // A blocked task stays at the step it was blocked from; a closed one keeps what it reached and marks none.
+ const blocked=detail();blocked.item.state='blocked';blocked.item.blocked={by:'pavi',at:time,reason:'waiting',from:'submitted'};
+ const blockedHtml=renderItem(project,blocked,'PAVI',null);
+ expect(steps(blockedHtml)).toEqual(['Claim:done','Fork:done','Prove:done','Review:current*','Land:todo']);
+ expect(blockedHtml).toContain('<span>Blocked here</span>');
+ const closed=detail();closed.item.state='abandoned';closed.item.head=null;
+ const closedHtml=renderItem(project,closed,'PAVI',null);
+ expect(steps(closedHtml)).toEqual(['Claim:done','Fork:todo','Prove:todo','Review:todo','Land:todo']);
+ expect(closedHtml).toContain('Closed without landing');
+ expect(closedHtml).not.toContain('aria-current="step"');
+ // Labels only: the commands and routes on the page keep their names.
+ const live=renderItem(project,detail(),'PAVI',null);
+ expect(live).toContain('action="/ui/example/t1/block"');
+ expect(live.indexOf('class="task-steps"')).toBeLessThan(live.indexOf('id="review"'));
+});
 it('acceptance renders only after an independent approval and passing evidence; the owner\'s approval leaves the override instead',()=>{
  const diff={head,base:'b'.repeat(40),files:[],truncated:false};
  const d=detail();d.reviews=[{itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'pavi',note:'approved',at:time}];
@@ -467,6 +498,30 @@ it('the Models page lists the pool by where it runs, escapes it, and adds throug
  const page=await worker.fetch(new Request('https://atelier.test/models',{headers:{cookie:signedIn}}),{...env,ATELIER_TOKEN:TOKEN} as typeof env);
  expect(await page.text()).toContain('deepseek-chat');
 });
+it('the Models page shows a paused or reserved model with the date its state was set, and each model\'s roles and tier',async()=>{
+ const {renderModels}=await import('../src/ui');
+ const base={where:'cloud' as const,provider:'subscription' as const,aliases:[],addedBy:'pavi',addedAt:time};
+ const html=renderModels([
+  {...base,id:'gemini-4-pro',harness:'gemini-cli',family:'google',note:'AI Studio down until 10-09',state:'paused',stateAt:'2026-10-05T12:00:00Z',roles:['build','review'],tier:'execution'},
+  {...base,id:'gpt-6-astra',harness:'codex',family:'openai',note:'astra\'s credits',state:'reserved',stateAt:'2026-10-08T12:00:00Z',tier:'frontier'},
+  {...base,id:'gpt-6-luna',harness:'codex',family:'openai',note:'',roles:['review'],tier:'budget'},
+  {...base,id:'opus-5.5',harness:'claude-code',family:'anthropic',note:'',state:'available',stateAt:'2026-10-09T12:00:00Z'},
+ ],new Map(),'PAVI');
+ const card=(id:string)=>html.slice(html.indexOf(`<strong class="mono">${id}</strong>`)).split('</li>')[0];
+ expect(card('gemini-4-pro')).toMatch(/<span class="tag ask">paused<\/span><span class="meta">set 2026-10-05 \d\d:\d\d [^<]*<\/span>/);
+ expect(card('gemini-4-pro')).toContain('<span class="tag ">build, review</span><span class="meta">the jobs it may take</span>');
+ expect(card('gemini-4-pro')).toContain('<span class="tag ">execution</span><span class="meta">tier</span>');
+ // A reserved model's note shows beside its state.
+ expect(card('gpt-6-astra')).toMatch(/<span class="tag ask">reserved<\/span><span class="meta">set 2026-10-08 \d\d:\d\d [^<]* · astra(&#39;|&#x27;|')s credits<\/span>/);
+ expect(card('gpt-6-astra')).toContain('<span class="tag ">frontier</span><span class="meta">tier</span>');
+ expect(card('gpt-6-astra')).not.toContain('the jobs it may take');
+ // A review-only model with no state set shows its roles and tier, and no state.
+ expect(card('gpt-6-luna')).toContain('<span class="tag ">review</span><span class="meta">the jobs it may take</span>');
+ expect(card('gpt-6-luna')).toContain('<span class="tag ">budget</span><span class="meta">tier</span>');
+ expect(card('gpt-6-luna')).not.toMatch(/paused|reserved|set 2026/);
+ // Available is not shown, nor its date; no roles or tier, no standing line.
+ expect(card('opus-5.5')).not.toMatch(/tag ask">available|set 2026-10-09|the jobs it may take|<span class="meta">tier<\/span>/);
+});
 it('the front door: / is the public showcase for everyone, and the owner signs in to Home at /home',async()=>{
  const TOKEN='door-test-token';
  const signedIn=await signIn(TOKEN,{...env,ATELIER_TOKEN:TOKEN} as typeof env);
@@ -519,7 +574,7 @@ it('the showcase draws a named project that has work, and survives a cache that 
   expect(body).toContain('Drawn project');
   expect(body).toContain('>t1<');
   expect(body).toContain('The owner made 0 decisions.');
-  expect(body).toContain('the owner decides');
+  expect(body).toContain('Proven. Reviewed. Recorded.');
  }finally{(caches.default as {put:unknown}).put=put;}
 });
 
@@ -707,6 +762,17 @@ it('the merge preview says plainly whether a task would merge into main, and esc
  expect(bad).toContain('at least 1,000 commits');
  expect(bad).toContain('<code>&lt;b&gt;.ts</code>');
 });
+it('the merge preview without checks marks nothing green, since no pass has been observed',async()=>{
+ const {renderMainPreview}=await import('../src/ui');
+ const current=renderMainPreview({head:'h',ahead:0,aheadCapped:false,merge:{clean:true,conflicts:[],both:[],ours:0,theirs:1}});
+ const clean=renderMainPreview({head:'h',ahead:3,aheadCapped:false,merge:{clean:true,conflicts:[],both:[],ours:4,theirs:1}});
+ expect(current).toContain('<span class="tag ">Up to date</span>');
+ expect(clean).toContain('<span class="tag ">Merges cleanly</span>');
+ for(const html of [current,clean]){
+  expect(html).not.toMatch(/class="[^"]*\bgo\b/);
+  expect(html).not.toMatch(/class="[^"]*\bbad\b/);
+ }
+});
 
 it('the showcase sets a project known only from git beside Atelier\'s record, and says what git cannot show',async()=>{
  const {renderShowcase}=await import('../src/ui');
@@ -791,6 +857,14 @@ it('Flow offers time and family filters that keep each other, and the showcase h
  expect(html).toContain('href="?since=1d&amp;family=openai"');
  expect(html).toContain('href="?since=7d"');
  expect(html).toMatch(/<a href="\?since=7d&amp;family=openai" aria-current="page"/);
+ // Company colours stay inside charts: the filters carry none.
+ const filters=html.split('aria-label="Filters"')[1].split('</nav>')[0];
+ expect(filters).not.toContain('--m-');
+ // Nor does Latest moves: a Claude claim's dot is neutral, the owner's the accent (astra finding 1).
+ const claude=buildStory('p',[{id:'t1',title:'T',state:'claimed'}] as never,[{seq:2,itemId:'t1',at:'2026-10-04T10:01:00Z',actor:'claude-code/opus-5.5',kind:'item.claimed',data:{}},evs[1]] as never,'pavi');
+ const moves=renderFlow([claude],claude.tally,'pavi','PAVI',false,new Map()).split('aria-label="Latest moves"')[1].split('</section>')[0];
+ expect(moves).toContain('<span class="dot" style="--c:var(--text-muted)">');
+ expect(moves).not.toMatch(/--m-(?!owner)/);
  // Replay is the scrubber the live script adds, not a second control beside it (finding 6).
  expect(html).not.toContain('class="replay"');
  expect(renderFlow([s],s.tally,'pavi','PAVI',false,new Map())).not.toContain('class="replay"');
@@ -1230,7 +1304,7 @@ it('Home labels a project whose notices or runners could not be read',async()=>{
   const unread=renderHome([{project:titled,items}],'PAVI',new Date('2026-10-06T14:30:00Z'),'pavi');
   expect(unread).toContain('<b>?</b>waiting on you');expect(unread).toContain('What waits on you here could not be read.');
 });
-it('History is a timeline of merges by day, each marked with the family that held the task, and closures apart',async()=>{
+it('History is a timeline of merges by day, each naming the model that held the task, and closures apart',async()=>{
  const {renderHistory}=await import('../src/ui');
  const at=(d:number,h:number)=>`2026-10-0${d}T${String(h).padStart(2,'0')}:00:00.000Z`;
  const base={...detail().item,owner:null,acceptedHead:head};
@@ -1256,8 +1330,9 @@ it('History is a timeline of merges by day, each marked with the family that hel
  expect(html.indexOf('href="/p/example/t1"')).toBeLessThan(html.indexOf('href="/p/example/t2"'));
  expect(html).toContain('Merged &lt;b&gt;one&lt;/b&gt;');expect(html).not.toContain('<b>one</b>');
  expect(html).toContain('Example &lt;i&gt;x&lt;/i&gt; · t1 · opus-5.5 · merged as cccccccc');
- expect(html).toContain('style="--c:var(--m-anthropic)" title="merged while held by claude-code/opus-5.5"');
- expect(html).toContain('style="--c:var(--m-zai)"');
+ // A timeline is not a chart: its marks carry no company colour; the row names the model.
+ expect(html).toContain('<i class="family-mark" title="merged while held by claude-code/opus-5.5"></i>');
+ expect(html.split('<main')[1]).not.toContain('--m-');
  expect(html).toContain('class="merge-row closed"');expect(html).toContain('class="family-mark unknown"');
  expect(html).toContain('closed without merging');expect(html).toContain('<span class="tag ">Closed</span>');
  expect(html).toContain('href="/p/example/t1"');expect(html).not.toContain('href="/p/example/t4"');
@@ -1461,8 +1536,8 @@ it('the error page keeps the owner\'s name, highlights nothing, and says Go back
 
 it('one line about Atelier serves both the rail and the sign-in headline',()=>{
  const rail=renderProject(project,[],[],'PAVI');
- expect(rail).toContain('<p>Multiple agents, one owner per task.</p>');
- expect(renderLogin()).toContain('<h1>Multiple agents,<br>one owner per task.</h1>');
+ expect(rail).toContain('<p>Git keeps the code. Atelier brings the receipts.</p>');
+ expect(renderLogin()).toContain('<h1>Git keeps the code.<br>Atelier brings the receipts.</h1>');
 });
 
 it('Plans draws each plan as one unit with its parts, their state and why each went to its agent',()=>{

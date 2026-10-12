@@ -369,7 +369,7 @@ uses; that folder serves an opencode entry with a custom `command`.
 
 ## Home runner
 
-`atelier runner --name home:NAME [--once] [--config PATH] [--integrate]` polls the queue every 30 seconds, claims one eligible job, and runs its configured harness. A runner offers `build`, `plan`, `merge-main`, `merge-main-task` and `merge-plan` jobs for every harness in its config, and `review` when its config lists it. A build or plan job runs the harness in the claimed workspace; a review job clones the head into a folder of its own, reads the diff and writes a verdict. The task brief is kept outside the workspace. A runner with `--integrate` runs no harness and takes no config: it offers only the `integrate` and `refresh` jobs, merging each part onto its plan's branch as `atelier/integrator`. Before its first poll every runner reads `GET /api/version` and refuses to start while the server lacks a capability one of the jobs it offers declares (`JOB_CAPABILITIES`, `src/route-level.ts`; the integrator's jobs need `projects.commit-identity.v1`, `plans.integration.v1` and `runners.scoped-token.v1`; the review job needs the review skip, `reviews.skip.v1` and `reviews.skip-as-runner.v1`, beside the binding and the unparsable route), naming the missing capabilities and the deploy to run, so a runner that would fail its calls one by one stops at once instead. The runner gives each opencode run a data folder of
+`atelier runner --name home:NAME [--once] [--config PATH] [--integrate]` polls the queue every 30 seconds, claims one eligible job, and runs its configured harness. A runner offers `build`, `plan`, `merge-main`, `merge-main-task` and `merge-plan` jobs for every harness in its config, and `review` when its config lists it. A build or plan job runs the harness in the claimed workspace; a review job clones the head into a folder of its own, reads the diff and writes a verdict. The task brief is kept outside the workspace. A runner with `--integrate` runs no harness and takes no config: it offers only the `integrate` and `refresh` jobs, merging each part onto its plan's branch as `atelier/integrator`. Before its first poll every runner reads `GET /api/version` and refuses to start while the server lacks a capability one of the jobs it offers declares (`JOB_CAPABILITIES`, `src/route-level.ts`; the integrator's jobs need `projects.commit-identity.v1`, `plans.integration.v1` and `runners.scoped-token.v1`; the review job needs the review skip, `reviews.skip.v1` and `reviews.skip-as-runner.v1`, beside the binding and the unparsable route; every other job, the integrator's included, needs the run skip it reports a job it gives up to, `runners.run-skip.v1`), naming the missing capabilities and the deploy to run, so a runner that would fail its calls one by one stops at once instead. The runner gives each opencode run a data folder of
 its own (`XDG_DATA_HOME`) beside the workspace, removed as the harness ends,
 however it ends: opencode processes sharing
 `~/.local/share/opencode/opencode.db` deadlock on it. The shipped
@@ -387,7 +387,9 @@ named variable that holds the owner's Atelier token is withheld, and the
 runner says so. After a successful harness exit with a new commit,
 the runner calls `finish` to push, run required checks, and submit. Failure
 releases a claim only when no new commit was made. Otherwise the claim stays
-in place for inspection. Two counters are kept for each project and task id,
+in place for inspection. A provider's usage limit is the exception: the claim
+is released even with commits, which stay in the workspace, so the same work
+resumes after the reset (see [Provider usage limits](#provider-usage-limits)). Two counters are kept for each project and task id,
 across revision changes. The task counter never resets. Two task failures,
 including harness failures and finish failures other than exit 4, skip the
 task for the rest of the process. A separate counter skips it after three consecutive infrastructure failures,
@@ -629,6 +631,17 @@ a request that failed in transit (retry later). `atelier ops` has exit codes
 of its own (see [Operations](owner.md#operations)).
 
 
+The owner can request an audit after a task has merged, including one landed
+with an override: `atelier review-request ID --reviewer H/M --project NAME`.
+A review runner reads the recorded merge from the baseline (a merged plan
+part from its integration branch), compares it with its original first parent,
+and judges it against the task's criteria. A fast-forward is compared with the
+fork point. Today's main is never the comparison base. The verdict and findings
+stay on the merged task and count on Models. Blocking findings create a bugfix
+task linked to the original task and the review request; the original task and
+its override remain as historical records. Reposting an answered request's
+verdict is refused, so retries do not file duplicate defects.
+
 ### Build validation blocked by the harness
 
 Codex build commands must explicitly establish unrestricted check execution:
@@ -658,3 +671,41 @@ after the head moved, runs its harness and the checks as usual.
 After fixing the harness and running the required checks successfully, the
 operator can remove this marker to resume. Changing the command configuration
 alone does not clear a blocked validation report or prove that checks passed.
+
+### Provider usage limits
+
+The shipped adapters (`bin/harness/atelier-*.mjs`) read a provider's usage
+limit from the harness's captured output and end with exit status **75** and,
+as the last line of standard error, `ATELIER_PROVIDER_LIMIT {json}` naming the
+harness, the reason and the reset instant. A runner config's own command is
+judged by its exit status alone; only these adapters emit it.
+
+Only a nonzero exit can report a limit. The adapters request structured output
+and inspect Claude's `result` with `is_error: true`, Codex's `error` event,
+opencode's `error` event with an `APIError`, or antigravity's provider error
+with code 429 or status `RESOURCE_EXHAUSTED`. Answer text, generic JSON error
+examples, plain diagnostics, authentication errors and timeouts are not limits.
+A zero exit never pauses the runner, regardless of its output.
+
+For build, merge-main, plan and review jobs the runner records an infrastructure
+event, changes no model reliability and neither failure counter, keeps the
+commits and the dispatch and request details, and releases the claim (a plan
+part's release is not an attempt). It pauses every model of that harness in the
+runner process and leaves them out of queue offers until the reset; other
+harnesses continue, and the harness resumes by itself with no redispatch. The
+pause is kept across runner restarts; the log and runner status show the
+harness, the reason and the reset instant. Other runner processes and shared
+accounts are not coordinated.
+
+The reset is read from an epoch, an explicit offset, or a relative duration
+("in 2 hours", "retry after 120"); an unzoned date or time is read in the
+message's named zone or the runner's (`TZ`), and a time alone means its next
+occurrence. A message with no reset, one that cannot be read (an unknown zone,
+February 31st), a dated reset already past, or one more than eight days
+away (`MAX_PAUSE_DAYS`) pauses the harness for the **60-minute fallback**,
+counted from when the runner saw the limit.
+
+To tell a limit from an answer, the adapter reads the harness's whole output:
+a build, plan or review run under it is piped rather than inherited, so what
+the harness printed reaches the runner's log once the harness ends, not as it
+is written.
