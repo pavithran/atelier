@@ -1,6 +1,6 @@
 import type { Item, ProjectPolicy } from "../rules.ts";
 import { actorFamily, assertEligible, DEFAULT_OWNER, modelKey, RuleError, singleFamily } from "../rules.ts";
-import { latestNote, noteLine, type ModelEntry } from "./pool.ts";
+import { entryRuns, latestNote, noteLine, standingRefusal, type ModelEntry } from "./pool.ts";
 import { buildReliability, outcomesOf, reliabilityLine, tiebreak, type ProjectEvents, type RunReport } from "./reliability.ts";
 import { paidPerToken, type Choice } from "../plans/route.ts";
 import { servedActor, servedBy } from "./served.ts";
@@ -71,10 +71,12 @@ export function suggestBuilder(input: SuggestionInput, constraints: { to?: unkno
   const excluded: string[] = [];
   for (const { entry, score, reason } of ranked(input)) {
     const actor = actorOf(entry);
-    let refusal = "";
-    if (constraints.model && ![entry.id, ...entry.aliases].includes(String(constraints.model))) continue;
+    if (constraints.model && !entryRuns(entry, String(constraints.model))) continue;
     if (constraints.to && constraints.to !== "any" && constraints.to !== entry.where) continue;
-    if (single && actorFamily(actor) !== single) refusal = `not one of ${single}'s models (single-family mode)`;
+    let refusal = "";
+    const held = standingRefusal(entry, "build");
+    if (held) refusal = held;
+    else if (single && actorFamily(actor) !== single) refusal = `not one of ${single}'s models (single-family mode)`;
     else if (strict && !frontier(entry)) refusal = "not frontier";
     else if (stalledBuilder(entry, input)) refusal = "two consecutive stalled builds; no successful build since";
     else if (entry.status?.state === "refused") refusal = "provider refused";

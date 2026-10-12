@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 
@@ -39,6 +40,7 @@ it("issues and records a five-minute fork write token under the owner without cl
   const t = await setup();
   await t.L.dispatch("t1", "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
   const before = await t.L.item("t1");
+  const claimGeneration = await runInDurableObject(t.L, (_instance, state) => state.storage.sql.exec("SELECT claim_gen FROM items WHERE id = 't1'").one().claim_gen);
   const response = await t.request();
   expect(response.status, await response.clone().text()).toBe(200);
   expect(await response.json()).toMatchObject({ token: "fresh-port-secret", remote: `https://git.test/${t.name}--t1.git`, defaultBranch: "main" });
@@ -46,6 +48,7 @@ it("issues and records a five-minute fork write token under the owner without cl
   expect(t.revoked).toContain("released-token");
   expect(await t.L.tokenId("t1")).toBe("port-1");
   expect(await t.L.item("t1")).toMatchObject({ owner: null, state: "open", dispatch: before.dispatch });
+  expect(await runInDurableObject(t.L, (_instance, state) => state.storage.sql.exec("SELECT claim_gen FROM items WHERE id = 't1'").one().claim_gen)).toBe(claimGeneration);
   const events = await t.L.events("t1");
   expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ actor: "owner", kind: "owner-port.token" })]));
   expect(JSON.stringify(events)).not.toContain("fresh-port-secret");
@@ -77,6 +80,17 @@ it("rotation revokes the previous port token and the next builder inherits it fo
   expect(t.revoked).toContain("port-1");
   const claim = await t.L.claim("t1", ACTOR);
   expect(claim.replaces).toBe("port-2");
+});
+
+it("a claim followed by release fences an owner mint even when the task is open again", async () => {
+  const t = await setup();
+  t.onMint(async () => {
+    await t.L.claim("t1", ACTOR);
+    await t.L.release("t1", ACTOR, "release");
+  });
+  expect((await t.request()).status).toBe(409);
+  expect(t.revoked).toContain("port-1");
+  expect(await t.L.item("t1")).toMatchObject({ owner: null, state: "open" });
 });
 
 it("an intervening owner reservation fences the earlier mint", async () => {

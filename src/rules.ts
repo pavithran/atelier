@@ -320,6 +320,7 @@ export interface Review {
   // the tier review too (gateServesTier in src/review/tier.ts). It counts for
   // the gate as any review does.
   topTier?: boolean;
+  postMerge?: boolean; // an audit of the recorded landing, preserving its state
   // The binding of the acceptance criteria the reviewer was given
   // (src/criteria.ts): the hash its review claim captured, or that the
   // reviewer read with the task. A review counts only while it is the
@@ -839,8 +840,10 @@ export function assertClaimable(item: Item, actor: string): void {
 // assignment passes (a claim, a handoff, a dispatch or a released hold
 // naming a model, a plan's planner named or picked, a part's builder or
 // reviewer rerouted, routing's builders and reviewers), so another company's
-// model is refused on all of them alike. test/single-family-scan.test.ts
-// fails on a new write of an assignment that does not pass it.
+// model is refused on all of them alike. An owner is written only through
+// Ledger.assignOwner, which the run-time guard enforces (t389);
+// test/single-family-scan.test.ts checks that its callers (claim, handoff)
+// and the dispatch, planner and review-binding paths pass this rule.
 export function assertEligible(actor: string, policy: ProjectPolicy, owner = DEFAULT_OWNER, role: AgentRole = "executor"): void {
   // An admitted reviewer is judged as the model it was admitted as, which
   // may be named by an alias of no recognised family.

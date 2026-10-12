@@ -16,6 +16,7 @@ import { appliesText, checkClasses, classText, type CheckClass } from "./checks.
 import theme from "./theme.css";
 import layout from "./layout.css";
 import type { ProjectRecord, LedgerEvent, ReviewerAvailability } from "./ledger";
+import { landingOf } from "./diff";
 import type { FileChange, ItemDiff, Landed } from "./diff";
 import { ago, position, splitActor, staggers, type Bench, type Floor, type MarkKind } from "./floor";
 import { briefFor, submission, type Verdict } from "./brief";
@@ -802,12 +803,18 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
     const status = m.status
       ? `${tag(m.status.state, STATUS_TONE[m.status.state])}<span class="meta">checked by ${e(m.status.by ?? "a runner")} ${e(when(m.status.at))}${m.status.served && m.status.served !== m.id ? `, served as <code>${e(m.status.served)}</code>` : ""}${m.status.detail ? `, ${e(m.status.detail)}` : ""}</span>`
       : `${tag("not checked yet")}<span class="meta">the runner reports here once it has tried this model</span>`;
+    // The owner's standing, shown with when it was set; available is not shown.
+    const held = m.state && m.state !== "available"
+      ? `${tag(m.state, "ask")}<span class="meta">set ${e(when(m.stateAt ?? m.addedAt))}${m.state === "reserved" && m.note ? ` · ${e(m.note)}` : ""}</span>`
+      : "";
+    const standing = [m.roles?.length ? `${tag(m.roles.join(", "))}<span class="meta">the jobs it may take</span>` : "", m.tier ? `${tag(m.tier)}<span class="meta">tier</span>` : ""].filter(Boolean).join(" ");
     const how = [e(m.harness), e(m.provider), m.endpoint ? `<code>${e(m.endpoint)}</code>` : "", m.keychain ? `key in Keychain <code>${e(m.keychain)}</code>` : ""].filter(Boolean).join(" · ");
     return `<li class="model">
   <div class="model-head"><strong class="mono">${e(m.id)}</strong>${m.family === "other" ? tag("family not recognised", "ask") : `<span class="meta">${e(m.family)}</span>`}</div>
   <p class="meta">${how}</p>
   ${m.aliases.length ? `<p class="meta">Also known as ${m.aliases.map((a) => `<code>${e(a)}</code>`).join(", ")}</p>` : ""}
-  <p class="model-status">${status}</p>
+  <p class="model-status">${status}${held ? ` ${held}` : ""}</p>
+  ${standing ? `<p class="meta">${standing}</p>` : ""}
   <p class="meta">${r.claimed ? `Took ${plural(r.claimed, "task")}, merged ${r.merges}; checks ${r.pass} passed, ${r.fail} failed; sent back ${plural(r.back, "time")}.` : "No work recorded yet."}</p>
   ${across.map((x) => `<p class="meta">Across projects${across.length > 1 ? ` as <code>${e(x.model)}</code>` : ""}: ${e(reliabilityLine(x))}</p>`).join("")}
   ${m.note ? `<p class="meta">${e(m.note)}</p>` : ""}
@@ -2235,6 +2242,7 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
   // The owner's framing, set with atelier new or atelier edit: shown only
   // when any of it is set, above the brief, where an agent or reviewer reads first.
   const list = (entries: string[]) => `<ul>${entries.map((x) => `<li>${e(x)}</li>`).join("")}</ul>`;
+  const defectOrigin = d.events.filter((ev) => ev.kind === "item.defect_of" && typeof ev.data.itemId === "string").map((ev) => `<p>Defect from post-merge review of <a href="${href("p", p.name, String(ev.data.itemId))}">${e(String(ev.data.itemId))}</a>.</p>`).join("");
   const framing = item.nonGoals?.length || item.stopWhen?.length || item.nextGate
     ? `<section class="review-section framing" id="framing" aria-label="How the task is framed"><h3>Framing</h3><dl>
     ${item.nonGoals?.length ? `<dt>Non-goals</dt><dd>${list(item.nonGoals)}</dd>` : ""}
@@ -2271,7 +2279,7 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
       <p>${item.scope.map(e).join(", ") || "Unrestricted"}</p>
       <p class="meta">${item.owner ? `${e(item.owner)} holds it; nothing is pushed for review yet.` : "Any eligible agent can claim it; until then nothing is pushed for review."}</p></section>`;
     return `${header}
-${framing}${openScope}
+${defectOrigin}${framing}${openScope}
 ${notices}
 ${submissionRounds(d)}
 <details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>
@@ -2327,10 +2335,16 @@ ${submissionRounds(d)}
       ${view.reports.map((r) => `<p>${tag("Reported")} ${e(r.claim)} <span class="meta">${e(r.by)}</span></p>`).join("")}</details>`
     : "";
   // A review by someone no longer authorised to review stays on the record,
-  // but marked as not counted, as the gate does not count it.
-  const counting = new Set(countingReviews(d.reviews, bindingOf(item), d.policy, d.ownerActor ?? DEFAULT_OWNER));
-  const reviews = latestReviews(d.reviews, bindingOf(item)).map((r) => `<div class="review-note">${tag(r.approve ? "Approved" : "Changes requested", r.approve ? "go" : "ask")}${counting.has(r) ? "" : ` ${tag("Not counted")}`}
-    <p>${e(r.note || "No note provided.")}</p><p class="meta">${counting.has(r) ? "" : "not counted: the reviewer is no longer authorised to review this project · "}${r.tier ? "tier review · " : r.topTier ? "gate review, top tier · " : ""}${e(r.by)} · ${when(r.at)}${recordedText(r, d.ownerActor ?? DEFAULT_OWNER) ? ` · ${e(recordedText(r, d.ownerActor ?? DEFAULT_OWNER)!)}` : ""}</p></div>`).join("");
+  // but marked as not counted, as the gate does not count it. A post-merge
+  // review of the landed head (t396) audits the merge and is shown beside them.
+  const reviewBinding = bindingOf(item);
+  const counting = new Set(countingReviews(d.reviews, reviewBinding, d.policy, d.ownerActor ?? DEFAULT_OWNER));
+  const landedHead = landingOf(item, d.events.toReversed())?.commit ?? null;
+  const current = latestReviews(d.reviews, reviewBinding);
+  const shownReviews = [...current, ...(typeof landedHead === "string" && landedHead !== item.head ? latestReviews(d.reviews, { ...reviewBinding, head: landedHead }) : [])];
+  const notCounted = (r: Review) => current.includes(r) && !counting.has(r);
+  const reviews = shownReviews.map((r) => `<div class="review-note">${tag(r.approve ? "Approved" : "Changes requested", r.approve ? "go" : "ask")}${notCounted(r) ? ` ${tag("Not counted")}` : ""}
+    <p>${e(r.note || "No note provided.")}</p>${r.findings?.length ? `<ul>${r.findings.map((f) => `<li>${e(f.severity)} · ${e(f.file)}${f.line === null ? "" : `:${f.line}`} — ${e(f.text)}</li>`).join("")}</ul>` : ""}<p class="meta">${notCounted(r) ? "not counted: the reviewer is no longer authorised to review this project · " : ""}${r.postMerge ? "post-merge review · " : ""}${r.tier ? "tier review · " : r.topTier ? "gate review, top tier · " : ""}${e(r.by)} · ${when(r.at)}${recordedText(r, d.ownerActor ?? DEFAULT_OWNER) ? ` · ${e(recordedText(r, d.ownerActor ?? DEFAULT_OWNER)!)}` : ""}</p></div>`).join("");
   const overridden = overrideAt(item, d.ownerActor ?? DEFAULT_OWNER);
   // An override recorded before the project forbade overrides (t371) counts
   // for nothing on a task still in hand, as gate counts none; a merged task's
@@ -2346,13 +2360,14 @@ ${submissionRounds(d)}
     : "";
 
   return `${header}
-${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
+${defectOrigin}${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 <nav class="review-nav" aria-label="In this review"><a href="#changes">Changes</a><a href="#checks">Checks</a><a href="#history">History</a>${item.fork ? `<a href="${href("p", p.name, item.id, "code")}">Browse the fork</a><a href="${href("p", p.name, item.id, "log")}">Its log</a>` : ""}</nav>
 <section id="changes" class="review-section"><h3>Changes</h3>${renderDiff(diff, item.head, mergedChecks)}${scope}${protectedNote}</section>
 <section id="checks" class="review-section"><h3>Checks and reviews</h3>
   <p class="meta">${view.checks.length ? `${decision.passed} of ${view.checks.length} required checks passed at this revision.` : view.notApplicable.length ? "No required check applies to this revision." : "This project requires no checks."}${view.checks.length && view.notApplicable.length ? ` ${view.notApplicable.length} more ${view.notApplicable.length === 1 ? "does" : "do"} not apply to it.` : ""}${d.policy.sandboxOnly ? " Only checks run in a Cloudflare container count for this project." : ""}</p>
   ${notices}
   ${checkRows}${notApplicableRows}${reports}${reviews}${overrideNote}${blockers}
+  ${item.state === "merged" ? d.events.filter((ev) => ev.kind === "item.defect" && ev.data.mergeCommit && typeof ev.data.foundIn === "string").map((ev) => `<p>Post-merge defect: <a href="${href("p", p.name, String(ev.data.foundIn))}">${e(String(ev.data.foundIn))}</a></p>`).join("") : ""}
 </section>
 ${submissionRounds(d)}
 <details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>

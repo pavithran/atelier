@@ -20,7 +20,7 @@ import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, R
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
-import { cleanEntry, cleanNote, cleanStatus, POOL_FAMILIES, type ModelEntry, type PoolFamily } from "./models/pool";
+import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, type ModelEntry, type PoolFamily } from "./models/pool";
 import { suggestionRecords } from "./models/suggestion-records.ts";
 import { suggestBuilder } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
@@ -439,6 +439,16 @@ function ledgerOf(env: Env, p: ProjectRecord) {
 }
 function index(env: Env) {
   return env.LEDGER.get(env.LEDGER.idFromName("__index"));
+}
+// Sends the pool to every project's Ledger after the owner changes it, so the
+// ticks that run there without the index (tier reviews, a plan's reviews)
+// skip a model just paused, reserved or kept from reviewing. A project that
+// cannot be reached keeps its last copy; the change itself stands.
+async function sendPool(env: Env): Promise<string[]> {
+  const I = index(env);
+  const [pool, projects] = await Promise.all([I.models(), I.projects()]);
+  const results = await Promise.allSettled(projects.map((p) => ledgerOf(env, p).poolChanged(pool).then(() => null).catch(() => p.name)));
+  return results.filter((r) => r.status === "fulfilled" && r.value !== null).map((r) => (r as any).value as string);
 }
 function resolveProject(env: Env, name: string): Promise<ProjectRef> {
   return index(env).resolveProject(name);
@@ -977,11 +987,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const id = parts[1] ?? "";
     if (parts.length === 2 && m === "PUT") {
       requireOwner(env, actor);
-      return json(await I.putModel(cleanEntry({ ...body, id }, actor, new Date().toISOString())));
+      const entry = await I.putModel(cleanEntry({ ...body, id }, actor, new Date().toISOString()));
+      const unreached = await sendPool(env);
+      return json({ ...entry, unreached });
     }
     if (parts.length === 2 && m === "DELETE") {
       requireOwner(env, actor);
-      return json({ removed: await I.removeModel(id) });
+      const removed = await I.removeModel(id);
+      const unreached = await sendPool(env);
+      return json({ removed, unreached });
     }
     if (parts.length === 3 && parts[2] === "notes" && m === "POST") {
       requireOwner(env, actor);
@@ -991,6 +1005,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const runner = parseRunner(req.headers.get("x-atelier-runner"));
       if (!runner) throw new RuleError("bad_runner", "a status report names its runner in X-Atelier-Runner", 400);
       return json(await I.setModelStatus(id, cleanStatus(body, new Date().toISOString(), runner.runner), runner.kind));
+    }
+    if (parts.length === 3 && parts[2] === "set" && m === "POST") {
+      requireOwner(env, actor);
+      const entry = await I.setModel(id, cleanModelSet(body), new Date().toISOString());
+      const unreached = await sendPool(env);
+      return json({ ...entry, unreached });
     }
     throw new RuleError("not_found", "no such route", 404);
   }
@@ -1241,6 +1261,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
     }
     const record = await L.initProject(init, actor);
+    await L.poolChanged(await index(env).models());
     await index(env).registerProject(record);
     return json({ project: record, baseline: await mint(env, repo, "write", await projectBranch(env, record)) });
   }
@@ -1766,6 +1787,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         requireOwner(env, actor);
         const waiting = await L.item(id);
         if (body.retainAt !== undefined || (waiting.state === "open" && !waiting.owner && waiting.dispatch)) {
+          // A builder given in the dispatch's place is checked against the
+          // pool's current standing, as a dispatch's own is below.
+          if (body.agent || body.model) await L.poolChanged(await index(env).models());
           return json(await L.releaseHold(id, actor, { ...body, retainAt: body.retainAt !== undefined ? body.retainAt : waiting.dispatch!.at }));
         }
       }
@@ -1796,6 +1820,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // A held task is released as it is queued, so its holder's write token
       // is revoked first, as for a release.
       const oldToken = await L.tokenId(id);
+      if (body.agent && body.model) await L.poolChanged(await index(env).models());
       const before = await L.checkDispatch(id, actor, body);
       if (before.owner) await revoke(env, before.fork, oldToken);
       return json({ ...await L.dispatch(id, actor, body, oldToken), ...(suggestion ? { suggestion } : {}) });
@@ -1821,8 +1846,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review": {
       const item = await L.item(id);
       assertReviewAllowed(item, !!c.token);
-      assertRevision(item, String(body.head ?? ""));
-      if (item.fork && await headOf(env, item.fork) !== item.head) throw new RuleError("stale_head", "the workspace changed; record the push and review again");
+      // A post-merge review judges the recorded landing, not the submitted
+      // head or a workspace that may have moved or disappeared. addReview
+      // validates its merge commit and claimed request together in the Ledger.
+      if (item.state !== "merged") {
+        assertRevision(item, String(body.head ?? ""));
+        if (item.fork && await headOf(env, item.fork) !== item.head) throw new RuleError("stale_head", "the workspace changed; record the push and review again");
+      }
       await L.addReview({
         itemId: id, by: actor, head: String(body.head ?? item.head ?? ""),
         // The criteria binding is the reviewer's own, as given; never the item's.
@@ -1847,13 +1877,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // base-token chooses), so the job can diff from the merge base of the
       // head and that branch rather than from the fork point, which a merge
       // of main into the task leaves behind (t230).
-      if (claim.item.fork) {
+      if (claim.item.fork || claim.item.state === "merged") {
         const p = await L.project();
         const branch = await projectBranch(env, p);
-        const t = await mint(env, claim.item.fork, "read", branch);
+        const landed = landingOf(claim.item, claim.events);
+        const repo = landed?.onPlanBranch ? await baseRepo(env, L, claim.item, p.repo) : p.repo;
+        const t = await mint(env, landed ? repo : claim.item.fork!, "read", branch);
         const b = await mint(env, await baseRepo(env, L, claim.item, p.repo), "read", branch);
         return json({
           ...claim,
+          ...(landed ? { landed } : {}),
           ...(diffRef ? { diffRef } : {}),
           readToken: { remote: t.remote, token: t.token, defaultBranch: t.defaultBranch },
           target: { remote: b.remote, token: b.token, branch: b.defaultBranch },
@@ -2586,7 +2619,10 @@ async function storedReviewDiff(
   if (!item.fork) return null;
   try {
     const p = await L.project();
-    const diff = await itemDiff(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork);
+    const landed = landingOf(item, claim.events);
+    const diff = landed
+      ? await mergedDiff(env.ARTIFACTS, landed.onPlanBranch ? await baseRepo(env, L, item, p.repo) : p.repo, item.fork, landed)
+      : await itemDiff(env.ARTIFACTS, await baseRepo(env, L, item, p.repo), item.fork);
     if (!diff) return null;
     const text = renderDiffText(item.id, diff);
     if (text.length <= DIFF_INLINE_MAX) return null;
