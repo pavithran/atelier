@@ -20,6 +20,15 @@ export async function prepareRecordedWorkspace(io, { dir, itemPath, detail, dryR
     return key === 'actor' ? !!value : value === (key === 'project' ? name : id);
   });
   if (configured) return false;
+  // A workspace that descends from the recorded head holds work the ledger
+  // has not seen (an orchestrator's fix committed in it, t549): replacing it
+  // would land, and review, the change without that work. Landing stops
+  // before the lease and asks for the push instead. A workspace without the
+  // recorded object cannot descend from it.
+  if (local && local !== head && git(['merge-base', '--is-ancestor', head, local], { cwd: dir, allowFail: true }).status === 0) {
+    const commits = git(['log', '--format=%h %s', `${head}..${local}`], { cwd: dir, allowFail: true }).stdout?.trim() ?? '';
+    throw new Error(`${id}'s workspace ${dir} holds ${countCommits(commits)} the recorded head ${head} lacks:\n${indent(commits)}\nPush them with atelier push (in ${dir}), then run atelier land ${id} again; landing stopped with the workspace untouched.`);
+  }
   if (dryRun) {
     print(`Would prepare ${id} from recorded source ${head}, preserving any existing workspace beside ${dir}.`);
     return true;
@@ -57,6 +66,14 @@ export async function prepareRecordedWorkspace(io, { dir, itemPath, detail, dryR
     if (identity) writeFileSync(join(staging, '.git', 'atelier-identity.json'), `${JSON.stringify(identity)}\n`);
     const current = (await request('GET', itemPath)).item;
     if (current.head !== head || current.owner !== detail.item.owner || current.state !== detail.item.state) throw new Error(`${id} changed while preparing recorded head ${head}; retry landing`);
+    // The commits a diverged workspace holds that the recorded head lacks,
+    // read in the staging repository (fetching the workspace's HEAD there)
+    // so the original gains no objects; the backup is named with them.
+    let held = '';
+    if (local) {
+      const from = git(['fetch', '--quiet', '--no-tags', dir, local], { cwd: staging, allowFail: true });
+      if (from.status === 0) held = git(['log', '--format=%h %s', local, '--not', head], { cwd: staging, allowFail: true }).stdout?.trim() ?? '';
+    }
     if (existsSync(dir)) {
       // A same-volume rename preserves every byte, even ignored files,
       // local-only objects and the merge index. A failed rename leaves the
@@ -66,6 +83,7 @@ export async function prepareRecordedWorkspace(io, { dir, itemPath, detail, dryR
       try { (io.renameWorkspace ?? renameSync)(dir, backup); }
       catch { rmSync(slot, { recursive: true, force: true }); throw new Error(`could not preserve ${dir}; landing stopped with the original untouched`); }
       print(`Preserved ${id}'s previous workspace at ${backup}.`);
+      if (held) print(`It has diverged from the recorded head ${head} and holds ${countCommits(held)} the recorded head lacks:\n${indent(held)}\nRecover them from ${backup} if they belong to ${id}.`);
     }
     try { (io.renameWorkspace ?? renameSync)(staging, dir); }
     catch {
@@ -77,6 +95,9 @@ export async function prepareRecordedWorkspace(io, { dir, itemPath, detail, dryR
     rmSync(staging, { recursive: true, force: true });
   }
 }
+
+const countCommits = (log) => { const n = log.split('\n').length; return `${n} commit${n === 1 ? '' : 's'}`; };
+const indent = (log) => log.split('\n').map(line => `  ${line}`).join('\n');
 
 // A landing's lock and journal live under the CLI's cache, in a directory per
 // checkout, never inside the checkout's Git directory. The owner's checkout
