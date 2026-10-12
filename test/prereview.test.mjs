@@ -36,11 +36,12 @@ test("the next two live waiters behind the holder are the candidates, in FIFO or
   assert.deepEqual(prereviewCandidates(null, true, queue, now), []);
 });
 
-test("a binding is keyed by task, head, criteria, contributors and main's generation, and its drift is named", () => {
-  const b = { head: SHA("a"), criteria: SHA("b"), contributors: ["Claude-Code/Opus-5.5"], generation: 3 };
+test("a binding is keyed by task, head, criteria, contributors and main's SHA and generation, and its drift is named", () => {
+  const b = { head: SHA("a"), criteria: SHA("b"), contributors: ["Claude-Code/Opus-5.5"], generation: 3, main: SHA("c") };
   assert.equal(bindingKey("t2", b), bindingKey("t2", { ...b, contributors: ["claude-code/opus-5.5", "claude-code/opus-5.5"] }));
   assert.notEqual(bindingKey("t2", b), bindingKey("t2", { ...b, generation: 4 }));
   assert.notEqual(bindingKey("t2", b), bindingKey("t3", b));
+  assert.notEqual(bindingKey("t2", b), bindingKey("t2", { ...b, main: SHA("d") }));
   assert.equal(bindingDrift(b, b), null);
   assert.match(bindingDrift(b, { ...b, head: SHA("e") }), /head moved/);
   assert.match(bindingDrift(b, { ...b, generation: 4 }), /main moved/);
