@@ -1,6 +1,8 @@
 // atelier check. Its forms, flags and help are declared in src/usage/commands/check.ts.
+import { prepareChecks } from "../../src/check-preparation.ts";
 import { join } from "node:path";
 import { checkApplies } from "../../src/rules.ts";
+import { LOCAL_OUTPUT_TAIL } from "../../src/check-failure.ts";
 import { appliesText, refusalOf, refusalText } from "../../src/checks.ts";
 import { CLEAN_CLONE, I, OWNER_NAME, actor, apiToken, args, at, call, checkInSandbox, cleanClone, cliState, die, doneChecks, itemArg, mergeWithMain, postEvidence, project, removeClone, runCheck, short, workspacePath, workspaceTokens } from "../atelier.mjs";
 
@@ -14,7 +16,7 @@ export default async function checkCommand() {
   const cmds = args.rest?.length ? [args.rest.join(" ")] : d.policy.checks;
   if (!cmds.length) die("this project has no required checks; pass one: atelier check -- npm test");
   // A command that is never read-only is not run, here or anywhere.
-  const refused = cmds.flatMap((cmd) => { const why = refusalOf(cmd); return why ? [refusalText(cmd, why)] : []; });
+  const refused = [...(d.policy.prepare ? [d.policy.prepare.command] : []), ...cmds].flatMap((cmd) => { const why = refusalOf(cmd); return why ? [refusalText(cmd, why)] : []; });
   if (refused.length) die(`${refused.join(".\n")}.${args.rest?.length ? "" : `\nNothing was run. Ask ${OWNER_NAME} to replace the check with atelier init --check.`}`);
   const ws = await call("POST", `${I(name, id)}/read-token`, {}, as);
   if (!ws.head) die("nothing pushed yet");
@@ -37,6 +39,7 @@ export default async function checkCommand() {
     // in this clone. The evidence is bound to both revisions, and the
     // Worker refuses a main head that is not on main's line.
     if (args.merged) mainHead = mergeWithMain(dir, id);
+    await prepareChecks(policy.prepare, (cmd) => runCheck(cmd, dir, secrets, { project: name, task: id, actor: as }), secrets).catch((error) => die(error.message, 2));
     const on = mainHead ? ` merged with main ${short(mainHead)}` : "";
     for (const cmd of cmds) {
       // A registered check whose paths this change does not touch is not
@@ -58,7 +61,7 @@ export default async function checkCommand() {
       // when the reply carries none. A merged check measures no paths.
       const d = await postEvidence(`${I(name, id)}/evidence`, {
         kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed,
-        outputTail: `${r.output.slice(-3500)}\n[sha256 of full output: ${r.sha}]`,
+        outputTail: `${r.output.slice(-LOCAL_OUTPUT_TAIL)}\n[sha256 of full output: ${r.sha}]`,
         ...(mainHead ? { merged: true, mainHead } : {}),
       }, as);
       const row = d?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd && !e.merged).at(-1);

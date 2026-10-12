@@ -8,6 +8,7 @@ import { parseRuleError, type Evidence, type Item, type ProjectPolicy, type Revi
 import type { Detail } from "../src/ui.ts";
 import { signIn } from "./signin.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
+import { taskProgress } from "../src/ui.ts";
 
 // The Ledger driven end to end over Durable Object RPC, with its real SQLite
 // storage, inside the Workers test pool. The pure policy underneath is tested
@@ -160,6 +161,20 @@ it("an item moves from creation to merge, gated by observed evidence", async () 
   ]);
 });
 
+// t367: the task page's steps read from what the Ledger records. A fresh
+// fork's head is its base, so Fork stays current until a push moves it.
+it("a fresh fork is at Fork, and a push that moves the head brings it to Prove", async () => {
+  const L = await setup("progress");
+  await L.newItem("Show the steps", ["src/**"], "owner");
+  await L.claim("t1", A);
+  const at = async () => taskProgress(await L.item("t1"), []).steps.find((s) => s.state === "current")?.verb;
+  await L.setFork("t1", "progress--t1", H0, A);
+  expect(await L.item("t1")).toMatchObject({ base: H0, head: H0 });
+  expect(await at()).toBe("Fork");
+  await L.recordPush("t1", A, H1, H1);
+  expect(await at()).toBe("Prove");
+});
+
 // t168: a merged revision whose declared protected actions have not run asks
 // the owner to ship it, and a recorded run of each kind retires the reminder.
 it("the inbox reminds the owner of a merged revision whose declared protected actions have not run", async () => {
@@ -272,7 +287,9 @@ it("decision 2026-10-06: only the owner overrides a missing review, with a reaso
   expect(accepted.overrideConfirmation).toBeUndefined();
   const events = await L.events("t1") as unknown as LedgerEvent[];
   expect(events.slice(0, 2).map((e) => [e.kind, e.actor])).toEqual([["item.accepted", "owner"], ["review.overridden", "owner"]]);
-  expect(events[1].data).toEqual({ head: H2, reason, waived: "touches a protected path; needs approval from a model of another family than every contributor", contributors: [A], confirmed: "command line", confirmedAt: allowed.overrideConfirmation!.at, factor: "secret" });
+  expect(events[1].data).toEqual({ head: H2, reason, waived: "touches a protected path; needs approval from a model of another family than every contributor", contributors: [A], confirmed: "command line", confirmedAt: allowed.overrideConfirmation!.at, factor: "secret",
+    // t457: called with no reviewer looked for, the record says so, as unknown.
+    availability: { known: false, reviewer: null, source: "none", at: events[1].at, why: "no reviewer was looked for as the override was made" } });
   expect(events[0].data).toMatchObject({ head: H2, reviewOverridden: true });
   // It is not a review: none was recorded for it.
   expect((await L.reviewsFor("t1")).filter((r) => r.head === H2)).toEqual([]);
@@ -346,7 +363,8 @@ it("decision 2026-10-09: the inbox names the reviewer a land would use for an as
   // Only the contributor's own model is available: the entry names no reviewer.
   const none = await L.inbox(T, [entry("opus-5.5", { harness: "claude-code" })]);
   expect(none[0].reviewer).toBeNull();
-  expect((await L.inbox(T)).map((e) => [e.kind, e.reviewer])).toEqual([["assess", null]]);
+  // With no pool given the reviewer is left unset: not read, never "none qualifies".
+  expect((await L.inbox(T)).map((e) => [e.kind, e.reviewer])).toEqual([["assess", undefined]]);
 });
 
 it("the holder under another letter case, profile or registered name cannot review, and that model's approval does not count", async () => {
@@ -883,7 +901,7 @@ it("a dispatch is withdrawn only from an open task, and a refusal says why and w
   await refusal(L.undispatch(item.id, "owner"), "not_dispatched",
     new RegExp(`^${item.id} is claimed by opencode/glm-5.3-flash; its dispatch applies again only if it is released, so withdraw it then$`));
   await L.abandon(item.id, "owner", "not needed");
-  await refusal(L.undispatch(item.id, "owner"), "not_dispatched", new RegExp(`^${item.id} is abandoned, so its dispatch no longer applies and there is nothing to withdraw$`));
+  await refusal(L.undispatch(item.id, "owner"), "not_dispatched", new RegExp(`^${item.id} is not queued for a runner, so there is no dispatch to withdraw$`));
 });
 
 // t235: a runner's dead run leaves its claims behind. The jobs the queue can
@@ -995,6 +1013,15 @@ it("an init is merged into the project in one step and keeps every field it does
   expect(mergeProject(tiered, { ...base, title: "V" }, "later").policy.reviewTier).toEqual(["claude-code/opus-5.5", "codex/gpt-6.1-sol"]);
   expect(mergeProject(tiered, { ...base, reviewTier: [] }, "later").policy).not.toHaveProperty("reviewTier");
   expect(mergeProject(tiered, { ...base, reset: true }, "later").policy).not.toHaveProperty("reviewTier");
+  // t394: the model policy is unset by default; a switch is stamped with the
+  // init's time and who made it, kept by an init that does not name it, and
+  // a return to cross-family review is recorded the same way, not dropped.
+  expect(full.policy).not.toHaveProperty("familyMode");
+  const single = mergeProject(full, { ...base, familyMode: { single: "anthropic", by: "pavi" } }, "2026-10-09T10:00:00Z");
+  expect(single.policy.familyMode).toEqual({ single: "anthropic", by: "pavi", at: "2026-10-09T10:00:00Z" });
+  expect(mergeProject(single, { ...base, title: "V" }, "later").policy.familyMode).toEqual({ single: "anthropic", by: "pavi", at: "2026-10-09T10:00:00Z" });
+  expect(mergeProject(single, { ...base, familyMode: { single: null, by: "pavi" } }, "2026-10-10T10:00:00Z").policy.familyMode).toEqual({ single: null, by: "pavi", at: "2026-10-10T10:00:00Z" });
+  expect(mergeProject(single, { ...base, reset: true }, "later").policy).not.toHaveProperty("familyMode");
   // reset starts the policy over and keeps the project's identity.
   const reset = mergeProject(full, { ...base, reset: true }, "later");
   expect(reset.policy).toEqual({ checks: [], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*", ".atelier/prompts/**"], eligible: [], refuseOverlap: false, sandboxOnly: false });
@@ -1734,4 +1761,62 @@ it("a gate request the criteria change withdrew is carried at the same head once
   await L.addEvidence(observed("t1", H1, ["AGENTS.md"]));
   expect(await live(L)).toEqual([expect.objectContaining({ head: H1, state: "open" })]);
   expect(((await L.events("t1")) as unknown as LedgerEvent[]).find((e) => e.kind === "review.requested")!.data).toMatchObject({ reviewer: GPT, via: "head-moved" });
+});
+
+for (const terminal of ["abandoned", "merged"] as const) {
+  it(`${terminal} clears dispatch and every live review, and refuses all claims`, async () => {
+    const L = await setup(`terminal-${terminal}`);
+    await L.newItem("Closed work", [], "owner");
+    await L.dispatch("t1", "owner", { to: "home" });
+    expect(await L.waiting()).toHaveLength(1);
+    await runInDurableObject(L, async (_instance, state) => {
+      for (const status of ["open", "claimed"]) {
+        for (const tier of [null, 1]) {
+          state.storage.sql.exec(`INSERT INTO review_requests (item, head, dispatch, state, tier) VALUES (?, ?, ?, ?, ?)`,
+            "t1", H1, JSON.stringify({ to: "home", agent: "codex", model: "gpt-5.5" }), status, tier);
+        }
+      }
+      if (terminal === "merged") state.storage.sql.exec(`UPDATE items SET state = 'accepted', accepted_head = ? WHERE id = 't1'`, H1);
+    });
+    if (terminal === "abandoned") await L.abandon("t1", "owner", "Stop");
+    else await L.merged("t1", "owner", H2, true);
+    expect(await L.item("t1")).toMatchObject({ state: terminal, dispatch: null });
+    expect(await L.waiting()).toEqual([]);
+    expect(await L.reviewWaiting()).toEqual([]);
+    await runInDurableObject(L, async (_instance, state) => {
+      expect(state.storage.sql.exec(`SELECT state FROM review_requests`).toArray().map(r => r.state)).toEqual(Array(4).fill("withdrawn"));
+    });
+    for (const actor of [A, "atelier/integrator"]) await refusal(L.claim("t1", actor, null, true), "closed", new RegExp(terminal));
+    await refusal(L.claimReview("t1", B, null), "closed", new RegExp(terminal));
+    await refusal(L.dispatch("t1", "owner", { to: "home" }), "closed", new RegExp(terminal));
+    await L.unclaim("t1", A, "not_ready");
+    expect((await L.item("t1")).state).toBe(terminal);
+  });
+}
+
+it("claim rollback preserves closure, newer claims, and a holder's retry", async () => {
+  const L = await setup("rollback-reservation");
+  await L.newItem("One", [], "owner");
+  const first = await L.claim("t1", A);
+  await L.release("t1", A, "Retry elsewhere");
+  const second = await L.claim("t1", A);
+  await L.unclaim("t1", A, "not_ready", false, first.generation);
+  expect((await L.item("t1")).state).toBe("claimed");
+  const retry = await L.claim("t1", A);
+  await L.unclaim("t1", A, "not_ready", false, retry.generation);
+  expect((await L.item("t1")).owner).toBe(A);
+  await L.abandon("t1", "owner", "Stop during fork");
+  await L.unclaim("t1", A, "not_ready", false, second.generation);
+  expect((await L.item("t1")).state).toBe("abandoned");
+});
+
+it("failed claim restores its prior state instead of assuming it was open", async () => {
+  const L = await setup("rollback-prior-state");
+  await L.newItem("Submitted without a holder", [], "owner");
+  await runInDurableObject(L, async (_instance, state) => {
+    state.storage.sql.exec(`UPDATE items SET state = 'submitted' WHERE id = 't1'`);
+  });
+  const claim = await L.claim("t1", A);
+  await L.unclaim("t1", A, "not_ready", false, claim.generation);
+  expect(await L.item("t1")).toMatchObject({ state: "submitted", owner: null, runner: null });
 });

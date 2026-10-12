@@ -1,10 +1,26 @@
 # Using Atelier well
 
+The cross-company rules below describe the default policy. With
+`atelier init --single-family COMPANY`, building and reviewing use only that
+company's models: a reviewer must be a different model from every contributor,
+never a contributor under another harness. This exception also applies to
+criteria review, handoffs and conflict contributors. Only that company's tier
+models qualify; if none qualifies, no separate tier review is requested.
+`atelier init --cross-family` restores the default; both switches record who
+made them and when. See [Single-family mode](gate.md#single-family-mode).
+
 This guide is for the owner of a project registered in Atelier: the person
 who decides what gets done and what goes in. Atelier and the agents do the
 work; the owner makes three kinds of decision. What to do, whether a plan's
 split is right, and whether finished work is accepted. Everything below is
 about making those decisions well and leaving the rest to the system.
+
+Every task goes through the same five steps: **Claim** (one holder per
+task), **Fork** (every task its own fork), **Prove** (Atelier runs the
+tests), **Review** (another company reviews, or in single-family mode another
+model) and **Land** (one landing at a time, with a receipt). A task's page shows which step it is at. The owner's
+decisions sit at either end: what is claimed, and what lands. What lands is
+proven, reviewed and recorded.
 
 `docs/orchestrating.md` is the companion for a session that runs Atelier on
 the owner's behalf; the How it works page (`/how`) holds every rule and
@@ -149,7 +165,8 @@ that is how Atelier improves.
 ## Habits that save trouble
 
 - Run one home runner per machine (`atelier runner --name home:NAME`), and
-  check for one before starting another: `pgrep -f "atelier.mjs runner"`.
+  check for one before starting another: `atelier status` lists the runners
+  live on this Mac by name, and to wait on a task use `atelier wait ID`.
 - Deploy a project between landings, after its full test suite passes, not
   while another task's checks run.
 - `atelier gc --project NAME` previews the workspaces of finished tasks that

@@ -348,6 +348,54 @@ it("the review bar route cleans the bar, keeps it on re-init, clears it on an em
   }
 });
 
+// t394: init --single-family COMPANY records the mode with who set it and
+// when; --cross-family (null or "") records the return the same way; a
+// company no model name is recognised by is refused; and a hand dispatch
+// under the mode names only that company's models.
+it("the single-family route records the company with who and when, records the return to cross-family, and refuses an unknown company", async () => {
+  await project("routes-single-family");
+  const put = (fields: Record<string, unknown>, actor = "owner") => worker.fetch(new Request("https://atelier.test/api/projects/routes-single-family", {
+    method: "PUT",
+    headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": actor, "content-type": "application/json" },
+    body: JSON.stringify({ checks: ["npm test"], protected: [], ...fields }),
+  }), artifactsEnv);
+  const modeOf = async (fields: Record<string, unknown>, actor = "owner") =>
+    (((await (await put(fields, actor)).json()) as { project: { policy: { familyMode?: { single: string | null; by: string; at: string } } } }).project.policy.familyMode);
+  expect(await modeOf({})).toBeUndefined();
+  const single = await modeOf({ singleFamily: " Anthropic " });
+  expect(single).toMatchObject({ single: "anthropic", by: "owner" });
+  expect(Number.isFinite(Date.parse(single!.at))).toBe(true);
+  // A re-init that names no mode keeps it.
+  expect(await modeOf({ title: "Kept" })).toEqual(single);
+  // The return is recorded, not dropped: who made it and when.
+  const back = await modeOf({ singleFamily: null });
+  expect(back).toMatchObject({ single: null, by: "owner" });
+  expect(await modeOf({ singleFamily: "openai" })).toMatchObject({ single: "openai", by: "owner" });
+  expect(await modeOf({ singleFamily: "" })).toMatchObject({ single: null, by: "owner" });
+  for (const bad of ["acme", "other", 7, ["anthropic"]]) {
+    const res = await put({ singleFamily: bad });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("bad_single_family");
+  }
+  expect((await put({ singleFamily: "acme" })).status).toBe(400);
+  expect(await modeOf({})).toMatchObject({ single: null, by: "owner" });
+
+  // Under the mode a hand dispatch names one of the company's models only.
+  await put({ singleFamily: "anthropic" });
+  const created = await (await call("POST", "/projects/routes-single-family/items", "owner", { title: "Small edit", scope: ["docs/**"] })).json() as { id: string };
+  const other = await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" });
+  expect(other.status).toBe(409);
+  const refusal = await other.json() as { error: string; detail: string };
+  expect(refusal.error).toBe("single_family");
+  expect(refusal.detail).toBe("gpt-6-astra is not one of anthropic's models, and this project runs in single-family mode (anthropic): use one of anthropic's models, or return to cross-family review with atelier init --cross-family");
+  expect((await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home", agent: "claude-code", model: "sonnet-5.5" })).status).toBe(200);
+  // A dispatch that names no model leaves the choice to the runner's offer, as before.
+  expect((await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home" })).status).toBe(200);
+  // Back under the default any model may be named.
+  await put({ singleFamily: null });
+  expect((await call("POST", `/projects/routes-single-family/items/${created.id}/dispatch`, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" })).status).toBe(200);
+});
+
 it("the review tier route takes models separated by commas or a list, keeps the tier on re-init, clears it on an empty one, and refuses one not harness/model", async () => {
   await project("routes-review-tier");
   const put = (fields: Record<string, unknown>) => worker.fetch(new Request("https://atelier.test/api/projects/routes-review-tier", {
@@ -867,8 +915,11 @@ it("the standing route is readable by any signed-in actor, and by no one else", 
     const s = await res.json() as { project: { name: string }; live: { id: string }[]; waiting: { id: string; brief: { verdict: string } | null }[]; queued: { id: string }[] };
     expect(s.project.name).toBe(name);
     expect(s.live.map((x) => x.id)).toEqual(["t1"]);
-    expect(s.waiting).toEqual([expect.objectContaining({ id: "t1", kind: "accept", brief: expect.objectContaining({ verdict: "accept" }) })]);
-    expect(s.queued.map((x) => x.id)).toEqual(["t2"]);
+    // t2 waits on the owner too while no live runner can take it, which
+    // depends on the runner offers earlier tests in this file recorded.
+    expect(s.waiting.filter((w) => (w as { call?: string }).call !== "start-runner")).toEqual([expect.objectContaining({ id: "t1", call: "accept", href: `/p/${name}/t1`, brief: expect.objectContaining({ verdict: "accept" }) })]);
+    for (const w of s.waiting.filter((x) => (x as { call?: string }).call === "start-runner")) expect(w.id).toBe("t2");
+    expect(s.queued.map((x) => x.id)).toEqual(["t2"])
   }
   const anonymous = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/standing`, { headers: { "x-atelier-actor": "owner" } }), testEnv);
   expect(anonymous.status).toBe(401);
@@ -1396,4 +1447,40 @@ it("a verdict on criteria that changed while its reviewer ran is refused with ho
   expect((await (await owner("GET", "/items/t1")).json() as Detail).gate.ready).toBe(true);
   // The brief route gives the criteria and their binding, as atelier show prints them.
   expect(await (await owner("GET", "/items/t1/brief")).json()).toMatchObject({ accept: TWO, partAccept: null, criteria: two });
+});
+
+// Task t480: the page's textarea counts a line break as one character and its
+// maxlength stops a note at 2000 of those, but a browser posts each break as
+// CRLF. A note the form took must not then be refused as 2010 characters, so
+// the form handler stores every break as LF before the limit is checked. The
+// API and CLI text is checked and stored as given.
+it("a dispatch note at the limit posted with CRLF line breaks is taken and stored with LF, while API text is kept as given", async () => {
+  const name = "routes-crlf-note";
+  await project(name);
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.newItem("Form note", [], "owner");
+  await L.newItem("API note", [], "owner");
+  const lines = Array.from({ length: 11 }, (_, i) => String(i % 10).repeat(i < 10 ? 181 : 180));
+  const stored = lines.join("\n");
+  expect(stored.length).toBe(2000);
+  const posted = lines.join("\r\n");
+  expect(posted.length).toBe(2010);
+
+  const cookie = await signIn(TOKEN, testEnv);
+  const form = await worker.fetch(new Request(`https://atelier.test/ui/${name}/t1/dispatch`, {
+    method: "POST", headers: { origin: "https://atelier.test", cookie }, body: new URLSearchParams({ to: "home", agent: "", model: "", note: posted }), redirect: "manual",
+  }), testEnv);
+  expect(form.status, await form.clone().text()).toBe(303);
+  expect((await L.item("t1")).dispatch?.note).toBe(stored);
+
+  // The API, as atelier dispatch --note-file sends a file, stores the text as
+  // given: a lone CR is kept, and CRLF counts as two units, so the same note
+  // in CRLF (2010 units) is refused whole, never folded to fit.
+  const api = await call("POST", `/projects/${name}/items/t2/dispatch`, "owner", { to: "home", note: lines.join("\r") });
+  expect(api.status, await api.clone().text()).toBe(200);
+  expect((await L.item("t2")).dispatch?.note).toBe(lines.join("\r"));
+  const over = await call("POST", `/projects/${name}/items/t2/dispatch`, "owner", { to: "home", note: posted });
+  expect(over.status).toBe(400);
+  expect(((await over.json()) as { error: string }).error).toBe("too_long");
+  expect((await L.item("t2")).dispatch?.note).toBe(lines.join("\r"));
 });

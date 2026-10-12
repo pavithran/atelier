@@ -351,12 +351,15 @@ stopped. After editing a plist, `bootout` and then `bootstrap` again.
 To check that one is running:
 
 ```sh
-pgrep -f "atelier.mjs runner"
+atelier status
 ```
 
-It prints one process id per runner and integrator, and nothing when none
-runs; `pgrep -fl` adds each command line, which shows the `--name`. Both write
-to the log named in the plist (`tail -f` follows it), one line each, every
+Its live-process section lists local runners and agents by task, with process
+ids and runner names, and says when none runs. To wait for their work, use
+`atelier wait ID --project PROJECT --for submitted` for a build or
+`--for reviewed` for a review; the command prints the outcome.
+Runners and integrators write to the log named in the plist (`tail -f`
+follows it), one line each, every
 line starting `runner: `. An idle runner, with nothing offered, prints
 nothing. A build job logs these lines in this order: `runner: nothing claimed`
 (the first line of every build job, written before the claim is made),

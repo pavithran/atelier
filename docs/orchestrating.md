@@ -1,5 +1,14 @@
 # Running Atelier for a project
 
+The cross-company rules below describe the default policy. With
+`atelier init --single-family COMPANY`, building and reviewing use only that
+company's models: a reviewer must be a different model from every contributor,
+never a contributor under another harness. This exception also applies to
+criteria review, handoffs and conflict contributors. Only that company's tier
+models qualify; if none qualifies, no separate tier review is requested.
+`atelier init --cross-family` restores the default; both switches record who
+made them and when. See [Single-family mode](gate.md#single-family-mode).
+
 This is the handbook for a session that runs Atelier for a project: one that
 files tasks, sends them to coding agents, has their work reviewed, and lands
 it for the owner. It is written from the work of 6 October 2026, when one
@@ -21,14 +30,19 @@ silence it, and a project with no checkout on this Mac always gets it.
 `atelier init` offers a short AGENTS.md section that
 points at it and states the review path (it does not edit the file).
 
-- Use builders from several companies, chosen by tier, and not one company's
-  models alone.
+- By default use builders from several companies, chosen by tier. In
+  single-family mode use only the selected company's models.
 - Every protected or coordinated change is reviewed by a model from another
-  company than every agent that worked on it.
+  company than every agent that worked on it; in single-family mode, only a
+  different model of the selected company from every contributor counts.
 - Never override a review, a check or a block, except on the owner's own
   confirmation. Ask, and cite the owner's words; never infer them.
 - Judge each review finding against the code before acting, and record every
-  verdict with `atelier finding`.
+  verdict with `atelier finding ... --as H/M`, naming yourself, as you name
+  yourself on `atelier decide`, `atelier decisions withdraw` and on an
+  override: the Models page measures your verdicts as it measures a
+  reviewer's. Without `--as` the record cannot tell you from the owner, and
+  the page counts the judgement as unknown.
 - File every task with its acceptance criteria, written before the build. A
   review judges the change against them, so a task without them gives the
   review nothing to bind to. Write with each criterion the edge cases it
@@ -38,7 +52,19 @@ points at it and states the review path (it does not edit the file).
   name is found by the reviewer instead, a round at a time: on 10 October
   one task took three review rounds and another five, each over a case the
   criteria left unstated.
-- Before asking for the cross-company review, read the diff against the
+- When a criterion requires that every path be guarded (every write of an
+  owner, every call that needs a check), ask for a runtime boundary, never
+  for a test that scans the source for the paths. Ask for one guarded entry
+  point that does the write and checks the guard, and for the low-level
+  write to refuse any call that does not come through it, tested by calling
+  the low-level write directly. A text scan can never prove that no path is
+  missed. t389's criterion 4 said "a test enumerates those paths and fails
+  if one is added without the check"; gpt-6-astra rejected it ten times from
+  9 to 12 October, each time over an assignment path the checks missed, and
+  the last two over owner writes the builder's scanner of regular
+  expressions missed (the last was
+  `const fields = { owner: to }; this.update(id, fields, at)`).
+- Before asking for the independent review, read the diff against the
   criteria yourself. Your reading does not count at the gate; it catches the
   plain misses before the expensive review does.
 - Land one task at a time with `atelier land ID --reviewer H/M`, where
@@ -83,7 +109,7 @@ A task moves through five hands:
    has a protected change's review asked of a tier model of another family
    first, and that one review serves both. Only when the gate's reviewer is
    outside the tier does one tier model that did not build the change
-   review it as well, at the same time, whatever its family: its rejection
+   review it as well, at the same time, whatever its family in the default mode (only the selected company in single-family mode): its rejection
    sends the change back like any rejection, its approval never stands in
    for the cross-family review, and a landing never waits for it.
 5. **The owner** accepts that exact revision and merges it into the
@@ -94,10 +120,11 @@ the project's core files: the queue does not start two pieces of work whose
 scopes overlap in one. Name them with `atelier init --core GLOB`, once per
 glob (for Atelier: `cli/runner.mjs`, `src/ledger.ts`,
 `src/dispatch/rules.ts`, the files where a dozen tasks built at once left
-half the landings on merge conflicts). A dispatch whose scope overlaps a
-live item's (claimed, submitted or accepted) within a core file waits in the
-queue until that item merges or is abandoned; `atelier status` names the item
-it waits on, and `atelier dispatch ID --overlap-ok` lets it through when the
+half the landings on merge conflicts). A dispatch whose scope overlaps,
+within a core file, a claimed item's or that of the item a live landing
+lease names waits in the queue until each claimed blocker submits or is
+released and each landing ends; a submitted or accepted item that is not
+landing holds nothing. `atelier status` names every item it waits on, and `atelier dispatch ID --overlap-ok` lets it through when the
 overlap is known to be harmless. Parts of one plan never hold each other,
 since the plan orders overlapping parts already. Landing is the part that
 must not run in parallel.
@@ -112,7 +139,8 @@ is in Atelier, the repository and this handbook. Before dispatching anything:
 2. For each claimed task, look at its workspace: uncommitted changes, a
    `COMMIT_MSG.txt` an agent left, a merge in progress, or an agent's log in
    `.scratch/`. Check whether the agent's process still runs before starting
-   the same work again.
+   the same work again: `atelier status` ends with the runners and agent
+   processes live on this Mac, by task, with no command lines.
 3. Check that main type-checks and that the deployed server holds main's
    routes.
 4. Read the owner's standing decisions where the project keeps them, and
@@ -251,7 +279,8 @@ So land one task at a time, in this order:
    one.
    Where the project has a tier, the server asks a qualifying tier model
    for this review first, and it serves as the tier review too. A
-   `--reviewer` outside the tier gets a separate tier review alongside;
+   `--reviewer` outside the tier gets a separate tier review alongside only
+   when a tier model qualifies under the family policy;
    `atelier land` waits only for the independent review, stops on a tier
    rejection, and the acceptance withdraws a tier request still open.
 4. Accept and merge at once, before anything else lands.
@@ -270,7 +299,17 @@ accepts and merges. Each step and how long it took are recorded on the
 task as `land.*` events, and a landing stopped partway is resumed by
 running the same command again, which takes its lease back. The same
 lease guards every merge, a plan's included (`POST items/tP/landing` in
-`cli/atelier.mjs`). `bin/orchestrate/queue.sh` and `land.sh` are the
+`cli/atelier.mjs`). To wait on a landing, a runner's build or an agent, use
+`atelier wait ID` (`cli/wait.mjs`), never a hand-written `pgrep` or `lsof`
+loop, which matches its own command line and cannot see a death:
+`--for merged` (the default) ends when the task merges, `--for submitted`
+when its agent submits, `--for reviewed` when a review is recorded at its
+head and current acceptance criteria, and `--for any-change` at the first
+change of state, head, owner or review count. It prints one line and exits 0 when reached, 1 when the task
+failed (abandoned, blocked, or rejected in review), 3 at `--timeout`, 4 when
+the task cannot be read. A task whose agent died stays claimed, so pair a
+long wait with `--timeout` and look at `atelier status` when it ends.
+`bin/orchestrate/queue.sh` and `land.sh` are the
 fallback for a session without a runner to serve the review. When the
 review waits because the runners are busy (one runner works one job at a
 time), the session can start a second runner (`atelier runner --name
@@ -286,11 +325,28 @@ not assemble it by hand.
 **Deploy when the CLI needs it.** On a machine where the CLI runs from the
 project's own checkout, a merge that adds a route the CLI calls, or changes
 the meaning of a route the CLI already calls, breaks every check until the
-server has the new behaviour too. Each such merge raises `ROUTE_LEVEL`
-(`src/route-level.ts`) by one, and `atelier land` and the home runner refuse
-before they start while the server's route level (`GET /api/version`) is
-older than the CLI's, naming both levels and saying to deploy. Deploy after
-such merges, before landing the next task or starting a runner.
+server has the new behaviour too. Such a merge declares a named capability
+(below), and `atelier land`, every command that needs it and the home runner
+refuse before they start while the server (`GET /api/version`) lacks it,
+naming the missing capability and saying to deploy. Deploy after such
+merges, before landing the next task or starting a runner.
+
+Since t458 they check named capabilities instead: each command declares what
+it needs in its module (`capabilities` in `src/usage/commands/NAME.ts`, or
+under one of its `subcommands`), each runner job in `JOB_CAPABILITIES`
+(`src/route-level.ts`), the server lists what it supports in `capabilities`
+beside `routeLevel`, and every command that declares some is refused before
+its first request while the server lacks one, naming the missing
+capabilities, the server's revision and the deploy to run; the runner
+refuses the same way before its first poll, for the jobs it offers. A change
+that adds API behaviour a command relies on declares a new capability on a
+line of its own under its family in `src/route-level.ts` and names it in
+that command's module, or in the job's row; a command that names one the
+file does not declare fails to load, naming the module. An incompatible
+change takes a new name (`…v2`). Do not raise `ROUTE_LEVEL`: it is frozen
+(t522) and published only for clients and servers that predate
+capabilities, as [Landing](landing.md) says; a new declaration has no
+level, and `test/capabilities.test.mjs` pins the frozen number.
 
 **Keep the machine's load down.** Checks run the whole suite. A dozen agents
 and checks at once pushed the load average past 100 and made timing tests
@@ -388,7 +444,8 @@ after deploy: record that check and do not claim it passed from local tests.
 The reviewer must be of another company than every contributor to the task,
 not only its last builder: `atelier show tN` names who worked on it, and the
 task's history may include an earlier builder or a session that fixed a
-conflict. Among qualifying reviewers, alternate between companies so that
+conflict. Among qualifying reviewers, alternate between companies (between models of
+the selected company in single-family mode) so that
 no one reviewer's queue holds every landing. A reviewer that has rejected
 the same task several rounds running is still the right reviewer; see
 "Judging a review".
@@ -420,12 +477,14 @@ with every task that landed before it. Within that, put first the tasks that
 another piece of work waits on. To reorder it, hold the lock while you edit the queue file:
 `mkdir "$ATELIER_CACHE/land-queue/atelier.queue.lock"`, edit, then `rmdir` it.
 
-Do not chain landings by having a shell wait on `pgrep -f "… tN"`: the
-waiting shell's own command line contains the pattern, so `pgrep` finds the
-waiter itself and it waits forever. On 10 October two landings sat for fifty
-minutes that way. If a wait on a process is unavoidable, write the pattern so
-it cannot match itself (`pgrep -f "land-queue.sh t40[5]"`). t408 replaces
-these waits with a command.
+Wait for a landing with `atelier wait tN --project atelier --for merged`.
+For a runner's build use `--for submitted`, for an agent's review use
+`--for reviewed`, and to observe the next task change use `--for any-change`.
+Add `--timeout 600` to bound the wait, including a stalled server read.
+The command prints the outcome and exits 0 when reached, 1 when the task
+fails, 3 on timeout, or 4 when it cannot read the task. Check that outcome
+before starting dependent work. A merge does not confirm deployment or
+publishing; check the landing queue's post-merge outcome separately.
 
 A failed post-merge step prints `LANDQ tN: post-merge blocked` and exits
 nonzero. Read `$ATELIER_CACHE/land-queue/atelier.queue.post-merge` for the
@@ -444,7 +503,7 @@ zero means they all finished, any other status holds the queue.
 | `tN landed through the landing Workflow` | Merged on main | "After each merge" |
 | `paused at its conflict stage` | Main has moved and the merge conflicts | "Conflicts" |
 | `… rejected tN at SHA: …` | The reviewer asked for changes | "Judging a review" |
-| `… route level N, this CLI route level N+1` | A merge raised `ROUTE_LEVEL` and the server is older | Deploy, then queue the task again |
+| `… lacks capabilities …` | A merge declared a capability the server does not publish yet | Deploy, then queue the task again |
 | `the landing lease was not tN's within 3 hours` | The landing reattached to an old Workflow run that had been waiting for the lease and has now timed out (t430) | Queue the task again: the next landing starts a fresh run |
 | `FAIL … npm test @ SHA` | The checks failed in a clean clone at the merged head, or ran out of time (`check exceeded its time limit` in the landing's output) | If it timed out, the machine was too loaded: lower the load, or raise `ATELIER_CHECK_TIMEOUT` for the landing, and queue it again. Otherwise run the suite in the task's workspace, keeping the whole output, to name the failing test; then send it back or fix it |
 
@@ -486,8 +545,8 @@ round; t435 has the runner merge main before submitting.
 ### Held dispatches
 
 Scope each task as narrowly as the change allows. A scope of `src/**`
-reaches every core file, so the task is held behind any live task in any of
-them: on 10 October twelve tasks filed with broad scopes all waited on one
+reaches every core file, so the task is held behind any claimed or landing task in
+any of them: on 10 October twelve tasks filed with broad scopes all waited on one
 task, while a second machine's runners sat idle.
 
 When runners sit idle, read `atelier queue` first: held dispatches are work
@@ -495,7 +554,8 @@ waiting on scope overlaps, not an empty backlog. If none are held, use
 `atelier status` to check runner eligibility and health.
 
 `atelier status` shows `Held: waits on tX … both scopes reach core file F`
-for a dispatch whose scope overlaps a live task's in a core file. Check that
+for a dispatch whose scope overlaps, in a core file, a claimed task's or the
+landing task's. Check that
 tX is really moving (its workspace's last commit, an agent process in it). If
 tX is stuck, fix tX first. If many tasks wait on one, release the few that
 matter most with `atelier dispatch tN --overlap-ok`, not all of them: tasks
@@ -543,16 +603,16 @@ that verification after deployment; a local pass cannot stand in for it.
    flaky test to file, one that repeats is a break on main to send back to
    the task that caused it.
 3. Deploy once the suite passes (the owner's decision d6: landed changes are
-   deployed after main's full suite passes, not only when `ROUTE_LEVEL`
-   rises):
+   deployed after main's full suite passes, not only when a capability is
+   added):
 
    ```sh
-   git diff $PREVIOUS HEAD -- src/route-level.ts
+   git diff $PREVIOUS HEAD -- src/capability-declarations.ts
    npm run deploy
    ```
 
-   The diff shows whether `ROUTE_LEVEL` rose; if it did, queue again every
-   landing refused on route level once the deploy is done. `npm run deploy`
+   The diff shows whether a capability was declared; if one was, queue
+   again every landing refused for lacking it once the deploy is done. `npm run deploy`
    does not run tests, which is why step 2 comes first. If it fails, report
    the error and queue no landing that needs the new route.
 4. Publish main to the public mirror once it is checked (t433 makes this a
@@ -636,6 +696,13 @@ owner it read as a defect. The other half were real, and some were serious.
   reviewers are right, and how often, is the most useful thing Atelier can
   measure about them. The next review brief shows each verdict and its note,
   so put the file and line that answer a refuted finding in the note.
+- Pass `--as H/M` with every verdict, naming the harness/model you are; it
+  must be a model in the pool. Your verdicts are measured too (task t440):
+  the Models page counts each upheld when another named model later agrees,
+  contradicted when a later verdict corrects it or a defect names it, and
+  unresolved otherwise. `atelier finding` prints the verdict's event number;
+  a defect that shows a refuted or fixed verdict wrong names it with
+  `atelier defect ID --note "…" --contradicts SEQ#N`.
 
 ## Keeping the record honest
 

@@ -76,7 +76,7 @@ function buildFixture(options = {}) {
     identityRefusals() { return []; },
     log: (s) => logs.push(s), stopped: () => false, env: {}, ownerTokens: () => [], now: () => NOW,
     workspacePath: (project, id) => `/cache/work/${project}/${id}`,
-    async cli(argv, cwd) { calls.push({ argv, cwd }); if (argv[0] === options.failCommand) throw new Error(`${argv[0]} refused`); },
+    async cli(argv, cwd, callOptions) { calls.push({ argv, cwd, options: callOptions }); if (argv[0] === options.failCommand) throw new Error(`${argv[0]} refused`); },
     async reset() { calls.push({ reset: true }); },
     async head() { return ++reads === 1 ? "before" : options.head ?? "before"; },
     async isAncestor() { return true; },
@@ -96,6 +96,7 @@ test("a build that ends in a provider limit is released, with no failure and not
   assert.equal(state.taskFailure, false);
   assert.equal(runOutcome(state), null);
   assert.equal(released(calls).length, 1);
+  assert.equal(released(calls)[0].options.providerLimit, true);
   assert.match(released(calls)[0].argv.at(-1), /^opencode usage limit until 2026-10-10T13:30:00.000Z: usage limit reached$/);
   assert.ok(!calls.some((c) => c.argv?.[0] === "finish"));
   assert.ok(logs.some((l) => l.startsWith("released:")));
@@ -185,7 +186,7 @@ test("a plan job that ends in a provider limit is released, with no failure and 
     identityRefusals() { return []; },
     log: (s) => logs.push(s), stopped: () => false, env: {}, ownerTokens: () => [], now: () => NOW,
     workspacePath: () => { const dir = join(root, "t7"); mkdirSync(dir, { recursive: true }); return dir; },
-    async cli(argv) { calls.push({ argv }); }, async reset() {},
+    async cli(argv, cwd, options) { calls.push({ argv, options }); }, async reset() {},
     async brief() { return { file: join(root, "brief.txt") }; },
     async jobBrief() { return { text: "SERVER BRIEF" }; },
     async postPlan() { calls.push({ posted: true }); return { valid: true, hash: "h" }; },
@@ -200,6 +201,7 @@ test("a plan job that ends in a provider limit is released, with no failure and 
   assert.equal(runOutcome(state), null);
   assert.ok(!calls.some((c) => c.posted));
   assert.equal(calls.filter((c) => c.argv?.[0] === "release").length, 1, "the plan job goes back in the queue");
+  assert.equal(released(calls)[0].options.providerLimit, true);
   assert.ok(!existsSync(planFilePath(join(root, "t7"))));
 });
 
@@ -258,7 +260,7 @@ function loop(t, { harnessFor, tasks, step = 10 * MIN, polls = 4, file, start = 
         identityRefusals() { return []; },
         log: (s) => seen.logs.push(s), env: {}, ownerTokens: () => [],
         async cli(argv) { if (argv[0] === "release") seen.released.push(argv[1]); if (argv[0] === "finish") seen.finished.push(argv[1]); },
-        async reset() {}, async head() { return seen.served.length % 2 ? "after" : "before"; },
+        async prepareSubmission() {}, async reset() {}, async head() { return seen.served.length % 2 ? "after" : "before"; },
         async isAncestor() { return true; },
         async brief() { return { file: "/b" }; }, async removeBrief() {}, async dataHome() { return { dir: "/d" }; }, async removeDataHome() {},
         async harness(argv) {
@@ -368,4 +370,51 @@ test("the pauses are per runner: another runner's file does not pause this one",
   await two.done;
   assert.deepEqual(two.seen.offers[0].agents, ["opencode", "claude-code"]);
   assert.equal(two.seen.served.length, 1);
+});
+
+test("a provider limit while resolving current main before submission preserves the commit and releases the claim", async () => {
+  const { io, calls } = buildFixture({ head: "committed", result: { code: 0, output: "built" } });
+  io.prepareSubmission = async (assignment, cwd, resolve) => {
+    io.harness = async () => limited({ resetAt: resetIn(90 * MIN) });
+    await resolve({ state: "conflicts", mainHead: "c".repeat(40), files: ["src/a.ts"] });
+  };
+  const state = await runTask(build, config, "home:studio", io);
+  assert.equal(state.providerLimit?.harness, "opencode");
+  assert.equal(state.taskFailure, false);
+  assert.equal(runOutcome(state), null);
+  assert.equal(released(calls)[0].options.providerLimit, true);
+  assert.ok(!calls.some((c) => c.argv?.[0] === "finish"));
+  assert.equal(calls.filter((c) => c.reset).length, 1);
+});
+
+test("the runner sends structured limit releases with its credential directly to the API", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-limit-api-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configFile = join(dir, "runner.json");
+  writeFileSync(configFile, JSON.stringify(config));
+  const requests = [];
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    requests.push({ url, options, body: JSON.parse(options.body) });
+    return Response.json({ state: "open" });
+  });
+  const { io } = buildFixture();
+  delete io.cli;
+  let polls = 0;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: configFile }, {
+    credential: "runner-credential", now: () => NOW, limitFile: join(dir, "limits.json"),
+    api: { server: () => "https://atelier.test", I: (project, id) => `/projects/${project}/items/${id}` },
+    workspacePath: io.workspacePath, taskIO: io,
+    executeChild: async (argv) => {
+      assert.equal(argv[2], "claim", "the release stays in the runner");
+      return { code: 0, output: "", stderr: "" };
+    },
+    queue: async () => { if (++polls > 1) process.emit("SIGTERM"); return polls === 1 ? [build] : []; },
+    wait: async () => {},
+  });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, `https://atelier.test/api/projects/atelier/items/${build.item.id}/release`);
+  assert.equal(requests[0].options.headers.authorization, "Bearer runner-credential");
+  assert.equal(requests[0].options.headers["x-atelier-actor"], build.actor);
+  assert.equal(requests[0].body.providerLimit, true);
+  assert.match(requests[0].body.note, /usage limit until/);
 });

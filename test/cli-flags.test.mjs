@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { noProjectMessage, parseArgs, unregisteredMessage } from "../cli/atelier.mjs";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 // How the CLI reads its flags. A switch (--approve, --cancel, --json,
 // --sandbox-only) never takes the word after it, so an item id written after
@@ -112,6 +113,8 @@ const CHANGES = {
 const detail = (id) => ({ item: item(id), policy: { checks: ["exit 0"], protected: [], sandboxOnly: false }, gate: { ready: true, blockers: [] }, evidence: [], reviews: [], events: [], acceptanceProtected: [] });
 globalThis.fetch = async (url, options = {}) => {
   const path = new URL(url).pathname, method = options.method ?? "GET";
+  // The capability check before new, edit, init, review and merge (t458) reads the version.
+  if (path === "/api/version") return Response.json({ capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
   const body = options.body ? JSON.parse(options.body) : undefined;
   appendFileSync(${JSON.stringify(log)}, JSON.stringify({ method, path, body, actor: options.headers?.["x-atelier-actor"] ?? null }) + "\\n");
   let data = {};
@@ -121,7 +124,9 @@ globalThis.fetch = async (url, options = {}) => {
   else if (path === "/api/inbox") data = [];
   else if (m) {
     const rest = m[1] ?? "";
-    const project = { name: "demo", title: "Demo", repo: "demo", policy: { checks: body?.checks ?? ["exit 0"], protected: body?.protected ?? [], eligible: [], refuseOverlap: body?.refuseOverlap ?? false, sandboxOnly: body?.sandboxOnly ?? false } };
+    // t394: the stub records a model-policy switch as the server does, stamped with who and when.
+    const familyMode = body?.singleFamily !== undefined ? { familyMode: { single: body.singleFamily || null, by: "owner", at: "2026-10-09T10:00:00.000Z" } } : {};
+    const project = { name: "demo", title: "Demo", repo: "demo", policy: { checks: body?.checks ?? ["exit 0"], protected: body?.protected ?? [], eligible: [], refuseOverlap: body?.refuseOverlap ?? false, sandboxOnly: body?.sandboxOnly ?? false, ...familyMode } };
     if (rest === "standing") data = { project: { name: "demo", title: "Demo" }, generatedAt: "2026-10-09T12:34:56Z", live: [], waiting: [], merged: [] };
     else if (rest === "" && method === "GET") data = { project, items: [item("t1"), item("t2")], events: [] };
     else if (rest === "" && method === "PUT") data = { project, baseline: { remote: BASELINE, token: "fake-baseline-token", defaultBranch: "main" } };
@@ -400,6 +405,39 @@ test("init sends a switch as true or false, as it was written, and refuses any o
   assert.deepEqual(f.requests(), []);
 });
 
+// t394: init --single-family COMPANY sends the company, --cross-family sends
+// null, neither sends nothing, both together are refused, and the answer's
+// mode is printed with who switched and when.
+test("init sends --single-family as the company and --cross-family as null, prints the mode, and refuses both at once", (t) => {
+  const f = fixture(t);
+  const sent = (argv) => {
+    f.clear();
+    const r = f.run(f.checkout, ["init", ...argv]);
+    assert.equal(r.status, 0, r.stderr);
+    const put = f.requests().find((q) => q.method === "PUT");
+    return { singleFamily: put.body.singleFamily, has: "singleFamily" in put.body, stdout: r.stdout };
+  };
+  const single = sent(["--single-family", "anthropic"]);
+  assert.equal(single.singleFamily, "anthropic");
+  assert.match(single.stdout, /^Models:     single-family, anthropic: building and reviewing use anthropic models only, and a review counts from a different anthropic model than every contributor \(set by owner at 2026-10-09T10:00:00\.000Z\)$/m);
+  const cross = sent(["--cross-family"]);
+  assert.equal(cross.singleFamily, null);
+  assert.ok(cross.has);
+  assert.match(cross.stdout, /^Models:     cross-family, the default: a protected change needs approval from a model of another company than every contributor \(set by owner at 2026-10-09T10:00:00\.000Z\)$/m);
+  const none = sent([]);
+  assert.equal(none.has, false);
+  assert.match(none.stdout, /^Models:     cross-family, the default: a protected change needs approval from a model of another company than every contributor$/m);
+  f.clear();
+  const bare = f.run(f.checkout, ["init", "--single-family"]);
+  assert.equal(bare.status, 1);
+  assert.match(bare.stderr, /--single-family needs a company: atelier init --single-family anthropic/);
+  assert.deepEqual(f.requests(), []);
+  const both = f.run(f.checkout, ["init", "--single-family", "anthropic", "--cross-family"]);
+  assert.equal(both.status, 1);
+  assert.match(both.stderr, /--single-family and --cross-family contradict each other; give one of them/);
+  assert.deepEqual(f.requests(), []);
+});
+
 test("a flag the command does not take, or a stray --, is refused before any request", (t) => {
   const f = fixture(t);
   for (const [argv, message] of [
@@ -442,6 +480,13 @@ test("ls --json and status --json print each item with its times, for Observator
       { id: "t2", title: "Task t2", state: "submitted", owner: "codex/test", head: f.head, ...TIMES },
     ],
     overlaps: [],
+    // The waiting rule's placement (src/attention.ts): nothing waits on the
+    // owner, and both submitted tasks are in review.
+    attention: {
+      owner: [],
+      pipeline: [{ id: "t1", title: "Task t1", stage: "submitted", notices: [] }, { id: "t2", title: "Task t2", stage: "submitted", notices: [] }],
+      unknown: [],
+    },
     mergedByOverride: [],
   }]);
 
@@ -460,7 +505,7 @@ test("new and edit send the framing as lists and a line, block sends its reason,
   // A field not given is not sent, so the server keeps what the item has.
   const plain = f.run(f.checkout, ["new", "Plain", "--project", "demo"]);
   assert.equal(plain.status, 0, plain.stderr);
-  assert.deepEqual(f.requests().map((q) => q.body), [{ title: "Plain", scope: [] }]);
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => q.body), [{ title: "Plain", scope: [] }]);
   f.clear();
   for (const [argv, message] of [
     [["new", "Title", "--non-goal", "", "--project", "demo"], /--non-goal needs text: atelier new --non-goal "TEXT", once per entry/],
@@ -550,13 +595,13 @@ test("new sends a title, a brief and repeatable criteria; one long string alone 
   const f = fixture(t);
   const made = f.run(f.checkout, ["new", "Short titles", "--brief", "The whole task.", "--accept", "Lists show it", "--accept", "The page shows the brief", "--project", "demo"]);
   assert.equal(made.status, 0, made.stderr);
-  assert.deepEqual(f.requests().map((q) => q.body), [{ title: "Short titles", scope: [], brief: "The whole task.", accept: ["Lists show it", "The page shows the brief"] }]);
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => q.body), [{ title: "Short titles", scope: [], brief: "The whole task.", accept: ["Lists show it", "The page shows the brief"] }]);
   assert.equal(made.stdout, "t9  Short titles\nAcceptance criterion 1: Lists show it\nAcceptance criterion 2: The page shows the brief\n\n" + POINTER);
   f.clear();
   const long = "word ".repeat(30).trim();
   const derived = f.run(f.checkout, ["new", long, "--project", "demo"]);
   assert.equal(derived.status, 0, derived.stderr);
-  assert.deepEqual(f.requests().map((q) => q.body), [{ title: long, scope: [] }]);
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => q.body), [{ title: long, scope: [] }]);
   assert.equal(derived.stdout, 't9  Derived title\nThe text is longer than a title, so it is kept as the brief and the title is its first clause; change it with atelier edit t9 --title "TEXT".\n\n' + POINTER);
   f.clear();
   for (const [argv, message] of [

@@ -94,7 +94,8 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
 // integration, handoff or owner privileges. review-skip is a runner's own
 // word, not a review: it says the runner will not serve a review job it was
 // offered (t353), and the gateway takes it only for such a job, as it takes
-// a run report (assertRunnerReport).
+// a run report (assertRunnerReport). run-skip is its word that it gives up a
+// build or plan job it was offered (t420), taken the same way.
 export function runnerRoute(method: string, parts: string[], body: Record<string, unknown> = {}): boolean {
   if (parts.length === 1) return method === "GET" && parts[0] === "config" || method === "POST" && ["queue", "runs"].includes(parts[0]);
   if (parts[0] !== "projects" || !parts[1]) return false;
@@ -103,9 +104,27 @@ export function runnerRoute(method: string, parts: string[], body: Record<string
   if (parts[2] !== "items" || !/^t[0-9]+$/.test(parts[3])) return false;
   if (["read-token", "base-token"].includes(parts[4]) && body.scope === "write") return false;
   if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "job-brief", "diff"].includes(parts[4]) || parts.length === 6 && ["sandbox", "logs", "diffs"].includes(parts[4]);
-  return method === "POST" && parts.length === 5 && ["claim", "read-token", "base-token", "push", "evidence", "sandbox", "submit", "plan", "release", "review-skip"].includes(parts[4]);
+  return method === "POST" && parts.length === 5 && ["claim", "read-token", "base-token", "push", "evidence", "sandbox", "submit", "plan", "release", "review-skip", "run-skip"].includes(parts[4]);
 }
 
 export function runnerDenied(token: AgentToken): RuleError {
   return new RuleError("runner_forbidden", `runner ${token.runner} (token ${token.id}) is not authorized for this operation`, 403);
+}
+
+// Dedicated CLI exits carry the exact state through nested finish steps.
+// Neither accepted, integrated nor blocked means the task is terminal.
+export const TERMINAL_TASK_EXITS = { merged: 5, abandoned: 6 } as const;
+
+export function runnerTaskTerminal(id: string, state: keyof typeof TERMINAL_TASK_EXITS): RuleError {
+  return new RuleError("task_terminal", `${id} is ${state === "abandoned" ? "closed" : state} (state: ${state})`, 409);
+}
+
+// The exit a CLI command ends with when the server's answer is task_terminal:
+// the exact state's exit, read back from the detail runnerTaskTerminal wrote,
+// so claim, push and every step of finish carry the state to the runner. Null
+// for any other answer, which keeps its own exit (1, or 3 for a refused claim).
+export function terminalTaskExit(answer: { error?: unknown; detail?: unknown }): number | null {
+  if (answer.error !== "task_terminal") return null;
+  const state = /\(state: ([a-z]+)\)$/.exec(String(answer.detail ?? ""))?.[1];
+  return state && Object.hasOwn(TERMINAL_TASK_EXITS, state) ? TERMINAL_TASK_EXITS[state as keyof typeof TERMINAL_TASK_EXITS] : null;
 }

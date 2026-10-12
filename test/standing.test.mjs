@@ -13,7 +13,7 @@ const standing = (over = {}) => ({
   project: { name: "demo", title: "Demo project", repo: "demo" },
   generatedAt: "2026-10-05T10:46:12.000Z",
   live: [{ id: "t1", title: "Held task", state: "claimed", owner: "claude-code/opus-5.5", since: "2026-10-05T09:00:00.000Z" }],
-  waiting: [{ id: "t2", title: "Ready one", kind: "accept", reason: "all checks observed passing at this head", brief: { verdict: "accept", line: "1 of 1 required checks passed at this revision and nothing blocks it." } }],
+  waiting: [{ id: "t2", title: "Ready one", call: "accept", sentence: "Accept the revision, whose required checks all passed at its head.", href: "/p/demo/t2", command: "atelier land t2 --reviewer H/M --project demo", why: "all checks observed passing at this head", brief: { verdict: "accept", line: "1 of 1 required checks passed at this revision and nothing blocks it." } }],
   queued: [{ id: "t3", title: "Queued one", to: "home", agent: "codex", model: "gpt-6", by: "pavi", at: "2026-10-05T08:00:00.000Z", note: "Keep it small" }],
   merged: [{ id: "t0", title: "Earlier", at: "2026-10-04T11:00:00.000Z", commit: "abcdef0123456789", line: "Fixed the thing" }],
   handoffs: [{ id: "t1", title: "Held task", from: "codex/gpt-6", to: "claude-code/opus-5.5", note: "Tests are in test/x", at: "2026-10-05T09:00:00.000Z" }],
@@ -22,23 +22,36 @@ const standing = (over = {}) => ({
 });
 
 test("the text is one line per item under plain headings, and says what each part is", () => {
-  const out = formatStanding(standing(), "PAVI").split("\n");
+  const out = formatStanding(standing(), "PAVI", "https://a.test").split("\n");
   assert.equal(out[0], "Demo project (demo) as of 2026-10-05 10:46 UTC, from Atelier's record");
   assert.ok(out.includes("  t1  claimed  held by claude-code/opus-5.5 since 2026-10-05 09:00 UTC  Held task"));
   assert.ok(out.includes("Waiting on PAVI:"));
-  assert.ok(out.includes("  t2  accept  Ready one  all checks observed passing at this head  brief, accept: 1 of 1 required checks passed at this revision and nothing blocks it."));
+  assert.ok(out.includes("  t2  accept  Ready one  Accept the revision, whose required checks all passed at its head.  https://a.test/p/demo/t2  why: all checks observed passing at this head  brief, accept: 1 of 1 required checks passed at this revision and nothing blocks it.  next: atelier land t2 --reviewer H/M --project demo"));
   assert.ok(out.includes("  t3  for home codex/gpt-6  Queued one  note: Keep it small"));
   assert.ok(out.includes("  t0  2026-10-04 11:00 UTC  abcdef01  Earlier  summary: Fixed the thing"));
   assert.ok(out.includes("  t1  codex/gpt-6 to claude-code/opus-5.5, 2026-10-05 09:00 UTC  Tests are in test/x"));
   assert.equal(out.filter((l) => /^\s+t\d/.test(l)).length, 5);
 });
 
+test("a waiting line says what to do and links it; the pipeline and overlapping scopes are counted, not listed", () => {
+  const out = formatStanding(standing({
+    waiting: [{ id: "t4", title: "Blocked", call: "unblock", sentence: "Settle what blocks it, then unblock it so it goes on.", href: "/p/demo/t4", command: "atelier unblock t4 --project demo", why: "blocked by a/b: keys", brief: null }],
+    pipeline: [{ stage: "submitted", count: 3 }, { stage: "building", count: 2 }],
+    overlaps: [["t5", "t6"], ["t5", "t7"]],
+  }), "PAVI").split("\n");
+  assert.ok(out.includes("  t4  unblock  Blocked  Settle what blocks it, then unblock it so it goes on.  /p/demo/t4  why: blocked by a/b: keys  next: atelier unblock t4 --project demo"));
+  assert.ok(out.includes("In the pipeline: 5 tasks: 3 in review, 2 building; none waits on PAVI."));
+  assert.ok(out.includes("Overlapping scopes: 2 pairs; nothing waits on PAVI. The JSON lists them."));
+  assert.ok(!out.some((l) => l.includes("t5")), "no overlapping pair is listed inline");
+});
+
+// A standing from a server before t504 carries kind and reason, no call.
 test("a waiting line keeps the inbox's reason, so a stale task and an overlap say what to do", () => {
   const out = formatStanding(standing({ waiting: [
     { id: "t4", title: "Stale", kind: "stale", kinds: ["stale"], reason: "claude-code/opus-5.5 has not pushed for 14h; hand it off or release it", brief: { verdict: "wait", line: "The task is in progress and has not been submitted for a decision." } },
     { id: "t5", title: "Overlap", kind: "overlap", kinds: ["accept", "overlap"], reason: "all checks observed passing; scope overlaps t9 (codex/gpt-6)", brief: null },
   ] })).split("\n");
-  assert.ok(out.includes("  t4  stale  Stale  claude-code/opus-5.5 has not pushed for 14h; hand it off or release it  brief, wait: The task is in progress and has not been submitted for a decision."));
+  assert.ok(out.includes("  t4  stale  Stale  claude-code/opus-5.5 has not pushed for 14h; hand it off or release it  brief, wait: The task is in progress and has not been submitted for a decision.  next: atelier release t4 --project demo"));
   assert.ok(out.includes("  t5  overlap  Overlap  all checks observed passing; scope overlaps t9 (codex/gpt-6)"));
 });
 
@@ -124,7 +137,8 @@ async function run(t, setup, argv, env = {}) {
     let status = 200, body;
     if (agent && !agentRoute(req.method, parts)) { status = 403; body = { error: "owner_token_required", detail: `${req.method} ${req.url} needs the owner token` }; }
     else if (req.url === "/api/config") body = { actor: "codex/gpt-6-astra", ownerActor: "owner" };
-    else if (req.url.endsWith("/standing")) body = standing();
+    else if (req.url.endsWith("/standing")) body = state.standing ?? standing();
+    else if (req.url === "/api/projects/demo") body = { project: { policy: state.policy ?? { checks: [], protected: [] } } };
     else if (req.url.endsWith("/baseline-head")) body = { head: git(dir, "--git-dir", bare, "rev-parse", "refs/heads/main") };
     else { status = 404; body = { error: "unexpected", detail: `${req.method} ${req.url}` }; }
     res.writeHead(status, { "content-type": "application/json" });
@@ -134,7 +148,7 @@ async function run(t, setup, argv, env = {}) {
   t.after(() => server.close());
   writeFileSync(join(dir, "config.json"), JSON.stringify({ server: "x", owner: "owner", projects: { demo: { path: checkout, branch: "main", ...state.project } } }));
   const child = spawn(process.execPath, [cli, ...(argv ?? ["status", "--project", "demo"])], {
-    cwd: dir, env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: join(dir, "cache"), ATELIER_TOKEN: "test-token", ATELIER_ACTOR: "owner", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}`, ...env },
+    cwd: dir, env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: join(dir, "cache"), ATELIER_TOKEN: "test-token", ATELIER_ACTOR: "owner", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}`, ...state.env, ...env },
   });
   let output = ""; child.stdout.on("data", (s) => output += s); child.stderr.on("data", (s) => output += s);
   const status = await new Promise((done) => child.on("close", done));
@@ -152,6 +166,47 @@ test("status --project --json prints the standing record and the checkout line f
   assert.equal(read.checkout.split("\n").length, 1);
 });
 
+for (const json of [false, true]) test(`status --project reports instruction disagreements${json ? " in JSON" : " in text"} for an agent`, async (t) => {
+  const r = await run(t, ({ checkout }) => {
+    writeFileSync(join(checkout, "AGENTS.md"), "# Rules\nReview is optional for non-authority changes.\n");
+    return { policy: { checks: [], protected: [], execution: {
+      allowed_classes: ["coordinated"], direct: { enabled: false, allowed_path_patterns: [] }, protected_path_patterns: [],
+    } } };
+  }, ["status", "--project", "demo", ...(json ? ["--json"] : [])], { ATELIER_TOKEN: "atl_agent-token", ATELIER_ACTOR: "codex/gpt-6-astra" });
+  assert.equal(r.status, 0, r.output);
+  const text = json ? JSON.parse(r.output).mismatches.join("\n") : r.output;
+  assert.match(text, /AGENTS\.md:2 calls review optional/);
+  assert.match(text, /a coordinated change needs a review from a different model than every contributor/);
+  assert.ok(r.seen.includes("GET /api/projects/demo"));
+  assert.ok(r.seen.every((request) => request.startsWith("GET ")));
+});
+
+for (const failed of ["tasks", "notices"]) {
+  const partial = [`The project's ${failed} could not be read, so what waits on you there is unknown.`];
+  const setup = () => ({ standing: standing({ live: [], waiting: [], queued: [], merged: [], handoffs: [], partial }) });
+  for (const json of [false, true]) {
+    test(`status --brief${json ? " --json" : ""} preserves a failed ${failed} read`, async (t) => {
+      const r = await run(t, setup, ["status", "--project", "demo", "--brief", ...(json ? ["--json"] : [])]);
+      assert.equal(r.status, 0, r.output);
+      const out = json ? JSON.parse(r.output).brief.join("\n") : r.output;
+      assert.ok(out.includes(partial[0]), out);
+      assert.match(out, /counts cover only what was read/);
+      assert.match(out, /Waiting on the owner: nothing known; more may be waiting\./);
+      assert.ok(!out.includes("Waiting on the owner: nothing."));
+    });
+    test(`status --project${json ? " --json" : ""} preserves a failed ${failed} read`, async (t) => {
+      const r = await run(t, setup, ["status", "--project", "demo", ...(json ? ["--json"] : [])]);
+      assert.equal(r.status, 0, r.output);
+      if (json) assert.deepEqual(JSON.parse(r.output).project.partial, partial);
+      else {
+        assert.ok(r.output.includes(partial[0]), r.output);
+        assert.match(r.output, /shown in the part read/);
+        assert.ok(!r.output.includes("Nothing is held, waiting, queued or recently merged."));
+      }
+    });
+  }
+}
+
 test("status --project prints where it stands and says the checkout is in step, reading only", async (t) => {
   const r = await run(t, () => null);
   assert.equal(r.status, 0, r.output);
@@ -160,14 +215,14 @@ test("status --project prints where it stands and says the checkout is in step, 
   assert.match(r.output, /Waiting on /);
   assert.match(r.output, /\nCheckout: in step\. main @ [0-9a-f]{8} holds the baseline's head [0-9a-f]{8}\.(?:\n|$)/);
   // The baseline's head is read from the server; no read token is minted.
-  assert.deepEqual(r.seen, ["GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head"]);
+  assert.deepEqual(r.seen, ["GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head", "GET /api/projects/demo"]);
 });
 
 test("status --project with an agent token reads the baseline's head through a route the allowlist admits", async (t) => {
   const r = await run(t, () => null, undefined, { ATELIER_TOKEN: "atl_agent-token", ATELIER_ACTOR: "codex/gpt-6-astra" });
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /\nCheckout: in step\. main @ [0-9a-f]{8} holds the baseline's head [0-9a-f]{8}\.(?:\n|$)/);
-  assert.deepEqual(r.seen, ["GET /api/config", "GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head"]);
+  assert.deepEqual(r.seen, ["GET /api/config", "GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head", "GET /api/projects/demo"]);
 });
 
 test("status --project says the checkout is out of step when the baseline has moved on", async (t) => {
@@ -264,4 +319,34 @@ test("each check is one line with its class and the paths it applies to, flatten
     "  xcodebuild build  read-only, from ControlPlane: capability app-build is local-read-only; applies only when the change touches App/**, project.yml",
     "  ./check.sh forged  undeclared: still run",
   ]);
+});
+
+
+test("status includes local runners and task processes in text and project JSON without arguments", async (t) => {
+  const setup = ({ dir }) => {
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    const ps = "100 1 01:00 /usr/bin/node /x/cli/atelier.mjs runner --name home:test --config PRIVATE\n101 100 00:30 codex exec SECRET PROMPT\n";
+    const lsof = `p101\nccodex\nn${dir}/cache/work/demo/t7\n`;
+    for (const [name, output] of [["ps", ps], ["lsof", lsof]]) {
+      const expected = name === "ps" ? ["-axo", "pid=,ppid=,etime=,args="] : ["-a", "-d", "cwd", "-Fpcn"];
+      const real = name === "ps" ? "/bin/ps" : "/usr/sbin/lsof";
+      writeFileSync(join(bin, name), `#!${process.execPath}
+const args = process.argv.slice(2);
+if (JSON.stringify(args) === ${JSON.stringify(JSON.stringify(expected))}) process.stdout.write(${JSON.stringify(output)});
+else process.exit(require("node:child_process").spawnSync(${JSON.stringify(real)}, args, { stdio: "inherit" }).status ?? 1);
+`, { mode: 0o755 });
+    }
+    return { env: { PATH: `${bin}:${process.env.PATH}` } };
+  };
+  const text = await run(t, setup);
+  assert.equal(text.status, 0, text.output);
+  assert.match(text.output, /runner home:test  pid 100  up 1m  working on t7/);
+  assert.match(text.output, /demo\/t7  codex pid 101 up 30s/);
+  const json = await run(t, setup, ["status", "--project", "demo", "--json"]);
+  assert.equal(json.status, 0, json.output);
+  const processes = JSON.parse(json.output).processes;
+  assert.deepEqual(processes.runners, [{ pid: 100, name: "home:test", age: "1m", tasks: ["t7"] }]);
+  assert.deepEqual(processes.agents, [{ pid: 101, command: "codex", age: "30s", project: "demo", id: "t7" }]);
+  for (const output of [text.output, json.output]) assert.doesNotMatch(output, /PRIVATE|SECRET|--config|codex exec/);
 });

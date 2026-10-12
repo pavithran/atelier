@@ -52,7 +52,8 @@ test("the receipt prints the whole story in the order the ledger recorded it", (
   const [rejected, finding, verdict] = lines.slice(8, 11);
   assert.match(rejected, /rejected by opencode\/glm-5\.3 at aaaaaaaa: One blocking defect$/);
   assert.equal(finding, " ".repeat(22) + "1. blocking src/parser.ts:12 Drops the last row");
-  assert.equal(verdict, " ".repeat(22) + "owner's verdict: fixed. Fixed in the second head");
+  // The verdict's event number, which atelier defect --contradicts names (t440).
+  assert.equal(verdict, " ".repeat(22) + "owner's verdict: fixed. Fixed in the second head (event 8)");
   assert.match(lines.at(-5), /head bbbbbbbb pushed by/);
   assert.match(lines.at(-3), /approved by opencode\/glm-5\.3 at bbbbbbbb/);
   assert.match(lines.at(-2), /merged by pavi: bbbbbbbb accepted, merge commit 5af22431 on the baseline$/);
@@ -104,6 +105,21 @@ test("a verdict on a finding the reviews do not show is its own line, and the pa
   assert.match(text, /finding verdict by pavi: fixed on blocking src\/parser\.ts:12 of the review at aaaaaaaa \(#1\)/);
   const paged = { item: detail().item, events: Array.from({ length: EVENT_PAGE }, (_, i) => ev(i + 1, "2026-10-07T20:27:11.752Z", "pavi", "land.lease", {})) };
   assert.match(receiptText("atelier", "t1", paged).split("\n")[1], new RegExp(`The whole story from the ledger, in order \\(the newest ${EVENT_PAGE} events; the record may hold more\\)\\.`));
+});
+
+// t440: a verdict, an override and a defect's link name the declared acting model and
+// the verdict's event, so the owner can see who judged and what was contradicted.
+test("the receipt names the acting model and the verdict a defect contradicts", () => {
+  const story = { item: detail().item, events: [
+    ev(4, "2026-10-08T10:00:00.000Z", "pavi", "item.defect", { head: B, note: "Still drops the last row", contradicts: { event: 2, finding: 1, head: A, verdict: "refuted" } }),
+    ev(3, "2026-10-07T21:20:00.000Z", "pavi", "review.overridden", { head: B, reason: "No other family", acting: "claude-code/opus-5.5" }),
+    ev(2, "2026-10-07T21:10:00.000Z", "pavi", "review.finding", { head: A, index: 1, verdict: "refuted", note: "", by: "opencode/glm-5.3", acting: "claude-code/opus-5.5", finding: { file: "src/parser.ts", line: 12, severity: "blocking", text: "Drops the last row" } }),
+    ev(1, "2026-10-07T21:02:06.195Z", "opencode/glm-5.3", "review.rejected", { note: "One blocking defect", head: A, findings: [{ file: "src/parser.ts", line: 12, severity: "blocking", text: "Drops the last row" }] }),
+  ] };
+  const lines = receiptText("atelier", "t1", story).split("\n").slice(2);
+  assert.equal(lines[2], " ".repeat(22) + "owner's verdict: refuted (event 2, declared acting claude-code/opus-5.5)");
+  assert.match(lines[3], /independent review overridden by pavi, declared acting claude-code\/opus-5\.5: No other family$/);
+  assert.match(lines[4], /defect recorded by pavi at bbbbbbbb: Still drops the last row; contradicts the refuted verdict, event 2, on finding 1$/);
 });
 
 test("the receipt as JSON carries the item's events in the ledger's order, whole", () => {

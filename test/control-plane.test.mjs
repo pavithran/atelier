@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { controlPlaneChanges, mergePolicyDecision, readControlPlane, refreshControlPlane } from "../cli/atelier.mjs";
 import { acceptancePolicy, mergeContext } from "../src/control-plane.ts";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 const agents = { codex: { available: true, eligible_roles: ["executor"], preferred_roles: ["planner"] }, claude: { available: false, eligible_roles: ["assessor"] } };
 const execution = { allowed_classes: ["direct", "protected"], direct: { enabled: true, allowed_path_patterns: ["docs/**"] }, protected_path_patterns: ["src/security/**"] };
@@ -246,6 +247,8 @@ if (process.env.TEST_NO_IDENTITY) delete policy.commitIdentity;
 acceptancePolicy ??= { protected: acceptanceProtected };
 if (process.env.TEST_SUBMITTED) state = 'submitted';
 globalThis.fetch = async (url, options) => {
+  // The capability check before merge and init (t458) reads the version.
+  if (new URL(url).pathname === '/api/version') return Response.json({ capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
   appendFileSync(${JSON.stringify(log)}, JSON.stringify({ url, method: options.method, body: options.body }) + '\\n');
   if (options.method === 'PUT') policy = { ...policy, ...JSON.parse(options.body) };
   if (options.method === 'PUT' && process.env.TEST_PUT_FAIL) return new Response('unavailable', { status: 500 });

@@ -8,6 +8,7 @@ import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import { planText, type PlanView } from "../src/plans/show.ts";
 import { REVIEW_CLAIM_TIMEOUT_MS } from "../src/review/needed.ts";
+import { reportLimits, stuckReport } from "../src/stuck/report.ts";
 import { reviewBrief } from "../src/review/brief.ts";
 import { criteriaHash } from "../src/criteria.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.ts";
@@ -1030,6 +1031,49 @@ it("a review claim carries the owner's standing decisions, and the brief marks t
   expect(reviewBrief({ need: none.need!, item: none.item, events: none.events, plan: none.plan, owner: none.owner, decisions: none.decisions })).toContain("The project owner has recorded no standing decision for this project.");
 });
 
+// t490: an ad-hoc check (atelier check -- CMD) outside the required checks is
+// shown to the reviewer, apart from the required ones, on the plan's request
+// and on the claim, and a brief rebuilt from the claim is the one the request
+// fingerprinted. A record at another head is not carried.
+it("carries ad-hoc observed checks at the head into the plan's request and the claim, with one brief hash", async () => {
+  const L = await setup("review-evidence");
+  const { partId } = await approved(L);
+  const head = "a".repeat(40);
+  const actor = `${(await L.item(partId)).dispatch!.agent}/${(await L.item(partId)).dispatch!.model}`;
+  await L.claim(partId, actor, RUNNER);
+  await L.setFork(partId, `fork-${partId}`, H0, actor);
+  const earlier = "b".repeat(40);
+  await L.recordPush(partId, actor, earlier, earlier);
+  await L.addEvidence({ ...observed(partId, earlier), claim: "npm run verify:stale", passed: false });
+  await L.recordPush(partId, actor, head, head);
+  await L.addEvidence(observed(partId, head));
+  await L.addEvidence({ ...observed(partId, head), claim: "npm run verify:visual", passed: true, outputTail: "visual: 12 of 12 match", where: "runner" });
+  // Two runs recorded in the same millisecond, a pass and then a failure:
+  // the recording sequence makes the failure the latest.
+  const tie = "2026-10-11T03:00:00.000Z";
+  await L.addEvidence({ ...observed(partId, head), claim: "npm run verify:tie", passed: true, outputTail: "tie passed", where: "runner", at: tie });
+  await L.addEvidence({ ...observed(partId, head), claim: "npm run verify:tie", passed: false, outputTail: "tie failed", where: "runner", at: tie });
+  await L.submit(partId, actor);
+  const requested = (await events(L, partId)).find((e) => e.kind === "review.requested")!;
+  const claim = await L.claimReview(partId, GPT, RUNNER) as unknown as ReviewClaim;
+  expect(claim.evidence.required).toEqual(["npm test"]);
+  expect(claim.evidence.runs.map((e) => e.claim)).toEqual(["npm test", "npm run verify:visual", "npm run verify:tie", "npm run verify:tie"]);
+  const seqs = claim.evidence.runs.map((e) => e.seq!);
+  expect(seqs.every((n, i) => Number.isInteger(n) && (i === 0 || n > seqs[i - 1]))).toBe(true);
+  const brief = reviewBrief({
+    need: claim.need!, item: claim.item, events: claim.events, plan: claim.plan, diff: null, owner: claim.owner,
+    bar: claim.reviewBar, decisions: claim.decisions, evidence: claim.evidence,
+  });
+  const supplemental = brief.slice(brief.indexOf("### Supplemental runs"), brief.indexOf("## The builder's summary"));
+  expect(supplemental).toContain("- `npm run verify:visual`: passed. Observed, on aaaaaaaa itself");
+  expect(supplemental).toContain("visual: 12 of 12 match");
+  expect(brief).not.toContain("verify:stale");
+  expect(supplemental).toContain("- `npm run verify:tie`: failed. Observed");
+  expect(supplemental).toContain(`- Superseded: \`npm run verify:tie\` passed here at ${tie}, recorded by \`owner\`;`);
+  let h = 0xcbf29ce484222325n;
+  for (let i = 0; i < brief.length; i++) h = ((h ^ BigInt(brief.charCodeAt(i))) * 0x100000001b3n) & 0xffffffffffffffffn;
+  expect(requested.data.briefHash).toBe(h.toString(16).padStart(16, "0"));
+});
 it("t485: concurrent claims, same-name restart and same-actor takeover fence every old operation", async () => {
   const L = await setup("review-generations");
   const { partId } = await approved(L);
@@ -1099,6 +1143,45 @@ it("a forty-minute review renews on server time; writes coalesce and connectivit
       const [recovered] = instance.reviewWaiting();
       expect(recovered.request).not.toBe(claim.request);
       expect(recovered.dispatch).toMatchObject({ agent: "codex", model: "gpt-6-astra" });
+    } finally { Date.now = realNow; }
+  });
+});
+
+it("the stuck report ages a renewed review from its claim, and a re-claim after expiry from the new claim", async () => {
+  const L = await setup("review-stuck-age");
+  const { partId } = await approved(L);
+  await submitPart(L, partId, "a".repeat(40));
+  const claim = await L.claimReview(partId, GPT, RUNNER, true) as unknown as ReviewClaim;
+  await runInDurableObject(L, async (instance: Ledger, state: DurableObjectState) => {
+    const stamp = (id: number) => state.storage.sql.exec(`SELECT claimedAt FROM review_requests WHERE id = ?`, id).one().claimedAt as string;
+    const start = Date.parse(stamp(claim.request));
+    const realNow = Date.now;
+    let now = start;
+    Date.now = () => now;
+    const reviews = () => stuckReport("review-stuck-age", "https://atelier.test", new Date(now), reportLimits(), instance.stuckSnapshot(), [], [], [])
+      .entries.filter((e) => e.kind === "review");
+    try {
+      // Renewed every 30 s for three hours: still claimed, last renewed now.
+      for (let elapsed = 30_000; elapsed <= 3 * 3_600_000; elapsed += 30_000) {
+        now = start + elapsed;
+        instance.renewReview(partId, GPT, claim.request);
+      }
+      expect(Date.parse(stamp(claim.request))).toBe(now);
+      expect(reviews()).toMatchObject([{ subject: partId, since: new Date(start).toISOString(), ageMs: 3 * 3_600_000 }]);
+      // The claim lapses; a re-claim is a new request that ages from itself.
+      now += 300_001;
+      const [waiting] = instance.reviewWaiting();
+      expect(waiting.request).not.toBe(claim.request);
+      const again = await instance.claimReview(partId, GPT, RUNNER, true) as unknown as ReviewClaim;
+      const restart = now;
+      for (let elapsed = 30_000; elapsed <= 2 * 3_600_000; elapsed += 30_000) {
+        now = restart + elapsed;
+        instance.renewReview(partId, GPT, again.request);
+      }
+      expect(reviews()).toEqual([]);
+      now += 1;
+      instance.renewReview(partId, GPT, again.request);
+      expect(reviews()).toMatchObject([{ subject: partId, reason: `review request ${again.request} claimed by ${GPT}`, since: new Date(restart).toISOString() }]);
     } finally { Date.now = realNow; }
   });
 });

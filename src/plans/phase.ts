@@ -99,10 +99,6 @@ interface PartHistory {
   waiting: boolean;     // an open dispatch with no claim or release after it
 }
 
-// The note the runner releases a claim with when a provider's usage limit ended
-// the run (cli/runner.mjs, limitNote).
-const PROVIDER_LIMIT_NOTE = /^\S+ usage limit until \d{4}-\d\d-\d\dT/;
-
 // Replays the events by sequence to count each part's attempts and to say
 // whether a part is waiting on an open dispatch. A release after a commit (a
 // `push.observed` in that attempt) is a failed finish; a release with none is
@@ -141,7 +137,7 @@ function histories(events: readonly LedgerEvent[]): Map<string, PartHistory> {
       case "item.released":
         // A provider's usage limit (t487) pauses the runner's harness; the
         // release it leaves is no attempt, so the same builder resumes.
-        if (holder.get(key) && !PROVIDER_LIMIT_NOTE.test(String(event.data.note ?? ""))) h.attempts.push({ actor: holder.get(key)!, outcome: committed.get(key) ? "failed" : "give-up" });
+        if (holder.get(key) && event.data.providerLimit !== true) h.attempts.push({ actor: holder.get(key)!, outcome: committed.get(key) ? "failed" : "give-up" });
         holder.set(key, null);
         committed.set(key, false);
         h.waiting = false;
