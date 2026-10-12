@@ -27,7 +27,6 @@ import { assertLength, NOTE_MAX, TEXT_CONTROLS } from "./text.ts";
 import { notificationRequest, usageAlertRequest } from "./notify.ts";
 import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, coreOrphans, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, overrideDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type OrphanedClaim, type RunnerKind, type RunnerOffer, type RunnerPolls, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
-import { REPORT_DEFAULTS } from "./stuck/report.ts";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
 import { matchServed, SERVED, SERVED_LIMIT, type ServedMatch, type ServedSelection } from "./models/served.ts";
@@ -1843,12 +1842,13 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // The runners' last polls as the queue route last read them from the
-  // index (t537): a claim whose runner has not polled for longer than the
-  // stuck report's runnerPollMinutes holds no other dispatch (orphanedBy in
+  // index (t537): a claim whose runner has not polled for longer than
+  // RUNNER_GONE_MS holds no other dispatch (orphanedBy in
   // src/dispatch/rules.ts). The project's ledger cannot read the index
-  // while it answers, so the copy is kept here, rewritten as polls change
-  // it; none kept, as before the first poll since t537, orphans nothing.
-  private recordRunnerPolls(polls: readonly { runner: string; at: string }[]): void {
+  // while it answers, so the copy is kept here, rewritten as polls and a
+  // busy runner's heartbeats change it; none kept, as before the first poll
+  // since t537, orphans nothing.
+  recordRunnerPolls(polls: readonly { runner: string; at: string }[]): void {
     const value = JSON.stringify(polls.map(({ runner, at }) => ({ runner, at })));
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'runner-polls'`).toArray()[0];
     if (row?.value !== value) this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('runner-polls', ?)`, value);
@@ -1856,7 +1856,7 @@ export class Ledger extends DurableObject<Env> {
 
   private runnerPolls(): RunnerPolls | null {
     const polls = this.runnerMeta<{ runner: string; at: string }[]>("runner-polls");
-    return polls ? { polls, limitMs: REPORT_DEFAULTS.runnerPollMinutes * 60_000 } : null;
+    return polls ? { polls } : null;
   }
 
   // What runners said of dispatched tasks they pass by, by item id (t420):
