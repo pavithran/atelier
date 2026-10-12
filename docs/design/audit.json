@@ -1,6 +1,6 @@
 {
   "generatedBy": "scripts/design/capture.ts",
-  "source": "d3528348e7c91c6fbacb3474bc4c87120fcbdcaf",
+  "source": "d9c0db28714d50aaa2a4d62600fe02666168c671",
   "sourceDirty": false,
   "browser": {
     "name": "chromium",
@@ -60,7 +60,7 @@
     "public-showcase": {
       "390": {
         "structure": {
-          "height": 6888,
+          "height": 6943,
           "navs": [
             {
               "label": "Elsewhere",
@@ -92,7 +92,7 @@
       },
       "1440": {
         "structure": {
-          "height": 4515,
+          "height": 4411,
           "navs": [
             {
               "label": "Elsewhere",
@@ -124,13 +124,13 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 192,
+            "checked": 188,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 192,
+            "checked": 188,
             "unknown": 0,
             "failures": []
           }
@@ -141,10 +141,10 @@
             "tag": "a",
             "label": "Atelier",
             "href": "/",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
-            "width": 88,
-            "height": 36
+            "width": 68,
+            "height": 26
           },
           "noIndicator": [
             {
@@ -153,8 +153,8 @@
               "href": null,
               "indicator": null,
               "onScreen": true,
-              "width": 18,
-              "height": 18
+              "width": 19,
+              "height": 19
             },
             {
               "tag": "g",
@@ -162,8 +162,8 @@
               "href": null,
               "indicator": null,
               "onScreen": true,
-              "width": 18,
-              "height": 18
+              "width": 19,
+              "height": 19
             },
             {
               "tag": "g",
@@ -171,8 +171,8 @@
               "href": null,
               "indicator": null,
               "onScreen": true,
-              "width": 18,
-              "height": 18
+              "width": 19,
+              "height": 19
             },
             {
               "tag": "g",
@@ -180,8 +180,8 @@
               "href": null,
               "indicator": null,
               "onScreen": true,
-              "width": 18,
-              "height": 18
+              "width": 19,
+              "height": 19
             }
           ],
           "offScreen": []
