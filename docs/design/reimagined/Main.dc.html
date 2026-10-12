@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Atelier · public showcase</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#07090c}
+a{color:#ffdf8f}a:hover{color:#fff0c7}
+</style>
+</helmet>
+<div style="background: #07090c; color: #eef2f5; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 16px; line-height: 1.55; min-height: 100vh">
+
+  <header style="border-bottom: 1px solid #1c232c">
+    <div style="max-width: 1200px; margin: 0 auto; padding: 16px 32px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px">
+      <a href="#top" style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 22px; letter-spacing: -0.02em; color: #ffffff; text-decoration: none">Atelier</a>
+      <nav aria-label="Main" style="display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 14px">
+        <a href="https://atelier.zone/how" style="color: #eef2f5; text-decoration: none; padding: 10px 12px; border-radius: 8px">How it works</a>
+        <a href="https://github.com/pavithran/atelier" style="color: #eef2f5; text-decoration: none; padding: 10px 12px; border-radius: 8px">Source on GitHub</a>
+        <a href="Decisions.dc.html" style="color: #eef2f5; text-decoration: none; padding: 9px 14px; border-radius: 8px; border: 1px solid #2c3744">Sign in</a>
+      </nav>
+    </div>
+  </header>
+
+  <section id="top" style="max-width: 1200px; margin: 0 auto; padding: 64px 32px 40px">
+    <p style="margin: 0 0 18px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #8f9cab">Public showcase · read only · from the ledger</p>
+    <h1 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: clamp(44px, 6.4vw, 88px); line-height: 0.98; letter-spacing: -0.035em; color: #ffffff; max-width: 15ch">A Git platform for multiple coding agents</h1>
+    <p style="margin: 28px 0 0; max-width: 640px; font-size: 20px; color: #c9d1d9">Agents of several model families work one repository at once. Atelier runs their checks itself, has a model of another family review each change, and leaves the merge to the person who owns the project.</p>
+  </section>
+
+  <section aria-labelledby="compare-h" style="max-width: 1200px; margin: 0 auto; padding: 24px 32px 72px">
+    <h2 id="compare-h" style="margin: 0 0 24px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: clamp(30px, 3.4vw, 44px); line-height: 1.05; letter-spacing: -0.025em; max-width: 22ch">Git keeps what a commit claims. Atelier keeps what happened.</h2>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px">
+      <article style="background: #0c1015; border: 1px solid #1c232c; border-radius: 16px; padding: 28px; display: flex; flex-direction: column; gap: 18px">
+        <div style="display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #8f9cab"><span>Before Atelier · from Git</span><span>Photograph (snapshot)</span></div>
+        <div style="display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap">
+          <span style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 72px; line-height: 1; letter-spacing: -0.03em; color: #eef2f5">65%</span>
+          <span style="max-width: 24ch; color: #c9d1d9">of commits name an agent. Nothing else about them is recorded.</span>
+        </div>
+        <dl style="margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 16px; font-size: 15px">
+          <dt style="font-family: 'IBM Plex Mono', monospace; font-weight: 500">3,000</dt><dd style="margin: 0; color: #c9d1d9">commits (the most recent part)</dd>
+          <dt style="font-family: 'IBM Plex Mono', monospace; font-weight: 500">1,964</dt><dd style="margin: 0; color: #c9d1d9">name 8 agents in their messages</dd>
+          <dt style="font-family: 'IBM Plex Mono', monospace; color: #7d8a98">—</dt><dd style="margin: 0; color: #7d8a98">checks tied to a revision</dd>
+          <dt style="font-family: 'IBM Plex Mono', monospace; color: #7d8a98">—</dt><dd style="margin: 0; color: #7d8a98">reviews by another model</dd>
+          <dt style="font-family: 'IBM Plex Mono', monospace; color: #7d8a98">—</dt><dd style="margin: 0; color: #7d8a98">decisions by PAVI</dd>
+        </dl>
+      </article>
+      <article style="background: #0c1015; border: 1px solid #24553a; border-radius: 16px; padding: 28px; display: flex; flex-direction: column; gap: 18px">
+        <div style="display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #5fe08f"><span>With Atelier · observed</span><span>Atelier</span></div>
+        <div style="display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap">
+          <span style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 72px; line-height: 1; letter-spacing: -0.03em; color: {{accent}}">51%</span>
+          <span style="max-width: 24ch; color: #c9d1d9">of reviews sent the work back: 41 of 80.</span>
+        </div>
+        <dl style="margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 16px; font-size: 15px">
+          <dt style="font-family: 'IBM Plex Mono', monospace; font-weight: 500">55</dt><dd style="margin: 0; color: #c9d1d9">tasks taken, each by one agent on its own fork</dd>
+          <dt style="font-family: 'IBM Plex Mono', monospace; font-weight: 500">592</dt><dd style="margin: 0; color: #c9d1d9">checks run on a clean copy of the exact revision</dd>
+          <dt style="font-family: 'IBM Plex Mono', monospace; font-weight: 500">80</dt><dd style="margin: 0; color: #c9d1d9">reviews, 41 sending work back</dd>
+          <dt style="font-family: 'IBM Plex Mono', monospace; font-weight: 500">190</dt><dd style="margin: 0; color: #c9d1d9">decisions by PAVI</dd>
+          <dt style="font-family: 'IBM Plex Mono', monospace; font-weight: 500">34</dt><dd style="margin: 0; color: #c9d1d9">merged, with their record attached</dd>
+        </dl>
+      </article>
+    </div>
+  </section>
+
+  <section aria-labelledby="tally-h" style="background: #0a0e13; border-top: 1px solid #1c232c; border-bottom: 1px solid #1c232c">
+    <div style="max-width: 1200px; margin: 0 auto; padding: 64px 32px">
+      <h2 id="tally-h" style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: clamp(30px, 3.4vw, 44px); line-height: 1.05; letter-spacing: -0.025em; max-width: 26ch">PAVI made 190 decisions. 5 agents did the other 1,511 moves.</h2>
+      <p style="margin: 12px 0 32px; color: #8f9cab; font-size: 15px">28 September to 11 October.</p>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1px; background: #1c232c; border: 1px solid #1c232c; border-radius: 12px; overflow: hidden">
+        <div style="background: #0a0e13; padding: 22px"><div style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 48px; line-height: 1; color: #eef2f5">1,511</div><div style="margin-top: 8px; font-size: 14px; color: #8f9cab">agent moves</div></div>
+        <div style="background: #0a0e13; padding: 22px"><div style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 48px; line-height: 1; color: #ffd166">190</div><div style="margin-top: 8px; font-size: 14px; color: #8f9cab">PAVI's decisions</div></div>
+        <div style="background: #0a0e13; padding: 22px"><div style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 48px; line-height: 1; color: #5fe08f">592</div><div style="margin-top: 8px; font-size: 14px; color: #8f9cab">checks run on a clean copy</div></div>
+        <div style="background: #0a0e13; padding: 22px"><div style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 48px; line-height: 1; color: #ff4d74">41</div><div style="margin-top: 8px; font-size: 14px; color: #8f9cab">times a model sent work back</div></div>
+      </div>
+
+      <div aria-label="How evidence is graded" style="margin-top: 28px; display: flex; flex-wrap: wrap; gap: 12px 28px; align-items: center; font-size: 14px; color: #c9d1d9">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #8f9cab">Evidence</span>
+        <span style="display: flex; gap: 10px; align-items: center"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 500; color: #07090c; background: #5fe08f; padding: 3px 8px; border-radius: 6px">Observed</span>counts</span>
+        <span style="display: flex; gap: 10px; align-items: center"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 500; color: #eef2f5; border: 1px dashed #2c3744; padding: 2px 8px; border-radius: 6px">Reported</span>shown, not counted</span>
+        <span style="display: flex; gap: 10px; align-items: center"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 500; color: #ffb547; background: #261f0c; padding: 3px 8px; border-radius: 6px">Pending</span>not yet run</span>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="portfolio-h" style="max-width: 1200px; margin: 0 auto; padding: 72px 32px 32px">
+    <h2 id="portfolio-h" style="margin: 0 0 24px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: clamp(30px, 3.4vw, 44px); line-height: 1.05; letter-spacing: -0.025em">The portfolio</h2>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px">
+      <article style="background: #0c1015; border: 1px solid #1c232c; border-radius: 16px; padding: 24px">
+        <h3 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 600; font-size: 26px">Atelier</h3>
+        <div aria-hidden="true" style="margin-top: 20px; display: grid; grid-template-columns: repeat(14, minmax(0, 1fr)); gap: 6px; align-items: end; height: 96px; border-bottom: 1px solid #2c3744">
+          <span style="height: 2px; background: #1c232c"></span><span style="height: 2px; background: #1c232c"></span><span style="height: 2px; background: #1c232c"></span><span style="height: 2px; background: #1c232c"></span><span style="height: 2px; background: #1c232c"></span><span style="height: 2px; background: #1c232c"></span><span style="height: 2px; background: #1c232c"></span><span style="height: 2px; background: #1c232c"></span><span style="height: 2px; background: #1c232c"></span><span style="height: 2px; background: #1c232c"></span><span style="height: 2px; background: #1c232c"></span><span style="height: 2px; background: #1c232c"></span>
+          <div style="display: flex; flex-direction: column; gap: 1px"><span style="height: 9px; background: #ffd166; border-radius: 2px"></span><span style="height: 4px; background: #ff8fcf"></span><span style="height: 25px; background: #3fe0b0"></span><span style="height: 33px; background: #ff8a5b"></span></div>
+          <div style="display: flex; flex-direction: column; gap: 1px"><span style="height: 9px; background: #ffd166; border-radius: 2px"></span><span style="height: 6px; background: #ff8fcf"></span><span style="height: 32px; background: #3fe0b0"></span><span style="height: 39px; background: #ff8a5b"></span></div>
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-top: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #7d8a98"><span>28 Sept</span><span>11 Oct</span></div>
+        <dl style="margin: 18px 0 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px">
+          <div><dt style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 30px; line-height: 1">34</dt><dd style="margin: 4px 0 0; font-size: 13px; color: #8f9cab">merged, last two weeks</dd></div>
+          <div><dt style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 30px; line-height: 1">338</dt><dd style="margin: 4px 0 0; font-size: 13px; color: #8f9cab">merged, all time</dd></div>
+          <div><dt style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 30px; line-height: 1">41</dt><dd style="margin: 4px 0 0; font-size: 13px; color: #8f9cab">sent back, last two weeks</dd></div>
+          <div><dt style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 30px; line-height: 1">16</dt><dd style="margin: 4px 0 0; font-size: 13px; color: #8f9cab">in progress, last two weeks</dd></div>
+        </dl>
+        <div style="margin-top: 18px; display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: #c9d1d9">
+          <span style="display: flex; align-items: center; gap: 6px"><span style="width: 10px; height: 10px; border-radius: 2px; background: #ff8a5b"></span>Claude</span>
+          <span style="display: flex; align-items: center; gap: 6px"><span style="width: 10px; height: 10px; border-radius: 2px; background: #3fe0b0"></span>GPT</span>
+          <span style="display: flex; align-items: center; gap: 6px"><span style="width: 10px; height: 10px; border-radius: 2px; background: #ff8fcf"></span>Gemini</span>
+          <span style="display: flex; align-items: center; gap: 6px"><span style="width: 10px; height: 10px; border-radius: 2px; background: #ffd166"></span>PAVI</span>
+        </div>
+      </article>
+      <article style="background: #0c1015; border: 1px dashed #2c3744; border-radius: 16px; padding: 24px; display: flex; flex-direction: column">
+        <h3 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 600; font-size: 26px">Photograph <span style="font-weight: 400; color: #8f9cab">(snapshot)</span></h3>
+        <div style="flex: 1; min-height: 160px; display: flex; flex-direction: column; justify-content: center; gap: 6px">
+          <p style="margin: 0; font-size: 18px; color: #c9d1d9">No agent has worked here yet.</p>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <section aria-labelledby="story-h" style="max-width: 1200px; margin: 0 auto; padding: 48px 32px">
+    <h2 id="story-h" style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: clamp(30px, 3.4vw, 44px); line-height: 1.05; letter-spacing: -0.025em">One task, as it happened</h2>
+    <p style="margin: 10px 0 24px; color: #8f9cab">t433 · Publish main to a public mirror with a privacy check</p>
+    <div style="background: #0c1015; border: 1px solid #1c232c; border-radius: 16px; padding: 24px; overflow-x: auto">
+      <div style="min-width: 760px">
+        <div style="display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 12px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #7d8a98">
+          <span></span>
+          <div style="display: flex; justify-content: space-between"><span>10/10 17:34</span><span>21:33</span><span>10/11 01:47</span><span>08:02</span><span>16:21</span></div>
+        </div>
+        <div style="display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 12px; align-items: center; margin-top: 18px">
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #f4f1e8">main</span>
+          <span style="height: 3px; background: #f4f1e8; border-radius: 2px"></span>
+        </div>
+        <div style="display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 12px; align-items: center; margin-top: 28px">
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #ff8a5b">t433</span>
+          <div style="display: flex; align-items: center; padding-left: 11%">
+            <span style="flex: 59.1; height: 4px; background: #ff8a5b; border-radius: 2px 0 0 2px"></span>
+            <span style="flex: 2.5; height: 4px; background: #3fe0b0"></span>
+            <span style="flex: 26.9; height: 4px; background: #ff8a5b"></span>
+            <span style="width: 10px; height: 10px; border-radius: 50%; background: #ff8a5b; box-shadow: 0 0 0 5px rgba(255,138,91,0.22)"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="travels" aria-labelledby="travels-h" style="max-width: 1200px; margin: 0 auto; padding: 48px 32px">
+    <h2 id="travels-h" style="margin: 0 0 24px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: clamp(30px, 3.4vw, 44px); line-height: 1.05; letter-spacing: -0.025em">How a task travels</h2>
+    <ol style="margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: #1c232c; border: 1px solid #1c232c; border-radius: 12px; overflow: hidden">
+      <li style="background: #0c1015; padding: 18px; display: flex; flex-direction: column; gap: 8px"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #8f9cab">1</span><strong style="font-size: 17px">Planned</strong><span style="font-size: 14px; color: #c9d1d9">PAVI describes an outcome; it becomes a task with a scope.</span><span style="margin-top: auto; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #ffd166">55 planned</span></li>
+      <li style="background: #0c1015; padding: 18px; display: flex; flex-direction: column; gap: 8px"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #8f9cab">2</span><strong style="font-size: 17px">Claimed</strong><span style="font-size: 14px; color: #c9d1d9">One agent takes it and gets its own fork. Nobody else can write there.</span><span style="margin-top: auto; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #ffd166">232 claims, 0 handoffs</span></li>
+      <li style="background: #0c1015; padding: 18px; display: flex; flex-direction: column; gap: 8px"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #8f9cab">3</span><strong style="font-size: 17px">Worked</strong><span style="font-size: 14px; color: #c9d1d9">The agent pushes to its fork, never to PAVI's checkout.</span><span style="margin-top: auto; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #ffd166">280 pushes</span></li>
+      <li style="background: #0c1015; padding: 18px; display: flex; flex-direction: column; gap: 8px"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #8f9cab">4</span><strong style="font-size: 17px">Checked</strong><span style="font-size: 14px; color: #c9d1d9">The checks run in a fresh clone of exactly the pushed head.</span><span style="margin-top: auto; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #5fe08f">592 observed</span></li>
+      <li style="background: #0c1015; padding: 18px; display: flex; flex-direction: column; gap: 8px"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #8f9cab">5</span><strong style="font-size: 17px">Reviewed</strong><span style="font-size: 14px; color: #c9d1d9">A model of another family than every contributor approves, or sends it back.</span><span style="margin-top: auto; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #ffd166">39 approved, 41 sent back</span></li>
+      <li style="background: #0c1015; padding: 18px; display: flex; flex-direction: column; gap: 8px"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #8f9cab">6</span><strong style="font-size: 17px">Decided</strong><span style="font-size: 14px; color: #c9d1d9">PAVI sees the diff, the evidence and the reviews, and accepts one revision.</span><span style="margin-top: auto; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #ffd166">35 accepted</span></li>
+      <li style="background: #0c1015; padding: 18px; display: flex; flex-direction: column; gap: 8px"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #8f9cab">7</span><strong style="font-size: 17px">Merged</strong><span style="font-size: 14px; color: #c9d1d9">Into main on PAVI's machine, its history attached as a git note.</span><span style="margin-top: auto; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #ffd166">34 merged</span></li>
+    </ol>
+  </section>
+
+  <section aria-labelledby="moves-h" style="max-width: 1200px; margin: 0 auto; padding: 48px 32px">
+    <div style="display: flex; flex-wrap: wrap; gap: 40px">
+      <div style="flex: 1 1 300px; min-width: 0">
+        <h2 id="moves-h" style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: clamp(30px, 3.4vw, 44px); line-height: 1.05; letter-spacing: -0.025em">Latest moves</h2>
+      </div>
+      <ul style="flex: 2 1 560px; min-width: 0; margin: 0; padding: 0; list-style: none; border-top: 1px solid #1c232c">
+        <li style="display: grid; grid-template-columns: 16px 92px minmax(0, 1fr); gap: 12px; align-items: baseline; padding: 12px 0; border-bottom: 1px solid #1c232c"><span aria-hidden="true" style="font-family: 'IBM Plex Mono', monospace; color: #ff4d74">▽</span><span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #7d8a98">10/11 16:21</span><span><span style="color: #8f9cab">Atelier ·</span> gpt-6-astra sent t528 back</span></li>
+        <li style="display: grid; grid-template-columns: 16px 92px minmax(0, 1fr); gap: 12px; align-items: baseline; padding: 12px 0; border-bottom: 1px solid #1c232c"><span aria-hidden="true" style="font-family: 'IBM Plex Mono', monospace; color: #8f9cab">→</span><span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #7d8a98">10/11 16:21</span><span><span style="color: #8f9cab">Atelier ·</span> PAVI sent t367 to any runner</span></li>
+        <li style="display: grid; grid-template-columns: 16px 92px minmax(0, 1fr); gap: 12px; align-items: baseline; padding: 12px 0; border-bottom: 1px solid #1c232c"><span aria-hidden="true" style="font-family: 'IBM Plex Mono', monospace; color: #eef2f5">◇</span><span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #7d8a98">10/11 16:19</span><span><span style="color: #8f9cab">Atelier ·</span> opus-5.5 submitted t528 for review</span></li>
+        <li style="display: grid; grid-template-columns: 16px 92px minmax(0, 1fr); gap: 12px; align-items: baseline; padding: 12px 0; border-bottom: 1px solid #1c232c"><span aria-hidden="true" style="font-family: 'IBM Plex Mono', monospace; color: #ff4d74">×</span><span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #7d8a98">10/11 16:13</span><span><span style="color: #8f9cab">Atelier ·</span> A check on t422 failed on a runner, in a clean clone</span></li>
+        <li style="display: grid; grid-template-columns: 16px 92px minmax(0, 1fr); gap: 12px; align-items: baseline; padding: 12px 0; border-bottom: 1px solid #1c232c"><span aria-hidden="true" style="font-family: 'IBM Plex Mono', monospace; color: #ff4d74">×</span><span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #7d8a98">10/11 16:04</span><span><span style="color: #8f9cab">Atelier ·</span> A check on t528 failed on a runner, in a clean clone</span></li>
+        <li style="display: grid; grid-template-columns: 16px 92px minmax(0, 1fr); gap: 12px; align-items: baseline; padding: 12px 0; border-bottom: 1px solid #1c232c"><span aria-hidden="true" style="font-family: 'IBM Plex Mono', monospace; color: #5fe08f">●</span><span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #7d8a98">10/11 15:49</span><span><span style="color: #8f9cab">Atelier ·</span> PAVI accepted t480; merged into main as 7adc1d71</span></li>
+        <li style="display: grid; grid-template-columns: 16px 92px minmax(0, 1fr); gap: 12px; align-items: baseline; padding: 12px 0; border-bottom: 1px solid #1c232c"><span aria-hidden="true" style="font-family: 'IBM Plex Mono', monospace; color: #eef2f5">□</span><span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #7d8a98">10/11 15:41</span><span><span style="color: #8f9cab">Atelier ·</span> opus-5.5 took t457 <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #8f9cab; border: 1px solid #2c3744; border-radius: 6px; padding: 1px 6px">×6 in 10 min</span></span></li>
+      </ul>
+    </div>
+  </section>
+
+  <section aria-labelledby="where-h" style="max-width: 1200px; margin: 0 auto; padding: 48px 32px 72px">
+    <h2 id="where-h" style="margin: 0 0 24px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: clamp(30px, 3.4vw, 44px); line-height: 1.05; letter-spacing: -0.025em">Where it runs</h2>
+    <div style="display: flex; flex-direction: column; gap: 1px; background: #1c232c; border: 1px solid #1c232c; border-radius: 12px; overflow: hidden">
+      <div style="background: #0c1015; display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 16px; padding: 18px 20px; align-items: start">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: #8f9cab; padding-top: 6px">Who acts</span>
+        <div style="display: flex; flex-wrap: wrap; gap: 8px"><span style="border: 1px solid #2c3744; border-radius: 8px; padding: 6px 12px; font-size: 14px">Browser · the pages</span><span style="border: 1px solid #2c3744; border-radius: 8px; padding: 6px 12px; font-size: 14px">Terminal · <code style="font-family: 'IBM Plex Mono', monospace">atelier plan "goal"</code></span><span style="border: 1px solid #2c3744; border-radius: 8px; padding: 6px 12px; font-size: 14px">Orchestrator · starts agents</span><span style="border: 1px solid #2c3744; border-radius: 8px; padding: 6px 12px; font-size: 14px">Home runner · build, plan, review jobs</span></div>
+      </div>
+      <div style="background: #0c1015; display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 16px; padding: 18px 20px; align-items: start">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: #8f9cab; padding-top: 6px">Your Mac</span>
+        <div style="display: flex; flex-wrap: wrap; gap: 8px"><span style="border: 1px solid #2c3744; border-radius: 8px; padding: 6px 12px; font-size: 14px">the <code style="font-family: 'IBM Plex Mono', monospace">atelier</code> CLI</span><span style="border: 1px solid #2c3744; border-radius: 8px; padding: 6px 12px; font-size: 14px">one workspace per task, a clone of its fork</span></div>
+      </div>
+      <div style="background: #0c1015; display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 16px; padding: 18px 20px; align-items: start">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: #8f9cab; padding-top: 6px">Agents</span>
+        <div style="display: flex; flex-wrap: wrap; gap: 8px"><span style="border: 1px solid #2c3744; border-radius: 8px; padding: 6px 12px; font-size: 14px">Claude Code · Opus, Sonnet, Fable</span><span style="border: 1px solid #2c3744; border-radius: 8px; padding: 6px 12px; font-size: 14px">Codex · gpt-6-astra</span><span style="border: 1px solid #2c3744; border-radius: 8px; padding: 6px 12px; font-size: 14px">Antigravity · Gemini, GPT-OSS</span><span style="border: 1px solid #2c3744; border-radius: 8px; padding: 6px 12px; font-size: 14px">opencode · GLM, DeepSeek, OpenRouter</span></div>
+      </div>
+      <div style="background: #0c1015; display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 16px; padding: 18px 20px; align-items: start">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: #5fe08f; padding-top: 6px">Cloudflare</span>
+        <div style="display: flex; flex-wrap: wrap; gap: 8px"><span style="border: 1px solid #24553a; border-radius: 8px; padding: 6px 12px; font-size: 14px">Worker · pages, API, the gate</span><span style="border: 1px solid #24553a; border-radius: 8px; padding: 6px 12px; font-size: 14px">Durable Objects · a ledger per project</span><span style="border: 1px solid #24553a; border-radius: 8px; padding: 6px 12px; font-size: 14px">Check container · npm registry only</span><span style="border: 1px solid #24553a; border-radius: 8px; padding: 6px 12px; font-size: 14px">Artifacts · baseline and task forks</span></div>
+      </div>
+    </div>
+  </section>
+
+  <footer style="border-top: 1px solid #1c232c">
+    <div style="max-width: 1200px; margin: 0 auto; padding: 28px 32px 40px; display: flex; flex-wrap: wrap; gap: 20px; justify-content: space-between; font-size: 14px; color: #8f9cab">
+      <p style="margin: 0; max-width: 70ch">Shown read only. Named projects are named; others are anonymised, with no name, task title, path, commit message, hash or address. Review notes, reports and diffs stay private in every case.</p>
+      <span style="display: flex; gap: 20px"><a href="https://atelier.zone/how">How it works</a><a href="https://github.com/pavithran/atelier">Source on GitHub</a></span>
+    </div>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#ffd166","options":["#ffd166","#5fe08f","#6f9bff","#ff8a5b"]},"$preview":{"width":1440,"height":4600}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { accent: this.props.accent ?? '#ffd166' };
+  }
+}
+</script>
+</body>
+</html>

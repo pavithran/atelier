@@ -1,8 +1,9 @@
 /* Atelier's layout. Colours, faces, radii and durations are tokens from
-   theme.css, the portfolio design set's Night theme; light and dark follow
-   the device. Atelier adds only what the set has no role for: one colour per
-   family of agent, so a thread is seen to change hands, and the colour of
-   the main line. The family colours are drawn only in charts, lane threads
+   theme.css, the portfolio design set's Night theme; on the public pages
+   light and dark follow the device, and the owner's pages are Night.
+   Atelier adds only what the set has no role for: one colour per family of
+   agent, so a thread is seen to change hands, and the colour of the main
+   line. The family colours are drawn only in charts, lane threads
    and graph marks, and their legends. The three names after them only say
    which token plays which part here. */
 :root {
@@ -27,8 +28,9 @@
 }
 @media (prefers-color-scheme: light) {
   /* The same families, darkened to read as lines on warm paper, and as
-     AA text on their own bands (test/theme.test.ts). */
-  :root {
+     AA text on their own bands (test/theme.test.ts). The owner's pages
+     are Night only (data-scheme="night", bin/sync-theme). */
+  :root:not([data-scheme="night"]) {
     --m-anthropic: #983b18;
     --m-openai: #09654c;
     --m-zai: #2c50bb;
@@ -83,32 +85,49 @@ svg { flex-shrink: 0; }
 /* ── frame ─────────────────────────────────────────────────────────────── */
 .skip { position: fixed; top: -80px; left: var(--space-xl); z-index: 10; background: var(--sheet); padding: var(--space-md); }
 .skip:focus { top: var(--space-md); }
-.rail {
-  position: fixed; inset: 0 auto 0 0; width: var(--rail-w); padding: 32px 20px;
-  display: flex; flex-direction: column; background: var(--page); border-right: 1px solid var(--line);
-}
 .brand { font: 38px/1.2 var(--font-display); letter-spacing: -.035em; text-decoration: none; color: var(--text-bright); padding: 4px 10px 30px; }
-.rail nav { display: grid; gap: var(--space-sm); }
-.rail nav a {
-  display: flex; gap: 14px; align-items: center; padding: var(--space-md) 14px;
-  border-radius: var(--radius-small); color: var(--text); text-decoration: none;
+/* The owner's bar (docs/design/reimagined/, plan.md P1): one header in two
+   rows on the shell's ground. Row 1 is where in Atelier, its current item
+   on the selected ground; row 2, in a project only, is Project › page and the
+   five tabs, the current one underlined in gold. Every colour is a theme
+   token: shell, line, text, text-muted, inset, line-bright and signal. */
+.owner-bar { background: var(--shell); border-bottom: 1px solid var(--line); }
+.bar-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-xxl); padding: 10px 32px; }
+.bar-row + .bar-row { border-top: 1px solid var(--line); padding-block: 6px; }
+.owner-bar .brand { font: 800 22px/1.2 var(--font-display); letter-spacing: -.02em; padding: 0; }
+.bar-nav { display: flex; flex-wrap: wrap; gap: var(--space-xs); flex: 1 1 auto; }
+.bar-nav a { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 10px 12px; border-radius: var(--radius-small); color: var(--text); text-decoration: none; }
+.bar-nav a:hover { background: var(--inset); }
+.bar-nav a[aria-current] { background: var(--inset); color: var(--text-bright); }
+.badge { font: 500 12px/1.5 var(--font-mono); color: var(--on-accent); background: var(--signal); border-radius: var(--radius-pill); padding: 1px 7px; }
+.bar-menu { position: relative; }
+.bar-menu > summary { list-style: none; cursor: pointer; display: flex; align-items: center; min-height: 44px; padding: 10px 12px; border-radius: var(--radius-small); }
+.bar-menu > summary::-webkit-details-marker { display: none; }
+.bar-menu > summary::after { content: " ▾"; white-space: pre; }
+.bar-menu.switcher > summary { border: 1px solid var(--line-bright); color: var(--text); }
+.bar-menu.account > summary { color: var(--text-muted); }
+.bar-menu > summary:hover, .bar-menu[open] > summary { color: var(--text-bright); background: var(--inset); }
+.bar-menu > div {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 220px; max-width: min(360px, calc(100vw - 32px));
+  display: grid; gap: 2px; padding: 6px; background: var(--surface-raised); border: 1px solid var(--line-bright); border-radius: var(--radius-medium);
 }
-.rail nav a[aria-current] { background: var(--selection); color: var(--text-bright); }
-.rail nav a:hover { background: var(--inset); }
-/* The account menu holds the pages about the owner's own setup, under the
-   work navigation: closed it is one line, open it is two links. */
-.account { margin-top: var(--space-lg); }
-.account > summary { font-size: 13px; font-weight: 600; color: var(--text-muted); cursor: pointer; padding: var(--space-sm) 14px; min-height: 28px; }
-.account[open] > summary { color: var(--text-bright); }
-.account > div { display: grid; gap: 2px; margin: 4px 0 0 10px; }
-.account a { display: flex; gap: 14px; align-items: center; padding: 8px 14px; border-radius: var(--radius-small); color: var(--text); text-decoration: none; font-size: 14px; }
-.account a[aria-current] { background: var(--selection); color: var(--text-bright); }
-.account a:hover { background: var(--inset); }
-.rail-foot { margin-top: auto; display: grid; grid-template-columns: 36px 1fr; align-items: center; gap: var(--space-md); font-size: 14px; padding: var(--space-xxl) var(--space-sm) 0; }
-.avatar { border-radius: var(--radius-pill); background: var(--selection); width: 36px; height: 36px; display: grid; place-items: center; }
-.rail-foot p { grid-column: 1 / -1; color: var(--text-muted); margin: 4px 0; font-size: 13px; }
-.rail-foot .signout { grid-column: 1 / -1; margin-top: var(--space-sm); }
-main { margin-left: var(--rail-w); padding: 48px 32px 72px; min-height: 100dvh; max-width: 1920px; }
+.bar-menu > div a { display: flex; justify-content: space-between; gap: var(--space-md); padding: 10px 12px; border-radius: var(--radius-small); color: var(--text); text-decoration: none; overflow-wrap: anywhere; }
+.bar-menu > div a:hover, .bar-menu > div a[aria-current] { background: var(--inset); color: var(--text-bright); }
+.bar-menu .signout { padding: 6px 12px 4px; border-top: 1px solid var(--line); margin-top: 4px; }
+.owner-bar .live-note { order: 1; }
+.project-row .crumb { margin: 0; font-size: 14px; color: var(--text-muted); overflow-wrap: anywhere; }
+.project-row .crumb a { color: var(--text); text-decoration: none; }
+.project-row .crumb a:hover { text-decoration: underline; }
+.project-row nav { display: flex; flex-wrap: wrap; gap: 2px; }
+.project-row nav a { display: inline-flex; align-items: center; min-height: 44px; padding: 10px 12px; color: var(--text-muted); text-decoration: none; white-space: nowrap; }
+.project-row nav a:hover { color: var(--text); }
+/* The Tasks count is its own part for the live refresh; as a flex item its
+   leading space would collapse into "Tasks(3)". */
+.project-row nav a > [data-shell] { white-space: pre; }
+.project-row nav a[aria-current] { color: var(--text-bright); box-shadow: inset 0 -2px 0 var(--signal); }
+.project-row nav.held { border-left: 1px solid var(--line); padding-left: 8px; }
+.project-row nav.held a { font-size: 14px; }
+main { padding: 48px 32px 72px; min-height: 100dvh; max-width: 1920px; margin: 0 auto; }
 /* ── type ──────────────────────────────────────────────────────────────── */
 h1 { font: 56px/1.08 var(--font-display); letter-spacing: -.035em; color: var(--text-bright); margin: 0 0 var(--space-md); overflow-wrap: anywhere; }
 h2, h3, p { margin-top: 0; }
@@ -367,6 +386,9 @@ pre.diff span { display: block; padding: 0 14px; white-space: pre; }
 .page-width { max-width: 1120px; margin: 0 auto; }
 .breadcrumbs { font-size: 13px; color: var(--text-muted); margin: 0 0 26px; }
 .breadcrumbs a { color: var(--text-muted); }
+/* The bar's second row is the location now; a browsing page keeps its crumb
+   only where it leads back to a task whose fork it reads. */
+.repo .breadcrumbs:not(:has(a:nth-of-type(3))) { display: none; }
 .standalone { max-width: 920px; }
 .task-list li { border-bottom: 1px solid var(--line); }
 .task-list a { display: grid; grid-template-columns: minmax(0, 1fr) auto auto 20px; gap: var(--space-xl); align-items: center; padding: 22px 4px; text-decoration: none; color: var(--text); }
@@ -426,7 +448,7 @@ main:has(.login-backdrop) { overflow-x: clip; }
 }
 @media (max-width: 1180px) {
   :root { --rail-w: 176px; --bench-w: 220px; }
-  .rail { padding: 28px var(--space-md); }
+  .bar-row { padding-inline: 22px; }
   main { padding: 32px 22px; }
   .desk { grid-template-columns: minmax(260px, .8fr) minmax(0, 1.2fr); gap: 18px; }
   .decision-row { grid-template-columns: 44px minmax(0, 1fr); }
@@ -445,18 +467,22 @@ main:has(.login-backdrop) { overflow-x: clip; }
   .axis-labels { margin-left: 0; }
 }
 @media (max-width: 720px) {
-  .rail { position: static; width: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: var(--space-xl) var(--space-lg) var(--space-sm); }
-  .brand { padding: 0 0 var(--space-md); font-size: 32px; }
-  /* One row that scrolls sideways: the three destinations and the account
-     menu never wrap into a second block (finding 9). */
-  .rail nav { grid-auto-flow: column; grid-auto-columns: max-content; justify-content: start; gap: 2px; overflow-x: auto; }
-  .rail nav a { padding: 10px; gap: 6px; font-size: 14px; }
-  .rail nav a svg { display: none; }
-  .account { margin: var(--space-sm) 0 0; }
-  .account > div { grid-auto-flow: column; grid-auto-columns: max-content; margin: 2px 0 0; }
-  .account a { padding: 8px 10px; }
-  .rail-foot { display: none; }
-  main { margin-left: 0; padding: var(--space-xxl) var(--space-lg) 56px; }
+  /* The destinations stay one row beside the brand; the two menus stack
+     under them, open in the page's flow, and the tabs wrap rather than
+     scroll, so nothing on the page scrolls sideways. */
+  .bar-row { padding: 6px var(--space-lg); gap: 2px var(--space-sm); }
+  .owner-bar .brand { font-size: 20px; margin-right: 4px; }
+  .bar-nav { gap: 0; }
+  .bar-nav a, .bar-menu > summary { padding: 10px 8px; font-size: 14px; }
+  .bar-menu { flex: 1 1 40%; min-width: 0; }
+  .bar-menu > summary { overflow-wrap: anywhere; }
+  .bar-menu[open] { flex-basis: 100%; }
+  .bar-menu > div { position: static; max-width: none; margin: 4px 0; }
+  .owner-bar .live-note { order: 2; flex-basis: 100%; }
+  .project-row .crumb { flex-basis: 100%; font-size: 13px; padding: 4px 0 0; }
+  .project-row nav { margin-inline: -8px; }
+  .project-row nav a { padding: 10px 8px; font-size: 14px; }
+  main { padding: var(--space-xxl) var(--space-lg) 56px; }
   h1 { font-size: 40px; }
   .lead { font-size: 17px; }
   .review-sheet { padding: var(--space-xl) var(--space-lg); }
@@ -491,7 +517,6 @@ main:has(.login-backdrop) { overflow-x: clip; }
 /* ── display type and stage ─────────────────────────────────────────────────── */
 h1, .brand { font-weight: 800; letter-spacing: -.04em; }
 .review-header h2 { font-weight: 700; letter-spacing: -.02em; }
-.rail { background: var(--shell); }
 .review-sheet { background: radial-gradient(1000px 360px at 30% 0%, var(--inset) 0%, var(--sheet) 62%); }
 
 /* ── flow: the work as a graph ───────────────────────────────────────────── */
@@ -625,12 +650,11 @@ h1, .brand { font-weight: 800; letter-spacing: -.04em; }
 /* After a refresh the graph is drawn at rest; only a mark that was not there before arrives. While scrubbing, the script draws each step itself. */
 .graph.settled .draw, .graph.settled .pop, .graph.scrub .draw, .graph.scrub .pop, .graph.scrub .g-task.live .g-head { animation: none; }
 .graph.settled .pop.fresh { animation: arrive .9s ease-out both; }
-/* The recurring note sits at the rail's foot, a pulse and one word; the time
+/* The recurring note sits in the owner's bar, a pulse and one word; the time
    and the interval arrive on hover or focus (finding 11). A stale notice is
    different: the script puts it at the top of <main>, where it is seen. */
 .live-note { display: flex; align-items: center; gap: 8px; margin: 0; font: 12px/1.4 var(--font-mono); color: var(--text-muted); }
 .live-note .pulse { flex: none; }
-.rail-foot .live-note { grid-column: 1 / -1; margin: 4px 0 0; }
 .live-note .live-when { display: none; }
 .live-note:hover .live-when, .live-note:focus-within .live-when { display: inline; }
 main .live-note { margin: 0 0 12px; }
@@ -666,7 +690,7 @@ main .live-note { margin: 0 0 12px; }
 
 /* Glows belong to the dark stage; on paper the lines stand on their own. */
 @media (prefers-color-scheme: light) {
-  .g-lane, .g-head, .g-merge, .g-main { filter: none; }
+  :root:not([data-scheme="night"]) :is(.g-lane, .g-head, .g-merge, .g-main) { filter: none; }
 }
 
 /* ── repository browsing ─────────────────────────────────────────────────── */
@@ -710,7 +734,7 @@ main .live-note { margin: 0 0 12px; }
 .commit-head h2 { font: 700 26px/1.2 var(--font-display); margin: 0 0 8px; color: var(--text-bright); overflow-wrap: anywhere; }
 .commit-body { white-space: pre-wrap; font: 14px/1.6 var(--font-mono); color: var(--text-muted); margin: 0 0 10px; }
 
-/* ── showcase: the public page, without the signed-in rail ─────────────────── */
+/* ── showcase: the public page, without the owner's bar ────────────────────── */
 body.public { display: block; }
 .public-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--space-lg); max-width: 1240px; margin: 0 auto; padding: 18px 16px 0; }
 .public-bar .brand { padding: 0; font-size: 30px; }

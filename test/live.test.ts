@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { csp, decideRefresh, headsIn, LIVE_SCRIPT, newNonce } from "../src/live.ts";
+import { csp, decideRefresh, headsIn, LIVE_SCRIPT, newNonce, refreshShell } from "../src/live.ts";
 
 const H1 = "a".repeat(40), H2 = "b".repeat(40);
 const form = (head: string, verb = "accept") => `<form method="post" action="/ui/p/t1/${verb}"><input type="hidden" name="head" value="${head}"><button>Go</button></form>`;
@@ -61,6 +61,43 @@ test("the script carries those two functions as they are, decides before it swap
   assert.ok(LIVE_SCRIPT.includes("if (copy === last) return;"));
   assert.ok(LIVE_SCRIPT.includes("last = copy;"));
   assert.ok(!LIVE_SCRIPT.includes("fresh.innerHTML !== main.innerHTML"));
+});
+
+// A stand-in for a parsed page: its parts marked data-shell, by key.
+const doc = (parts: Record<string, string>) => {
+  const nodes = Object.entries(parts).map(([key, html]) => ({ key, innerHTML: html, getAttribute: (n: string) => (n === "data-shell" ? key : null) }));
+  return {
+    nodes,
+    querySelectorAll: (sel: string) => (sel === "[data-shell]" ? nodes : []),
+    querySelector: (sel: string) => nodes.find((n) => sel === `[data-shell="${n.key}"]`) ?? null,
+  };
+};
+const badge = (n: number) => ` <span class="badge"><span class="visually-hidden">, waiting on you: </span>${n}</span>`;
+
+test("every copy fetched brings the bar's counts up to date, outside <main> (gate finding 1)", () => {
+  // The Decisions badge, the switcher's list and the Tasks count follow the fetched copy.
+  const page = doc({ waiting: badge(2), projects: '<a href="/home">All projects</a>', tasks: " (3)" });
+  const fetched = doc({ waiting: badge(3), projects: '<a href="/home">All projects</a>', tasks: " (4)" });
+  assert.equal(refreshShell(page, fetched), 2);
+  assert.deepEqual(page.nodes.map((n) => n.innerHTML), [badge(3), '<a href="/home">All projects</a>', " (4)"]);
+  // Nothing waiting any more: the badge goes, it does not stay at its old number.
+  assert.equal(refreshShell(page, doc({ waiting: "", tasks: " (4)" })), 1);
+  assert.equal(page.nodes[0].innerHTML, "");
+  // A copy without a part (the bar could not be read) leaves the part as it is.
+  assert.equal(refreshShell(page, doc({})), 0);
+  assert.equal(page.nodes[2].innerHTML, " (4)");
+  // The script carries it, valid as it is, and runs it on every copy fetched,
+  // before the copy of <main> is compared, held or found stale.
+  assert.match(LIVE_SCRIPT, /function refreshShell\(page\s*,\s*fetched\s*\)/);
+  const src = LIVE_SCRIPT.slice(0, LIVE_SCRIPT.indexOf("(() => {"));
+  const copy = new Function(`${src}; return refreshShell;`)() as typeof refreshShell;
+  const again = doc({ waiting: badge(1) });
+  assert.equal(copy(again, doc({ waiting: badge(5) })), 1);
+  assert.equal(again.nodes[0].innerHTML, badge(5));
+  const at = LIVE_SCRIPT.indexOf("refreshShell(document, doc);");
+  assert.ok(at > -1);
+  assert.ok(at < LIVE_SCRIPT.indexOf("if (copy === last) return;"), "an unchanged <main> still updates the counts");
+  assert.ok(at < LIVE_SCRIPT.indexOf('if (what === "hold") return;'), "a held copy still updates the counts");
 });
 
 test("the policy admits only the fonts without a nonce, and only the nonced script with one", () => {
