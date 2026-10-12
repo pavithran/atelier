@@ -1,9 +1,18 @@
 // atelier push. Its forms, flags and help are declared in src/usage/commands/push.ts.
-import { I, actor, args, call, count, die, forkBranch, git, hasCommit, holds, itemArg, project, requireWorkspace, short, wsConfig } from "../atelier.mjs";
+import { I, OWNER, actor, args, call, count, die, forkBranch, git, hasCommit, holds, itemArg, project, requireWorkspace, short, serverVersion, wsConfig } from "../atelier.mjs";
+
+import { checkCapabilities, COMMAND_CAPABILITIES } from "../../src/route-level.ts";
 
 export default async function pushCommand() {
   const name = project(), id = itemArg(), as = await actor();
-  requireWorkspace("push", name, id, as);
+  // Keep the repository guard even when the owner ports an unclaimed task.
+  // The ledger authorizes the exception again when it observes the push.
+  let workspaceActor = as, ownerPort = false;
+  if (as === OWNER && wsConfig("project") === name && wsConfig("item") === id) {
+    const { item } = await call("GET", I(name, id), undefined, as);
+    if (item.owner === null && item.state === "open") { workspaceActor = wsConfig("actor"); ownerPort = true; }
+  }
+  requireWorkspace("push", name, id, workspaceActor);
   // A push to any branch but the one the fork's HEAD names lands where
   // Atelier never reads, so it is refused before anything is sent. When
   // origin does not name its branch, the push goes ahead and the
@@ -53,11 +62,35 @@ export default async function pushCommand() {
     }
     lease.push(`--force-with-lease=${branch}:${known}`);
   }
-  const pushArgs = ["push", "--quiet", "--recurse-submodules=no", ...lease, "origin", `HEAD:${branch}`];
-  if (!lease.length) git(pushArgs);
-  else {
-    const r = git(pushArgs, { allowFail: true });
-    if (r.status !== 0) die(`${id}'s fork no longer stands at ${short(known)}, the head Atelier recorded: something was pushed to it since. Run atelier update to take what it holds, then atelier push --force again. Nothing was pushed.\n${(r.stderr || r.stdout).trim()}`);
+  if (ownerPort) {
+    const check = checkCapabilities(await serverVersion(), COMMAND_CAPABILITIES.push);
+    if (!check.ok) die(check.message, check.kind === "unavailable" ? 4 : 1);
+  }
+  const credential = ownerPort ? await call("POST", `${I(name, id)}/owner-port-token`, {}, as) : null;
+  if (credential && credential.defaultBranch !== branch) die(`${id} fork branch changed; nothing was pushed`);
+  let credentialEnv;
+  if (credential) {
+    // A released workspace still includes its revoked, URL-scoped header.
+    // Git prefers that scope to a generic http.extraHeader. Reset its list
+    // and supply the fresh header at the same scope, for this process only.
+    const n = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? "", 10) || 0;
+    credentialEnv = { GIT_CONFIG_COUNT: String(n + 2),
+      [`GIT_CONFIG_KEY_${n}`]: `http.${credential.remote}.extraHeader`, [`GIT_CONFIG_VALUE_${n}`]: "",
+      [`GIT_CONFIG_KEY_${n + 1}`]: `http.${credential.remote}.extraHeader`, [`GIT_CONFIG_VALUE_${n + 1}`]: `Authorization: Bearer ${credential.token}` };
+  }
+  const pushArgs = ["push", "--quiet", "--recurse-submodules=no", ...lease, credential?.remote ?? "origin", `HEAD:${branch}`];
+  const r = git(pushArgs, { allowFail: true, token: credential?.token, env: credentialEnv });
+  if (r.status !== 0 || r.error) {
+    // Git's refusal says nothing about why the fork refused. A runner's
+    // workspace pushes through the Worker, which refuses the push once the
+    // task is merged or abandoned (src/runner-git.ts), so the task is read
+    // before the refusal is reported: a closed task answers task_terminal
+    // there, and the command ends with that state's exit (t476), not git's.
+    await call("GET", I(name, id), undefined, as);
+    let said = (r.stderr || r.stdout || r.error?.message || "").trim();
+    if (credential?.token) said = said.split(credential.token).join("[redacted]");
+    if (lease.length) die(`${id}'s fork no longer stands at ${short(known)}, the head Atelier recorded: something was pushed to it since. Run atelier update to take what it holds, then atelier push --force again. Nothing was pushed.\n${said}`);
+    die(`git ${pushArgs.join(" ")} failed:\n${said}`);
   }
   const item = await call("POST", `${I(name, id)}/push`, { head, ...(rebasedFrom ? { rebasedFrom } : {}) }, as);
   if (item.head !== head) die(`pushed ${short(head)} but Artifacts reports ${short(item.head)}; recorded what Artifacts reports`);

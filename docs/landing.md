@@ -1,5 +1,14 @@
 # Landing and merging
 
+The cross-company rules below describe the default policy. With
+`atelier init --single-family COMPANY`, building and reviewing use only that
+company's models: a reviewer must be a different model from every contributor,
+never a contributor under another harness. This exception also applies to
+criteria review, handoffs and conflict contributors. Only that company's tier
+models qualify; if none qualifies, no separate tier review is requested.
+`atelier init --cross-family` restores the default; both switches record who
+made them and when. See [Single-family mode](gate.md#single-family-mode).
+
 How accepted work reaches the project: `atelier finish`, `atelier merge`
 with its journal and cancel, and `atelier land`, which runs the whole second
 half of a task in one command. The README's "Landing" section gives the
@@ -127,26 +136,95 @@ accepted, finishes it after the other landing ends.
 
 The steps in between:
 
-1. The server must be at this CLI's route level or newer. `GET /api/version`
+1. Clients from before capabilities require the server to be at their route
+   level or newer. `GET /api/version`
    reports the commit the server was deployed from (`npm run deploy` records
    it) and its route level, and a landing whose server is older refuses
    before it starts, naming both levels and saying to deploy, since the
    server may lack the routes the landing needs, or answer one the landing
-   asks in a way it no longer expects. The route level
-   (`src/route-level.ts`) rises by one only when a change makes the CLI
-   start calling a route the server did not have, or changes the meaning of
-   a route the CLI already calls; the waiting queue the landing's `--wait`
-   asks about (`{ item, queued: true }` on the landing-lease route) raised
-   it to 10 (main had already reached 9 with another route change).
+   asks in a way it no longer expects. `ROUTE_LEVEL` is frozen at 28 (t522);
+   new routes require named capabilities, never a numeric raise.
+
+   The landing now checks named capabilities rather than that number (t458):
+   `GET /api/version` also lists `capabilities`, names like
+   `land.workflow.v1` that each stand for one behaviour of the API, and
+   `atelier land` refuses, before the lease or any workspace changes, when
+   the list lacks one of the capabilities its module declares
+   (`src/usage/commands/land.ts`, read back as `COMMAND_CAPABILITIES.land`),
+   naming the missing set, the revision the server runs and the deploy to
+   run. Extra capabilities are accepted; a reply with no usable version,
+   and one whose `capabilities` or `routeLevel` is the wrong shape, are
+   refused with their own messages. A capability is never changed
+   incompatibly: the change takes a new name (`…v2`), and a client that
+   needs `v1` is not satisfied by a server that publishes only `v2`.
+
+   Every command checks the same way: a command that relies on an API
+   behaviour names it in `capabilities` in its module,
+   `src/usage/commands/NAME.ts` (a subcommand's own go under
+   `subcommands`, so `atelier models` lists the pool on any server while
+   `models note` needs `models.note.v1`), and the CLI asks the server once,
+   after the flags are checked and before the handler's first request
+   (`requireCapabilities`, `cli/atelier.mjs`); `land` alone makes the same
+   check itself, after `--release-lease`, which touches only the lease
+   route so a stuck lease can be freed while the server is behind, and
+   before the lease is read. `claim`, `start`, `wrap`, `new`, `edit`, `init`, `merge`, `plan refresh`,
+   `review`, `review-claim`, `review-unparsable`, `token issue`, `token
+   store`, `area`, `board` and the integrator's `integrated`,
+   `integration-failed`, `refreshed` and `refresh-failed` declare theirs
+   (`new` and `edit` declare the area assignment their `--area` posts, as
+   `edit` declares the binding a change of criteria withdraws: a command
+   declares what any of its flags may ask); a command with none, and
+   `help`, `--help` and `--version` of any command, asks nothing, so the
+   offline commands work with no server at all, including `init --rename-local`.
+   The identity consumers (`adopt`, `revert`, `claim`, `start`, `wrap`, `init`, `merge`,
+   `land` and runner jobs) require `projects.commit-identity.v1`;
+   `models admit`, `withdraw` and `reviewers` require `reviews.admission.v1`;
+   `models set` requires the pool's standing, `models.standing.v1` (t389),
+   and `models add` asks for it only with `--state`, `--roles` or `--tier`;
+   `init` and `land` require the durable post-merge runs, `land.post-merge.v1`
+   (t477), and `land --post-merge` asks for that one alone; they also
+   require the landing's triage step, `land.triage.v1` (t475); `stuck` requires
+   the stuck report, `projects.stuck.v1` (t441). The home runner checks the
+   union of its jobs' (`JOB_CAPABILITIES`, `src/route-level.ts`) before its
+   first poll, the integrator's `integrate` and `refresh` jobs included;
+   the review job's include the review claim leases (`reviews.lease.v1`) and the review skip (`reviews.skip.v1`,
+   `reviews.skip-as-runner.v1`), so a reviewer against a server from before
+   t353 refuses to start instead of losing its skips.
+
+   **Adding a route.** Add one unique `family.behaviour.vN` declaration,
+   with a summary and no `level`, to `src/capability-declarations.ts`, and
+   name it in the consuming command or runner job's requirements. The server
+   publishes it automatically. Do not raise `ROUTE_LEVEL`. Independent
+   declarations merge in either order through the file's `merge=union`
+   attribute; the capabilities test refuses duplicate names after merging.
+   A server missing the name is refused with the same deploy-first remedy,
+   even if it reports a higher route level.
+
+   **Legacy compatibility.** The server still publishes `routeLevel` for old
+   clients. A server that publishes only a level guarantees existing
+   declarations up to that level, capped at the frozen boundary of 28.
+   Keep historical mappings unchanged. New declarations have no legacy
+   guarantee. Queued tasks carrying a `level` above 28 may keep that metadata,
+   but must drop their `ROUTE_LEVEL` raise; their capabilities work through
+   the published names, never through that metadata. There is no contiguous
+   level requirement or renumbering step. The capabilities test pins the
+   frozen number and checks independent additions in both merge orders.
+
+   The run skip, `runners.run-skip.v1` (t420), is one such name: every
+   runner job but the review requires it, so a runner refuses a server that
+   reports only a route level and starts on one that publishes the name.
+
 2. Main is fetched into the task's workspace and merged with `--no-ff`. On
    conflicts the landing stops, leaves the merge in the workspace for the
    owner to resolve, and names the files. After resolving and committing,
-   `atelier land t9` again picks up from the push. The conflicts can also go
+   run `atelier push` in the workspace to record the resolution before running
+   `atelier land t9` again. A rerun prepares from the recorded head and preserves
+   an unpushed resolution in a separate backup workspace. The conflicts can also go
    back to the task's builder instead: `atelier dispatch t9 --job merge-main`
    (naming the holder with `--agent` and `--model`, as the message the
    landing prints says) sends the task to a runner, whose merge-main job
    merges main into the workspace again and leaves the conflicts for the
-   builder to resolve and commit; then `atelier land t9` again, with main
+   builder to resolve, commit and push with `atelier push`; then `atelier land t9` again, with main
    already merged. See [Dispatch](runners.md#dispatch).
 3. When the project's policy declares a `regenerate` command
    (`atelier init --regenerate "CMD"`), it runs in the workspace like a check
@@ -173,6 +251,68 @@ whole) is recorded as the first commit hashes with the count of all of
 them beside it (`fromMainCount`); the hashes themselves are in the merge,
 which names main's head. `--dry-run` prints the steps and the refusals
 without changing anything.
+
+### Triage before the review
+
+A landing can have one model triage the change before the review is asked
+for (t475), so a change that plainly misses a criterion goes back to its
+holder without spending a review round. The model is `--triage H/M`, or else
+the project's `triage` setting (the policy's, set with `atelier init --triage
+H/M` and cleared with `--triage ""`, or `"triage": "H/M"` in this Mac's
+registration of the project in the Atelier config); with neither, no triage
+runs. A model of the builder's own company may triage, since triage
+is not the independent review; the pool's rules still apply: the model must
+be in the pool, not refused, and not paid per token. It runs on the owner's
+Mac through its harness's adapter (`bin/harness`), read-only, for at most 30
+minutes (`ATELIER_LAND_TRIAGE_TIMEOUT` milliseconds).
+
+The triage runs after the push and before the required checks. A
+submission asks for the review, and so does the checks' passing evidence for
+a task already submitted at an older head: the push withdraws its open
+review request, and that evidence asks it again at the pushed head. Since
+the triage runs first, one that stops has asked nothing of a reviewer. If the task was
+submitted before the landing, the stop says it stays submitted, with any
+request already open at the pushed head left open.
+
+The triage reads the pushed head — after the merge of main and the
+regeneration — as a diff against its merge base with main, with the task's
+acceptance criteria (and a part's, numbered after them) as they are now.
+For each criterion it answers met, not-met or unsure, with its evidence and
+a file and line, or the reason no location applies. Its brief has it trace
+the production request paths the change touches and list the runtime
+behaviour it could not verify. A result is bound to the head, the merge base
+and the criteria binding, and a pass recorded at the same binding by the same
+model is not asked for twice. The criteria are read again just before the
+submission, and criteria changed by then are triaged again with nothing yet
+submitted. Criteria changed after the submission stop the landing before the
+review request, saying the task is submitted and no review was asked for;
+running the landing again triages the new criteria.
+
+Through the Workflow, the landing is started as one that triages and the
+machine holding the workspace reports the triage's merge base and criteria
+binding with the head. The Workflow submits, and later asks for the review,
+only while the Ledger holds a pass, bypass or override recorded at that whole
+binding and the task's head and criteria are still those; otherwise it ends,
+saying what moved, with the lease released.
+
+Only every criterion met goes on. A criterion not met or unsure, a task with
+no criteria, a reply that cannot be read, a timeout, or a model that is
+unavailable stops the landing before the task is submitted (through the
+Workflow, before the head is reported, so the Workflow submits nothing): the
+findings are printed with the command to run again, the lease is released,
+and the task stays with its holder, its merged head pushed. The project
+owner can skip the triage with `--no-triage "REASON"`, or go past a stop with
+`--override-triage "REASON"`; either is recorded with the head and the
+criteria binding before the landing goes on, and a record the server
+refuses — it takes one only from the signed-in project owner — stops the
+landing. Neither stands in for the independent review.
+
+Triage is recorded as `land.triage` events (the binding, the model, the
+outcome — passed, stopped, bypassed or overridden — each criterion's status,
+and the owner's reason), never as a review: it adds no approval, rejection
+or round, and the gate decides as it did. After a pass or a bypass the
+landing goes on under the review rules as they are, whether no review is
+needed, an approval already covers the change, or `--no-review` was given.
 
 ## Landing through a Cloudflare Workflow
 
@@ -222,9 +362,10 @@ Ledger (`lease`, `workspace`, `conflict`, `checks`, `review`, `merge`,
 two of them:
 
 - At `workspace` the Workflow holds the lease, and the command merges main,
-  regenerates and pushes with the same code as the plain landing, in the
-  `local` checks mode runs the required checks in a clean clone (the plain
-  landing's `atelier check` step), renewing the lease meanwhile, then
+  regenerates and pushes with the same code as the plain landing, triages
+  when the landing triages, in the `local` checks mode then runs the
+  required checks in a clean clone (the plain landing's `atelier check`
+  step), renewing the lease meanwhile, and
   reports the pushed head as a `workspace` event. A check that fails is
   reported as a failed workspace step instead, which ends the Workflow with
   the check's output.
@@ -241,7 +382,8 @@ required checks run; `local` is the default. The mode is a flag only: the
 project's policy holds no default for it (adding an `atelier init` field
 was more than this change needed, t305).
 
-- `local`: after the push, the command runs the required checks on the
+- `local`: after the push (and the triage, when the landing triages), the
+  command runs the required checks on the
   owner's machine in a clean clone of the pushed head, exactly as the plain
   landing does, and the server records each result as observed evidence at
   the head it reads from Artifacts (only the task's holder can record a
@@ -306,6 +448,67 @@ What this protects against, and what it does not:
 - Timeouts: a workspace that never reports ends the Workflow after 24 hours,
   a review after one hour, a merge after 24 hours, all with the lease
   released and the by-hand command named.
+- The lease wait has a limit, `LANDING_LEASE_WAIT_LIMIT_MS` in
+  `src/landing/lease-wait.ts`: three hours, measured from the time the
+  server recorded the instance entering the stage `lease` (`stageAt` of its
+  landing-workflow record; the same stage written again in a round keeps
+  it), never from the instance's own clock. The Workflow's own wait
+  (`waitTimeoutMs`) is capped at it. Its timeout names the holder the final
+  ask found, read on the server at that ask, or says that no landing held
+  the lease (the queue ahead stood in the way), with the server's refusal.
+- An instance the server records at `lease` for the limit or longer (the
+  boundary included) is not attached to: `atelier land t9 --workflow`
+  terminates it, reads its status back until it has ended, and only then
+  starts a replacement, which keeps the task's place in the queue (t430).
+  What counts is the status read after the terminate, not the terminate's
+  own answer: a terminate that throws still allows the replacement when
+  the status read back afterwards confirms the instance ended (terminated,
+  errored or complete), and the failed terminate is ignored. A status that
+  cannot be read, or one still live after the reads, is refused with a 503
+  and nothing is started, whether the terminate succeeded or failed.
+- Who starts the next instance is decided in the Ledger before anything
+  is created (`claimLandingWorkflow`). The instance that follows a
+  remembered one, whether that one was replaced or found already ended,
+  has an id derived from it, and the claim is made only while the record
+  still names the old instance. So of runs at once (two replacing it, or
+  one replacing it and one that finds it already terminated) exactly one
+  records the successor with its review options and creates it with those
+  options; the others answer that record (`created: false`), so the
+  options recorded are always those of the instance created. A missing
+  instance never clears a pending claim: replacement after a missing read
+  requires a previously recorded ended status or a recorded terminal stage
+  (`done` or `failed`). This lets purged instances recover even when no
+  status was observed, including older records. Only `instance.not_found`
+  from `get()` permits this recovery; an unreadable `status()` still fails
+  closed. Without that evidence the request leaves the claim intact. If
+  the record has no observed status, remains at `lease`, and is at least
+  60 seconds old (from its server-recorded `at`), a confirmed
+  `instance.not_found` from `get()` allows reconciliation: create the same
+  claimed ID using its recorded checks and review options. Concurrent
+  retries and a delayed original creator use that same ID; an existing-ID
+  error requires a readable status before attaching. Recovery uses default
+  Workflow timeouts, since custom timeouts are not recorded. Other missing
+  or unreadable instances return 503. A failed create keeps the claim for
+  retry, including when creation may have succeeded before the error. The
+  answer and the command name the reason and the old and new instances (`replaced`), and the record keeps them.
+- The record keeps the review options an instance was started with
+  (`reviewer`, `noReview`), and a replacement that names none keeps them.
+  Before acceptance, a run naming an eligible reviewer (another family than
+  every contributor) while the remembered one is no longer eligible
+  replaces the instance the same safe way; a named reviewer who is not
+  eligible replaces nothing and is reported. A record with no remembered
+  reviewer is not ineligible, so naming one alone does not restart it.
+  Successors of already-ended instances inherit unnamed review options and
+  do not inherit a historical replacement reason. A fresh start reports a
+  replacement only when that request's predecessor qualifies for one.
+- A replaced instance, and the command attached to it, are fenced: the
+  Workflow's lease calls and the command's lease renewals name their
+  instance, and the Ledger refuses them (`stale_landing`) once the record
+  names another, so neither can release, renew or take the replacement's
+  lease; events must name the instance they answer, and one naming a
+  replaced instance is refused, so a stale report cannot advance the
+  replacement. The Workflow renews (and so checks the fence) before it
+  submits, requests the review and accepts.
 
 The routes the command calls (`landing-workflow`, GET and POST) raised the
 route level to 14. The Workflow is tested in workerd with the Workflows test
@@ -316,6 +519,13 @@ arriving late, missing or untrusted, and failing, and the routes), and the
 command against a stand-in server (`test/land.test.mjs`, including the
 local mode's checks run after the push and before the report). No test yet drives the command
 against a running Workflow, and none has run on Cloudflare itself.
+Claim reconciliation relies on Cloudflare rejecting duplicate Workflow IDs.
+The remote smoke check before and after deploy must also leave a recorded
+claim without creating its instance, wait 60 seconds, then retry concurrently
+with different review options: verify one instance with the claimed ID and
+recorded options, and that a delayed original create cannot clear its record.
+Local tests cover these races with a binding double; they do not establish
+production create visibility or duplicate-ID behavior.
 
 ## Integration basis
 

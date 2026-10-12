@@ -29,6 +29,7 @@ const config = { agents: [{ agent: "opencode", models: [model], command: ["openc
 const assignment = { project: "atelier", item: { id: "t21", dispatch: { job: "review" } }, agent: "opencode", model, actor: `opencode/${model}` };
 
 const claimed = {
+  request: 41,
   item: { id: "t21", title: "Review rules", base: H0, scope: ["src/review/**"], fork: "p--t21", head: H1 },
   head: H1,
   need: {
@@ -56,6 +57,7 @@ function fixture(options = {}) {
   const proofs = Array.from({ length: criteria }, (_, i) => `CRITERION ${i + 1}: met — Ran the clone's tests; test ${i + 1} fails without the change.`);
   const verdict = options.verdict ?? ["VERDICT: APPROVE", "SUMMARY: Checked the diff.", ...proofs].join("\n");
   const io = {
+    prepare: () => assert.fail("this job must not prepare"),
     log: (s) => logs.push(s), stopped: () => false,
     env: {}, ownerTokens: () => [],
     readSecret: () => FAKE_TOKEN,
@@ -66,6 +68,7 @@ function fixture(options = {}) {
       return "{}";
     },
     async clone(remote, t, dir) { calls.push({ clone: [remote, t, dir] }); },
+    async checkout(dir, head) { calls.push({ checkout: [dir, head] }); },
     async diff(dir, base, head) { calls.push({ diff: [dir, base, head] }); return DIFF; },
     async brief(workspace, text) { calls.push({ brief: text, workspace }); return { file: "/cache/work/atelier/brief.txt" }; },
     async writeDiff(workspace, text) { calls.push({ writeDiff: text }); return { file: "/cache/work/atelier/diff.txt" }; },
@@ -158,7 +161,10 @@ test("runReview releases the request when the harness fails or times out", async
     const { io, calls } = fixture(options);
     const state = await runReview(assignment, config, "home:studio", io);
     assert.equal(state.phase, "failed");
-    assert.ok(calls.some((c) => c.argv && c.argv[0] === "review-release"), JSON.stringify(options));
+    const releases = calls.filter((c) => c.argv?.[0] === "review-release");
+    assert.equal(releases.length, 1, JSON.stringify(options));
+    assert.equal(releases[0].argv[releases[0].argv.indexOf("--request") + 1], String(claimed.request));
+    assert.equal(releases[0].token, FAKE_TOKEN);
   }
 });
 
@@ -328,6 +334,8 @@ test("runReview gives an opencode reviewer its own data folder for the length of
     const home = calls.find((c) => c.dataHome);
     assert.ok(home, "a data folder is made");
     assert.equal(harness.env.XDG_DATA_HOME, `${home.dataHome}-opencode-data`);
+    assert.equal(harness.env.ATELIER_TEST_PRIORITY, "review");
+    assert.equal(harness.env.ATELIER_TEST_TASK, "t21");
     assert.equal(harness.env.CF_AIG_METADATA, '{"task":"t21","role":"review","runner":"home:studio"}');
     assert.ok(calls.indexOf(home) < calls.indexOf(harness));
     assert.ok(calls.findIndex((c) => c.removedDataHome === harness.env.XDG_DATA_HOME) > calls.indexOf(harness), "the folder is removed after the harness");
@@ -409,29 +417,209 @@ test("a review run that timed out is reported with the review role", async (t) =
   assert.deepEqual(reports.map((r) => [r.role, r.outcome]), [["review", "timed-out"]]);
 });
 
+// t353: a review this runner fails twice is skipped for this process, and the
+// skip is reported to the server; a new review request (a new head and request
+// number) is served again, so an earlier landing's failures never strand the
+// next landing's review.
+test("a review that fails twice is reported as skipped, and a new head is served again", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { io, calls } = fixture({ code: 1 });
+  const reports = [];
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const first = { ...assignment, item: { ...assignment.item, head: "a".repeat(40), request: 1, dispatch: { job: "review" } } };
+  const second = { ...assignment, item: { ...assignment.item, head: "b".repeat(40), request: 2, dispatch: { job: "review" } } };
+  let polls = 0;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async reportReviewSkip(body) { reports.push(body); },
+    async queue() {
+      polls++;
+      if (polls === 1 || polls === 2) return [first];
+      if (polls === 3) return [second];
+      process.emit("SIGINT");
+      return [];
+    },
+  });
+  // The skip is reported once, for the first request's head and number, so
+  // the landing counts it against that request alone.
+  assert.equal(reports.length, 1, JSON.stringify(reports));
+  assert.equal(reports[0].item, "t21");
+  assert.equal(reports[0].head, "a".repeat(40));
+  assert.equal(reports[0].request, 1);
+  // The second request is served after the first was skipped: two claims for
+  // the first, one for the second.
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 3);
+});
+
+// t353: a skip report that fails is not dropped. The capped review is no
+// longer taken, so the report must be tried again on its own, each poll,
+// until the server has it; otherwise the landing waiting on the review never
+// hears the skip and waits out the hour.
+test("a review skip report that fails is tried again each poll until the server has it, while the capped review is no longer taken", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { io, calls, logs } = fixture({ code: 1 });
+  const attempts = [], persisted = [];
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const task = { ...assignment, item: { ...assignment.item, head: "a".repeat(40), request: 1, dispatch: { job: "review" } } };
+  let polls = 0;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async reportReviewSkip(body) {
+      attempts.push(body);
+      // The first report meets a transient server failure; the next lands.
+      if (attempts.length === 1) throw new Error("503");
+      persisted.push(body);
+    },
+    async queue() {
+      polls++;
+      // The request stays open in the queue, as it would while no runner serves it.
+      if (polls <= 5) return [task];
+      process.emit("SIGINT");
+      return [];
+    },
+  });
+  // Two runs reach the cap; the review is not taken again after that.
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 2);
+  // The failed report is tried again on the next poll and lands once; a
+  // report that landed is not sent again on the polls after it.
+  assert.equal(attempts.length, 2, JSON.stringify(attempts));
+  assert.equal(persisted.length, 1, JSON.stringify(persisted));
+  assert.deepEqual(persisted[0], { project: "atelier", item: "t21", head: "a".repeat(40), request: 1, actor: assignment.actor, note: attempts[0].note });
+  assert.ok(logs.some((l) => /could not report the review skip for atelier\/t21.*503.*again next poll/.test(l)), logs.join("\n"));
+  assert.ok(logs.some((l) => /^reported the review skip for atelier\/t21/.test(l)), logs.join("\n"));
+});
+
+// t353: a 408 (the server timed the request out) or a 429 (it was busy) is as
+// temporary as a 5xx, not a refusal: the report is kept and lands on a later
+// poll, so a busy moment never strands the landing for the hour.
+for (const status of ["408", "429 slow down"]) {
+  test(`a review skip report that meets a ${status.slice(0, 3)} is tried again and lands, not dropped`, async (t) => {
+    const args = { ...runnerConfig(t), once: undefined };
+    const { io, calls, logs } = fixture({ code: 1 });
+    const attempts = [], persisted = [];
+    const previous = process.exitCode;
+    t.after(() => { process.exitCode = previous; });
+    const task = { ...assignment, item: { ...assignment.item, head: "a".repeat(40), request: 1, dispatch: { job: "review" } } };
+    let polls = 0;
+    await runRunner(args, {
+      workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+      async reportReviewSkip(body) {
+        attempts.push(body);
+        if (attempts.length === 1) throw new Error(status);
+        persisted.push(body);
+      },
+      async queue() {
+        polls++;
+        if (polls <= 5) return [task];
+        process.emit("SIGINT");
+        return [];
+      },
+    });
+    assert.equal(calls.filter((c) => c.argv?.[0] === "review-claim").length, 2);
+    assert.equal(attempts.length, 2, JSON.stringify(attempts));
+    assert.equal(persisted.length, 1, JSON.stringify(persisted));
+    assert.equal(persisted[0].request, 1);
+    assert.ok(logs.some((l) => new RegExp(`could not report the review skip for atelier/t21: ${status}; trying again next poll`).test(l)), logs.join("\n"));
+    assert.ok(logs.some((l) => /^reported the review skip for atelier\/t21/.test(l)), logs.join("\n"));
+  });
+}
+
+// t353: a report that keeps failing is retried with the queue backoff, in
+// polls — the next poll, then two, four and eight polls on, at most ten (five
+// minutes) — not every poll, so a server that is down or busy is not asked
+// every 30 seconds for as long as the runner lives.
+test("a review skip report that keeps failing backs off in polls, and lands when the server answers", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { io, logs } = fixture({ code: 1 });
+  const attemptPolls = [], persisted = [];
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const task = { ...assignment, item: { ...assignment.item, head: "a".repeat(40), request: 1, dispatch: { job: "review" } } };
+  let polls = 0;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async reportReviewSkip(body) {
+      attemptPolls.push(polls);
+      // 429, 503, 408, a dropped connection, then the server answers.
+      if (attemptPolls.length <= 4) throw new Error(["429", "503", "408", "fetch failed"][attemptPolls.length - 1]);
+      persisted.push(body);
+    },
+    async queue() {
+      polls++;
+      if (polls <= 20) return [task];
+      process.emit("SIGINT");
+      return [];
+    },
+  });
+  // The cap is reached on poll 2 and the first report fails there; the retries
+  // come 1, 2, 4 and 8 polls after each failure, and the fifth lands.
+  assert.deepEqual(attemptPolls, [2, 3, 5, 9, 17]);
+  assert.equal(persisted.length, 1, JSON.stringify(persisted));
+  assert.ok(logs.some((l) => /could not report the review skip for atelier\/t21: 503; trying again in 2 polls$/.test(l)), logs.join("\n"));
+  assert.ok(logs.some((l) => /could not report the review skip for atelier\/t21: 408; trying again in 4 polls$/.test(l)), logs.join("\n"));
+});
+
+// t353: a skip report the server refuses outright — a request it does not
+// have, a malformed head — would never land however often it is tried, so it
+// is said once and dropped rather than sent every poll.
+test("a review skip report the server refuses is dropped after the refusal, not tried every poll", async (t) => {
+  const args = { ...runnerConfig(t), once: undefined };
+  const { io, logs } = fixture({ code: 1 });
+  const attempts = [];
+  const previous = process.exitCode;
+  t.after(() => { process.exitCode = previous; });
+  const task = { ...assignment, item: { ...assignment.item, head: "a".repeat(40), request: 1, dispatch: { job: "review" } } };
+  let polls = 0;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
+    async reportReviewSkip(body) { attempts.push(body); throw new Error("404 no review request 1 of t21"); },
+    async queue() {
+      polls++;
+      if (polls <= 4) return [task];
+      process.emit("SIGINT");
+      return [];
+    },
+  });
+  assert.equal(attempts.length, 1, JSON.stringify(attempts));
+  assert.ok(logs.some((l) => /could not report the review skip for atelier\/t21: 404 no review request 1 of t21$/.test(l)), logs.join("\n"));
+});
+
 // t213: an interrupt during a review still gives the request back, with the
 // cleanup deadline a build's release gets, since the runner's own signal is
 // already aborted by then.
-test("an interrupted review releases the request through the real CLI helper", { timeout: 10_000 }, async (t) => {
+test("SIGTERM stops the review child before bounded, generation-fenced cleanup", { timeout: 10_000 }, async (t) => {
   const args = { ...runnerConfig(t), once: undefined };
   const { io } = fixture();
   const { cli, stopped, ...taskIO } = io;
-  const releases = [];
-  // The harness interrupts the runner; a review the runner refuses before the
-  // claim never reaches it, so the queue stops the runner itself after a few
-  // polls, and the assertion below fails instead of the poll loop spinning.
+  const order = [];
+  const oldServer = process.env.ATELIER_SERVER;
+  process.env.ATELIER_SERVER = "https://atelier.test";
+  t.after(() => { if (oldServer === undefined) delete process.env.ATELIER_SERVER; else process.env.ATELIER_SERVER = oldServer; });
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    assert.match(String(url), /\/review-release$/);
+    assert.equal(options.signal.aborted, false);
+    assert.equal(options.headers.authorization, `Bearer ${FAKE_TOKEN}`);
+    assert.equal(JSON.parse(options.body).request, claimed.request);
+    order.push("release");
+    // A hanging cleanup is bounded even though the runner's main signal
+    // is already aborted. The lease recovers this unanswered release.
+    await new Promise((resolve) => options.signal.addEventListener("abort", resolve, { once: true }));
+    throw new Error("cleanup timed out");
+  });
   let polls = 0;
   await runRunner(args, {
-    workspacePath: io.workspacePath, wait: () => tick(), queue: async () => { if (++polls > 3) process.emit("SIGINT"); return [assignment]; },
-    taskIO: { ...taskIO, async harness() { process.emit("SIGINT"); return { code: 0 }; } },
-    async executeChild(argv, options) {
+    workspacePath: io.workspacePath, wait: () => tick(), queue: async () => { if (++polls > 3) process.emit("SIGTERM"); return [assignment]; },
+    taskIO: { ...taskIO, async harness() { process.emit("SIGTERM"); order.push("child stopped"); return { code: 0 }; } },
+    async executeChild(argv) {
       if (argv[2] === "review-claim") return { code: 0, output: JSON.stringify(claimed) };
-      if (argv[2] === "review-release") releases.push({ signal: options.signal, step: options.step });
       return { code: 0, output: "" };
     },
   });
-  assert.deepEqual(releases, [{ signal: undefined, step: "cleanup" }]);
+  assert.deepEqual(order, ["child stopped", "release"]);
 });
+
 
 // t230, with real git: the review diff runs from the merge base of the head
 // and the branch the item merges into, never from the fork point, so commits
@@ -470,6 +658,7 @@ async function serveReview(t, dir, claim) {
         seen.diff = readFileSync(argv[2], "utf8");
         seen.diffPath = argv[2];
         seen.cwd = options.cwd;
+        seen.head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: options.cwd, encoding: "utf8" }).trim();
         seen.status = execFileSync("git", ["status", "--porcelain", "--ignored=no"], { cwd: options.cwd, encoding: "utf8" });
         writeFileSync(argv[3], "VERDICT: APPROVE\nSUMMARY: Read the diff.\nCRITERION 1: met — Ran the tests in the clone; they pass.");
         return { code: 0 };
@@ -673,8 +862,172 @@ test("runReview names the claim's criteria binding and request with the verdict,
   assert.ok(brief.includes("1. Reviews are bound") && brief.includes("1. Tests pass"));
   // A claim from a server that gave no binding sends none: the server refuses
   // the verdict rather than the runner filling one in.
-  const older = fixture();
+  const older = fixture({ claim: { ...claimed, request: undefined } });
   await runReview(assignment, config, "home:studio", older.io);
   const unbound = older.calls.find((c) => c.argv && c.argv[0] === "review").argv;
   assert.ok(!unbound.includes("--criteria") && !unbound.includes("--request"));
+});
+
+
+test("post-merge runner reviews the original parent even when main has moved on", async () => {
+  const merge = "e".repeat(40), parent = "c".repeat(40);
+  const claim = { ...claimed, item: { ...claimed.item, state: "merged", head: merge, accept: ["Keeps data"] }, head: merge,
+    need: { ...claimed.need, head: merge }, landed: { commit: merge, head: H1, base: H0 },
+    readToken: { ...claimed.readToken, remote: "https://artifacts.example/baseline" },
+    target: { remote: "https://artifacts.example/baseline", token: "read", branch: "main" } };
+  const { io, calls } = fixture({ claim });
+  io.revParse = async (_dir, ref) => { assert.equal(ref, `${merge}^@`); return `${parent}\n${H1}`; };
+  io.mergeBase = async () => { throw new Error("must not compare against current main"); };
+  const result = await runReview(assignment, config, "home:studio", io);
+  assert.equal(result.phase, "reviewed");
+  assert.equal(calls.find((c) => c.clone).clone[0], claim.readToken.remote);
+  assert.deepEqual(calls.find((c) => c.diff).diff.slice(1), [parent, merge]);
+  assert.equal(calls.find((c) => c.checkout).checkout[1], merge);
+  assert.match(calls.find((c) => c.brief).brief, /Keeps data/);
+  const verdict = calls.find((c) => c.argv?.[0] === "review").argv;
+  assert.equal(verdict[verdict.indexOf("--head") + 1], merge);
+});
+
+test("post-merge fast-forward reviews the whole task from its fork point", async () => {
+  const { reviewBase } = await import("../cli/runner.mjs");
+  const compare = await reviewBase({ revParse: async () => H0 }, "/clone", {
+    head: H1, item: { base: H0 }, landed: { commit: H1, head: H1, base: H0 },
+  });
+  assert.deepEqual(compare, { from: H0, target: H0 });
+});
+
+
+test("real Git post-merge review checks out the merge, excluding later main commits", async (t) => {
+  const { dir, git, commit, target, work } = reviewRepos(t);
+  const base = commit(work, "base.txt", "base\n");
+  git(work, "checkout", "--quiet", "-b", "task");
+  const head = commit(work, "task.txt", "landed task\n");
+  git(work, "checkout", "--quiet", "main");
+  const parent = commit(work, "main.txt", "main before merge\n");
+  git(work, "merge", "--quiet", "--no-ff", "task", "-m", "Land task");
+  const merge = git(work, "rev-parse", "HEAD");
+  commit(work, "later.txt", "main moved on\n");
+  git(work, "push", "--quiet", "origin", "HEAD:main");
+  const claim = { ...claimFor({ base, fork: target, state: "merged", accept: ["Keeps data"] }, merge),
+    landed: { commit: merge, head, base }, target: { remote: target, token: "read", branch: "main" } };
+  const seen = await serveReview(t, dir, claim);
+  assert.equal(seen.head, merge);
+  assert.deepEqual(changed(seen.diff), ["task.txt"]);
+  assert.match(seen.brief, new RegExp(`git diff ${parent} ${merge}`));
+  assert.match(seen.brief, /Post-merge audit/);
+});
+
+// t490: the claim's evidence at the head reaches the brief the reviewer
+// reads, ad-hoc runs apart from the required checks; a claim from an older
+// server that sends none says so.
+test("runReview shows the claim's observed evidence, ad-hoc runs among it, in the brief", async () => {
+  const run = (claim, passed, outputTail) => ({ itemId: "t21", claim, grade: "observed", head: H1, passed, by: "zcode/glm-5.3", at: "2026-10-10T12:00:00.000Z", where: "runner", outputTail });
+  const evidence = { required: ["npm test"], runs: [run("npm test", true, "ok 3"), run("npm run verify:visual", true, "visual: 12 of 12 match")] };
+  const { io, calls } = fixture({ claim: { ...claimed, evidence } });
+  assert.equal((await runReview(assignment, config, "home:studio", io)).phase, "reviewed");
+  const brief = calls.find((c) => c.brief).brief;
+  const supplemental = brief.slice(brief.indexOf("### Supplemental runs"), brief.indexOf("## The builder's summary"));
+  assert.ok(supplemental.includes("- `npm run verify:visual`: passed. Observed, on aaaaaaaa itself"), brief);
+  assert.ok(supplemental.includes("visual: 12 of 12 match"), brief);
+  const old = fixture();
+  await runReview(assignment, config, "home:studio", old.io);
+  assert.ok(old.calls.find((c) => c.brief).brief.includes("Atelier sent no evidence with this review"));
+});
+
+test("runReview renews every thirty seconds throughout a forty-minute review", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const { io, calls } = fixture();
+  io.harness = async () => {
+    for (let minute = 0; minute < 80; minute++) {
+      t.mock.timers.tick(30_000);
+      await tick();
+    }
+    return { code: 0 };
+  };
+  assert.equal((await runReview(assignment, config, "home:studio", io)).phase, "reviewed");
+  const renewals = calls.filter((c) => c.argv?.[0] === "review-renew");
+  assert.equal(renewals.length, 80);
+  for (const call of renewals) {
+    assert.equal(call.token, FAKE_TOKEN);
+    assert.equal(call.argv[call.argv.indexOf("--request") + 1], String(claimed.request));
+  }
+  t.mock.timers.tick(300_000);
+  await tick();
+  assert.equal(calls.filter((c) => c.argv?.[0] === "review-renew").length, 80);
+});
+
+for (const status of [200, 409]) test(`runner HTTP renewal authenticates and fences the claim (${status})`, async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const args = runnerConfig(t);
+  const { io } = fixture();
+  const { cli, stopped, ...taskIO } = io;
+  const requests = [], children = [];
+  const previous = process.exitCode;
+  const oldServer = process.env.ATELIER_SERVER;
+  process.env.ATELIER_SERVER = "https://atelier.test";
+  t.after(() => {
+    process.exitCode = previous;
+    if (oldServer === undefined) delete process.env.ATELIER_SERVER;
+    else process.env.ATELIER_SERVER = oldServer;
+  });
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    requests.push({ url: String(url), body: JSON.parse(options.body), options, aborted: options.signal.aborted });
+    return new Response("{}", { status });
+  });
+  await runRunner(args, {
+    workspacePath: io.workspacePath, wait: () => tick(), queue: async () => [assignment],
+    taskIO: { ...taskIO, async harness() {
+      t.mock.timers.tick(30_000);
+      await tick();
+      return { code: 0 };
+    } },
+    async executeChild(argv) {
+      children.push(argv[2]);
+      return { code: 0, output: argv[2] === "review-claim" ? JSON.stringify(claimed) : "{}" };
+    },
+  });
+  assert.deepEqual(requests.map((r) => r.url), [
+    "https://atelier.test/api/projects/atelier/items/t21/review-renew",
+    ...(status === 409 ? ["https://atelier.test/api/projects/atelier/items/t21/review-release"] : []),
+  ]);
+  for (const request of requests) {
+    assert.equal(request.body.request, claimed.request);
+    assert.equal(request.options.method, "POST");
+    assert.equal(request.options.headers.authorization, `Bearer ${FAKE_TOKEN}`);
+    assert.equal(request.options.headers["x-atelier-actor"], assignment.actor);
+    assert.equal(request.aborted, false);
+    assert.equal(request.options.redirect, "error");
+  }
+  assert.equal(children.includes("review"), status === 200, "a stale renewal prevents a verdict");
+  assert.ok(!children.includes("review-renew") && !children.includes("review-release"), "lease calls use the runner API directly");
+  t.mock.timers.tick(300_000);
+  await tick();
+  assert.equal(requests.length, status === 200 ? 1 : 2, "renewal stops when the review ends");
+});
+
+test("a lost claim response leaves recovery to expiry and never sends unfenced cleanup", async () => {
+  const { io, calls } = fixture();
+  const cli = io.cli;
+  io.cli = async (...args) => {
+    await cli(...args);
+    if (args[0][0] === "review-claim") throw new Error("claim response lost");
+    return "{}";
+  };
+  assert.equal((await runReview(assignment, config, "home:studio", io)).phase, "failed");
+  assert.equal(calls.some((c) => c.argv?.[0] === "review-release"), false);
+});
+
+test("a renewal refused as stale prevents a late verdict from the review child", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const { io, calls } = fixture();
+  const cli = io.cli;
+  io.cli = async (...args) => {
+    if (args[0][0] === "review-renew") throw Object.assign(new Error("stale claim"), { status: 409 });
+    return cli(...args);
+  };
+  io.harness = async () => { t.mock.timers.tick(30_000); await tick(); return { code: 0 }; };
+  assert.equal((await runReview(assignment, config, "home:studio", io)).phase, "failed");
+  assert.equal(calls.some((c) => c.argv?.[0] === "review"), false);
+  const release = calls.find((c) => c.argv?.[0] === "review-release");
+  assert.equal(release.argv[release.argv.indexOf("--request") + 1], String(claimed.request));
 });

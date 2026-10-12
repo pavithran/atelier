@@ -4,6 +4,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 // push, update and finish act on the repository in the current directory, so
 // they may run only in the claimed workspace of the item they name. Run in
@@ -15,7 +16,7 @@ import { join, resolve } from "node:path";
 
 const cli = resolve("cli/atelier.mjs");
 
-function fixture(t) {
+function fixture(t, { unclaimed = false, portCapability = true, portFailure = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-guard-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" } }).trim();
@@ -54,6 +55,10 @@ function fixture(t) {
     git(dir, "clone", "-q", forks[id], workspaces[id]);
     identity(workspaces[id]);
     for (const [k, v] of Object.entries({ project: "demo", item: id, actor: "codex/test", branch: "main" })) git(workspaces[id], "config", "--local", `atelier.${k}`, v);
+    if (unclaimed) {
+      git(workspaces[id], "config", `url.${forks[id]}.insteadOf`, `https://fork.test/${id}.git`);
+      git(workspaces[id], "config", `http.https://fork.test/${id}.git.extraHeader`, "Authorization: Bearer " + "revoked-claim-secret");
+    }
   }
 
   writeFileSync(join(dir, "config.json"), JSON.stringify({ server: "https://fake.invalid", owner: "owner", ownerName: "Pavi", projects: { demo: { path: checkout, branch: "main" } } }));
@@ -61,12 +66,29 @@ function fixture(t) {
   const preload = join(dir, "server.mjs");
   writeFileSync(preload, `
 import { appendFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import childProcess, { execFileSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+const spawn = childProcess.spawnSync;
+childProcess.spawnSync = (cmd, args, opts) => {
+  if (${unclaimed} && cmd === "git" && args[0] === "push") {
+    const remote = args.at(-2);
+    const configured = spawn("git", ["config", "--get-urlmatch", "http.extraHeader", remote], opts);
+    const headers = configured.stdout.trimEnd().split("\\n");
+    // Git's empty value resets all earlier extra headers, including the
+    // released claim's token, before the fresh owner credential is added.
+    const effective = headers.slice(headers.lastIndexOf("") + 1);
+    if (configured.status !== 0 || effective.length !== 1 || effective[0] !== "Authorization: Bearer " + "fresh-owner-port-secret") throw new Error("owner push did not replace its revoked credential");
+    if (${portFailure}) return { status: 1, stdout: "", stderr: "rejected fresh-owner-port-secret" };
+  }
+  return spawn(cmd, args, opts);
+};
+syncBuiltinESMExports();
 const BASE = ${JSON.stringify(base)}, BASELINE = ${JSON.stringify(baseline)}, FORKS = ${JSON.stringify(forks)};
 const forkHead = (id) => execFileSync("git", ["--git-dir", FORKS[id], "rev-parse", "refs/heads/main"], { encoding: "utf8" }).trim();
-const item = (id) => ({ id, title: "Task " + id, scope: [], state: "claimed", owner: "codex/test", head: forkHead(id), acceptedHead: null, base: BASE, fork: "demo-" + id, dispatch: null });
+const item = (id) => ({ id, title: "Task " + id, scope: [], state: ${JSON.stringify(unclaimed ? "open" : "claimed")}, owner: ${JSON.stringify(unclaimed ? null : "codex/test")}, head: forkHead(id), acceptedHead: null, base: BASE, fork: "demo-" + id, dispatch: null });
 globalThis.fetch = async (url, options = {}) => {
   const path = new URL(url).pathname, method = options.method ?? "GET";
+  if (path === "/api/version") return Response.json({ capabilities: ${JSON.stringify(SERVER_CAPABILITIES.filter(name => portCapability || name !== "items.owner-port.v1"))} });
   const body = options.body ? JSON.parse(options.body) : undefined;
   appendFileSync(${JSON.stringify(log)}, JSON.stringify({ method, path, body }) + "\\n");
   let data = {};
@@ -76,6 +98,7 @@ globalThis.fetch = async (url, options = {}) => {
   else if (m) {
     const [, id, verb] = /^items\\/([^/]+)(?:\\/(.*))?$/.exec(m[1]) ?? [];
     if (verb === "push") data = { ...item(id), head: body.head };
+    else if (verb === "owner-port-token") data = { remote: "https://fork.test/" + id + ".git", token: "fresh-owner-port-secret", defaultBranch: "main" };
     else if (verb === "read-token") data = { remote: FORKS[id], token: "fake-fork-token", defaultBranch: "main", head: forkHead(id), base: BASE };
     else if (verb === "base-token") data = { remote: BASELINE, token: "fake-baseline-token", defaultBranch: "main" };
     else data = { item: item(id), policy: { checks: ["exit 0"], protected: [], sandboxOnly: false }, gate: { ready: true, blockers: [] }, evidence: [], reviews: [], events: [], acceptanceProtected: [] };
@@ -170,4 +193,40 @@ test("push and update still run in the item's own workspace", (t) => {
   assert.match(updated.stdout, new RegExp(`t1 rebased onto baseline ${moved.slice(0, 8)}`));
   assert.equal(f.git(ws, "rev-parse", "HEAD^"), moved);
   assert.equal(f.git(ws, "log", "-1", "--format=%s"), "Work");
+});
+
+test("the owner can push an unclaimed task workspace without changing its configured actor", t => {
+  const f = fixture(t, { unclaimed: true }), dir = f.workspaces.t1;
+  writeFileSync(join(dir, "port.txt"), "owner port");
+  f.git(dir, "add", "."); f.git(dir, "commit", "-m", "Port change", "-m", "Agent: owner");
+  const head = f.git(dir, "rev-parse", "HEAD");
+  // A released workspace's remote/credential is no longer writable. Only
+  // the route's fresh remote and per-process token can perform this push.
+  f.git(dir, "remote", "set-url", "origin", join(f.dir, "revoked.git"));
+  const r = f.run(dir, ["push", "t1", "--as", "owner"]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(f.forkMain("t1"), head);
+  assert.equal(f.git(dir, "config", "atelier.actor"), "codex/test");
+  assert.equal(f.git(dir, "config", "http.https://fork.test/t1.git.extraHeader"), "Authorization: Bearer " + "revoked-claim-secret");
+  assert.equal(f.writes().filter(x => x.path.endsWith("/push")).length, 1);
+  assert.equal(f.writes().filter(x => x.path.endsWith("/claim")).length, 0);
+  assert.equal(f.writes().filter(x => x.path.endsWith("/owner-port-token")).length, 1);
+  assert.doesNotMatch(readFileSync(join(dir, ".git", "config"), "utf8") + r.stdout + r.stderr, /fresh-owner-port-secret/);
+});
+
+test("owner port refuses a server without its named capability before requesting credentials", t => {
+  const f = fixture(t, { unclaimed: true, portCapability: false });
+  const r = f.run(f.workspaces.t1, ["push", "t1", "--as", "owner"]);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /items.owner-port.v1/);
+  assert.deepEqual(f.writes(), []);
+});
+
+test("owner port redacts its fresh credential from a Git refusal", t => {
+  const f = fixture(t, { unclaimed: true, portFailure: true });
+  const r = f.run(f.workspaces.t1, ["push", "t1", "--as", "owner"]);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /rejected \[redacted\]/);
+  assert.doesNotMatch(r.stdout + r.stderr, /fresh-owner-port-secret/);
+  assert.equal(f.writes().filter(x => x.path.endsWith("/push")).length, 0);
 });

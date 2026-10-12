@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockup: Project overview — Atelier</title>
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<div class="mock-head">
+  <p class="mock-back"><a href="index.html">All mockups</a></p>
+  <p class="mock-title">Project: Overview</p>
+  <p class="mock-routes">Covers <code>/p/NAME</code>: dense (<code>/p/ledger-core</code>, 200 tasks) and empty (<code>/p/blank-slate</code>), each at desktop and phone width. Pending ship requests, formerly on the Ship tab, appear here.</p>
+</div>
+
+<div class="frames">
+<figure class="frame desktop">
+<figcaption>Desktop · 1440 · /p/ledger-core</figcaption>
+<div class="screen">
+<header class="ob">
+  <a class="skip" href="#d-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <ul>
+      <li><a href="/decisions">Decisions <span class="count">(14)</span></a></li>
+      <li><a href="/home" aria-current="true">Projects</a></li>
+      <li><a href="/studio">Activity</a></li>
+    </ul>
+    <span class="spacer"></span>
+    <details><summary>Ledger Core ▾</summary><div class="menu-panel"><a href="/p/ledger-core">Ledger Core <span>9</span></a><a href="/p/field-notes">Field Notes <span>4</span></a><a href="/p/open-tool">Open Tool <span>1</span></a><a href="/p/blank-slate">blank-slate</a><a href="/p/cold-storage">cold-storage <span>unavailable</span></a></div></details>
+    <details><summary>Owner ▾</summary><div class="menu-panel"><a href="/models">Models</a><a href="/usage">Usage</a><hr><a href="/logout">Sign out</a></div></details>
+  </nav>
+  <nav class="r2" aria-label="Project">
+    <p class="loc"><a href="/p/ledger-core">Ledger Core</a><span class="sep">›</span><span>Overview</span></p>
+    <ul class="tabs">
+      <li><a href="/p/ledger-core" aria-current="page">Overview</a></li>
+      <li><a href="/p/ledger-core/tasks">Tasks <span class="count">(200)</span></a></li>
+      <li><a href="/p/ledger-core/code">Code</a></li>
+      <li><a href="/p/ledger-core/flow">Activity</a></li>
+      <li><a href="/p/ledger-core/settings">Settings</a></li>
+    </ul>
+  </nav>
+</header>
+<main id="d-main" class="app-main">
+  <h1>Ledger Core</h1>
+  <p class="lede">200 tasks · 9 waiting on you · last merge 2 h ago</p>
+  <ul class="counts" aria-label="Tasks by state">
+    <li><a href="/p/ledger-core/tasks?state=open"><span class="n">14</span><span class="w">Ready to start</span></a></li>
+    <li><span class="n">9</span><span class="w">Working (1 stale)</span></li>
+    <li><span class="n">5</span><span class="w">Ready to accept</span></li>
+    <li><span class="n">2</span><span class="w">Needs review</span></li>
+    <li><span class="n">1</span><span class="w">Sent back</span></li>
+    <li><span class="n">3</span><span class="w">Checks failed</span></li>
+    <li><span class="n">2</span><span class="w">Ready to merge</span></li>
+    <li><span class="n">2</span><span class="w">Blocked</span></li>
+    <li><span class="n">156</span><span class="w">Merged</span></li>
+    <li><span class="n">6</span><span class="w">Closed</span></li>
+    <li style="border:0;background:none"><a class="mk" href="#n1">1</a></li>
+  </ul>
+
+  <div class="cols">
+    <section aria-labelledby="d-wait">
+      <h2 id="d-wait">Waiting on you · 9 <a class="mk" href="#n2">2</a></h2>
+      <ul class="rows">
+        <li><span class="id">t195</span><a class="title" href="/p/ledger-core/t195">Rotate the signing key for audit exports</a><span class="meta">protected path</span><span class="tag ask">Needs review</span></li>
+        <li><span class="id">t200</span><a class="title" href="/p/ledger-core/t200">Paginate account statements</a><span class="meta">1 file out of scope</span><span class="tag ask">Needs review</span></li>
+        <li><span class="id">t192</span><a class="title" href="/p/ledger-core/t192">Add idempotency keys to the posting API</a><span class="meta">runner, clean clone</span><span class="tag go">Ready to accept</span></li>
+        <li><span class="id">t166</span><a class="title" href="/p/ledger-core/t166">Reconcile bank feed timestamps</a><span class="meta">waits on sandbox keys</span><span class="tag caution">Blocked</span></li>
+        <li><span class="id">t163</span><a class="title" href="/p/ledger-core/t163">Migrate balances to integer cents</a><span class="meta">hand off?</span><span class="tag caution">Working · stale 2 d</span></li>
+      </ul>
+      <p><a href="/decisions?project=ledger-core">All 9 waiting →</a></p>
+    </section>
+    <section aria-labelledby="d-run">
+      <h2 id="d-run">Running · 9 <a class="mk" href="#n3">3</a></h2>
+      <ul class="rows">
+        <li><span class="id">t196</span><a class="title" href="/p/ledger-core/t196">Reject postings to archived accounts</a><span class="meta"><span class="who">opencode/qwen-4</span></span><span class="meta">pushed 20 min</span></li>
+        <li><span class="id">t182</span><a class="title" href="/p/ledger-core/t182">Multi-currency trial balance export</a><span class="meta"><span class="who">claude-code/opus-5.5</span></span><span class="meta">pushed 1 h</span></li>
+        <li><span class="id">t197</span><a class="title" href="/p/ledger-core/t197">Round half-even in currency conversion</a><span class="meta"><span class="who">codex/gpt-6-astra</span></span><span class="meta">revising</span></li>
+      </ul>
+      <p><a href="/p/ledger-core/tasks?state=working">All 9 working →</a></p>
+
+      <h2>Last five merges <a class="mk" href="#n4">4</a></h2>
+      <ul class="rows">
+        <li><span class="id">t156</span><span class="title">Validate ISO 4217 codes on import</span><span class="meta"><span class="who">codex</span></span><span class="meta">2 h</span></li>
+        <li><span class="id">t155</span><span class="title">Show closing balance per period</span><span class="meta"><span class="who">claude-code</span></span><span class="meta">5 h</span></li>
+        <li><span class="id">t153</span><span class="title">Fix off-by-one in statement ranges</span><span class="meta"><span class="who">zcode</span></span><span class="meta">9 h</span></li>
+        <li><span class="id">t151</span><span class="title">Seed chart of accounts for tests</span><span class="meta"><span class="who">antigravity</span></span><span class="meta">1 d</span></li>
+        <li><span class="id">t150</span><span class="title">Rename Txn to Entry in the API</span><span class="meta"><span class="who">opencode</span></span><span class="meta">1 d</span></li>
+      </ul>
+      <p><a href="/history?project=ledger-core">All merges →</a></p>
+    </section>
+  </div>
+  <h2>Ship requests</h2>
+  <p class="muted">None pending. Approvals are in <a href="/p/ledger-core/settings#protected">Settings</a>.</p>
+</main>
+</div>
+</figure>
+
+<figure class="frame phone">
+<figcaption>Phone · 390 · /p/ledger-core</figcaption>
+<div class="screen">
+<header class="ob phone">
+  <a class="skip" href="#p-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <a href="/decisions">Decisions <span class="count">(14)</span></a>
+    <span class="spacer"></span>
+    <details><summary>Menu ▾</summary><div class="menu-panel"><a href="/home">Projects</a><a href="/studio">Activity</a><hr><a href="/models">Models</a><a href="/usage">Usage</a><a href="/logout">Sign out</a></div></details>
+  </nav>
+  <nav class="r2" aria-label="Project">
+    <p class="loc"><a href="/p/ledger-core">Ledger Core</a><span class="sep">›</span><span>Overview</span></p>
+    <ul class="tabs"><li><a href="/p/ledger-core" aria-current="page">Overview</a></li><li><a href="/p/ledger-core/tasks">Tasks (200)</a></li><li><a href="/p/ledger-core/code">Code</a></li><li><a href="/p/ledger-core/flow">Activity</a></li><li><a href="/p/ledger-core/settings">Settings</a></li></ul>
+  </nav>
+</header>
+<main id="p-main" class="app-main">
+  <h1>Ledger Core</h1>
+  <p class="lede">200 tasks · 9 waiting on you</p>
+  <ul class="counts" aria-label="Tasks by state">
+    <li><span class="n">9</span><span class="w">Waiting on you</span></li>
+    <li><span class="n">9</span><span class="w">Working</span></li>
+    <li><span class="n">3</span><span class="w">Checks failed</span></li>
+    <li><span class="n">156</span><span class="w">Merged</span></li>
+  </ul>
+  <h2>Waiting on you · 9</h2>
+  <ul class="rows">
+    <li><span class="id">t195</span><span class="tag ask">Needs review</span><a class="title" href="/p/ledger-core/t195">Rotate the signing key for audit exports</a></li>
+    <li><span class="id">t200</span><span class="tag ask">Needs review</span><a class="title" href="/p/ledger-core/t200">Paginate account statements</a></li>
+    <li><span class="id">t192</span><span class="tag go">Ready to accept</span><a class="title" href="/p/ledger-core/t192">Add idempotency keys to the posting API</a></li>
+  </ul>
+  <p><a href="/decisions?project=ledger-core">All 9 waiting →</a></p>
+  <h2>Running · 9</h2>
+  <p><a href="/p/ledger-core/tasks?state=working">See who holds what →</a></p>
+</main>
+</div>
+</figure>
+
+<figure class="frame desktop small">
+<figcaption>Desktop · 1440 · /p/blank-slate (empty)</figcaption>
+<div class="screen">
+<header class="ob">
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <ul><li><a href="/decisions">Decisions <span class="count">(14)</span></a></li><li><a href="/home" aria-current="true">Projects</a></li><li><a href="/studio">Activity</a></li></ul>
+    <span class="spacer"></span>
+    <details><summary>blank-slate ▾</summary></details>
+    <details><summary>Owner ▾</summary></details>
+  </nav>
+  <nav class="r2" aria-label="Project">
+    <p class="loc"><a href="/p/blank-slate">blank-slate</a><span class="sep">›</span><span>Overview</span></p>
+    <ul class="tabs"><li><a href="/p/blank-slate" aria-current="page">Overview</a></li><li><a href="/p/blank-slate/tasks">Tasks <span class="count">(0)</span></a></li><li><a href="/p/blank-slate/code">Code</a></li><li><a href="/p/blank-slate/flow">Activity</a></li><li><a href="/p/blank-slate/settings">Settings</a></li></ul>
+  </nav>
+</header>
+<main class="app-main">
+  <h1>blank-slate</h1>
+  <div class="card" style="max-width:640px;margin-top:16px">
+    <h2 style="margin-top:0">No tasks yet <a class="mk" href="#n5">5</a></h2>
+    <p class="muted">Agents pick up tasks you create here. Checks: <span class="mono">npm test</span> (from Settings).</p>
+    <a class="btn primary" href="/p/blank-slate/tasks?new=1">Create the first task</a>
+  </div>
+</main>
+</div>
+</figure>
+<figure class="frame phone">
+<figcaption>Phone · 390 · /p/blank-slate (empty)</figcaption>
+<div class="screen">
+<header class="ob phone">
+  <a class="skip" href="#pe-main">Skip to content</a>
+  <nav class="r1" aria-label="Atelier">
+    <a class="brand" href="/decisions">Atelier</a>
+    <a href="/decisions">Decisions <span class="count">(14)</span></a>
+    <span class="spacer"></span>
+    <details><summary>Menu ▾</summary><div class="menu-panel"><a href="/home">Projects</a><a href="/studio">Activity</a><hr><a href="/models">Models</a><a href="/usage">Usage</a><a href="/logout">Sign out</a></div></details>
+  </nav>
+  <nav class="r2" aria-label="Project">
+    <p class="loc"><a href="/p/blank-slate">blank-slate</a><span class="sep">›</span><span>Overview</span></p>
+    <ul class="tabs"><li><a href="/p/blank-slate" aria-current="page">Overview</a></li><li><a href="/p/blank-slate/tasks">Tasks (0)</a></li><li><a href="/p/blank-slate/code">Code</a></li><li><a href="/p/blank-slate/flow">Activity</a></li><li><a href="/p/blank-slate/settings">Settings</a></li></ul>
+  </nav>
+</header>
+<main id="pe-main" class="app-main">
+  <h1>blank-slate</h1>
+  <div class="card" style="margin-top:12px">
+    <h2 style="margin-top:0">No tasks yet</h2>
+    <p class="muted">Agents pick up tasks you create here. Checks: <span class="mono">npm test</span> (from Settings).</p>
+    <a class="btn primary" href="/p/blank-slate/tasks?new=1">Create the first task</a>
+  </div>
+</main>
+</div>
+</figure>
+</div>
+
+<section class="notes" aria-labelledby="notes-h">
+  <h2 id="notes-h">Notes</h2>
+  <ol>
+    <li id="n1"><span class="num">1</span><div>A counts strip in the one vocabulary answers "where does it stand" before any list; each count links to Tasks filtered to that state. <span class="cite">F6, F11 → P5, P4</span></div></li>
+    <li id="n2"><span class="num">2</span><div>At most five waiting, then "All 9 waiting". 9 is the same number as the project switcher, the Projects card and this project's share of Decisions (14), replacing 24 / 14 / 9. Overlaps are not counted as waiting. <span class="cite">F7, F9 → P6, P5</span></div></li>
+    <li id="n3"><span class="num">3</span><div>Running work with holder and last push; briefs are no longer inlined as 42 disclosures. <span class="cite">F6 → P5</span></div></li>
+    <li id="n4"><span class="num">4</span><div>Last five merges and a link to the paged Merges view; pending ship requests move here from the Ship tab. Target height at 1440: under 2,500 px (live: 27,968). <span class="cite">F6, F1 → P5, P9, P10</span></div></li>
+    <li id="n5"><span class="num">5</span><div>The empty project offers "Create the first task"; the raw ledger event and policy JSON are gone. <span class="cite">F13 → P5</span></div></li>
+  </ol>
+</section>
+</body>
+</html>

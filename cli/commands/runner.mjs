@@ -1,5 +1,22 @@
 // atelier runner. Its forms, flags and help are declared in src/usage/commands/runner.ts.
-import { I, OWNER, actor, apiToken, args, auth, die, discoverModels, postAsRunner, project, readJson, reportUsage, resolveTokenActor, server, setupRunner, tokenActor, tokenRunner, workspacePath } from "../atelier.mjs";
+import { P, I, OWNER, apiToken, args, die, discoverModels, postAsRunner, reportUsage, resolveTokenActor, server, setupRunner, tokenActor, tokenRunner, workspacePath } from "../atelier.mjs";
+
+// Queue polling has already resolved the runner's identity. A failed policy
+// read must reach the job's infrastructure handling, never call()'s process.exit.
+export async function hasPreparation(project, actor) {
+  try {
+    const res = await fetch(server() + `/api${P(project)}`, {
+      headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": actor, ...(tokenRunner ? { "x-atelier-runner": tokenRunner } : {}) },
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data?.project?.policy) throw new Error("missing project policy");
+    return !!data.project.policy.prepare;
+  } catch (error) {
+    throw Object.assign(new Error(`the preparation policy could not be read: ${error.message}`), { infrastructure: true });
+  }
+}
 
 // `runner --discover` reports what each home model's harness serves (discover.mjs);
 // `runner --usage` reports each tool's windows, served models and balances (usage.mjs).
@@ -18,6 +35,7 @@ export default async function runnerCommand() {
   try {
     await runRunner(args, {
       credential: apiToken(),
+      api: { server, I },
       workspacePath,
       // The server's route level against the CLI's, checked once at start:
       // a server behind this CLI would fail the runner's calls one by one.
@@ -53,6 +71,19 @@ export default async function runnerCommand() {
         if (incomplete) console.log(`Could not read: ${incomplete}. Tasks waiting there are not listed.`);
         return res.json();
       },
+      // A busy runner's heartbeat (t537): its offer, marked as a heartbeat,
+      // renews its last poll while a job runs, so the claim it builds under
+      // is not taken for one its runner orphaned. Nothing is offered back.
+      async heartbeat(offer, signal) {
+        await resolveTokenActor();
+        const res = await fetch(server() + "/api/queue", {
+          method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+          headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER, "content-type": "application/json" },
+          body: JSON.stringify({ ...offer, heartbeat: true }),
+        });
+        if (!res.ok) throw new Error(`heartbeat: ${res.status}`);
+      },
+      hasPreparation,
       async jobBrief(project, id, actor) {
         await resolveTokenActor();
         let res;
@@ -77,6 +108,46 @@ export default async function runnerCommand() {
       // A run that stalled, timed out or was refused goes to the run
       // reports, under the runner's name, as a model's status does.
       reportRun: (body, runner, signal) => postAsRunner("/runs", body, runner, signal),
+      // Why an idle runner found nothing to claim: its poll asked with
+      // `why`, which lists each waiting dispatch of the token's projects
+      // with its reason (t420); a runner token may not GET the owner's
+      // listing. Asked only when a poll offers nothing, never on the busy
+      // path. A server older than this answers with the tasks offered,
+      // which carry no reason, so the runner says only its own.
+      idleWhy: async (offer, signal) => {
+        await resolveTokenActor();
+        let res;
+        try {
+          res = await fetch(server() + "/api/queue", {
+            method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+            headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER, "content-type": "application/json" },
+            body: JSON.stringify({ ...offer, why: true }),
+          });
+        } catch (error) {
+          if (signal.aborted) throw error;
+          throw Object.assign(new Error(`queue: ${error.message}`), { transient: true });
+        }
+        if (!res.ok) throw Object.assign(new Error(`queue: ${res.status}`), { transient: res.status >= 500 || res.status === 429 });
+        return res.json();
+      },
+      // A review this runner will not serve is reported to the project, so
+      // the landing waiting on it can say, by runner, when every runner
+      // that offers the reviewer has skipped (t353). Under a runner token,
+      // which cannot act as the owner, the report goes as the review job's
+      // actor, for which the poll was offered the job; under the owner's
+      // token it goes as the owner, as the run reports do.
+      async reportReviewSkip(body, runner, signal) {
+        await resolveTokenActor();
+        return postAsRunner(`${I(body.project, body.item)}/review-skip`, body, runner, signal, tokenRunner ? body.actor : OWNER);
+      },
+      // A build or plan job this runner gives up under its dispatch, after
+      // failed runs or infrastructure failures in a row, is reported the
+      // same way (t420), so status and show name this runner as what passes
+      // it by.
+      async reportRunSkip(body, runner, signal) {
+        await resolveTokenActor();
+        return postAsRunner(`${I(body.project, body.item)}/run-skip`, body, runner, signal, tokenRunner ? body.actor : OWNER);
+      },
     });
   } catch (error) { die(error.message); }
 }

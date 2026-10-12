@@ -16,7 +16,7 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import {
-  bindingOf, changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, hasRole, independentApproval, matchesAny,
+  bindingOf, changeClass, countingReviews, DEFAULT_OWNER, evidenceAt, gate, reviewAuthorized, independentApproval, independentReviewerText, matchesAny, singleFamily,
   type ChangeClass, type Evidence, type EvidenceView, type Item, type ProjectPolicy, type Review,
 } from "../rules.ts";
 import { contributorsOf } from "./independence.ts";
@@ -24,7 +24,7 @@ import { contributorsOf } from "./independence.ts";
 // A review with the findings parseVerdict read from its reply. Review in
 // src/rules.ts carries the findings field, so this is the same shape; the
 // alias names the reviewer's record as the brief reads it.
-export type ReviewRecord = Review;
+export type ReviewRecord = Review & { seq?: number };   // seq: the review event's sequence, when the Ledger matched one
 
 // What the ledger knows of a review request for this item. Open and claimed
 // requests are live; answered and withdrawn ones are not. A tier request
@@ -33,17 +33,12 @@ export interface ReviewRequestView {
   head: string;
   state: "open" | "claimed" | "answered" | "withdrawn";
   claimedBy?: string | null;
-  claimedAt?: string | null;   // ISO time the request was claimed
+  claimedAt?: string | null;   // server-clock time of the last claim renewal
   tier?: boolean;
 }
 
-// A claimed request with no verdict after this long no longer holds the item
-// back: its reviewer is taken to have failed, a new request may be made, and
-// pickReviewer can pass that reviewer over. An open request never lapses,
-// since it is waiting for a runner and a second request would wait in the
-// same queue. Two hours is a judgement, not a measurement: well beyond the
-// time a slow local model should need for a large diff.
-export const REVIEW_CLAIM_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+// Compatibility export for callers scheduling the lease alarm.
+export { REVIEW_LEASE_MS as REVIEW_CLAIM_TIMEOUT_MS } from "../rules.ts";
 
 // review: no model has rejected a head of this item that this review moves
 // past. re-review: one has — the builder has pushed since, or the owner
@@ -83,8 +78,18 @@ export type ReviewNeed = ReviewRequired | ReviewNotNeeded;
 // review.finding event), keyed by the review's head and reviewer, the
 // finding's position in that review and the finding itself, so a verdict
 // names the finding it was recorded on. The newest verdict on a finding wins.
+// A verdict recorded since t486 also names its review's sequence, so it
+// answers that review alone; one without it answers every review at the head
+// by that reviewer whose finding matches, as it always has.
 export type OwnerVerdict = { verdict: string; note: string };
-export const findingKey = (head: string, by: string, index: number, f: { file: string; text: string }) => JSON.stringify([head, by, index, f.file, f.text]);
+export const findingKey = (head: string, by: string, index: number, f: { file: string; text: string }, review?: number) =>
+  JSON.stringify(review === undefined ? [head, by, index, f.file, f.text] : [head, by, index, f.file, f.text, review]);
+
+// The verdict on finding `index` (one based) of review `r`: the one naming the
+// review's sequence, else a verdict from before verdicts named one.
+export function verdictOn(verdicts: ReadonlyMap<string, OwnerVerdict>, r: ReviewRecord, index: number, f: { file: string; text: string }): OwnerVerdict | undefined {
+  return (r.seq === undefined ? undefined : verdicts.get(findingKey(r.head, r.by, index, f, r.seq))) ?? verdicts.get(findingKey(r.head, r.by, index, f));
+}
 
 export function ownerVerdicts(events: readonly LedgerEvent[]): Map<string, OwnerVerdict> {
   const found = new Map<string, OwnerVerdict & { seq: number }>();
@@ -93,7 +98,8 @@ export function ownerVerdicts(events: readonly LedgerEvent[]): Map<string, Owner
     const d = e.data as { head?: unknown; by?: unknown; index?: unknown; verdict?: unknown; note?: unknown; finding?: { file?: unknown; text?: unknown } };
     if (typeof d.head !== "string" || typeof d.by !== "string" || typeof d.index !== "number" || typeof d.verdict !== "string") continue;
     if (typeof d.finding?.file !== "string" || typeof d.finding.text !== "string") continue;
-    const key = findingKey(d.head, d.by, d.index, { file: d.finding.file, text: d.finding.text });
+    const review = typeof (d as { review?: unknown }).review === "number" ? (d as { review: number }).review : undefined;
+    const key = findingKey(d.head, d.by, d.index, { file: d.finding.file, text: d.finding.text }, review);
     const held = found.get(key);
     if (!held || held.seq < e.seq) found.set(key, { verdict: d.verdict, note: typeof d.note === "string" ? d.note : "", seq: e.seq });
   }
@@ -107,9 +113,9 @@ export function ownerVerdicts(events: readonly LedgerEvent[]): Map<string, Owner
 // before findings were kept) has nothing to refute and still waits for
 // rework. A confirmed or fixed finding stands, so a rejection with one of
 // those among its blockers still blocks.
-export function refutedRejection(r: Review, verdicts: ReadonlyMap<string, OwnerVerdict>): boolean {
+export function refutedRejection(r: ReviewRecord, verdicts: ReadonlyMap<string, OwnerVerdict>): boolean {
   const blocking = (r.findings ?? []).map((f, i) => ({ f, index: i + 1 })).filter(({ f }) => f.severity === "blocking");
-  return blocking.length > 0 && blocking.every(({ f, index }) => verdicts.get(findingKey(r.head, r.by, index, f))?.verdict === "refuted");
+  return blocking.length > 0 && blocking.every(({ f, index }) => verdictOn(verdicts, r, index, f)?.verdict === "refuted");
 }
 
 export interface NeedInput {
@@ -119,6 +125,7 @@ export interface NeedInput {
   evidence: readonly Evidence[];
   reviews: readonly ReviewRecord[];            // every review of the item, at any head
   requests?: readonly ReviewRequestView[];
+  postMerge?: boolean;                        // explicit review of a recorded merge
   wanted?: boolean;                            // the owner asked for this review, so a gate that needs none does not end the need
   // The owner's verdicts on findings of the item's reviews, as review.finding
   // events record them (`atelier finding`); read so a rejection whose every
@@ -140,24 +147,27 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   const { item, policy } = input;
   const owner = input.owner ?? DEFAULT_OWNER;
   const no = (reason: string): ReviewNotNeeded => ({ needed: false, reason });
-  if (item.state !== "submitted") return no(`${item.id} is ${item.state}, not submitted`);
+  if (item.state !== "submitted" && !(input.postMerge && item.state === "merged")) return no(`${item.id} is ${item.state}, not submitted`);
   if (!item.head) return no(`${item.id} has no verified push`);
   const head = item.head;
 
-  const view = evidenceAt(policy, [...input.evidence], head);
+  const view = evidenceAt(policy, [...input.evidence], input.postMerge ? item.acceptedHead ?? head : head);
+  // Landed work is audited independently of its old check gate. The runner
+  // reads the actual merge diff, even when historical measurements are absent.
+  if (input.postMerge && view.changedPaths === null) view.changedPaths = [];
   const failed = view.checks.filter((c) => c.grade === "observed" && !c.passed).map((c) => c.claim);
-  if (failed.length) return no(`${list(failed)} failed at ${short(head)}; the builder fixes that before a review`);
+  if (!input.postMerge && failed.length) return no(`${list(failed)} failed at ${short(head)}; the builder fixes that before a review`);
   const pending = view.checks.filter((c) => c.grade === "pending").map((c) => c.claim);
-  if (pending.length) return no(`${list(pending)} not yet observed passing at ${short(head)}`);
+  if (!input.postMerge && pending.length) return no(`${list(pending)} not yet observed passing at ${short(head)}`);
   if (view.changedPaths === null) return no(`changed paths not yet observed at ${short(head)}`);
-  if (!view.changedPaths.length) return no(`${short(head)} changes no paths, so there is nothing to review`);
+  if (!input.postMerge && !view.changedPaths.length) return no(`${short(head)} changes no paths, so there is nothing to review`);
 
-  const kind = changeClass(view.changedPaths, policy)!;   // null only for no paths, refused above
+  const kind = changeClass(view.changedPaths, policy) ?? "direct";   // null only for no paths, refused above
   const governed = policy.execution !== undefined;
-  if (governed && !policy.execution!.allowed_classes.includes(kind)) {
+  if (!input.postMerge && governed && !policy.execution!.allowed_classes.includes(kind)) {
     return no(`${kind} changes are not allowed by this project's execution policy, and a review cannot make the change acceptable`);
   }
-  const basis: ReviewBasis | null = input.part ? "part" : kind === "protected" ? "protected" : governed && kind === "coordinated" ? "coordinated" : null;
+  const basis: ReviewBasis | null = input.postMerge ? null : input.part ? "part" : kind === "protected" ? "protected" : governed && kind === "coordinated" ? "coordinated" : null;
   if (!basis && !input.wanted) {
     return no(kind === "direct"
       ? "a direct change needs no review"
@@ -180,38 +190,35 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   // reviews were bound, neither ends the need nor blocks it.
   const atHead = countingReviews(reviews, bindingOf(item), policy, owner);
   const rejected = atHead.filter((r) => !r.approve && !refutedRejection(r, verdicts));
-  if (rejected.length) return no(`${rejected.map((r) => (r.by === owner ? "the project owner" : r.by)).join(", ")} rejected ${short(head)}; the builder reworks it before another review`);
+  if (!input.postMerge && rejected.length) return no(`${rejected.map((r) => (r.by === owner ? "the project owner" : r.by)).join(", ")} rejected ${short(head)}; the builder reworks it before another review`);
   const contributors = contributorsOf(item);
+  const single = singleFamily(policy);
   if (input.tier) {
     // A tier review is asked beside the gate's; the gate's approval leaves it standing.
   } else if (basis === "part") {
-    const independent = atHead.find((r) => independentApproval(r, "protected", contributors, owner));
-    if (independent) return no(`${independent.by}, of another family than every contributor, approved ${short(head)}`);
+    const independent = atHead.find((r) => independentApproval(r, "protected", contributors, owner, single));
+    if (independent) return no(`${independent.by}, ${single ? `a different ${single} model from every contributor` : "of another family than every contributor"}, approved ${short(head)}`);
   } else if (!input.wanted) {
     const g = gate(item, policy, [...input.evidence], reviews, owner);
     if (g.overridden) return no(`the project owner overrode the independent review of ${short(head)}: ${g.overridden.reason}`);
     if (!g.needsAssessor) {
-      const approvers = atHead.filter((r) => independentApproval(r, kind === "protected" ? "protected" : "coordinated", contributors, owner)).map((r) => r.by);
+      const approvers = atHead.filter((r) => independentApproval(r, kind === "protected" ? "protected" : "coordinated", contributors, owner, single)).map((r) => r.by);
       return no(`the gate already counts an independent approval of ${short(head)} (${approvers.join(", ")})`);
     }
   }
 
-  // A live request for this head holds the item unless its claim has lapsed;
-  // a tier request beside it holds nothing.
-  // A claim time that cannot be read is taken as recent, so a request is
-  // never duplicated on a guess.
+  // The ledger recovers expired claims before supplying this view. A live
+  // gate request holds the item; a tier request beside it holds nothing.
   const live = (input.requests ?? []).filter((r) => r.head === head && !r.tier && (r.state === "open" || r.state === "claimed"));
-  const lapsedAt = (r: ReviewRequestView) => {
-    const at = r.state === "claimed" && r.claimedAt ? Date.parse(r.claimedAt) : NaN;
-    return Number.isFinite(at) && input.now.getTime() - at >= REVIEW_CLAIM_TIMEOUT_MS;
-  };
-  const waiting = live.find((r) => !lapsedAt(r));
+  const waiting = live[0];
   if (waiting) {
     return no(waiting.state === "open"
       ? `a review request for ${short(head)} is open`
       : `a review request for ${short(head)} is claimed${waiting.claimedBy ? ` by ${waiting.claimedBy}` : ""}`);
   }
-  const lapsed = [...new Set(live.flatMap((r) => (r.claimedBy ? [r.claimedBy] : [])))];
+  // Lease recovery belongs to the ledger. Runner failure is not evidence
+  // against a reviewer and must not exclude its actor from future routing.
+  const lapsed: string[] = [];
 
   // Earlier reviews: the latest counting review per reviewer at each head,
   // this one included (an approval here that does not suffice, with its
@@ -223,7 +230,7 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   // not rounds of automatic review. The limit on rounds is fixed when a plan
   // is approved and reaching it blocks the plan, so it is the plan tick's to
   // enforce; this reports the round.
-  const counts = (r: Review) => r.by === owner || hasRole(r.by, policy, "assessor");
+  const counts = (r: Review) => reviewAuthorized(r, policy, owner);
   const latest = new Map<string, ReviewRecord>();
   for (const r of reviews.filter(counts).sort((a, b) => a.at.localeCompare(b.at))) {
     latest.set(`${r.head}\n${r.by}`, r);
@@ -234,7 +241,7 @@ export function reviewNeeded(input: NeedInput): ReviewNeed {
   const last = modelRejections.at(-1);
 
   const why = basis === "part"
-    ? `every part is reviewed by another model family, and this ${kind} change has no such approval at ${short(head)}`
+    ? `every part is reviewed by ${single ? independentReviewerText(single) : "another model family"}, and this ${kind} change has no such approval at ${short(head)}`
     : basis === "protected"
       ? `a protected change needs an independent review, and none is recorded at ${short(head)}`
       : basis === "coordinated"

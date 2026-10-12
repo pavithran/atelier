@@ -1,8 +1,10 @@
+import type { PostMergePolicy } from "./post-merge.ts";
 import { familyOf, type PoolFamily } from "./models/pool.ts";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import type { Dispatch } from "./dispatch/rules";
 import type { CheckDeclaration } from "./checks.ts";
 import type { LargeRef } from "./large.ts";
+import type { CommitIdentityPolicy } from "./commit-identity.ts";
 import { criteriaOf } from "./criteria.ts";
 // Atelier's rules, as pure functions. Nothing here touches Cloudflare, so the
 // whole policy can be tested with `node --test` and read in one place.
@@ -12,6 +14,7 @@ import { criteriaOf } from "./criteria.ts";
 export type ItemState = "open" | "claimed" | "submitted" | "accepted" | "integrated" | "merged" | "abandoned" | "blocked";
 
 export interface Item {
+  area?: string | null;
   id: string;
   title: string;            // the short title every list shows, at most TITLE_MAX characters
   // The long text of the task, shown only on its own page and in briefs to
@@ -128,6 +131,7 @@ export interface SecretClearance {
 // item's value; one absent keeps it. An empty list, a null gate or a null
 // brief clears. `title` is read by edit only: new takes its title apart.
 export interface ItemFields {
+  area?: string | null;
   // Creation only: the ledger resolves this task's recorded merge itself.
   revertOf?: string;
   nonGoals?: string[];
@@ -264,6 +268,14 @@ export interface Evidence {
   // a failure under a saturated machine stays legible beside a later passing
   // run of the same command. Only a run on someone's machine records one.
   load?: number;
+  // The ledger's own number for the row, set when the evidence is read back
+  // (evidenceFor in src/ledger.ts), never posted: what `atelier show` and
+  // `atelier check-log` name a result by (t436).
+  id?: number;
+  // The container run that made an observed result (src/sandbox/runner.ts),
+  // the run id `atelier check --sandbox` polls; a run on someone's machine
+  // records none.
+  run?: string;
 }
 
 // One finding of an automatic review, as parseVerdict (src/review/verdict.ts)
@@ -294,6 +306,7 @@ export interface Review {
   // review recorded before these fields existed gains them from its event
   // when the Ledger starts; one built without them, as in a test, is read
   // as proved.
+  reviewerAdmission?: ReviewerAdmission;
   recordedBy?: string;
   proved?: boolean;
   claimed?: boolean;
@@ -307,6 +320,7 @@ export interface Review {
   // the tier review too (gateServesTier in src/review/tier.ts). It counts for
   // the gate as any review does.
   topTier?: boolean;
+  postMerge?: boolean; // an audit of the recorded landing, preserving its state
   // The binding of the acceptance criteria the reviewer was given
   // (src/criteria.ts): the hash its review claim captured, or that the
   // reviewer read with the task. A review counts only while it is the
@@ -372,9 +386,48 @@ export interface CheckPaths {
   paths: string[];
 }
 
+// Preparation paths are literal workspace-relative files or directories, not globs.
+export function preparationPaths(value: unknown): string[] {
+  if (!Array.isArray(value) || !value.length || value.some((p) =>
+    typeof p !== "string" || !p || p.startsWith("/") ||
+    p.split("/").some((part) => !part || part === "." || part === "..") || /[\\*?\[\]\0]/.test(p))) {
+    throw new RuleError("bad_prepare", "preparation requires nonempty lists of literal relative input and output paths", 400);
+  }
+  return [...new Set(value)];
+}
+
+export interface ReviewerAdmission {
+  id: string;
+  aliases: string[];
+  by: string;
+  reason: string;
+  at: string;
+  active: boolean;
+}
+
+// Admissions are read from the project ledger, never supplied by a review.
+export function reviewerAdmission(actor: string, policy: ProjectPolicy): ReviewerAdmission | undefined {
+  if (!actor.includes("/")) return undefined;
+  const key = modelKey(actor);
+  return policy.reviewerAdmissions?.find((a) => [a.id, ...a.aliases].some((name) => modelKey(`model/${name}`) === key));
+}
+
+export function admissionActor(actor: string, admission: ReviewerAdmission): string {
+  return [admission.id, ...admission.aliases].some((name) => modelKey(`model/${name}`) === modelKey(actor))
+    ? `${actor.split("/")[0]}/${admission.id}` : actor;
+}
+
 export interface ProjectPolicy {
+  postMerge?: PostMergePolicy;
+  reviewerAdmissions?: ReviewerAdmission[];
   agents?: Record<string, AgentPolicy>;
   execution?: ExecutionPolicy;
+  prepare?: {
+    command: string;
+    inputs: string[];
+    outputs: string[];
+    declaration: CheckDeclaration;
+  };
   checks: string[];         // commands that must pass, observed, before acceptance
   checkClasses?: CheckDeclaration[];  // how each check is known to be read-only (src/checks.ts)
   checkPaths?: CheckPaths[];          // checks that apply only when the change touches these paths
@@ -391,6 +444,11 @@ export interface ProjectPolicy {
   // What may block a review, as every review brief states it; absent, the
   // briefs state DEFAULT_REVIEW_BAR (src/review/verdict.ts).
   reviewBar?: string;
+  // The model, harness/model, that triages a landing's diff against the
+  // task's criteria before its review is asked for (`atelier init
+  // --triage`, src/review/triage.ts); `atelier land --triage` names another
+  // for one landing. Absent, no triage runs unless a landing names one.
+  triage?: string;
   // The project's top review tier, as harness/model actors (`atelier init
   // --review-tier`): every protected change that gets its gate review is
   // also reviewed by one of these. The gate's review goes to a tier model of
@@ -412,11 +470,43 @@ export interface ProjectPolicy {
   coreFiles?: string[];
   approval?: string;
   sandboxOnly?: boolean;    // only checks observed in a Cloudflare sandbox count
+  // Which companies' models build and review (t394). Absent, or `single`
+  // null, the default holds: a protected change needs approval from a model
+  // of another family than every contributor. With `single` set the project
+  // runs in single-family mode: building and reviewing use that company's
+  // models alone, routing and the reviewer picker take no other, and a
+  // review counts when the reviewer is a different model from every
+  // contributor. The switch records who made it and when, either way, so a
+  // return to the default is as visible as the opt-in.
+  familyMode?: FamilyMode;
   // Overrides of the independent review are refused in this project, with
   // or without the owner's confirmation (`atelier init --no-override`, t371):
-  // every change gets its review from another family, or does not land.
+  // every change gets its independent review (from another family, or in
+  // single-family mode from a different model of the one company), or does
+  // not land.
   noOverride?: boolean;
+  // The name and address the project's commits carry, the agent addresses
+  // allowed beside it, and the addresses declared private (t451,
+  // src/commit-identity.ts). A claim writes the name and address into the
+  // workspace's Git config; a runner and a landing refuse what falls outside
+  // it. Absent in a project set up before t451 until the owner names one.
+  commitIdentity?: CommitIdentityPolicy;
 }
+
+export interface FamilyMode {
+  single: PoolFamily | null;  // the one company, or null when the owner returned to cross-family review
+  by: string;
+  at: string;
+}
+
+// The company a project runs on alone, or null under the default.
+export const singleFamily = (policy: Pick<ProjectPolicy, "familyMode"> | null | undefined): PoolFamily | null => policy?.familyMode?.single ?? null;
+
+// What a protected change needs of its reviewer, in words: the default's
+// model of another family, or single-family mode's different model of the
+// one company.
+export const independentReviewerText = (single: PoolFamily | null): string =>
+  single ? `a different ${single} model from every contributor (single-family mode)` : "a model of another family than every contributor";
 
 // Reject malformed policy at the boundary instead of silently widening access.
 export function parseAgents(value: unknown): Record<string, AgentPolicy> {
@@ -551,6 +641,13 @@ export function sameActor(a: string, b: string): boolean {
   return harness(a) === harness(b) && modelKey(a) === modelKey(b);
 }
 
+// Whether `actor` is one of `contributors` as review counts them: the same
+// agent, or the same model by modelKey under another harness. A model never
+// reviews a change it contributed to, in either family mode (t394), so
+// codex/claude-opus-5-5 is a contributor of claude-code/opus-5.5's work.
+export const contributed = (actor: string, contributors: readonly string[]): boolean =>
+  contributors.some((c) => sameActor(c, actor) || modelKey(c) === modelKey(actor));
+
 // Everyone an item's work came from, as review independence counts them:
 // every holder and push actor pushActors() recorded, and its current owner.
 export function contributorsOf(item: { owner: string | null; pushActors?: readonly string[] }): string[] {
@@ -565,14 +662,30 @@ export const actorFamily = (actor: string): PoolFamily => familyOf(modelKey(acto
 // Null when `reviewer` is of a recognised family that no contributor shares;
 // otherwise the rule it fails. A contributor of unrecognised family fails
 // every reviewer, because no family can be shown to differ from one that is
-// not recognised.
-export function familyRefusal(reviewer: string, contributors: readonly string[]): string | null {
+// not recognised. Under single-family mode (`single`, the company named by
+// singleFamily) the rule is instead that the reviewer is that company's and
+// a different model, by modelKey, from every contributor: the same model in
+// another harness is still the same model reviewing its own work.
+export function familyRefusal(reviewer: string, contributors: readonly string[], single: PoolFamily | null = null): string | null {
+  if (single) {
+    if (actorFamily(reviewer) !== single) return `not one of ${single}'s models, and this project runs in single-family mode (${single})`;
+    const same = contributors.find((c) => modelKey(c) === modelKey(reviewer));
+    return same ? `the same model as contributor ${same}, and no model reviews its own work` : null;
+  }
   const unknown = contributors.find((c) => actorFamily(c) === "other");
   if (unknown) return `contributor ${unknown}'s family is not recognised from its name`;
   const family = actorFamily(reviewer);
   if (family === "other") return "family not recognised from its name";
   const same = contributors.find((c) => actorFamily(c) === family);
   return same ? `same family as contributor ${same} (${family})` : null;
+}
+
+// Null unless the project runs in single-family mode and `actor` is not one
+// of that company's models; then why it may not review there. Every path a
+// review comes by asks it (t394): the gate, a review recorded directly, a
+// claimed request, and each request asked or carried.
+export function companyRefusal(actor: string, single: PoolFamily | null): string | null {
+  return single && actorFamily(actor) !== single ? `${actor} is not one of ${single}'s models, and this project runs in single-family mode (${single})` : null;
 }
 
 // Minimal glob: `**` crosses directories, `*` does not, everything else literal.
@@ -702,6 +815,12 @@ export function parseRuleError(err: unknown): { status: number; code: string; de
   return m ? { status: Number(m[1]), code: m[2], detail: m[3] } : null;
 }
 
+export function assertNotTerminal(item: Item): void {
+  if (item.state === "merged" || item.state === "abandoned") {
+    throw new RuleError("closed", `${item.id} is ${item.state}`);
+  }
+}
+
 export function assertClaimable(item: Item, actor: string): void {
   if (!validActor(actor)) throw new RuleError("bad_actor", `"${actor}" is not harness/model`, 400);
   assertNotBlocked(item);
@@ -715,7 +834,25 @@ export function assertClaimable(item: Item, actor: string): void {
 
 // Role policy takes precedence over legacy harness eligibility. Taking work
 // needs the executor role; planning a plan needs the planner role.
+//
+// Single-family mode (t394) is judged here first, before any role, admission
+// or harness rule can let an actor through: this is the one rule every
+// assignment passes (a claim, a handoff, a dispatch or a released hold
+// naming a model, a plan's planner named or picked, a part's builder or
+// reviewer rerouted, routing's builders and reviewers), so another company's
+// model is refused on all of them alike. An owner is written only through
+// Ledger.assignOwner, which the run-time guard enforces (t389);
+// test/single-family-scan.test.ts checks that its callers (claim, handoff)
+// and the dispatch, planner and review-binding paths pass this rule.
 export function assertEligible(actor: string, policy: ProjectPolicy, owner = DEFAULT_OWNER, role: AgentRole = "executor"): void {
+  // An admitted reviewer is judged as the model it was admitted as, which
+  // may be named by an alias of no recognised family.
+  const admission = role === "assessor" ? reviewerAdmission(actor, policy) : undefined;
+  if (actor !== owner) assertSingleFamily(admission?.active ? admissionActor(actor, admission) : actor, policy, actor);
+  if (role === "assessor") {
+    if (admission?.active) return;
+    if (admission) throw new RuleError("ineligible", `${admission.id}'s reviewer admission was withdrawn; use atelier models admit`, 403);
+  }
   if (policy.agents) {
     if (!hasRole(actor, policy, role)) throw new RuleError("ineligible", `${actor} needs an available agent with the ${role} role`, 403);
     return;
@@ -749,6 +886,10 @@ export function agentOf(actor: string, agents: Record<string, AgentPolicy>): str
 }
 
 export function hasRole(actor: string, policy: ProjectPolicy, role: AgentRole): boolean {
+  if (role === "assessor") {
+    const admission = reviewerAdmission(actor, policy);
+    if (admission) return admission.active;
+  }
   if (!policy.agents) return true;
   const name = agentOf(actor, policy.agents);
   return name !== null && policy.agents[name].available && policy.agents[name].eligible_roles.includes(role);
@@ -773,6 +914,8 @@ export function eligibleAgents(policy: ProjectPolicy, role: AgentRole): string[]
 // claim would apply.
 export function roleRefusal(actor: string, policy: ProjectPolicy, role: AgentRole, owner = DEFAULT_OWNER): string | null {
   if (policy.agents) {
+    const foreign = actor === owner ? null : companyRefusal(actor, singleFamily(policy));
+    if (foreign) return `${foreign}: use one of ${singleFamily(policy)}'s models, or return to cross-family review with atelier init --cross-family`;
     if (hasRole(actor, policy, role)) return null;
     const names = eligibleAgents(policy, role);
     return `${actor} needs an available agent with the ${role} role${names.length ? `; available agents with the ${role} role: ${names.join(", ")}` : `; no agent is available with the ${role} role`}`;
@@ -819,7 +962,9 @@ export function harnessRefusal(harness: string, policy: ProjectPolicy, role: Age
     return `${harness} needs an available agent with the ${role} role${names.length ? `; available agents with the ${role} role: ${names.join(", ")}` : `; no agent is available with the ${role} role`}`;
   }
   try {
-    assertEligible(`${harness}/x`, policy, owner, role);
+    // A harness names no model, so no company: the claim judges the model
+    // the runner names (assertEligible).
+    assertEligible(`${harness}/x`, { ...policy, familyMode: undefined }, owner, role);
     return null;
   } catch (err) {
     const rule = parseRuleError(err);
@@ -828,8 +973,14 @@ export function harnessRefusal(harness: string, policy: ProjectPolicy, role: Age
   }
 }
 
+// An admission cannot retroactively qualify an old review. A recorded
+// admission survives withdrawal; head, criteria and independence still apply.
+export function reviewAuthorized(r: Review, policy: ProjectPolicy, owner = DEFAULT_OWNER): boolean {
+  return r.by === owner || r.reviewerAdmission?.active === true || hasRole(r.by, { ...policy, reviewerAdmissions: undefined }, "assessor");
+}
+
 export function countingReviews(reviews: Review[], at: ReviewBinding, policy: ProjectPolicy, owner = DEFAULT_OWNER): Review[] {
-  return latestReviews(reviews, at).filter((r) => r.by === owner || hasRole(r.by, policy, "assessor"));
+  return latestReviews(reviews, at).filter((r) => reviewAuthorized(r, policy, owner));
 }
 
 export function measuredPaths(value: unknown): string[] | null {
@@ -846,17 +997,30 @@ export function measuredPaths(value: unknown): string[] | null {
 // environment, and an item cannot add a ship file either.
 export const SHIP_FILES = ["docs/atelier/**"];
 
+// Keep classification and its early explanation on the same protected set.
+export function protectedRuleGroups(policy: ProjectPolicy): [string, string[]][] {
+  return [
+    ["the project's protected paths", policy.protected ?? []],
+    ["the files its required checks run", checkFiles(policy.checks)],
+    ["the execution policy's protected_path_patterns", policy.execution?.protected_path_patterns ?? []],
+    ["the ship files", SHIP_FILES],
+    ["the files its ship order runs", checkFiles(policy.shipRuns ?? [])],
+    ["the post-merge policy (all repository paths)", policy.postMerge ? ["**"] : []],
+    ["the post-merge steps' protected files", policy.postMerge?.steps.flatMap(s => [...s.protect, ...checkFiles([s.command]), "package.json", "package-lock.json", "wrangler.*", ".npmrc"]) ?? []],
+  ];
+}
+
 export function changeClass(paths: string[], policy: ProjectPolicy): ChangeClass | null {
   if (!paths.length) return null;
-  const guarded = [...policy.protected, ...checkFiles(policy.checks), ...(policy.execution?.protected_path_patterns ?? []), ...SHIP_FILES, ...checkFiles(policy.shipRuns ?? [])];
+  const guarded = protectedRuleGroups(policy).flatMap(([, globs]) => globs);
   if (paths.some((p) => matchesFolded(p, guarded))) return "protected";
   const direct = policy.execution?.direct;
   return direct?.enabled && paths.every((p) => matchesAny(p, direct.allowed_path_patterns)) ? "direct" : "coordinated";
 }
 
-export function classRequirement(kind: ChangeClass): string {
-  if (kind === "protected") return "Protected change: needs one review from another model family";
-  if (kind === "coordinated") return "Coordinated change: needs one review from a different model than every contributor";
+export function classRequirement(kind: ChangeClass, single: PoolFamily | null = null): string {
+  if (kind === "protected") return single ? `Protected change: needs one review from a different ${single} model (single-family mode)` : "Protected change: needs one review from another model family";
+  if (kind === "coordinated") return single ? `Coordinated change: needs one review from a different ${single} model than every contributor (single-family mode)` : "Coordinated change: needs one review from a different model than every contributor";
   return "Direct change: needs no review";
 }
 
@@ -864,6 +1028,7 @@ export function classRequirement(kind: ChangeClass): string {
 // execution policy lacks its independent review. Such a project has no
 // change classes to name, so the blocker names the protected path instead.
 export const PROTECTED_NEED = "touches a protected path; needs approval from a model of another family than every contributor";
+export const protectedNeed = (single: PoolFamily | null): string => (single ? `touches a protected path; needs approval from ${independentReviewerText(single)}` : PROTECTED_NEED);
 
 // Whether one review is the independent review a change needs. The project
 // owner's approval never is: the owner decides by accepting, and the
@@ -872,15 +1037,27 @@ export const PROTECTED_NEED = "touches a protected path; needs approval from a m
 // regardless of harness, spelling or profile. A protected change, in every
 // project, needs a model of a recognised family
 // that no contributor shares (familyRefusal); a coordinated change in a
-// governed project needs a different model. In a protected change, a review
+// governed project needs a different model (contributed). In a protected
+// change, a review
 // the owner token recorded in a model's name counts only when it answers a
 // review request that model claimed for that head (unprovedReview). A tier
 // review's approval never is: the tier reviews beside the gate, not for it.
-export function independentApproval(r: Review, kind: "protected" | "coordinated", contributors: readonly string[], owner = DEFAULT_OWNER): boolean {
+// Under single-family mode (`single`) a protected change needs instead a
+// different model of that company (familyRefusal), and no other company's
+// model counts for any change, coordinated included; a contributor never
+// counts in either mode.
+export function independentApproval(r: Review, kind: "protected" | "coordinated", contributors: readonly string[], owner = DEFAULT_OWNER, single: PoolFamily | null = null): boolean {
+  if (r.reviewerAdmission) {
+    const admission = r.reviewerAdmission;
+    r = { ...r, by: admissionActor(r.by, admission) };
+    contributors = contributors.map((actor) => admissionActor(actor, admission));
+    if (familyRefusal(r.by, contributors, single) !== null) return false;
+  }
   if (!r.approve || r.tier || sameActor(r.by, owner) || !validActor(r.by) || !r.by.includes("/")) return false;
   if (kind === "protected" && unprovedReview(r)) return false;
-  if (contributors.some((actor) => modelKey(r.by) === modelKey(actor))) return false;
-  return kind === "coordinated" || familyRefusal(r.by, contributors) === null;
+  if (contributed(r.by, contributors)) return false;
+  if (companyRefusal(r.by, single)) return false;
+  return kind === "coordinated" || familyRefusal(r.by, contributors, single) === null;
 }
 
 // A review the owner token recorded in a model's name that answers no review
@@ -1045,6 +1222,10 @@ export function itemFields(input: Record<string, unknown>): ItemFields {
     return entries;
   };
   const out: ItemFields = {};
+  if (input.area !== undefined) {
+    if (input.area !== null && (typeof input.area !== "string" || !/^a[1-9]\d*$/.test(input.area))) throw new RuleError("bad_area", "area must be an area ID or null to clear", 400);
+    out.area = input.area as string | null;
+  }
   if (input.revertOf !== undefined) {
     if (typeof input.revertOf !== "string" || !/^t[1-9]\d*$/.test(input.revertOf)) throw new RuleError("bad_field", "revertOf must name a task, such as t7", 400);
     out.revertOf = input.revertOf;
@@ -1068,11 +1249,14 @@ export function itemFields(input: Record<string, unknown>): ItemFields {
 export const OVERRIDE_REASON_MAX = 500;
 
 // The refusal a project that forbids overrides gives every override, and
-// every permission for one, before the reason is read (t371).
-export const OVERRIDE_FORBIDDEN = "this project forbids overrides of the independent review (atelier init --no-override): the change needs an approval from a model of another family than every contributor, or it does not land";
+// every permission for one, before the reason is read (t371). In
+// single-family mode (t394) it names the reviewer that mode needs.
+export const overrideForbidden = (single: PoolFamily | null): string =>
+  `this project forbids overrides of the independent review (atelier init --no-override): the change needs an approval from ${independentReviewerText(single)}, or it does not land`;
+export const OVERRIDE_FORBIDDEN = overrideForbidden(null);
 
-export function assertOverridesAllowed(policy: Pick<ProjectPolicy, "noOverride">): void {
-  if (policy.noOverride) throw new RuleError("override_forbidden", OVERRIDE_FORBIDDEN, 403);
+export function assertOverridesAllowed(policy: Pick<ProjectPolicy, "noOverride" | "familyMode">): void {
+  if (policy.noOverride) throw new RuleError("override_forbidden", overrideForbidden(singleFamily(policy)), 403);
 }
 
 // What the inbox, the page and the brief offer beside a missing independent
@@ -1107,7 +1291,7 @@ export function reviewOverrideFor(
     const where = item.head ? ` at ${item.head.slice(0, 8)}` : "";
     throw new RuleError("override_unneeded", `${item.id}${where} is not missing an independent review, so there is nothing to override${g.ready ? "; accept it without an override" : `: ${g.blockers.join("; ")}`}`);
   }
-  return { override: { head: item.head, by: owner, reason: text, at }, waived: g.requirement ?? PROTECTED_NEED, contributors: contributorsOf(item) };
+  return { override: { head: item.head, by: owner, reason: text, at }, waived: g.requirement ?? protectedNeed(singleFamily(policy)), contributors: contributorsOf(item) };
 }
 
 // An item holds its scope against other claims while it is claimed,
@@ -1123,6 +1307,18 @@ export function overlappingLive(item: Item, items: readonly Item[], actor: strin
   return items.filter(
     (o) => o.id !== item.id && holdsScope(o) && o.owner !== actor && !samePlan(item, o) && scopesOverlap(item.scope, o.scope),
   );
+}
+
+// Under single-family mode only the company's models build, plan or review
+// (t394), whatever named them. assertEligible calls this first, so every
+// assignment is judged by it; a dispatch or released hold naming only a
+// model calls it directly, and one naming no model leaves the runner to
+// choose and is judged at the claim. An actor that is not harness/model, the
+// owner working by hand, is no model and is not judged.
+export function assertSingleFamily(actor: string, policy: Pick<ProjectPolicy, "familyMode">, what = actor): void {
+  const single = singleFamily(policy);
+  if (!single || !actor.includes("/") || actorFamily(actor) === single) return;
+  throw new RuleError("single_family", `${what} is not one of ${single}'s models, and this project runs in single-family mode (${single}): use one of ${single}'s models, or return to cross-family review with atelier init --cross-family`, 409);
 }
 
 // The reason a claim whose scope overlaps a live item is refused under a
@@ -1188,11 +1384,22 @@ export interface EvidenceView {
 // on someone's machine is still shown but does not count.
 const countsAtHead = (policy: ProjectPolicy, e: Evidence) => e.grade === "observed" && !e.merged && (!policy.sandboxOnly || e.where === "sandbox");
 
+// The head's own runs of one check that the gate counts, oldest first: every
+// observed result at the head for that command that is not a merged run and,
+// under sandboxOnly, ran in a container. The last of them is the check's
+// result at the head (evidenceAt); the earlier ones are the retries it
+// followed, kept so a failure and the pass that answered it stay legible
+// together (t403, t436).
+export function countingRunsAt(policy: ProjectPolicy, evidence: Evidence[], head: string | null, claim: string): Evidence[] {
+  return (head ? evidence.filter((e) => e.head === head) : [])
+    .filter((e) => countsAtHead(policy, e) && !e.notApplicable && e.claim === claim)
+    .sort((a, b) => a.at.localeCompare(b.at));
+}
+
 export function evidenceAt(policy: ProjectPolicy, evidence: Evidence[], head: string | null): EvidenceView {
   const atHead = head ? evidence.filter((e) => e.head === head) : [];
   const counts = (e: Evidence) => countsAtHead(policy, e);
-  const latest = (claim: string) =>
-    atHead.filter((e) => counts(e) && !e.notApplicable && e.claim === claim).sort((a, b) => a.at.localeCompare(b.at)).pop();
+  const latest = (claim: string) => countingRunsAt(policy, atHead, head, claim).pop();
   const measured = atHead.filter((e) => counts(e) && measuredPaths(e.changedPaths) !== null).sort((a, b) =>
     Number(a.where === "sandbox") - Number(b.where === "sandbox") || a.at.localeCompare(b.at)).pop();
   const changedPaths = measured?.changedPaths ?? null;
@@ -1223,11 +1430,19 @@ export interface MergedCheckView {
   run: boolean;   // whether any merged check has been run at this head
 }
 
+// The merged runs of one check at the head that count, oldest first; the
+// last is the check's result on the merge (mergedChecksAt).
+export function mergedRunsAt(policy: ProjectPolicy, evidence: Evidence[], head: string | null, claim: string): Evidence[] {
+  return (head ? evidence.filter((e) => e.head === head) : [])
+    .filter((e) => e.claim === claim && e.merged && e.grade === "observed" && !e.notApplicable && (!policy.sandboxOnly || e.where === "sandbox"))
+    .sort((a, b) => a.at.localeCompare(b.at));
+}
+
 export function mergedChecksAt(policy: ProjectPolicy, evidence: Evidence[], head: string | null, mainNow: string | null): MergedCheckView {
   const runs = head ? evidence.filter((e) => e.head === head && e.merged && e.grade === "observed" && !e.notApplicable && (!policy.sandboxOnly || e.where === "sandbox")) : [];
   const changed = evidenceAt(policy, evidence, head).changedPaths;
   const checks = policy.checks.filter((claim) => checkApplies(policy, claim, changed) !== false).map((claim) => {
-    const e = runs.filter((e) => e.claim === claim).sort((a, b) => a.at.localeCompare(b.at)).pop();
+    const e = mergedRunsAt(policy, runs, head, claim).pop();
     return e
       ? { claim, grade: "observed" as Grade, passed: e.passed, where: e.where ?? "runner", mainHead: e.mainHead, stale: !!mainNow && e.mainHead !== mainNow, at: e.at, by: e.by }
       : { claim, grade: "pending" as Grade, passed: null, stale: false };
@@ -1247,17 +1462,25 @@ export function mergedChecksAt(policy: ProjectPolicy, evidence: Evidence[], head
 // the head's own check before it is shown and not counted. The latest merged
 // run per check decides. While the head's own check fails, it is the blocker.
 export function mergedBlockers(policy: ProjectPolicy, evidence: Evidence[], head: string | null): string[] {
-  const out: string[] = [];
+  return blockingMergedRuns(policy, evidence, head).map((b) => b.blocker);
+}
+
+// The merged runs behind mergedBlockers: each failing merged run that blocks
+// acceptance, with the blocker it is worded as, so a reading of why the gate
+// refuses (src/check-failure.ts) can show the run itself.
+export function blockingMergedRuns(policy: ProjectPolicy, evidence: Evidence[], head: string | null): { run: Evidence; blocker: string }[] {
+  const out: { run: Evidence; blocker: string }[] = [];
   for (const m of mergedChecksAt(policy, evidence, head, null).checks) {
     if (m.grade !== "observed" || m.passed || !m.mainHead || !m.at) continue;
-    const own = evidence.filter((e) => e.head === head && e.claim === m.claim && !e.notApplicable && countsAtHead(policy, e)).sort((a, b) => a.at.localeCompare(b.at));
+    const own = countingRunsAt(policy, evidence, head, m.claim);
     if (!own.at(-1)?.passed) continue;
     // The head's own run the merged one followed says which main the head's
     // check saw. With none before it, the latest run's main head is all the
     // record holds. A run that names no main head cannot say main moved.
     const ranAt = m.at, seen = own.filter((e) => e.at <= ranAt).at(-1) ?? own.at(-1)!;
     if (!seen.mainHead || (seen.at <= ranAt && seen.mainHead === m.mainHead)) continue;
-    out.push(`\`${m.claim}\` failed on the merge with main at ${m.mainHead.slice(0, 8)}, which moved after this revision's own checks passed; run atelier check --merged again, or bring main into the workspace`);
+    const run = mergedRunsAt(policy, evidence, head, m.claim).pop()!;
+    out.push({ run, blocker: `\`${m.claim}\` failed on the merge with main at ${m.mainHead.slice(0, 8)}, which moved after this revision's own checks passed; run atelier check --merged again, or bring main into the workspace` });
   }
   return out;
 }
@@ -1483,7 +1706,7 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   const kind = view.changedPaths === null ? null : changeClass(changed, policy);
   const governed = policy.execution !== undefined;
   if (governed && view.changedPaths?.length === 0) blockers.push("nothing to merge");
-  const requirement = kind ? classRequirement(kind) : view.changedPaths === null ? "Change class pending: changed paths not yet observed" : "Nothing to merge";
+  const requirement = kind ? classRequirement(kind, singleFamily(policy)) : view.changedPaths === null ? "Change class pending: changed paths not yet observed" : "Nothing to merge";
   let needsAssessor = false;
   let overridden: ReviewOverride | null = null;
   if (governed && kind && !policy.execution!.allowed_classes.includes(kind)) blockers.push(`${kind} changes are not allowed by this project's execution policy`);
@@ -1496,18 +1719,19 @@ export function gate(item: Item, policy: ProjectPolicy, evidence: Evidence[], re
   // stands in for it; the owner's approval does not.
   if (!options.reviewHeld && (kind === "protected" || (governed && kind === "coordinated"))) {
     const contributors = contributorsOf(item);
-    if (!reviews.some((r) => independentApproval(r, kind, contributors, owner))) {
+    const single = singleFamily(policy);
+    if (!reviews.some((r) => independentApproval(r, kind, contributors, owner, single))) {
       // A project that forbids overrides (t371) counts none, an override
       // recorded before the prohibition included: the change waits for its
       // review as if the override had never been made.
       overridden = policy.noOverride ? null : overrideAt(item, owner);
       if (!overridden) {
         needsAssessor = true;
-        blockers.push(governed ? requirement : PROTECTED_NEED);
+        blockers.push(governed ? requirement : protectedNeed(single));
         // An approval that would count had the model's own token or a claimed
         // request shown it is named, so the owner sees why it does not.
         if (kind === "protected") {
-          for (const r of reviews) if (unprovedReview(r) && independentApproval({ ...r, proved: true }, kind, contributors, owner)) blockers.push(unprovedBlocker(r));
+          for (const r of reviews) if (unprovedReview(r) && independentApproval({ ...r, proved: true }, kind, contributors, owner, single)) blockers.push(unprovedBlocker(r));
         }
       }
     }
@@ -1540,22 +1764,9 @@ export interface InboxEntry {
   reviewer?: string | null;
 }
 
-// The inbox kinds that are the lead developer's own decisions — the calls only
-// the human makes: approve a plan, accept, override or assess, approve a
-// protected action, a block marked as a decision. Everything else the waiting
-// list holds (merging, a stale claim, an out-of-scope change, failing checks,
-// overlapping work) is what the orchestrator and the runners handle, and the
-// waiting lists on Home, Decisions and `atelier status` split on this line
-// (src/ui.ts, cli/status.mjs).
-export const OWN_CALL_KINDS: ReadonlySet<InboxEntry["kind"]> = new Set([
-  "approve-plan", "plan-blocked", "accept", "assess", "ship", "blocked",
-]);
-
-// Whether an inbox entry is the lead developer's own decision, not work the
-// orchestrator or the runners handle.
-export function isOwnCall(kind: InboxEntry["kind"]): boolean {
-  return OWN_CALL_KINDS.has(kind);
-}
+// Which of these notices make a task the owner's own call, and which leave it
+// at its pipeline stage for the orchestrator and reviewers, is one rule:
+// attentionFor in src/attention.ts (t504), which every waiting list reads.
 
 // The weights of a plan's own entries, which the Ledger adds beside
 // inboxFor's (src/plans/state.ts): approving a proposed split, and deciding
@@ -1604,7 +1815,7 @@ export function inboxFor(
       if (g.ready) {
         out.push({ ...base, kind: "accept", reason: `all checks observed passing at this head${overrode(g)}`, weight: 100 });
       } else if (g.needsAssessor) {
-        out.push({ ...base, kind: "assess", reason: `${g.requirement ?? PROTECTED_NEED}; ask a reviewer with atelier land ${item.id} --reviewer H/M${policy.noOverride ? "; this project forbids overrides" : ", and override only as the owner's last resort"}`, weight: 80 });
+        out.push({ ...base, kind: "assess", reason: `${g.requirement ?? protectedNeed(singleFamily(policy))}; ask a reviewer with atelier land ${item.id} --reviewer H/M${policy.noOverride ? "; this project forbids overrides" : ", and override only as the owner's last resort"}`, weight: 80 });
       } else if (g.blockers.some((b) => b.includes("failed"))) {
         out.push({ ...base, kind: "failing", reason: g.blockers.find((b) => b.includes("failed"))!, weight: 20 });
       }
@@ -1689,6 +1900,11 @@ export function assertCriteria(item: Item, expected: unknown): void {
   }
 }
 
+// Porting to a released fork does not take its claim or dispatch.
+export function ownerPortAllowed(item: Pick<Item, "owner" | "state">, actor: string, owner = DEFAULT_OWNER): boolean {
+  return actor === owner && item.owner === null && item.state === "open";
+}
+
 export function assertLive(item: Item): void {
   assertNotBlocked(item);
   if (!["claimed", "submitted"].includes(item.state)) throw new RuleError("closed", `${item.id} is ${item.state}`);
@@ -1733,7 +1949,7 @@ export function decisionFor(item: Item, policy: ProjectPolicy, evidence: Evidenc
   // the page asks for a qualifying reviewer, and offers the override only
   // when the missing review is all that blocks, since it waives nothing else.
   if (item.state === "submitted" && g.needsAssessor) {
-    const need = g.requirement ? `${g.requirement}.` : "This task changes protected files and needs an approval from a model of another family than every contributor.";
+    const need = g.requirement ? `${g.requirement}.` : `This task changes protected files and needs an approval from ${independentReviewerText(singleFamily(policy))}.`;
     const override = overrideOffer(policy, g.blockers.length === 1);
     return { title: "Waiting for an independent review", detail: `${need} Your own approval does not count as that review.${override}`, action: "review", tone: "ask", passed };
   }
@@ -1755,4 +1971,12 @@ export function pushNotice(value: unknown, namespace = "atelier"): PushNotice | 
   const { ref, after } = v.payload ?? {};
   if (!v.source.repoName || !ref?.startsWith("refs/heads/") || !after || !/^[a-f0-9]{40,64}$/.test(after) || /^0+$/.test(after)) return null;
   return { repo: v.source.repoName, ref, after };
+}
+
+// Review leases use the server clock. Renewal is coalesced to one write per
+// 30 seconds; five minutes without one fences the claim, even after SIGKILL.
+export const REVIEW_RENEW_MS = 30_000;
+export const REVIEW_LEASE_MS = 5 * 60_000;
+export function reviewLeaseExpired(renewedAt: string | null | undefined, now: number): boolean {
+  return !renewedAt || !Number.isFinite(Date.parse(renewedAt)) || now - Date.parse(renewedAt) >= REVIEW_LEASE_MS;
 }

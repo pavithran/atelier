@@ -1,11 +1,13 @@
+import { postMergeArgs } from "../post-merge-policy.mjs";
 // atelier init. Its forms, flags and help are declared in src/usage/commands/init.ts.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { checkFiles } from "../../src/rules.ts";
+import { checkFiles, preparationPaths } from "../../src/rules.ts";
 import { adapterCheckPaths, adapterClasses, appliesText, checkClasses, classText, knownReadOnly, refusalOf, refusalText } from "../../src/checks.ts";
 import { buildHistory, loadPairs, savePairs } from "../fresh.mjs";
 import { pushHistory } from "../push-steps.mjs";
 import { shipPolicy } from "../ship.mjs";
+import { familyModeText } from "../status.mjs";
 import { OWNER, OWNER_NAME, P, agentsMdOffer, args, call, cfg, coreArg, die, git, holds, initName, listArg, project, readControlPlane, recordedApproval, saveConfig, short, wsConfig } from "../atelier.mjs";
 
 // The project owner, in the project's checkout.
@@ -52,6 +54,12 @@ export default async function initCommand() {
   const reset = args.reset === true;
   const protect = given ?? (reset ? [] : cfg.projects?.[name]?.protect ?? []);
   const policy = {};
+  const postMerge = postMergeArgs(args);
+  if (postMerge !== undefined && args.multi?.["post-merge"]) {
+    // The server's support is land.post-merge.v1, which init declares and
+    // the CLI checked before this handler ran (t458).
+    policy.postMerge = postMerge;
+  }
   if (args.multi.check || reset) policy.checks = checks;
   // Each check must be read-only (src/checks.ts). One that is never
   // read-only is refused here, before any request. The ControlPlane
@@ -67,6 +75,27 @@ export default async function initCommand() {
     onServer = Array.isArray(list) && list.some((p) => p.name === name);
     registered = (Array.isArray(list) ? list.find((p) => p.name === name)?.policy : null) ?? { checks: [] };
   }
+  if (args["prepare-input"] !== undefined || args["prepare-output"] !== undefined) {
+    if (!args.prepare) die("--prepare-input and --prepare-output require --prepare CMD");
+  }
+  if (args.prepare !== undefined) {
+    if (typeof args.prepare !== "string") die("--prepare needs a command");
+    if (args.prepare === "") policy.prepare = null;
+    else {
+      const command = args.prepare.trim();
+      if (!command) die("--prepare needs a nonempty command, or an empty value to clear it");
+      const why = refusalOf(command);
+      const adapter = cp?.adapter ? adapterClasses(cp.adapter, [command]) : { declarations: [], refusals: [] };
+      if (why || adapter.refusals.length) die(`${why ? refusalText(command, why) : adapter.refusals[0].text}.\nNothing was sent.`);
+      let inputs, outputs;
+      try {
+        inputs = preparationPaths(listArg("prepare-input", "init"));
+        outputs = preparationPaths(listArg("prepare-output", "init"));
+      } catch (error) { die(error.message); }
+      const declaration = adapter.declarations[0] ?? (!knownReadOnly(command) && declaring !== undefined ? { command, by: "owner", note: declaring.trim() } : undefined);
+      policy.prepare = { command, inputs, outputs, ...(declaration ? { declaration } : {}) };
+    }
+  }
   const classed = policy.checks ?? registered?.checks ?? [];
   const fromAdapter = cp?.adapter ? adapterClasses(cp.adapter, classed) : { declarations: [], refusals: [] };
   const byWords = classed.flatMap((cmd) => { const why = refusalOf(cmd); return why ? [refusalText(cmd, why)] : []; });
@@ -78,7 +107,7 @@ export default async function initCommand() {
   const settled = new Set([...fromAdapter.refusals, ...fromAdapter.declarations, ...(registered?.checkClasses ?? [])].map((d) => d.command));
   const needing = classed.filter((cmd) => !refusalOf(cmd) && !knownReadOnly(cmd) && !settled.has(cmd));
   const owned = declaring === undefined ? [] : needing.map((command) => ({ command, by: "owner", note: declaring.trim() }));
-  if (declaring !== undefined && !owned.length) console.log("--declare-read-only declared nothing: every check is already known to be read-only.");
+  if (declaring !== undefined && !owned.length && !policy.prepare?.declaration) console.log("--declare-read-only declared nothing: every check is already known to be read-only.");
   if (fromAdapter.declarations.length || owned.length) policy.checkClasses = [...fromAdapter.declarations, ...owned];
   // The adapter's change_rules say which checks apply to which paths. A
   // first init, or one that names the checks with --check or starts over
@@ -124,6 +153,22 @@ export default async function initCommand() {
   // ones; --core "" alone clears them, and --reset without it does too.
   const core = coreArg();
   if (core || reset) policy.coreFiles = core ?? [];
+  // --single-family COMPANY has the project build and review with one
+  // company's models alone; --cross-family returns to the default, where
+  // a protected change needs a model of another company than every
+  // contributor. Omitted, the recorded mode stays; the server records
+  // either switch with who made it and when.
+  if (args["single-family"] !== undefined && args["cross-family"] === true) die("--single-family and --cross-family contradict each other; give one of them");
+  const singleFamily = args["single-family"] !== undefined ? args["single-family"] : args["cross-family"] === true ? null : undefined;
+  // The commit identity (t451): each flag given replaces what is recorded,
+  // and the server checks the whole and refuses an invalid one. A list
+  // flag given once as "" clears its list.
+  if (args["commit-name"] !== undefined) policy.commitName = args["commit-name"];
+  if (args["commit-email"] !== undefined) policy.commitEmail = args["commit-email"];
+  for (const [flag, field] of [["agent-email", "agentEmails"], ["private-email", "privateEmails"], ["public-mirror", "publicMirrors"]]) {
+    const values = args.multi[flag];
+    if (values) policy[field] = values.length === 1 && values[0] === "" ? [] : values;
+  }
   const r = await call("PUT", P(name), {
     ...policy,
     ...(reset ? { reset: true } : {}),
@@ -133,10 +178,14 @@ export default async function initCommand() {
     // What may block a review, stated in every review brief; omitted keeps
     // it, "" restores the default bar.
     ...(args["review-bar"] !== undefined ? { reviewBar: args["review-bar"] } : {}),
+    // The model that triages a landing's diff against the task's criteria
+    // before its review (t475), harness/model; omitted keeps it, "" clears it.
+    ...(args.triage !== undefined ? { triage: args.triage } : {}),
     // The top review tier, harness/model actors separated by commas, each
     // reviewing every protected change beside the gate's review; omitted
     // keeps it, "" clears it.
     ...(args["review-tier"] !== undefined ? { reviewTier: args["review-tier"] } : {}),
+    ...(singleFamily !== undefined ? { singleFamily } : {}),
     approval: args.approval,
     // Omitted keeps the current title; --title "" clears it.
     ...(args.title === undefined ? {} : { title: args.title }),
@@ -183,6 +232,8 @@ export default async function initCommand() {
   cfg.projects[name] = { ...cfg.projects[name], path: top, branch, protect, ...(since || fresh ? { fresh: true } : {}) };
   saveConfig(cfg);
   const pol = r.project.policy;
+  if (postMerge && !pol.postMerge) die("server did not record post-merge policy; stop and upgrade the server");
+  if (pol.postMerge) console.log(`Post-merge: ${pol.postMerge.steps.map(s => `${s.name} (${s.class})`).join(" → ")}; owner approval recorded`);
   console.log(fresh
     ? `${r.project.title ? `${r.project.title} (${name})` : name}: policy updated; the baseline was not pushed (it holds part of the history; atelier sync carries new commits).`
     : `${r.project.title ? `${r.project.title} (${name})` : name}: baseline ${r.project.repo} now holds ${branch} @ ${short(git(["rev-parse", pushed], { cwd: top }))}.`);
@@ -191,12 +242,19 @@ export default async function initCommand() {
   for (const v of checkClasses(pol)) console.log(`  ${v.command}: ${classText(v)}${pol.checkPaths?.some((c) => c.command === v.command) ? `; ${appliesText(pol, v.command)}` : ""}`);
   if (fromRules?.unrun.length) console.log(`ControlPlane change rules also require ${fromRules.unrun.map((u) => `${u.name} (\`${u.command}\`)`).join(", ")}, which no registered check runs; add one with --check to require it.`);
   console.log(`Ship:       ${pol.shipKinds?.length ? `needs ${pol.shipKinds.join(", ")}; ` : ""}${pol.shipRuns?.length ?? 0} protected command${(pol.shipRuns?.length ?? 0) === 1 ? "" : "s"}`);
+  if (pol.prepare) console.log(`Prepare:    ${pol.prepare.command} (inputs: ${pol.prepare.inputs.join(", ")}; outputs: ${pol.prepare.outputs.join(", ")})`);
   if (pol.regenerate) console.log(`Regenerate: ${pol.regenerate}`);
   console.log(`Review bar: ${pol.reviewBar ?? "the default, which blocks for a correctness, security or data-loss defect, a behaviour change without a test that covers it, docs or help that now contradict the code, a breaking change to a command, route or API field without a migration, or a visible regression on a user-facing page; anything else is a follow-up"}`);
   // A server older than the review bar ignores it and answers without one.
   if (typeof args["review-bar"] === "string" && args["review-bar"].trim() && !pol.reviewBar) console.log("Warning: the server did not record the review bar; deploy the server, then run atelier init --review-bar again.");
+  console.log(`Triage:     ${pol.triage ? `${pol.triage}, which triages each landing's diff against the task's acceptance criteria before the review is asked for (atelier land --triage H/M names another, --no-triage REASON skips it)` : "none, unless a landing names a model with atelier land --triage H/M"}`);
+  // A server older than the triage setting ignores it and answers without one.
+  if (typeof args.triage === "string" && args.triage.trim() && !pol.triage) console.log("Warning: the server did not record the triage model; deploy the server, then run atelier init --triage again.");
   console.log(`Review tier: ${pol.reviewTier?.length ? `${pol.reviewTier.join(", ")}, one of which reviews every protected change: the gate's review goes to the tier first, and a separate tier review is asked only when the gate's reviewer is outside it` : "none"}`);
   if (typeof args["review-tier"] === "string" && args["review-tier"].trim() && !pol.reviewTier?.length) console.log("Warning: the server did not record the review tier; deploy the server, then run atelier init --review-tier again.");
+  console.log(`Models:     ${familyModeText(pol)}`);
+  // A server older than single-family mode ignores it and answers without one.
+  if (typeof singleFamily === "string" && singleFamily.trim() && !pol.familyMode?.single) console.log("Warning: the server did not record single-family mode; deploy the server, then run atelier init --single-family again.");
   const checkInputs = checkFiles(pol.checks ?? []);
   console.log(`Protected:  ${[...new Set([...(pol.protected ?? []), ...checkInputs])].sort().join(", ")}`);
   console.log(`Eligible:   ${pol.eligible?.join(", ") || "any agent"}`);
@@ -207,9 +265,12 @@ export default async function initCommand() {
   console.log(`Criteria:   ${pol.requireCriteria ? "required on every task" : "optional"}`);
   // A server older than the criteria requirement ignores it and answers without one.
   if (args["require-criteria"] === true && !pol.requireCriteria) console.log("Warning: the server did not record the criteria requirement; deploy the server, then run atelier init --require-criteria again.");
-  console.log(`Core files: ${pol.coreFiles?.length ? `${pol.coreFiles.join(", ")}; the queue holds a dispatch whose scope overlaps a live item's in one` : "none; the queue holds no dispatch for its scope"}`);
+  console.log(`Core files: ${pol.coreFiles?.length ? `${pol.coreFiles.join(", ")}; the queue holds a dispatch whose scope overlaps a claimed or landing item's in one` : "none; the queue holds no dispatch for its scope"}`);
   // A server older than core files ignores them and answers without any.
   if (core?.length && !pol.coreFiles?.length) console.log("Warning: the server did not record the core files; deploy the server, then run atelier init --core again.");
+  const ci = pol.commitIdentity;
+  console.log(`Commits:    ${ci ? `${ci.name} <${ci.email}>${ci.agentEmails.length ? `; agents may also commit as ${ci.agentEmails.join(", ")}` : ""}${ci.privateEmails?.length ? `; declared private: ${ci.privateEmails.join(", ")}` : ""}${ci.publicMirrors?.length ? `; public mirrors: ${ci.publicMirrors.join(", ")}` : ""}` :"no identity named; claims fall back to the checkout's, and runners refuse to start a builder: set one with --commit-name NAME --commit-email EMAIL"}`);
+  if ((args["commit-email"] !== undefined || args["commit-name"] !== undefined) && !ci) console.log("Warning: the server did not record the commit identity; deploy the server, then run atelier init --commit-name NAME --commit-email EMAIL again.");
   if (pol.approval) console.log(`Approval:   ${pol.approval}`);
   let agentsMd = null;
   try { agentsMd = readFileSync(join(top, "AGENTS.md"), "utf8"); } catch {}

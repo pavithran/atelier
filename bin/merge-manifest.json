@@ -3,8 +3,14 @@
   "generators": [
     {
       "name": "command-indexes",
-      "command": ["node", "cli/regenerate.mjs"],
-      "inputs": ["cli/**", "src/**"],
+      "command": [
+        "node",
+        "cli/regenerate.mjs"
+      ],
+      "inputs": [
+        "cli/**",
+        "src/**"
+      ],
       "outputs": [
         "cli/commands/index.mjs",
         "src/usage/commands/index.ts",
@@ -14,20 +20,30 @@
       ]
     }
   ],
-  "records": [],
+  "records": [
+    {
+      "path": "src/capability-declarations.ts",
+      "framed": true,
+      "key": "^  \\{ name: \"([^\"]+)\","
+    }
+  ],
   "registries": [
     {
       "name": "command-handlers",
       "dir": "cli/commands",
       "files": "*.mjs",
-      "exclude": ["index.mjs"],
+      "exclude": [
+        "index.mjs"
+      ],
       "key": "^// atelier (\\S+?)[.:]?(?: |$)"
     },
     {
       "name": "command-declarations",
       "dir": "src/usage/commands",
       "files": "*.ts",
-      "exclude": ["index.ts"],
+      "exclude": [
+        "index.ts"
+      ],
       "key": "^  name: \"([^\"]+)\","
     }
   ]

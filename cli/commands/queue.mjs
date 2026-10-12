@@ -1,6 +1,7 @@
 // atelier queue. Its forms, flags and help are declared in src/usage/commands/queue.ts.
-import { holdText } from "../../src/dispatch/rules.ts";
-import { OWNER, apiToken, die, project, resolveTokenActor, server, tokenActor } from "../atelier.mjs";
+import { holdText, orphanText } from "../../src/dispatch/rules.ts";
+import { notePreview } from "../../src/text.ts";
+import { OWNER, apiToken, die, flat, project, resolveTokenActor, server, tokenActor } from "../atelier.mjs";
 
 // Everything waiting for a runner, across projects, oldest first.
 export default async function queueCommand() {
@@ -14,6 +15,11 @@ export default async function queueCommand() {
   for (const { project, item } of queued) {
     const d = item.dispatch;
     console.log(`${project}/${item.id}  for ${d.to}${d.agent ? ` ${d.agent}` : ""}${d.model ? `/${d.model}` : ""}${d.job === "merge-main" ? "  merge-main" : ""}  ${item.title}`);
-    if (item.held) console.log(`  held: ${holdText(item.held)}`);
+    const preview = notePreview(d.note);
+    if (preview) console.log(`  note: ${flat(preview)}`);
+    // A claim whose runner stopped polling holds nothing (t537): said in
+    // the hold's text when a live blocker holds the task too, else alone.
+    if (item.held) console.log(`  held: ${holdText(item.held, project)}`);
+    else if (item.orphaned?.length) console.log(`  held: ${orphanText(item.orphaned, project)}`);
   }
 }

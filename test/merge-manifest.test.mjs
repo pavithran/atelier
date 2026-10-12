@@ -4,7 +4,8 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, cpSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { MANIFEST_PATH, parseManifest } from "../cli/merge-driver.mjs";
+import { MANIFEST_PATH, parseManifest, readRecords } from "../cli/merge-driver.mjs";
+import { CAPABILITY_DECLARATIONS } from "../src/capability-declarations.ts";
 import { mergeConfigProblems, mergeThrough, previewMerge } from "../cli/merge-pipeline.mjs";
 import { runGroup } from "../cli/group.mjs";
 import { commandFiles, handlerIndex, specIndex } from "../cli/regenerate.mjs";
@@ -44,6 +45,16 @@ test("this repository declares node cli/regenerate.mjs with every output it writ
     assert.ok(names.length > 60);
     for (const name of names) assert.equal(registries[dir].pattern.exec(readFileSync(join(root, dir, `${name}${ext}`), "utf8"))?.[1], name, `${dir}/${name}${ext}`);
   }
+});
+
+test("this repository declares src/capability-declarations.ts as a framed record file keyed by capability name, routed to the records driver", () => {
+  const manifest = parseManifest(readFileSync(join(root, MANIFEST_PATH), "utf8"));
+  const record = manifest.records.find((r) => r.path === "src/capability-declarations.ts");
+  assert.equal(record?.framed, true);
+  assert.match(git(root, "check-attr", "merge", "--", record.path), /: merge: atelier-records$/);
+  const read = readRecords(readFileSync(join(root, record.path), "utf8"), record.pattern, true);
+  assert.deepEqual(read.problems, []);
+  assert.deepEqual([...read.records.keys()], CAPABILITY_DECLARATIONS.map((c) => c.name));
 });
 
 test("a registry's exclude is a list of file names in its folder", () => {

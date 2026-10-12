@@ -9,10 +9,10 @@ const OWNER = "runner-tests-owner", ACTOR = "codex/gpt-6-astra", HEAD = "a".repe
 const I = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 let serial = 0;
 afterEach(() => vi.restoreAllMocks());
-async function setup() {
+async function setup(policy = {}) {
   const name = `runner-test-${++serial}`;
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
-  const p = { name, repo: name, policy: { checks: [], protected: [] }, createdAt: new Date().toISOString() };
+  const p = { name, repo: name, policy: { checks: [], protected: [], ...policy }, createdAt: new Date().toISOString() };
   await L.setProject(p, "owner");
   await I().registerProject(p);
   await L.newItem("Build", [], "owner");
@@ -48,6 +48,17 @@ async function setup() {
   return { name, L, token, api, request, offer, base, poll, claim, upstream, bindings, push: () => { forkHead = "b".repeat(40); } };
 }
 
+it("refuses runner tokens on board and area routes", async () => {
+  const t = await setup();
+  for (const section of ["board", "areas", "areas/a1"]) {
+    for (const method of ["GET", "POST", "DELETE"]) {
+      const response = await t.api(method, `/projects/${t.name}/${section}`);
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({ error: "runner_forbidden" });
+    }
+  }
+});
+
 it("issues normalized runner/project credentials, requires owner and one existing project", async () => {
   const t = await setup();
   expect(t.token.runner).toBe("home:studio");
@@ -60,6 +71,14 @@ it("issues normalized runner/project credentials, requires owner and one existin
   expect(await config.json()).toMatchObject({ runner: "home:studio", tokenId: t.token.id });
   expect(tokenActive(t.token, Date.parse(t.token.expiresAt) - 1)).toBe(true);
   expect(tokenActive(t.token, Date.parse(t.token.expiresAt))).toBe(false);
+});
+
+it("a runner token's claim carries the project's commit identity, as any claim does (t451)", async () => {
+  const commitIdentity = { name: "Owner", email: "1+owner@users.noreply.github.com", agentEmails: [] };
+  const t = await setup({ commitIdentity });
+  expect((await t.claim()).commitIdentity).toEqual(commitIdentity);
+  const bare = await setup();
+  expect((await bare.claim()).commitIdentity).toBeNull();
 });
 
 it("denies every owner, review and integration operation with identity and no secret", async () => {
@@ -117,6 +136,8 @@ it("allows job reads, held-job resume, evidence, release and reports; invalid cr
   await t.claim();
   for (const path of [`/projects/${t.name}`, `${t.base}`, `${t.base}/brief`, `/projects/${t.name}/decisions`]) expect((await t.api("GET", path)).status).toBe(200);
   for (const verb of ["read-token", "base-token"]) expect((await t.api("POST", `${t.base}/${verb}`, {})).status).toBe(200);
+  // The project's baseline token, which a build's runner reads main through
+  // before it submits (t435), is covered in test/runner-baseline-token.spec.ts.
   expect((await t.poll()).status).toBe(200);
   expect((await t.api("POST", `${t.base}/claim`, {})).status).toBe(200);
   expect((await t.api("POST", `${t.base}/evidence`, { claim: "inspected", kind: "note", head: HEAD, passed: true })).status).toBe(200);
@@ -138,7 +159,10 @@ it.each(["revoke", "expire", "release", "reassign"])("direct Git credentials sto
     expect(options.headers.get("authorization")).toBe("Bearer upstream-secret");
     return new Response("0000", { headers: { "content-type": "application/x-git-receive-pack-result" } });
   });
-  expect((await t.request("POST", path, workspace.token, null, "0000")).status).toBe(200);
+  const pushed = await t.request("POST", path, workspace.token, null, "0000");
+  expect(pushed.status).toBe(200);
+  // The pack streams back (t528): the upstream token is revoked once the body is read.
+  expect(await pushed.text()).toBe("0000");
   expect(t.upstream.at(-1)).toHaveProperty("revoked");
   expect((await t.request("GET", "/config", workspace.token)).status).toBe(401);
   expect((await t.request("POST", path.replace("t1.git", "t2.git"), workspace.token, null, "0000")).status).toBe(403);
@@ -222,4 +246,17 @@ it("concurrent different runners cannot both acquire the same dispatched job", a
   const item = await t.L.item("t1");
   expect(item.owner).toBe(ACTOR);
   expect(["home:studio", "home:second"]).toContain(item.runner);
+});
+
+// Only an authenticated runner can classify a release as infrastructure.
+it.each([true, false])("provider-limit release metadata requires a runner token (%s)", async (runner) => {
+  const t = await setup();
+  await t.claim();
+  const body = { note: "codex usage limit until 2026-10-14T15:00:00.000Z: quota", providerLimit: true };
+  const response = runner
+    ? await t.api("POST", `${t.base}/release`, body)
+    : await t.request("POST", `${t.base}/release`, OWNER, ACTOR, body);
+  expect(response.status).toBe(200);
+  const releases = (await t.L.events("t1")).filter((e) => e.kind === "item.released");
+  expect(releases[0].data.providerLimit).toBe(runner ? true : undefined);
 });

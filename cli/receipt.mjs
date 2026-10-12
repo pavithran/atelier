@@ -37,9 +37,16 @@ function ownerVerdicts(events) {
     if (typeof d.head !== "string" || typeof d.index !== "number" || typeof d.verdict !== "string") continue;
     const key = findingKey(d.head, d.by, d.index, d.finding ?? {});
     const held = found.get(key);
-    if (!held || (e.seq ?? 0) > held.seq) found.set(key, { verdict: d.verdict, note: typeof d.note === "string" ? d.note : "", seq: e.seq ?? 0 });
+    if (!held || (e.seq ?? 0) > held.seq) found.set(key, { verdict: d.verdict, note: typeof d.note === "string" ? d.note : "", seq: e.seq ?? 0, acting: d.acting });
   }
-  return new Map([...found].map(([k, v]) => [k, { verdict: v.verdict, note: v.note }]));
+  return found;
+}
+
+// Where a verdict sits in the record, and the harness/model that recorded it
+// for the owner (t440), so a defect can name it with --contradicts SEQ#N.
+function verdictPlace(seq, acting) {
+  const said = [seq > 0 ? `event ${seq}` : null, typeof acting === "string" && acting ? `declared acting ${flat(acting)}` : null].filter(Boolean);
+  return said.length ? ` (${said.join(", ")})` : "";
 }
 
 // The detail route reads this many of the item's events; a record at the
@@ -106,7 +113,7 @@ function linesFor(e, verdicts, used, owner) {
         out.push(`${i + 1}. ${flat(f.severity)} ${flat(f.file)}${f.line ? `:${f.line}` : ""} ${flat(f.text)}`);
         const key = findingKey(d.head, e.actor, i + 1, { file: String(f.file ?? ""), text: String(f.text ?? "") });
         const v = verdicts.get(key);
-        if (v) { used.add(key); out.push(`owner's verdict: ${flat(v.verdict)}${v.note ? `. ${flat(v.note)}` : ""}`); }
+        if (v) { used.add(key); out.push(`owner's verdict: ${flat(v.verdict)}${v.note ? `. ${flat(v.note)}` : ""}${verdictPlace(v.seq, v.acting)}`); }
       });
       return out;
     }
@@ -114,12 +121,12 @@ function linesFor(e, verdicts, used, owner) {
       const key = findingKey(d.head, d.by, d.index, { file: String(d.finding?.file ?? ""), text: String(d.finding?.text ?? "") });
       if (used.has(key)) return null;
       const f = d.finding ?? {};
-      return [`finding verdict by ${flat(e.actor)}: ${flat(d.verdict)} on ${flat(f.severity)} ${flat(f.file)}${f.line ? `:${f.line}` : ""} of the review at ${short(d.head)} (#${d.index})`];
+      return [`finding verdict by ${flat(e.actor)}: ${flat(d.verdict)} on ${flat(f.severity)} ${flat(f.file)}${f.line ? `:${f.line}` : ""} of the review at ${short(d.head)} (#${d.index})${verdictPlace(e.seq ?? 0, d.acting)}`];
     }
     case "item.submitted":
       return [`submitted by ${flat(e.actor)} at ${short(d.head)}${d.summary ? `: ${flat(d.summary)}` : ""}`];
     case "review.overridden":
-      return [`independent review overridden by ${flat(e.actor)}: ${flat(d.reason)}`];
+      return [`independent review overridden by ${flat(e.actor)}${typeof d.acting === "string" && d.acting ? `, declared acting ${flat(d.acting)}` : ""}: ${flat(d.reason)}`];
     // t407: the reply itself is kept on the task; show ID --reviews prints it.
     case "review.unparsable":
       return [`unparsable review reply from ${flat(e.actor)} at ${short(d.head)}, kept on the task${d.note ? `: ${flat(d.note)}` : ""}`];
@@ -134,7 +141,7 @@ function linesFor(e, verdicts, used, owner) {
     case "item.unblocked":
       return [`unblocked by ${flat(e.actor)}, back to ${flat(d.to)}`];
     case "item.defect":
-      return [`defect recorded by ${flat(e.actor)} at ${short(d.head)}: ${flat(d.note)}${d.foundIn ? ` (found in ${flat(d.foundIn)})` : ""}`];
+      return [`defect recorded by ${flat(e.actor)} at ${short(d.head)}: ${flat(d.note)}${d.foundIn ? ` (found in ${flat(d.foundIn)})` : ""}${d.contradicts && typeof d.contradicts.event === "number" ? `; contradicts the ${flat(d.contradicts.verdict ?? "")} verdict, event ${d.contradicts.event}, on finding ${flat(d.contradicts.finding)}` : ""}`];
     default:
       return null;
   }

@@ -1,9 +1,39 @@
 # The task lifecycle and the gate
 
+The cross-company rules below describe the default policy. With
+`atelier init --single-family COMPANY`, building and reviewing use only that
+company's models: a reviewer must be a different model from every contributor,
+never a contributor under another harness. This exception also applies to
+criteria review, handoffs and conflict contributors. Only that company's tier
+models qualify; if none qualifies, no separate tier review is requested.
+`atelier init --cross-family` restores the default; both switches record who
+made them and when. See [Single-family mode](gate.md#single-family-mode).
+
 This is the full reference for how a task moves from creation to merge, what
 the gate requires before the project owner may accept it, which checks are
 allowed, and which checks apply to a change. The README's "Concepts" section
 gives the outline.
+
+## The five steps
+
+The app, the README, `/how` and this reference name the life of a task in
+five verbs. They are labels: the commands keep their own names.
+
+| Step | Its line | Commands |
+| --- | --- | --- |
+| Claim | One holder per task. | `atelier start`, `atelier claim`, `atelier handoff`, `atelier release` |
+| Fork | Every task its own fork. | `atelier push`, `atelier update` |
+| Prove | Atelier runs the tests. | `atelier check`, `atelier submit` |
+| Review | Another company reviews, or in single-family mode another model. | `atelier review` |
+| Land | One landing at a time, with a receipt. | `atelier land`, `atelier accept`, `atelier merge` |
+
+A task's page shows the five as its progress, the current one marked, read
+from the task's recorded state: open is at Claim; claimed with nothing pushed,
+a fresh fork whose head is still its base among them, is at Fork; claimed with
+a pushed head, or submitted without every required check
+observed passing, is at Prove; submitted with them all passing is at Review;
+accepted is at Land; merged has done all five. What lands is **Proven.
+Reviewed. Recorded.** Git keeps the code. Atelier brings the receipts.
 
 ## How it works
 
@@ -20,7 +50,7 @@ In detail:
 | `atelier new "title" --scope 'src/**'` | the project owner | Creates an item with a short title (at most 80 characters). The scope is what the item intends to touch; overlapping live scopes are flagged in the inbox. `--brief` holds the whole task and `--accept` its acceptance criteria, which the review brief numbers and a reviewer blocks on. `--non-goal`, `--stop-when` and `--next-gate` frame it, and `atelier edit` changes all of these later; the brief, `atelier start` and the item's page show them. |
 | `atelier block t3 "reason"` | the item's owner or the project owner | Blocks the item with what it is waiting on. It keeps its owner and workspace, leaves the runner queue and stuck detection, cannot be pushed or submitted, and sits in the inbox with the reason until `atelier unblock t3` returns it to the state it was in. |
 | `atelier claim t3 --as claude-code/opus-5.5` | an agent | The project's Durable Object grants ownership atomically, so a second claimant is refused. The Worker forks the baseline and mints an eight-hour write token for the owner alone. The CLI clones the workspace into `~/Library/Caches/ai-projects/cloudflare-git/work/` and records the project's branch as the one it pushes to; a later claim records it again and says when it changed. A claim that reuses a workspace the fork's branch has moved past, as when a task handed off comes back, fast-forwards it to what the fork holds, or stops and names the commits to integrate when the two have diverged. |
-| `atelier push` | the item's owner | Runs only in the item's claimed workspace, as `update` and `finish` do: anywhere else, the owner's checkout included, it stops before git is asked to push and says where to run it. Refuses, pushing nothing, when the workspace's branch is not the one its fork's HEAD names, since Atelier reads only that one. Otherwise pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named, and refuses a head that no longer holds the one it recorded, unless `atelier push --force` declares the rebase `atelier update` made; that push leases against the recorded head and first checks, by patch, that every recorded commit survives. A fork whose history runs deeper than the Worker reads to tell is refused as unverified, not taken for a rewrite. |
+| `atelier push` | the item's owner; the project owner for an open, unclaimed task | Runs only in the item's claimed workspace, as `update` and `finish` do: anywhere else, the owner's checkout included, it stops before git is asked to push and says where to run it. Refuses, pushing nothing, when the workspace's branch is not the one its fork's HEAD names, since Atelier reads only that one. Otherwise pushes, then asks the Worker to read the workspace head from Artifacts. The ledger records the head Atelier saw, not the one the agent named, and refuses a head that no longer holds the one it recorded, unless `atelier push --force` declares the rebase `atelier update` made; that push leases against the recorded head and first checks, by patch, that every recorded commit survives. A fork whose history runs deeper than the Worker reads to tell is refused as unverified, not taken for a rewrite. The project owner may also push an open, unclaimed task's workspace (`atelier push --as owner`), as an orchestrator's port or merge before the next builder claims: the push asks the Worker for a five-minute write token for that task's fork alone (`items.owner-port.v1`), recorded as the owner's, which the next claim revokes. |
 | `atelier update` | the item's owner | Rebases the workspace onto the baseline's current head. The fork's own branch comes first: commits another holder pushed there and this workspace lacks are taken before its own commits move, so the `push --force` that follows keeps them. |
 | `atelier check` | the item's owner; anyone with `--sandbox` | Clones the workspace afresh at that head (or runs in a Cloudflare container with `--sandbox` or `sandboxOnly` policy), runs each required check, and records the results as Observed. A result run on the caller's machine is recorded only for the item's owner, since the gate counts it on the caller's word; anyone the project's tokens reach may ask for a sandbox run, which records its own results. With each result Atelier records every path on which the workspace's head differs from main's head, which it measures itself from Artifacts; a list the caller sends is ignored. A result for a head that has since moved is refused. A local check runs with the caller's file access; run untrusted code with `--sandbox`. `--merged` runs the checks on the would-be merge instead: the head merged with main as main is now, in a temporary merge commit made in the clean clone and never pushed, or built by the Worker with `--sandbox`. A check that does not apply to the change is not run merged either. The result is recorded against both revisions, shown beside the merge preview on the item page, and marked stale when main moves on; it is never the head's own check. |
 | `atelier report [ID] "…"` | anyone | Records a Reported claim on the item named, else on the workspace's item; in a workspace, another item's id needs `--item ID`. It is shown and never counted. |
@@ -120,14 +150,10 @@ and say nothing about the merge. Every observed
 check also records main's head as Atelier read it when the check was
 recorded, which is how the gate knows main moved.
 
-A local check waits for the machine's load average to fall under a limit
-before it runs, so a landing's required checks do not start on top of the
-home runners' jobs and starve them (or themselves) of CPU; the wait is said
-on the command's own output. The limit is the core count, or
-`ATELIER_LOAD_LIMIT` when set. Each result records the load it started at in
-its evidence, and a check that failed and then passed unchanged keeps both
-results, each with its load, so a failure under a saturated machine stays
-legible beside the later pass.
+Each applicable local check command takes one [host test slot](test-slots.md).
+Local landings and release checks have first priority, then review commands,
+then ordinary checks. N/A checks never enter the pool. `ATELIER_LOAD_LIMIT`
+and `ATELIER_LOAD` are retired; no load-average gate remains.
 
 The project owner's approval is never the independent review: the owner
 decides by accepting, and that decision is not also the second opinion. When
@@ -146,6 +172,60 @@ provenance note, which can be pushed to a public remote, names the override and
 who made it but not its reason; it names each review's reviewer, verdict, head
 and recorder in the same way, without the review's note. Both stay in the
 ledger.
+
+### Single-family mode
+
+A project may run on one company's models alone, for a client who allows
+one provider or a project where only one company's models are licensed:
+
+```text
+atelier init --single-family anthropic
+```
+
+The company is one of the families a model's name is recognised by
+([`src/models/pool.ts`](../src/models/pool.ts): anthropic, openai, google,
+zai, deepseek, qwen, minimax, mistral, meta, moonshot, xai, xiaomi,
+bytedance, cohere). The policy records the mode as `familyMode`, with who set
+it and when. Under it, plan routing, a hand dispatch, the builder a dispatch
+without `--agent` is suggested, the reviewer picker, the review tier and the
+landing take only that company's models; a claim or
+handoff by another company's model is refused, so a dispatch that names no
+model cannot hand the work to one either. The gate counts an approval
+when the reviewer is a different model of the company from every recorded
+contributor, compared by model name without letter case, a `:profile` suffix
+or the harness: the same model in another harness is still the same model.
+A model never counts as reviewer of a change it contributed to, in either
+mode and for a coordinated change too: Opus reviewing in Codex what Opus
+built in Claude Code is not another agent's review. No other company's
+model reviews under the mode, by any path: the gate counts its approval for
+neither a protected nor a coordinated change, a review it submits directly
+is refused, and so is its claim of a review request, whatever the policy was
+when the request was made. The switch to the mode withdraws every open or
+claimed review request another company's model holds or is asked to give,
+and every waiting dispatch that names another company's model; a plan whose
+planner, or a part whose routed builder, is of another company is blocked
+until the owner reroutes it with `atelier plan reroute`. The company is
+judged where every assignment passes, the project's eligibility rule
+(`assertEligible` in [`src/rules.ts`](../src/rules.ts)), so a claim, a
+handoff, a released hold, a plan's planner named or picked and a part's
+builder or reviewer rerouted are all refused alike; every dispatch the
+Ledger stores is judged again as it is written. A scan test
+(`test/single-family-scan.test.ts`) fails on a new path that assigns work
+without passing these checks.
+The mode is shown under the project's title on every tab of its page
+and on its Settings tab, by `atelier status` and `atelier status --project`,
+at the top of every review brief, and in each merge's provenance note, so
+nobody takes such a review for a cross-company one. The acceptance records
+the mode in force and each contributor with its company, and the provenance
+note states those, not the mode at merge time: work contributed before a
+switch keeps its own company there.
+
+```text
+atelier init --cross-family
+```
+
+returns to the default, and that switch too is recorded with who made it
+and when. `--reset` drops the mode with the rest of the policy.
 
 ## The review bar
 

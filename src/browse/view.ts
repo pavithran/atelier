@@ -30,8 +30,9 @@ const firstLine = (m: string) => m.split("\n")[0];
 
 // The family a commit's message names: the first Agent or Co-Authored-By
 // line that names a model, in that family's colour, as the imported history
-// reads them. A commit naming none is labelled so and drawn dim. The label
-// says it in words beside every stripe, so colour never carries it alone.
+// reads them; a commit naming none is labelled so. The stripe itself is
+// neutral (company colours stay inside charts, d9): the name is written
+// beside it, so the stripe never carries the family.
 export function commitFamily(c: Commit): { label: string; colour: string } {
   const names = agentsIn(c.message);
   const label = names.length ? normaliseAgentName(names[0]) : NO_AGENT;
@@ -61,8 +62,9 @@ function pathCrumbs(w: Where, path: string[]): string {
 }
 
 // `touched` is the commit that last changed each entry (repo.ts lastChanges):
-// each row then carries a stripe in the family that commit names, with the
-// name and the commit beside it. Null when that could not be read; absent
+// each row then carries a neutral stripe, with the agent that commit names
+// (or "no agent named") and the commit beside it; an entry no commit read
+// changed gets a fainter stripe. Null when that could not be read; absent
 // when it was not asked for.
 export function renderTree(w: Where, head: Commit, path: string[], node: Extract<Node, { kind: "tree" }>, ownerName: string | null = null, touched?: Touched | null): string {
   const rows = node.entries.map((x) => {
@@ -79,8 +81,8 @@ export function renderTree(w: Where, head: Commit, path: string[], node: Extract
   const more = node.total > node.entries.length ? `<p class="meta">The first ${node.entries.length} of ${node.total} entries; clone the repository for the rest.</p>` : "";
   const stripes = touched === undefined ? ""
     : touched === null ? '<p class="meta">Which commit last changed each entry could not be read just now.</p>'
-    : touched.complete ? '<p class="meta">Each stripe is the family of the agent named by the commit that last changed the entry, with its name beside it.</p>'
-    : touched.examined ? `<p class="meta">Each stripe is the family of the agent named by the commit that last changed the entry, among the last ${touched.examined} commits on the first-parent line.</p>`
+    : touched.complete ? '<p class="meta">Each stripe marks the commit that last changed the entry; the agent its message names is written beside it. A fainter stripe marks an entry none of the commits read changed.</p>'
+    : touched.examined ? `<p class="meta">Each stripe marks the commit that last changed the entry, among the last ${touched.examined} commits on the first-parent line; the agent its message names is written beside it. A fainter stripe marks an entry none of those commits changed.</p>`
     : '<p class="meta">Which commit last changed each entry was not read: the directory is too deep or too busy for this page\'s read budget.</p>';
   const body = `${pathCrumbs(w, path)}${node.entries.length ? `<ul class="repo-tree">${rows}</ul>${stripes}${more}` : '<p class="empty">This directory is empty.</p>'}`;
   const title = path.length ? path.join("/") : "Code";
@@ -99,7 +101,7 @@ export function renderBlob(w: Where, head: Commit, path: string[], view: FileVie
   return frame(w, path.join("/"), path.join("/"), "code", head, `${pathCrumbs(w, path)}${tools}${body}`, ownerName);
 }
 
-// Each commit carries a stripe in the family its message names, and the name in its line.
+// Each commit carries a neutral stripe, and the agent its message names in its line.
 function commitRows(w: Where, commits: Commit[]): string {
   return `<ol class="repo-log">${commits.map((c) => `<li>${stripe(c)}<a class="mono" href="${commitHref(w, c.hash)}">${short(c.hash)}</a><span class="msg">${e(firstLine(c.message))}</span><span class="meta">${e(commitFamily(c).label)} · ${e(c.author.name)} · ${day(c.authoredAt)}</span></li>`).join("")}</ol>`;
 }

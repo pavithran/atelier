@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { noProjectMessage, parseArgs, unregisteredMessage } from "../cli/atelier.mjs";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 // How the CLI reads its flags. A switch (--approve, --cancel, --json,
 // --sandbox-only) never takes the word after it, so an item id written after
@@ -112,6 +113,8 @@ const CHANGES = {
 const detail = (id) => ({ item: item(id), policy: { checks: ["exit 0"], protected: [], sandboxOnly: false }, gate: { ready: true, blockers: [] }, evidence: [], reviews: [], events: [], acceptanceProtected: [] });
 globalThis.fetch = async (url, options = {}) => {
   const path = new URL(url).pathname, method = options.method ?? "GET";
+  // The capability check before new, edit, init, review and merge (t458) reads the version.
+  if (path === "/api/version") return Response.json({ capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
   const body = options.body ? JSON.parse(options.body) : undefined;
   appendFileSync(${JSON.stringify(log)}, JSON.stringify({ method, path, body, actor: options.headers?.["x-atelier-actor"] ?? null }) + "\\n");
   let data = {};
@@ -119,9 +122,15 @@ globalThis.fetch = async (url, options = {}) => {
   if (path === "/api/config") data = { ownerActor: "owner", ownerName: "Pavi" };
   else if (path === "/api/projects") data = [{ name: "demo", title: "Demo" }];
   else if (path === "/api/inbox") data = [];
+  // t389: the pool holds one reserved, review-only frontier model; a set
+  // answers with the entry as changed.
+  else if (path === "/api/models") data = [{ id: "gpt-6-astra", harness: "codex", where: "cloud", provider: "openai", aliases: [], family: "openai", note: "credits held for t370", addedBy: "owner", addedAt: "2026-10-01T09:00:00.000Z", state: "reserved", stateAt: "2026-10-08T09:00:00.000Z", roles: ["review"], tier: "frontier" }];
+  else if (path === "/api/models/gpt-6-astra/set") data = { id: "gpt-6-astra", state: body.state, stateAt: "2026-10-10T08:00:00.000Z", note: body.note, roles: body.roles.split(","), tier: body.tier };
   else if (m) {
     const rest = m[1] ?? "";
-    const project = { name: "demo", title: "Demo", repo: "demo", policy: { checks: body?.checks ?? ["exit 0"], protected: body?.protected ?? [], eligible: [], refuseOverlap: body?.refuseOverlap ?? false, sandboxOnly: body?.sandboxOnly ?? false } };
+    // t394: the stub records a model-policy switch as the server does, stamped with who and when.
+    const familyMode = body?.singleFamily !== undefined ? { familyMode: { single: body.singleFamily || null, by: "owner", at: "2026-10-09T10:00:00.000Z" } } : {};
+    const project = { name: "demo", title: "Demo", repo: "demo", policy: { checks: body?.checks ?? ["exit 0"], protected: body?.protected ?? [], eligible: [], refuseOverlap: body?.refuseOverlap ?? false, sandboxOnly: body?.sandboxOnly ?? false, ...familyMode } };
     if (rest === "standing") data = { project: { name: "demo", title: "Demo" }, generatedAt: "2026-10-09T12:34:56Z", live: [], waiting: [], merged: [] };
     else if (rest === "" && method === "GET") data = { project, items: [item("t1"), item("t2")], events: [] };
     else if (rest === "" && method === "PUT") data = { project, baseline: { remote: BASELINE, token: "fake-baseline-token", defaultBranch: "main" } };
@@ -330,6 +339,35 @@ test("dispatch with no --agent asks the server to suggest a builder and prints t
   assert.equal(r.stdout, "Builder: claude-code/opus-5.5. Eligible pool models ranked by recorded successful and failed outcomes. Passed over codex/gpt-6.1-sol: two consecutive stalled builds; no successful build since.\nt3 is waiting for a home runner, claude-code with opus-5.5.\n");
 });
 
+// t389: the owner's standing for a model is set with models set and comes
+// back from models, in its listing and as JSON.
+test("models set sends state, note, roles and tier; models lists them and --json returns them", (t) => {
+  const f = fixture(t);
+  const set = f.run(f.checkout, ["models", "set", "gpt-6-astra", "--state", "paused", "--note", "AI Studio down", "--roles", "build,review", "--tier", "execution"]);
+  assert.equal(set.status, 0, set.stderr);
+  const sent = f.requests().at(-1);
+  assert.equal(sent.method, "POST");
+  assert.equal(sent.path, "/api/models/gpt-6-astra/set");
+  assert.deepEqual(sent.body, { state: "paused", note: "AI Studio down", roles: "build,review", tier: "execution" });
+  assert.equal(set.stdout, "gpt-6-astra: paused since 2026-10-10T08:00Z roles build,review tier execution (AI Studio down).\n");
+
+  const listed = f.run(f.checkout, ["models"]);
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.equal(listed.stdout, "cloud codex/gpt-6-astra  openai  not checked  reserved since 2026-10-08T09:00Z  roles: review  tier: frontier\n");
+
+  const json = f.run(f.checkout, ["models", "--json"]);
+  assert.equal(json.status, 0, json.stderr);
+  const [entry] = JSON.parse(json.stdout);
+  assert.deepEqual({ state: entry.state, stateAt: entry.stateAt, roles: entry.roles, tier: entry.tier, note: entry.note }, { state: "reserved", stateAt: "2026-10-08T09:00:00.000Z", roles: ["review"], tier: "frontier", note: "credits held for t370" });
+
+  // A set that names nothing to change is refused before any request.
+  f.clear();
+  const empty = f.run(f.checkout, ["models", "set", "gpt-6-astra"]);
+  assert.equal(empty.status, 1);
+  assert.match(empty.stderr, /name at least one/);
+  assert.deepEqual(f.requests().filter((r) => r.path.startsWith("/api/models")), []);
+});
+
 // t360: --version answers after any command, before any request.
 test("--version after a command prints the version and contacts no server", (t) => {
   const f = fixture(t);
@@ -400,6 +438,39 @@ test("init sends a switch as true or false, as it was written, and refuses any o
   assert.deepEqual(f.requests(), []);
 });
 
+// t394: init --single-family COMPANY sends the company, --cross-family sends
+// null, neither sends nothing, both together are refused, and the answer's
+// mode is printed with who switched and when.
+test("init sends --single-family as the company and --cross-family as null, prints the mode, and refuses both at once", (t) => {
+  const f = fixture(t);
+  const sent = (argv) => {
+    f.clear();
+    const r = f.run(f.checkout, ["init", ...argv]);
+    assert.equal(r.status, 0, r.stderr);
+    const put = f.requests().find((q) => q.method === "PUT");
+    return { singleFamily: put.body.singleFamily, has: "singleFamily" in put.body, stdout: r.stdout };
+  };
+  const single = sent(["--single-family", "anthropic"]);
+  assert.equal(single.singleFamily, "anthropic");
+  assert.match(single.stdout, /^Models:     single-family, anthropic: building and reviewing use anthropic models only, and a review counts from a different anthropic model than every contributor \(set by owner at 2026-10-09T10:00:00\.000Z\)$/m);
+  const cross = sent(["--cross-family"]);
+  assert.equal(cross.singleFamily, null);
+  assert.ok(cross.has);
+  assert.match(cross.stdout, /^Models:     cross-family, the default: a protected change needs approval from a model of another company than every contributor \(set by owner at 2026-10-09T10:00:00\.000Z\)$/m);
+  const none = sent([]);
+  assert.equal(none.has, false);
+  assert.match(none.stdout, /^Models:     cross-family, the default: a protected change needs approval from a model of another company than every contributor$/m);
+  f.clear();
+  const bare = f.run(f.checkout, ["init", "--single-family"]);
+  assert.equal(bare.status, 1);
+  assert.match(bare.stderr, /--single-family needs a company: atelier init --single-family anthropic/);
+  assert.deepEqual(f.requests(), []);
+  const both = f.run(f.checkout, ["init", "--single-family", "anthropic", "--cross-family"]);
+  assert.equal(both.status, 1);
+  assert.match(both.stderr, /--single-family and --cross-family contradict each other; give one of them/);
+  assert.deepEqual(f.requests(), []);
+});
+
 test("a flag the command does not take, or a stray --, is refused before any request", (t) => {
   const f = fixture(t);
   for (const [argv, message] of [
@@ -442,6 +513,13 @@ test("ls --json and status --json print each item with its times, for Observator
       { id: "t2", title: "Task t2", state: "submitted", owner: "codex/test", head: f.head, ...TIMES },
     ],
     overlaps: [],
+    // The waiting rule's placement (src/attention.ts): nothing waits on the
+    // owner, and both submitted tasks are in review.
+    attention: {
+      owner: [],
+      pipeline: [{ id: "t1", title: "Task t1", stage: "submitted", notices: [] }, { id: "t2", title: "Task t2", stage: "submitted", notices: [] }],
+      unknown: [],
+    },
     mergedByOverride: [],
   }]);
 
@@ -460,7 +538,7 @@ test("new and edit send the framing as lists and a line, block sends its reason,
   // A field not given is not sent, so the server keeps what the item has.
   const plain = f.run(f.checkout, ["new", "Plain", "--project", "demo"]);
   assert.equal(plain.status, 0, plain.stderr);
-  assert.deepEqual(f.requests().map((q) => q.body), [{ title: "Plain", scope: [] }]);
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => q.body), [{ title: "Plain", scope: [] }]);
   f.clear();
   for (const [argv, message] of [
     [["new", "Title", "--non-goal", "", "--project", "demo"], /--non-goal needs text: atelier new --non-goal "TEXT", once per entry/],
@@ -550,13 +628,13 @@ test("new sends a title, a brief and repeatable criteria; one long string alone 
   const f = fixture(t);
   const made = f.run(f.checkout, ["new", "Short titles", "--brief", "The whole task.", "--accept", "Lists show it", "--accept", "The page shows the brief", "--project", "demo"]);
   assert.equal(made.status, 0, made.stderr);
-  assert.deepEqual(f.requests().map((q) => q.body), [{ title: "Short titles", scope: [], brief: "The whole task.", accept: ["Lists show it", "The page shows the brief"] }]);
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => q.body), [{ title: "Short titles", scope: [], brief: "The whole task.", accept: ["Lists show it", "The page shows the brief"] }]);
   assert.equal(made.stdout, "t9  Short titles\nAcceptance criterion 1: Lists show it\nAcceptance criterion 2: The page shows the brief\n\n" + POINTER);
   f.clear();
   const long = "word ".repeat(30).trim();
   const derived = f.run(f.checkout, ["new", long, "--project", "demo"]);
   assert.equal(derived.status, 0, derived.stderr);
-  assert.deepEqual(f.requests().map((q) => q.body), [{ title: long, scope: [] }]);
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => q.body), [{ title: long, scope: [] }]);
   assert.equal(derived.stdout, 't9  Derived title\nThe text is longer than a title, so it is kept as the brief and the title is its first clause; change it with atelier edit t9 --title "TEXT".\n\n' + POINTER);
   f.clear();
   for (const [argv, message] of [
@@ -607,6 +685,27 @@ test("review sends the criteria binding and the request only as given, and refus
   assert.equal(f.requests().filter((q) => q.path.endsWith("/review")).length, 0);
 });
 
+test("review-release forwards the claim generation and preserves owner recovery without a number", (t) => {
+  const f = fixture(t);
+  const run = (...flags) => f.run(f.workspace, ["review-release", "t2", ...flags], { ATELIER_ACTOR: "claude-code/opus" });
+  const numbered = run("--request", "7", "--note", "harness stopped");
+  assert.equal(numbered.status, 0, numbered.stderr);
+  assert.deepEqual(f.requests().map((q) => [q.path, q.body]), [["/api/projects/demo/items/t2/review-release", { request: 7, note: "harness stopped" }]]);
+  f.clear();
+  const owner = run("--note", "manual recovery");
+  assert.equal(owner.status, 0, owner.stderr);
+  assert.deepEqual(f.requests().map((q) => q.body), [{ note: "manual recovery" }]);
+  f.clear();
+  for (const value of ["x", "0", "-1", "1.5", "1e2", "9007199254740992", ""]) {
+    const bad = run(`--request=${value}`);
+    assert.equal(bad.status, 1, value);
+    assert.match(bad.stderr, /--request needs the request number the review claim gave/);
+  }
+  const bare = run("--request");
+  assert.equal(bare.status, 1);
+  assert.equal(f.requests().length, 0, "invalid generations never reach the server");
+});
+
 test("edit says when the acceptance criteria changed, what that withdrew, and that a fresh review is needed; otherwise nothing of them", (t) => {
   const f = fixture(t);
   const edit = (id, ...flags) => {
@@ -633,6 +732,15 @@ test("show prints the task's criteria, the plan's for a part, and their binding 
   const r = f.run(f.checkout, ["show", "t2", "--project", "demo"]);
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /\nAcceptance criterion 1: Nested lists parse\nPlan acceptance criterion 1: It works\nCriteria binding: c{64} \(a review of these criteria names it with --criteria\)\n/);
+});
+
+
+test("review-request sends a named reviewer as an owner-requested runner job", (t) => {
+  const f = fixture(t);
+  const r = f.run(f.checkout, ["review-request", "t1", "--reviewer", "codex/gpt-6-astra"]);
+  assert.equal(r.status, 0, r.stderr);
+  const sent = f.requests().find((r) => r.path.endsWith("/review-request"));
+  assert.deepEqual(sent.body, { reviewer: "codex/gpt-6-astra", wanted: true });
 });
 
 test("parseArgs: --brief is a switch only for status, found after flag values", () => {
