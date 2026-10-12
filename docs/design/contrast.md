@@ -40,14 +40,14 @@ measurements are in `docs/design/audit.json`, written by the capture.
 | `--text-bright` | headings, strong | `#05070a` | 18.34 | 16.92 | 15.29 | 16.46 |
 | `--text-muted` | secondary text (43 rules) | `#4b5562` | 6.88 | 6.35 | 5.74 | 6.18 |
 | `--text-dim` | meta, captions | `#55606d` | 5.82 | 5.37 | 4.85 | 5.23 |
-| `--signal` | links, owner's colour | `#7a5600` | 6.04 | 5.58 | 5.04 | 5.43 |
+| `--signal` | links, owner's colour | `#735200` | 6.50 | 6.00 | 5.42 | 5.84 |
 | `--signal-hot` | focus ring, hover | `#6b4b00` | 7.26 | 6.69 | 6.05 | 6.51 |
-| `--observed` | passed, merged | `#1d6b3c` | 5.93 | 5.47 | 4.94 | 5.32 |
+| `--observed` | passed, merged | `#185a33` | 7.49 | 6.91 | 6.25 | 6.72 |
 | `--caution` | waiting, warning | `#7d4d00` | 6.51 | 6.01 | 5.43 | 5.84 |
-| `--fault` | failed, sent back | `#b0173f` | 6.28 | 5.79 | 5.24 | 5.64 |
-| `--m-anthropic` | Claude family | `#b4461c` | 4.98 | 4.60 | 4.15 (large/UI only) | 4.47 (large/UI only) |
-| `--m-openai` | GPT family | `#0b7a5c` | 4.83 | 4.46 (large/UI only) | 4.03 (large/UI only) | 4.34 (large/UI only) |
-| `--m-zai` | GLM family | `#2f56c9` | 5.79 | 5.35 | 4.83 | 5.20 |
-| `--m-google` | Gemini family | `#b0307a` | 5.38 | 4.96 | 4.49 (large/UI only) | 4.83 |
-| `--m-qwen` | Qwen family | `#4d7a12` | 4.65 | 4.29 (large/UI only) | 3.88 (large/UI only) | 4.17 (large/UI only) |
+| `--fault` | failed, sent back | `#9e1539` | 7.29 | 6.72 | 6.08 | 6.54 |
+| `--m-anthropic` | Claude family | `#983b18` | 6.42 | 5.92 | 5.35 | 5.76 |
+| `--m-openai` | GPT family | `#09654c` | 6.41 | 5.92 | 5.35 | 5.76 |
+| `--m-zai` | GLM family | `#2c50bb` | 6.42 | 5.93 | 5.36 | 5.77 |
+| `--m-google` | Gemini family | `#9b2a6c` | 6.49 | 5.99 | 5.41 | 5.83 |
+| `--m-qwen` | Qwen family | `#3f620f` | 6.44 | 5.94 | 5.37 | 5.78 |
 | `--main-line` | main line on graphs | `#14181d` | 16.21 | 14.95 | 13.51 | 14.55 |

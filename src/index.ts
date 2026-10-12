@@ -5,9 +5,10 @@ import { assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed } from ".
 import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { changedPaths, itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
 import { scanCommit } from "./secret-scan.ts";
+import { criteriaOf } from "./criteria.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
-import { assertNameFree, assertProjectRemovable, LANDING_DETAIL_MAX, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
+import { assertNameFree, assertProjectRemovable, LANDING_DETAIL_MAX, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim, type ReviewerAvailability } from "./ledger.ts";
 import { accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
@@ -16,7 +17,7 @@ import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, 
 import { briefFor, cleanSummary } from "./brief.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
-import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
+import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanNote, cleanStatus, POOL_FAMILIES, type ModelEntry, type PoolFamily } from "./models/pool";
@@ -33,7 +34,7 @@ import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderB
 import { addTally, buildStory, emptyTally, VENDOR_NAMES, type Story } from "./graph";
 import { buildPulse } from "./pulse";
 import { projectKind } from "./kind";
-import { assign, parseRunner, type RunnerOffer, type SeenOffer } from "./dispatch/rules";
+import { assign, parseRunner, unclaimed, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
 import { attentionFor } from "./attention.ts";
 import { readStanding, type StandingSource } from "./standing-read.ts";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
@@ -1040,7 +1041,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // the project's core files hold carrying `held`, the live item it waits on;
   // a runner POSTs what it can run and gets back the tasks it may claim, with
   // the name to claim under, leaving out every held one (coreHold in
-  // src/dispatch/rules.ts).
+  // src/dispatch/rules.ts). A runner that finds nothing to claim POSTs its
+  // offer with `why: true` (t420), and gets back the listing GET gives, its
+  // token's projects only, each dispatch with why it is not being taken and
+  // those for another runner said as such: a runner token may not GET it.
+  // A runner token gets each entry as id, title, dispatch (its note left
+  // out) and why alone, and only its own refusals and skips among the
+  // reasons: the full item is what GET items/tN refuses it with 403.
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const offer = m === "POST" ? runnerOffer(body) : null;
     if (c.token?.runner && (!offer || offer.runner !== c.token.runner)) throw runnerDenied(c.token);
@@ -1075,7 +1082,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // the claim a dead run left behind is settled before new work starts.
     const queued = lists.flat().sort((a, b) => Number(isHeld(b.item)) - Number(isHeld(a.item)) ||
       (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
-    const result = offer
+    const result = offer && body.why !== true
       ? queued.flatMap(({ project, item }) => {
           if ("held" in item && item.held) return [];
           const a = item.dispatch ? assign(item.dispatch, offer) : null;
@@ -1084,7 +1091,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // as another's claim (claim guards the runner name; assign the actor).
           return a && (!c.token?.runner || !["integrate", "refresh"].includes(item.dispatch?.job ?? "")) && (!c.token || c.token.runner || a.actor === actor) && (!isHeld(item) || item.owner === a.actor) ? [{ project, item, ...a }] : [];
         })
-      : queued;
+      : await queueWhy(env, queued.filter(({ item }) => !isHeld(item)), offer, c.token?.runner ? c.token.runner : null);
     // A project that could not be read is named, so a missing task is never silent.
     const res = json(result);
     if (unreadable.length) res.headers.set("x-atelier-incomplete", unreadable.sort().join(","));
@@ -1867,6 +1874,26 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       await L.recordReviewSkip(id, request, head, runner.runner, actor, String(body.note ?? ""), !!c.token);
       return json({ skipped: true });
     }
+    // A runner's word that it gives up a dispatched build or plan job under
+    // its current dispatch (t420): after its failed runs (`failures`), or
+    // after workspace, git or harness failures in a row (`infrastructure`),
+    // which send no run report. Authorised as review-skip is: the owner
+    // token the runner holds, or a runner token for a job its poll was
+    // offered, under that job's actor. Kept on the task, so status and show
+    // name the runner that passes it by and the command that releases it.
+    case "run-skip": {
+      if (!c.token?.runner) requireOwner(env, actor);
+      const runner = parseRunner(req.headers.get("x-atelier-runner"));
+      if (!runner) throw new RuleError("bad_runner", "a run skip names its runner in X-Atelier-Runner", 400);
+      const kind = body.kind;
+      if (kind !== "failures" && kind !== "infrastructure") throw new RuleError("bad_kind", "a run skip's kind is failures or infrastructure", 400);
+      const failures = body.failures;
+      if (typeof failures !== "number" || !Number.isInteger(failures) || failures < 1 || failures > 1000) throw new RuleError("bad_failures", "a run skip names how many failures it gave up after", 400);
+      // Under a runner token the job's actor is the caller, checked at the gateway.
+      const by = c.token?.runner ? actor : String(body.actor ?? "");
+      if (!validActor(by)) throw new RuleError("bad_actor", "a run skip names the harness/model the job ran under", 400);
+      return json({ kept: await L.recordRunSkip(id, runner.runner, by, kind, failures, String(body.note ?? "")) });
+    }
     // t407: a reviewer's reply parseVerdict could not read is kept on the
     // task, its last VERDICT_LIMITS.reply characters with the reviewer and
     // the head, as the request the reviewer claimed is released. The runner
@@ -2200,9 +2227,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // owner's standing permission from the task's page (t371); the
       // refusal names that page on this server and the factor it takes.
       const overrideReview = body.overrideReview === undefined ? undefined : typeof body.overrideReview === "string" ? body.overrideReview : "";
+      const availability = overrideReview !== undefined ? await reviewerAvailability(env, L, id) : undefined;
       let item: Item;
       try {
-        item = await L.accept(id, actor, String(body.head ?? ""), overrideReview, typeof body.note === "string" ? body.note : undefined, undefined, c.acting ?? null);
+        item = await L.accept(id, actor, String(body.head ?? ""), overrideReview, typeof body.note === "string" ? body.note : undefined, undefined, availability, undefined, c.acting ?? null);
       } catch (err) {
         const rule = parseRuleError(err);
         if (rule?.code === "override_unconfirmed") {
@@ -2213,8 +2241,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // An override the owner records while a reviewer of another family was
       // available is answered with that reviewer, so the owner sees the
       // `atelier land ID --reviewer H/M` command that would have replaced it
-      // (t395).
-      const availableReviewer = overrideReview !== undefined ? await L.availableReviewer(id, await index(env).models()) : null;
+      // (t395). It is the one looked for as the override was made, and
+      // recorded with it (t457).
+      const availableReviewer = availability?.reviewer ?? null;
       return json({ ...item, ...(availableReviewer ? { availableReviewer } : {}) });
     }
     case "merged": {
@@ -2563,8 +2592,10 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
   // The jobs the runner runs, build among them; an ask naming none is an
   // older runner's, which takes builds (missingJob in src/dispatch/rules.ts).
   const jobs = Array.isArray(body.jobs) ? body.jobs.filter((j): j is string => typeof j === "string") : [];
+  // When the runner's process started, which an older runner does not say.
+  const started = typeof body.started === "string" && Number.isFinite(Date.parse(body.started)) ? new Date(body.started).toISOString() : null;
   return {
-    runner: r.runner, kind: r.kind, jobs,
+    runner: r.runner, kind: r.kind, jobs, ...(started ? { started } : {}),
     agents: agents.flatMap((a) => {
       const x = a as { agent?: unknown; models?: unknown };
       return typeof x.agent === "string" && Array.isArray(x.models)
@@ -2578,6 +2609,45 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
 // heldJobs lists it: the queue offers it back to its holder alone.
 function isHeld(item: Item): boolean {
   return item.state === "claimed" && !!item.owner;
+}
+
+// Why each queued dispatch the owner's listing shows is not being taken,
+// attached as `why` so `atelier status` and `atelier show` say it: the core
+// file hold, overlap refusal and refused claims the Ledger already read
+// beside it, the live runners that gave it up after failing it (from the run
+// reports), and the model or job no live runner offers (unclaimed in
+// src/dispatch/rules.ts); asked by one runner (`offer`), also a dispatch
+// meant for another. A review request is listed apart, so it carries none.
+async function queueWhy(env: Env, queued: { project: string; item: Item & { held?: CoreHold; overlap?: OverlapRefusal; refusals?: ClaimRefusal[]; skips?: RunSkip[] } }[], offer: RunnerOffer | null = null, runner: string | null = null): Promise<{ project: string; item: (Item | RunnerWhyItem) & { why?: UnclaimedReason[] } }[]> {
+  // Each waiting dispatch's build runs since it was dispatched, read task by
+  // task, so the newest reports of other tasks never push its failures out.
+  const asks = queued.flatMap(({ project, item }) => item.dispatch && item.dispatch.job !== "review" ? [{ project, item: item.id, since: item.dispatch.at }] : []);
+  const [offers, runs] = await Promise.all([index(env).runnerOffers(), asks.length ? index(env).buildRunsSince(asks) : []]);
+  // Asked under a runner token, the reasons are built from that runner's own
+  // refusals, skips and run reports only, and each entry is cut to what the
+  // runner prints (runnerWhyItem): another runner's refusal or failure, and
+  // the task's brief and note, are the owner's to read.
+  const mine = <T extends { runner: string }>(list: readonly T[] | undefined) => list && runner ? list.filter((r) => r.runner === runner) : list ?? null;
+  const reports = mine(runs.map((r) => ({ project: r.project, item: r.item, role: r.role, outcome: r.outcome, runner: r.runner, at: r.at }))) ?? [];
+  return queued.map(({ project, item }) => {
+    if (item.dispatch?.job === "review") return { project, item: runner ? runnerWhyItem(item, undefined) : item };
+    const why = unclaimed(item, { held: item.held ?? null, overlap: item.overlap ?? null, refusals: mine(item.refusals), skips: mine(item.skips), offers, runs: reports, project, offer });
+    if (runner) return { project, item: runnerWhyItem(item, why) };
+    // Always carried, empty when nothing holds it, so the CLI can tell this
+    // listing from an older server's, which carries `held` alone.
+    return { project, item: { ...item, why } };
+  });
+}
+
+// What a runner token's why poll carries of a waiting dispatch: no more than
+// it prints (the id and the reasons) and the dispatch it was not offered,
+// without the dispatch's note, which a plain poll gives only the runner it
+// offers the task to.
+interface RunnerWhyItem { id: string; title: string; dispatch: { to: string; agent: string | null; model: string | null; job: string | null } | null; why?: UnclaimedReason[] }
+function runnerWhyItem(item: Item, why: UnclaimedReason[] | undefined): RunnerWhyItem {
+  const d = item.dispatch;
+  const dispatch = d ? { to: d.to, agent: d.agent, model: d.model, job: d.job ?? null } : null;
+  return { id: item.id, title: item.title, dispatch, ...(why ? { why } : {}) };
 }
 
 // The portfolio's notices, each project's read on its own: a project whose
@@ -2642,6 +2712,9 @@ async function assertPlanMergeable(env: Env, L: ReturnType<typeof ledger>, id: s
   const paths = preview.merge.conflicts.map((c) => `${c.path} (${c.reason})`).join(", ");
   throw new RuleError("conflicts_with_main", `${id}'s branch would conflict with main at ${preview.head.slice(0, 8)}: ${paths}. Take main into the branch first with atelier plan refresh ${id}, which puts the plan back to building and merges main's head, adding a merge-main part whose builder resolves the conflict when it does not merge cleanly (--resolve adds that part at once); the integrator submits the plan again once every part is integrated, and it is accepted then`, 409);
 }
+
+// The task page's forms whose refusal is drawn beside them (t457).
+const TASK_FORMS = new Set<string>(["approve", "reject", "accept", "override", "allow-override"] satisfies FormError["verb"][]);
 
 async function verifyRevision(env: Env, key: string, id: string, expected: string) {
   const item = await ledger(env,key).item(id);
@@ -2710,57 +2783,86 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       await actionForm(L, verb, form, owner, async (commit) => onMainLine(env, (await L.project()).repo, commit));
       return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/ship`, c.url).toString(), 303);
     }
-    const before = await L.item(id);
-    const expected = String(form.get("head") ?? "");
-    if (before.head) assertRevision(before, expected);
-    if (["accept", "override", "allow-override", "approve", "reject"].includes(verb)) await verifyRevision(env, ref.key, id, expected);
-    if (verb === "accept" || verb === "override") await assertPlanMergeable(env, L, id);
-    // The override forms are the owner's confirmation only with the factor
-    // no agent holds (t371, ownerFactorIn): posted with the owner token as a
-    // bearer, as an agent could, or from a session alone, which that token
-    // buys, they are refused as the API's override is.
-    let factor: OwnerFactor | undefined;
-    if (verb === "override" || verb === "allow-override") {
-      if (!c.signedIn) throw new RuleError("override_unconfirmed", `an override of the independent review needs the owner's own sign-in, not the owner token: ${overrideConfirmationHint(project, id, c.url.origin, ownerFactorOf(env))}`, 403);
-      factor = ownerFactorIn(env, c, form, project, id);
+    // A refusal of one of the task page's own forms (approve, request
+    // changes, accept, override, the command-line permission) is answered
+    // with the task's page, drawn again from the record, the refusal beside
+    // the form it came from and the reason typed kept; never the
+    // confirmation secret (t457). Any other failure goes to the error page.
+    try {
+      const before = await L.item(id);
+      const expected = String(form.get("head") ?? "");
+      if (before.head) assertRevision(before, expected);
+      if (["accept", "override", "allow-override", "approve", "reject"].includes(verb)) await verifyRevision(env, ref.key, id, expected);
+      // Every form of the page carries the criteria it showed beside the
+      // head: the decision forms must name them, and any form that does is
+      // refused once they changed, so an override or a permission is never
+      // made from a page showing other criteria than the task's (t457).
+      const shownCriteria = form.get("criteria");
+      if ((TASK_FORMS.has(verb) || shownCriteria !== null) && shownCriteria !== criteriaOf(before)) {
+        throw new RuleError("stale_criteria", `${id}'s acceptance criteria changed since you opened this page; reload it and read them again`, 409);
+      }
+      // An override sent from a page drawn before the task was accepted (an
+      // old tab) would record a second override and acceptance; it is
+      // refused, the page drawn again with the acceptance on it (t457).
+      if (verb === "override" && before.state !== "submitted") {
+        throw new RuleError("not_submitted", before.state === "accepted"
+          ? `${id} was already accepted at ${(before.acceptedHead ?? before.head ?? "").slice(0, 8)} since this page was drawn, so this override would record a second override and acceptance`
+          : `${id} is ${before.state}; an override is made only on a submitted revision`, 409);
+      }
+      if (verb === "accept" || verb === "override") await assertPlanMergeable(env, L, id);
+      // The override forms are the owner's confirmation only with the factor
+      // no agent holds (t371, ownerFactorIn): posted with the owner token as a
+      // bearer, as an agent could, or from a session alone, which that token
+      // buys, they are refused as the API's override is.
+      let factor: OwnerFactor | undefined;
+      if (verb === "override" || verb === "allow-override") {
+        if (!c.signedIn) throw new RuleError("override_unconfirmed", `an override of the independent review needs the owner's own sign-in, not the owner token: ${overrideConfirmationHint(project, id, c.url.origin, ownerFactorOf(env))}`, 403);
+        factor = ownerFactorIn(env, c, form, project, id);
+      }
+      // A change of owner takes the write token with it, as on the API routes:
+      // the Ledger clears the id read here only if it is still the one recorded.
+      const oldToken = await L.tokenId(id);
+      // As on the API routes: a change of owner is checked, the holder's
+      // write token revoked, and only then the change made. The workspace is
+      // read after the token id, not taken from `before`: a token is recorded
+      // only once its workspace exists, so the workspace read here is the
+      // one the token was made for, even if a claim made both after `before`
+      // was read. With `before.fork` that token would go unrevoked, and the
+      // change would then take it off the record while it still works.
+      const moving = verb === "abandon" || verb === "release" || verb === "handoff" || verb === "dispatch";
+      if (moving) {
+        if (verb === "dispatch") await L.checkDispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note });
+        else if (verb === "abandon") await L.checkAbandon(id, owner, note);
+        else if (verb === "release") await L.checkRelease(id, owner, note);
+        else await L.checkHandoff(id, owner, String(form.get("to") ?? ""), note);
+        const { fork } = await L.item(id);
+        await revoke(env, fork, oldToken);
+      }
+      if (verb === "dispatch") await L.dispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note }, oldToken);
+      else if (verb === "undispatch") await L.undispatch(id, owner);
+      else if (verb === "accept") await L.accept(id, owner, expected, undefined, undefined, undefined, undefined, String(shownCriteria));
+      // The page's override form: accept with the owner's override of a missing
+      // independent review, its reason in the note.
+      else if (verb === "override") await L.accept(id, owner, expected, note, undefined, factor, await reviewerAvailability(env, L, id), String(shownCriteria));
+      // The page's permission for an override from the command line (t371).
+      else if (verb === "allow-override") await L.confirmOverride(id, owner, expected, factor!, String(shownCriteria));
+      else if (verb === "abandon") await L.abandon(id, owner, note, oldToken);
+      else if (verb === "block") await L.block(id, owner, note);
+      else if (verb === "unblock") await L.unblock(id, owner);
+      else if (verb === "clear-secret") await L.clearSecret(id, owner, note);
+      else if (verb === "release") await L.release(id, owner, note, false, oldToken);
+      else if (verb === "handoff") await L.handoff(id, owner, String(form.get("to") ?? ""), note, false, oldToken);
+      else if (verb === "approve" || verb === "reject") {
+        await L.addReview({ itemId: id, by: owner, head: expected, criteria: String(form.get("criteria") ?? ""), approve: verb === "approve", note, at: new Date().toISOString() }, c.url.origin, false, "page");
+      } else return html(renderError("Unknown action.", "/home", ownerName(env)), 400);
+      return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
+    } catch (err) {
+      const rule = parseRuleError(err);
+      if (!rule || !TASK_FORMS.has(verb)) throw err;
+      const kept = verb === "override" || verb === "reject" ? note : "";
+      const formError: FormError = { verb: verb as FormError["verb"], message: rule.detail, ...(kept ? { note: kept } : {}) };
+      return html(await taskPage(env, L, id, formError), rule.status);
     }
-    // A change of owner takes the write token with it, as on the API routes:
-    // the Ledger clears the id read here only if it is still the one recorded.
-    const oldToken = await L.tokenId(id);
-    // As on the API routes: a change of owner is checked, the holder's
-    // write token revoked, and only then the change made. The workspace is
-    // read after the token id, not taken from `before`: a token is recorded
-    // only once its workspace exists, so the workspace read here is the
-    // one the token was made for, even if a claim made both after `before`
-    // was read. With `before.fork` that token would go unrevoked, and the
-    // change would then take it off the record while it still works.
-    const moving = verb === "abandon" || verb === "release" || verb === "handoff" || verb === "dispatch";
-    if (moving) {
-      if (verb === "dispatch") await L.checkDispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note });
-      else if (verb === "abandon") await L.checkAbandon(id, owner, note);
-      else if (verb === "release") await L.checkRelease(id, owner, note);
-      else await L.checkHandoff(id, owner, String(form.get("to") ?? ""), note);
-      const { fork } = await L.item(id);
-      await revoke(env, fork, oldToken);
-    }
-    if (verb === "dispatch") await L.dispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note }, oldToken);
-    else if (verb === "undispatch") await L.undispatch(id, owner);
-    else if (verb === "accept") await L.accept(id, owner, expected);
-    // The page's override form: accept with the owner's override of a missing
-    // independent review, its reason in the note.
-    else if (verb === "override") await L.accept(id, owner, expected, note, undefined, factor);
-    // The page's permission for an override from the command line (t371).
-    else if (verb === "allow-override") await L.confirmOverride(id, owner, expected, factor!);
-    else if (verb === "abandon") await L.abandon(id, owner, note, oldToken);
-    else if (verb === "block") await L.block(id, owner, note);
-    else if (verb === "unblock") await L.unblock(id, owner);
-    else if (verb === "clear-secret") await L.clearSecret(id, owner, note);
-    else if (verb === "release") await L.release(id, owner, note, false, oldToken);
-    else if (verb === "handoff") await L.handoff(id, owner, String(form.get("to") ?? ""), note, false, oldToken);
-    else if (verb === "approve" || verb === "reject") {
-      await L.addReview({ itemId: id, by: owner, head: expected, criteria: String(form.get("criteria") ?? ""), approve: verb === "approve", note, at: new Date().toISOString() }, c.url.origin, false, "page");
-    } else return html(renderError("Unknown action.", "/home", ownerName(env)), 400);
-    return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
   }
   if (req.method !== "GET") return html("Not found.", 404);
   // Old URLs moved by organising the site by project (PAVI's direction,
@@ -2997,16 +3099,37 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
   }
   const res = await browse(env, c.url, ref, parts.slice(2));
   if (res) return res;
-  if (parts.length === 3) {
-    const p = await L.project();
-    const item = await L.item(parts[2]);
-    // The page's override forms ask for the factor this server takes (t371).
-    const read: Detail = await L.detail(parts[2]);
-    const detail: Detail = { ...read, ownerFactor: ownerFactorOf(env) };
-    detail.runs = await index(env).runsForItem(p.name, parts[2]);
-    return html(renderItem(p, detail, ownerName(env), await diffFor(env, L, p.repo, item, detail.events), live), 200, nonce);
-  }
+  if (parts.length === 3) return html(await taskPage(env, L, parts[2], undefined, live), 200, nonce);
   return html("Not found.", 404);
+}
+
+// A task's page, as its GET draws it and as a refused form of it is answered
+// (t457): `formError` draws the refusal beside the form it came from, on a
+// page read from the record after the refusal, so it claims nothing the
+// record does not hold. Not live: a refresh would drop the reason kept.
+async function taskPage(env: Env, L: ReturnType<typeof ledger>, id: string, formError?: FormError, live?: Live): Promise<string> {
+  const p = await L.project();
+  const item = await L.item(id);
+  // The page's override forms ask for the factor this server takes (t371).
+  const read: Detail = await L.detail(id);
+  const detail: Detail = { ...read, ownerFactor: ownerFactorOf(env), ...(formError ? { formError } : {}) };
+  detail.runs = await index(env).runsForItem(p.name, id);
+  return renderItem(p, detail, ownerName(env), await diffFor(env, L, p.repo, item, detail.events), live);
+}
+
+// Whether a reviewer of another family was available when the owner
+// overrode the independent review (t457), looked for as the override is
+// made, on the page and from the command line alike, and kept with it in
+// review.overridden. A pool that cannot be read is recorded as unknown,
+// never as no reviewer.
+async function reviewerAvailability(env: Env, L: ReturnType<typeof ledger>, id: string): Promise<ReviewerAvailability> {
+  const at = new Date().toISOString();
+  try {
+    return { known: true, reviewer: await L.availableReviewer(id, await index(env).models()), source: "model pool", at };
+  } catch (err) {
+    console.error(errorLine(`reviewer availability for ${id}`, err));
+    return { known: false, reviewer: null, source: "model pool", at, why: "the model pool could not be read" };
+  }
 }
 
 // ── entry ──────────────────────────────────────────────────────────────────
@@ -3165,6 +3288,18 @@ export default {
         // reaches the project as the current one does, for a token limited to
         // either, and the answer names the project as it is called now.
         const ref = parts[1] === "projects" && parts[2] !== undefined ? await resolveProject(env, parts[2]) : null;
+        // A claim refused a runner is kept on the task (noteClaimRefusal), so
+        // status and show name it (t420): the runner passes the task by
+        // until it changes, and said so only in its own log. Recording it
+        // never hides the refusal itself.
+        const claimRunner = req.method === "POST" && ref && parts[3] === "items" && /^t[0-9]+$/.test(parts[4] ?? "") && parts[5] === "claim" && parts.length === 6
+          ? token?.runner ?? parseRunner(req.headers.get("x-atelier-runner"))?.runner ?? null : null;
+        const noteRefusal = async (error: unknown) => {
+          const rule = parseRuleError(error);
+          if (!claimRunner || !ref || !rule || rule.status >= 500) return;
+          try { await ledger(env, ref.key).noteClaimRefusal(parts[4], claimRunner, actor, rule.code, rule.detail, token?.runner ? token : undefined); }
+          catch (e) { console.error("claim refusal not recorded", String(e)); }
+        };
         if (token?.runner) {
           const input = body as Record<string, unknown>;
           if (!runnerRoute(req.method, parts.slice(1), input) || ref && !inScope(token, ref.names)) throw runnerDenied(token);
@@ -3176,7 +3311,13 @@ export default {
             // a run report for the review is; the runner never holds a
             // review as a job of its own, so assertRunnerJob cannot judge it.
             if (parts[5] === "review-skip") await ledger(env, ref.key).assertRunnerReport(token, parts[4], actor, "review");
-            else await ledger(env, ref.key).assertRunnerJob(token, parts[4], actor, parts[5] === "claim");
+            // A run skip (t420) is the runner's report of a build or plan job
+            // its poll was offered, checked as that job's run report is.
+            else if (parts[5] === "run-skip") await ledger(env, ref.key).assertRunnerReport(token, parts[4], actor, input.role === "plan" ? "plan" : "build");
+            else {
+              try { await ledger(env, ref.key).assertRunnerJob(token, parts[4], actor, parts[5] === "claim"); }
+              catch (error) { await noteRefusal(error); throw error; }
+            }
             // The authenticated runner, never a caller-selected identity, goes to the atomic claim.
             req = new Request(req.url, { method: req.method, headers: new Headers(req.headers) });
             req.headers.set("x-atelier-runner", token.runner);
@@ -3197,6 +3338,7 @@ export default {
         try {
           res = await api({ env, req, url, actor, body, token, ref, acting, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
         } catch (error) {
+          await noteRefusal(error);
           if (token?.runner && parseRuleError(error)?.status === 403) throw runnerDenied(token);
           throw error;
         }
