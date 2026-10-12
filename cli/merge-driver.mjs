@@ -130,6 +130,30 @@ export function readRecords(text, pattern, framed = false) {
   return { records, problems, head: head.join("\n"), tail: tail.join("\n") };
 }
 
+// A framed side that holds no records has no line between its frame's
+// opening and closing lines, so readRecords reads its whole frame as the
+// opening. Each such side is split where its lines take the opening and
+// closing lines of a side that holds records, so a side emptied of every
+// record merges like any other deletion; a frame that cannot be split that
+// way, or only at more than one place, is a problem, never a guess.
+function splitEmptyFrames(sides, problems) {
+  const known = Object.values(sides).filter((side) => side.records.size);
+  if (!known.length) return;
+  for (const [name, side] of Object.entries(sides)) {
+    if (side.records.size) continue;
+    const lines = side.head === "" ? [] : side.head.split("\n");
+    let best = 0, at = [];
+    for (let k = 0; k <= lines.length; k++) {
+      const head = lines.slice(0, k).join("\n"), tail = lines.slice(k).join("\n");
+      const score = Math.max(...known.map((ref) => (ref.head === head) + (ref.tail === tail)));
+      if (score > best) { best = score; at = [k]; } else if (score === best && score) at.push(k);
+    }
+    if (at.length !== 1) { problems.push(`${name}: it holds no records, and its frame cannot be told apart into the opening and closing lines the other sides hold`); continue; }
+    side.head = lines.slice(0, at[0]).join("\n");
+    side.tail = lines.slice(at[0]).join("\n");
+  }
+}
+
 // The three-way union of a record file, by key. A key one side alone
 // changed (added, edited or deleted) takes that side; a key both sides
 // changed the same way takes it once; a key both sides changed differently
@@ -143,6 +167,7 @@ export function readRecords(text, pattern, framed = false) {
 export function mergeRecords(base, ours, theirs, pattern, framed = false) {
   const [o, a, b] = [base, ours, theirs].map((text) => readRecords(text, pattern, framed));
   const problems = [...a.problems.map((p) => `ours: ${p}`), ...b.problems.map((p) => `theirs: ${p}`), ...o.problems.map((p) => `base: ${p}`)];
+  if (framed) splitEmptyFrames({ base: o, ours: a, theirs: b }, problems);
   const byKey = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
   const keys = framed
     ? [...o.records.keys(), ...[...new Set([...a.records.keys(), ...b.records.keys()])].filter((k) => !o.records.has(k)).sort(byKey)]
