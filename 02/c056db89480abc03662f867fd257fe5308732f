@@ -1,0 +1,69 @@
+atelier atelier/t455 "land works from the task's recorded head, wherever it was built"
+accepted head a3ec987fa03cb3841fa2f8c1b44f8d22c08d9de3
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR codex/gpt-6-astra (openai)
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — codex/gpt-6-astra 2026-10-12T08:58:36.046Z
+OBSERVED pass npm run types && npm run typecheck — codex/gpt-6-astra 2026-10-12T08:58:39.372Z
+REVIEW approve by antigravity/gemini-3.1-pro at a3ec987fa03cb3841fa2f8c1b44f8d22c08d9de3, recorded by antigravity/gemini-3.1-pro
+REVIEW approve by opencode/glm-5.3 at a3ec987fa03cb3841fa2f8c1b44f8d22c08d9de3, recorded by opencode/glm-5.3
+2026-10-10T16:32:55.815Z pavi item.created
+2026-10-10T17:47:21.512Z pavi item.edited
+2026-10-10T17:47:21.512Z pavi item.criteria_changed
+2026-10-10T17:47:34.218Z pavi item.dispatched
+2026-10-10T18:14:54.490Z pavi item.undispatched
+2026-10-10T21:56:43.169Z pavi item.edited
+2026-10-10T21:56:43.169Z pavi item.criteria_changed
+2026-10-12T00:23:29.280Z pavi item.dispatched
+2026-10-12T00:23:56.996Z codex/gpt-6-astra item.claimed
+2026-10-12T00:25:18.786Z codex/gpt-6-astra fork.created
+2026-10-12T00:43:01.009Z codex/gpt-6-astra push.observed
+2026-10-12T00:48:36.379Z codex/gpt-6-astra evidence.observed
+2026-10-12T00:48:40.514Z codex/gpt-6-astra evidence.observed
+2026-10-12T00:48:41.633Z codex/gpt-6-astra item.submitted
+2026-10-12T02:59:04.018Z pavi item.released
+2026-10-12T02:59:04.018Z pavi item.dispatched
+2026-10-12T04:58:47.068Z codex/gpt-6-astra item.claimed
+2026-10-12T05:17:33.490Z codex/gpt-6-astra push.observed
+2026-10-12T05:25:23.075Z codex/gpt-6-astra evidence.observed
+2026-10-12T05:25:25.642Z codex/gpt-6-astra evidence.observed
+2026-10-12T05:25:26.087Z codex/gpt-6-astra item.submitted
+2026-10-12T05:30:24.408Z pavi item.released
+2026-10-12T05:30:24.408Z pavi item.dispatched
+2026-10-12T06:41:03.184Z codex/gpt-6-astra item.claimed
+2026-10-12T07:04:27.305Z codex/gpt-6-astra push.observed
+2026-10-12T07:04:28.392Z atelier/events secret.flagged
+2026-10-12T07:10:33.769Z codex/gpt-6-astra evidence.observed
+2026-10-12T07:10:36.159Z codex/gpt-6-astra evidence.observed
+2026-10-12T07:17:51.931Z codex/gpt-6-astra push.observed
+2026-10-12T07:17:53.013Z atelier/events secret.flagged
+2026-10-12T07:25:30.125Z codex/gpt-6-astra evidence.observed
+2026-10-12T07:25:33.043Z codex/gpt-6-astra evidence.observed
+2026-10-12T08:23:45.710Z codex/gpt-6-astra item.released
+2026-10-12T08:23:51.625Z codex/gpt-6-astra item.claimed
+2026-10-12T08:24:04.168Z codex/gpt-6-astra item.released
+2026-10-12T08:24:07.975Z codex/gpt-6-astra item.claimed
+2026-10-12T08:30:53.738Z codex/gpt-6-astra push.observed
+2026-10-12T08:30:54.718Z atelier/events secret.flagged
+2026-10-12T08:37:05.987Z codex/gpt-6-astra evidence.observed
+2026-10-12T08:37:08.379Z codex/gpt-6-astra evidence.observed
+2026-10-12T08:37:08.803Z codex/gpt-6-astra item.submitted
+2026-10-12T08:51:38.006Z pavi land.lease
+2026-10-12T08:51:44.005Z pavi land.merge
+2026-10-12T08:51:55.764Z pavi land.regenerate
+2026-10-12T08:51:58.403Z codex/gpt-6-astra push.observed
+2026-10-12T08:51:59.332Z atelier/events secret.resolved
+2026-10-12T08:51:59.441Z pavi land.push
+2026-10-12T08:58:36.447Z codex/gpt-6-astra evidence.observed
+2026-10-12T08:58:39.582Z codex/gpt-6-astra evidence.observed
+2026-10-12T08:58:40.057Z pavi land.check
+2026-10-12T08:58:43.083Z pavi review.requested
+2026-10-12T08:58:43.083Z pavi review.requested
+2026-10-12T08:59:07.573Z opencode/glm-5.3 review.claimed
+2026-10-12T08:59:08.112Z antigravity/gemini-3.1-pro review.claimed
+2026-10-12T08:59:08.534Z opencode/glm-5.3 review.diff
+2026-10-12T08:59:08.927Z antigravity/gemini-3.1-pro review.diff
+2026-10-12T09:03:39.728Z antigravity/gemini-3.1-pro review.approved
+2026-10-12T09:17:15.550Z opencode/glm-5.3 review.approved
+2026-10-12T09:17:25.988Z pavi land.review
+2026-10-12T09:17:26.631Z pavi item.accepted
+2026-10-12T09:17:26.654Z pavi land.accept
