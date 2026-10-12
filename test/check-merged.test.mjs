@@ -209,3 +209,25 @@ test("preparation timeout stops checks and names the signal", async (t) => {
   assert.match(r.stderr, /timed out/);
   assert.deepEqual(f.evidence(), []);
 });
+
+test("failed speculative generation keeps and names its log after check deletes the clone", async (t) => {
+  const failing = (input) => (cwd) => {
+    generating(input)(cwd);
+    const path = join(cwd, "bin", "merge-manifest.json");
+    const manifest = JSON.parse(readFileSync(path, "utf8"));
+    manifest.generators[0].command = ["sh", "-c", "echo generation-diagnostic >&2; exit 3"];
+    writeFileSync(path, JSON.stringify(manifest));
+  };
+  const f = await fixture(t, { mainChange: failing("main"), taskChange: failing("task"), check: "exit 0" });
+  const r = await f.run(["check", "t1", "--project", "proj", "--merged"]);
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stderr, /failed generator gen/);
+  const discardedLog = /its log is (.+\.log)/.exec(r.stderr)?.[1];
+  assert.ok(discardedLog, r.stderr);
+  assert.equal(existsSync(discardedLog), false, "the speculative clone was deleted");
+  const log = /Atelier-Generator-Log: gen: (.+\.log)/.exec(r.stderr)?.[1];
+  assert.ok(log, r.stderr);
+  assert.ok(log.startsWith(join(f.root, "cache", "merge-logs", "proj", "t1")));
+  assert.match(readFileSync(log, "utf8"), /--- run 1: exit 3\ngeneration-diagnostic/);
+  assert.equal(f.posts.filter((p) => p.path.endsWith("/evidence")).length, 0);
+});

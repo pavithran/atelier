@@ -15,7 +15,7 @@
 // generator runs here.
 
 import { changedPaths, diffLines, mergeBase, repoReader, splitLines, type Reader } from "../diff.ts";
-import { MANIFEST_PATH, generatorsToRun, mergeRecords, parseManifest, type Manifest } from "../merge-declarations.ts";
+import { MANIFEST_PATH, declarationProblems, generatorsToRun, mergeRecords, parseManifest, type Manifest } from "../merge-declarations.ts";
 import { globToRegExp } from "../rules.ts";
 
 export interface Conflict { path: string; reason: string }
@@ -45,7 +45,7 @@ function locator(r: Reader) {
     for (let i = 0; i < parts.length; i++) {
       const e = (await tree(hash))?.find((x) => x.name === parts[i]);
       if (!e) return null;
-      if (i === parts.length - 1) return e.type === "blob" ? e.hash : null;
+      if (i === parts.length - 1) return e.type === "blob" || e.type === "exec" ? e.hash : null;
       if (e.type !== "tree") return null;
       hash = e.hash;
     }
@@ -122,7 +122,8 @@ export async function mergeability(
   const both = theirsPaths.filter((p) => ourSet.has(p)).sort();
   const atMain = locator(main), atTask = locator(task);
   const conflicts: Conflict[] = [];
-  const declared = await declarations(main, task, oursTree, theirsTree, theirsPaths.includes(MANIFEST_PATH));
+  const mergedText = new Map<string, string>();
+  const declared = await declarations(main, task, baseTree, oursTree, theirsTree);
   if ("problem" in declared) conflicts.push({ path: MANIFEST_PATH, reason: declared.problem });
   const manifest = "manifest" in declared ? declared.manifest : null;
   const outputs = new Set(manifest?.generators.flatMap((g) => g.outputs) ?? []);
@@ -142,11 +143,13 @@ export async function mergeability(
       const merged = mergeRecords(...[bb, ob, tb].map((x) => new TextDecoder().decode(x)) as [string, string, string], record.pattern, record.framed);
       if (merged.problems.length) conflicts.push({ path, reason: `a declared record file that breaks its format: ${merged.problems.join("; ")}` });
       else if (merged.conflicts.length) conflicts.push({ path, reason: `records both sides changed differently: ${merged.conflicts.join("; ")}` });
+      else mergedText.set(path, merged.text);
       continue;
     }
     const clash = linesConflict(linesOf(bb), linesOf(ob), linesOf(tb));
     if (clash === null) conflicts.push({ path, reason: "too large to compare here" });
     else if (clash) conflicts.push({ path, reason: b ? "both sides changed the same lines" : "added on both sides with different contents" });
+    else mergedText.set(path, new TextDecoder().decode(bytesOf(mergeLines(linesOf(bb), linesOf(ob), linesOf(tb))!)));
   }
   // A path that is a file on one side and a folder on the other: git cannot
   // put both at one place, though no single path is changed by both sides.
@@ -169,17 +172,61 @@ export async function mergeability(
     }
   }
   for (const path of [...collisions].sort()) conflicts.push({ path, reason: "a file on one side and a folder on the other" });
+  // Validate entries in the actual merged tree, including independent
+  // additions at different paths and deletions from either side.
+  if (!conflicts.length && manifest) {
+    const files = new Map<string, string>();
+    const folders = new Map<string, string[]>();
+    const readMerged = async (path: string) => {
+      if (mergedText.has(path)) return mergedText.get(path)!;
+      const [reader, tree, at] = theirSet.has(path) ? [task, theirsTree, atTask] : [main, oursTree, atMain];
+      const hash = await at(tree, path);
+      if (!hash) return null;
+      const bytes = await reader.blob(hash);
+      if (!bytes) { conflicts.push({ path, reason: "could not be read" }); return null; }
+      return new TextDecoder().decode(bytes);
+    };
+    for (const registry of manifest.registries) {
+      const names = new Set([...(await folderFiles(main, oursTree, registry.dir)), ...(await folderFiles(task, theirsTree, registry.dir))]);
+      const surviving: string[] = [];
+      for (const name of names) {
+        const path = `${registry.dir}/${name}`;
+        const text = await readMerged(path);
+        if (text !== null) { surviving.push(name); files.set(path, text); }
+      }
+      folders.set(registry.dir, surviving);
+    }
+    for (const record of manifest.records) {
+      const text = await readMerged(record.path);
+      if (text !== null) files.set(record.path, text);
+    }
+    for (const reason of declarationProblems(manifest, (path) => files.get(path) ?? null, (dir) => folders.get(dir) ?? [], globToRegExp)) {
+      conflicts.push({ path: MANIFEST_PATH, reason });
+    }
+  }
   return {
     clean: conflicts.length === 0, conflicts, both, ours: oursPaths.length, theirs: theirsPaths.length,
     ...(regenerable.length ? { regenerable, generators: generators.map((g) => g.name) } : {}),
   };
 }
 
+// Direct files only, matching the CLI registry reader.
+async function folderFiles(reader: Reader, root: string, folder: string): Promise<string[]> {
+  let hash = root;
+  for (const part of folder.split("/")) {
+    const entry = (await reader.tree(hash))?.find((e) => e.name === part && e.type === "tree");
+    if (!entry) return [];
+    hash = entry.hash;
+  }
+  return (await reader.tree(hash) ?? []).filter((e) => e.type === "blob" || e.type === "exec").map((e) => e.name);
+}
+
 // The merge declarations the merged tree would hold: the task's where it
 // changed the manifest, main's otherwise. None where the tree has no
 // manifest; a problem where it cannot be read or parsed, which stops the
 // pipeline's merge too.
-async function declarations(main: Reader, task: Reader, oursTree: string, theirsTree: string, taskChanged: boolean): Promise<{ manifest: Manifest } | { problem: string } | { none: true }> {
+async function declarations(main: Reader, task: Reader, baseTree: string, oursTree: string, theirsTree: string): Promise<{ manifest: Manifest } | { problem: string } | { none: true }> {
+  const taskChanged = (await changedPaths(task, baseTree, theirsTree)).includes(MANIFEST_PATH);
   const [reader, tree] = taskChanged ? [task, theirsTree] : [main, oursTree];
   const hash = await locator(reader)(tree, MANIFEST_PATH);
   if (!hash) return { none: true };
@@ -249,7 +296,7 @@ export async function mergePatch(
   // Outputs only a generator can write: no tree here, since no generator
   // runs in the Worker (the caller says where the merge can be checked).
   if (m.regenerable?.length) return { patch, conflicts: [], regenerable: m.regenerable, generators: m.generators };
-  const declared = await declarations(main, task, oursTree, theirsTree, m.both.includes(MANIFEST_PATH));
+  const declared = await declarations(main, task, baseTree, oursTree, theirsTree);
   const records = "manifest" in declared ? declared.manifest.records : [];
   const both = new Set(m.both);
   const atMain = leafLocator(main), atTask = leafLocator(task);

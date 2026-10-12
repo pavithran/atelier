@@ -1067,7 +1067,7 @@ export async function mergeWithMain(dir, id, name = "") {
   const config = [["user.name", "atelier"], ["user.email", "atelier@localhost"], ["commit.gpgsign", "false"]];
   const r = await mergeThrough(dir, "FETCH_HEAD", { git, config, verify: false, message: `atelier check --merged: main at ${main}`, log: (line) => process.stderr.write(`atelier: ${line}\n`) });
   if (r.state === "conflicts") die(`the merge of ${id} with main at ${short(main)} stops on conflicts; nothing was regenerated.\n${describeConflicts(r, r.manifest)}\nIn the workspace, run atelier update, resolve them, commit, and atelier push --force; then check again.`, 2);
-  if (r.state === "stopped" || r.state === "failed") die(`the merge of ${id} with main at ${short(main)} stops:\n${r.reason}\nIn the workspace, run atelier update, resolve it, commit, and atelier push --force; then check again.`, 2);
+
   const kept = join(CACHE, "merge-logs", ...[name, id].filter(Boolean));
   const logs = [];
   for (const g of r.regenerated ?? []) {
@@ -1075,8 +1075,9 @@ export async function mergeWithMain(dir, id, name = "") {
     const log = join(kept, `${short(main)}-${basename(g.log)}`);
     copyFileSync(g.log, log);
     logs.push(`Atelier-Generator-Log: ${g.name}: ${log}`);
-    process.stderr.write(`atelier: regenerated ${g.outputs.map((o) => `${o.path} (matches ${o.matches})`).join(", ")} with ${g.command.join(" ")}; log ${log}\n`);
+    process.stderr.write(`atelier: ${g.stop ? "failed generator " + g.name : "regenerated"} ${g.outputs.map((o) => `${o.path} (matches ${o.matches})`).join(", ")} with ${g.command.join(" ")}; log ${log}\n`);
   }
+  if (r.state === "stopped" || r.state === "failed") die(`the merge of ${id} with main at ${short(main)} stops:\n${r.reason}\n${logs.join("\n")}\nIn the workspace, run atelier update, resolve it, commit, and atelier push --force; then check again.`, 2);
   process.stderr.write(`atelier: merged with main at ${short(main)} in the clean clone\n`);
   const lines = [...(r.provenance ?? []), ...logs];
   return { main, provenance: lines.length ? `Merged with main at ${main} through the merge pipeline:\n${lines.join("\n")}` : "" };
