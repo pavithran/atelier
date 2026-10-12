@@ -155,6 +155,28 @@ it("a failure that outlasts the retries ends the landing with the lease released
   expect((await L.item(id)).state).not.toBe("submitted");
 });
 
+// A pre-review finding of t524's own review: the lease ask did not catch
+// prereview_blocked from the queue step, so a fenced landing was retried five
+// times (over a minute of retry delays) before it ended. It ends at once.
+it("a landing a blocking pre-review fenced ends at once, not after the lease ask's retries", async () => {
+  const { L, id } = await pushedTask("wf-fenced", "wf-fenced-1");
+  await runInDurableObject(L, async (_instance, state) => {
+    state.storage.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `prereview-fence:${id}`,
+      JSON.stringify({ request: 1_000_000_001, head: H1, reviewer: "codex/gpt-6-astra", at: new Date().toISOString(), blocking: 1, builder: OPUS, ownerAction: null }));
+  });
+  await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, "wf-fenced-1");
+  // Sleeps are skipped, retry delays are not: five retries would wait out
+  // two seconds and more each, past this test's timeout.
+  await wf.modify(async (m) => { await m.disableSleeps(); });
+  const t0 = Date.now();
+  await env.LANDING_WORKFLOW.create({ id: "wf-fenced-1", params: params("wf-fenced", id) });
+  await wf.waitForStatus("errored");
+  expect(Date.now() - t0).toBeLessThan(4000);
+  expect((await wf.getError()).message).toMatch(/NonRetryableError/);
+  expect(await L.landingWorkflowOf(id)).toMatchObject({ stage: "failed", detail: expect.stringMatching(/pre-review .* blocking finding.*atelier unblock/) });
+  expect(await L.readProjectLanding()).toBeNull();
+});
+
 it("pauses on a conflict with the lease released and the files named, resumes on the owner's word, and passes over a report from the earlier round", async () => {
   const { L, id } = await pushedTask("wf-conflict", "wf-conflict-1");
   await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, "wf-conflict-1");

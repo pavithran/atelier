@@ -1,7 +1,8 @@
 // atelier show. Its forms, flags and help are declared in src/usage/commands/show.ts.
 import { effectiveFailures, failureJson, failureSummary, resolveFailures } from "../../src/check-failure.ts";
-import { I, OWNER, RequestError, actor, args, call, die, formatBrief, formatReviews, itemArg, logReader, newestReviews, project, request, server } from "../atelier.mjs";
+import { I, OWNER, RequestError, actor, args, call, die, formatBrief, formatCriteriaReviews, formatReviews, itemArg, logReader, newestReviews, project, request, server } from "../atelier.mjs";
 import { queueReasons } from "../status.mjs";
+import { fenceText, PREREVIEW_JOB, prereviewLines } from "../../src/dispatch/prereview.ts";
 
 export default async function showCommand() {
   const name = project(), id = itemArg(), as = await actor(OWNER);
@@ -29,11 +30,12 @@ export default async function showCommand() {
   }
   // Why a dispatched task is not being taken, as the queue holds it (t420):
   // each reason in words and the command that releases it. Read from the
-  // queue's entry for it, so `show` and `status` say the same thing.
+  // queue's entry for it, so `show` and `status` say the same thing. A
+  // review or pre-review request of the task (t524) is not its build.
   let why = [];
   try {
     const entry = ((await request("GET", "/queue", undefined, as)) ?? [])
-      .find((q) => q.project === name && q.item?.id === id && q.item.dispatch?.job !== "review");
+      .find((q) => q.project === name && q.item?.id === id && q.item.dispatch?.job !== "review" && q.item.dispatch?.job !== PREREVIEW_JOB);
     why = entry ? queueReasons(entry.item) : [];
   } catch { /* the brief still prints; the queue's reason is a bonus */ }
   // The failed checks at the current head, as the gate reads them (t436,
@@ -44,10 +46,15 @@ export default async function showCommand() {
   const failures = d.item?.head && d.policy?.checks
     ? await resolveFailures(effectiveFailures(d.policy, d.evidence ?? [], d.item.head), logReader(name, id, as))
     : [];
-  if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), failedChecks: failures.map(failureJson), ...(why.length ? { why } : {}) }, null, 2));
+  // The newest pre-review of the task (t524) and the fence a blocking one
+  // left on its landing: state, binding, reviewer, findings and recovery.
+  const prereview = d.prereviews?.[0] ?? null, fence = d.prereviewFence ?? null;
+  if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}) }, null, 2));
   const blocks = [formatBrief(name, id, brief, server())];
   if (why.length) blocks.push(why.map((r) => r.line).join("\n"));
+  if (prereview || fence) blocks.push([...(prereview ? prereviewLines(prereview) : []), ...(fence ? [`Fenced: ${fenceText(id, fence)}`] : [])].join("\n"));
   if (failures.length) blocks.push(failureSummary(id, d.item.head, failures));
   if (args.reviews) blocks.push(formatReviews(d?.reviews ?? [], d?.ownerActor, d?.unparsable ?? []));
+  if (args.reviews && d?.criteriaReview) blocks.push(formatCriteriaReviews(d.criteriaReview));
   console.log(blocks.join("\n\n"));
 }
