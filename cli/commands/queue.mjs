@@ -1,5 +1,5 @@
 // atelier queue. Its forms, flags and help are declared in src/usage/commands/queue.ts.
-import { holdText } from "../../src/dispatch/rules.ts";
+import { holdText, orphanText } from "../../src/dispatch/rules.ts";
 import { notePreview } from "../../src/text.ts";
 import { OWNER, apiToken, die, flat, project, resolveTokenActor, server, tokenActor } from "../atelier.mjs";
 
@@ -17,6 +17,9 @@ export default async function queueCommand() {
     console.log(`${project}/${item.id}  for ${d.to}${d.agent ? ` ${d.agent}` : ""}${d.model ? `/${d.model}` : ""}${d.job === "merge-main" ? "  merge-main" : ""}  ${item.title}`);
     const preview = notePreview(d.note);
     if (preview) console.log(`  note: ${flat(preview)}`);
+    // A claim whose runner stopped polling holds nothing (t537): said in
+    // the hold's text when a live blocker holds the task too, else alone.
     if (item.held) console.log(`  held: ${holdText(item.held)}`);
+    else if (item.orphaned?.length) console.log(`  held: ${orphanText(item.orphaned)}`);
   }
 }

@@ -1061,6 +1061,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // the models live runners offer (src/plans/route.ts). The same call on
     // the index returns the projects to read.
     const projects = (await index(env).askQueue(offer, new Date().toISOString())).filter((p) => inScope(c.token, namesOf(p)));
+    // Every runner's last poll, this one's included, goes to each project,
+    // where a claim whose runner stopped polling holds no other dispatch
+    // (t537, orphanedBy in src/dispatch/rules.ts).
+    const polls = projects.length ? (await index(env).runnerOffers()).map(({ runner, at }) => ({ runner, at })) : [];
     const indexed = Date.now();
     const unreadable: string[] = [];
     // One call per project reads both its waiting tasks and its open review requests.
@@ -1072,7 +1076,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // it starts new work.
         const L = ledgerOf(env, p);
         if (c.token?.runner && offer) await L.runnerPoll(c.token, offer);
-        const [held, { waiting, reviews }] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), L.queued()]);
+        const [held, { waiting, reviews }] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), L.queued(polls)]);
         return [...held, ...waiting, ...reviews].map((item) => ({ project: p.name, item }));
       }
       catch { unreadable.push(p.name); return []; }
