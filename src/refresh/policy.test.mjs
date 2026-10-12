@@ -190,7 +190,7 @@ for (const job of ["refresh", "resolve"]) for (const phase of ["pushing", "check
       const resumed = takeLease(target, { job, actor: by, runner: null, head: H("c"), now, id: `lease-${now}`, same: sameActor });
       assert.equal(resumed.expectedHead, H("1"));
       assert.equal(resumed.mainHead, H("a"));
-      assert.deepEqual(resumed[phase], old[phase]);
+      assert.deepEqual(resumed[phase], phase === "pushing" ? { ...old.pushing, by, job } : old.checking);
       target = { ...target, lease: resumed };
     }
     assert.equal(afterSettle(target, target.lease, "checks", new Date().toISOString()).state, "queued");
@@ -201,4 +201,17 @@ test("an expired lease cannot be replaced before its bounded push window ends", 
   const target = { ...enqueue(null, "t7", H("a"), new Date(0).toISOString()).target, state: "leased",
     lease: { id: "old", job: "refresh", by: "atelier/integrator", mainHead: H("a"), expectedHead: H("1"), at: new Date(0).toISOString(), until: new Date(1).toISOString(), pushing: { head: H("c"), until: new Date(1000).toISOString() } } };
   assert.equal(code(() => takeLease(target, { job: "refresh", actor: "atelier/integrator", runner: null, head: H("1"), now: 2, id: "new", same: sameActor })), "refresh_pushing");
+});
+
+test("the integrator may reconcile a lapsed push whoever announced it; another actor may not", () => {
+  const resolver = "claude-code/opus-5.5";
+  const target = { ...enqueue(null, "t7", H("a"), new Date(0).toISOString()).target, state: "leased", resolver,
+    lease: { id: "old", job: "resolve", by: resolver, runner: null, mainHead: H("a"), expectedHead: H("1"), at: new Date(0).toISOString(), until: new Date(1).toISOString(), pushing: { head: H("c"), until: new Date(2).toISOString() } } };
+  const take = (job, actor) => takeLease(target, { job, actor, runner: null, head: H("1"), now: 10, id: "new", same: sameActor });
+  const integrator = take("refresh", "atelier/integrator");
+  assert.equal(integrator.by, "atelier/integrator");
+  assert.equal(integrator.job, "refresh");
+  assert.deepEqual(integrator.pushing, { head: H("c"), until: new Date(2).toISOString(), by: resolver, job: "resolve" });
+  assert.equal(take("resolve", resolver).by, resolver);
+  assert.equal(code(() => take("resolve", "codex/gpt-6-astra")), "not_leaseholder");
 });

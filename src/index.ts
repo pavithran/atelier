@@ -2293,9 +2293,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // back with no outcome (a provider's usage limit, a failure before any
       // report), and the lease's token is revoked.
       if (typeof body.renew === "string") return json({ lease: await L.renewRefreshLease(id, actor, body.renew) });
-      // Before a push it cannot tell recorded is taken back, the leaseholder
-      // reads the task's head as recorded now.
+      // A leaseholder whose report went unanswered reads the task's head as
+      // recorded now; its push is never taken back.
       if (typeof body.status === "string") return json(await L.refreshLeaseStatus(id, actor, body.status));
+      // The owner releases a lapsed lease's unreconciled push this way too,
+      // with a reason (Ledger.releaseRefreshLease).
       if (typeof body.release === "string") {
         const { revoke: token, ...released } = await L.releaseRefreshLease(id, actor, body.release, String(body.reason ?? ""), body.providerLimit === true);
         if (token) await revoke(env, released.item.fork, token);

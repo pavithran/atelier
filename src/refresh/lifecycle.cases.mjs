@@ -56,7 +56,7 @@ for (const observed of [false, true]) for (const newer of [false, true]) {
     if (observed) await L.observePush(id, R, H);
     if (newer) { await L.noteMainHead(N); await L.noteMainHead(N); }
     await expire(L, id);
-    await refusal(L.beginProjectLanding(id, "owner"), /refresh is pushing/);
+    await refusal(L.beginProjectLanding(id, "owner"), /refresh_pushing/);
     await refusal(L.releaseRefreshLease(id, actor, lease.id, "crashed"), /reconciled/);
     const resumed = (await L.leaseRefresh(id, actor, null, "refresh")).lease;
     expect(resumed).toMatchObject({ expectedHead: H, mainHead: M, pushing: { head: R } });
@@ -85,7 +85,54 @@ it("an expired pre-push lease cannot announce a late push; an unsettled announce
   await L.refreshPushing(id, actor, { ...report(next), head: R });
   await expire(L, id);
   await L.renewRefreshLease(id, actor, next.id);
-  await refusal(L.beginProjectLanding(id, "owner"), /refresh is pushing/);
+  await refusal(L.beginProjectLanding(id, "owner"), /refresh_pushing/);
   await L.taskRefreshFailed(id, actor, { ...report(next), outcome: "superseded", reason: "bounded push settled without changing the fork" });
+  await L.beginProjectLanding(id, "owner");
+});
+
+// Pre-review of 45d40c3c: only the announcer could reconcile its push, and
+// nothing else ended the landing fence, so a resolver no runner offers any
+// more left its task unlandable for good.
+it("the integrator reconciles a lapsed push a resolver announced, under the resolver's Agent line", async () => {
+  const resolver = "claude-code/opus-5.5";
+  const { L, id, lease } = await setup();
+  await L.refreshPushing(id, actor, { ...report(lease), head: R });
+  // The announcement as a resolver's lease stored it before pushes named
+  // their announcer.
+  await runInDurableObject(L, async (_instance, state) => {
+    const sql = state.storage.sql;
+    const target = JSON.parse(sql.exec("SELECT json FROM refresh_targets WHERE item = ?", id).toArray()[0].json);
+    target.resolver = resolver;
+    target.lease = { ...target.lease, job: "resolve", by: resolver, pushing: { head: R, until: target.lease.pushing.until } };
+    sql.exec("UPDATE refresh_targets SET json = ? WHERE item = ?", JSON.stringify(target), id);
+  });
+  await expire(L, id);
+  const job = (await L.refreshJobs()).find((j) => j.id === id);
+  expect(job.dispatch).toMatchObject({ job: "task-refresh", agent: "atelier", model: "integrator" });
+  await refusal(L.leaseRefresh(id, "codex/gpt-6-astra", null, "resolve"), /reconciled by/);
+  const taken = (await L.leaseRefresh(id, actor, null, "refresh")).lease;
+  expect(taken).toMatchObject({ job: "refresh", by: actor, expectedHead: H, mainHead: M, pushing: { head: R, by: resolver, job: "resolve" } });
+  await refusal(L.taskRefreshed(id, actor, { ...report(taken), head: R, agent: actor }, true), /bad_agent/);
+  const done = await L.taskRefreshed(id, actor, { ...report(taken), head: R, agent: resolver }, true);
+  expect(done.result).toMatchObject({ outcome: "refreshed", resolver, reason: "checks pending" });
+  expect(done.item).toMatchObject({ state: "submitted", head: R });
+});
+
+it("the owner alone releases a lapsed, unreconciled push, with a reason, and the fence says how", async () => {
+  const { L, id, lease } = await setup();
+  await L.refreshPushing(id, actor, { ...report(lease), head: R });
+  const fence = await L.beginProjectLanding(id, "owner").then(() => null, (e) => e.message);
+  expect(fence).toMatch(/atelier\/integrator reconciles the push/);
+  expect(fence).toContain(`atelier refresh-lease ${id} --release ${lease.id} --reason TEXT`);
+  expect(fence).not.toMatch(/in a moment/);
+  await refusal(L.releaseRefreshLease(id, "owner", lease.id, "stuck"), /may still be pushing/);
+  await expire(L, id);
+  await refusal(L.releaseRefreshLease(id, "owner", lease.id, "  "), /reason_required/);
+  await refusal(L.releaseRefreshLease(id, builder, lease.id, "stuck"), /not_leaseholder/);
+  await refusal(L.releaseRefreshLease(id, actor, lease.id, "stuck"), /reconciled/);
+  expect(await L.releaseRefreshLease(id, "owner", lease.id, "resolver retired; fork checked by hand")).toMatchObject({ released: true });
+  const released = (await L.events(id)).find((e) => e.kind === "refresh.push_released");
+  expect(released.data).toMatchObject({ head: R, announcedBy: actor, reason: "resolver retired; fork checked by hand" });
+  expect((await L.refreshQueue()).find((v) => v.item === id).target).toMatchObject({ state: "queued", lease: null });
   await L.beginProjectLanding(id, "owner");
 });
