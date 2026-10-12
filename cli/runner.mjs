@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { excludeScratch } from "./scratch.mjs";
 import { accessSync, constants, appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, statSync, readdirSync, realpathSync, renameSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -20,6 +20,7 @@ import { checkCapabilities, requiredForJobs } from "../src/route-level.ts";
 import { TERMINAL_TASK_EXITS } from "../src/tokens.ts";
 import { rolePrompt, ROLE_PROMPT_MAX } from "../src/usage.ts";
 import { mergeMainAndRegenerate } from "./land.mjs";
+import { runTaskRefresh } from "./task-refresh.mjs";
 import { DETECTOR_ENV, RENAME_THRESHOLD, describeFinding, detectMovedEditsAsync, normalize, parseRawZ, showPath } from "../src/moved-code.ts";
 import { builderRefusals } from "../src/commit-identity.ts";
 
@@ -1997,10 +1998,11 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   const integrating = args.integrate === true;
   if (typeof args.name !== "string" || !/^home:[a-z0-9][a-z0-9._-]{0,63}$/i.test(args.name)) throw new Error("use --name home:NAME");
   // The integrator runs no model: it offers the integrate and refresh jobs
-  // alone, under the reserved actor, and takes no config.
+  // and the task refresh's (t462) alone, under the reserved actor, and
+  // takes no config.
   const config = integrating ? { agents: [] } : readConfig(args.config);
   const offer = integrating
-    ? { runner: args.name.toLowerCase(), kind: "home", agents: [], jobs: ["integrate", "refresh"] }
+    ? { runner: args.name.toLowerCase(), kind: "home", agents: [], jobs: ["integrate", "refresh", "task-refresh"] }
     : offerFrom(config, args.name);
   const controller = new AbortController();
   // The first interrupt ends the active child's group with its grace
@@ -2184,6 +2186,29 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // The workspace half of a rollback; runIntegrate and runRefresh push it with atelier push --rollback.
     rollback: (cwd, before) => checked(["git", "reset", "--hard", before], { cwd, capture: true, captureError: true, signal: controller.signal, step: "rollback" }, executeChild),
     writeDiff, removeDiff, verdictPath, readVerdict,
+    // The task refresh's own workspace (t462, cli/task-refresh.mjs): a fresh
+    // directory, never a builder's, removed when the job ends.
+    tempDir: async (prefix) => mkdtempSync(join(tmpdir(), prefix)),
+    // A resolver's harness on a refresh's mechanical conflicts, in that
+    // workspace, with the brief the job wrote; what it leaves is verified
+    // by the job before anything is committed.
+    resolveConflicts: async (assignment, cwd, text) => {
+      const entry = config.agents.find((a) => a.agent === assignment.agent && a.models.includes(assignment.model));
+      if (!entry) throw new Error(`this runner has no harness for ${assignment.actor}`);
+      excludeScratch(cwd);
+      const brief = writeBrief(cwd, text);
+      let dataHome;
+      try {
+        const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
+        dataHome = OWN_DATA_HOME.has(assignment.agent) ? makeDataHome(cwd) : null;
+        const result = await io.harness(commandFor(entry, { model: assignment.model, briefFile: brief.file, workspace: cwd }), cwd, harnessRunEnv(env, dataHome, assignment.item.id, "build", offer.runner, assignment.project, assignment.actor), { capture: true, stream: true });
+        if (result.timedOut) throw new Error("harness timed out resolving the refresh");
+        if (result.code !== 0) throw new Error(`harness exited ${result.code} resolving the refresh`);
+      } finally {
+        if (dataHome) removeDataHome(dataHome);
+        removeBrief(brief);
+      }
+    },
     ...taskIO,
   };
   try {
@@ -2193,7 +2218,12 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // first poll, so a runner that would fail its calls one by one stops
     // here instead, saying to deploy.
     if (version) {
-      const refusal = versionRefusal(await version(controller.signal), offer.jobs);
+      const answer = await version(controller.signal);
+      // The integrator's task refresh (t462) is the one job it drops rather
+      // than refuse for: a server from before it still has its plans
+      // integrated and refreshed, and the line below says the job is off.
+      if (integrating && versionRefusal(answer, ["task-refresh"])) offer.jobs = offer.jobs.filter((job) => job !== "task-refresh");
+      const refusal = versionRefusal(answer, offer.jobs);
       if (refusal) throw new Error(refusal);
     }
     // Said once, before the first poll (t289): the jobs this runner takes
@@ -2257,7 +2287,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
                 ? await runIntegrate(task, config, offer.runner, io)
                 : task.item.dispatch?.job === "refresh"
                   ? await runRefresh(task, config, offer.runner, io)
-                  : await runTask(task, config, offer.runner, io);
+                  : task.item.dispatch?.job === "task-refresh" || task.item.dispatch?.job === "task-resolve"
+                    ? await runTaskRefresh(task, config, offer.runner, io)
+                    : await runTask(task, config, offer.runner, io);
           if (controller.signal.aborted) break;
           const outcome = runOutcome(state);
           if (outcome && reportRun) {

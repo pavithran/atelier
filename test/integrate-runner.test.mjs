@@ -372,14 +372,14 @@ test("runRefresh skips a refresh job that names no main head", async () => {
   assert.equal(calls.filter((c) => c.argv).length, 0);
 });
 
-test("runRunner --integrate offers only the integrate and refresh jobs with no agents", async (t) => {
+test("runRunner --integrate offers only the integrate, refresh and task-refresh jobs with no agents", async (t) => {
   const offers = [];
   const args = { _: ["runner"], multi: { name: ["home:studio"], integrate: [true] }, name: "home:studio", integrate: true, once: true };
   await runRunner(args, {
     workspacePath: () => { throw new Error("nothing claimed"); },
     async queue(offer) { offers.push(offer); process.emit("SIGINT"); return []; },
   });
-  assert.deepEqual(offers, [{ runner: "home:studio", kind: "home", agents: [], jobs: ["integrate", "refresh"] }]);
+  assert.deepEqual(offers, [{ runner: "home:studio", kind: "home", agents: [], jobs: ["integrate", "refresh", "task-refresh"] }]);
 });
 
 // t213: any error after the claim gives the plan item back; before, a failed

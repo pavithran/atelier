@@ -185,6 +185,10 @@ export default async function initCommand() {
     // reviewing every protected change beside the gate's review; omitted
     // keeps it, "" clears it.
     ...(args["review-tier"] !== undefined ? { reviewTier: args["review-tier"] } : {}),
+    // The frontier models that may resolve a refresh's mechanical conflicts
+    // (t462), harness/model actors separated by commas; omitted keeps
+    // them, "" clears them.
+    ...(args.resolver !== undefined ? { resolvers: args.resolver } : {}),
     ...(singleFamily !== undefined ? { singleFamily } : {}),
     approval: args.approval,
     // Omitted keeps the current title; --title "" clears it.
@@ -252,6 +256,8 @@ export default async function initCommand() {
   if (typeof args.triage === "string" && args.triage.trim() && !pol.triage) console.log("Warning: the server did not record the triage model; deploy the server, then run atelier init --triage again.");
   console.log(`Review tier: ${pol.reviewTier?.length ? `${pol.reviewTier.join(", ")}, one of which reviews every protected change: the gate's review goes to the tier first, and a separate tier review is asked only when the gate's reviewer is outside it` : "none"}`);
   if (typeof args["review-tier"] === "string" && args["review-tier"].trim() && !pol.reviewTier?.length) console.log("Warning: the server did not record the review tier; deploy the server, then run atelier init --review-tier again.");
+  console.log(`Resolvers:  ${pol.resolvers?.length ? `${pol.resolvers.join(", ")}, the first eligible of which resolves a refresh's mechanical conflicts` : "none; a refresh's mechanical conflict waits for one (atelier init --resolver H/M)"}`);
+  if (typeof args.resolver === "string" && args.resolver.trim() && !pol.resolvers?.length) console.log("Warning: the server did not record the resolvers; deploy the server, then run atelier init --resolver again.");
   console.log(`Models:     ${familyModeText(pol)}`);
   // A server older than single-family mode ignores it and answers without one.
   if (typeof singleFamily === "string" && singleFamily.trim() && !pol.familyMode?.single) console.log("Warning: the server did not record single-family mode; deploy the server, then run atelier init --single-family again.");
