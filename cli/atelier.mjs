@@ -29,7 +29,7 @@ import { cleanSummary } from "../src/brief.ts";
 import { notePreview } from "../src/text.ts";
 import { recordedText } from "../src/rules.ts";
 import { ROUTE_LEVEL, checkCapabilities, requiredForCommand } from "../src/route-level.ts";
-import { callPath, declaredCall, terminalTaskExit } from "../src/tokens.ts";
+import { callPath, declaredCall, declaredHelperCall, RUNNER_COMMANDS, terminalTaskExit } from "../src/tokens.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
 import { hooksOff, landingDir, landingJournalFile, oldLandingJournalFile, RECEIPT_TEMPLATE, RECEIPTS_DIR } from "./landing.mjs";
@@ -772,7 +772,13 @@ export class RequestError extends Error {
 // caller can retry it or name the step that failed.
 export async function request(method, path, body, as, extra = {}, signal) {
   const die = (message, code = 1) => { throw new RequestError(message, code); };
+  // Validate before even the identity read: spelling, aliases and indirect
+  // calls cannot evade this boundary. Ordinary owner commands retain their
+  // wider transport; every command the runner can spawn uses the table.
+  const helper = RUNNER_COMMANDS.has(commandFor(args._[0]));
+  if (helper) declaredHelperCall(method, path, body, !!tokenRunner);
   if (path !== "/config") await resolveTokenActor();
+  if (helper && tokenRunner) declaredHelperCall(method, path, body, true);
   if (tokenActor) as = args.as ?? process.env.ATELIER_ACTOR ?? tokenActor;
   let res, text;
   try {

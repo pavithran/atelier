@@ -257,6 +257,32 @@ export function declaredCall(name: string): RunnerCall {
 // The atelier commands the runner spawns for its `cli` calls.
 export const RUNNER_COMMANDS: ReadonlySet<string> = new Set(RUNNER_CALLS.flatMap((c) => c.command ? [c.command] : []));
 
+// Resolve the legacy CLI transport's method/path to a named declaration
+// before it sends anything. Helpers share reads and finish composes other
+// commands, so the boundary is the declared CLI operations, not command
+// ownership. Exact segment matching rejects queries and extra path segments.
+export function declaredHelperCall(method: string, path: string, body: unknown, runnerOnly = false): RunnerCall {
+  const parts = path.split("/");
+  const call = RUNNER_CALLS.find((c) => {
+    if (c.via !== "cli" && c.name !== "config") return false;
+    if (runnerOnly && c.credential !== "runner") return false;
+    const pattern = c.path.split("/");
+    return c.method === method && pattern.length === parts.length && pattern.every((part, i) =>
+      /^\{\w+\}$/.test(part) ? !!parts[i] && !/[?#]/.test(parts[i]) : part === parts[i]);
+  });
+  if (!call) throw new Error(`${method} ${path} is not a call the runner helpers declare (RUNNER_CALLS in src/tokens.ts)`);
+  if (method === "GET") {
+    if (body !== undefined) throw new Error(`${call.name} is a GET and sends no body`);
+  } else {
+    if (typeof body !== "object" || body === null || Array.isArray(body)) throw new Error(`${call.name} sends an object`);
+    const fields = call.body;
+    const undeclared = Object.keys(body).filter((key) => fields === "document" || !fields.includes(key));
+    if (undeclared.length) throw new Error(`${call.name} does not send ${undeclared.join(", ")}`);
+    if (runnerOnly && "scope" in body && body.scope !== "read") throw new Error(`${call.name} only requests read scope for a runner`);
+  }
+  return call;
+}
+
 // A declared call's path under /api with its parameters filled in, each
 // encoded as a path segment; a parameter the path names and the caller
 // leaves out is an error, never an empty segment.
