@@ -1460,6 +1460,7 @@ export function formatBrief(project, id, brief, origin) {
     ...(brief.summary ? [`Summary: ${flat(brief.summary)}`] : []), ...formatFields(brief),
     ...(brief.partAccept ?? []).map((c, i) => `Plan acceptance criterion ${i + 1}: ${flat(c)}`),
     ...(brief.criteria ? [`Criteria binding: ${brief.criteria} (a review of these criteria names it with --criteria)`] : []),
+    ...(brief.criteriaReview ? [`Criteria review: ${flat(brief.criteriaReview)}`] : []),
     ...brief.evidence.map(flat),
     `Recommendation: ${flat(brief.recommendation.verdict)}. ${flat(brief.recommendation.reason)}`,
     `${origin}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`].join("\n");
@@ -1493,6 +1494,41 @@ export function formatReviews(reviews, owner = OWNER, unparsable = []) {
   for (const r of newestReviews(unparsable)) {
     lines.push(`  ${flat(r.by)} wrote a reply no verdict could be read from at ${short(r.head)} (${at(r.at)}): ${flat(r.note) || "(no reason recorded)"}`);
     lines.push(`    Reply: ${flat(r.reply) || "(nothing written)"}`);
+  }
+  return lines.join("\n");
+}
+
+// The reviews of the task's acceptance criteria themselves (t438), apart
+// from the reviews of the change above: where they stand now, who wrote each
+// revision, and each review that reached a verdict or failed, newest first,
+// with its findings and the project owner's newest resolution of each. The
+// same flattening as formatReviews, so no note or finding can pose as a line
+// of Atelier's own. Empty when the server sent no record (an older server).
+export function formatCriteriaReviews(view) {
+  if (!view) return "";
+  const lines = ["Criteria reviews:"];
+  const standing = view.status?.approved ? "approved" : "not approved";
+  lines.push(`  Revision ${view.status?.rev ?? 0}, ${standing}${view.required ? "; the project requires the approval before a build" : ""}: ${flat(view.status?.reason ?? "")}`);
+  for (const r of view.revisions ?? []) lines.push(`  Revision ${r.rev} by ${flat(r.by)} (${at(r.at)}), binding ${flat(r.criteria)}.`);
+  const latest = new Map();
+  for (const v of [...(view.resolutions ?? [])].sort((a, b) => String(a.at).localeCompare(String(b.at)))) latest.set(`${v.review}:${v.index}`, v);
+  const shown = (view.reviews ?? []).filter((r) => ["approved", "rejected", "failed"].includes(r.state)).sort((a, b) => b.id - a.id);
+  if (!shown.length) lines.push("  No criteria review has reached a verdict.");
+  for (const r of shown) {
+    const what = r.state === "failed" ? `reached no verdict (${flat(r.failure ?? "failed")})` : r.state;
+    lines.push(`  Criteria review ${r.id}, revision ${r.rev}${r.rev === view.status?.rev ? " (the criteria as they are now)" : ""}: ${flat(r.reviewer)} ${what} (${at(r.decidedAt ?? r.requestedAt)}).`);
+    if (r.state !== "failed") lines.push(`    Note: ${flat(r.summary ?? "") || "(no note)"}`);
+    (r.findings ?? []).forEach((f, i) => {
+      const v = latest.get(`${r.id}:${i + 1}`);
+      lines.push(`    ${i + 1}. ${f.severity} ${flat(f.file)} ${flat(f.text)}${v ? ` [${flat(v.verdict)}${flat(v.note) ? `: ${flat(v.note)}` : ""}]` : " [no resolution recorded]"}`);
+    });
+    // The criteria the review flagged as checks after deploy (t457).
+    for (const c of r.checks ?? []) lines.push(`    Check after deploy: criterion ${flat(String(c.criterion))}, ${c.by === "owner" ? "the project owner's" : "the orchestrator's"}: ${flat(c.text)}`);
+  }
+  // The checks that stand for the criteria as they are now.
+  if (view.checks?.length) {
+    lines.push(`  Checks after deploy for revision ${view.status?.rev ?? 0}, the builder cannot verify these in its workspace:`);
+    for (const c of view.checks) lines.push(`    criterion ${flat(String(c.criterion))}: ${c.by === "owner" ? "the project owner" : "the orchestrator"} checks it once deployed. ${flat(c.text)}`);
   }
   return lines.join("\n");
 }
