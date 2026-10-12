@@ -412,7 +412,7 @@ test("without an injected harness the triage runs through the harness's own adap
   const scratch = resolve(".scratch"); mkdirSync(scratch, { recursive: true });
   const bin = mkdtempSync(join(scratch, "triage-claude-")); t.after(() => rmSync(bin, { recursive: true, force: true }));
   const fake = (name, body) => { const file = join(bin, name); writeFileSync(file, `#!/bin/sh\n${body}\n`); chmodSync(file, 0o755); return file; };
-  const answering = fake("claude-ok", `cat > "${join(bin, "prompt.txt")}"\nprintf '%s\\n' "$*" > "${join(bin, "argv.txt")}"\necho '${allMet().replace(/\n/g, " ")}'`);
+  const answering = fake("claude-ok", `cat > "${join(bin, "prompt.txt")}"\nprintf '%s\\n' "$*" > "${join(bin, "argv.txt")}"\nprintf '%s\\n' '${JSON.stringify({ type: "result", is_error: false, result: allMet() })}'`);
   const l = landing(t, { args: { triage: "claude-code/opus-5.5", "no-review": true } });
   delete l.io.triage;
   l.io.triageTimeoutMs = 60_000;

@@ -247,3 +247,16 @@ it("concurrent different runners cannot both acquire the same dispatched job", a
   expect(item.owner).toBe(ACTOR);
   expect(["home:studio", "home:second"]).toContain(item.runner);
 });
+
+// Only an authenticated runner can classify a release as infrastructure.
+it.each([true, false])("provider-limit release metadata requires a runner token (%s)", async (runner) => {
+  const t = await setup();
+  await t.claim();
+  const body = { note: "codex usage limit until 2026-10-14T15:00:00.000Z: quota", providerLimit: true };
+  const response = runner
+    ? await t.api("POST", `${t.base}/release`, body)
+    : await t.request("POST", `${t.base}/release`, OWNER, ACTOR, body);
+  expect(response.status).toBe(200);
+  const releases = (await t.L.events("t1")).filter((e) => e.kind === "item.released");
+  expect(releases[0].data.providerLimit).toBe(runner ? true : undefined);
+});

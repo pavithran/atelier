@@ -61,6 +61,8 @@ fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv, input, cwd: p
 const answer = "VERDICT: APPROVE\\nSUMMARY: fine";
 const at = argv.indexOf("--output-last-message");
 if (at !== -1) fs.writeFileSync(argv[at + 1], answer);
+else if (argv.includes("--format") && argv[argv.indexOf("--format") + 1] === "json") process.stdout.write(JSON.stringify({ type: "text", part: { text: answer } }));
+else if (argv.includes("-p") && argv[argv.indexOf("--output-format") + 1] === "json") process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: answer }));
 else if (argv.includes("--output-format") && argv[argv.indexOf("--output-format") + 1] === "json") process.stdout.write(JSON.stringify({ response: answer }));
 else process.stdout.write(answer);
 `);
@@ -192,7 +194,7 @@ test("the harnesses are started with their own permission rules", (t) => {
   const agy = run("antigravity", s, { model: "gemini-3.1-pro" }).seen.argv;
   assert.equal(agy[agy.indexOf("--model") + 1], "gemini-3.1-pro-high");
   assert.ok(agy.includes("--sandbox"));
-  assert.deepEqual(run("opencode", s, { model: "deepseek-v4-pro" }).seen.argv, ["run", "--model", "deepseek-api/deepseek-v4-pro"]);
+  assert.deepEqual(run("opencode", s, { model: "deepseek-v4-pro" }).seen.argv, ["run", "--model", "deepseek-api/deepseek-v4-pro", "--format", "json"]);
   assert.equal(claudeModel("sonnet-5.5"), "claude-sonnet-5-5");
   assert.equal(claudeModel("claude-fable-5-1"), "claude-fable-5-1");
 });
