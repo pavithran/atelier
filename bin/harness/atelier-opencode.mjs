@@ -6,10 +6,12 @@
 // docs/runners.md).
 import { spawnSync } from "node:child_process";
 import { readSecret } from "../../cli/credentials.mjs";
-import { parseArgs, runAdapter, storeEnv } from "../../cli/harness/adapter.mjs";
+import { parseArgs, storeEnv } from "../../cli/harness/adapter.mjs";
+
+import { runWithLimits } from "./limit.mjs";
 
 const argv = process.argv.slice(2);
-process.exitCode = runAdapter("opencode", argv, {
+process.exitCode = runWithLimits("opencode", argv, {
   secret: (name) => readSecret(name, {
     env: storeEnv(process.env, parseArgs(argv).options),
     // A locked Keychain or unresponsive Secret Service can wait for user
