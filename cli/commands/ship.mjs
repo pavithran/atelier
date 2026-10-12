@@ -26,6 +26,9 @@ export default async function shipCommand() {
   const inProgress = () => [...new Set(Object.keys(WRAP_MARKERS).filter((marker) => (marker === "landing"
     ? [landingJournalFile(landingHome(gitDir)), oldLandingJournalFile(gitDir)]
     : [resolve(cwd, git(["rev-parse", "--git-path", marker], { cwd }))]).some((file) => existsSync(file))).map((marker) => WRAP_MARKERS[marker]))];
+  // The push reads the project's commit identity, whose public mirrors take
+  // the privacy check before anything is pushed (cli/mirror.mjs).
+  const identity = args.push === true ? (await call("GET", P(name), undefined, OWNER)).project?.policy?.commitIdentity ?? null : null;
   await runShip({
     name, cwd, branch: p.branch, baselineHead, inProgress,
     paired: (sha) => (p.fresh === true ? loadPairs(gitDir, name)[sha] ?? null : sha),
@@ -41,5 +44,6 @@ export default async function shipCommand() {
     redact,
     dryRun: args["dry-run"] === true,
     push: args.push === true,
+    identity,
   });
 }
