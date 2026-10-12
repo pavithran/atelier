@@ -95,8 +95,10 @@ test("a plan's planner and a part's builder are named only through namedActor, w
 });
 
 test("a review request is bound to its reviewer only by bindReview, which judges the reviewer's company", () => {
-  assert.deepEqual(sites(/SET state = 'claimed', claimedBy = \?/), ["bindReview"], "a new path binds a review request; judge the reviewer's company and list it here");
+  // A pre-review (t524) is bound by bindPrereview, which judges the company too.
+  assert.deepEqual(sites(/SET state = 'claimed', claimedBy = \?/), ["bindPrereview", "bindReview"], "a new path binds a review request; judge the reviewer's company and list it here");
   passes("bindReview", "companyRefusal(");
+  passes("bindPrereview", "companyRefusal(");
   passes("claimReview", "this.bindReview(");
   // Every place a request is made, open for a claim; a new one is listed
   // here once it is shown to ask only a reviewer the mode allows, or to
