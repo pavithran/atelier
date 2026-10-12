@@ -593,3 +593,63 @@ it("the routes bind the claim to the baseline's head and judge the verdict again
   expect(await queueIds(L)).toContain(t2);
   expect((await L.detail(t2) as unknown as { prereviewFence: unknown }).prereviewFence).toBeNull();
 });
+
+// Remaining rework at d5b253c8: owner standing and main's actual identity.
+for (const [label, change] of [
+  ["paused", { state: "paused" }],
+  ["reserved", { state: "reserved" }],
+  ["build-only", { roles: ["build"] }],
+] as [string, Partial<ModelEntry>][]) {
+  it(`withdraws open pre-reviews when their reviewer becomes ${label}`, async () => {
+    const { L, t2 } = await landing(`pre-standing-${label}`);
+    const pool = [entry("opus-5.5", "claude-code"), { ...entry("gpt-6-astra", "codex"), ...change }];
+    await L.poolChanged(pool);
+    expect((await views(L, t2))[0]).toMatchObject({ state: "withdrawn", detail: expect.stringMatching(/paused|reserved|not a reviewer/) });
+    expect((await L.queued()).reviews.filter((r) => r.id === t2)).toEqual([]);
+    expect(await queueIds(L)).toContain(t2);
+  });
+
+  for (const phase of ["claim", "verdict"]) {
+    it(`rechecks ${label} standing at pre-review ${phase} without a pool-change sweep`, async () => {
+      const { L, t2 } = await landing(`pre-standing-${label}-${phase}`);
+      const c = phase === "verdict" ? await claim(L, t2) : null;
+      // Another gate request refreshes standing without poolChanged.
+      const other = await L.newItem("Other", [], "owner");
+      await L.requestReview(other.id, "owner", OPUS, [
+        entry("opus-5.5", "claude-code"),
+        { ...entry("gpt-6-astra", "codex"), ...change },
+      ]);
+      await refusal(c ? verdict(L, t2, c, false, [BLOCKING]) : claim(L, t2), "model_held");
+      expect((await views(L, t2))[0].state).toBe("withdrawn");
+      expect(await queueIds(L)).toContain(t2);
+      expect((await L.detail(t2) as unknown as { prereviewFence: unknown }).prereviewFence).toBeNull();
+    });
+  }
+}
+
+for (const outcome of ["passed", "conflict"]) {
+  it(`asks a new pre-review after main moves following a ${outcome}, without a merge event`, async () => {
+    const { L, t1, t2 } = await landing(`pre-settled-main-${outcome}`);
+    const c = await claim(L, t2);
+    if (outcome === "passed") await verdict(L, t2, c, true);
+    else await L.releaseReview(t2, GPT, outcomeNote({ outcome: "conflict", detail: "conflict", main: MAIN }), true, c.request);
+    const generation = await L.mergeGeneration();
+    await L.renewProjectLanding(t1, "owner");
+    expect(await views(L, t2)).toHaveLength(1);
+    const moved = "e".repeat(40);
+    await L.noteMainHead(moved);
+    await L.queueProjectLanding(t2, "owner");
+    await L.renewProjectLanding(t1, "owner");
+    expect(await L.mergeGeneration()).toBe(generation);
+    const rows = await views(L, t2);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ state: "open", attempts: 1, binding: { main: moved } });
+    expect(rows[1]).toMatchObject({ state: outcome, binding: { main: MAIN } });
+    const next = await claim(L, t2, GPT, moved);
+    expect(next.request).not.toBe(c.request);
+    await verdict(L, t2, next, true, [], { main: moved, mainNow: moved });
+    await L.queueProjectLanding(t2, "owner");
+    expect(await views(L, t2)).toHaveLength(2);
+    expect(await queueIds(L)).toContain(t2);
+  });
+}

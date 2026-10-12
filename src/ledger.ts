@@ -1072,6 +1072,11 @@ export class Ledger extends DurableObject<Env> {
       const held = asked ? actorStanding(pool, asked, "review") : null;
       if (held) this.withdrawHeldRequest(r.item as string, r.id as number, r.head as string, asked!, held, r.tier === 1, at);
     }
+    for (const row of this.sql.exec(`SELECT * FROM prereviews WHERE state = 'open' AND dispatch IS NOT NULL`).toArray()) {
+      const d = JSON.parse(row.dispatch as string) as Dispatch;
+      const held = d.agent && d.model ? actorStanding(pool, `${d.agent}/${d.model}`, "review") : null;
+      if (held) this.settlePrereview(row, "withdrawn", { detail: held }, ORCHESTRATOR, at);
+    }
     // A queued build of a standalone task, or an unapproved plan's queued
     // plan job, for a model the owner's standing now holds from that job is
     // withdrawn too; an approved plan's parts are taken back by its tick.
@@ -3355,6 +3360,14 @@ export class Ledger extends DurableObject<Env> {
         this.settlePrereview(row, "withdrawn", { detail: `${id} left the landing queue: its landing stopped asking, gave up its place, or the task closed` }, ORCHESTRATOR, at);
         continue;
       }
+      // Requests made before main was first observed acquire that identity
+      // without duplicating their still-open work on the next queue poll.
+      const binding = JSON.parse(row.binding as string) as PrereviewBinding;
+      if (row.state === "open" && !binding.main && this.mainHead()) {
+        binding.main = this.mainHead();
+        row.binding = JSON.stringify(binding);
+        this.sql.exec(`UPDATE prereviews SET binding = ?, bindingKey = ? WHERE id = ?`, row.binding, bindingKey(id, binding), row.id);
+      }
       const drift = this.prereviewDrift(row);
       if (drift) this.settlePrereview(row, "stale", { outcome: "stale", detail: drift }, ORCHESTRATOR, at);
     }
@@ -3381,7 +3394,10 @@ export class Ledger extends DurableObject<Env> {
     if (this.sql.exec(`SELECT id FROM review_requests WHERE item = ? AND state IN ('open', 'claimed') AND tier IS NULL LIMIT 1`, id).toArray().length) return;
     const binding = this.prereviewBinding(item);
     const key = bindingKey(id, binding);
-    const earlier = this.sql.exec(`SELECT * FROM prereviews WHERE bindingKey = ? ORDER BY id`, key).toArray();
+    // Derive keys through the same helper for historical rows too: older
+    // stored keys did not include main, though their bindings captured it.
+    const earlier = this.sql.exec(`SELECT * FROM prereviews WHERE item = ? ORDER BY id`, id).toArray()
+      .filter((r) => bindingKey(id, JSON.parse(r.binding as string) as PrereviewBinding) === key);
     const last = earlier.at(-1);
     if (last) {
       const outcome = (last.result ? (JSON.parse(last.result as string) as { outcome?: PrereviewOutcome }).outcome : undefined) ?? null;
@@ -3425,7 +3441,7 @@ export class Ledger extends DurableObject<Env> {
   }
 
   private prereviewBinding(item: Item): PrereviewBinding {
-    return { head: item.head ?? "", criteria: criteriaOf(item), contributors: normalContributors(contributorsOf(item)), generation: this.mergeGeneration(), main: null, tree: null };
+    return { head: item.head ?? "", criteria: criteriaOf(item), contributors: normalContributors(contributorsOf(item)), generation: this.mergeGeneration(), main: this.mainHead(), tree: null };
   }
 
   // A claimed request is bound to main's head as read at its claim, so main
@@ -3575,6 +3591,11 @@ export class Ledger extends DurableObject<Env> {
     if (!runner) throw new RuleError("dispatched", `${itemId}'s pre-review waits for a runner to claim it`, 409);
     if (dispatch.to !== "any" && dispatch.to !== runner.kind) throw new RuleError("wrong_runner", `${itemId}'s pre-review is for a ${dispatch.to} runner, not ${runner.runner}`, 403);
     const now = Date.now(), at = new Date(now).toISOString();
+    const held = actorStanding(this.poolStanding(), actor, "review");
+    if (held) {
+      this.settlePrereview(row, "withdrawn", { detail: held }, ORCHESTRATOR, at);
+      throw new RuleError("model_held", `${held}; its pre-review of ${itemId} is withdrawn`, 409);
+    }
     const ineligible = this.prereviewIneligible(itemId, now);
     if (ineligible) {
       if (ineligible.gone) this.retirePrereview(row, ineligible, at);
@@ -3588,7 +3609,7 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("stale_request", `${itemId}'s pre-review ${prereviewRequest(row.id as number)} is stale: ${drift}`, 409);
     }
     const binding: PrereviewBinding = { ...JSON.parse(row.binding as string) as PrereviewBinding, main };
-    const bound = this.sql.exec(`UPDATE prereviews SET state = 'claimed', claimedBy = ?, runner = ?, claimedAt = ?, binding = ? WHERE id = ? AND state = 'open' RETURNING id`, actor, runner.runner, at, JSON.stringify(binding), row.id).toArray();
+    const bound = this.sql.exec(`UPDATE prereviews SET state = 'claimed', claimedBy = ?, runner = ?, claimedAt = ?, binding = ?, bindingKey = ? WHERE id = ? AND state = 'open' RETURNING id`, actor, runner.runner, at, JSON.stringify(binding), bindingKey(itemId, binding), row.id).toArray();
     if (!bound.length) throw new RuleError("no_review", `${itemId} has no open pre-review request`, 409);
     const request = prereviewRequest(row.id as number);
     this.log(itemId, actor, "prereview.claimed", { request, head: binding.head, main, runner: runner.runner, criteria: binding.criteria }, at, proved);
@@ -3676,6 +3697,11 @@ export class Ledger extends DurableObject<Env> {
       if ((row.state === "passed" || row.state === "blocked") && sameActor(row.claimedBy as string, by)) return;
       this.log(itemId, by, "prereview.stale", { request, head: r.head, reason: `the pre-review was no longer ${by}'s claim (${row.state}) when its verdict came, so the verdict changes nothing` }, at, proved);
       return;
+    }
+    const held = actorStanding(this.poolStanding(), by, "review");
+    if (held) {
+      this.settlePrereview(row, "withdrawn", { detail: held }, by, at, proved);
+      throw new RuleError("model_held", `${held}; its pre-review of ${itemId} is withdrawn`, 409);
     }
     // The verdict is checked here whatever client posted it: an envelope
     // that does not parse, or a verdict whose word and findings disagree

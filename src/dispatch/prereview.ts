@@ -69,8 +69,8 @@ export const retryable = (outcome: PrereviewOutcome): boolean => ["no-reviewer",
 // What a request and its result are bound to. The head, the criteria and the
 // contributors are the task's when the request is made; `generation` counts
 // the merges the ledger has recorded (Ledger.mergeGeneration), so a landing
-// that moves main moves it; `main` is main's head as the Worker read it from
-// the baseline when a runner claimed the request (null while it is open),
+// that moves main moves it; `main` is main's last observed head when requested, captured from
+// the baseline again when claimed (null until first observed),
 // which the runner must merge and which must still be main's head when the
 // verdict comes, so a baseline moved by anything (atelier sync pushes one
 // without a merge) makes the result stale; `tree` is the tree the runner
@@ -86,8 +86,8 @@ export interface PrereviewBinding {
 
 // The key requests are deduplicated by: one request per task and binding,
 // whatever became of it, so a waiter's every poll does not ask again.
-export function bindingKey(item: string, b: Pick<PrereviewBinding, "head" | "criteria" | "contributors" | "generation">): string {
-  return JSON.stringify([item, b.head, b.criteria, normalContributors(b.contributors), b.generation]);
+export function bindingKey(item: string, b: Pick<PrereviewBinding, "head" | "criteria" | "contributors" | "generation" | "main">): string {
+  return JSON.stringify([item, b.head, b.criteria, normalContributors(b.contributors), b.generation, b.main]);
 }
 
 export const normalContributors = (list: readonly string[]): string[] => [...new Set(list.map((c) => c.toLowerCase()))].sort();
