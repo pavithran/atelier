@@ -1,5 +1,14 @@
 # Atelier
 
+The cross-company rules below describe the default policy. With
+`atelier init --single-family COMPANY`, building and reviewing use only that
+company's models: a reviewer must be a different model from every contributor,
+never a contributor under another harness. This exception also applies to
+criteria review, handoffs and conflict contributors. Only that company's tier
+models qualify; if none qualifies, no separate tier review is requested.
+`atelier init --cross-family` restores the default; both switches record who
+made them and when. See [Single-family mode](docs/gate.md#single-family-mode).
+
 Atelier is a multi-agent system for software work, built on Git: a planner
 splits a goal into parts, builders of several model families work them at
 the same time, each in its own fork, reviewers of another family check each
@@ -20,35 +29,57 @@ checks, reviews and decisions.
 
 Agents sharing a repository overwrite each other's work, report checks that
 never ran, and approve their own changes. Atelier answers each of these with
-a rule the server enforces, not a convention.
+a rule the server enforces, not a convention. A task lives in five steps,
+and each has its rule.
 
-1. **One exact owner per task.** A task (an *item* in the API) has exactly
-   one owner at a time, granted atomically by the project's Durable Object,
-   so a second claimant is refused. The owner holds the only write token for
-   the task's workspace. Ownership moves only by a recorded handoff, which
-   revokes the old token.
-2. **Every agent in its own fork.** The project's main branch is copied into
-   an Artifacts repository, the *baseline*. Each task works in a fork of the
-   baseline, its *workspace*, so multiple agents work concurrently without
-   touching each other's files.
-3. **Checks observed, not reported.** A check that Atelier ran itself, in a
-   clean clone of exactly the head it reads from Artifacts, is *Observed*.
-   Anything an agent says it did is *Reported*: shown, never counted. A
-   required check with no observed result at the current head is *Pending*.
-   Only Observed passes count.
-4. **Review by another model family.** A change to a protected path needs
-   approval from a model of another family than every recorded contributor.
-   The project owner's approval is not that review; without one, the owner
-   can accept only by recording an override with its reason.
-5. **Plans split by a planner and integrated on a plan branch.** A goal too
-   large for one task goes to a planner model, which splits it into parts.
-   Once the owner approves the split, runners build each part, a model of
-   another family reviews it, and an integrator merges it onto the plan's own
-   branch.
-6. **The project owner accepts and merges.** The project owner is the person
-   the project belongs to; in the API they act as a reserved actor, `owner`
-   unless the deployment names another. Work reaches the project only when
-   the owner accepts it through the gate and merges it.
+### Claim
+
+**One holder per task.** A task (an *item* in the API) has exactly one owner
+at a time, granted atomically by the project's Durable Object when an agent
+runs `atelier start`, so a second claimant is refused. Ownership moves only
+by a recorded handoff, which revokes the old token.
+
+### Fork
+
+**Every task its own fork.** The project's main branch is copied into an
+Artifacts repository, the *baseline*. Each task works in a fork of the
+baseline, its *workspace*, and its owner holds the only write token for it,
+so multiple agents work concurrently without touching each other's files.
+
+### Prove
+
+**Atelier runs the tests.** A check that Atelier ran itself, in a clean
+clone of exactly the head it reads from Artifacts, is *Observed*. Anything
+an agent says it did is *Reported*: shown, never counted. A required check
+with no observed result at the current head is *Pending*. Only Observed
+passes count.
+
+### Review
+
+**Another company reviews, or in single-family mode another model.** A
+change to a protected path needs approval from a model of another family than
+every recorded contributor by default; in single-family mode, a different
+model of the project's one company from every contributor. The project
+owner's approval is not that review; without one, the owner can accept only
+by recording an override with its reason.
+
+### Land
+
+**One landing at a time, with a receipt.** The project owner is the person
+the project belongs to; in the API they act as a reserved actor, `owner`
+unless the deployment names another. Work reaches the project only when the
+owner accepts one exact head through the gate and it merges, one landing per
+project at a time (`atelier land` holds the project's landing lease), with
+the task's record attached to the merge as a git note: its receipt. A goal
+too large for one task is split by a planner model into parts; once the
+owner approves the split, each part is claimed, forked, proven and reviewed
+by a model of another family the same way, and an integrator merges it onto
+the plan's own branch, which lands as one task.
+
+**Proven. Reviewed. Recorded.** What lands has every required check observed
+passing at its exact head, an independent review where the change needs
+one, and its whole history in the ledger. Git keeps the code. Atelier brings
+the receipts.
 
 The web inbox answers one question, *what needs the project owner now?*, and
 ranks the things a person must decide above the things an agent must fix.
@@ -296,7 +327,9 @@ and names that step. The individual steps remain available: `claim`,
 `report` (a Reported claim), `submit`, `handoff`, `release`, and `block`
 with `unblock` for a task waiting on something outside it.
 
-`atelier inbox` and `atelier show ID` print the owner's decision briefs with
+`atelier inbox` prints each task that waits on the owner, one per task with
+what to do and the link to do it (docs/owner.md, "What waits on the owner").
+`atelier show ID` prints a task's decision brief with
 the recorded evidence, a recommendation and the task's address; an agent
 can relay that text unchanged. Both accept `--json`; the same brief is
 `GET /api/projects/NAME/items/ID/brief`, which requires sign-in. The owner
@@ -411,7 +444,7 @@ or fails to fix while claiming to, a behaviour change without a test that
 covers it, docs or help that now contradict the code, a breaking change to a
 command, route or API field without a migration, or a visible regression on a
 user-facing page; anything else is a follow-up. `atelier init --review-tier
-H/M,H/M` names a top tier of reviewers that reviews every protected change.
+H/M,H/M` names a top tier of reviewers that reviews protected changes when a tier model qualifies under the family policy.
 
 The owner records a verdict on each finding with `atelier finding ID --head
 SHA --index N --verdict confirmed|refuted|fixed`. A later review of the task
@@ -528,8 +561,10 @@ each holds locally. The project page and `GET
 beside the selected task; Flow draws each task as a thread from main and
 back; History keeps merged and closed tasks with their evidence; Studio
 draws one lane per live task, banded by who held it; Models and Usage show
-the pool, each model's record and spend. Only the owner token signs in to
-the browser.
+the pool, each model's record and spend. On a server without Cloudflare
+Access, only the owner token signs in to the browser; behind Access, the
+owner's Access sign-in starts the session with no token to paste
+(docs/setup.md).
 
 **The public pages.** `/how` explains what Atelier is, draws the loop from
 task to merge, states the rules the code enforces, marks which parts of the

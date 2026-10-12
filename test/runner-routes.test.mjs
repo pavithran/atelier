@@ -74,7 +74,7 @@ const API_ROUTES = [
     "GET /projects/p/decisions", "POST /projects/p/decisions", "POST /projects/p/decisions/d1/withdraw", "GET /projects/p/actions", "GET /projects/p/items", "POST /projects/p/items"],
   ...["GET", "GET brief", "GET job-brief", "GET sandbox/p:t1:abc:1", "GET diff", `GET logs/${"a".repeat(64)}`, `GET diffs/${"a".repeat(64)}`, "GET plan", "GET landing-workflow",
     ...["claim", "read-token", "read-token (write)", "base-token", "base-token (write)", "push", "evidence", "sandbox", "dispatch", "undispatch", "edit", "block", "unblock", "clear-secret",
-      "review", "review-claim", "review-renew", "review-release", "review-skip", "review-unparsable", "review-request", "land", "landing-workflow", "submit", "handoff", "release", "abandon", "accept",
+      "review", "review-claim", "review-renew", "review-release", "review-skip", "review-unparsable", "run-skip", "review-request", "land", "landing-workflow", "submit", "handoff", "release", "abandon", "accept",
       "merge", "override", "criteria", "decide", "integrated", "integration-failed", "refreshed", "refresh-failed", "plan", "plan/approve"].map((v) => `POST ${v}`),
   ].map((entry) => { const [method, rest = ""] = entry.split(" ", 2); const write = entry.endsWith(" (write)"); const verb = rest.replace(" (write)", ""); return `${method} /projects/p/items/t1${verb ? `/${verb}` : ""}${write ? " (write)" : ""}`; }),
 ];
@@ -156,6 +156,19 @@ test("the transport sends a declared call as declared, and refuses an undeclared
   await assert.rejects(t.send("config", {}, { actor: "owner" }), /config names no actor/);
   await assert.rejects(t.send("config", {}, { actor: ACTOR }), /config names no actor/);
   assert.equal(sent.length, 5);
+  // The idle poll's why form and the run skip (t420), each its own declared
+  // call: the why poll on the poll's route with a field more, which the busy
+  // poll may not send; the run skip as a report of the job, whose project
+  // and item name the path, never the body.
+  await t.send("queue-why", {}, { body: { ...offer, started: "2026-10-12T00:00:00.000Z", why: true }, actor: "owner" });
+  assert.deepEqual([sent[5].url, sent[5].init.method, sent[5].init.body], ["https://atelier.test/api/queue", "POST", JSON.stringify({ ...offer, started: "2026-10-12T00:00:00.000Z", why: true })]);
+  await assert.rejects(t.send("queue", {}, { body: { ...offer, why: true }, actor: "owner" }), /queue does not send why/);
+  const skip = { actor: ACTOR, role: "build", kind: "failures", failures: 2, note: "the harness failed twice" };
+  await t.send("run-skip", { project: "p", item: "t3" }, { actor: ACTOR, body: skip });
+  assert.deepEqual([sent[6].url, sent[6].init.method, sent[6].init.headers["x-atelier-actor"], sent[6].init.body], ["https://atelier.test/api/projects/p/items/t3/run-skip", "POST", ACTOR, JSON.stringify(skip)]);
+  await assert.rejects(t.send("run-skip", { project: "p", item: "t3" }, { actor: ACTOR, body: { ...skip, project: "p", item: "t3" } }), /run-skip does not send project, item/);
+  await assert.rejects(t.send("run-skip", { project: "p" }, { actor: ACTOR, body: skip }), /run-skip needs item/);
+  assert.equal(sent.length, 7);
   const reads = [];
   const id = runnerTransport({ server: "https://atelier.test", credential: "atl_secret", runner: RUNNER, fetch: async (url, init) => { reads.push({ url, init }); return Response.json({ ownerActor: "owner", runner: RUNNER, tokenId: "id" }); } });
   assert.deepEqual(await id.identity(), { runner: RUNNER, actor: null });
@@ -462,7 +475,22 @@ test("idle polling: an empty queue answers [], records the offer, and GET /queue
   assert.equal(callPath(preflight), "/version");
   const read = await expect(mf.dispatchFetch(`https://atelier.test/api${callPath(preflight)}`), 200, "capabilities");
   assert.equal(checkCapabilities(read, requiredForJobs(preflight.jobs)).ok, true, "the server lacks a capability a runner's job needs");
-  cover("queue", "config", "version", "capabilities");
+  // The poll's why form (t420), asked when a poll offers nothing: the same
+  // POST with `why`, answering each waiting dispatch of the token's
+  // projects with its reason, cut to what the runner prints. A dispatch to
+  // a model the offer does not serve is offered to nobody, and the why
+  // poll says so; the listing GET gives stays refused above.
+  const id = await task(p);
+  await dispatch(p, id, { ...DISPATCH, model: "gpt-7" });
+  assert.deepEqual(await expect(api("POST", "/queue", { body: OFFER }), 200, "poll with a dispatch the offer cannot serve"), []);
+  const why = await expect(api("POST", "/queue", { body: { ...OFFER, why: true } }), 200, "why poll");
+  const entry = why.find((q) => q.project === p.name && q.item.id === id);
+  assert.ok(entry?.item.why?.length, `the why poll lists the waiting dispatch with its reason: ${JSON.stringify(why)}`);
+  assert.deepEqual(Object.keys(entry.item).sort(), ["dispatch", "id", "title", "why"], "a runner token's why entry carries no more than the runner prints");
+  assert.deepEqual(entry.item.dispatch, { to: "home", agent: "codex", model: "gpt-7", job: null });
+  await denied(api("POST", "/queue", { body: { ...OFFER, runner: "home:other", why: true } }), token, "why poll as another runner");
+  await denied(api("GET", "/queue?why=1"), token, "GET /queue with why");
+  cover("queue", "queue-why", "config", "version", "capabilities");
 });
 
 test("a build job: claim, reads, tokens, push, evidence, sandbox, submit and release, each under the runner's own claim", async () => {
@@ -571,7 +599,22 @@ test("run reports and review skips: each error-reporting path reaches the ledger
   assert.deepEqual((await p.L.reviewSkips(job.id, job.request)).map((s) => [s.runner, s.note]), [[RUNNER, "no agent token for the reviewer"]]);
   const reported = await expect(api("POST", "/runs", { body: { actor: REVIEWER, role: "review", outcome: "refused", project: p.name, item: job.id, detail: "" } }), 201, "review run report");
   assert.equal(reported.role, "review");
-  cover("runs", "review-skip");
+  // The run skip (t420): the runner's word that it gives up the build job
+  // its poll was offered, as that job's actor, kept on the task's dispatch
+  // where the owner's listing reads it (waiting). Another actor, the owner,
+  // the job under another role, and a review job are refused at the gateway
+  // as a run report is; a kind the server does not know is refused after.
+  const runSkip = { actor: ACTOR, role: "build", kind: "failures", failures: 2, note: "the harness failed twice" };
+  assert.equal(runnerRoute("POST", ["projects", p.name, "items", id, "run-skip"], runSkip), true);
+  await denied(api("POST", `${p.base(id)}/run-skip`, { actor: "codex/other", body: { ...runSkip, actor: "codex/other" } }), token, "run skip as another actor");
+  await denied(api("POST", `${p.base(id)}/run-skip`, { actor: "owner", body: runSkip }), token, "run skip as the owner");
+  await denied(api("POST", `${p.base(id)}/run-skip`, { body: { ...runSkip, role: "plan" } }), token, "run skip of the build as a plan job");
+  await denied(api("POST", `${p.base(job.id)}/run-skip`, { actor: REVIEWER, body: { ...runSkip, actor: REVIEWER } }), token, "run skip of a review job");
+  assert.equal((await expect(api("POST", `${p.base(id)}/run-skip`, { body: { ...runSkip, kind: "gave-up" } }), 400, "bad kind")).error, "bad_kind");
+  assert.deepEqual(await expect(api("POST", `${p.base(id)}/run-skip`, { body: runSkip }), 200, "run-skip"), { kept: true });
+  const waiting = await p.L.waiting();
+  assert.deepEqual(waiting.find((w) => w.id === id)?.skips?.map((s) => [s.runner, s.actor, s.kind, s.failures, s.note]), [[RUNNER, ACTOR, "failures", 2, "the harness failed twice"]], JSON.stringify(waiting));
+  cover("runs", "review-skip", "run-skip");
 });
 
 test("the review job's calls are the reviewer's agent token's, never the runner token's", async () => {
@@ -655,7 +698,7 @@ test("wrong actor: an actor the offer did not match, the owner or the integrator
   await denied(api("POST", `${p.base(id)}/claim`, { actor: "atelier/integrator", body: {} }), token, "claim as the integrator");
   await denied(api("POST", `${p.base(id)}/claim`, { actor: "not-an-actor", body: {} }), token, "claim as no actor");
   await expect(api("POST", `${p.base(id)}/claim`, { body: {} }), 200, "claim");
-  for (const [method, verb] of [["GET", ""], ["GET", "job-brief"], ["POST", "read-token"], ["POST", "base-token"], ["POST", "push"], ["POST", "evidence"], ["POST", "submit"], ["POST", "release"]]) {
+  for (const [method, verb] of [["GET", ""], ["GET", "job-brief"], ["POST", "read-token"], ["POST", "base-token"], ["POST", "push"], ["POST", "evidence"], ["POST", "submit"], ["POST", "release"], ["POST", "run-skip"]]) {
     const path = `${p.base(id)}${verb ? `/${verb}` : ""}`;
     assert.equal(runnerRoute(method, path.split("/").filter(Boolean), {}), true, verb);
     await denied(api(method, path, { actor: "codex/other", ...(method === "POST" ? { body: {} } : {}) }), token, `${verb || "item"} as another actor`);
@@ -671,6 +714,8 @@ test("wrong job: a review job is never claimed as a build, an integrate job is n
   assert.equal(runnerRoute("POST", ["projects", p.name, "items", job.id, "claim"], {}), true);
   await denied(api("POST", `${p.base(job.id)}/claim`, { actor: REVIEWER, body: {} }), token, "claim of a review job");
   await denied(api("POST", `${p.base(job.id)}/read-token`, { actor: REVIEWER, body: {} }), token, "read token for a review job");
+  assert.equal(runnerRoute("POST", ["projects", p.name, "items", job.id, "run-skip"], {}), true);
+  await denied(api("POST", `${p.base(job.id)}/run-skip`, { actor: REVIEWER, body: { actor: REVIEWER, role: "build", kind: "failures", failures: 2, note: "" } }), token, "a run skip on a review job");
   await denied(api("POST", "/runs", { body: { actor: REVIEWER, role: "build", outcome: "stalled", project: p.name, item: job.id, detail: "" } }), token, "a build report on a review job");
   // The integrate and refresh jobs belong to the integrator's token: a
   // runner offering them is offered nothing, and the plan's jobs stay.
@@ -827,6 +872,11 @@ function scratch(t) {
 test("atelier runner polls the real server under its runner token and exits 0 when idle, 1 when the token is another runner's", async (t) => {
   const p = await project();
   const token = await issue(p);
+  // A dispatch to a model the runner does not offer: the idle poll's why
+  // form (idleWhy, the declared queue-why call) names it, through the
+  // guarded transport, where the busy poll offers it to nobody.
+  const id = await task(p);
+  await dispatch(p, id, { ...DISPATCH, model: "gpt-7" });
   const dir = scratch(t);
   const config = join(dir, "runner.json");
   writeFileSync(config, JSON.stringify({ jobs: ["build"], agents: [{ agent: "codex", models: ["gpt-6-astra"], command: ["true", "{model}", "{brief_file}", "{workspace}"] }] }));
@@ -834,6 +884,8 @@ test("atelier runner polls the real server under its runner token and exits 0 wh
   assert.equal(idle.status, 0, idle.stdout + idle.stderr);
   assert.match(idle.stdout, /^runner: jobs: build \(not plan, merge-main, merge-main-task, merge-plan, review\)\n/);
   assert.doesNotMatch(idle.stdout + idle.stderr, /failed|runner_forbidden/);
+  assert.match(idle.stdout, new RegExp(`found nothing to claim while 1 dispatch waits:\\n[^\\n]*  ${p.name}/${id}  `), "the why poll's listing did not reach the runner");
+  assert.doesNotMatch(idle.stdout, /could not be read/, "the why poll was refused");
   unguarded(idle);
   const offers = await expect(call("GET", "/runners"), 200, "runners");
   assert.deepEqual(offers.find((o) => o.runner === RUNNER)?.jobs, ["build"], "the CLI's poll recorded its offer");
@@ -855,6 +907,7 @@ test("atelier runner polls the real server under an agent token and exits 0 when
   const idle = cli(["runner", "--name", RUNNER, "--once", "--config", config], runnerEnv(agent, dir));
   assert.equal(idle.status, 0, idle.stdout + idle.stderr);
   assert.doesNotMatch(idle.stdout + idle.stderr, /failed|actor_mismatch|403/);
+  assert.doesNotMatch(idle.stdout, /could not be read/, "the why poll was refused under the agent token");
   unguarded(idle);
   const offers = await expect(call("GET", "/runners"), 200, "runners");
   assert.deepEqual(offers.find((o) => o.runner === RUNNER)?.jobs, ["build"], "the agent token's poll recorded its offer");

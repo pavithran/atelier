@@ -300,6 +300,32 @@ it("a submitted task with a protected change gets a review request, named or pic
   expect(after.reason).toMatch(/the gate already counts an independent approval/);
 });
 
+// The owner's standing (src/models/pool.ts, standingRefusal) binds a named
+// reviewer too: one paused, reserved or without the review role is refused
+// with the reason, and nothing is requested or withdrawn.
+it("a named reviewer the owner paused, reserved or kept from reviewing is refused with the reason", async () => {
+  for (const [name, change, why] of [
+    ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }, /codex\/gpt-6-astra is paused since 2026-10-06 \(the owner's standing\): AI Studio down/],
+    ["reserved", { state: "reserved", stateAt: AT, note: "astra's credits" }, /codex\/gpt-6-astra is reserved since 2026-10-06 \(the owner's standing\): astra's credits/],
+    ["build-only", { roles: ["build"] }, /codex\/gpt-6-astra is not a reviewer; its roles are build/],
+  ] as const) {
+    const L = await setup(`land-review-held-${name}`);
+    const id = (await L.newItem("Landing", [], "owner")).id;
+    await submittedTask(L, id, "a".repeat(40));
+    const pool = POOL.map((e) => e.id === "gpt-6-astra" ? { ...e, ...change } : e);
+    await refusal(L.requestReview(id, "owner", GPT, pool), "model_held", why);
+    await refusal(L.requestReview(id, "owner", GPT, pool, true), "model_held", why);
+    // A profile or another letter case names the same model, held the same.
+    for (const named of [`${GPT}:high`, "CODEX/GPT-6-Astra:fast"]) {
+      await refusal(L.requestReview(id, "owner", named, pool), "model_held", new RegExp(why.source.replace("codex\\/gpt-6-astra is", `${named.replace(/[/.]/g, "\\$&")} is`)));
+    }
+    expect(await L.reviewRequests(id), name).toEqual([]);
+    expect((await events(L, id)).filter((e) => e.kind === "review.requested"), name).toEqual([]);
+    // Back to available, the same name is asked.
+    expect(await L.requestReview(id, "owner", GPT, POOL), name).toMatchObject({ requested: true, reviewer: GPT });
+  }
+});
+
 // t353: a review request every live runner that offers its reviewer has
 // skipped will never be claimed, since each runner keeps its skip until the
 // request changes. The owner asking again, with the live offers, withdraws
@@ -451,6 +477,32 @@ it("the landing's steps are recorded as land.* events with their duration, and a
   await refusal(L.landEvent(id, OPUS, "merge", 5, {}), "not_project_owner", /only the project owner records/);
 });
 
+it("a triage is recorded as its own land.triage step, by the project owner alone, and changes no review, round or gate decision (t475)", async () => {
+  const L = await setup("land-triage");
+  const id = (await L.newItem("Landing", ["src/**"], "owner")).id;
+  const detail = async () => (await L.detail(id)) as unknown as { reviews: unknown[]; gate: unknown };
+  const before = await detail();
+  const binding = { head: "a".repeat(40), base: "b".repeat(40), criteria: "c".repeat(64) };
+  await L.landEvent(id, "owner", "triage", 4000, { ...binding, outcome: "stopped", triager: GPT, statuses: ["1:met", "2:not-met"], reason: "criterion 2 not met" });
+  await L.landEvent(id, "owner", "triage", 0, { ...binding, outcome: "overridden", triager: GPT, reason: "checked by hand" });
+  await L.landEvent(id, "owner", "triage", 0, { ...binding, outcome: "bypassed", reason: "hotfix" });
+  const recorded = (await events(L, id)).filter((e) => e.kind === "land.triage").sort((a, b) => a.seq - b.seq);
+  expect(recorded.map((e) => [e.actor, e.data.outcome, e.data.head, e.data.base, e.data.criteria, e.data.reason])).toEqual([
+    ["owner", "stopped", binding.head, binding.base, binding.criteria, "criterion 2 not met"],
+    ["owner", "overridden", binding.head, binding.base, binding.criteria, "checked by hand"],
+    ["owner", "bypassed", binding.head, binding.base, binding.criteria, "hotfix"],
+  ]);
+  expect(recorded[0].data).toMatchObject({ triager: GPT, statuses: ["1:met", "2:not-met"] });
+  // Only the project owner records a triage, its bypass or its override.
+  await refusal(L.landEvent(id, OPUS, "triage", 0, { ...binding, outcome: "bypassed", reason: "mine" }), "not_project_owner", /only the project owner records/);
+  await refusal(L.landEvent(id, "owner", "triage", 0, { ...binding, outcome: 3 }), "bad_field", /outcome must be text/);
+  // Triage is not a review: the item's reviews and its gate are as they were.
+  const after = await detail();
+  expect(after.reviews).toEqual(before.reviews);
+  expect(after.gate).toEqual(before.gate);
+  expect((await events(L, id)).some((e) => e.kind.startsWith("review."))).toBe(false);
+});
+
 it("a merge step with more commits from main than its record has room for is cut to the first hashes with the count, not refused", async () => {
   const L = await setup("land-cut");
   const id = (await L.newItem("Landing", [], "owner")).id;
@@ -513,6 +565,36 @@ it("a landing's review request with an explicit --reviewer outside the tier asks
   expect((await solo.reviewRequests(t)).filter((r) => r.tier)).toEqual([]);
 });
 
+// t394: the acceptance records the family mode in force and each contributor
+// with its company, and the merge's provenance note reads them from there:
+// GPT's work done before a switch to Anthropic only stays GPT's in the note.
+it("an acceptance records the family mode in force and each contributor's company for the provenance note", async () => {
+  const SONNET = "claude-code/sonnet-5.5";
+  const L = await setup("land-acceptance-family");
+  const id = (await L.newItem("Landing", [], "owner")).id;
+  const first = "d".repeat(40), head = "e".repeat(40);
+  await L.claim(id, GPT, RUNNER);
+  await L.setFork(id, `fork-${id}`, H0, GPT);
+  await L.recordPush(id, GPT, first, first);
+  await L.release(id, GPT, "Opus finishes it");
+  await L.claim(id, OPUS, RUNNER);
+  await L.recordPush(id, OPUS, head, first);
+  await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/land.ts"] } satisfies Evidence);
+  await L.submit(id, OPUS);
+  await L.initProject({ name: "land-acceptance-family", repo: "land-acceptance-family--baseline", reset: false, familyMode: { single: "anthropic", by: "owner" } }, "owner");
+  expect(await L.requestReview(id, "owner", null, [...POOL, entry("sonnet-5.5", "claude-code")])).toMatchObject({ reviewer: SONNET });
+  const claim = await L.claimReview(id, SONNET, RUNNER) as unknown as ReviewClaim;
+  await L.addReview({ request: claim.request, itemId: id, criteria: await L.criteria(id), by: SONNET, head, approve: true, note: "Fine.", at: new Date().toISOString() });
+  await L.accept(id, "owner", head);
+  // What cli/provenance.mjs states (its own tests read these into the note).
+  const family = (await L.detail(id) as unknown as { acceptanceFamily: { contributors: unknown[] } }).acceptanceFamily;
+  expect(family).toEqual({ singleFamily: "anthropic", contributors: expect.arrayContaining([{ actor: GPT, company: "openai" }, { actor: OPUS, company: "anthropic" }]) });
+  expect(family.contributors).toHaveLength(2);
+  // A later return to the default does not change what the acceptance recorded.
+  await L.initProject({ name: "land-acceptance-family", repo: "land-acceptance-family--baseline", reset: false, familyMode: { single: null, by: "owner" } }, "owner");
+  expect((await L.detail(id) as unknown as { acceptanceFamily: { singleFamily: string | null } }).acceptanceFamily.singleFamily).toBe("anthropic");
+});
+
 it("a tier approval alone does not let the task be accepted", async () => {
   const L = await setup("land-tier-gate", { ...policy, reviewTier: ["claude-code/sonnet-5.5"] });
   const id = (await L.newItem("Landing", [], "owner")).id;
@@ -524,6 +606,64 @@ it("a tier approval alone does not let the task be accepted", async () => {
   await refusal(L.accept(id, "owner", head), "not_ready", /another family/);
   // The gate's request still stands for GPT.
   expect((await L.reviewRequests(id)).find((r) => !r.tier)).toMatchObject({ state: "open" });
+});
+
+// t394: under single-family mode a landing picks a different model of the
+// company, refuses a named reviewer of another company, and the review
+// claim carries the mode so the brief can say so; the company's approval
+// then clears the gate, which the owner's acceptance confirms.
+it("under single-family mode a landing's review goes to a different model of the company, and no other company's model is named", async () => {
+  const SONNET = "claude-code/sonnet-5.5";
+  const pool = [...POOL, entry("sonnet-5.5", "claude-code")];
+  const L = await setup("land-single-family", { ...policy, familyMode: { single: "anthropic", by: "owner", at: AT } });
+  const id = (await L.newItem("Landing", [], "owner")).id;
+  const head = "c".repeat(40);
+  await submittedTask(L, id, head);
+  // GPT, first in the pool's order, is passed over for being another company's; OPUS built it.
+  await refusal(L.requestReview(id, "owner", GPT, pool), "single_family", /codex\/gpt-6-astra is not one of anthropic's models, and this project runs in single-family mode \(anthropic\)/);
+  expect(await L.requestReview(id, "owner", null, pool)).toMatchObject({ requested: true, reviewer: SONNET });
+  expect((await events(L, id)).find((e) => e.kind === "review.requested")).toMatchObject({ data: { reviewer: SONNET, via: "land" } });
+  const claim = await L.claimReview(id, SONNET, RUNNER) as unknown as ReviewClaim;
+  expect(claim.singleFamily).toBe("anthropic");
+  expect(claim.need?.reason).toMatch(/needs an independent review/);
+  await L.addReview({ request: claim.request, itemId: id, criteria: await L.criteria(id), by: SONNET, head, approve: true, note: "Fine.", at: new Date().toISOString() });
+  await L.accept(id, "owner", head);
+  expect(await L.item(id)).toMatchObject({ state: "accepted" });
+  // With only the builder's company's one model, no reviewer can be shown independent, and the refusal says what to name.
+  const alone = await setup("land-single-family-alone", { ...policy, familyMode: { single: "anthropic", by: "owner", at: AT } });
+  const t = (await alone.newItem("Alone", [], "owner")).id;
+  await submittedTask(alone, t, head);
+  await refusal(alone.requestReview(t, "owner", null, POOL), "no_reviewer", /^no reviewer that is a different anthropic model from every contributor \(single-family mode\) is in the pool: /);
+  // The claim under the default carries no mode.
+  const plain = await setup("land-single-family-none");
+  const p = (await plain.newItem("Plain", [], "owner")).id;
+  await submittedTask(plain, p, head);
+  expect(await plain.requestReview(p, "owner", null, pool)).toMatchObject({ reviewer: GPT });
+  expect((await plain.claimReview(p, GPT, RUNNER) as unknown as { singleFamily: string | null }).singleFamily).toBeNull();
+});
+
+// t394, the review of e5cb758c: a dispatch that names no model leaves the
+// runner's choice to the claim, which is refused for another company's model
+// as a handoff to one is; a separate tier review is asked only of the
+// company's tier models; and a landing that resumes on its standing request
+// judges that request's reviewer by the same mode.
+it("under single-family mode no other company's model claims, takes a handoff or is asked for the tier, and a landing resumes on its standing review", async () => {
+  const SONNET = "claude-code/sonnet-5.5", SOL = "codex/gpt-6.1-sol", FABLE = "claude-code/fable-5.1";
+  const single: ProjectPolicy = { ...policy, familyMode: { single: "anthropic", by: "owner", at: AT } };
+  const L = await setup("land-single-family-guards", { ...single, reviewTier: [SOL, FABLE] });
+  const id = (await L.newItem("Guards", [], "owner")).id;
+  await L.dispatch(id, "owner", { to: "home" });
+  await refusal(L.claim(id, GPT, RUNNER), "single_family", /^codex\/gpt-6-astra is not one of anthropic's models, and this project runs in single-family mode \(anthropic\)/);
+  await refusal(L.dispatch(id, "owner", { to: "home", agent: "codex", model: "gpt-6-astra" }), "single_family", /^gpt-6-astra is not one of anthropic's models/);
+  const head = "d".repeat(40);
+  await submittedTask(L, id, head);
+  await refusal(L.handoff(id, OPUS, GPT, "over to you"), "single_family", /^codex\/gpt-6-astra is not one of anthropic's models/);
+  // The gate goes to SONNET, outside the tier; the tier's SOL comes first but is another company's, so FABLE is asked.
+  expect(await L.requestReview(id, "owner", SONNET, [...POOL, entry("sonnet-5.5", "claude-code")])).toMatchObject({ requested: true, reviewer: SONNET });
+  expect((await L.reviewWaiting()).map((i) => `${i.dispatch!.agent}/${i.dispatch!.model}`)).toEqual([SONNET, FABLE]);
+  // The landing resumes on SONNET's open request: a different anthropic model is no refusal under the mode.
+  const records = { project: "land-single-family-guards", sources: [], runs: [] };
+  expect(await L.requestReview(id, "owner", null, POOL, false, false, records)).toMatchObject({ requested: false, reviewer: SONNET, head });
 });
 
 it("a landing's review goes to a tier model of another family first, and its one review serves the gate and the tier", async () => {
