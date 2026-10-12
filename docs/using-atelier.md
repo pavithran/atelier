@@ -15,6 +15,13 @@ work; the owner makes three kinds of decision. What to do, whether a plan's
 split is right, and whether finished work is accepted. Everything below is
 about making those decisions well and leaving the rest to the system.
 
+Every task goes through the same five steps: **Claim** (one holder per
+task), **Fork** (every task its own fork), **Prove** (Atelier runs the
+tests), **Review** (another company reviews, or in single-family mode another
+model) and **Land** (one landing at a time, with a receipt). A task's page shows which step it is at. The owner's
+decisions sit at either end: what is claimed, and what lands. What lands is
+proven, reviewed and recorded.
+
 `docs/orchestrating.md` is the companion for a session that runs Atelier on
 the owner's behalf; the How it works page (`/how`) holds every rule and
 command.

@@ -3,7 +3,7 @@
 // the command reference is drawn from src/usage.ts, which the CLI prints from.
 
 import how from "./how.css";
-import { ORCHESTRATOR, LIMITS, LOOP, LOOP_CAPTION, LOOP_LABEL, LOOP_RETURN, RULES, TERMS, USING_WELL, USING_WELL_DOC, type Lane } from "./how-data.ts";
+import { ORCHESTRATOR, LIMITS, LOOP, LOOP_CAPTION, LOOP_LABEL, LOOP_RETURN, RULES, STEPS, TAGLINE, TAKEAWAYS, TERMS, USING_WELL, USING_WELL_DOC, type Lane, type Verbed } from "./how-data.ts";
 import { HELP_GROUPS, guideText } from "./usage.ts";
 import { REPO_URL, escapeText as e, publicPage } from "./ui";
 import { layersFigure, planFlowFigure } from "./diagrams.ts";
@@ -77,7 +77,8 @@ function loop(): string {
   return `
 <p>A task goes through seven steps. The diagram shows who acts at each step and what Atelier records; the list gives the command and the detail.</p>
 <figure class="how-fig"><div class="scroll">${diagram()}</div><figcaption>${e(LOOP_CAPTION)}</figcaption></figure>
-<ol class="how-steps">${LOOP.map((s) => `<li><h3>${e(s.name)}</h3><p>${md(s.detail)}</p></li>`).join("")}</ol>`;
+<ol class="how-steps">${LOOP.map((s) => `<li><h3>${e(s.name)}</h3><p>${md(s.detail)}</p></li>`).join("")}</ol>
+<p>The five sections after this one name the life of a task in five verbs, ${STEPS.map((s) => e(s.verb)).join(", ")}, and set out under each the rules that guard it. Each rule is enforced by code, which it names, and each says why it exists.</p>`;
 }
 
 // "`a` and `b` in `src/x.ts`; `c` in `src/y.ts`", in the order the rule lists them.
@@ -88,10 +89,19 @@ function enforcedIn(where: { file: string; symbol: string }[]): string {
   return [...byFile].map(([file, symbols]) => `${list(symbols)} in <code>${e(file)}</code>`).join("; ");
 }
 
-function rules(): string {
+// One of the five steps: its line, what it means, and the rules that guard it.
+function step(s: Verbed): string {
   return `
-<p>Each rule is enforced by code, which it names, and each says why it exists.</p>
-<ol class="how-rules">${RULES.map((r) => `<li><h3>${e(r.title)}</h3><p>${md(r.enforced)}</p><p class="how-why"><strong>Why.</strong> ${md(r.why)}</p><p class="how-where">Enforced in ${enforcedIn(r.where)}.</p></li>`).join("")}</ol>
+<p class="how-motto"><strong>${e(s.line)}</strong> ${md(s.about)}</p>
+<ol class="how-rules">${RULES.filter((r) => r.verb === s.verb).map((r) => `<li><h3>${e(r.title)}</h3><p>${md(r.enforced)}</p><p class="how-why"><strong>Why.</strong> ${md(r.why)}</p><p class="how-where">Enforced in ${enforcedIn(r.where)}.</p></li>`).join("")}</ol>`;
+}
+
+// The five steps summed up in the three takeaways, then what is trusted, not enforced.
+function takeaways(): string {
+  return `
+<p class="how-takeaways">${e(TAKEAWAYS)}</p>
+<p>Proven: every required check observed passing at the exact head, run by Atelier and not taken on an agent's word. Reviewed: protected changes approved by a model of another family than every contributor, or in single-family mode by a different model of the project's company; an owner override is recorded as one, never as a review. Recorded: every claim, push, check, review, acceptance and merge in the task's ledger, and its receipt attached to the merge as a git note.</p>
+<p class="how-tagline">${e(TAGLINE)}</p>
 <h3 class="how-sub">Limits of enforcement</h3>
 <ul class="how-limits">${LIMITS.map((t) => `<li>${md(t)}</li>`).join("")}</ul>`;
 }
@@ -123,7 +133,12 @@ ${groups}
 }
 
 export function renderHow(): string {
-  const sections: [string, string][] = [["Terms", terms()], ["Where it runs", where()], ["The loop", loop()], ["Rules", rules()], ["The orchestrator", orchestrator()], ["Using Atelier well", usingWell()], ["Commands", commands()]];
+  const sections: [string, string][] = [
+    ["Terms", terms()], ["Where it runs", where()], ["The loop", loop()],
+    ...STEPS.map((s): [string, string] => [s.verb, step(s)]),
+    [TAKEAWAYS, takeaways()],
+    ["The orchestrator", orchestrator()], ["Using Atelier well", usingWell()], ["Commands", commands()],
+  ];
   return publicPage({
     title: "How it works · Atelier",
     description: "What Atelier is, the loop from task to merge, the rules it enforces and why, which parts of the orchestrator are built, how to use it well, and every command.",
@@ -137,6 +152,7 @@ export function renderHow(): string {
   <h1>How Atelier works</h1>
   <p class="lead">Atelier is a Git platform for several coding agents working on one project at the same time. Each task has one owner at a time and its own fork of the code, checks run on a clean clone of exactly what was pushed, and no agent's work reaches the project until the project owner accepts and merges it.</p>
   <p class="lead">It runs on Cloudflare Workers, Durable Objects and Artifacts. A Durable Object for each project holds the ledger: the items, the evidence, the reviews and an append-only event log. Artifacts holds the repositories. Agents and the owner work through one command, <code>atelier</code>, which needs only Node and git; the owner also has a web inbox that ranks what needs a decision.</p>
+  <p class="lead">A task lives in five steps: ${STEPS.slice(0, -1).map((s) => e(s.verb)).join(", ")} and ${e(STEPS.at(-1)!.verb)}. What lands is <strong>${e(TAKEAWAYS)}</strong> ${e(TAGLINE)}</p>
   <nav class="how-toc" aria-label="On this page">${sections.map(([h]) => `<a href="#${slug(h)}">${e(h)}</a>`).join("")}</nav>
 </header>
 ${sections.map(section).join("")}
