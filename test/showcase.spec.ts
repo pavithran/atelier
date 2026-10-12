@@ -134,9 +134,9 @@ it("the setting is the owner's alone: agent tokens and unsigned callers cannot c
   expect(await (await OWNER_TOKEN_CALL("GET", "/showcase")).text()).not.toContain("owner-only");
 });
 
-it("the sign-in page stands in the public shell, with no signed-in rail", async () => {
+it("the sign-in page stands in the public shell, with no owner bar", async () => {
   const body = await (await worker.fetch(new Request("https://atelier.test/login"), testEnv)).text();
-  expect(body).not.toContain('class="rail"');
+  expect(body).not.toContain('class="owner-bar"');
   expect(body).not.toContain('href="/decisions"');
   expect(body).toContain('class="public-bar"');
   expect(body).toContain('<a href="/how">how Atelier works</a>');

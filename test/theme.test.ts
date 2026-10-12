@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // The Night palette (PAVI, d24; t367): near-black ground, white text, a
 // muted grey that still reads, gold for links, primary actions and the
@@ -301,4 +304,39 @@ test("the page styles set no colour of their own; only the agents' colours carry
         assert.ok(chroma(hex) < NEUTRAL, `${file}: ${hex} sets a colour outside the theme: ${line.trim()}`);
     }
   }
+});
+
+// Gate finding 4: the owner's pages are Night only, as the re-imagined canvas
+// draws them (d24). Every light block, theme.css's from bin/sync-theme and
+// layout.css's own, keeps away from a page marked data-scheme="night", which
+// every owner page is (test/ui.spec.ts); the public pages still follow the
+// device.
+test("no light block reaches a page marked Night only", () => {
+  for (const [file, sheet] of [["theme.css", theme], ["layout.css", layout]] as const) {
+    const blocks = [...sheet.matchAll(/@media \(prefers-color-scheme: light\) \{([\s\S]*?)\n\}\n/g)];
+    assert.ok(blocks.length > 0, `${file} has no light block`);
+    for (const [, inner] of blocks) {
+      for (const [, sel] of css(inner).matchAll(/([^{}]+)\{[^{}]*\}/g)) {
+        for (const one of selectors(sel)) assert.match(one, /^:root(\[data-theme="[a-z]+"\])?:not\(\[data-scheme="night"\]\)/, `${file}: ${one} reaches a Night-only page`);
+      }
+    }
+  }
+});
+
+test("theme.css is exactly what bin/sync-theme makes of the portfolio's copy, and the sync is idempotent", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sync-theme-"));
+  try {
+    mkdirSync(join(dir, "bin"));
+    mkdirSync(join(dir, "src"));
+    copyFileSync("bin/sync-theme", join(dir, "bin/sync-theme"));
+    // The portfolio's copy is theme.css without the sync's header and the Night-only guard it adds.
+    const upstream = theme.split("\n").slice(1).join("\n").replaceAll(':not([data-scheme="night"])', "");
+    assert.match(upstream, /@media \(prefers-color-scheme: light\) \{\n  :root \{/);
+    writeFileSync(join(dir, "themes.css"), upstream);
+    execFileSync("sh", [join(dir, "bin/sync-theme"), join(dir, "themes.css")], { stdio: "ignore" });
+    assert.equal(readFileSync(join(dir, "src/theme.css"), "utf8"), theme);
+    writeFileSync(join(dir, "themes.css"), theme.split("\n").slice(1).join("\n"));
+    execFileSync("sh", [join(dir, "bin/sync-theme"), join(dir, "themes.css")], { stdio: "ignore" });
+    assert.equal(readFileSync(join(dir, "src/theme.css"), "utf8"), theme, "a second pass adds no second guard");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
