@@ -1,3 +1,4 @@
+import { landingOf } from "./diff.ts";
 import { parsePostMerge, reservePostMerge, preparePostMerge, startAttempt, finishAttempt, recordCommand, recoverPostMerge, expireAttempt, type PostMergePolicy, type PostMergeRun, type Attempt } from "./post-merge.ts";
 import type { Area, BoardSnapshot, StageFacts } from "./board.ts";
 import { cleanSession, type SessionNote } from "./sessions.ts";
@@ -2153,6 +2154,14 @@ export class Ledger extends DurableObject<Env> {
     this.afterPlanChange(e.itemId);
   }
 
+  private reviewItem(id: string): Item {
+    const item = this.item(id);
+    if (item.state !== "merged") return item;
+    const landing = landingOf(item, this.events(id, Number.MAX_SAFE_INTEGER).toReversed());
+    if (!landing) throw new RuleError("no_merge_commit", `${id} has no recorded merge commit`, 409);
+    return { ...item, head: landing.commit };
+  }
+
   // `via` says where a review by the project owner was recorded: "page" is a
   // form on the task page, which only the signed-in owner reaches; "api" is
   // the owner token, as the orchestrator and the CLI use it. The reliability
@@ -2176,13 +2185,16 @@ export class Ledger extends DurableObject<Env> {
     // review comes (t394); the owner's own review is the owner's, not a model's.
     const foreign = sameActor(r.by, this.owner) ? null : companyRefusal(r.by, singleFamily(policy));
     if (foreign) throw new RuleError("single_family", `${foreign}: its review is not recorded; return to cross-family review with atelier init --cross-family`, 409);
-    const item = this.item(r.itemId);
+    const item = this.reviewItem(r.itemId);
     if (admission?.active) {
       const refusal = familyRefusal(admissionActor(r.by, admission), contributorsOf(item).map((a) => admissionActor(a, admission)), singleFamily(policy));
       if (refusal) throw new RuleError("not_independent", `${r.by}: ${refusal}`, 403);
     }
+    if (item.state === "merged" && r.request === undefined) {
+      throw new RuleError("closed", `${item.id} is merged; a review must answer a claimed post-merge review request`, 409);
+    }
     assertReviewAllowed(item, proved);
-    if (item.state !== "accepted") assertLive(item);
+    if (item.state !== "accepted" && item.state !== "merged") assertLive(item);
     else if (this.landing(item.id)) throw new RuleError("landing", "cancel the interrupted landing before reviewing again");
     // The holder under another letter case, profile or registered name is still the holder.
     if (item.owner && sameActor(item.owner, r.by)) throw new RuleError("self_review", "an owner cannot review their own item", 403);
@@ -2211,6 +2223,9 @@ export class Ledger extends DurableObject<Env> {
     }
     const boundClaims = claims.filter((c) => c.id === r.request);
     const claimed = boundClaims.length > 0;
+    if (item.state === "merged" && (!claimed || r.request === undefined)) {
+      throw new RuleError("stale_request", "a post-merge verdict must answer the review request this reviewer claimed", 409);
+    }
     // A review answering a tier request this reviewer claimed is a tier
     // review. One whose tier request was withdrawn, when the change was
     // accepted or closed, is no longer asked for and is refused, so a late
@@ -2226,11 +2241,11 @@ export class Ledger extends DurableObject<Env> {
     // A review answering a gate's request asked of a tier model gives the
     // tier review too (gateServesTier): the gate's review, top tier.
     const topTier = !tierClaim && boundClaims.some((c) => c.tier !== 1 && c.topTier === 1);
-    r = { ...r, recordedBy: proved ? recordedActor : this.owner, proved, claimed, ...(tierClaim ? { tier: true } : {}), ...(topTier ? { topTier: true } : {}) };
+    r = { ...r, ...(item.state === "merged" ? { postMerge: true } : {}), recordedBy: proved ? recordedActor : this.owner, proved, claimed, ...(tierClaim ? { tier: true } : {}), ...(topTier ? { topTier: true } : {}) };
     this.sql.exec(`INSERT INTO reviews (item_id, json) VALUES (?, ?)`, r.itemId, JSON.stringify(r));
     // A new review of accepted work requires another acceptance.
     if (item.state === "accepted") this.update(item.id, { state: "submitted", accepted_head: null }, at);
-    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, criteria: r.criteria, ...(r.reviewerAdmission ? { reviewerAdmission: r.reviewerAdmission } : {}), ...(r.request !== undefined ? { request: r.request } : {}), recordedBy: r.recordedBy, ...(claimed ? { claimed } : {}), ...(r.tier ? { tier: true } : {}), ...(r.topTier ? { topTier: true } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
+    this.log(r.itemId, r.by, r.approve ? "review.approved" : "review.rejected", { note: r.note, head: r.head, criteria: r.criteria, ...(r.reviewerAdmission ? { reviewerAdmission: r.reviewerAdmission } : {}), ...(r.request !== undefined ? { request: r.request } : {}), recordedBy: r.recordedBy, ...(r.postMerge ? { postMerge: true } : {}), ...(claimed ? { claimed } : {}), ...(r.tier ? { tier: true } : {}), ...(r.topTier ? { topTier: true } : {}), ...(r.findings?.length ? { findings: r.findings } : {}), ...(via && r.by === this.owner ? { via } : {}) }, at, proved);
     // A tier review answers its own request; any other answers the gate's
     // requests at the head and leaves a tier request beside them standing.
     if (tierClaim) this.sql.exec(`UPDATE review_requests SET state = 'answered' WHERE id = ?`, tierClaim.id);
@@ -2243,8 +2258,19 @@ export class Ledger extends DurableObject<Env> {
     // rework (docs/orchestrator.md, section 4). The re-review goes to the same
     // reviewer first, and after two rounds to an alternate builder, which
     // phase.ts reads from the review.rework event as a failed finish.
-    if (item.kind === "part" && !r.approve && (r.findings ?? []).some((f) => f.severity === "blocking")) {
+    if (item.state !== "merged" && item.kind === "part" && !r.approve && (r.findings ?? []).some((f) => f.severity === "blocking")) {
       this.reworkPart(item, r, at, proved);
+    }
+    if (item.state === "merged") {
+      const blocking = (r.findings ?? []).filter((f) => f.severity === "blocking");
+      if (blocking.length) {
+        const defect = this.newItem(shortTitle(`Defect in ${item.id}: ${item.title}`), item.scope, ORCHESTRATOR, {
+          brief: `Post-merge review of ${item.id} at ${r.head} by ${r.by}. Full findings are recorded on ${item.id}, review request ${r.request}.\nFindings excerpt:\n${blocking.map((f) => `${f.file}${f.line === null ? "" : `:${f.line}`}: ${f.text}`).join("\n").slice(0, 3000)}`,
+          accept: [`Resolve every blocking finding on ${item.id} in review request ${r.request}; add regression tests.`],
+        });
+        this.log(defect.id, ORCHESTRATOR, "item.defect_of", { itemId: item.id, head: r.head, by: r.by, request: r.request }, at);
+        this.log(item.id, ORCHESTRATOR, "item.defect", { head: item.acceptedHead, mergeCommit: r.head, note: r.note, foundIn: defect.id }, at);
+      }
     }
     this.notify(r.itemId, origin);
     this.afterPlanChange(r.itemId);
@@ -4337,7 +4363,7 @@ export class Ledger extends DurableObject<Env> {
     const ids = [...new Set(requests.map((r) => r.item as string))];
     const rows = this.sql.exec(`SELECT * FROM items WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(ids)).toArray();
     const items = new Map(this.withPushActors(rows).map((i) => [i.id, i]));
-    return requests.filter((r) => !["merged", "abandoned"].includes(items.get(r.item as string)?.state ?? "")).map((r) => {
+    return requests.filter((r) => items.get(r.item as string)?.state !== "abandoned").map((r) => {
       const item = items.get(r.item as string);
       if (!item) throw new RuleError("no_item", `no item ${r.item as string}`, 404);
       return { ...item, head: r.head as string, request: r.id as number, dispatch: JSON.parse(r.dispatch as string) as Dispatch };
@@ -4441,7 +4467,10 @@ export class Ledger extends DurableObject<Env> {
   // (t197 waited with a review routed to a contributor). The tick rescues
   // the plan, never the claim, so the refusal is thrown as it was.
   async claimReview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved = false): Promise<ReviewClaim> {
-    assertNotTerminal(this.item(itemId));
+    const item = this.item(itemId);
+    if (item.state === "merged") this.expireReviewClaims();
+    const postMergeRequest = item.state === "merged" && this.sql.exec(`SELECT id FROM review_requests WHERE item = ? AND state = 'open' LIMIT 1`, itemId).toArray().length > 0;
+    if (!postMergeRequest) assertNotTerminal(item);
     try {
       return await this.bindReview(itemId, actor, runner, proved);
     } catch (err) {
@@ -4456,14 +4485,14 @@ export class Ledger extends DurableObject<Env> {
   // beside the claim it answers, so the ledger names what the reviewer was
   // given without carrying it.
   reviewDiffStored(itemId: string, actor: string, head: string, ref: LargeRef, proved = false): void {
-    const item = this.item(itemId);
+    const item = this.reviewItem(itemId);
     if (head !== item.head) throw new RuleError("stale_head", `the stored diff is for ${head.slice(0, 8)} but the item is at ${item.head?.slice(0, 8) ?? "nothing"}`);
     this.log(itemId, actor, "review.diff", { head, ...ref }, new Date().toISOString(), proved);
   }
 
   private async bindReview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved: boolean): Promise<ReviewClaim> {
     this.expireReviewClaims();
-    const item = this.item(itemId);
+    const item = this.reviewItem(itemId);
     const admission = reviewerAdmission(actor, this.project().policy);
     if (admission && !admission.active) throw new RuleError("reviewer_withdrawn", `${admission.id}'s reviewer admission was withdrawn`, 403);
     if (admission?.active) {
@@ -4477,7 +4506,7 @@ export class Ledger extends DurableObject<Env> {
     // binds the current head's. Requests made before t300 could be left
     // open at an old head; this closes them on the first claim.
     const closed = item.head ? this.withdrawStaleRequests(itemId, item.head, new Date().toISOString()) : [];
-    if (item.head) this.reaskReview(itemId, new Date().toISOString());
+    if (item.state !== "merged" && item.head) this.reaskReview(itemId, new Date().toISOString());
     if (item.owner && sameActor(item.owner, actor)) throw new RuleError("self_review", "an owner cannot review their own item", 403);
     if (contributed(actor, contributorsOf(item))) throw new RuleError("self_review", `${actor} contributed to ${itemId} and cannot review it`, 403);
     // The company restriction in force now binds, whatever it was when the
@@ -4535,7 +4564,7 @@ export class Ledger extends DurableObject<Env> {
     const need = reviewNeeded({
       item, part: item.kind === "part", policy,
       evidence: this.evidenceFor(itemId), reviews: this.reviewsFor(itemId),
-      requests: [], verdicts: this.findingVerdicts(itemId), wanted: !!row.wanted, tier, now: new Date(at), owner: this.owner,
+      requests: [], verdicts: this.findingVerdicts(itemId), wanted: !!row.wanted, postMerge: item.state === "merged", tier, now: new Date(at), owner: this.owner,
     });
     // The request was made only where a review is needed, so this holds; the
     // runner treats an absent need as a request to release.
@@ -4543,7 +4572,7 @@ export class Ledger extends DurableObject<Env> {
       item, head,
       need: need.needed ? need : null,
       plan: part && plan ? { goal: plan.goal, part } : null,
-      events: this.briefEvents(itemId), owner: this.owner, reviewBar: policy.reviewBar ?? null, singleFamily: singleFamily(policy), tier,
+      events: item.state === "merged" ? this.events(itemId, Number.MAX_SAFE_INTEGER).toReversed() : this.briefEvents(itemId), owner: this.owner, reviewBar: policy.reviewBar ?? null, singleFamily: singleFamily(policy), tier,
       decisions: standingDecisions(this.decisionStore),
       evidence: this.reviewEvidence(itemId, head, policy),
       criteria, request: row.id as number,
@@ -4611,7 +4640,8 @@ export class Ledger extends DurableObject<Env> {
   // anew (renewSkippedRequest), so the runners serve the new request.
   requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }, offers?: readonly SeenOffer[]): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean; request?: number } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the project owner asks for a review", 403);
-    const item = this.item(id);
+    const item = this.reviewItem(id);
+    if (item.state === "merged") wanted = true;
     const policy = this.project().policy;
     // Validate even when another request already stands.
     if (wanted && reviewer === null) throw new RuleError("bad_request", "a wanted review names its reviewer", 400);
@@ -4683,7 +4713,7 @@ export class Ledger extends DurableObject<Env> {
     const need = reviewNeeded({
       item, part: item.kind === "part", policy,
       evidence: this.evidenceFor(id), reviews: this.reviewsFor(id),
-      requests: this.reviewRequests(id), verdicts: this.findingVerdicts(id), wanted, now: new Date(at), owner: this.owner,
+      requests: this.reviewRequests(id), verdicts: this.findingVerdicts(id), wanted, postMerge: item.state === "merged", now: new Date(at), owner: this.owner,
     });
     // The newest live request: an older one at this head is one whose claim
     // lapsed, since a new request is made only when every earlier one has.
@@ -4746,10 +4776,10 @@ export class Ledger extends DurableObject<Env> {
     if (reviewerAdmission(chosen, policy)?.active && !liveOffers(offers ?? []).some((offer) => assign(dispatch, offer))) {
       throw new RuleError("no_runner", `no live ${where} runner offers the review job for ${chosen}; start a runner with its registered harness and endpoint`, 409);
     }
-    const topTier = this.gateIsTier(item, need, chosen);
+    const topTier = item.state !== "merged" && this.gateIsTier(item, need, chosen);
     const made = this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, wanted, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?, ?) RETURNING id`, id, need.head, JSON.stringify(dispatch), null, wanted ? 1 : null, topTier ? 1 : null, criteriaOf(item)).one();
-    this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: "land", ...(choiceReason ? { reason: choiceReason } : {}), ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
-    this.askTierReview(item, need, chosen, actor, at, proved);
+    this.log(id, actor, "review.requested", { head: need.head, reviewer: chosen, round: need.round, via: item.state === "merged" ? "post-merge" : "land", ...(choiceReason ? { reason: choiceReason } : {}), ...(wanted ? { wanted: true } : {}), ...(topTier ? { topTier: true } : {}) }, at, proved);
+    if (item.state !== "merged") this.askTierReview(item, need, chosen, actor, at, proved);
     return { needed: true, requested: true, reason: [need.reason, choiceReason, renewed ?? ""].filter(Boolean).join(" "), at, head: need.head, reviewer: chosen, request: made.id as number };
   }
 

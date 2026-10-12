@@ -1459,12 +1459,13 @@ export async function runReview(assignment, config, name, runnerIO) {
     workspace = `${io.workspacePath(project, item.id)}-review-${randomUUID().slice(0, 8)}`;
     await io.clone(claimed.readToken.remote, claimed.readToken.token, workspace);
     if (io.stopped()) throw new Error("interrupted");
+    if (claimed.landed) await io.checkout(workspace, claimed.head);
     const compare = await reviewBase(io, workspace, claimed);
     if (io.stopped()) throw new Error("interrupted");
     if (compare.fallback) io.log(`review diff from the fork point: ${compare.fallback}`);
     // A merge-main job's merge is reviewed by what it resolved (mergeReview);
     // every other head by the diff from `compare`.
-    const merged = await mergeReview(io, workspace, claimed);
+    const merged = claimed.landed ? null : await mergeReview(io, workspace, claimed);
     if (io.stopped()) throw new Error("interrupted");
     if (merged?.skipped) io.log(`merge-main review read as a plain diff: ${merged.skipped}`);
     const diff = merged?.diff ?? await io.diff(workspace, compare.from, claimed.head);
@@ -1605,6 +1606,17 @@ export async function runReview(assignment, config, name, runnerIO) {
 export async function reviewBase(io, workspace, claimed) {
   const forkPoint = (fallback) => ({ from: claimed.item.base, fallback });
   const target = claimed.target;
+  if (claimed.landed) {
+    // Never use today's main as the merge base: it already contains the
+    // change and would produce an empty diff. Fail rather than fall back.
+    const commit = claimed.landed.commit;
+    if (commit !== claimed.head) throw new Error("post-merge claim names a different merge commit");
+    const parents = (await io.revParse(workspace, `${commit}^@`)).trim().split(/\s+/).filter(Boolean);
+    const fastForward = commit === claimed.landed.head && parents.length < 2;
+    const from = fastForward ? claimed.landed.base : parents[0];
+    if (!from) throw new Error("post-merge review has no readable original base");
+    return { from, target: from };
+  }
   if (!target?.remote || !target?.branch) return forkPoint("the review claim named no branch the task merges into");
   try {
     await io.fetch(workspace, target.remote, target.token, target.branch);
@@ -2313,6 +2325,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // fetch); a runner started without them takes no plan job and no part.
     ...(jobBrief ? { jobBrief } : {}), ...(postPlan ? { postPlan } : {}),
     clone: (remote, token, dir) => checked(["git", "clone", "--quiet", remote, dir], { env: gitAuth(token), signal: controller.signal, step: "clone" }, executeChild),
+    checkout: (dir, head) => checked(["git", "checkout", "--quiet", "--detach", head], { cwd: dir, signal: controller.signal, step: "checkout" }, executeChild),
     diff: (dir, base, head) => checked(["git", "diff", base, head], { cwd: dir, capture: true, signal: controller.signal, step: "diff" }, executeChild),
     mergeBase: (dir, a, b) => checked(["git", "merge-base", a, b], { cwd: dir, capture: true, signal: controller.signal, step: "merge-base" }, executeChild),
     // Whether `base` is an ancestor of `head` (alreadyComplete): git exits 0

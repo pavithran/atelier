@@ -68,6 +68,7 @@ function fixture(options = {}) {
       return "{}";
     },
     async clone(remote, t, dir) { calls.push({ clone: [remote, t, dir] }); },
+    async checkout(dir, head) { calls.push({ checkout: [dir, head] }); },
     async diff(dir, base, head) { calls.push({ diff: [dir, base, head] }); return DIFF; },
     async brief(workspace, text) { calls.push({ brief: text, workspace }); return { file: "/cache/work/atelier/brief.txt" }; },
     async writeDiff(workspace, text) { calls.push({ writeDiff: text }); return { file: "/cache/work/atelier/diff.txt" }; },
@@ -657,6 +658,7 @@ async function serveReview(t, dir, claim) {
         seen.diff = readFileSync(argv[2], "utf8");
         seen.diffPath = argv[2];
         seen.cwd = options.cwd;
+        seen.head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: options.cwd, encoding: "utf8" }).trim();
         seen.status = execFileSync("git", ["status", "--porcelain", "--ignored=no"], { cwd: options.cwd, encoding: "utf8" });
         writeFileSync(argv[3], "VERDICT: APPROVE\nSUMMARY: Read the diff.\nCRITERION 1: met — Ran the tests in the clone; they pass.");
         return { code: 0 };
@@ -864,6 +866,55 @@ test("runReview names the claim's criteria binding and request with the verdict,
   await runReview(assignment, config, "home:studio", older.io);
   const unbound = older.calls.find((c) => c.argv && c.argv[0] === "review").argv;
   assert.ok(!unbound.includes("--criteria") && !unbound.includes("--request"));
+});
+
+
+test("post-merge runner reviews the original parent even when main has moved on", async () => {
+  const merge = "e".repeat(40), parent = "c".repeat(40);
+  const claim = { ...claimed, item: { ...claimed.item, state: "merged", head: merge, accept: ["Keeps data"] }, head: merge,
+    need: { ...claimed.need, head: merge }, landed: { commit: merge, head: H1, base: H0 },
+    readToken: { ...claimed.readToken, remote: "https://artifacts.example/baseline" },
+    target: { remote: "https://artifacts.example/baseline", token: "read", branch: "main" } };
+  const { io, calls } = fixture({ claim });
+  io.revParse = async (_dir, ref) => { assert.equal(ref, `${merge}^@`); return `${parent}\n${H1}`; };
+  io.mergeBase = async () => { throw new Error("must not compare against current main"); };
+  const result = await runReview(assignment, config, "home:studio", io);
+  assert.equal(result.phase, "reviewed");
+  assert.equal(calls.find((c) => c.clone).clone[0], claim.readToken.remote);
+  assert.deepEqual(calls.find((c) => c.diff).diff.slice(1), [parent, merge]);
+  assert.equal(calls.find((c) => c.checkout).checkout[1], merge);
+  assert.match(calls.find((c) => c.brief).brief, /Keeps data/);
+  const verdict = calls.find((c) => c.argv?.[0] === "review").argv;
+  assert.equal(verdict[verdict.indexOf("--head") + 1], merge);
+});
+
+test("post-merge fast-forward reviews the whole task from its fork point", async () => {
+  const { reviewBase } = await import("../cli/runner.mjs");
+  const compare = await reviewBase({ revParse: async () => H0 }, "/clone", {
+    head: H1, item: { base: H0 }, landed: { commit: H1, head: H1, base: H0 },
+  });
+  assert.deepEqual(compare, { from: H0, target: H0 });
+});
+
+
+test("real Git post-merge review checks out the merge, excluding later main commits", async (t) => {
+  const { dir, git, commit, target, work } = reviewRepos(t);
+  const base = commit(work, "base.txt", "base\n");
+  git(work, "checkout", "--quiet", "-b", "task");
+  const head = commit(work, "task.txt", "landed task\n");
+  git(work, "checkout", "--quiet", "main");
+  const parent = commit(work, "main.txt", "main before merge\n");
+  git(work, "merge", "--quiet", "--no-ff", "task", "-m", "Land task");
+  const merge = git(work, "rev-parse", "HEAD");
+  commit(work, "later.txt", "main moved on\n");
+  git(work, "push", "--quiet", "origin", "HEAD:main");
+  const claim = { ...claimFor({ base, fork: target, state: "merged", accept: ["Keeps data"] }, merge),
+    landed: { commit: merge, head, base }, target: { remote: target, token: "read", branch: "main" } };
+  const seen = await serveReview(t, dir, claim);
+  assert.equal(seen.head, merge);
+  assert.deepEqual(changed(seen.diff), ["task.txt"]);
+  assert.match(seen.brief, new RegExp(`git diff ${parent} ${merge}`));
+  assert.match(seen.brief, /Post-merge audit/);
 });
 
 // t490: the claim's evidence at the head reaches the brief the reviewer
