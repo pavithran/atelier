@@ -93,6 +93,9 @@ type Settings = {
   // and read by GET /api/version beside the route level, so a CLI can
   // refuse a server older than the routes it calls (atelier land).
   DEPLOYED_MAIN?: string;
+  // The project whose main this Worker is built from, "atelier" when unset:
+  // GET /api/version names its main head as the ledger last observed it.
+  SOURCE_PROJECT?: string;
   // Cloudflare Access in front of the owner's pages (src/access.ts): the
   // team's URL, the Access application's audience tag, and the owner's email
   // as the token's email claim must name it. All three set, and every owner
@@ -453,6 +456,20 @@ async function sendPool(env: Env): Promise<string[]> {
 }
 function resolveProject(env: Env, name: string): Promise<ProjectRef> {
   return index(env).resolveProject(name);
+}
+// Main's head of the project this Worker is built from (SOURCE_PROJECT), as
+// its ledger last observed it (t556), or null when that project is not
+// registered, its ledger has seen no main, or it cannot be read. A merge of
+// cli/** alone deploys nothing, so DEPLOYED_MAIN stays where it was; this
+// moves with every merge, and a runner reloads its CLI once its checkout
+// holds it (cli/runner.mjs reloadCheck).
+async function sourceMain(env: Env): Promise<string | null> {
+  try {
+    const ref = await resolveProject(env, (env as unknown as Settings).SOURCE_PROJECT?.trim() || "atelier");
+    if (!ref.registered) return null;
+    const head = await ledger(env, ref.key).observedMain();
+    return typeof head === "string" && /^[a-f0-9]{40,64}$/.test(head) ? head : null;
+  } catch { return null; }
 }
 // Every name a listed project answers to, for a token's project scope.
 function namesOf(p: ProjectRecord): string[] {
@@ -3433,8 +3450,10 @@ export default {
       }
       const how = await authorised(req, env);
       if (parts[0] === "api") {
-        // The server's version: the deployed main commit, its route level
-        // and the capabilities it supports (src/route-level.ts). It answers
+        // The server's version: the deployed main commit, main's head as the
+        // ledger last observed it (sourceMain, which a runner reloads to),
+        // its route level and the capabilities it supports
+        // (src/route-level.ts). It answers
         // without a token: the commit of a public repository, a route level
         // and capability names are not secret, and a session checks them
         // before it signs in. Each CLI command and runner job checks the
@@ -3442,7 +3461,7 @@ export default {
         // dependent request, refusing with the missing names and saying to
         // deploy; a CLI from before capabilities reads routeLevel alone.
         if (parts.length === 2 && parts[1] === "version" && (req.method === "GET" || req.method === "HEAD")) {
-          return json({ commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES });
+          return json({ commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, main: await sourceMain(env), routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES });
         }
         if (how !== "api" && (typeof how !== "object" || !how)) {
           // A path that names no part of the API answers 404 whoever asks:
