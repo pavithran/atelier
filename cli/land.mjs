@@ -787,8 +787,27 @@ export async function runLand(io) {
       // far as the server's rules let it (t459, where deployed), and
       // otherwise the new head is reviewed again; a conflict ends it.
       guardLease();
-      const mainNow = await readMain(io, { dir, id, name });
+      let mainNow = await readMain(io, { dir, id, name });
       guardLease();
+      // The server reads main itself and records it with the head (t550),
+      // so the merge of this head into any other main is refused even if
+      // this landing loses the lease before it merges; one that finds main
+      // moved meanwhile says so, and the landing goes round again.
+      if (mainNow === mainHead && timing) {
+        try { await request("POST", leasePath, { item: id, confirm: true, main: mainHead }); }
+        catch (error) {
+          // A takeover the heartbeat has not reported is learned here, as
+          // the renewal before publishing would learn it (t232).
+          if (/^(no_lease|landing_lease|stale_landing): /.test(error.message)) {
+            loseLease(error.message);
+            throw new StepError(`the landing lease is no longer ${id}'s (${error.message}); this landing stops before accepting or merging ${id}. Nothing was merged; run atelier land ${id} again once the other landing ends, or atelier merge ${id} if it is already accepted.`);
+          }
+          const moved = /^main_moved: main is at ([a-f0-9]{8})/.exec(error.message);
+          if (!moved) throw new StepError(`main ${short(mainHead)} could not be recorded under the lease, so ${id} is not accepted or merged: ${error.message}`);
+          mainNow = await readMain(io, { dir, id, name });
+          if (mainNow === mainHead) throw new StepError(`the server reads main at ${moved[1]}, not ${short(mainHead)} as this machine fetched it, so ${id} is not accepted or merged; run atelier land ${id} again`);
+        }
+      }
       if (mainNow !== mainHead) {
         await release(`main moved from ${mainHead} to ${mainNow}`);
         if (round + 1 >= MAIN_MOVED_ROUNDS) throw new StepError(`main moved under the lease ${MAIN_MOVED_ROUNDS} times (now at ${short(mainNow)}, where ${short(head)} was checked and reviewed against ${short(mainHead)}), so the landing stops without merging ${id}; ${id} stays submitted. Run atelier land ${id} again once main settles`);
@@ -1793,10 +1812,15 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, triage, move
     if (status.status === "errored" || status.status === "terminated") {
       die(`the landing Workflow ${instance} ${status.status === "terminated" ? "was terminated" : "failed"}: ${status.error?.message ?? detail ?? "no reason given"}; last status: ${status.status}; ${await queueState(read)}`, 1);
     }
-    const key = `${stage}:${round}:${stage === "review" ? detail ?? "" : ""}`;
+    // A new instance's record begins at `lease` with no detail, before its
+    // first step writes `workspace` (t550): said as starting, not as the
+    // wait for the lease a checked and approved head makes, which names it.
+    const shown = stage === "lease" && !detail ? "starting" : stage;
+    const key = `${shown}:${round}:${stage === "review" ? detail ?? "" : ""}`;
     if (key !== said) {
       said = key;
       const what = {
+        starting: "is starting",
         lease: "has the head checked and approved, and queues for the landing lease for the merge alone",
         workspace: `waits for this machine to merge main and push, holding no lease${detail ? ` (${detail})` : ""}`,
         conflict: `is paused on conflicts in ${(files ?? []).join(", ") || "the merge of main"}`,
@@ -1805,7 +1829,7 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, triage, move
         merge: "has accepted the reviewed head and waits for the merge",
         done: "is done",
         failed: `failed: ${detail ?? ""}`,
-      }[stage] ?? `is at ${stage}`;
+      }[shown] ?? `is at ${stage}`;
       print(`The landing Workflow ${what}${round ? ` (round ${round + 1})` : ""}.`);
     }
 
@@ -1874,9 +1898,16 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, triage, move
           print(`${id} merged: ${r.output.split("\n").filter(Boolean).at(-1) ?? "merged"}`);
           break;
         }
-        // The Workflow leaves the lease unrenewed while it waits for the
-        // merge, so a landing that took it meanwhile finishes first and the
-        // merge goes on after it.
+        // The server refuses to merge the head into a main other than the
+        // one the Workflow confirmed under the lease (t550): it goes back
+        // for a merge of the new main, new checks and a review.
+        if (/main_moved|since .*'s landing confirmed it under the lease/.test(r.output)) {
+          die(`${r.output.split("\n").filter(Boolean).slice(-6).join("\n")}\nNothing was merged: ${id} was checked and reviewed against an older main.`);
+        }
+        // The Workflow renews the lease while it waits for the merge (t550);
+        // a landing_lease refusal means it was freed by hand and another
+        // landing took it, which finishes first. The merge is tried after
+        // it, and the server refuses it if that landing moved main.
         if (/landing_lease|one landing runs at a time/.test(r.output) && tried < 720) {
           if (!saidWait) { print(`The merge waits: another task's landing holds ${name}'s landing lease. Trying again every ${Math.round(POLL_MS / 1000)}s…`); saidWait = true; }
           await sleep();
