@@ -289,3 +289,36 @@ test("the sandbox's merged tree unites records by key, and a merge needing a gen
   assert.equal(mergedTreeRefusal(refused, "f".repeat(40)), "the merge with main at ffffffff needs indexes to regenerate out/index.txt (declared in bin/merge-manifest.json), and no generator runs in the sandbox; check the merge with atelier check --merged without --sandbox, which merges through the merge pipeline and regenerates them, or bring main into the workspace with atelier update and check its head");
   assert.match(mergedTreeRefusal({ conflicts: [{ path: "a.ts", reason: "both sides changed the same lines" }] }, "f".repeat(40)) ?? "", /stops on conflicts: a\.ts \(both sides changed the same lines\)/);
 });
+
+test("merged registry validation rejects independent duplicate keys in preview and sandbox (t463)", async () => {
+  const manifest = JSON.stringify({ version: 1, registries: [{ name: "commands", dir: "cmds", key: "^key: (.+)$", files: "*.txt", exclude: ["index.txt"] }] });
+  const base = { "bin/merge-manifest.json": manifest, "cmds/base.txt": "key: base\n" };
+  const ours = { ...base, "cmds/main.txt": "key: same\n", "cmds/index.txt": "ignored\n", "cmds/readme.md": "ignored\n" };
+  for (const key of ["same", "unique"]) {
+    const r = nested({ base, ours, theirs: { ...base, "cmds/task.txt": `key: ${key}\n` } });
+    const preview = await mergeability(r, r, "base", "ours", "theirs");
+    const merged = await mergePatch(r, r, "base", "ours", "theirs");
+    assert.equal(preview.clean, key === "unique");
+    assert.deepEqual(merged.conflicts, preview.conflicts);
+    if (key === "same") {
+      assert.match(preview.conflicts[0].reason, /registry key same is declared by both cmds\/main.txt and cmds\/task.txt/);
+      assert.equal(merged.patch.size, 0);
+    }
+  }
+  // A deletion must not leave a phantom duplicate in the combined listing.
+  const r = nested({ base, ours: { ...base, "cmds/new.txt": "key: base\n" }, theirs: { "bin/merge-manifest.json": manifest } });
+  assert.equal((await mergeability(r, r, "base", "ours", "theirs")).clean, true);
+});
+
+test("preview and sandbox both select record declarations introduced only by the task (t463)", async () => {
+  const base = { "bin/merge-manifest.json": JSON.stringify({ version: 1 }), "routes.tsv": "/base\tB\n" };
+  const r = nested({
+    base,
+    ours: { ...base, "routes.tsv": "/base\tB\n/main\tM\n" },
+    theirs: { ...base, "bin/merge-manifest.json": JSON.stringify({ version: 1, records: [{ path: "routes.tsv", key: "^(\\S+)\\t" }] }), "routes.tsv": "/base\tB\n/task\tT\n" },
+  });
+  assert.equal((await mergeability(r, r, "base", "ours", "theirs")).clean, true);
+  const merged = await mergePatch(r, r, "base", "ours", "theirs");
+  assert.deepEqual(merged.conflicts, []);
+  assert.equal(new TextDecoder().decode(merged.patch.get("routes.tsv")!.data), "/base\tB\n/main\tM\n/task\tT\n");
+});

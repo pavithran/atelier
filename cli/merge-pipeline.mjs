@@ -34,7 +34,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
-import { GENERATED_DRIVER, MANIFEST_PATH, RECORDS_DRIVER, generatorsToRun as pickFor, parseManifest, readRecords } from "../src/merge-declarations.ts";
+import { GENERATED_DRIVER, MANIFEST_PATH, RECORDS_DRIVER, generatorsToRun as pickFor, parseManifest, declarationProblems as validateDeclarations } from "../src/merge-declarations.ts";
 import { globToRegExp } from "../src/rules.ts";
 
 export { MANIFEST_PATH, GENERATED_DRIVER, RECORDS_DRIVER };
@@ -174,27 +174,7 @@ async function routingProblems(dir, manifest, git) {
 // The record and registry problems of a tree, read through `read(path)`
 // (null for a missing file) and `list(dir)` (the file names in a folder).
 // Each is a sentence naming the path.
-function declarationProblems(manifest, read, list, skip = new Set()) {
-  const problems = [];
-  for (const record of manifest?.records ?? []) {
-    if (skip.has(record.path)) continue;
-    const text = read(record.path);
-    if (text === null) continue;
-    for (const p of readRecords(text, record.pattern, record.framed).problems) problems.push(`${record.path}: ${p}`);
-  }
-  for (const registry of manifest?.registries ?? []) {
-    const match = registry.files ? globToRegExp(registry.files) : null;
-    const seen = new Map();
-    for (const name of list(registry.dir).filter((n) => (!match || match.test(n)) && !registry.exclude.includes(n)).sort()) {
-      const path = `${registry.dir}/${name}`;
-      const key = registry.pattern.exec(read(path) ?? "")?.[1];
-      if (!key) problems.push(`${path} names no key for the ${registry.name} registry`);
-      else if (seen.has(key)) problems.push(`the ${registry.name} registry key ${key} is declared by both ${seen.get(key)} and ${path}`);
-      else seen.set(key, path);
-    }
-  }
-  return problems;
-}
+const declarationProblems = (manifest, read, list, skip) => validateDeclarations(manifest, read, list, globToRegExp, skip);
 
 const workTreeReader = (dir) => ({
   read: (path) => { try { return readFileSync(join(dir, path), "utf8"); } catch { return null; } },
@@ -430,7 +410,13 @@ export async function mergeThrough(dir, target, { git = localGit, message, commi
     for (const generator of generators) {
       log(`Regenerating ${generator.outputs.join(", ")} with ${generator.command.join(" ")} (${generator.name})…`);
       const done = await regenerate(dir, generator, { git, run, logDir, stamp, ours, theirs });
-      if (done.stop) { await abort(); return { state: "stopped", reason: done.stop, ...sorted, regenerated }; }
+      if (done.stop) {
+        // The caller must be able to preserve even this failed attempt's
+        // log before removing a speculative clone.
+        regenerated.push({ ...done, name: generator.name, command: generator.command, outputs: [], logSha: createHash("sha256").update(readFileSync(done.log)).digest("hex") });
+        await abort();
+        return { state: "stopped", reason: done.stop, ...sorted, regenerated };
+      }
       regenerated.push(done);
     }
   }

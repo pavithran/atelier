@@ -218,3 +218,26 @@ export function generatorsToRun(manifest: Manifest | null, { mb, a, b, conflicte
     return g.outputs.some((o) => conflicted.includes(o)) || !mb || (a.some(touches) && b.some(touches));
   });
 }
+
+// Validate the merged records and registry entries in both CLI and Worker.
+export function declarationProblems(manifest: Manifest | null, read: (path: string) => string | null, list: (dir: string) => string[], glob: (pattern: string) => RegExp, skip = new Set<string>()): string[] {
+  const problems: string[] = [];
+  for (const record of manifest?.records ?? []) {
+    if (skip.has(record.path)) continue;
+    const text = read(record.path);
+    if (text === null) continue;
+    for (const p of readRecords(text, record.pattern, record.framed).problems) problems.push(`${record.path}: ${p}`);
+  }
+  for (const registry of manifest?.registries ?? []) {
+    const match = registry.files ? glob(registry.files) : null;
+    const seen = new Map<string, string>();
+    for (const name of list(registry.dir).filter((n) => (!match || match.test(n)) && !registry.exclude.includes(n)).sort()) {
+      const path = `${registry.dir}/${name}`;
+      const key = registry.pattern.exec(read(path) ?? "")?.[1];
+      if (!key) problems.push(`${path} names no key for the ${registry.name} registry`);
+      else if (seen.has(key)) problems.push(`the ${registry.name} registry key ${key} is declared by both ${seen.get(key)} and ${path}`);
+      else seen.set(key, path);
+    }
+  }
+  return problems;
+}

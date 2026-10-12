@@ -264,6 +264,10 @@ test("a generator that writes an ignored file, new or already there, writes outs
     const r = await mergeThrough(f.dir, "theirs", { message: "m" });
     assert.equal(r.state, "stopped", generator);
     assert.match(r.reason, why);
+    assert.equal(r.regenerated.length, 1);
+    assert.equal(r.regenerated[0].name, "index");
+    assert.equal(r.regenerated[0].stop, r.reason);
+    assert.ok(existsSync(r.regenerated[0].log));
     assert.equal(merging(f.dir), false);
   }
 });
@@ -286,6 +290,10 @@ test("a generator that fails, writes outside its outputs, leaves an output out o
     const r = await mergeThrough(f.dir, "theirs", { message: "m" });
     assert.equal(r.state, "stopped", generator);
     assert.match(r.reason, why);
+    assert.equal(r.regenerated.length, 1);
+    assert.equal(r.regenerated[0].name, "index");
+    assert.equal(r.regenerated[0].stop, r.reason);
+    assert.ok(existsSync(r.regenerated[0].log));
     assert.equal(merging(f.dir), false);
     assert.equal(git(f.dir, "rev-parse", "HEAD"), head);
     assert.ok(s.theirs);
