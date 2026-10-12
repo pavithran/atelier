@@ -7,6 +7,7 @@
   t456, t474, t496 (refiled as t504), t497 and t498, and the order to land them.
 - [mockups/](mockups/index.html): every page, desktop and phone, annotated.
 - [contrast.md](contrast.md): the palette's ratios, generated from the tokens.
+- [reimagined/](reimagined/README.md): the canvas "atelier.zone, re-imagined", as the spec for the shell and the pages after it.
 - `screens/` and `audit.json`: written by the capture.
 
 ## Capturing
