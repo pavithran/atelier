@@ -94,7 +94,8 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
 // integration, handoff or owner privileges. review-skip is a runner's own
 // word, not a review: it says the runner will not serve a review job it was
 // offered (t353), and the gateway takes it only for such a job, as it takes
-// a run report (assertRunnerReport).
+// a run report (assertRunnerReport). run-skip is its word that it gives up a
+// build or plan job it was offered (t420), taken the same way.
 export function runnerRoute(method: string, parts: string[], body: Record<string, unknown> = {}): boolean {
   if (parts.length === 1) return method === "GET" && parts[0] === "config" || method === "POST" && ["queue", "runs"].includes(parts[0]);
   if (parts[0] !== "projects" || !parts[1]) return false;
@@ -103,7 +104,7 @@ export function runnerRoute(method: string, parts: string[], body: Record<string
   if (parts[2] !== "items" || !/^t[0-9]+$/.test(parts[3])) return false;
   if (["read-token", "base-token"].includes(parts[4]) && body.scope === "write") return false;
   if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "job-brief", "diff"].includes(parts[4]) || parts.length === 6 && ["sandbox", "logs", "diffs"].includes(parts[4]);
-  return method === "POST" && parts.length === 5 && ["claim", "read-token", "base-token", "push", "evidence", "sandbox", "submit", "plan", "release", "review-skip"].includes(parts[4]);
+  return method === "POST" && parts.length === 5 && ["claim", "read-token", "base-token", "push", "evidence", "sandbox", "submit", "plan", "release", "review-skip", "run-skip"].includes(parts[4]);
 }
 
 export function runnerDenied(token: AgentToken): RuleError {
@@ -182,9 +183,24 @@ export const RUNNER_CALLS: readonly RunnerCall[] = [
   // token's runner, an agent token's actor, neither for the owner's. It
   // names no actor, as the CLI's own resolveTokenActor names none.
   { name: "config", method: "GET", path: "/config", credential: "runner", actor: "none", body: [], via: "runner", jobs: [] },
-  { name: "queue", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents"], via: "runner", jobs: [] },
+  // The poll: what the runner can run and when it started (t420), answered
+  // with the tasks it may claim. GET /queue is the owner's listing, which
+  // runnerRoute refuses a runner token (test/runner-routes.test.mjs).
+  { name: "queue", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started"], via: "runner", jobs: [] },
+  // The same poll asked with `why` (t420), when a poll offered nothing: the
+  // server answers the listing GET gives, cut to the token's projects, each
+  // waiting dispatch with why it is not being taken. The same route, the
+  // same credential, a body field more: declared apart so the idle path is
+  // its own authorization case.
+  { name: "queue-why", method: "POST", path: "/queue", credential: "runner", body: ["runner", "kind", "jobs", "agents", "started", "why"], via: "runner", jobs: [] },
   { name: "runs", method: "POST", path: "/runs", credential: "runner", body: ["actor", "role", "outcome", "project", "item", "detail"], via: "runner", jobs: ["build", "plan", "review"] },
   { name: "review-skip", method: "POST", path: `${ITEM}/review-skip`, credential: "runner", body: ["head", "request", "note"], via: "runner", jobs: REVIEW },
+  // The runner's word that it gives up a build or plan job under its
+  // dispatch (t420), after failed runs or infrastructure failures in a row:
+  // taken as a run report for the job is, under the job's actor. The actor
+  // in the body is read under the owner's token alone; a runner token's
+  // report is the header's actor, checked at the gateway.
+  { name: "run-skip", method: "POST", path: `${ITEM}/run-skip`, credential: "runner", body: ["actor", "role", "kind", "failures", "note"], via: "runner", jobs: ["build", "plan"] },
   // The project's record, read for its preparation policy (t378) before a
   // build whose last run left a validation marker.
   { name: "project", method: "GET", path: "/projects/{project}", credential: "runner", body: [], via: "runner", jobs: ["build"] },

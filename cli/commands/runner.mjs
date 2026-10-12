@@ -98,6 +98,26 @@ export default async function runnerCommand() {
         if (!res.ok) throw new Error(`${res.status}${detail(res)}`);
         return res.data;
       },
+      // Why an idle runner found nothing to claim: its poll asked with
+      // `why`, which lists each waiting dispatch of the token's projects
+      // with its reason (t420); a runner token may not GET the owner's
+      // listing. Asked only when a poll offers nothing, never on the busy
+      // path, as the poll goes: the declared "queue-why" call, through the
+      // transport, under the token's actor. A server older than this
+      // answers with the tasks offered, which carry no reason, so the
+      // runner says only its own.
+      async idleWhy(offer, signal) {
+        let res;
+        try {
+          const who = await transport.identity(signal);
+          res = await transport.send("queue-why", {}, { body: { ...offer, why: true }, actor: who.actor ?? OWNER, signal });
+        } catch (error) {
+          if (signal.aborted) throw error;
+          throw Object.assign(new Error(`queue: ${error.message}`), { transient: true });
+        }
+        if (!res.ok) throw Object.assign(new Error(`queue: ${res.status}`), { transient: res.status >= 500 || res.status === 429 });
+        return res.data;
+      },
       // A review this runner will not serve is reported to the project, so
       // the landing waiting on it can say, by runner, when every runner
       // that offers the reviewer has skipped (t353). Under a runner token,
@@ -110,6 +130,21 @@ export default async function runnerCommand() {
         const who = await transport.identity(signal);
         const { project, item, actor, ...rest } = body;
         const res = await transport.send("review-skip", { project, item }, { body: rest, actor: who.runner ? actor : OWNER, signal });
+        if (!res.ok) throw new Error(`${res.status}${detail(res)}`);
+        return res.data;
+      },
+      // A build or plan job this runner gives up under its dispatch, after
+      // failed runs or infrastructure failures in a row, is reported the
+      // same way (t420), so status and show name this runner as what passes
+      // it by.
+      // It goes as the review skip does: the declared "run-skip" call, as
+      // the job's actor under a runner token and as the owner otherwise;
+      // the body keeps the actor, which the server reads under the owner's
+      // token alone.
+      async reportRunSkip(body, _runner, signal) {
+        const who = await transport.identity(signal);
+        const { project, item, ...rest } = body;
+        const res = await transport.send("run-skip", { project, item }, { body: rest, actor: who.runner ? body.actor : OWNER, signal });
         if (!res.ok) throw new Error(`${res.status}${detail(res)}`);
         return res.data;
       },

@@ -12,15 +12,17 @@
 // in src/rules.ts), and a landing never waits for it: an open tier request is
 // withdrawn when the change is accepted, integrated or closed.
 
+import type { PoolFamily } from "../models/pool.ts";
 import { byPrecision, type PrecisionRecord } from "../models/precision.ts";
-import { sameActor } from "../rules.ts";
+import { actorFamily, contributed, sameActor } from "../rules.ts";
 import { independenceRefusal } from "./independence.ts";
 
 // Whether the gate's reviewer gives the tier review too: it is a tier model
 // and could give the gate's independent review, of another family than every
-// contributor. Then no separate tier request is asked.
-export function gateServesTier(tier: readonly string[] | undefined, reviewer: string, contributors: readonly string[]): boolean {
-  return !!tier?.some((a) => sameActor(a, reviewer)) && independenceRefusal(reviewer, contributors) === null;
+// contributor (under single-family mode, `single`, a different model of the
+// company). Then no separate tier request is asked.
+export function gateServesTier(tier: readonly string[] | undefined, reviewer: string, contributors: readonly string[], single: PoolFamily | null = null): boolean {
+  return !!tier?.some((a) => sameActor(a, reviewer)) && independenceRefusal(reviewer, contributors, single) === null;
 }
 
 // The tier model asked for a change's separate tier review: the first, in
@@ -28,8 +30,10 @@ export function gateServesTier(tier: readonly string[] | undefined, reviewer: st
 // order, that is no contributor, is not asked or answering for the
 // gate (`gate`: a model asked for the gate already reviews the change, and
 // one actor's later verdict at a head replaces its earlier one), and may
-// review under the project's policy. Null when none remains, and then no
-// tier review is asked for.
-export function pickTierReviewer(tier: readonly string[], contributors: readonly string[], gate: readonly string[], mayReview: (actor: string) => boolean, precision: PrecisionRecord | null = null): string | null {
-  return byPrecision(tier, (a) => [a], precision).find((a) => !contributors.some((c) => sameActor(c, a)) && !gate.some((g) => sameActor(g, a)) && mayReview(a)) ?? null;
+// review under the project's policy; under single-family mode (`single`,
+// t394) it is also one of that company's models. Null when none remains, and
+// then no tier review is asked for.
+export function pickTierReviewer(tier: readonly string[], contributors: readonly string[], gate: readonly string[], mayReview: (actor: string) => boolean, precision: PrecisionRecord | null = null, single: PoolFamily | null = null): string | null {
+  return byPrecision(tier, (a) => [a], precision).find((a) => !contributed(a, contributors) && !gate.some((g) => sameActor(g, a))
+    && (!single || actorFamily(a) === single) && mayReview(a)) ?? null;
 }

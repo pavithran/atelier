@@ -54,6 +54,7 @@ import command_revert from "./revert.mjs";
 import command_review from "./review.mjs";
 import command_review_claim from "./review-claim.mjs";
 import command_review_release from "./review-release.mjs";
+import command_review_request from "./review-request.mjs";
 import command_review_unparsable from "./review-unparsable.mjs";
 import command_run_report from "./run-report.mjs";
 import command_runner from "./runner.mjs";
@@ -64,6 +65,7 @@ import command_showcase from "./showcase.mjs";
 import command_slots from "./slots.mjs";
 import command_start from "./start.mjs";
 import command_status from "./status.mjs";
+import command_stuck from "./stuck.mjs";
 import command_submit from "./submit.mjs";
 import command_sync from "./sync.mjs";
 import command_token from "./token.mjs";
@@ -130,6 +132,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/review.mjs", run: command_review },
   { path: "cli/commands/review-claim.mjs", run: command_review_claim },
   { path: "cli/commands/review-release.mjs", run: command_review_release },
+  { path: "cli/commands/review-request.mjs", run: command_review_request },
   { path: "cli/commands/review-unparsable.mjs", run: command_review_unparsable },
   { path: "cli/commands/run-report.mjs", run: command_run_report },
   { path: "cli/commands/runner.mjs", run: command_runner },
@@ -140,6 +143,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/slots.mjs", run: command_slots },
   { path: "cli/commands/start.mjs", run: command_start },
   { path: "cli/commands/status.mjs", run: command_status },
+  { path: "cli/commands/stuck.mjs", run: command_stuck },
   { path: "cli/commands/submit.mjs", run: command_submit },
   { path: "cli/commands/sync.mjs", run: command_sync },
   { path: "cli/commands/token.mjs", run: command_token },

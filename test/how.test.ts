@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
-import { LIMITS, LOOP, ORCHESTRATOR, RULES, TERMS, USING_WELL, USING_WELL_DOC } from "../src/how-data.ts";
+import { LIMITS, LOOP, ORCHESTRATOR, RULES, STEPS, TAGLINE, TAKEAWAYS, TERMS, USING_WELL, USING_WELL_DOC } from "../src/how-data.ts";
 import { HELP_FORMS } from "../src/usage.ts";
 import { LAYERS_CAPTION, LAYERS_LABEL, PLAN_FLOW, PLAN_FLOW_CAPTION, PLAN_FLOW_LABEL, PLAN_FLOW_RETURNS, layersDiagram } from "../src/diagrams.ts";
 
@@ -34,6 +34,22 @@ test("every rule names code that exists where it says", () => {
       assert.match(read(file), named(symbol), `${rule.title}: ${symbol} is not in ${file}; update the rule or the page`);
     }
   }
+});
+
+// The five verbs of t367, the words the app, the README and the docs share.
+test("the life of a task is five verbs in order, each guarded by a rule, and the README uses the same words", () => {
+  assert.deepEqual(STEPS.map((s) => s.verb), ["Claim", "Fork", "Prove", "Review", "Land"]);
+  for (const s of STEPS) assert.ok(RULES.some((r) => r.verb === s.verb), `no rule is listed under ${s.verb}`);
+  assert.equal(TAKEAWAYS, "Proven. Reviewed. Recorded.");
+  assert.equal(TAGLINE, "Git keeps the code. Atelier brings the receipts.");
+  for (const t of [...STEPS.flatMap((s) => [s.line, s.about]), TAKEAWAYS, TAGLINE]) assert.doesNotMatch(t, /\s[–—-]\s|[–—]/, t);
+  // Labels only: every command the steps name is still a command.
+  for (const s of STEPS) for (const [, cmd] of s.about.matchAll(/`atelier ([a-z]+)/g)) assert.ok(HELP_FORMS.some((f) => f.split(" ")[0] === cmd), `${s.verb} names atelier ${cmd}, which the help does not list`);
+  const readme = read("README.md");
+  const enforces = readme.slice(readme.indexOf("## What Atelier enforces"), readme.indexOf("\n## ", readme.indexOf("## What Atelier enforces") + 3)).replace(/[ \n]+(?!#)/g, " ");
+  assert.deepEqual([...enforces.matchAll(/^### (\w+)/gm)].map((m) => m[1]), STEPS.map((s) => s.verb), "the README's What Atelier enforces is not headed by the five verbs");
+  for (const s of STEPS) assert.ok(enforces.includes(s.line), `the README does not give ${s.verb}'s line, "${s.line}"`);
+  assert.ok(enforces.includes(TAKEAWAYS) && enforces.includes(TAGLINE), "the README's summary does not give the takeaways and the tagline");
 });
 
 test("each rule gives its reason in one sentence", () => {
@@ -68,7 +84,13 @@ test("the review code is called by the ledger and the runner, and the page says 
   // limits, and the CLI reads the reply limit alone, to cut what it keeps of
   // an unparsable reply (t407); neither calls any of the review code.
   const sharesTypes = new Set([join("src", "plans", "brief.ts"), join("cli", "commands", "review-unparsable.mjs")]);
-  const callers = [...sources("src"), ...sources("cli")].filter((file) => !file.startsWith(inside) && !sharesTypes.has(file) && imports.test(read(file)));
+  // The landing's triage before the review (t475) lives in src/review/triage.ts
+  // and is not review code: the landing, the landing Workflow that checks its
+  // binding and the init route that records the project's triage model
+  // import it, and nothing else from src/review.
+  const triageOnly = (file: string) => [join("cli", "land.mjs"), join("src", "landing-workflow.ts"), join("src", "index.ts")].includes(file)
+    && [...read(file).matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*)["'](?:[^"']*\/)?review\/([^"']+)["']/g)].every((m) => m[1] === "triage.ts");
+  const callers = [...sources("src"), ...sources("cli")].filter((file) => !file.startsWith(inside) && !sharesTypes.has(file) && !triageOnly(file) && imports.test(read(file)));
   assert.deepEqual([...callers].sort(), ["cli/runner.mjs", "src/ledger.ts"], "the review code should be called by the ledger and the runner alone");
   const requests = ORCHESTRATOR.find((p) => p.name === "Review requests and runner job")!;
   assert.ok(requests.built);

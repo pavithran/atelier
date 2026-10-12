@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
-import { ROUTE_LEVEL } from "../src/route-level.ts";
+import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 // t505: inside `atelier runner`, cli/atelier.mjs is the main module and is
 // still in its top-level await. A lease call (review-renew, -release,
@@ -31,7 +31,7 @@ test("a review runner's lease call keeps the CLI process alive and reaches the s
     req.on("end", () => {
       requests.push({ method: req.method, path: req.url, body });
       let answer = {};
-      if (req.url === "/api/version") answer = { routeLevel: ROUTE_LEVEL };
+      if (req.url === "/api/version") answer = { routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES };
       else if (req.url === "/api/config") answer = { ownerActor: "owner", ownerName: "The owner", actor };
       else if (req.url === "/api/queue") {
         answer = offered ? [] : [{ project: "atelier", item: { id: "t21", dispatch: { job: "review" } }, agent: "opencode", model, actor }];

@@ -6,7 +6,7 @@
 // tick at the end of each route) is step 5, a later task.
 
 import type { LedgerEvent } from "../ledger.ts";
-import { modelKey } from "../rules.ts";
+import { modelKey, sameActor } from "../rules.ts";
 import type { PartRoute } from "./route.ts";
 import type { Plan } from "./schema.ts";
 
@@ -249,28 +249,33 @@ export function partAttempts(events: readonly LedgerEvent[]): Map<string, Attemp
   return new Map([...histories(events)].map(([key, h]) => [key, h.attempts]));
 }
 
-// The actor to dispatch a part to next, or why it is stuck. Frozen routing
-// keeps the attempt order aligned with [builder, ...alternates], so the walk
-// just counts: each actor gets two attempts (two give-ups, or one failed
-// finish retried once) before the tick moves to the next alternate. A model
-// that reviewed the part (by modelKey, whatever its harness) is left out of
-// that order, so a reviewer never becomes a contributor to what it judged.
+// The actor to dispatch a part to next, or why it is stuck. Each actor gets
+// two attempts (two give-ups, or one failed finish retried once) before the
+// tick moves to the next alternate, and the plan three in all. Attempts are
+// counted per actor (sameActor), not by position in [builder, ...alternates]:
+// the routes a tick reads may have left out a builder held since
+// (standingRoute), and positions would then charge one actor's attempts to
+// another. A model that reviewed the part (by modelKey, whatever its
+// harness) is left out, so a reviewer never becomes a contributor to what it
+// judged.
 function nextActor(key: string, route: PartRoute, attempts: readonly Attempt[], reviewers: readonly string[] = []): { to: string; reason: string } | { blocked: string } {
   if (route.builder === null) return { blocked: `part ${key} is unrouted: ${route.unrouted}` };
   const reviewed = new Set(reviewers.map(modelKey));
   const routed = [route.builder.actor, ...route.alternates.map((a) => a.actor)];
   const actors = routed.filter((actor) => !reviewed.has(modelKey(actor)));
   if (attempts.length >= 3) return { blocked: `part ${key} has reached 3 attempts` };
-  const index = Math.floor(attempts.length / 2);
-  const used = attempts.length % 2;
-  if (index >= actors.length) {
+  const tries = (actor: string) => attempts.filter((a) => sameActor(a.actor, actor)).length;
+  const last = attempts[attempts.length - 1];
+  const open = actors.filter((actor) => tries(actor) < 2);
+  const actor = (last && open.find((a) => sameActor(a, last.actor))) ?? open[0];
+  if (actor === undefined) {
     const left = routed.filter((actor) => !actors.includes(actor));
     return { blocked: `part ${key} has no alternates left${left.length ? ` (${left.join(", ")} reviewed it)` : ""}` };
   }
-  const actor = actors[index];
-  const last = attempts[attempts.length - 1];
   if (!last) return { to: actor, reason: "the routed builder" };
-  if (used === 0) return { to: actor, reason: `two attempts by ${actors[index - 1]} did not finish; moving to the next alternate` };
+  if (!sameActor(actor, last.actor)) {
+    return { to: actor, reason: tries(last.actor) >= 2 ? `two attempts by ${last.actor} did not finish; moving to the next alternate` : `${last.actor} is no longer routed to build it; moving to the next alternate` };
+  }
   if (last.outcome === "failed") return { to: actor, reason: `a failed finish; retrying ${actor} with the failing output` };
   return { to: actor, reason: `released without a commit; re-dispatching to ${actor}` };
 }

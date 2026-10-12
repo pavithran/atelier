@@ -25,16 +25,10 @@ import { COMMAND_MODULES } from "./usage/commands/index.ts";
 // is not well formed, when this module loads, and commandCapabilities
 // refuses a command that requires a name no declaration publishes.
 //
-// Migration: until every server publishes capabilities, a server that
-// reports only routeLevel is read through `level` on the declarations: level
-// N guarantees exactly the capabilities declared with level <= N, which is
-// the documented guarantee of each raise (the integration routes at 6, in
-// the commits named there, and each raise from 14 on below), and nothing
-// else. A capability with no level (one added after this migration) is not
-// guaranteed by any legacy level, so a legacy server is refused for it.
-// ROUTE_LEVEL and its merge arithmetic (atelier land) stay until no
-// supported server reports a level without capabilities; docs/landing.md
-// says when.
+// Legacy compatibility is frozen at ROUTE_LEVEL. Existing declarations keep
+// their historical levels; new capabilities omit level and require an explicit
+// name in /api/version. Levels above the frozen boundary (including metadata
+// from queued tasks) never establish support on a legacy server.
 export type CapabilityDeclaration = { name: string; summary: string; level?: number };
 
 const CAPABILITY_NAME = /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+\.v[1-9][0-9]*$/;
@@ -50,8 +44,7 @@ export function buildCapabilities<const T extends readonly CapabilityDeclaration
   return Object.freeze(declarations);
 }
 
-// Add one declaration with the level the change raises ROUTE_LEVEL to
-// during migration, or level: undefined afterward. Keep names as literal
+// Add one declaration without a level for each new capability. Keep names as literal
 // types so undeclared requirements also fail typechecking.
 // Level 6 guarantees both sides of integration: plans.integration.v1 for
 // integrators and plans.refresh.v1 for owners (32d5755 and 933d198).
@@ -100,13 +93,16 @@ export const COMMAND_CAPABILITIES: Readonly<Record<string, readonly string[]>> =
 // after the command names a subcommand that declares some, that
 // subcommand's. `atelier models` lists the pool on any server; `atelier
 // models note` needs models.note.v1.
-// new declares area support, but only requires it when --area is supplied.
+// new declares area support, but only requires it when --area is supplied;
+// models add declares the standing (t389), but only requires it with
+// --state, --roles or --tier.
 export function requiredForCommand(command: string, word?: string, flags: Readonly<Record<string, unknown>> = {}): string[] {
   const d = DECLARED[command];
   if (!d) return [];
   const sub = word !== undefined && Object.hasOwn(d.subcommands, word) ? d.subcommands[word] : [];
   return [...new Set([...d.own, ...sub])].filter((name) =>
-    command !== "new" || name !== "areas.manage.v1" || flags.area !== undefined,
+    (command !== "new" || name !== "areas.manage.v1" || flags.area !== undefined) &&
+    (command !== "models" || word !== "add" || name !== "models.standing.v1" || ["state", "roles", "tier"].some((f) => flags[f] !== undefined)),
   );
 }
 
@@ -116,22 +112,25 @@ export function requiredForCommand(command: string, word?: string, flags: Readon
 // carries the criteria; the review job posts the binding, keeps an
 // unparsable reply and reports a review it will not serve as the job's
 // actor (reviews.skip.v1, reviews.skip-as-runner.v1); the integrate and
-// refresh jobs post the integration routes (plans.integration.v1).
+// refresh jobs post the integration routes (plans.integration.v1). Every
+// job but the review reports one it gives up to run-skip (runners.run-skip.v1,
+// t420); the queue's why poll, which the same capability names, is only
+// read for the idle message, so the review job does not require it.
 export const JOB_CAPABILITIES: Readonly<Record<string, readonly CapabilityName[]>> = {
-  build: ["projects.commit-identity.v1", "items.brief-criteria.v1", "runners.scoped-token.v1"],
-  plan: ["projects.commit-identity.v1", "items.brief-criteria.v1", "runners.scoped-token.v1"],
-  "merge-main": ["projects.commit-identity.v1", "runners.scoped-token.v1"],
-  "merge-main-task": ["projects.commit-identity.v1", "runners.scoped-token.v1"],
-  "merge-plan": ["projects.commit-identity.v1", "runners.scoped-token.v1"],
-  review: ["projects.commit-identity.v1", "reviews.criteria-binding.v1", "reviews.lease.v1", "reviews.unparsable.v1", "reviews.skip.v1", "reviews.skip-as-runner.v1", "runners.scoped-token.v1"],
-  integrate: ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1"],
-  refresh: ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1"],
+  build: ["projects.commit-identity.v1", "items.brief-criteria.v1", "runners.scoped-token.v1", "runners.run-skip.v1"],
+  plan: ["projects.commit-identity.v1", "items.brief-criteria.v1", "runners.scoped-token.v1", "runners.run-skip.v1"],
+  "merge-main": ["projects.commit-identity.v1", "runners.scoped-token.v1", "runners.run-skip.v1"],
+  "merge-main-task": ["projects.commit-identity.v1", "runners.scoped-token.v1", "runners.run-skip.v1"],
+  "merge-plan": ["projects.commit-identity.v1", "runners.scoped-token.v1", "runners.run-skip.v1"],
+  review: ["reviews.post-merge.v1", "projects.commit-identity.v1", "reviews.criteria-binding.v1", "reviews.lease.v1", "reviews.unparsable.v1", "reviews.skip.v1", "reviews.skip-as-runner.v1", "runners.scoped-token.v1"],
+  integrate: ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1", "runners.run-skip.v1"],
+  refresh: ["projects.commit-identity.v1", "plans.integration.v1", "runners.scoped-token.v1", "runners.run-skip.v1"],
 };
 
 export const requiredForJobs = (jobs: readonly string[]): string[] => [...new Set(jobs.flatMap((job) => JOB_CAPABILITIES[job] ?? []))];
 
 // The capabilities a legacy route level guarantees, and no more.
-export const capabilitiesForLevel = (level: number): string[] => CAPABILITIES.filter((c) => c.level !== undefined && c.level <= level).map((c) => c.name);
+export const capabilitiesForLevel = (level: number): string[] => (CAPABILITIES as readonly CapabilityDeclaration[]).filter((c) => c.level !== undefined && c.level <= ROUTE_LEVEL && c.level <= level).map((c) => c.name);
 
 export type CapabilityFailure = "unavailable" | "malformed" | "missing" | "unmapped";
 export type CapabilityCheck = { ok: true; via: "capabilities" | "legacy" } | { ok: false; kind: CapabilityFailure; missing: string[]; message: string };
@@ -163,57 +162,12 @@ export function checkCapabilities(version: unknown, required: readonly string[])
   }
   const missing = required.filter((n) => !have.has(n));
   if (!missing.length) return { ok: true, via };
-  const unmapped = via === "legacy" ? missing.filter((n) => !CAPABILITIES.some((c) => c.name === n && c.level !== undefined)) : [];
+  const unmapped = via === "legacy" ? missing.filter((n) => !capabilitiesForLevel(ROUTE_LEVEL).includes(n)) : [];
   const what = via === "legacy" ? `reports only route level ${v.routeLevel}, which guarantees ${[...have].join(", ") || "none"}` : `publishes ${[...have].join(", ") || "none"}`;
   return fail(unmapped.length ? "unmapped" : "missing", missing, `the server (${revision}) lacks capabilities ${missing.join(", ")}: it ${what}. ${remedy}`);
 }
 
-// The server's route level, one integer the server and the CLI share by
-// importing this module. GET /api/version reports it beside the deployed
-// commit, and a CLI from before capabilities (above) refuses when the
-// server's level is lower than its own, since it may be calling a route the
-// server does not have, or one whose meaning the server has changed. Raise
-// it by one, and only then, when a change makes the CLI start calling a
-// route the server did not have, or changes the meaning of an existing route
-// the CLI relies on; a merge that changes neither changes nothing here,
-// whatever commit it moves to. Two tasks that each raise it from one base
-// merge cleanly to the number they share; atelier land, wherever the
-// workspace's HEAD holds main — its own merge or a rerun of one resolved
-// by hand — compares this file at the task's fork point, its head and
-// main's head, and raises the merged level to main's plus the task's own
-// raise for legacy files. With named declarations, landing instead refuses
-// automatic arithmetic until the builder resolves the legacy mappings.
-// The number still gates legacy clients: each raise declares the capability
-// it stands for in src/capability-declarations.ts with its guaranteed level;
-// test/capabilities.test.mjs fails a raise that declares none, or a
-// declaration with a level this number has not reached. 14: the
-// landing-workflow routes, behind atelier land --workflow (t280). 15: items
-// take a brief and acceptance criteria apart from the short title, and edit
-// takes a title (t315). 16: a review names the binding of the acceptance
-// criteria it judged and may name the request it claimed, the review claim
-// gives both, and edit says what a change of criteria withdrew (t326).
-// 17: the review-unparsable route, which the runner's review job calls to
-// keep a reply no verdict could be read from on the task (t407).
-// 18: the owner keeps dated notes under a pool model, atelier models note
-// (t406).
-// 19: a project that requires criteria refuses a task filed or cleared
-// without them, and init takes --require-criteria (t397).
-// 20: runner-scoped API credentials and revocable Git gateway (t444).
-// 21: a runner reports a review it will not serve to review-skip, the
-// queue's review tasks and the review request's answer name the request's
-// number, and the landing counts skips by it (t353). 22: a runner token
-// posts review-skip for a review job it was offered, under the job's actor,
-// as the runner has done since runner tokens (t444); a server at 21 refused
-// it, so a runner's skip never reached the landing (t353).
-// 23: function areas, task assignments and the shared board snapshot (t456).
-// 24: a project's policy carries its commit identity, which every claim,
-// runner and landing reads, and init takes commitName, commitEmail,
-// agentEmails, privateEmails and publicMirrors (t451).
-// 25: the owner admits, withdraws and lists outside reviewers (PUT, DELETE
-// and GET /projects/:p/reviewers), which an older server answers 404 (t492).
-
-// 26: review-renew and five-minute leases; release and verdicts name the
-// exact request generation, and expired requests are reoffered (t351).
-// 27: durable owner-approved post-merge steps and recovery (t477,
-// land.post-merge.v1).
-export const ROUTE_LEVEL = 27;
+// Frozen at main's level when capability-only additions began (t522).
+// Published only for old clients; new routes declare a capability without
+// raising this number. Keep historical declaration levels for old servers.
+export const ROUTE_LEVEL = 28;
