@@ -1,5 +1,6 @@
 // atelier finish. Its forms, flags and help are declared in src/usage/commands/finish.ts.
-import { I, actor, args, call, checkInSandbox, cliState, die, doneChecks, git, itemArg, project, requireWorkspace, summaryArg } from "../atelier.mjs";
+import { I, actor, args, call, checkInSandbox, cliState, die, doneChecks, git, itemArg, project, request, requireWorkspace, summaryArg } from "../atelier.mjs";
+import { workspaceNotice } from "../review-notice.mjs";
 import checkCommand from "./check.mjs";
 import pushCommand from "./push.mjs";
 import submitCommand from "./submit.mjs";
@@ -12,6 +13,10 @@ export default async function finishCommand() {
   if (d.item.owner !== as || !["claimed","submitted"].includes(d.item.state)) die("this task must be live and owned by you");
   if (git(["status","--porcelain"])) die("commit your changes before finishing");
   const head = git(["rev-parse","HEAD"]);
+  // Advisory: failure to read the baseline must not prevent push or checks.
+  const baseline = await request("POST", `${I(name,id)}/base-token`, { scope: "read" }, as).catch(() => undefined);
+  const notice = workspaceNotice(git, process.cwd(), d.policy, { baseline, part: d.item.kind === "part" });
+  if (notice) console.log(notice.join("\n"));
   doneChecks.length = 0;
   if (cliState.doneStep) cliState.doneStep = "push";
   await pushCommand();
