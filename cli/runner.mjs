@@ -2130,7 +2130,29 @@ export function runOutcome(state) {
 // is logged and the loop goes on.
 // `reportRunSkip(body, runner, signal)` says a build or plan job is given up
 // under its dispatch, kept and tried again as a review skip is (reportSkip).
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, version, idleWhy, api, now = Date.now, limitFile }) {
+// How often a busy runner renews its last poll (t537): the index rewrites
+// an unchanged offer at most once a minute (askQueue), well inside the
+// RUNNER_GONE_MS after which a claim's runner counts as gone.
+export const HEARTBEAT_MS = 60_000;
+
+// Runs a job while `beat` renews the runner's last poll every `intervalMs`,
+// one beat in flight at a time. A beat that fails is said once per job and
+// does not fail the job; with no `beat` (a CLI without it) the job runs alone.
+export async function withHeartbeat(job, beat, { intervalMs = HEARTBEAT_MS, log = () => {}, stopped = () => false } = {}) {
+  if (!beat) return job();
+  let beating = false, said = false;
+  const timer = setInterval(async () => {
+    if (beating || stopped()) return;
+    beating = true;
+    try { await beat(); }
+    catch (error) { if (!said && !stopped()) { said = true; log(`heartbeat failed: ${error.message}`); } }
+    finally { beating = false; }
+  }, intervalMs);
+  timer.unref?.();
+  try { return await job(); } finally { clearInterval(timer); }
+}
+
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, version, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
@@ -2457,15 +2479,18 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // carrying "review" for the review job, "integrate" for the
           // integrate job and "refresh" for the refresh job
           // (docs/orchestrator.md, sections 2, 4 and 5); anything else is building.
-          state = task.item.dispatch?.job === "plan"
-            ? await runPlanTask(task, config, offer.runner, io)
+          // Polls stop while the job runs, so a heartbeat renews this
+          // runner's last poll meanwhile (t537): without it a build longer
+          // than RUNNER_GONE_MS would orphan its own claim.
+          state = await withHeartbeat(() => task.item.dispatch?.job === "plan"
+            ? runPlanTask(task, config, offer.runner, io)
             : task.item.dispatch?.job === "review"
-              ? await runReview(task, config, offer.runner, io)
+              ? runReview(task, config, offer.runner, io)
               : task.item.dispatch?.job === "integrate"
-                ? await runIntegrate(task, config, offer.runner, io)
+                ? runIntegrate(task, config, offer.runner, io)
                 : task.item.dispatch?.job === "refresh"
-                  ? await runRefresh(task, config, offer.runner, io)
-                  : await runTask(task, config, offer.runner, io);
+                  ? runRefresh(task, config, offer.runner, io)
+                  : runTask(task, config, offer.runner, io), heartbeat && (() => heartbeat(offer, controller.signal)), { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
           if (controller.signal.aborted) break;
           if (state.providerLimit) {
             pauseHarness(task, state);
