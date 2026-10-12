@@ -1,10 +1,10 @@
 {
   "generatedBy": "scripts/design/capture.ts",
-  "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+  "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
   "sourceDirty": false,
   "browser": {
     "name": "chromium",
-    "version": "149.0.7827.55",
+    "version": "156.0.8078.4",
     "playwrightCore": "1.61.1"
   },
   "fixture": {
@@ -69,9 +69,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 4009,
+      "height": 3944,
       "filename": "public-showcase-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -80,7 +80,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -107,9 +107,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 5170,
+      "height": 5210,
       "filename": "public-showcase-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -118,7 +118,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -145,9 +145,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 16009,
+      "height": 17884,
       "filename": "public-how-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -156,7 +156,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -183,9 +183,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 25156,
+      "height": 28154,
       "filename": "public-how-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -194,7 +194,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -221,9 +221,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 900,
+      "height": 968,
       "filename": "public-owner-route-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -232,7 +232,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -258,9 +258,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 1009,
+      "height": 947,
       "filename": "public-owner-route-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -269,7 +269,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -288,7 +288,7 @@
       "state": "Sign-in over the anonymised backdrop",
       "path": "/login",
       "url": "https://atelier.test/login",
-      "audience": "access",
+      "audience": "token",
       "status": 200,
       "viewport": {
         "width": 1440,
@@ -297,7 +297,7 @@
       "colorScheme": "light",
       "height": 954,
       "filename": "signin-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -306,7 +306,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -326,7 +326,7 @@
       "state": "Sign-in over the anonymised backdrop",
       "path": "/login",
       "url": "https://atelier.test/login",
-      "audience": "access",
+      "audience": "token",
       "status": 200,
       "viewport": {
         "width": 390,
@@ -335,7 +335,7 @@
       "colorScheme": "light",
       "height": 963,
       "filename": "signin-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -344,7 +344,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -371,9 +371,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 1905,
+      "height": 2049,
       "filename": "home-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -382,7 +382,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -394,7 +394,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -409,9 +409,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 4281,
+      "height": 4480,
       "filename": "home-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -420,7 +420,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -432,7 +432,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -447,9 +447,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 10291,
+      "height": 5435,
       "filename": "decisions-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -458,7 +458,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -471,7 +471,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -486,9 +486,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2436,
+      "height": 2791,
       "filename": "decisions-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -497,7 +497,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -510,7 +510,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -525,9 +525,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 10291,
+      "height": 5435,
       "filename": "decisions-sent-back-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -536,7 +536,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -549,7 +549,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -564,9 +564,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2724,
+      "height": 3064,
       "filename": "decisions-sent-back-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -575,7 +575,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -588,7 +588,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -603,9 +603,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 10291,
+      "height": 5435,
       "filename": "decisions-blocked-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -614,7 +614,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -627,7 +627,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -642,9 +642,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2420,
+      "height": 2736,
       "filename": "decisions-blocked-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -653,7 +653,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -666,7 +666,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -681,9 +681,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 6000,
+      "height": 6068,
       "filename": "studio-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -692,7 +692,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -719,9 +719,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 9807,
+      "height": 9745,
       "filename": "studio-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -730,7 +730,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -757,9 +757,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 10136,
+      "height": 10714,
       "filename": "flow-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -768,7 +768,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -796,9 +796,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 9961,
+      "height": 9997,
       "filename": "flow-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -807,7 +807,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -835,9 +835,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 1929,
+      "height": 1952,
       "filename": "flow-filtered-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -846,7 +846,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -874,9 +874,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 3026,
+      "height": 3062,
       "filename": "flow-filtered-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -885,7 +885,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -913,9 +913,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 18829,
+      "height": 18867,
       "filename": "history-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -924,7 +924,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -951,9 +951,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 33125,
+      "height": 33043,
       "filename": "history-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -962,7 +962,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -989,9 +989,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2886,
+      "height": 3241,
       "filename": "models-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1000,7 +1000,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1027,9 +1027,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 4970,
+      "height": 5420,
       "filename": "models-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1038,7 +1038,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1065,9 +1065,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2336,
+      "height": 2404,
       "filename": "usage-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1076,7 +1076,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1103,9 +1103,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 4316,
+      "height": 4214,
       "filename": "usage-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1114,7 +1114,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1141,9 +1141,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 22708,
+      "height": 21293,
       "filename": "project-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1152,7 +1152,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1164,7 +1164,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -1179,9 +1179,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 118613,
+      "height": 114423,
       "filename": "project-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1190,7 +1190,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1202,7 +1202,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -1217,9 +1217,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 900,
+      "height": 1026,
       "filename": "project-empty-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1228,7 +1228,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1240,7 +1240,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -1255,9 +1255,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 1009,
+      "height": 1030,
       "filename": "project-empty-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1266,7 +1266,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1278,7 +1278,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -1293,9 +1293,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 900,
+      "height": 968,
       "filename": "project-unavailable-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1304,7 +1304,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1313,9 +1313,10 @@
         ],
         "fonts": [
           "Bricolage Grotesque",
+          "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 3
+        "external": 4
       }
     },
     {
@@ -1330,9 +1331,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 1009,
+      "height": 947,
       "filename": "project-unavailable-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1341,7 +1342,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1350,9 +1351,10 @@
         ],
         "fonts": [
           "Bricolage Grotesque",
+          "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 3
+        "external": 4
       }
     },
     {
@@ -1367,9 +1369,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 19476,
+      "height": 19556,
       "filename": "tasks-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1378,7 +1380,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1387,9 +1389,10 @@
         ],
         "fonts": [
           "Bricolage Grotesque",
+          "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 3
+        "external": 4
       }
     },
     {
@@ -1404,9 +1407,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 111277,
+      "height": 111210,
       "filename": "tasks-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1415,7 +1418,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1424,9 +1427,10 @@
         ],
         "fonts": [
           "Bricolage Grotesque",
+          "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 3
+        "external": 4
       }
     },
     {
@@ -1441,9 +1445,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 900,
+      "height": 1026,
       "filename": "tasks-empty-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1452,7 +1456,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1461,9 +1465,10 @@
         ],
         "fonts": [
           "Bricolage Grotesque",
+          "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 3
+        "external": 4
       }
     },
     {
@@ -1478,9 +1483,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 1009,
+      "height": 1030,
       "filename": "tasks-empty-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1489,7 +1494,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1498,9 +1503,10 @@
         ],
         "fonts": [
           "Bricolage Grotesque",
+          "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 3
+        "external": 4
       }
     },
     {
@@ -1515,9 +1521,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 6359,
+      "height": 6438,
       "filename": "project-flow-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1526,7 +1532,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1539,7 +1545,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -1554,9 +1560,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 5879,
+      "height": 5831,
       "filename": "project-flow-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1565,7 +1571,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1578,7 +1584,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -1593,9 +1599,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 900,
+      "height": 1026,
       "filename": "plans-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1604,7 +1610,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1616,7 +1622,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -1631,9 +1637,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 1009,
+      "height": 1030,
       "filename": "plans-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1642,7 +1648,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1654,7 +1660,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -1669,9 +1675,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 900,
+      "height": 1026,
       "filename": "ship-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1680,7 +1686,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1692,7 +1698,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -1707,9 +1713,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 1009,
+      "height": 1030,
       "filename": "ship-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1718,7 +1724,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1730,7 +1736,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -1745,9 +1751,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 900,
+      "height": 1026,
       "filename": "settings-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1756,7 +1762,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1768,7 +1774,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -1783,9 +1789,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 1039,
+      "height": 1077,
       "filename": "settings-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1794,7 +1800,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1806,7 +1812,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -1821,9 +1827,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 900,
+      "height": 1026,
       "filename": "code-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1832,7 +1838,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1844,7 +1850,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -1859,9 +1865,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 1009,
+      "height": 1030,
       "filename": "code-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1870,7 +1876,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1882,7 +1888,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -1897,9 +1903,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 900,
+      "height": 1026,
       "filename": "code-dir-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1908,7 +1914,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1935,9 +1941,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 1009,
+      "height": 1030,
       "filename": "code-dir-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1946,7 +1952,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1973,9 +1979,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 981,
+      "height": 1026,
       "filename": "code-file-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -1984,7 +1990,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2011,9 +2017,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 1151,
+      "height": 1033,
       "filename": "code-file-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2022,7 +2028,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2049,9 +2055,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 900,
+      "height": 968,
       "filename": "code-no-commits-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2060,7 +2066,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2069,9 +2075,10 @@
         ],
         "fonts": [
           "Bricolage Grotesque",
+          "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 3
+        "external": 4
       }
     },
     {
@@ -2086,9 +2093,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 1009,
+      "height": 947,
       "filename": "code-no-commits-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2097,7 +2104,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2106,9 +2113,10 @@
         ],
         "fonts": [
           "Bricolage Grotesque",
+          "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 3
+        "external": 4
       }
     },
     {
@@ -2123,9 +2131,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2495,
+      "height": 2522,
       "filename": "log-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2134,7 +2142,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2146,7 +2154,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2161,9 +2169,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 4976,
+      "height": 4857,
       "filename": "log-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2172,7 +2180,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2184,7 +2192,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2199,9 +2207,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2495,
+      "height": 2522,
       "filename": "log-page-2-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2210,7 +2218,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2222,7 +2230,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2237,9 +2245,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 4976,
+      "height": 4857,
       "filename": "log-page-2-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2248,7 +2256,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2260,7 +2268,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2275,9 +2283,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 1497,
+      "height": 1531,
       "filename": "commit-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2286,7 +2294,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2298,7 +2306,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2313,9 +2321,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 1687,
+      "height": 1575,
       "filename": "commit-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2324,7 +2332,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2336,7 +2344,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2351,9 +2359,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 1068,
+      "height": 1095,
       "filename": "path-history-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2362,7 +2370,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2389,9 +2397,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 1985,
+      "height": 1867,
       "filename": "path-history-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2400,7 +2408,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2427,9 +2435,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 1246,
+      "height": 1526,
       "filename": "task-open-long-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2438,7 +2446,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2451,7 +2459,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2466,9 +2474,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 1728,
+      "height": 2309,
       "filename": "task-open-long-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2477,7 +2485,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2490,7 +2498,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2505,9 +2513,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2038,
+      "height": 2317,
       "filename": "task-working-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2516,7 +2524,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2529,7 +2537,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2544,9 +2552,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2448,
+      "height": 3006,
       "filename": "task-working-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2555,7 +2563,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2568,7 +2576,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2583,9 +2591,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2038,
+      "height": 2317,
       "filename": "task-stale-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2594,7 +2602,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2607,7 +2615,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2622,9 +2630,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2448,
+      "height": 3006,
       "filename": "task-stale-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2633,7 +2641,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2646,7 +2654,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2661,9 +2669,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2213,
+      "height": 2493,
       "filename": "task-blocked-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2672,7 +2680,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2685,7 +2693,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2700,9 +2708,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2837,
+      "height": 3418,
       "filename": "task-blocked-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2711,7 +2719,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2724,7 +2732,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2739,9 +2747,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2297,
+      "height": 2577,
       "filename": "task-failed-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2750,7 +2758,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2763,7 +2771,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2778,9 +2786,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2808,
+      "height": 3365,
       "filename": "task-failed-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2789,7 +2797,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2802,7 +2810,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2817,9 +2825,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2141,
+      "height": 2402,
       "filename": "task-unreadable-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2828,7 +2836,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2841,7 +2849,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2856,9 +2864,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2749,
+      "height": 3357,
       "filename": "task-unreadable-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2867,7 +2875,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2880,7 +2888,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2895,9 +2903,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2196,
+      "height": 2456,
       "filename": "task-ready-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2906,7 +2914,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2919,7 +2927,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2934,9 +2942,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2794,
+      "height": 3356,
       "filename": "task-ready-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2945,7 +2953,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2958,7 +2966,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2973,9 +2981,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2495,
+      "height": 2884,
       "filename": "task-protected-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -2984,7 +2992,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2997,7 +3005,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -3012,9 +3020,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 3475,
+      "height": 4002,
       "filename": "task-protected-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3023,7 +3031,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3036,7 +3044,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -3051,9 +3059,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2397,
+      "height": 2681,
       "filename": "task-sent-back-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3062,7 +3070,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3075,7 +3083,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -3090,9 +3098,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 3141,
+      "height": 3727,
       "filename": "task-sent-back-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3101,7 +3109,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3114,7 +3122,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -3129,9 +3137,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2220,
+      "height": 2480,
       "filename": "task-accepted-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3140,7 +3148,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3153,7 +3161,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -3168,9 +3176,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2822,
+      "height": 3361,
       "filename": "task-accepted-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3179,7 +3187,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3192,7 +3200,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -3207,9 +3215,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2185,
+      "height": 2446,
       "filename": "task-scope-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3218,7 +3226,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3231,7 +3239,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -3246,9 +3254,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2759,
+      "height": 3321,
       "filename": "task-scope-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3257,7 +3265,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3270,7 +3278,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -3285,9 +3293,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 1730,
+      "height": 2019,
       "filename": "task-merged-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3296,7 +3304,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3309,7 +3317,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -3324,9 +3332,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2122,
+      "height": 2690,
       "filename": "task-merged-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3335,7 +3343,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3348,7 +3356,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -3363,9 +3371,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 1681,
+      "height": 1988,
       "filename": "task-abandoned-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3374,7 +3382,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3387,7 +3395,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -3402,9 +3410,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 1991,
+      "height": 2577,
       "filename": "task-abandoned-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3413,13 +3421,51 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
         "local": [
           "https://atelier.test/p/ledger-core/t157",
           "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "task-not-found",
+      "state": "A task id that does not exist",
+      "path": "/p/ledger-core/t9999",
+      "url": "https://atelier.test/p/ledger-core/t9999",
+      "audience": "owner",
+      "status": 404,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 968,
+      "filename": "task-not-found-1440.png",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
+      "sourceDirty": false,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "156.0.8078.4",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t9999"
         ],
         "fonts": [
           "Bricolage Grotesque",
@@ -3437,50 +3483,13 @@
       "audience": "owner",
       "status": 404,
       "viewport": {
-        "width": 1440,
-        "height": 900
-      },
-      "colorScheme": "light",
-      "height": 900,
-      "filename": "task-not-found-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
-      "fixture": {
-        "file": "test/fixtures/design/seed.ts",
-        "now": "2026-10-10T12:00:00.000Z",
-        "tasks": 310
-      },
-      "browser": {
-        "name": "chromium",
-        "version": "149.0.7827.55",
-        "playwrightCore": "1.61.1"
-      },
-      "assets": {
-        "local": [
-          "https://atelier.test/p/ledger-core/t9999"
-        ],
-        "fonts": [
-          "Bricolage Grotesque",
-          "IBM Plex Sans"
-        ],
-        "external": 3
-      }
-    },
-    {
-      "id": "task-not-found",
-      "state": "A task id that does not exist",
-      "path": "/p/ledger-core/t9999",
-      "url": "https://atelier.test/p/ledger-core/t9999",
-      "audience": "owner",
-      "status": 404,
-      "viewport": {
         "width": 390,
         "height": 844
       },
       "colorScheme": "light",
-      "height": 1009,
+      "height": 947,
       "filename": "task-not-found-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3489,7 +3498,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3498,9 +3507,10 @@
         ],
         "fonts": [
           "Bricolage Grotesque",
+          "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 3
+        "external": 4
       }
     },
     {
@@ -3515,9 +3525,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 900,
+      "height": 1026,
       "filename": "fork-code-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3526,7 +3536,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3553,9 +3563,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 1009,
+      "height": 1030,
       "filename": "fork-code-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3564,7 +3574,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3591,9 +3601,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 900,
+      "height": 968,
       "filename": "fork-none-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3602,7 +3612,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3611,9 +3621,10 @@
         ],
         "fonts": [
           "Bricolage Grotesque",
+          "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 3
+        "external": 4
       }
     },
     {
@@ -3628,9 +3639,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 1009,
+      "height": 947,
       "filename": "fork-none-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3639,7 +3650,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3648,9 +3659,10 @@
         ],
         "fonts": [
           "Bricolage Grotesque",
+          "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 3
+        "external": 4
       }
     },
     {
@@ -3665,9 +3677,9 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 900,
+      "height": 968,
       "filename": "public-showcase-none-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3676,7 +3688,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3702,9 +3714,9 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 1009,
+      "height": 947,
       "filename": "public-showcase-none-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
+      "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
       "sourceDirty": false,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
@@ -3713,7 +3725,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
