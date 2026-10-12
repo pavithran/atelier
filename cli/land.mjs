@@ -11,6 +11,7 @@ import { runCommand } from "./ship.mjs";
 import { COMMAND_CAPABILITIES, checkCapabilities } from "../src/route-level.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed } from "../src/landing-lease.ts";
 import { unoffered } from "../src/dispatch/rules.ts";
+import { prereviewClause } from "../src/dispatch/prereview.ts";
 import { contributorsOf, roleRefusal, sameActor } from "../src/rules.ts";
 import { landingVerdict, allSkipped } from "../src/landing-verdict.ts";
 import { criteriaOf } from "../src/criteria.ts";
@@ -515,11 +516,15 @@ export async function runLand(io) {
       const ahead = aheadOf(waiting);
       if (!current && !ahead.length) return;
       const list = ahead.map((w) => `${w.item} (queued ${since(w)})`).join(", ");
-      const key = `${current?.holder ?? ""} ${current?.item ?? ""} ${current?.at ?? ""}|${list}`;
+      // This landing's own pre-review (t524), as the server's queue row
+      // carries it: said with the wait line, and again whenever it changes.
+      const own = (Array.isArray(waiting) ? waiting : []).find((w) => w?.item === id)?.prereview;
+      const pre = own && typeof own.request === "number" && own.binding ? ` Its ${prereviewClause(own)}.` : "";
+      const key = `${current?.holder ?? ""} ${current?.item ?? ""} ${current?.at ?? ""}|${list}|${pre}`;
       if (key !== shown) {
-        print(current
+        print((current
           ? `Waiting behind ${current.holder}'s landing of ${current.item} (since ${since(current)})${ahead.length ? `, with ${ahead.length} landing${ahead.length === 1 ? "" : "s"} queued ahead of ${id}: ${list}` : ""}; ${id} starts ${ahead.length ? "when its turn comes, in the order the landings queued" : "as soon as the lease is free"}.`
-          : `Waiting for the lease behind ${ahead.length} landing${ahead.length === 1 ? "" : "s"} queued ahead of ${id}: ${list}; ${id} takes the lease when its turn comes, in the order the landings queued.`);
+          : `Waiting for the lease behind ${ahead.length} landing${ahead.length === 1 ? "" : "s"} queued ahead of ${id}: ${list}; ${id} takes the lease when its turn comes, in the order the landings queued.`) + pre);
         shown = key;
       }
       if (Date.now() - queuedSince >= WAIT_TIMEOUT_MS) await timedOut(current, ahead[0] ?? null);
