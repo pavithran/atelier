@@ -301,7 +301,8 @@ Standing rules:
   entry point that the low-level write enforces at run time, tested by
   calling the low-level write directly; never for a test that scans the
   source for paths, which can never prove none is missed (t389 was rejected
-  ten rounds running, each time over a form the scanner missed).
+  ten times, each over a path its checks missed, the last two over owner
+  writes its scanner missed).
 - Before asking for the independent review, read the diff against the
   criteria yourself; it does not count at the gate, but it catches plain misses.
 - Resolve a mechanical merge conflict yourself (both sides adding help text,
