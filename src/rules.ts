@@ -34,8 +34,9 @@ export interface Item {
   dispatch?: Dispatch | null; // set while the task waits for a runner; kept as the record once claimed
   runner?: string | null;     // the runner that holds the claim, if a runner claimed it
   // How many reviews of the item's acceptance criteria reached a verdict or
-  // failed (t438), set on a queued task alone (Ledger.waiting), so its runner
-  // fetches the server's brief, which carries their findings, before it builds.
+  // failed (t438), set on every build item the queue offers (Ledger.waiting
+  // and Ledger.heldJobs), so the server's brief, which carries their
+  // findings, is known to hold something before the build starts.
   criteriaReviews?: number;
   reviewOverride?: ReviewOverride | null; // the owner's latest override; it counts only at the head it names
   // The owner's standing permission for an override from the command line

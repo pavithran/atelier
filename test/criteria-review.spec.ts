@@ -209,6 +209,8 @@ it("a rejection waits for the owner's resolutions; a failed or lapsed review app
   await L.dispatch(id, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
   expect((await L.waiting()).map((i) => i.criteriaReviews)).toEqual([4]);
   await L.claim(id, OPUS, RUNNER);
+  // Held after a crash, the claim the queue offers back carries the count too.
+  expect((await L.heldJobs(RUNNER.runner)).map((i) => [i.id, i.criteriaReviews])).toEqual([[id, 4]]);
   const brief = await L.jobBrief(id, OPUS);
   expect(brief.job).toBe("build");
   expect(brief.text).toContain("## Review of the acceptance criteria");
@@ -216,6 +218,45 @@ it("a rejection waits for the owner's resolutions; a failed or lapsed review app
   expect(brief.text).toContain("finding 2: follow-up criterion-1 Say which search. [no resolution recorded]");
   expect(brief.text).toContain("reached no verdict (harness timed out)");
   expect(brief.text).toContain(`Criteria review ${claim4.request}, revision 1 (the criteria as they are now): ${GPT} approved.`);
+});
+
+// The queue attaches the criteria reviews' count to every build item it
+// offers (t438), so no build starts without the findings, the owner's
+// resolutions and the deferred checks its brief carries: a task waiting on
+// its dispatch, the claim a crashed runner takes back (heldJobs), the task
+// dispatched again with an attempt committed, and a merge-main job.
+it("every build item the queue offers carries its criteria reviews: waiting, held after a crash, dispatched again and a merge-main job", async () => {
+  const L = await setup("criteria-every-offer");
+  const { id } = await L.newItem("Faster search", ["src/**"], "owner", { accept: ["Search answers within 200 ms"] });
+  const offered = async () => ({
+    waiting: (await L.waiting()).map((i) => [i.id, i.state, i.dispatch?.job ?? "build", i.criteriaReviews]),
+    held: (await L.heldJobs(RUNNER.runner)).map((i) => [i.id, i.state, i.dispatch?.job ?? "build", i.criteriaReviews]),
+  });
+  await reviewed(L, id, true);
+  await L.dispatch(id, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
+  expect(await offered()).toEqual({ waiting: [[id, "open", "build", 1]], held: [] });
+  // Claimed, then the runner dies before its first commit: the queue offers
+  // the claim back to that runner, counted, and the brief it fetches carries the review.
+  await L.claim(id, OPUS, RUNNER);
+  expect(await offered()).toEqual({ waiting: [], held: [[id, "claimed", "build", 1]] });
+  expect((await L.jobBrief(id, OPUS)).text).toContain("## Review of the acceptance criteria");
+  // Released with an attempt committed and dispatched again: waiting again, counted.
+  await L.setFork(id, "criteria-every-offer--t1", H0, OPUS);
+  await L.recordPush(id, OPUS, H1, null);
+  await L.release(id, OPUS, "stalled");
+  await L.dispatch(id, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
+  expect(await offered()).toEqual({ waiting: [[id, "open", "build", 1]], held: [] });
+  expect((await L.waiting()).map((i) => [i.head, i.base])).toEqual([[H1, H0]]);
+  // Submitted and landed on a conflict: the merge-main job is counted too,
+  // waiting and once claimed.
+  await L.claim(id, OPUS, RUNNER);
+  await L.submit(id, OPUS);
+  await L.dispatch(id, "owner", { job: "merge-main", head: "5".repeat(40), agent: "claude-code", model: "opus-5.5" });
+  expect(await offered()).toEqual({ waiting: [[id, "open", "merge-main", 1]], held: [] });
+  await L.claim(id, OPUS, RUNNER);
+  expect(await offered()).toEqual({ waiting: [], held: [[id, "claimed", "merge-main", 1]] });
+  // Another runner's poll is offered none of it.
+  expect(await L.heldJobs("home:laptop")).toEqual([]);
 });
 
 it("a plan asks for each part's criteria review before it dispatches the part, of another family than the planner who wrote them, and holds a queued part whose criteria change", async () => {

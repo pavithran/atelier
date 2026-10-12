@@ -2155,14 +2155,7 @@ export class Ledger extends DurableObject<Env> {
 
   private dispatchWaiting(pushHistory = false): Waiting[] {
     const rows = this.sql.exec(`SELECT * FROM items WHERE state = 'open' AND (owner IS NULL OR owner = '') AND dispatch IS NOT NULL AND dispatch != '' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
-    const open = (rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)) : [])
-      // A task whose criteria were reviewed carries how many findings the
-      // reviews recorded (t438), so its runner fetches the server's brief,
-      // which carries them, before it builds.
-      .map((i) => {
-        const findings = this.sql.exec(`SELECT COUNT(*) AS n FROM criteria_reviews WHERE item = ? AND state IN ('approved', 'rejected', 'failed')`, i.id).one().n as number;
-        return findings ? { ...i, criteriaReviews: findings } : i;
-      });
+    const open = this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)) : []);
     const project = this.project(), policy = project.policy, projectName = project.name, lease = this.projectLanding(), now = Date.now(), runners = this.runnerPolls();
     const live = open.length && policy.coreFiles?.length ? this.sql.exec(`SELECT * FROM items WHERE state = 'claimed' OR id = ? ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`, lease?.item ?? "").toArray().map(toItem) : [];
     const all = policy.refuseOverlap || [...open, ...live].some((i) => i.deps?.length) ? this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem) : [...open, ...live];
@@ -2314,9 +2307,22 @@ export class Ledger extends DurableObject<Env> {
   // itself stays as it was: only the asking runner matches, compared without
   // case as claim() compares it.
   heldJobs(runner: string): Item[] {
-    return this.items()
+    return this.withCriteriaReviews(this.items()
       .filter((i) => i.state === "claimed" && i.dispatch && (i.runner ?? "").toLowerCase() === runner.toLowerCase())
-      .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at));
+      .sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)));
+  }
+
+  // Every build item the queue offers, waiting or held, carries how many
+  // reviews of its criteria reached a verdict or failed (t438), so the
+  // runner that starts it, fresh or after a crash, knows the server's brief
+  // holds their findings, the owner's resolutions and the checks deferred to
+  // after deploy. The runner fetches that brief before every build anyway;
+  // the count is for a runner from before it, and for the queue's readers.
+  private withCriteriaReviews<T extends Item>(items: T[]): T[] {
+    return items.map((i) => {
+      const findings = this.sql.exec(`SELECT COUNT(*) AS n FROM criteria_reviews WHERE item = ? AND state IN ('approved', 'rejected', 'failed')`, i.id).one().n as number;
+      return findings ? { ...i, criteriaReviews: findings } : i;
+    });
   }
 
   // Restore only the reservation that changed ownership. A late fork failure
