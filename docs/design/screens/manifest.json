@@ -1,10 +1,10 @@
 {
   "generatedBy": "scripts/design/capture.ts",
-  "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-  "sourceDirty": false,
+  "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+  "sourceDirty": true,
   "browser": {
     "name": "chromium",
-    "version": "149.0.7827.55",
+    "version": "156.0.8078.4",
     "playwrightCore": "1.61.1"
   },
   "fixture": {
@@ -69,10 +69,10 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 4009,
+      "height": 3850,
       "filename": "public-showcase-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -80,7 +80,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -107,10 +107,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 5170,
+      "height": 5878,
       "filename": "public-showcase-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -118,7 +118,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -145,10 +145,10 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 16009,
+      "height": 17892,
       "filename": "public-how-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -156,7 +156,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -183,10 +183,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 25156,
+      "height": 28177,
       "filename": "public-how-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -194,7 +194,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -223,8 +223,8 @@
       "colorScheme": "light",
       "height": 900,
       "filename": "public-owner-route-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -232,7 +232,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -260,8 +260,8 @@
       "colorScheme": "light",
       "height": 1009,
       "filename": "public-owner-route-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -269,7 +269,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -288,17 +288,17 @@
       "state": "Sign-in over the anonymised backdrop",
       "path": "/login",
       "url": "https://atelier.test/login",
-      "audience": "access",
+      "audience": "token",
       "status": 200,
       "viewport": {
         "width": 1440,
         "height": 900
       },
       "colorScheme": "light",
-      "height": 954,
+      "height": 962,
       "filename": "signin-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -306,7 +306,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -326,17 +326,17 @@
       "state": "Sign-in over the anonymised backdrop",
       "path": "/login",
       "url": "https://atelier.test/login",
-      "audience": "access",
+      "audience": "token",
       "status": 200,
       "viewport": {
         "width": 390,
         "height": 844
       },
       "colorScheme": "light",
-      "height": 963,
+      "height": 985,
       "filename": "signin-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -344,7 +344,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -371,10 +371,10 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 1905,
+      "height": 1981,
       "filename": "home-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -382,7 +382,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -409,10 +409,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 4281,
+      "height": 4542,
       "filename": "home-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -420,7 +420,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -447,10 +447,10 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 10291,
+      "height": 5566,
       "filename": "decisions-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -458,7 +458,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -486,10 +486,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2436,
+      "height": 2835,
       "filename": "decisions-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -497,7 +497,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -525,10 +525,10 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 10291,
+      "height": 5566,
       "filename": "decisions-sent-back-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -536,7 +536,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -564,10 +564,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2724,
+      "height": 3107,
       "filename": "decisions-sent-back-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -575,7 +575,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -603,10 +603,10 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 10291,
+      "height": 5566,
       "filename": "decisions-blocked-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -614,7 +614,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -642,10 +642,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2420,
+      "height": 2779,
       "filename": "decisions-blocked-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -653,7 +653,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -683,8 +683,8 @@
       "colorScheme": "light",
       "height": 6000,
       "filename": "studio-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -692,7 +692,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -721,8 +721,8 @@
       "colorScheme": "light",
       "height": 9807,
       "filename": "studio-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -730,7 +730,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -757,10 +757,10 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 10136,
+      "height": 10172,
       "filename": "flow-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -768,7 +768,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -796,10 +796,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 9961,
+      "height": 10040,
       "filename": "flow-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -807,7 +807,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -835,10 +835,10 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 1929,
+      "height": 1965,
       "filename": "flow-filtered-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -846,7 +846,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -874,10 +874,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 3026,
+      "height": 3105,
       "filename": "flow-filtered-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -885,7 +885,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -913,10 +913,10 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 18829,
+      "height": 18799,
       "filename": "history-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -924,7 +924,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -951,10 +951,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 33125,
+      "height": 33105,
       "filename": "history-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -962,7 +962,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -989,10 +989,10 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2886,
+      "height": 3173,
       "filename": "models-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1000,7 +1000,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1027,10 +1027,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 4970,
+      "height": 5522,
       "filename": "models-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1038,7 +1038,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1067,8 +1067,8 @@
       "colorScheme": "light",
       "height": 2336,
       "filename": "usage-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1076,7 +1076,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1105,8 +1105,8 @@
       "colorScheme": "light",
       "height": 4316,
       "filename": "usage-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1114,7 +1114,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1141,10 +1141,10 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 22708,
+      "height": 21213,
       "filename": "project-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1152,7 +1152,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1179,10 +1179,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 118613,
+      "height": 114489,
       "filename": "project-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1190,7 +1190,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1219,8 +1219,8 @@
       "colorScheme": "light",
       "height": 900,
       "filename": "project-empty-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1228,7 +1228,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1257,8 +1257,8 @@
       "colorScheme": "light",
       "height": 1009,
       "filename": "project-empty-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1266,7 +1266,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1295,8 +1295,8 @@
       "colorScheme": "light",
       "height": 900,
       "filename": "project-unavailable-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1304,7 +1304,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1332,8 +1332,8 @@
       "colorScheme": "light",
       "height": 1009,
       "filename": "project-unavailable-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1341,7 +1341,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1369,8 +1369,8 @@
       "colorScheme": "light",
       "height": 19476,
       "filename": "tasks-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1378,7 +1378,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1406,8 +1406,8 @@
       "colorScheme": "light",
       "height": 111277,
       "filename": "tasks-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1415,7 +1415,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1443,8 +1443,8 @@
       "colorScheme": "light",
       "height": 900,
       "filename": "tasks-empty-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1452,7 +1452,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1480,8 +1480,8 @@
       "colorScheme": "light",
       "height": 1009,
       "filename": "tasks-empty-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1489,7 +1489,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1517,8 +1517,8 @@
       "colorScheme": "light",
       "height": 6359,
       "filename": "project-flow-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1526,7 +1526,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1556,8 +1556,8 @@
       "colorScheme": "light",
       "height": 5879,
       "filename": "project-flow-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1565,7 +1565,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1595,8 +1595,8 @@
       "colorScheme": "light",
       "height": 900,
       "filename": "plans-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1604,7 +1604,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1633,8 +1633,8 @@
       "colorScheme": "light",
       "height": 1009,
       "filename": "plans-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1642,7 +1642,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1671,8 +1671,8 @@
       "colorScheme": "light",
       "height": 900,
       "filename": "ship-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1680,7 +1680,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1709,8 +1709,8 @@
       "colorScheme": "light",
       "height": 1009,
       "filename": "ship-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1718,7 +1718,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1747,8 +1747,8 @@
       "colorScheme": "light",
       "height": 900,
       "filename": "settings-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1756,7 +1756,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1783,10 +1783,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 1039,
+      "height": 1143,
       "filename": "settings-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1794,7 +1794,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1823,8 +1823,8 @@
       "colorScheme": "light",
       "height": 900,
       "filename": "code-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1832,7 +1832,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1861,8 +1861,8 @@
       "colorScheme": "light",
       "height": 1009,
       "filename": "code-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1870,7 +1870,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1899,8 +1899,8 @@
       "colorScheme": "light",
       "height": 900,
       "filename": "code-dir-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1908,7 +1908,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1937,8 +1937,8 @@
       "colorScheme": "light",
       "height": 1009,
       "filename": "code-dir-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1946,7 +1946,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -1975,8 +1975,8 @@
       "colorScheme": "light",
       "height": 981,
       "filename": "code-file-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -1984,7 +1984,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2013,8 +2013,8 @@
       "colorScheme": "light",
       "height": 1151,
       "filename": "code-file-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2022,7 +2022,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2051,8 +2051,8 @@
       "colorScheme": "light",
       "height": 900,
       "filename": "code-no-commits-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2060,7 +2060,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2088,8 +2088,8 @@
       "colorScheme": "light",
       "height": 1009,
       "filename": "code-no-commits-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2097,7 +2097,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2125,8 +2125,8 @@
       "colorScheme": "light",
       "height": 2495,
       "filename": "log-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2134,7 +2134,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2163,8 +2163,8 @@
       "colorScheme": "light",
       "height": 4976,
       "filename": "log-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2172,7 +2172,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2201,8 +2201,8 @@
       "colorScheme": "light",
       "height": 2495,
       "filename": "log-page-2-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2210,7 +2210,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2239,8 +2239,8 @@
       "colorScheme": "light",
       "height": 4976,
       "filename": "log-page-2-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2248,7 +2248,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2277,8 +2277,8 @@
       "colorScheme": "light",
       "height": 1497,
       "filename": "commit-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2286,7 +2286,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2315,8 +2315,8 @@
       "colorScheme": "light",
       "height": 1687,
       "filename": "commit-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2324,7 +2324,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2353,8 +2353,8 @@
       "colorScheme": "light",
       "height": 1068,
       "filename": "path-history-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2362,7 +2362,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2391,8 +2391,8 @@
       "colorScheme": "light",
       "height": 1985,
       "filename": "path-history-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2400,7 +2400,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2427,10 +2427,10 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 1246,
+      "height": 1498,
       "filename": "task-open-long-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2438,7 +2438,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2451,7 +2451,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2466,10 +2466,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 1728,
+      "height": 2408,
       "filename": "task-open-long-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2477,7 +2477,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2490,7 +2490,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2505,10 +2505,10 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2038,
+      "height": 2290,
       "filename": "task-working-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2516,7 +2516,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2529,7 +2529,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2544,10 +2544,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2448,
+      "height": 3106,
       "filename": "task-working-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2555,7 +2555,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2568,7 +2568,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2583,10 +2583,10 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2038,
+      "height": 2290,
       "filename": "task-stale-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2594,7 +2594,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2607,7 +2607,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2622,10 +2622,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2448,
+      "height": 3106,
       "filename": "task-stale-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2633,7 +2633,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2646,7 +2646,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2661,10 +2661,10 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2213,
+      "height": 2465,
       "filename": "task-blocked-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2672,7 +2672,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2685,7 +2685,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2700,10 +2700,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2837,
+      "height": 3517,
       "filename": "task-blocked-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2711,7 +2711,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2724,7 +2724,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2739,10 +2739,10 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2297,
+      "height": 2549,
       "filename": "task-failed-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2750,7 +2750,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2763,7 +2763,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2778,10 +2778,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2808,
+      "height": 3465,
       "filename": "task-failed-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2789,7 +2789,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2802,7 +2802,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2817,10 +2817,10 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2141,
+      "height": 2374,
       "filename": "task-unreadable-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2828,7 +2828,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2841,7 +2841,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2856,10 +2856,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2749,
+      "height": 3457,
       "filename": "task-unreadable-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2867,7 +2867,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2880,7 +2880,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2895,10 +2895,10 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2196,
+      "height": 2429,
       "filename": "task-ready-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2906,7 +2906,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2919,7 +2919,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2934,10 +2934,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2794,
+      "height": 3456,
       "filename": "task-ready-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2945,7 +2945,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2958,7 +2958,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -2973,10 +2973,10 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2495,
+      "height": 2856,
       "filename": "task-protected-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -2984,7 +2984,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -2997,7 +2997,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -3012,10 +3012,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 3475,
+      "height": 4101,
       "filename": "task-protected-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -3023,7 +3023,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3036,7 +3036,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -3051,10 +3051,10 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2397,
+      "height": 2653,
       "filename": "task-sent-back-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -3062,7 +3062,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3075,7 +3075,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -3090,10 +3090,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 3141,
+      "height": 3827,
       "filename": "task-sent-back-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -3101,7 +3101,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3114,7 +3114,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -3129,10 +3129,10 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2220,
+      "height": 2453,
       "filename": "task-accepted-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -3140,7 +3140,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3153,7 +3153,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -3168,10 +3168,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2822,
+      "height": 3461,
       "filename": "task-accepted-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -3179,7 +3179,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3192,7 +3192,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -3207,10 +3207,10 @@
         "height": 900
       },
       "colorScheme": "light",
-      "height": 2185,
+      "height": 2418,
       "filename": "task-scope-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -3218,7 +3218,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3231,7 +3231,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -3246,10 +3246,10 @@
         "height": 844
       },
       "colorScheme": "light",
-      "height": 2759,
+      "height": 3421,
       "filename": "task-scope-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -3257,7 +3257,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3270,7 +3270,7 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
       }
     },
     {
@@ -3283,129 +3283,12 @@
       "viewport": {
         "width": 1440,
         "height": 900
-      },
-      "colorScheme": "light",
-      "height": 1730,
-      "filename": "task-merged-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
-      "fixture": {
-        "file": "test/fixtures/design/seed.ts",
-        "now": "2026-10-10T12:00:00.000Z",
-        "tasks": 310
-      },
-      "browser": {
-        "name": "chromium",
-        "version": "149.0.7827.55",
-        "playwrightCore": "1.61.1"
-      },
-      "assets": {
-        "local": [
-          "https://atelier.test/p/ledger-core/t1",
-          "https://atelier.test/live.js"
-        ],
-        "fonts": [
-          "Bricolage Grotesque",
-          "IBM Plex Mono",
-          "IBM Plex Sans"
-        ],
-        "external": 4
-      }
-    },
-    {
-      "id": "task-merged",
-      "state": "Merged, diff as it landed",
-      "path": "/p/ledger-core/t1",
-      "url": "https://atelier.test/p/ledger-core/t1",
-      "audience": "owner",
-      "status": 200,
-      "viewport": {
-        "width": 390,
-        "height": 844
-      },
-      "colorScheme": "light",
-      "height": 2122,
-      "filename": "task-merged-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
-      "fixture": {
-        "file": "test/fixtures/design/seed.ts",
-        "now": "2026-10-10T12:00:00.000Z",
-        "tasks": 310
-      },
-      "browser": {
-        "name": "chromium",
-        "version": "149.0.7827.55",
-        "playwrightCore": "1.61.1"
-      },
-      "assets": {
-        "local": [
-          "https://atelier.test/p/ledger-core/t1",
-          "https://atelier.test/live.js"
-        ],
-        "fonts": [
-          "Bricolage Grotesque",
-          "IBM Plex Mono",
-          "IBM Plex Sans"
-        ],
-        "external": 4
-      }
-    },
-    {
-      "id": "task-abandoned",
-      "state": "Closed without merging",
-      "path": "/p/ledger-core/t157",
-      "url": "https://atelier.test/p/ledger-core/t157",
-      "audience": "owner",
-      "status": 200,
-      "viewport": {
-        "width": 1440,
-        "height": 900
-      },
-      "colorScheme": "light",
-      "height": 1681,
-      "filename": "task-abandoned-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
-      "fixture": {
-        "file": "test/fixtures/design/seed.ts",
-        "now": "2026-10-10T12:00:00.000Z",
-        "tasks": 310
-      },
-      "browser": {
-        "name": "chromium",
-        "version": "149.0.7827.55",
-        "playwrightCore": "1.61.1"
-      },
-      "assets": {
-        "local": [
-          "https://atelier.test/p/ledger-core/t157",
-          "https://atelier.test/live.js"
-        ],
-        "fonts": [
-          "Bricolage Grotesque",
-          "IBM Plex Mono",
-          "IBM Plex Sans"
-        ],
-        "external": 4
-      }
-    },
-    {
-      "id": "task-abandoned",
-      "state": "Closed without merging",
-      "path": "/p/ledger-core/t157",
-      "url": "https://atelier.test/p/ledger-core/t157",
-      "audience": "owner",
-      "status": 200,
-      "viewport": {
-        "width": 390,
-        "height": 844
       },
       "colorScheme": "light",
       "height": 1991,
-      "filename": "task-abandoned-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "filename": "task-merged-1440.png",
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -3413,7 +3296,85 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t1",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "task-merged",
+      "state": "Merged, diff as it landed",
+      "path": "/p/ledger-core/t1",
+      "url": "https://atelier.test/p/ledger-core/t1",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 2789,
+      "filename": "task-merged-390.png",
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "156.0.8078.4",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t1",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
+      }
+    },
+    {
+      "id": "task-abandoned",
+      "state": "Closed without merging",
+      "path": "/p/ledger-core/t157",
+      "url": "https://atelier.test/p/ledger-core/t157",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "colorScheme": "light",
+      "height": 1961,
+      "filename": "task-abandoned-1440.png",
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3426,7 +3387,46 @@
           "IBM Plex Mono",
           "IBM Plex Sans"
         ],
-        "external": 4
+        "external": 5
+      }
+    },
+    {
+      "id": "task-abandoned",
+      "state": "Closed without merging",
+      "path": "/p/ledger-core/t157",
+      "url": "https://atelier.test/p/ledger-core/t157",
+      "audience": "owner",
+      "status": 200,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "colorScheme": "light",
+      "height": 2677,
+      "filename": "task-abandoned-390.png",
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
+      "fixture": {
+        "file": "test/fixtures/design/seed.ts",
+        "now": "2026-10-10T12:00:00.000Z",
+        "tasks": 310
+      },
+      "browser": {
+        "name": "chromium",
+        "version": "156.0.8078.4",
+        "playwrightCore": "1.61.1"
+      },
+      "assets": {
+        "local": [
+          "https://atelier.test/p/ledger-core/t157",
+          "https://atelier.test/live.js"
+        ],
+        "fonts": [
+          "Bricolage Grotesque",
+          "IBM Plex Mono",
+          "IBM Plex Sans"
+        ],
+        "external": 5
       }
     },
     {
@@ -3443,8 +3443,8 @@
       "colorScheme": "light",
       "height": 900,
       "filename": "task-not-found-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -3452,7 +3452,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3480,8 +3480,8 @@
       "colorScheme": "light",
       "height": 1009,
       "filename": "task-not-found-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -3489,7 +3489,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3517,8 +3517,8 @@
       "colorScheme": "light",
       "height": 900,
       "filename": "fork-code-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -3526,7 +3526,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3555,8 +3555,8 @@
       "colorScheme": "light",
       "height": 1009,
       "filename": "fork-code-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -3564,7 +3564,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3593,8 +3593,8 @@
       "colorScheme": "light",
       "height": 900,
       "filename": "fork-none-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -3602,7 +3602,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3630,8 +3630,8 @@
       "colorScheme": "light",
       "height": 1009,
       "filename": "fork-none-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -3639,7 +3639,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3667,8 +3667,8 @@
       "colorScheme": "light",
       "height": 900,
       "filename": "public-showcase-none-1440.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -3676,7 +3676,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
@@ -3704,8 +3704,8 @@
       "colorScheme": "light",
       "height": 1009,
       "filename": "public-showcase-none-390.png",
-      "source": "c2915e353e5a529f116fa258b9aad8e891f787e4",
-      "sourceDirty": false,
+      "source": "50992d8c4864396f98fb53eb06a9fc61f5993993",
+      "sourceDirty": true,
       "fixture": {
         "file": "test/fixtures/design/seed.ts",
         "now": "2026-10-10T12:00:00.000Z",
@@ -3713,7 +3713,7 @@
       },
       "browser": {
         "name": "chromium",
-        "version": "149.0.7827.55",
+        "version": "156.0.8078.4",
         "playwrightCore": "1.61.1"
       },
       "assets": {
