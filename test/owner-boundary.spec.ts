@@ -43,6 +43,9 @@ it("raw ownership writes are refused for variables, spreads and computed keys, e
     ]) expect(() => sql.exec(statement, ACTOR, id)).toThrow(/requires assignOwner/);
     expect(() => sql.exec("UPDATE items SET claim_gen = claim_gen + 1 WHERE id = ?", id)).toThrow(/requires assignOwner/);
     expect(() => sql.exec("INSERT INTO items (id,title,scope,state,owner,created_at,updated_at) VALUES ('injected','x','[]','claimed',?,?,?)", ACTOR, AT, AT)).toThrow(/requires assignOwner/);
+    // Reserving a generation without an owner must not bypass the insert guard.
+    expect(() => sql.exec("INSERT INTO items (id,title,scope,state,claim_gen,created_at,updated_at) VALUES ('reserved','x','[]','open',1,?,?)", AT, AT)).toThrow(/requires assignOwner/);
+    expect(sql.exec("SELECT owner, claim_gen FROM items WHERE id = ?", id).one()).toMatchObject({ owner: null, claim_gen: 0 });
     expect(sql.exec("SELECT * FROM owner_assignment").toArray()).toEqual([]);
     raw.update(id, { owner: null }, AT); // Clearing an unowned task is harmless.
   });
@@ -69,6 +72,7 @@ it("the checked boundary itself refuses held models and closes its gate after SQ
     }
     raw.poolChanged([model]);
     expect(() => raw.assignOwner(id, ACTOR, { nonexistent_column: "failure" }, AT, true)).toThrow();
+    expect(state.storage.sql.exec("SELECT owner, claim_gen FROM items WHERE id = ?", id).one()).toMatchObject({ owner: null, claim_gen: 0 });
     expect(state.storage.sql.exec("SELECT * FROM owner_assignment").toArray()).toEqual([]);
     expect(() => raw.update(id, { owner: ACTOR }, AT)).toThrow(/require assignOwner/);
     expect(() => state.storage.sql.exec("UPDATE items SET owner = ? WHERE id = ?", ACTOR, id)).toThrow(/requires assignOwner/);

@@ -210,6 +210,10 @@ The steps in between:
    level requirement or renumbering step. The capabilities test pins the
    frozen number and checks independent additions in both merge orders.
 
+   The run skip, `runners.run-skip.v1` (t420), is one such name: every
+   runner job but the review requires it, so a runner refuses a server that
+   reports only a route level and starts on one that publishes the name.
+
 2. Main is fetched into the task's workspace and merged with `--no-ff`. On
    conflicts the landing stops, leaves the merge in the workspace for the
    owner to resolve, and names the files. After resolving and committing,
