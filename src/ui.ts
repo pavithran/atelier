@@ -1438,6 +1438,11 @@ export interface Standing {
   checks: { command: string; class: CheckClass; text: string; paths: string[] | null }[];
   // What this view could not read in full, in words. Empty when it read everything it shows.
   partial: string[];
+  // The sources that failed outright (readStanding): the tasks, so nothing
+  // drawn from them is known, or the notices, so the calls only they show are
+  // not. Absent when both were read. The Overview says each as not read,
+  // never as none.
+  unread?: ("tasks" | "notices")[];
 }
 
 // How many waiting tasks get a brief, how many merges are listed, and how many
@@ -1584,7 +1589,9 @@ function standingMore(p: ProjectRecord, s: Standing): string {
   const group = (title: string, rows: string[]) => rows.length ? `<h3>${e(title)}</h3><ul class="standing-list">${rows.join("")}</ul>` : "";
   const runner = (q: Standing["queued"][number]) => `${q.to}${q.agent ? ` ${q.agent}` : ""}${q.model ? `/${q.model}` : ""}`;
   const overrides = s.overrides ?? [];
-  return `<details class="disclosure standing-more"><summary>${plural(s.queued.length, "task")} queued · <span class="merged-by-override">${plural(overrides.length, "merge")} by override</span> · ${plural(s.handoffs.length, "handoff note")}</summary>
+  const summary = s.unread?.includes("tasks") ? "Atelier's record: its tasks could not be read"
+    : `${plural(s.queued.length, "task")} queued · <span class="merged-by-override">${plural(overrides.length, "merge")} by override</span> · ${plural(s.handoffs.length, "handoff note")}`;
+  return `<details class="disclosure standing-more"><summary>${summary}</summary>
   ${group("Queued for a runner", s.queued.map((q) => `<li>${link(q.id)} <strong>${e(q.title)}</strong><span class="meta">for ${e(runner(q))} · sent by ${e(q.by)} ${e(when(q.at))}${q.note ? ` · ${e(notePreview(q.note))}` : ""}</span></li>`))}
   ${group(`Merged by override: ${plural(overrides.length, "merge")}`, overrides.map((o) => `<li>${link(o.id)} <strong>${e(o.title)}</strong><span class="meta">${e(when(o.at))} · the owner's override, not a review: ${e(o.reason)}</span></li>`))}
   ${group("Handoff notes", s.handoffs.map((h) => `<li>${link(h.id)} <strong>${e(h.title)}</strong><span class="meta">${e(h.from || "?")} to ${e(h.to || "?")}, ${e(when(h.at))}: ${e(h.note)}</span></li>`))}
@@ -1598,11 +1605,19 @@ function standingMore(p: ProjectRecord, s: Standing): string {
 // the owner, who is working, the last five merges and the ship requests,
 // each read from the Ledger and linked to the tasks it names. Without the
 // standing only what the items tell is drawn; nothing is shown as zero
-// that was not read.
-function overviewSection(p: ProjectRecord, items: Item[], inbox: InboxEntry[] | null, s: Standing | undefined, now: Date): string {
+// that was not read. `items` null: the board could not be read, so the task
+// count, the grid and who is running are said as not read, as are the
+// sections the standing's own failed reads leave unknown (s.unread); a
+// source read and empty still says it is empty.
+function overviewSection(p: ProjectRecord, board: Item[] | null, inbox: InboxEntry[] | null, s: Standing | undefined, now: Date): string {
+  const items = board ?? [];
+  const tasksUnread = s?.unread?.includes("tasks") ?? false;
+  const noticesUnread = s?.unread?.includes("notices") ?? false;
+  const unreadLine = (what: string) => `<p class="meta" role="status">${what} could not be read.</p>`;
   const words = stateWords(items, inbox);
   const stale = new Set((inbox ?? []).filter((x) => x.kind === "stale").map((x) => x.itemId));
   const staleWorking = items.filter((i) => words.get(i.id) === "working" && stale.has(i.id)).length;
+  const mergesUnread = s ? tasksUnread : board === null;
   const merged = s?.merged ?? lastMerged(items).map((i) => ({ id: i.id, title: i.title, at: i.updatedAt }));
   const since = new Map((s?.live ?? []).map((l) => [l.id, l.since]));
   const working = items.filter((i) => words.get(i.id) === "working")
@@ -1610,9 +1625,12 @@ function overviewSection(p: ProjectRecord, items: Item[], inbox: InboxEntry[] | 
     .sort((a, b) => (b.push ?? b.since ?? "").localeCompare(a.push ?? a.since ?? ""));
   const waiting = s?.waiting ?? [];
   const ships = waiting.filter((w) => w.call === "ship");
+  // A count over a source that was read only in part carries a question mark,
+  // as Home's does; one over a source not read at all is left out.
+  const waitCount = `${waiting.length}${noticesUnread ? "?" : ""}`;
   const figures = [
-    plural(items.length, "task"),
-    ...s ? [`${waiting.length} waiting on you`] : [],
+    ...board ? [plural(items.length, "task")] : [],
+    ...s && !tasksUnread ? [`${waitCount} waiting on you`] : [],
     ...merged.length ? [`last merge ${ago(merged[0].at, now)}`] : [],
   ].join(" · ");
   const list = (cls: string, rows: string[]) => `<ul class="overview-list ${cls}">${rows.join("")}</ul>`;
@@ -1621,29 +1639,35 @@ function overviewSection(p: ProjectRecord, items: Item[], inbox: InboxEntry[] | 
   const mergeRows = merged.map((m) => `<li>${idLink(p, m.id)}<span class="row-title">${e(m.title)}</span><time class="row-when" datetime="${e(m.at)}">${e(bare(ago(m.at, now)))}</time></li>`);
   const shipRows = ships.map((w) => `<li>${idLink(p, w.id)}<span class="row-title">${e(w.title)}</span><span class="row-why">${e(w.sentence)} <a href="${e(w.href)}">Open Ship</a></span></li>`);
   const waitingSection = s ? `<section class="overview-block" aria-labelledby="wait-h">
-      <h2 id="wait-h">Waiting on you · ${waiting.length}</h2>
-      ${waitRows.length ? list("wait-list", waitRows) : '<p class="empty">Nothing waits on you here.</p>'}
+      <h2 id="wait-h">Waiting on you${tasksUnread ? "" : ` · ${waitCount}`}</h2>
+      ${tasksUnread ? unreadLine("What waits on you here")
+        : waitRows.length ? list("wait-list", waitRows)
+        : noticesUnread ? '<p class="meta" role="status">Nothing the tasks show waits on you; the notices could not be read, so a call only they show is not here.</p>'
+        : '<p class="empty">Nothing waits on you here.</p>'}
       ${waiting.length ? `<p class="overview-more"><a href="/decisions">All ${waiting.length} waiting</a></p>` : ""}
     </section>` : "";
   const shipSection = s ? `<section class="overview-block" aria-labelledby="ship-h">
         <h2 id="ship-h">Ship requests</h2>
-        ${shipRows.length ? list("wait-list", shipRows) : `<p class="meta">None pending. Approvals are in <a href="${href("p", p.name, "ship")}">Ship</a>.</p>`}
+        ${shipRows.length ? list("wait-list", shipRows)
+          : tasksUnread || noticesUnread ? `<p class="meta" role="status">The ship requests could not be read. Approvals are in <a href="${href("p", p.name, "ship")}">Ship</a>.</p>`
+          : `<p class="meta">None pending. Approvals are in <a href="${href("p", p.name, "ship")}">Ship</a>.</p>`}
       </section>` : "";
   return `<section class="overview" id="standing" aria-label="Overview">
-  <p class="overview-figures">${e(figures)}</p>
+  ${figures ? `<p class="overview-figures">${e(figures)}</p>` : ""}
   ${s?.partial.length ? `<div class="notice" role="status"><h3>Part of this record is not shown</h3><ul>${s.partial.map((x) => `<li>${e(x)}</li>`).join("")}</ul></div>` : ""}
   ${stateGrid(p, words, staleWorking)}
   <div class="overview-cols">
     ${waitingSection}
     <div class="overview-side">
       <section class="overview-block" aria-labelledby="run-h">
-        <h2 id="run-h">Running · ${working.length}</h2>
-        ${runRows.length ? list("run-list", runRows) : '<p class="empty">Nobody is working on a task.</p>'}
+        <h2 id="run-h">Running${board ? ` · ${working.length}` : ""}</h2>
+        ${!board ? unreadLine("Who is working")
+          : runRows.length ? list("run-list", runRows) : '<p class="empty">Nobody is working on a task.</p>'}
         ${working.length ? `<p class="overview-more"><a href="${tasksIn(p, "working")}">All ${working.length} working</a></p>` : ""}
       </section>
       <section class="overview-block" aria-labelledby="merge-h">
         <h2 id="merge-h">Last five merges</h2>
-        ${mergeRows.length ? list("merge-list", mergeRows) : '<p class="empty">Nothing merged yet.</p>'}
+        ${mergeRows.length ? list("merge-list", mergeRows) : mergesUnread ? unreadLine("The merges") : '<p class="empty">Nothing merged yet.</p>'}
         <p class="overview-more"><a href="${href("p", p.name, "flow")}">Activity</a></p>
       </section>
       ${shipSection}
@@ -1761,11 +1785,11 @@ const newTaskForm = (p: ProjectRecord) => `<details class="new-task"><summary>+ 
 // which the page says rather than showing an empty record or no tasks.
 // `inbox` holds the project's notices, which split a submitted task by its
 // state word; null when they could not be read.
-export function renderProject(p: ProjectRecord, items: Item[], events: LedgerEvent[] | null, ownerName: string | null = null, standing?: Standing, board?: BoardSnapshot | null, inbox: InboxEntry[] | null = null, now = standing ? new Date(standing.generatedAt) : new Date()): string {
+export function renderProject(p: ProjectRecord, items: Item[] | null, events: LedgerEvent[] | null, ownerName: string | null = null, standing?: Standing, board?: BoardSnapshot | null, inbox: InboxEntry[] | null = null, now = standing ? new Date(standing.generatedAt) : new Date()): string {
   const unread = (what: string) => `<p class="notice" role="status">${what} could not be read.</p>`;
   return projectPage(p, "Overview", `
   ${board === null ? unread("The task board") : ""}
-  ${overviewSection(p, items, inbox, standing, now)}
+  ${overviewSection(p, board === null ? null : items, inbox, standing, now)}
   <details class="disclosure"><summary>Ledger events</summary>${events ? eventTable(events, true) : unread("The project's events")}</details>
   `, ownerName);
 }

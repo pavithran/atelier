@@ -140,3 +140,59 @@ it("Decisions' resting panel says the list may be incomplete, naming the project
   expect(read.slice(read.indexOf('class="resting-graph"'))).toContain("Nothing is waiting on you.");
   expect(read).not.toContain("may be incomplete");
 });
+
+// The tier review of t546 (codex/gpt-6-astra at 2393474a): a board that
+// failed to read was drawn as an empty one, "0 tasks", "Running · 0" and
+// "Nobody is working", and a standing whose tasks failed as "Nothing waits on
+// you here" and "None pending". Not read is said as not read; read and empty
+// still says empty.
+const overviewOf = (page: string) => page.split('id="standing"')[1].split('<details class="disclosure')[0];
+const emptyClaims = ["Nothing waits on you here", "None pending", "Nobody is working", "Nothing merged yet"];
+
+it("the Overview says what it could not read as not read, with no zero counts and no empty-state claims", async () => {
+  const s = await readStanding(source("alpha", ["items", "inbox"]), OFFERS, [], 300, NOW);
+  expect(s.unread).toEqual(["tasks", "notices"]);
+  const page = renderProject(record("alpha"), null, null, "PAVI", s, null);
+  const sec = overviewOf(page);
+  expect(sec).toContain("What waits on you here could not be read.");
+  expect(sec).toContain("Who is working could not be read.");
+  expect(sec).toContain("The merges could not be read.");
+  expect(sec).toContain("The ship requests could not be read.");
+  for (const claim of emptyClaims) expect(sec).not.toContain(claim);
+  expect(sec).not.toMatch(/· 0\b|\b0 tasks?\b|\b0 waiting/);
+  expect(sec).toContain('<h2 id="wait-h">Waiting on you</h2>');
+  expect(sec).toContain('<h2 id="run-h">Running</h2>');
+  // The record under the fold counts nothing from the tasks it did not read.
+  expect(page).not.toContain("0 tasks queued");
+  expect(page).toContain("Atelier's record: its tasks could not be read");
+});
+
+it("the Overview whose board alone failed says who is working as not read, and keeps what the standing read", async () => {
+  const s = await readStanding(source("alpha", []), OFFERS, [], 300, NOW);
+  const sec = overviewOf(renderProject(record("alpha"), null, [], "PAVI", s, null));
+  expect(sec).toContain("Who is working could not be read.");
+  expect(sec).not.toContain("Nobody is working");
+  expect(sec).not.toMatch(/\b0 tasks?\b|Running · /);
+  expect(sec).toContain(`Waiting on you · ${s.waiting.length}`);
+});
+
+it("the Overview of a project read in full and empty still says it is empty", async () => {
+  const empty: StandingSource = {
+    project: () => Promise.resolve(record("alpha")),
+    items: () => Promise.resolve([]),
+    inbox: () => Promise.resolve([]),
+    events: () => Promise.resolve([]),
+    detail: () => Promise.reject(new Error("none")),
+    sessions: () => Promise.resolve([]),
+  };
+  const s = await readStanding(empty, OFFERS, [], 300, NOW);
+  expect(s.unread).toBeUndefined();
+  const page = renderProject(record("alpha"), [], [], "PAVI", s, { items: [] } as never, []);
+  const sec = overviewOf(page);
+  for (const claim of emptyClaims) expect(sec).toContain(claim);
+  expect(sec).toContain("Waiting on you · 0");
+  expect(sec).toContain("Running · 0");
+  expect(sec).toContain("0 tasks");
+  expect(sec).not.toContain("could not be read");
+  expect(page).toContain("0 tasks queued");
+});
