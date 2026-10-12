@@ -413,7 +413,7 @@ test("the runner sends structured limit releases with its credential directly to
   });
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, `https://atelier.test/api/projects/atelier/items/${build.item.id}/release`);
-  assert.equal(requests[0].options.headers.authorization, "Bearer runner-credential");
+  assert.equal(requests[0].options.headers.authorization, `Bearer ${"runner-credential"}`);
   assert.equal(requests[0].options.headers["x-atelier-actor"], build.actor);
   assert.equal(requests[0].body.providerLimit, true);
   assert.match(requests[0].body.note, /usage limit until/);
