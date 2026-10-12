@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { offerFrom, orderJobs, runPrereview } from "../cli/runner.mjs";
 import {
-  bindingDrift, bindingKey, blocks, isPrereviewRequest, outcomeNote, parseOutcomeNote, parsePrereviewReport, prereviewBrief, prereviewCandidates,
+  bindingDrift, bindingKey, blocks, isPrereviewRequest, verdictContradiction, outcomeNote, parseOutcomeNote, parsePrereviewReport, prereviewBrief, prereviewCandidates,
   prereviewEnvelope, prereviewRecovery, prereviewRequest, relevantTests, PREREVIEW_DEPTH, PREREVIEW_REQUEST_BASE,
 } from "../src/dispatch/prereview.ts";
 import { LANDING_LEASE_EXPIRY_MS } from "../src/landing-lease.ts";
@@ -64,6 +64,13 @@ test("a verdict's envelope is checked, and a rejection or a blocking finding blo
   assert.equal(blocks(true, [{ ...findings[0], severity: "follow-up" }]), false);
   assert.equal(blocks(true, findings), true);
   assert.equal(blocks(false, []), true);
+  // A verdict whose word and findings disagree is a contradiction the ledger
+  // records as malformed, whatever client posted it.
+  assert.match(verdictContradiction(false, []), /rejects but names no blocking finding/);
+  assert.match(verdictContradiction(false, [{ ...findings[0], severity: "follow-up" }]), /rejects but names no blocking finding/);
+  assert.match(verdictContradiction(true, findings), /approves but names a blocking finding/);
+  assert.equal(verdictContradiction(false, findings), null);
+  assert.equal(verdictContradiction(true, []), null);
 });
 
 test("an outcome note keeps conflicts and failed preparations apart, fits a release note, and reads plain text as a runner failure", () => {
@@ -274,4 +281,18 @@ test("a claim that binds the task's gate review instead is served as that review
   const release = calls.find((c) => c.argv?.[0] === "review-release")?.argv;
   assert.equal(argOf(release, "--request"), "41");
   assert.ok(!calls.some((c) => c.argv?.[0] === "review" && argOf(c.argv, "--findings")?.includes("prereview")));
+});
+
+test("a baseline that moved since the claim is reported stale before any reviewer runs", async (t) => {
+  const r = repos(t);
+  const claim = prereviewClaim(r);
+  claim.prereview.binding.main = SHA("e");
+  const { io, calls } = fixture(r, { claim });
+  const state = await runPrereview(assignment(r.head), config, "home:studio", io);
+  assert.deepEqual([state.phase, state.outcome], ["prereviewed", "stale"]);
+  const note = parseOutcomeNote(argOf(calls.find((c) => c.argv?.[0] === "review-release").argv, "--note"));
+  assert.equal(note.outcome, "stale");
+  assert.match(note.detail, /main moved from eeeeeeee/);
+  assert.ok(!calls.some((c) => c.harness), "no harness for a tree of another main");
+  assert.ok(!calls.some((c) => c.argv?.[0] === "review"));
 });

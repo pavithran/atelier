@@ -27,8 +27,8 @@ import { notificationRequest, usageAlertRequest } from "./notify.ts";
 import { assign, assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, coreHold, coreBlockers, blockerChains, holdGraph, CORE_HOLD_WARNING_MS, describe, holdText, makeDispatch, overrideDispatch, retainDispatch, liveOffers, OFFER_REFRESH_MS, overlapRefusal, sameRevision, type ClaimRefusal, type CoreHold, type Dispatch, type OverlapRefusal, type RunnerKind, type RunnerOffer, type RunSkip, type RunSkipKind, type SeenOffer } from "./dispatch/rules";
 import { allSkipped } from "./landing-verdict";
 import {
-  askedOf, bindingDrift, bindingKey, blocks, fenceText, isPrereviewRequest, normalContributors, parseOutcomeNote, parsePrereviewReport, prereviewCandidates, prereviewId, prereviewRecovery, prereviewRequest, retryable,
-  PREREVIEW_ATTEMPTS, PREREVIEW_JOB, PREREVIEW_RETRY_MS,
+  askedOf, bindingDrift, bindingKey, blocks, fenceText, isPrereviewRequest, normalContributors, parseOutcomeNote, parsePrereviewReport, prereviewCandidates, verdictContradiction, prereviewId, prereviewRecovery, prereviewRequest, retryable,
+  PREREVIEW_ATTEMPTS, PREREVIEW_DEPTH, PREREVIEW_JOB, PREREVIEW_RETRY_MS,
   type OutcomeNote, type PrereviewBinding, type PrereviewClaim, type PrereviewFence, type PrereviewOutcome, type PrereviewState, type PrereviewView,
 } from "./dispatch/prereview.ts";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
@@ -2180,7 +2180,7 @@ export class Ledger extends DurableObject<Env> {
   // form on the task page, which only the signed-in owner reaches; "api" is
   // the owner token, as the orchestrator and the CLI use it. The reliability
   // record (src/models/reliability.ts) counts the two apart.
-  addReview(r: Review, origin?: string, proved = false, via?: "page" | "api"): void {
+  addReview(r: Review & { mainNow?: string | null }, origin?: string, proved = false, via?: "page" | "api"): void {
     // A verdict under a pre-review's number is pre-review evidence (t524),
     // recorded apart: it never reaches the reviews the gate reads.
     if (isPrereviewRequest(r.request)) return this.prereviewVerdict(r, proved);
@@ -3136,11 +3136,44 @@ export class Ledger extends DurableObject<Env> {
     return { head: item.head ?? "", criteria: criteriaOf(item), contributors: normalContributors(contributorsOf(item)), generation: this.mergeGeneration(), main: null, tree: null };
   }
 
+  // A claimed request is bound to main's head as read at its claim, so main
+  // seen elsewhere since (a later claim, a merge, the Worker's reads) at
+  // another head makes it stale too.
   private prereviewDrift(row: Row): string | null {
     const asked = JSON.parse(row.binding as string) as PrereviewBinding;
     let item: Item;
     try { item = this.item(row.item as string); } catch { return "the task is gone"; }
-    return bindingDrift(asked, this.prereviewBinding(item));
+    const main = this.mainHead();
+    return bindingDrift(asked, this.prereviewBinding(item))
+      ?? (asked.main && main && asked.main !== main ? `main moved from ${asked.main.slice(0, 8)} to ${main.slice(0, 8)} since the claim` : null);
+  }
+
+  // Why a pending pre-review of `id` may not be offered to a runner or
+  // claimed now, or null when it may: its task must still be one of the
+  // next PREREVIEW_DEPTH live waiters behind a live lease. The queue read
+  // here is pruned of waiters whose landing stopped asking, gave up or
+  // closed, so a waiter that expired is not eligible even when no landing
+  // call has swept since. `gone` is true when the waiter left the queue or
+  // took the lease, so its request ends; a waiter that is only out of reach
+  // for now (no live lease, or more than PREREVIEW_DEPTH ahead of it) keeps
+  // its request for when it is back in reach.
+  private prereviewIneligible(id: string, now: number): { gone: boolean; holds: boolean; why: string } | null {
+    const at = new Date(now).toISOString();
+    const lease = this.projectLanding();
+    const leaseLive = !!lease && this.landingLive(lease, at);
+    if (lease && leaseLive && lease.item === id) return { gone: true, holds: true, why: `${id} holds the landing lease` };
+    const queue = this.projectLandingQueue();
+    if (!queue.some((w) => w.item === id)) return { gone: true, holds: false, why: `${id} left the landing queue: its landing stopped asking, gave up its place, or the task closed` };
+    if (prereviewCandidates(lease, leaseLive, queue, now).some((w) => w.item === id)) return null;
+    return { gone: false, holds: false, why: leaseLive ? `${id} is not among the next ${PREREVIEW_DEPTH} landings behind the lease` : "no landing holds a live lease" };
+  }
+
+  // Ends the pending pre-reviews of a waiter that is gone, as the sweep
+  // (prereviewTick) would: detached when its task took the lease, withdrawn
+  // when it left the queue.
+  private retirePrereview(row: Row, why: { holds: boolean; why: string }, at: string): void {
+    if (why.holds) this.detachPrereviews(row.item as string, at);
+    else this.settlePrereview(row, "withdrawn", { detail: why.why }, ORCHESTRATOR, at);
   }
 
   // Ends a pre-review in `state`, recording what settled it on the row and
@@ -3186,14 +3219,23 @@ export class Ledger extends DurableObject<Env> {
   // Open pre-reviews, as the queue offers them to runners: after the gate's
   // review requests, and none for a task a gate request is open for, so a
   // pre-review never takes a runner a gate review is waiting on.
+  // Each is offered only while its waiter is still eligible
+  // (prereviewIneligible), judged now rather than at the last sweep; one
+  // whose waiter is gone is ended here.
   private prereviewWaiting(): (Item & { request: number })[] {
     const rows = this.sql.exec(`SELECT * FROM prereviews WHERE state = 'open' AND dispatch IS NOT NULL ORDER BY id`).toArray();
+    const now = Date.now();
     return rows.flatMap((r) => {
       const id = r.item as string;
       if (this.sql.exec(`SELECT id FROM review_requests WHERE item = ? AND state = 'open' LIMIT 1`, id).toArray().length) return [];
       let item: Item;
       try { item = this.item(id); } catch { return []; }
       if (item.state === "merged" || item.state === "abandoned") return [];
+      const ineligible = this.prereviewIneligible(id, now);
+      if (ineligible) {
+        if (ineligible.gone) this.retirePrereview(r, ineligible, new Date(now).toISOString());
+        return [];
+      }
       const binding = JSON.parse(r.binding as string) as PrereviewBinding;
       return [{ ...item, head: binding.head, request: prereviewRequest(r.id as number), dispatch: JSON.parse(r.dispatch as string) as Dispatch }];
     });
@@ -3219,7 +3261,12 @@ export class Ledger extends DurableObject<Env> {
   // model the dispatch named, and the binding still the task's. The answer
   // is a review claim with `prereview` set and no need, so the claim route
   // hands the runner its read tokens for the task's head and for main.
-  private bindPrereview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved: boolean, row: Row): ReviewClaim {
+  // The claim also binds the request to main's head as the Worker read it
+  // from the baseline (`main`); a claim made where it could not be read is
+  // refused, and the request stays open. A waiter no longer eligible
+  // (prereviewIneligible) is refused too, so an expired waiter never takes a
+  // reviewer however long since a landing call swept.
+  private bindPrereview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved: boolean, row: Row, main: string | null): ReviewClaim {
     const policy = this.project().policy;
     const item = this.item(itemId);
     const admission = reviewerAdmission(actor, policy);
@@ -3235,17 +3282,24 @@ export class Ledger extends DurableObject<Env> {
     const dispatch = JSON.parse(row.dispatch as string) as Dispatch;
     if (!runner) throw new RuleError("dispatched", `${itemId}'s pre-review waits for a runner to claim it`, 409);
     if (dispatch.to !== "any" && dispatch.to !== runner.kind) throw new RuleError("wrong_runner", `${itemId}'s pre-review is for a ${dispatch.to} runner, not ${runner.runner}`, 403);
-    const at = new Date().toISOString();
+    const now = Date.now(), at = new Date(now).toISOString();
+    const ineligible = this.prereviewIneligible(itemId, now);
+    if (ineligible) {
+      if (ineligible.gone) this.retirePrereview(row, ineligible, at);
+      throw new RuleError("not_eligible", `${itemId}'s pre-review ${prereviewRequest(row.id as number)} cannot be claimed: ${ineligible.why}`, 409);
+    }
+    if (!main || !/^[a-f0-9]{40,64}$/.test(main)) throw new RuleError("main_unread", `main's head could not be read from the baseline, so ${itemId}'s pre-review cannot be bound to it; claim it again`, 503);
+    this.setMainHead(main, at);
     const drift = this.prereviewDrift(row);
     if (drift) {
       this.settlePrereview(row, "stale", { outcome: "stale", detail: drift }, ORCHESTRATOR, at);
       throw new RuleError("stale_request", `${itemId}'s pre-review ${prereviewRequest(row.id as number)} is stale: ${drift}`, 409);
     }
-    const bound = this.sql.exec(`UPDATE prereviews SET state = 'claimed', claimedBy = ?, runner = ?, claimedAt = ? WHERE id = ? AND state = 'open' RETURNING id`, actor, runner.runner, at, row.id).toArray();
+    const binding: PrereviewBinding = { ...JSON.parse(row.binding as string) as PrereviewBinding, main };
+    const bound = this.sql.exec(`UPDATE prereviews SET state = 'claimed', claimedBy = ?, runner = ?, claimedAt = ?, binding = ? WHERE id = ? AND state = 'open' RETURNING id`, actor, runner.runner, at, JSON.stringify(binding), row.id).toArray();
     if (!bound.length) throw new RuleError("no_review", `${itemId} has no open pre-review request`, 409);
-    const binding = JSON.parse(row.binding as string) as PrereviewBinding;
     const request = prereviewRequest(row.id as number);
-    this.log(itemId, actor, "prereview.claimed", { request, head: binding.head, runner: runner.runner, criteria: binding.criteria }, at, proved);
+    this.log(itemId, actor, "prereview.claimed", { request, head: binding.head, main, runner: runner.runner, criteria: binding.criteria }, at, proved);
     return {
       item, head: binding.head, need: null, plan: null, events: [], owner: this.owner, reviewBar: policy.reviewBar ?? null,
       singleFamily: singleFamily(policy), tier: false, decisions: standingDecisions(this.decisionStore),
@@ -3309,7 +3363,7 @@ export class Ledger extends DurableObject<Env> {
   // fences its re-entry and hands the findings to its builder, all in one
   // transaction. A task that took the lease meanwhile keeps the result as
   // evidence only. Nothing touches reviews, review requests or acceptance.
-  private prereviewVerdict(r: Review, proved: boolean): void {
+  private prereviewVerdict(r: Review & { mainNow?: string | null }, proved: boolean): void {
     if (!validActor(r.by)) throw new RuleError("bad_actor", `"${r.by}" is not harness/model`, 400);
     assertLength(r.note, NOTE_MAX, "the pre-review note");
     const admission = reviewerAdmission(r.by, this.project().policy);
@@ -3329,19 +3383,31 @@ export class Ledger extends DurableObject<Env> {
       this.log(itemId, by, "prereview.stale", { request, head: r.head, reason: `the pre-review was no longer ${by}'s claim (${row.state}) when its verdict came, so the verdict changes nothing` }, at, proved);
       return;
     }
+    // The verdict is checked here whatever client posted it: an envelope
+    // that does not parse, or a verdict whose word and findings disagree
+    // (verdictContradiction), is malformed and fences nothing.
     const parsed = parsePrereviewReport(r.findings);
-    if (!parsed.ok) {
-      this.settlePrereview(row, "unavailable", { outcome: "malformed", detail: parsed.error, by }, by, at, proved, { retryAt: at });
+    const contradiction = parsed.ok ? verdictContradiction(r.approve, parsed.report.findings) : null;
+    if (!parsed.ok || contradiction) {
+      this.settlePrereview(row, "unavailable", { outcome: "malformed", detail: parsed.ok ? contradiction : parsed.error, by }, by, at, proved, { retryAt: at });
       return;
     }
     const asked = JSON.parse(row.binding as string) as PrereviewBinding;
     const binding: PrereviewBinding = { ...asked, main: parsed.report.main, tree: parsed.report.tree };
     const verdict = r.approve ? "approve" : "reject";
     const result = { verdict, note: r.note, findings: parsed.report.findings, by };
+    // Main's head as the Worker read it from the baseline for this verdict:
+    // the tree must have been prepared from it, and from the head the claim
+    // was bound to, or main moved under the result (by a merge, or by a push
+    // that records none, as atelier sync makes) and it is stale.
+    const mainNow = r.mainNow && /^[a-f0-9]{40,64}$/.test(r.mainNow) ? r.mainNow : null;
+    if (mainNow) this.setMainHead(mainNow, at);
     const drift = bindingDrift(asked, this.prereviewBinding(item))
       ?? (r.head !== asked.head ? `the verdict names ${r.head.slice(0, 8)}, not the request's ${asked.head.slice(0, 8)}` : null)
       ?? (r.criteria !== asked.criteria ? "the verdict names other acceptance criteria than the request's" : null)
-      ?? (asked.main && asked.main !== binding.main ? `the verdict merged main at ${binding.main!.slice(0, 8)}, not ${asked.main.slice(0, 8)}` : null);
+      ?? (asked.main && asked.main !== binding.main ? `the verdict merged main at ${binding.main!.slice(0, 8)}, not ${asked.main.slice(0, 8)} the claim was bound to` : null)
+      ?? (!mainNow ? "main's head could not be read from the baseline when the verdict came, so the verdict cannot be shown to be of main as it is" : null)
+      ?? (mainNow !== binding.main ? `main moved to ${mainNow!.slice(0, 8)} since the tree was prepared from ${binding.main!.slice(0, 8)}` : null);
     if (drift) {
       this.settlePrereview(row, "stale", { ...result, outcome: "stale", detail: drift }, by, at, proved, { binding });
       return;
@@ -3365,7 +3431,7 @@ export class Ledger extends DurableObject<Env> {
       this.setProjectLandingQueue(this.projectLandingQueue().filter((w) => w.item !== itemId));
       const delivery = this.deliverPrereviewRework(item, at);
       const fence: PrereviewFence = {
-        request, head: asked.head, reviewer: by, at, blocking: Math.max(1, parsed.report.findings.filter((f) => f.severity === "blocking").length),
+        request, head: asked.head, reviewer: by, at, blocking: parsed.report.findings.filter((f) => f.severity === "blocking").length,
         builder: delivery.builder, ownerAction: delivery.ownerAction,
       };
       this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `prereview-fence:${itemId}`, JSON.stringify(fence));
@@ -4935,12 +5001,15 @@ export class Ledger extends DurableObject<Env> {
   // without the tick the plan waits idle for a change that may not come
   // (t197 waited with a review routed to a contributor). The tick rescues
   // the plan, never the claim, so the refusal is thrown as it was.
-  async claimReview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved = false): Promise<ReviewClaim> {
+  //
+  // `main` is main's head as the Worker read it from the baseline for this
+  // claim, which a pre-review claim is bound to (bindPrereview).
+  async claimReview(itemId: string, actor: string, runner: { runner: string; kind: RunnerKind } | null, proved = false, main: string | null = null): Promise<ReviewClaim> {
     assertNotTerminal(this.item(itemId));
     // A pre-review asked of this reviewer is bound when no gate request is
     // open for the task (openPrereviewFor): the gate's goes first.
     const prereview = this.openPrereviewFor(itemId, actor);
-    if (prereview) return this.bindPrereview(itemId, actor, runner, proved, prereview);
+    if (prereview) return this.bindPrereview(itemId, actor, runner, proved, prereview, main);
     try {
       return await this.bindReview(itemId, actor, runner, proved);
     } catch (err) {

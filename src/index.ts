@@ -35,7 +35,7 @@ import { addTally, buildStory, emptyTally, VENDOR_NAMES, type Story } from "./gr
 import { buildPulse } from "./pulse";
 import { projectKind } from "./kind";
 import { assign, parseRunner, unclaimed, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
-import { PREREVIEW_JOB } from "./dispatch/prereview.ts";
+import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
 import { attentionFor } from "./attention.ts";
 import { readStanding, type StandingSource } from "./standing-read.ts";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
@@ -1816,11 +1816,25 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         ...(body.request !== undefined ? { request: Number(body.request) } : {}),
         approve: Boolean(body.approve), note: String(body.note ?? ""), at: new Date().toISOString(),
         ...(body.findings !== undefined ? { findings: body.findings } : {}),
+        // A pre-review verdict is judged against main's head as the baseline
+        // holds it now, which only the Worker can read (t524).
+        ...(isPrereviewRequest(Number(body.request)) ? { mainNow: await mainHeadOf(env, L) } : {}),
       }, c.url.origin, !!c.token, "api");
       return json(await L.detail(id));
     }
     case "review-claim": {
-      const claim = await L.claimReview(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token) as unknown as ReviewClaim;
+      // A pre-review claim is bound to main's head as the baseline holds it
+      // now (t524), which the Ledger cannot read: it refuses with main_unread,
+      // having changed nothing, and the claim is made again with the head
+      // read here. Any other claim never reads the baseline.
+      const runner = parseRunner(req.headers.get("x-atelier-runner"));
+      let claim: ReviewClaim;
+      try {
+        claim = await L.claimReview(id, actor, runner, !!c.token) as unknown as ReviewClaim;
+      } catch (err) {
+        if (parseRuleError(err)?.code !== "main_unread") throw err;
+        claim = await L.claimReview(id, actor, runner, !!c.token, await mainHeadOf(env, L)) as unknown as ReviewClaim;
+      }
       // The review's diff, kept in R2 by reference when the change is too
       // large for a brief (t284): the claim hands the reference to the
       // runner, and the brief carries it instead of the diff's text. The

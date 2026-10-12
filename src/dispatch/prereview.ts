@@ -68,8 +68,12 @@ export const retryable = (outcome: PrereviewOutcome): boolean => ["no-reviewer",
 // What a request and its result are bound to. The head, the criteria and the
 // contributors are the task's when the request is made; `generation` counts
 // the merges the ledger has recorded (Ledger.mergeGeneration), so a landing
-// that moves main moves it; `main` is the main head the runner captured and
-// merged, and `tree` the tree it prepared, both null until it reports them.
+// that moves main moves it; `main` is main's head as the Worker read it from
+// the baseline when a runner claimed the request (null while it is open),
+// which the runner must merge and which must still be main's head when the
+// verdict comes, so a baseline moved by anything (atelier sync pushes one
+// without a merge) makes the result stale; `tree` is the tree the runner
+// prepared, null until it reports it.
 export interface PrereviewBinding {
   head: string;
   criteria: string;
@@ -148,6 +152,17 @@ export function parsePrereviewReport(value: unknown): { ok: true; report: Prerev
 
 // Whether a verdict blocks: a rejection, or any blocking finding.
 export const blocks = (approve: boolean, findings: readonly Finding[]): boolean => !approve || findings.some((f) => f.severity === "blocking");
+
+// A verdict whose word and findings disagree — a rejection naming no
+// blocking finding, or an approval naming one — says nothing the queue may
+// act on. The ledger checks it itself, whatever client posted the verdict,
+// and records it as malformed: an unavailable result that fences nothing.
+export function verdictContradiction(approve: boolean, findings: readonly Finding[]): string | null {
+  const blocking = findings.some((f) => f.severity === "blocking");
+  if (!approve && !blocking) return "the pre-review verdict rejects but names no blocking finding; a rejection must name what blocks";
+  if (approve && blocking) return "the pre-review verdict approves but names a blocking finding";
+  return null;
+}
 
 // What a runner reports when it ends a pre-review without a verdict, as the
 // note of a review-release: the outcome, what happened, and for a conflict
