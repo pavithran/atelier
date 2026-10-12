@@ -1,9 +1,39 @@
 # The task lifecycle and the gate
 
+The cross-company rules below describe the default policy. With
+`atelier init --single-family COMPANY`, building and reviewing use only that
+company's models: a reviewer must be a different model from every contributor,
+never a contributor under another harness. This exception also applies to
+criteria review, handoffs and conflict contributors. Only that company's tier
+models qualify; if none qualifies, no separate tier review is requested.
+`atelier init --cross-family` restores the default; both switches record who
+made them and when. See [Single-family mode](gate.md#single-family-mode).
+
 This is the full reference for how a task moves from creation to merge, what
 the gate requires before the project owner may accept it, which checks are
 allowed, and which checks apply to a change. The README's "Concepts" section
 gives the outline.
+
+## The five steps
+
+The app, the README, `/how` and this reference name the life of a task in
+five verbs. They are labels: the commands keep their own names.
+
+| Step | Its line | Commands |
+| --- | --- | --- |
+| Claim | One holder per task. | `atelier start`, `atelier claim`, `atelier handoff`, `atelier release` |
+| Fork | Every task its own fork. | `atelier push`, `atelier update` |
+| Prove | Atelier runs the tests. | `atelier check`, `atelier submit` |
+| Review | Another company reviews, or in single-family mode another model. | `atelier review` |
+| Land | One landing at a time, with a receipt. | `atelier land`, `atelier accept`, `atelier merge` |
+
+A task's page shows the five as its progress, the current one marked, read
+from the task's recorded state: open is at Claim; claimed with nothing pushed,
+a fresh fork whose head is still its base among them, is at Fork; claimed with
+a pushed head, or submitted without every required check
+observed passing, is at Prove; submitted with them all passing is at Review;
+accepted is at Land; merged has done all five. What lands is **Proven.
+Reviewed. Recorded.** Git keeps the code. Atelier brings the receipts.
 
 ## How it works
 
@@ -142,6 +172,60 @@ provenance note, which can be pushed to a public remote, names the override and
 who made it but not its reason; it names each review's reviewer, verdict, head
 and recorder in the same way, without the review's note. Both stay in the
 ledger.
+
+### Single-family mode
+
+A project may run on one company's models alone, for a client who allows
+one provider or a project where only one company's models are licensed:
+
+```text
+atelier init --single-family anthropic
+```
+
+The company is one of the families a model's name is recognised by
+([`src/models/pool.ts`](../src/models/pool.ts): anthropic, openai, google,
+zai, deepseek, qwen, minimax, mistral, meta, moonshot, xai, xiaomi,
+bytedance, cohere). The policy records the mode as `familyMode`, with who set
+it and when. Under it, plan routing, a hand dispatch, the builder a dispatch
+without `--agent` is suggested, the reviewer picker, the review tier and the
+landing take only that company's models; a claim or
+handoff by another company's model is refused, so a dispatch that names no
+model cannot hand the work to one either. The gate counts an approval
+when the reviewer is a different model of the company from every recorded
+contributor, compared by model name without letter case, a `:profile` suffix
+or the harness: the same model in another harness is still the same model.
+A model never counts as reviewer of a change it contributed to, in either
+mode and for a coordinated change too: Opus reviewing in Codex what Opus
+built in Claude Code is not another agent's review. No other company's
+model reviews under the mode, by any path: the gate counts its approval for
+neither a protected nor a coordinated change, a review it submits directly
+is refused, and so is its claim of a review request, whatever the policy was
+when the request was made. The switch to the mode withdraws every open or
+claimed review request another company's model holds or is asked to give,
+and every waiting dispatch that names another company's model; a plan whose
+planner, or a part whose routed builder, is of another company is blocked
+until the owner reroutes it with `atelier plan reroute`. The company is
+judged where every assignment passes, the project's eligibility rule
+(`assertEligible` in [`src/rules.ts`](../src/rules.ts)), so a claim, a
+handoff, a released hold, a plan's planner named or picked and a part's
+builder or reviewer rerouted are all refused alike; every dispatch the
+Ledger stores is judged again as it is written. A scan test
+(`test/single-family-scan.test.ts`) fails on a new path that assigns work
+without passing these checks.
+The mode is shown under the project's title on every tab of its page
+and on its Settings tab, by `atelier status` and `atelier status --project`,
+at the top of every review brief, and in each merge's provenance note, so
+nobody takes such a review for a cross-company one. The acceptance records
+the mode in force and each contributor with its company, and the provenance
+note states those, not the mode at merge time: work contributed before a
+switch keeps its own company there.
+
+```text
+atelier init --cross-family
+```
+
+returns to the default, and that switch too is recorded with who made it
+and when. `--reset` drops the mode with the rest of the policy.
 
 ## The review bar
 

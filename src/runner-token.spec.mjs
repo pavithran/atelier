@@ -136,6 +136,8 @@ it("allows job reads, held-job resume, evidence, release and reports; invalid cr
   await t.claim();
   for (const path of [`/projects/${t.name}`, `${t.base}`, `${t.base}/brief`, `/projects/${t.name}/decisions`]) expect((await t.api("GET", path)).status).toBe(200);
   for (const verb of ["read-token", "base-token"]) expect((await t.api("POST", `${t.base}/${verb}`, {})).status).toBe(200);
+  // The project's baseline token, which a build's runner reads main through
+  // before it submits (t435), is covered in test/runner-baseline-token.spec.ts.
   expect((await t.poll()).status).toBe(200);
   expect((await t.api("POST", `${t.base}/claim`, {})).status).toBe(200);
   expect((await t.api("POST", `${t.base}/evidence`, { claim: "inspected", kind: "note", head: HEAD, passed: true })).status).toBe(200);
@@ -157,7 +159,10 @@ it.each(["revoke", "expire", "release", "reassign"])("direct Git credentials sto
     expect(options.headers.get("authorization")).toBe("Bearer upstream-secret");
     return new Response("0000", { headers: { "content-type": "application/x-git-receive-pack-result" } });
   });
-  expect((await t.request("POST", path, workspace.token, null, "0000")).status).toBe(200);
+  const pushed = await t.request("POST", path, workspace.token, null, "0000");
+  expect(pushed.status).toBe(200);
+  // The pack streams back (t528): the upstream token is revoked once the body is read.
+  expect(await pushed.text()).toBe("0000");
   expect(t.upstream.at(-1)).toHaveProperty("revoked");
   expect((await t.request("GET", "/config", workspace.token)).status).toBe(401);
   expect((await t.request("POST", path.replace("t1.git", "t2.git"), workspace.token, null, "0000")).status).toBe(403);
@@ -241,4 +246,17 @@ it("concurrent different runners cannot both acquire the same dispatched job", a
   const item = await t.L.item("t1");
   expect(item.owner).toBe(ACTOR);
   expect(["home:studio", "home:second"]).toContain(item.runner);
+});
+
+// Only an authenticated runner can classify a release as infrastructure.
+it.each([true, false])("provider-limit release metadata requires a runner token (%s)", async (runner) => {
+  const t = await setup();
+  await t.claim();
+  const body = { note: "codex usage limit until 2026-10-14T15:00:00.000Z: quota", providerLimit: true };
+  const response = runner
+    ? await t.api("POST", `${t.base}/release`, body)
+    : await t.request("POST", `${t.base}/release`, OWNER, ACTOR, body);
+  expect(response.status).toBe(200);
+  const releases = (await t.L.events("t1")).filter((e) => e.kind === "item.released");
+  expect(releases[0].data.providerLimit).toBe(runner ? true : undefined);
 });

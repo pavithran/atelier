@@ -96,7 +96,8 @@ atelier runner --name home:integrator --integrate
 
 **Open the places to watch.** Three views show the whole walk:
 
-- `atelier inbox` prints what waits on the owner, most urgent first. The
+- `atelier inbox` prints what waits on the owner, one line of what to do
+  and a link per task, in the order of docs/owner.md's table. The
   Decisions page at `/decisions` shows the same.
 - The Studio at `/studio` draws one lane per live task, banded by holder,
   with a mark for every claim, push, check, submission and review. Each
@@ -333,7 +334,10 @@ part, the brief's inputs and a read token for the fork. It cloned the head
 read-only into a folder of its own, wrote the diff to the diff file, built
 the reviewer's brief (the goal, the part's spec and acceptance criteria,
 the scope and any paths outside it, the builder's summary, the observed
-checks and where each ran, earlier findings, and the diff), and ran the
+checks and where each ran, every run recorded at the head with its latest
+result and the end of its output, ad-hoc `atelier check -- CMD` runs apart
+from the required checks and reports labelled Reported, earlier findings,
+and the diff), and ran the
 harness. The harness wrote a verdict: approve or reject, a summary, and
 findings, each with a path, a severity (blocker, should or nit) and a note.
 The runner posted it as `atelier review t11 --approve --head SHA --criteria BINDING --request N --note

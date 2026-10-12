@@ -38,7 +38,7 @@ import { outcomesOf, reliabilityLine, tiebreak, type Reliability } from "../mode
 import { byPrecision, precisionLine, precisionOf, precisionTerm, type PrecisionRecord } from "../models/precision.ts";
 import { route, tied, type Candidate, type Tiebreak } from "../models/routing.ts";
 import { measureText, stalledText, type SpeedRecord } from "../models/speed.ts";
-import { assertEligible, hasRole, modelKey, parseRuleError, type ProjectPolicy } from "../rules.ts";
+import { assertEligible, hasRole, modelKey, parseRuleError, singleFamily, type ProjectPolicy } from "../rules.ts";
 import type { Plan, PlanPart } from "./schema.ts";
 
 // What the owner knows about a tool's usage limits, keyed by actor
@@ -191,7 +191,9 @@ export function recordFor(pool: readonly ModelEntry[], events: readonly LedgerEv
 
 // The rule a claim applies, so routing never names a builder the claim
 // would refuse: under a governed policy the executor role, otherwise the
-// project's eligible harnesses.
+// project's eligible harnesses, and the company single-family mode allows,
+// whose refusal the single-family rule in judge() already says in its own
+// words (t394).
 function claimRefusal(actor: string, policy: ProjectPolicy): string | null {
   try {
     assertEligible(actor, policy);
@@ -199,7 +201,7 @@ function claimRefusal(actor: string, policy: ProjectPolicy): string | null {
   } catch (err) {
     const rule = parseRuleError(err);
     if (!rule) throw err;
-    return rule.detail;
+    return rule.code === "single_family" ? null : rule.detail;
   }
 }
 
@@ -219,6 +221,7 @@ interface Context {
   governed: boolean;
   reviewOffered: Offering | null;          // what the live runners offer for the review job; null when none were read or no runner is live
   offersRead: boolean;                     // whether the caller read runner offers at all
+  single: PoolFamily | null;               // the company the project runs on alone (single-family mode, t394), or null under the default
 }
 
 // One pool actor judged for one part: the rules it passed, for the reasons
@@ -247,6 +250,14 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
   else if (!allowPaid) both.push(`paid per token (${entry.provider}); the plan was not approved with allowPaid`);
   else if (spend && spend.used >= spend.cap) both.push(`paid per token (${entry.provider}); spend ${spend.used} has reached the cap ${spend.cap}`);
   else passed.push(`Paid per token (${entry.provider}), allowed by allowPaid; ${spend ? `spend ${spend.used} of cap ${spend.cap}` : "no spend cap"}`);
+
+  // Under single-family mode only the company's models build or review; the
+  // family is read as the gate reads it, from the model's name by modelKey.
+  const family = familyOf(modelKey(actor));
+  if (ctx.single) {
+    if (family === ctx.single) passed.push(`One of ${ctx.single}'s models, as single-family mode asks`);
+    else both.push(`not one of ${ctx.single}'s models, and this project runs in single-family mode (${ctx.single})`);
+  }
 
   const availability = ctx.availability.get(actor.toLowerCase()) ?? ctx.availability.get(entry.harness.toLowerCase());
   if (!availability) passed.push("Availability not set; treated as available");
@@ -299,7 +310,7 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
   }
   // The family as the gate reads it, by modelKey, so a profile suffix never
   // makes a reviewer look like another family than the builder.
-  return { actor, family: familyOf(modelKey(actor)), candidate, passed, build, review, reviewOffer };
+  return { actor, family, candidate, passed, build, review, reviewOffer };
 }
 
 function choice(verdict: Verdict, lead: string[], role: string, ctx: Context): Choice {
@@ -407,16 +418,25 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   const precision = ctx.input.precision ?? null;
   const namesOfVerdict = (v: Verdict) => { const entry = ctx.entries.get(v.actor)!; return [entry.id, ...entry.aliases].map((id) => `${entry.harness}/${id}`); };
   const termOf = (v: Verdict) => precisionTerm(precisionOf(precision, namesOfVerdict(v)));
-  const reviewers = byPrecision(byPace(others.filter((v) => !v.review.length && crossFamily(v.family, builder.family)), ctx, "review"), namesOfVerdict, precision);
+  // Under single-family mode the reviewer is a different model of the
+  // company from the builder, by modelKey, so the builder's model under
+  // another harness never reviews its own work; otherwise another family.
+  const single = ctx.single;
+  const independent = (v: Verdict) => (single ? modelKey(v.actor) !== modelKey(builder.actor) : crossFamily(v.family, builder.family));
+  const reviewers = byPrecision(byPace(others.filter((v) => !v.review.length && independent(v)), ctx, "review"), namesOfVerdict, precision);
   const reviewer = reviewers.length ? spread(reviewers, reviews, "reviews", ctx, (a, b) => !precision || termOf(a) === termOf(b)) : null;
   if (!reviewer) {
-    const why = builder.family === "other"
-      ? `no reviewer can be of another family than ${builder.actor}, whose family is not recognised from its name`
-      : `no reviewer of another family than ${builder.family} (${builder.actor}): ${others.length ? others.map((v) => `${v.actor} (${v.review.length ? v.review.join("; ") : v.family === "other" ? "family not recognised from its name" : `same family, ${v.family}`})`).join(", ") : "no other model in the pool"}`;
+    const why = single
+      ? `no different ${single} model from ${builder.actor} to review (single-family mode): ${others.length ? others.map((v) => `${v.actor} (${v.review.length ? v.review.join("; ") : "the same model as the builder"})`).join(", ") : "no other model in the pool"}`
+      : builder.family === "other"
+        ? `no reviewer can be of another family than ${builder.actor}, whose family is not recognised from its name`
+        : `no reviewer of another family than ${builder.family} (${builder.actor}): ${others.length ? others.map((v) => `${v.actor} (${v.review.length ? v.review.join("; ") : v.family === "other" ? "family not recognised from its name" : `same family, ${v.family}`})`).join(", ") : "no other model in the pool"}`;
     return { key: part.key, builder: chosen, alternates, reviewer: null, excluded, unrouted: why };
   }
   reviews.add(reviewer.pick);
-  const family = `Another family (${reviewer.pick.family}) than the builder's (${builder.family})`;
+  const family = single
+    ? `A different ${single} model (${reviewer.pick.actor}) from the builder (${builder.actor}), as single-family mode asks`
+    : `Another family (${reviewer.pick.family}) than the builder's (${builder.family})`;
   const first = precision ? "the first such model by review precision, then rank order" : "the first such model in rank order";
   const said = [reviewer.lead ? `${family}; ${reviewer.lead[0].toLowerCase()}${reviewer.lead.slice(1)}` : `${family}; ${first}`];
   if (precision) said.push(precisionLine(precisionOf(precision, namesOfVerdict(reviewer.pick)), precision.window));
@@ -456,6 +476,7 @@ export function routeParts(plan: Plan, input: RouteInput): PartRoute[] {
     governed: input.policy.agents !== undefined,
     reviewOffered: input.offers != null ? offering(REVIEW_JOB, input.offers) : null,
     offersRead: input.offers != null,
+    single: singleFamily(input.policy),
   };
   // Parts route in plan order; each sees how many parts the earlier ones gave each model.
   const builds = new Load(), reviews = new Load();

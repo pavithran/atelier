@@ -175,7 +175,7 @@ test("partAttempts distinguishes a release with no commit from a failed finish",
 });
 
 test("partAttempts leaves out a release a provider's usage limit caused (t487)", () => {
-  const limit = { note: "codex usage limit until 2026-10-14T15:00:00.000Z: You've hit your usage limit" };
+  const limit = { providerLimit: true, note: "codex usage limit until 2026-10-14T15:00:00.000Z: You've hit your usage limit" };
   const events = [
     event(1, actor("a"), "item.claimed", {}, "a"),
     event(2, actor("a"), "push.observed", { head: "b".repeat(40) }, "a"),
@@ -185,6 +185,12 @@ test("partAttempts leaves out a release a provider's usage limit caused (t487)",
     ...giveUp(6, actor("a")),
   ];
   assert.deepEqual(partAttempts(events).get("a"), [{ actor: actor("a"), outcome: "give-up" }] satisfies Attempt[]);
+});
+
+test("a limit-looking release note still charges an attempt", () => {
+  const events = [event(1, actor("a"), "item.claimed", {}, "a"),
+    event(2, actor("a"), "item.released", { note: "codex usage limit until 2026-10-14T15:00:00.000Z: quota" }, "a")];
+  assert.deepEqual(partAttempts(events).get("a"), [{ actor: actor("a"), outcome: "give-up" }]);
 });
 
 // A submitted part whose integration failed: claim, push, submit, then the

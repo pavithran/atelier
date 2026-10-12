@@ -1,3 +1,4 @@
+import { executePostMerge } from "../post-merge.mjs";
 // atelier merge. Its forms, flags and help are declared in src/usage/commands/merge.ts.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -8,12 +9,13 @@ import { carryTask, loadPairs, rebuild, savePairs } from "../fresh.mjs";
 import { provenanceNote } from "../provenance.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { IDENTITY_LOG_FORMAT, isPublicMirror, NO_IDENTITY, parseIdentityLog, publicRefusals } from "../../src/commit-identity.ts";
-import { I, OWNER, P, actor, args, at, call, cfg, die, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, overrideArg, project, refreshControlPlane, request, server, short, writeReceipt } from "../atelier.mjs";
+import { I, OWNER, P, actingHeaders, actor, args, at, call, cfg, die, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, overrideArg, project, refreshControlPlane, request, server, short, writeReceipt } from "../atelier.mjs";
 
 // The project owner merges an exact revision. With --head, a submitted item
 // is first approved (with --approve) and accepted at that revision only.
 export default async function mergeCommand() {
   const git = landingGit;
+  const postMerge = (name, id) => executePostMerge({ name, id, request: (method, path, body) => request(method, path, body, OWNER) });
   // A plan's branch is updated only by its integrator, which merges
   // recorded parts, so an accepted plan that conflicts with main would stay
   // accepted with no one able to update it. Its merge, already aborted,
@@ -129,7 +131,7 @@ export default async function mergeCommand() {
       if (d.item.head!==args.head) die("the task changed; review the new revision before merging");
       // The owner approves here the criteria this command read with the head.
       if (args.approve) await call("POST",`${I(name,id)}/review`,{head:args.head,criteria:d.criteria,approve:true,note:args.note??""},OWNER);
-      await call("POST",`${I(name,id)}/accept`,{head:args.head,...(reason!==undefined?{overrideReview:reason}:{})},OWNER);
+      await call("POST",`${I(name,id)}/accept`,{head:args.head,...(reason!==undefined?{overrideReview:reason}:{})},OWNER,reason!==undefined?actingHeaders():{});
     }
   }
   const gitDir=git(["rev-parse","--absolute-git-dir"],{cwd}), landing=landingHome(gitDir);
@@ -149,7 +151,7 @@ export default async function mergeCommand() {
     if (!['accepted','merged'].includes(item.state)) die(`${id} is ${item.state}; accept the reviewed revision first`);
     if (args.head && args.head!==item.acceptedHead) die("the accepted revision differs from --head; review it before merging");
     const journal=landingJournal(landing,{project:name,item:id,head:item.acceptedHead});
-    if (item.state==='merged') { journal.clear(); console.log(`${id} is already merged.`); return; }
+    if (item.state==='merged') { journal.clear(); console.log(`${id} is already merged.`); if (d.policy.postMerge || d.postMerge) await postMerge(name, id); return; }
     const acceptedPolicy = acceptancePolicy(d, refreshed?.before ?? d.policy), context = mergeContext(d, refreshed?.items);
     if (refreshed?.policy) {
       const decision = mergePolicyDecision(acceptedPolicy, refreshed.policy, [], false, context);
@@ -255,7 +257,7 @@ export default async function mergeCommand() {
     // merge commit is kept for reconciliation.
     await call('POST',`${I(name,id)}/landing`,{head:item.acceptedHead},OWNER);
     // The note goes to the public remote too, so it names reviewers and verdicts but never their text (cli/provenance.mjs).
-    const note=provenanceNote({name,id,item,view,reviews,events:d.events});
+    const note=provenanceNote({name,id,item,view,reviews,events:d.events,policy:d.policy,acceptanceFamily:d.acceptanceFamily});
     // The notes commits refs/notes/atelier holds that FROM (a remote's notes
     // tip, or nothing) does not, checked against the policy's identity.
     // A remote the policy declares a public mirror takes only the project's own
@@ -295,22 +297,24 @@ export default async function mergeCommand() {
     const alreadyPublished=git(['merge-base','--is-ancestor',published,baselineHead],{cwd,allowFail:true}).status===0;
     git(['push','--quiet',base.remote,...(alreadyPublished?[]:[`${published}:refs/heads/${p.branch}`]),'refs/notes/atelier:refs/notes/atelier'],{cwd,token:base.token});
     journal.save({phase:'published'});
-    await call('POST',`${I(name,id)}/merged`,{mergeCommit:published},OWNER);
+    const recorded = await call('POST',`${I(name,id)}/merged`,{mergeCommit:published},OWNER);
     journal.clear();
+    const privatePublication = (recorded.postMerge?.policy ?? d.policy.postMerge)?.steps.some(s => s.class === 'publish');
     // A public notes remote gets only notes history whose identities pass; one
     // whose tip cannot be read is not pushed to (fail closed).
     let notesHeld=null;
-    if(p.notesRemote&&identity){
+    if(p.notesRemote&&!privatePublication&&identity){
       const listed=git(['ls-remote',p.notesRemote,'refs/notes/atelier'],{cwd,allowFail:true});
       const refused=listed.status!==0?[`${p.notesRemote}: its refs/notes/atelier could not be read`]:notesRangeRefusals(listed.stdout.split(/\s/)[0]||null,p.notesRemote);
       if(refused.length)notesHeld=refused;
     }
-    const notesPush=p.notesRemote&&!notesHeld?git(['push','--quiet',p.notesRemote,'refs/notes/atelier:refs/notes/atelier'],{cwd,allowFail:true}):null;
+    const notesPush=p.notesRemote&&!privatePublication&&!notesHeld?git(['push','--quiet',p.notesRemote,'refs/notes/atelier:refs/notes/atelier'],{cwd,allowFail:true}):null;
     if(notesHeld)console.log(`Provenance notes were not pushed to ${p.notesRemote}:\n  ${notesHeld.join('\n  ')}`);
     console.log(`${id} merged as ${short(mergeCommit)} in ${cwd}${published!==mergeCommit?` (on the baseline as ${short(published)})`:""}; baseline and ledger agree.`);
     console.log(`Provenance: git notes --ref=atelier show ${short(mergeCommit)}`);
     if(notesPush?.status===0)console.log(`Provenance notes pushed to ${p.notesRemote}.`);
     else if(notesPush)console.log(`Provenance notes need retry: git push ${p.notesRemote} refs/notes/atelier:refs/notes/atelier`);
-    console.log("The project branch was not pushed to its own remotes. Nothing was deployed.");
+    if (recorded.postMerge || d.policy.postMerge || d.postMerge) await postMerge(name, id);
+    else console.log("The project branch was not pushed to its own remotes. Nothing was deployed.");
   } finally { unlock(); }
 }

@@ -96,6 +96,28 @@ export default async function runnerCommand() {
       // A run that stalled, timed out or was refused goes to the run
       // reports, under the runner's name, as a model's status does.
       reportRun: (body, runner, signal) => postAsRunner("/runs", body, runner, signal),
+      // Why an idle runner found nothing to claim: its poll asked with
+      // `why`, which lists each waiting dispatch of the token's projects
+      // with its reason (t420); a runner token may not GET the owner's
+      // listing. Asked only when a poll offers nothing, never on the busy
+      // path. A server older than this answers with the tasks offered,
+      // which carry no reason, so the runner says only its own.
+      idleWhy: async (offer, signal) => {
+        await resolveTokenActor();
+        let res;
+        try {
+          res = await fetch(server() + "/api/queue", {
+            method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+            headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER, "content-type": "application/json" },
+            body: JSON.stringify({ ...offer, why: true }),
+          });
+        } catch (error) {
+          if (signal.aborted) throw error;
+          throw Object.assign(new Error(`queue: ${error.message}`), { transient: true });
+        }
+        if (!res.ok) throw Object.assign(new Error(`queue: ${res.status}`), { transient: res.status >= 500 || res.status === 429 });
+        return res.json();
+      },
       // A review this runner will not serve is reported to the project, so
       // the landing waiting on it can say, by runner, when every runner
       // that offers the reviewer has skipped (t353). Under a runner token,
@@ -105,6 +127,14 @@ export default async function runnerCommand() {
       async reportReviewSkip(body, runner, signal) {
         await resolveTokenActor();
         return postAsRunner(`${I(body.project, body.item)}/review-skip`, body, runner, signal, tokenRunner ? body.actor : OWNER);
+      },
+      // A build or plan job this runner gives up under its dispatch, after
+      // failed runs or infrastructure failures in a row, is reported the
+      // same way (t420), so status and show name this runner as what passes
+      // it by.
+      async reportRunSkip(body, runner, signal) {
+        await resolveTokenActor();
+        return postAsRunner(`${I(body.project, body.item)}/run-skip`, body, runner, signal, tokenRunner ? body.actor : OWNER);
       },
     });
   } catch (error) { die(error.message); }

@@ -1,5 +1,7 @@
 // atelier show. Its forms, flags and help are declared in src/usage/commands/show.ts.
-import { I, OWNER, RequestError, actor, args, call, die, formatBrief, formatReviews, itemArg, newestReviews, project, request, server } from "../atelier.mjs";
+import { effectiveFailures, failureJson, failureSummary, resolveFailures } from "../../src/check-failure.ts";
+import { I, OWNER, RequestError, actor, args, call, die, formatBrief, formatReviews, itemArg, logReader, newestReviews, project, request, server } from "../atelier.mjs";
+import { queueReasons } from "../status.mjs";
 
 export default async function showCommand() {
   const name = project(), id = itemArg(), as = await actor(OWNER);
@@ -25,7 +27,27 @@ export default async function showCommand() {
     const label = event.kind === "item.reverts" ? "Reverts" : "Revert requested in";
     brief.evidence.push(`${label} ${itemId} (recorded merge ${mergeCommit}): ${server()}/p/${encodeURIComponent(name)}/${itemId}`);
   }
-  if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []) }, null, 2));
-  const text = formatBrief(name, id, brief, server());
-  console.log(args.reviews ? `${text}\n\n${formatReviews(d?.reviews ?? [], d?.ownerActor, d?.unparsable ?? [])}` : text);
+  // Why a dispatched task is not being taken, as the queue holds it (t420):
+  // each reason in words and the command that releases it. Read from the
+  // queue's entry for it, so `show` and `status` say the same thing.
+  let why = [];
+  try {
+    const entry = ((await request("GET", "/queue", undefined, as)) ?? [])
+      .find((q) => q.project === name && q.item?.id === id && q.item.dispatch?.job !== "review");
+    why = entry ? queueReasons(entry.item) : [];
+  } catch { /* the brief still prints; the queue's reason is a bonus */ }
+  // The failed checks at the current head, as the gate reads them (t436,
+  // src/check-failure.ts): each named by command, head and evidence id,
+  // with the failing tests its reporter named and a bounded tail of its
+  // log, the stored whole log read by reference where the run kept one.
+  // `failedChecks` carries the same in --json.
+  const failures = d.item?.head && d.policy?.checks
+    ? await resolveFailures(effectiveFailures(d.policy, d.evidence ?? [], d.item.head), logReader(name, id, as))
+    : [];
+  if (args.json) return console.log(JSON.stringify({ ...brief, reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), failedChecks: failures.map(failureJson), ...(why.length ? { why } : {}) }, null, 2));
+  const blocks = [formatBrief(name, id, brief, server())];
+  if (why.length) blocks.push(why.map((r) => r.line).join("\n"));
+  if (failures.length) blocks.push(failureSummary(id, d.item.head, failures));
+  if (args.reviews) blocks.push(formatReviews(d?.reviews ?? [], d?.ownerActor, d?.unparsable ?? []));
+  console.log(blocks.join("\n\n"));
 }
