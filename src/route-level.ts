@@ -18,9 +18,13 @@ import { COMMAND_MODULES } from "./usage/commands/index.ts";
 // a change that is not compatible with it takes a new name (…v2), and the
 // old one stays published for as long as the server still behaves that way,
 // so a client that needs v1 is not satisfied by a server that has only v2.
-// Each capability is one line in src/capability-declarations.ts. Its
-// merge=union attribute retains independent additions, including names in
-// the same family. Duplicate names still fail validation after a merge.
+// Each capability is one line in src/capability-declarations.ts, routed by
+// .gitattributes to merge=atelier-records (t463, bin/merge-manifest.json):
+// where Atelier merges, independent additions unite by name, including
+// names in the same family, and a name both sides changed stays in
+// conflict; a clone without Atelier's setup merges the file as text, so
+// neighbouring additions conflict for a person to resolve. Duplicate names
+// still fail validation after a merge.
 // buildCapabilities refuses a name declared twice, or one that
 // is not well formed, when this module loads, and commandCapabilities
 // refuses a command that requires a name no declaration publishes.
