@@ -245,7 +245,7 @@ it("with Access on, / is the public showcase to anyone, and every owner route st
     const page = await (await at("/")).text();
     expect(page).toContain("<title>Atelier · public showcase</title>");
     expect(page).toContain('<a href="/login">Sign in</a>');
-    for (const secret of ["Front door secret title", "Front door secret task", "front-door", 'class="rail"', 'href="/home"']) expect(page).not.toContain(secret);
+    for (const secret of ["Front door secret title", "Front door secret task", "front-door", 'class="owner-bar"', 'href="/home"']) expect(page).not.toContain(secret);
     expect((await at("/showcase")).status).toBe(200);
     const cookie = await signIn(TOKEN, shown, { "cf-access-jwt-assertion": await assertion() });
     const form = { origin: "https://atelier.test", cookie };

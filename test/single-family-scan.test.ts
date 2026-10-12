@@ -95,8 +95,15 @@ test("a plan's planner and a part's builder are named only through namedActor, w
 });
 
 test("a review request is bound to its reviewer only by bindReview, which judges the reviewer's company", () => {
-  assert.deepEqual(sites(/SET state = 'claimed', claimedBy = \?/), ["bindReview"], "a new path binds a review request; judge the reviewer's company and list it here");
+  assert.deepEqual(sites(/SET state = 'claimed', claimedBy = \?/), ["bindPrereview", "bindReview", "claimCriteriaReview"], "a new path binds a review request; judge the reviewer's company and list it here");
   passes("bindReview", "companyRefusal(");
+  // A criteria review (t438) is bound by its own claim, which judges the
+  // company through criteriaIndependenceRefusal under the mode in force.
+  passes("claimCriteriaReview", "criteriaIndependenceRefusal(actor, row.authors, this.owner, singleFamily(");
+  const criteria = readFileSync(join(SRC, "review/criteria.ts"), "utf8");
+  const from = criteria.indexOf("export function criteriaIndependenceRefusal(");
+  assert.ok(criteria.slice(from, criteria.indexOf("\n}\n", from)).includes("companyRefusal(reviewer, single)"), "criteriaIndependenceRefusal no longer judges the company");
+  passes("bindPrereview", "companyRefusal(");
   passes("claimReview", "this.bindReview(");
   // Every place a request is made, open for a claim; a new one is listed
   // here once it is shown to ask only a reviewer the mode allows, or to

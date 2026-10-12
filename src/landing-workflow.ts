@@ -337,7 +337,15 @@ export class LandingWorkflow extends WorkflowEntrypoint<Env, LandingWorkflowPara
     for (let i = 0; ; i++) {
       const ask = await step.do(`ask for the landing lease ${label} #${i}`, RETRIES, async () => {
         const t0 = Date.now();
-        await L.queueProjectLanding(p.item, p.actor, false, p.instance);
+        // A landing a blocking pre-review fenced (t524) is refused the queue
+        // until `atelier unblock`; no retry of the ask lifts it, so it ends
+        // the Workflow at once rather than after every retry.
+        try { await L.queueProjectLanding(p.item, p.actor, false, p.instance); }
+        catch (error) {
+          const parsed = parseRuleError(error);
+          if (parsed?.code === "prereview_blocked") throw new NonRetryableError(parsed.detail);
+          throw error;
+        }
         try {
           const { expired }: { expired: LandingLease | null } = await L.beginProjectLanding(p.item, p.actor, p.instance);
           return { took: true as const, t0, expired: expired ? expired.item : null };
