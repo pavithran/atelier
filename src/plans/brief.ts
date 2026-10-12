@@ -91,6 +91,10 @@ export interface JobBriefInput {
   failure?: CheckFailure | null;               // rework after a failing check
   mergeMain?: { head: string } | null;         // a merge-main part: the main head recorded as dispatch context
   mergePlan?: { head: string } | null;         // a part whose integration conflicted: the plan branch's head the runner merges into the workspace
+  // The section on the reviews of the part's acceptance criteria and the
+  // owner's resolutions of their findings (criteriaFindingsSection in
+  // src/review/criteria.ts, t438); null or absent when none was recorded.
+  criteriaReview?: string | null;
   limits?: Partial<JobBriefLimits> | null;
 }
 
@@ -125,6 +129,7 @@ interface Resolved {
   failure: { claim: string; head: string | null; where: "sandbox" | "runner" | null; output: string; log: LargeRef | null } | null;
   mergeMain?: { head: string };  // left out for any other part, so its hash is as before
   mergePlan?: { head: string };  // left out unless the part's integration conflicted, so other briefs' hashes are as before
+  criteriaReview?: string;       // left out when no criteria review was recorded, so other briefs' hashes are as before
   limits: JobBriefLimits;
 }
 
@@ -254,6 +259,7 @@ function resolve(input: JobBriefInput): Resolved {
     failure: failure ? { claim: failure.claim, head: failure.head ?? null, where: failure.where ?? null, output: failure.output, log: failure.log ?? null } : null,
     mergeMain: input.mergeMain ? { head: input.mergeMain.head } : undefined,
     mergePlan: input.mergePlan ? { head: input.mergePlan.head } : undefined,
+    criteriaReview: input.criteriaReview ? input.criteriaReview : undefined,
     limits: { findings: limit(input.limits?.findings, JOB_BRIEF_LIMITS.findings), output: limit(input.limits?.output, JOB_BRIEF_LIMITS.output) },
   };
 }
@@ -384,6 +390,11 @@ function render(r: Resolved): string {
       ...r.checks.map((c) => `- ${code(c)}`),
     );
   }
+
+  // What the criteria reviewers found and how the owner answered (t438): the
+  // section is built by criteriaFindingsSection, fenced as it fences, and
+  // carried whole.
+  if (r.criteriaReview) section(r.criteriaReview);
 
   if (r.findings) section(findingsSection(r.findings, r.limits.findings));
 
