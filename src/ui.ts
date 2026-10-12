@@ -803,12 +803,18 @@ export function renderModels(entries: ModelEntry[], record: ModelRecord, ownerNa
     const status = m.status
       ? `${tag(m.status.state, STATUS_TONE[m.status.state])}<span class="meta">checked by ${e(m.status.by ?? "a runner")} ${e(when(m.status.at))}${m.status.served && m.status.served !== m.id ? `, served as <code>${e(m.status.served)}</code>` : ""}${m.status.detail ? `, ${e(m.status.detail)}` : ""}</span>`
       : `${tag("not checked yet")}<span class="meta">the runner reports here once it has tried this model</span>`;
+    // The owner's standing, shown with when it was set; available is not shown.
+    const held = m.state && m.state !== "available"
+      ? `${tag(m.state, "ask")}<span class="meta">set ${e(when(m.stateAt ?? m.addedAt))}${m.state === "reserved" && m.note ? ` · ${e(m.note)}` : ""}</span>`
+      : "";
+    const standing = [m.roles?.length ? `${tag(m.roles.join(", "))}<span class="meta">the jobs it may take</span>` : "", m.tier ? `${tag(m.tier)}<span class="meta">tier</span>` : ""].filter(Boolean).join(" ");
     const how = [e(m.harness), e(m.provider), m.endpoint ? `<code>${e(m.endpoint)}</code>` : "", m.keychain ? `key in Keychain <code>${e(m.keychain)}</code>` : ""].filter(Boolean).join(" · ");
     return `<li class="model">
   <div class="model-head"><strong class="mono">${e(m.id)}</strong>${m.family === "other" ? tag("family not recognised", "ask") : `<span class="meta">${e(m.family)}</span>`}</div>
   <p class="meta">${how}</p>
   ${m.aliases.length ? `<p class="meta">Also known as ${m.aliases.map((a) => `<code>${e(a)}</code>`).join(", ")}</p>` : ""}
-  <p class="model-status">${status}</p>
+  <p class="model-status">${status}${held ? ` ${held}` : ""}</p>
+  ${standing ? `<p class="meta">${standing}</p>` : ""}
   <p class="meta">${r.claimed ? `Took ${plural(r.claimed, "task")}, merged ${r.merges}; checks ${r.pass} passed, ${r.fail} failed; sent back ${plural(r.back, "time")}.` : "No work recorded yet."}</p>
   ${across.map((x) => `<p class="meta">Across projects${across.length > 1 ? ` as <code>${e(x.model)}</code>` : ""}: ${e(reliabilityLine(x))}</p>`).join("")}
   ${m.note ? `<p class="meta">${e(m.note)}</p>` : ""}
