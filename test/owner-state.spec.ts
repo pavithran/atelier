@@ -29,7 +29,8 @@ function detail(): Detail {
 }
 const review = (o: Partial<Review>): Review => ({ itemId: "t1", head, criteria: NO_CRITERIA, approve: true, by: "pavi", note: "", at: time, ...o });
 const event = (seq: number, kind: string, data: Record<string, unknown>, at = time): LedgerEvent => ({ seq, itemId: "t1", at, actor: "pavi", kind, data });
-const header = (html: string) => html.slice(0, html.indexOf("</header>"));
+// The task's own header, in <main>: the owner's bar above it is a header too.
+const header = (html: string) => { const main = html.slice(html.indexOf('<main id="main"')); return main.slice(0, main.indexOf("</header>")); };
 
 afterEach(() => { setTimeZone(undefined); });
 
