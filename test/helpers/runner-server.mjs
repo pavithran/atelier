@@ -15,7 +15,7 @@ export const RUNNER_ROUTES = [
   ["GET", ITEM],
   ...["brief", "job-brief", "diff"].map((verb) => ["GET", `${ITEM}/${verb}`]),
   ...["sandbox", "logs", "diffs"].map((verb) => ["GET", `${ITEM}/${verb}/*`]),
-  ...["claim", "read-token", "base-token", "push", "evidence", "sandbox", "submit", "plan", "release", "review-skip"].map((verb) => ["POST", `${ITEM}/${verb}`]),
+  ...["claim", "read-token", "base-token", "push", "evidence", "sandbox", "submit", "plan", "release", "review-skip", "run-skip"].map((verb) => ["POST", `${ITEM}/${verb}`]),
   // A review runner's lease calls (cli/runner.mjs review jobs): agent routes, served the same way.
   ...["review-claim", "review-renew", "review-release", "review-unparsable"].map((verb) => ["POST", `${ITEM}/${verb}`]),
 ];
