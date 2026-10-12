@@ -64,15 +64,17 @@ test("a dispatch is stored only through setDispatch, which judges the model it n
   passes("setDispatch", "assertSingleFamily(");
 });
 
-test("a task's owner is set only by a claim or a handoff, both passing assertEligible", () => {
-  assert.deepEqual([...new Set(sites(/this\.update\([^)]*\{ owner: (?!null)/))].sort(), ["claim", "handoff", "unclaim"], "a new path sets a task's owner; check it with assertEligible and list it here");
+test("claim and handoff keep their eligibility checks around the runtime ownership boundary", () => {
+  // Source hints only: owner-boundary.spec.ts exercises the update and SQL
+  // guards at runtime, independent of how a future caller assembles fields.
   passes("claim", "assertClaimAllowed(");
+  passes("claim", "this.assignOwner(");
   passes("handoffAllowed", "assertEligible(");
   passes("handoff", "this.handoffAllowed(");
-  // unclaim (from main, 639ffa5) assigns no one: a claim that failed late is
-  // rolled back to the owner saved before it, which a claim or a handoff
-  // already judged. It must restore only that saved owner.
-  assert.deepEqual(body.get("unclaim")?.match(/\{ owner: [^,]+/g), ["{ owner: prior.owner"], "unclaim sets an owner other than the one saved before the failed claim");
+  passes("handoff", "this.assignOwner(");
+  // t506 restores an unowned snapshot, never grants ownership.
+  passes("unclaim", "if (prior.owner) throw");
+  passes("unclaim", "{ owner: null");
   passes("unclaim", "`claim-rollback:${id}`");
 });
 

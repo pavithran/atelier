@@ -372,3 +372,44 @@ test("routing picks builders, alternates and reviewers only from the models live
   assert.equal(prefer.builder!.actor, "codex/gpt-6-astra");
   assert.equal(prefer.builder!.reasons[0], "The plan preferred claude-code/opus-5.5 (knows the module); not chosen: no live runner offers claude-code/opus-5.5, so no runner could claim its dispatch");
 });
+
+test("a paused or reserved model is skipped for build and review alike, with its note and date", () => {
+  // glm-5.3 ranks first by model id, but it is paused, so gpt builds and opus reviews.
+  const paused = one([{ ...glm, state: "paused", stateAt: AT, note: "source down" }, gpt, opus]);
+  assert.equal(paused.builder!.actor, "codex/gpt-6-astra");
+  assert.equal(paused.reviewer!.actor, "claude-code/opus-5.5");
+  assert.deepEqual(paused.excluded, [{ actor: "zcode/glm-5.3", reasons: ["paused since 2026-10-04 (the owner's standing): source down"] }]);
+  // A paused model is not even an alternate behind the builder.
+  assert.deepEqual(actors(paused.alternates), ["claude-code/opus-5.5"]);
+  // reserved is the same hold, whatever its reason; the date is the entry's.
+  const reserved = one([{ ...glm, state: "reserved", note: "astra's credits" }, gpt, opus]);
+  assert.equal(reserved.builder!.actor, "codex/gpt-6-astra");
+  assert.deepEqual(reserved.excluded, [{ actor: "zcode/glm-5.3", reasons: ["reserved since 2026-10-04 (the owner's standing): astra's credits"] }]);
+  // A paused model is never the reviewer either: with only gpt and a paused opus, no reviewer remains.
+  const noReview = one([gpt, { ...opus, state: "paused", note: "source down" }]);
+  assert.equal(noReview.builder!.actor, "codex/gpt-6-astra");
+  assert.equal(noReview.reviewer, null);
+  assert.match(noReview.unrouted!, /claude-code\/opus-5\.5 \(paused since 2026-10-04/);
+  // available (the default) holds nothing back.
+  assert.deepEqual(one([{ ...opus, state: "available" }, gpt]).excluded, []);
+});
+
+test("a model's roles limit the jobs it is routed to; a review-only model is never a builder", () => {
+  // glm-5.3 ranks first, so gpt's review-only roles keep it out of the build but it still reviews.
+  const reviewOnly = one([{ ...gpt, roles: ["review"] }, glm, opus]);
+  assert.equal(reviewOnly.builder!.actor, "zcode/glm-5.3");
+  assert.equal(reviewOnly.reviewer!.actor, "codex/gpt-6-astra");
+  assert.deepEqual(reviewOnly.excluded, [{ actor: "codex/gpt-6-astra", reasons: ["not a builder; its roles are review"] }]);
+  assert.ok(reviewOnly.reviewer!.reasons.some((reason) => reason.startsWith("Another family (openai)")));
+  // A build-only model never reviews: opus is the only cross-family candidate and it cannot.
+  const buildOnly = one([gpt, { ...opus, roles: ["build"] }]);
+  assert.equal(buildOnly.builder!.actor, "codex/gpt-6-astra");
+  assert.equal(buildOnly.reviewer, null);
+  assert.match(buildOnly.unrouted!, /claude-code\/opus-5\.5 \(not a reviewer; its roles are build\)/);
+  // A model limited to neither build nor review cannot take the part at all.
+  const planOnly = one([{ ...gpt, roles: ["plan"] }, opus]);
+  assert.equal(planOnly.builder!.actor, "claude-code/opus-5.5");
+  assert.equal(planOnly.reviewer, null);
+  assert.deepEqual(planOnly.excluded, [{ actor: "codex/gpt-6-astra", reasons: ["not a builder; its roles are plan"] }]);
+  assert.match(planOnly.unrouted!, /not a reviewer; its roles are plan/);
+});

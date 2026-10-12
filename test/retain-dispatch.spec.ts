@@ -90,6 +90,40 @@ it("--overlap-ok on a held dispatch keeps its builder and place, is idempotent, 
   expect(await L.item(claimed)).toMatchObject({ state: "open", owner: null, fork: `${name}--${claimed}` });
 });
 
+// The builder given in a retained dispatch's place goes through the owner's
+// standing (t389) like a dispatch's own, read from the pool as it stands:
+// one paused, reserved or kept from building is refused with the reason, and
+// the waiting dispatch is unchanged.
+it("--overlap-ok with a builder the owner holds from building is refused and changes nothing", async () => {
+  const name = "core-retain-held";
+  const record = { name, repo: name, policy: { checks: ["npm test"], protected: [], coreFiles: ["src/ledger.ts"] }, createdAt: new Date().toISOString() };
+  const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
+  await L.setProject(record, "owner");
+  const index = env.LEDGER.get(env.LEDGER.idFromName("__index"));
+  await index.registerProject(record);
+  const entry = (id: string, change: Partial<ModelEntry> = {}): ModelEntry => ({
+    id, harness: "opencode", where: "home", provider: "subscription", aliases: [], family: familyOf(id), note: "", addedBy: "owner", addedAt: "2026-10-06T12:00:00.000Z", ...change,
+  });
+  await index.putModel(entry("glm-5.3-flash"));
+  await index.putModel(entry("qwen3-coder-next", { state: "paused", stateAt: "2026-10-06T12:00:00.000Z", note: "AI Studio down" }));
+  await index.putModel(entry("kimi-k3", { roles: ["review"] }));
+  const id = ((await (await call("POST", `/projects/${name}/items`, { title: "Core edit", scope: ["src/ledger.ts"] })).json()) as { id: string }).id;
+  const first = await call("POST", `/projects/${name}/items/${id}/dispatch`, { to: "home", agent: "opencode", model: "glm-5.3-flash", note: "keep" });
+  const { dispatch } = (await first.json()) as { dispatch: Record<string, unknown> };
+  for (const [model, why] of [["qwen3-coder-next", /paused since 2026-10-06 \(the owner's standing\): AI Studio down/], ["kimi-k3", /not a builder; its roles are review/]] as const) {
+    const res = await call("POST", `/projects/${name}/items/${id}/dispatch`, { retain: true, overlapOk: true, model });
+    expect(res.status, model).toBe(409);
+    const body = (await res.json()) as { error: string; detail: string };
+    expect(body.error, model).toBe("model_held");
+    expect(body.detail, model).toMatch(why);
+    expect((await L.item(id)).dispatch, model).toEqual(dispatch);
+  }
+  // The builder it has is available: the release goes through as before.
+  const released = await call("POST", `/projects/${name}/items/${id}/dispatch`, { retain: true, overlapOk: true });
+  expect(released.status).toBe(200);
+  expect(((await released.json()) as { dispatch: Record<string, unknown> }).dispatch).toEqual({ ...dispatch, overlapOk: true });
+});
+
 // A pool that could suggest a builder, as other dispatch specs seed it, so a
 // retained dispatch is accepted and its suppressed suggestion is observable.
 const POOL: ModelEntry[] = ["shared", "new"].map((id) => ({

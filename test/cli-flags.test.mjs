@@ -122,6 +122,10 @@ globalThis.fetch = async (url, options = {}) => {
   if (path === "/api/config") data = { ownerActor: "owner", ownerName: "Pavi" };
   else if (path === "/api/projects") data = [{ name: "demo", title: "Demo" }];
   else if (path === "/api/inbox") data = [];
+  // t389: the pool holds one reserved, review-only frontier model; a set
+  // answers with the entry as changed.
+  else if (path === "/api/models") data = [{ id: "gpt-6-astra", harness: "codex", where: "cloud", provider: "openai", aliases: [], family: "openai", note: "credits held for t370", addedBy: "owner", addedAt: "2026-10-01T09:00:00.000Z", state: "reserved", stateAt: "2026-10-08T09:00:00.000Z", roles: ["review"], tier: "frontier" }];
+  else if (path === "/api/models/gpt-6-astra/set") data = { id: "gpt-6-astra", state: body.state, stateAt: "2026-10-10T08:00:00.000Z", note: body.note, roles: body.roles.split(","), tier: body.tier };
   else if (m) {
     const rest = m[1] ?? "";
     // t394: the stub records a model-policy switch as the server does, stamped with who and when.
@@ -333,6 +337,35 @@ test("dispatch with no --agent asks the server to suggest a builder and prints t
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(f.requests().at(-1).body, { to: "home", suggest: true });
   assert.equal(r.stdout, "Builder: claude-code/opus-5.5. Eligible pool models ranked by recorded successful and failed outcomes. Passed over codex/gpt-6.1-sol: two consecutive stalled builds; no successful build since.\nt3 is waiting for a home runner, claude-code with opus-5.5.\n");
+});
+
+// t389: the owner's standing for a model is set with models set and comes
+// back from models, in its listing and as JSON.
+test("models set sends state, note, roles and tier; models lists them and --json returns them", (t) => {
+  const f = fixture(t);
+  const set = f.run(f.checkout, ["models", "set", "gpt-6-astra", "--state", "paused", "--note", "AI Studio down", "--roles", "build,review", "--tier", "execution"]);
+  assert.equal(set.status, 0, set.stderr);
+  const sent = f.requests().at(-1);
+  assert.equal(sent.method, "POST");
+  assert.equal(sent.path, "/api/models/gpt-6-astra/set");
+  assert.deepEqual(sent.body, { state: "paused", note: "AI Studio down", roles: "build,review", tier: "execution" });
+  assert.equal(set.stdout, "gpt-6-astra: paused since 2026-10-10T08:00Z roles build,review tier execution (AI Studio down).\n");
+
+  const listed = f.run(f.checkout, ["models"]);
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.equal(listed.stdout, "cloud codex/gpt-6-astra  openai  not checked  reserved since 2026-10-08T09:00Z  roles: review  tier: frontier\n");
+
+  const json = f.run(f.checkout, ["models", "--json"]);
+  assert.equal(json.status, 0, json.stderr);
+  const [entry] = JSON.parse(json.stdout);
+  assert.deepEqual({ state: entry.state, stateAt: entry.stateAt, roles: entry.roles, tier: entry.tier, note: entry.note }, { state: "reserved", stateAt: "2026-10-08T09:00:00.000Z", roles: ["review"], tier: "frontier", note: "credits held for t370" });
+
+  // A set that names nothing to change is refused before any request.
+  f.clear();
+  const empty = f.run(f.checkout, ["models", "set", "gpt-6-astra"]);
+  assert.equal(empty.status, 1);
+  assert.match(empty.stderr, /name at least one/);
+  assert.deepEqual(f.requests().filter((r) => r.path.startsWith("/api/models")), []);
 });
 
 // t360: --version answers after any command, before any request.
