@@ -219,6 +219,20 @@ The queue offers a tier request as `job:"review"` like any review, and the claim
 
 **A rejection with blocker findings** triggers an internal release, then a dispatch back to the builder with the findings. The re-review goes to the same reviewer first. After two rounds, the part goes to an alternate builder; after that, the plan is blocked. An approval moves the part to integration: the tick dispatches the plan item's integrate job (`integrateDispatch` in `src/ledger.ts`; section 5).
 
+## 4b. t438: review of the acceptance criteria before dispatch
+
+The criteria are what section 4's review judges a change against, so criteria that cannot be observed, contradict the brief or leave the task open to any reading send a build down the wrong path before it starts. A criteria review judges them first, apart from any review of a change (`src/review/criteria.ts`).
+
+**Revisions and authors.** The stored criteria are recorded by revision (`criteria_revisions` in `src/ledger.ts`): every change of the lists is a new revision with its author, and an approval binds to a revision number, not to the text. An edit and its revert are two revisions, neither the approved one, so the approval is gone for good; an edit that stores the same lists again is no revision and keeps it. A revision's authors are everyone who wrote any revision up to it.
+
+**The reviewer.** `atelier criteria-review ID [--reviewer H/M]` asks for one: a model of a recognised family different from every model author's, by the family rules the gate applies to code (`familyRefusal` in `src/rules.ts`); criteria only the owner or Atelier wrote have no model author, so any recognised family may review them. Criteria with no recorded author, a model author of no recognised family, or no qualifying reviewer refuse with the reason rather than guessing. A plan asks for each part's criteria review itself before it dispatches the part, of another family than the planner that wrote them.
+
+**Storage.** `criteria_reviews(item, rev, criteria, authors, reviewer, dispatch, state, ...)` holds each review with its binding, author and reviewer identities, verdict, findings and the checks after deploy it flagged; `criteria_resolutions` holds the owner's verdicts on its findings (`atelier criteria-finding ID --review N --index N --verdict confirmed|refuted|fixed`). The queue offers an open review as `job:"criteria-review"` under its own request number; `criteria-review-claim` binds it to one reviewer, `criteria-verdict` records the verdict bound to the revision, binding and request the claim gave, and `criteria-review-failed` records a harness that stopped, timed out or wrote no verdict, which approves nothing. A claim that lapses fails the same way, and a verdict that arrives after the criteria changed is refused.
+
+**The gate.** Under `atelier init --require-criteria-review`, the server's dispatch and claim of a build, a plan's automatic part dispatch and queued work included, need a current approval of the revision the criteria are at now, with every blocking finding settled (refuted or fixed). The planner's job and the review jobs are exempt; the merge, integrate and refresh jobs keep their own gates. Any edit of the criteria withdraws the approval and the open requests under it, and the existing code-review invalidation and the landing and integrated edit restrictions stand. With the policy off, nothing is held, and the review may still be asked for.
+
+**What the briefs carry.** The build brief and the code-review brief carry the criteria reviews' findings with the owner's recorded resolutions. A criterion the builder cannot verify in its workspace (a signed-in browser, production data, a deployed service, a human step) is no defect of the criteria (t457): the review flags it with a CHECK line as a check after deploy, the project owner's or the orchestrator's; the build brief tells the builder not to claim it verified, and the code review's reply may mark that criterion deferred rather than reject for it. `atelier show ID --reviews` prints the criteria reviews with their findings, resolutions and checks.
+
 ## 5. t16: integration branch per plan
 
 **Parts fork from the plan's fork, at its current head.** This changes the claim route's source repository. It also means changed paths must be measured against the plan's fork, not the baseline. Today these all assume the baseline:
@@ -378,6 +392,7 @@ Reaching any limit blocks the plan; it never continues silently. The approval re
 ### Implementation files
 - `src/ledger.ts`
 - `src/rules.ts`
+- `src/review/criteria.ts`
 - `src/index.ts`
 - `cli/runner.mjs`
 - `src/models/routing.ts`
