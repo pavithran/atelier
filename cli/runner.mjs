@@ -2394,59 +2394,57 @@ export function runnerCheckout(dir = RUNNER_CHECKOUT, executeChild = execute) {
   };
 }
 
-// The first Node whose process.execve throws when the exec fails: from 22.15
-// (where it appeared) through 26.0, a failed execve(2) aborts the process
-// (src/node_process_methods.cc calls ABORT), past any catch, so there a
-// reload is never tried.
-export const EXECVE_THROWS_FROM = [26, 1];
-export function execveThrows(version = process.version) {
-  const [major, minor] = (/^v?(\d+)\.(\d+)\./.exec(version) ?? []).slice(1).map(Number);
-  return major > EXECVE_THROWS_FROM[0] || (major === EXECVE_THROWS_FROM[0] && minor >= EXECVE_THROWS_FROM[1]);
+// A replacement signals readiness only after runner initialization, and waits
+// for the old process to release it before polling. No job can overlap the
+// handoff. These APIs work on every supported Node, without process.execve.
+export const RELOAD_HANDOFF = "ATELIER_RUNNER_HANDOFF";
+export const RELOAD_TARGET = "ATELIER_RUNNER_RELOAD_TARGET";
+export async function runnerReady() {
+  if (!process.env[RELOAD_HANDOFF]) return;
+  delete process.env[RELOAD_HANDOFF];
+  if (!process.connected || !process.send) throw new Error("reload IPC channel is missing");
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("reload release timed out")), 60_000);
+    process.once("disconnect", () => { clearTimeout(timer); resolve(); });
+    process.send({ type: "runner-ready" }, (error) => {
+      if (error) { clearTimeout(timer); reject(error); }
+    });
+  });
 }
 
-// Why execve(2) would refuse this command line, or null: an executable
-// that is not an executable file, a script that cannot be read, an argument
-// or environment entry that is not a string without NUL. Checked before the
-// call, so a failure that would leave the process is caught here instead.
-export function reexecRefusal(execPath, args, env) {
-  const file = (path, mode) => {
-    try { if (!statSync(path).isFile()) return "is not a file"; accessSync(path, mode); return null; }
-    catch (error) { return error.code ?? error.message; }
-  };
-  const text = (value) => typeof value === "string" && !value.includes("\0");
-  if (typeof execPath !== "string" || !execPath.startsWith("/")) return `the Node executable ${JSON.stringify(execPath)} is not an absolute path`;
-  const node = file(execPath, constants.X_OK);
-  if (node) return `the Node executable ${execPath} cannot run (${node})`;
-  if (!Array.isArray(args) || !args.every(text)) return "an argument is not a string without NUL";
-  const script = args.find((arg, index) => index > 0 && !arg.startsWith("-"));
-  if (!script) return "the command line names no script";
-  const unreadable = file(script, constants.R_OK);
-  if (unreadable) return `the script ${script} cannot be read (${unreadable})`;
-  if (!env || typeof env !== "object" || !Object.entries(env).every(([key, value]) => text(key) && key && !key.includes("=") && text(value))) return "an environment entry is not a NAME=value string without NUL";
-  return null;
-}
-
-// Why this Node cannot reload in place, or null: it has no process.execve,
-// or a failed one would abort it.
-export function reexecUnsupported({ execve = process.execve, version = process.version } = {}) {
-  if (typeof execve === "function" && execveThrows(version)) return null;
-  return `this Node (${version}) cannot reload in place: ${typeof execve !== "function" ? "it has no process.execve" : "a failed process.execve aborts it"}; Node ${EXECVE_THROWS_FROM.join(".")} or later can`;
-}
-
-// Replaces this process with the same command line, run anew from the
-// checkout: exec in place, so the pid stays and launchd keeps the job. A
-// failure throws, and this process runs on: a Node reexecUnsupported names
-// (marked cannotReload), a command line reexecRefusal refuses, or the exec
-// refused on a Node whose execve throws for it.
-export async function reexecSelf(env, { execve = process.execve, argv = process.argv, execArgv = process.execArgv, execPath = process.execPath, version = process.version } = {}) {
-  const unsupported = reexecUnsupported({ execve, version });
-  if (unsupported) throw Object.assign(new Error(unsupported), { cannotReload: true });
-  const args = [execPath, ...execArgv, ...argv.slice(1)];
-  const refusal = reexecRefusal(execPath, args, env);
-  if (refusal) throw new Error(refusal);
-  // The reload line reaches a piped log before the image is replaced.
-  for (const stream of [process.stdout, process.stderr]) await new Promise((done) => stream.write("", done));
-  execve(execPath, args, env);
+// The replacement is not a job child: it must survive the old runner's exit
+// cleanup. On failure, kill it and wait for its exit before resuming work.
+export async function reexecSelf(env, { argv = process.argv, execArgv = process.execArgv, execPath = process.execPath, readyTimeoutMs = 60_000 } = {}) {
+  const child = spawn(execPath, [...execArgv, ...argv.slice(1)], {
+    env: { ...env, [RELOAD_HANDOFF]: "1" },
+    stdio: ["inherit", "inherit", "inherit", "ipc"], detached: true,
+  });
+  await new Promise((resolve, reject) => {
+    let failure;
+    const fail = (error) => {
+      if (failure) return;
+      failure = error;
+      clearTimeout(timer);
+      if (child.pid) child.kill("SIGKILL");
+      else reject(error);
+    };
+    const timer = setTimeout(() => fail(new Error("replacement runner readiness timed out")), readyTimeoutMs);
+    child.on("error", fail);
+    child.once("exit", (code, signal) => {
+      clearTimeout(timer);
+      reject(failure ?? new Error(`replacement runner exited before ready (${signal ?? code})`));
+    });
+    child.on("message", (message) => {
+      if (failure || message?.type !== "runner-ready") return;
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+  // The old runner is idle and cannot resume its loop after this point.
+  // Closing IPC releases the initialized replacement to poll for work.
+  child.disconnect();
+  child.unref();
+  process.exit(0);
 }
 
 // What an idle runner does about the deployed commit: nothing while the
@@ -2719,17 +2717,20 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // runner compares the deployed one. A --once run never reloads.
     const reloading = reload && !args.once;
     const started = reloading ? await reload.checkout.head().catch(() => null) : null;
+    const target = process.env[RELOAD_TARGET];
+    delete process.env[RELOAD_TARGET];
+    if (target && (!started || !await reload.checkout.contains(target, started))) {
+      throw new Error("replacement checkout no longer contains the deployed commit");
+    }
     const reloadedFrom = process.env[RELOADED_FROM];
     delete process.env[RELOADED_FROM];
     if (reloading && reloadedFrom) line(`reloaded: was ${short(reloadedFrom)}, now ${short(started)}`);
     if (reloading && !started) line(`the commit this runner started from cannot be read in ${reload.checkout.dir}; it will not reload itself after a deploy`);
     // The deployed commit last said to be missing from the checkout, and the
     // one a re-exec failed for: each is said once, and a failed one is not
-    // tried again until the next deploy; a Node that cannot reload in place
-    // is said once and never tried again.
-    let saidBehind = null, failedReload = null, cannotReload = false;
+    // tried again until the next deploy.
+    let saidBehind = null, failedReload = null;
     const reloadIfDeployed = async () => {
-      if (cannotReload) return;
       const check = await reloadCheck(started, { version, checkout: reload.checkout, signal: controller.signal });
       if (controller.signal.aborted || check.action === "none") return;
       if (check.action === "behind") {
@@ -2741,16 +2742,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       // A skip report not yet taken lives only in this process: the reload
       // waits until the server has it.
       if (failedReload === check.deployed || pendingSkips.size) return;
-      const cannot = (why) => {
-        cannotReload = true;
-        line(`reload skipped: ${why}; still running ${short(started)}. Restart this runner by hand to load ${short(check.deployed)}, and after each deploy`);
-      };
-      const unsupported = reload.unsupported?.();
-      if (unsupported) return cannot(unsupported);
-      line(`reloading: started from ${short(started)}, the server runs ${short(check.deployed)}; re-executing in place (same pid) from ${reload.checkout.dir} at ${short(check.head)}`);
-      try { await reload.reexec({ ...process.env, [RELOADED_FROM]: started }); }
+      line(`reloading: started from ${short(started)}, the server runs ${short(check.deployed)}; starting replacement runner from ${reload.checkout.dir} at ${short(check.head)}`);
+      try { await reload.reexec({ ...process.env, [RELOADED_FROM]: started, [RELOAD_TARGET]: check.deployed }); }
       catch (error) {
-        if (error.cannotReload) return cannot(error.message);
         failedReload = check.deployed;
         line(`reload failed: ${error.message}; still running ${short(started)}. Restart this runner by hand to load ${short(check.deployed)}`);
       }
@@ -2783,6 +2777,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       for (const r of reasons) line(`  ${r.task}  ${r.line}`);
       if (unread) line(`found nothing to claim; the server's reasons for the dispatches waiting could not be read (${unread}), so atelier status names them.`);
     };
+    await runnerReady();
     while (!controller.signal.aborted) {
       let state;
       try {

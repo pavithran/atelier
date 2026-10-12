@@ -1,14 +1,14 @@
 // t265: a home runner reloads itself after a deploy. Between jobs, after a
 // poll that claimed nothing, it reads the deployed commit (GET /api/version);
-// once its checkout contains it, it re-executes itself in place with the same
+// once its checkout contains it, it starts a replacement with the same
 // arguments, and until then says once that it is behind.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { RELOADED_FROM, execveThrows, planFilePath, reexecRefusal, reexecSelf, reexecUnsupported, reloadCheck, runRunner, runnerCheckout } from "../cli/runner.mjs";
+import { RELOADED_FROM, planFilePath, reexecSelf, reloadCheck, runRunner, runnerCheckout } from "../cli/runner.mjs";
 import { fileURLToPath } from "node:url";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 
@@ -68,7 +68,7 @@ for (const [kind, args] of Object.entries(kinds)) {
     assert.equal(polls, 1, "the first idle poll reloads");
     const reloading = s.logs.filter((l) => l.startsWith("runner: reloading:"));
     assert.equal(reloading.length, 1);
-    assert.match(reloading[0], new RegExp(`started from ${OLD.slice(0, 8)}, the server runs ${NEW.slice(0, 8)}; re-executing in place \\(same pid\\)`));
+    assert.match(reloading[0], new RegExp(`started from ${OLD.slice(0, 8)}, the server runs ${NEW.slice(0, 8)}; starting replacement runner`));
   });
 }
 
@@ -148,13 +148,13 @@ test("a failed re-exec keeps the old process running, said once, and not tried a
     credential: "secret", workspacePath: () => s.workspace, wait: async () => {},
     version: async () => answer(polls === 0 ? OLD : polls < 4 ? NEW : LATER),
     queue: async () => { if (++polls > 5) stop(); return []; },
-    reload: { checkout: fakeCheckout([OLD, LATER]), reexec: async () => { execs.push(polls); throw new Error("exec refused"); } },
+    reload: { checkout: fakeCheckout([OLD, LATER]), reexec: async () => { execs.push(polls); await reexecSelf(process.env, { execPath: join(s.dir, "missing-node") }); } },
   });
   assert.deepEqual(execs, [1, 4], "once for the deploy, again for the next one");
   assert.equal(polls, 6, "the old process polled on");
   const failed = s.logs.filter((l) => l.startsWith("runner: reload failed:"));
   assert.equal(failed.length, 2);
-  assert.match(failed[0], /exec refused; still running aaaaaaaa\. Restart this runner by hand to load bbbbbbbb/);
+  assert.match(failed[0], /ENOENT.*; still running aaaaaaaa\. Restart this runner by hand to load bbbbbbbb/);
 });
 
 test("the reloaded process starts from the deployed commit, says so, and does not reload again", async (t) => {
@@ -210,95 +210,60 @@ test("runnerCheckout reads a real checkout's HEAD and which commits it contains"
   assert.equal(await runnerCheckout(join(dir, "missing")).head(), null);
 });
 
-test("reexecSelf replaces the process with the same command line and environment, and throws where it cannot", async () => {
-  const calls = [];
-  const execPath = process.execPath, script = fileURLToPath(import.meta.url), supported = { version: "v26.1.0" };
-  await reexecSelf({ A: "1" }, { ...supported, execve: (...call) => calls.push(call), execPath, execArgv: ["--flag"], argv: ["/node", script, "runner", "--name", "home:studio"] });
-  assert.deepEqual(calls, [[execPath, [execPath, "--flag", script, "runner", "--name", "home:studio"], { A: "1" }]]);
-  const never = () => assert.fail("execve was called");
-  await assert.rejects(reexecSelf({}, { ...supported, execve: null }), (error) => error.cannotReload && /has no process\.execve/.test(error.message));
-  await assert.rejects(reexecSelf({}, { version: "v24.0.0", execve: never, execPath, argv: ["/node", script] }), (error) => error.cannotReload && /v24\.0\.0\) cannot reload in place: a failed process\.execve aborts it; Node 26\.1 or later can/.test(error.message));
-  await assert.rejects(reexecSelf({}, { ...supported, execve: never, execPath: "/missing/node", argv: ["/node", script] }), /the Node executable \/missing\/node cannot run \(ENOENT\)/);
-  await assert.rejects(reexecSelf({}, { ...supported, execve: () => { throw new Error("ENOEXEC"); }, execPath, argv: ["/node", script] }), /ENOEXEC/);
-});
 
-test("execveThrows: only a Node whose failed process.execve throws, 26.1 or later, may try one", () => {
-  for (const version of ["v22.15.0", "v23.11.0", "v24.0.0", "v24.21.0", "v25.9.0", "v26.0.0", "nonsense"]) assert.equal(execveThrows(version), false, version);
-  for (const version of ["v26.1.0", "v26.9.0", "v27.0.0", "v30.2.1"]) assert.equal(execveThrows(version), true, version);
-  assert.equal(reexecUnsupported({ execve: () => {}, version: "v26.1.0" }), null);
-  assert.match(reexecUnsupported({ execve: () => {}, version: "v24.0.0" }), /a failed process\.execve aborts it/);
-  assert.match(reexecUnsupported({ execve: null, version: "v26.9.0" }), /has no process\.execve/);
-});
-
-test("reexecRefusal names what execve(2) would refuse before it is called", (t) => {
+// Real children exercise spawn errors, startup failure, timeout cleanup and
+// the readiness barrier on the running Node, including supported Node 24.
+test("failed spawn and failed readiness keep the caller alive", async (t) => {
   const s = setup(t);
-  const node = process.execPath, script = fileURLToPath(import.meta.url);
-  const plain = join(s.dir, "plain");
-  writeFileSync(plain, "", { mode: 0o644 });
-  assert.equal(reexecRefusal(node, [node, "--flag", script, "runner"], { A: "1" }), null);
-  assert.match(reexecRefusal("node", [node, script], {}), /is not an absolute path/);
-  assert.match(reexecRefusal(join(s.dir, "missing"), [node, script], {}), /cannot run \(ENOENT\)/);
-  assert.match(reexecRefusal(plain, [node, script], {}), /cannot run \(EACCES\)/);
-  assert.match(reexecRefusal(s.dir, [node, script], {}), /is not a file/);
-  assert.match(reexecRefusal(node, [node, join(s.dir, "gone.mjs")], {}), /the script .*gone\.mjs cannot be read \(ENOENT\)/);
-  assert.match(reexecRefusal(node, [node, "--flag"], {}), /names no script/);
-  assert.match(reexecRefusal(node, [node, script, "a\0b"], {}), /argument/);
-  assert.match(reexecRefusal(node, [node, script, 7], {}), /argument/);
-  for (const env of [{ A: 1 }, { A: "x\0y" }, { "A=B": "1" }, { "": "1" }, null]) assert.match(reexecRefusal(node, [node, script], env), /environment entry/, JSON.stringify(env));
+  await assert.rejects(reexecSelf(process.env, { execPath: join(s.dir, "missing-node") }), /ENOENT/);
+  await assert.rejects(reexecSelf(process.env, {
+    execArgv: [], argv: [process.execPath, "--eval", "process.exit(7)"],
+  }), /exited before ready \(7\)/);
+  const pidFile = join(s.dir, "pid");
+  await assert.rejects(reexecSelf(process.env, {
+    execArgv: [], argv: [process.execPath, "--eval", `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`],
+    readyTimeoutMs: 1000,
+  }), /readiness timed out/);
+  const pid = Number(readFileSync(pidFile, "utf8"));
+  assert.throws(() => process.kill(pid, 0), /ESRCH/, "timed-out replacement is gone before old runner resumes");
 });
 
-test("a runner on a Node that cannot reload in place says so once and never tries", async (t) => {
-  const s = setup(t);
-  let polls = 0;
-  await runRunner(kinds.build(s), {
-    credential: "secret", workspacePath: () => s.workspace, wait: async () => {},
-    version: async () => answer(polls < 3 ? NEW : LATER),
-    queue: async () => { if (++polls > 5) stop(); return []; },
-    reload: { checkout: fakeCheckout([OLD, LATER]), unsupported: () => "this Node (v24.0.0) cannot reload in place: a failed process.execve aborts it; Node 26.1 or later can", reexec: async () => assert.fail("reexec was tried") },
-  });
-  assert.equal(polls, 6, "the old process polled on");
-  assert.deepEqual(s.logs.filter((l) => /reload/.test(l)), [`runner: reload skipped: this Node (v24.0.0) cannot reload in place: a failed process.execve aborts it; Node 26.1 or later can; still running ${OLD.slice(0, 8)}. Restart this runner by hand to load ${NEW.slice(0, 8)}, and after each deploy`]);
-});
-
-// A real process.execve in a child node, through reexecSelf: an executable
-// that is not a program (ENOEXEC) passes the checks and fails in the
-// syscall; a missing one is refused before it. The child must survive both,
-// on any Node: where a failed exec would abort, it is never attempted.
-test("a real failed re-exec leaves the process running", (t) => {
-  const s = setup(t);
-  const garbage = join(s.dir, "not-a-program");
-  writeFileSync(garbage, "\x7fnot an executable image\n", { mode: 0o755 });
-  const runner = new URL("../cli/runner.mjs", import.meta.url).href, script = fileURLToPath(import.meta.url);
-  const child = `
-    const { reexecSelf } = await import(${JSON.stringify(runner)});
-    for (const execPath of ${JSON.stringify([garbage, join(s.dir, "missing-node")])}) {
-      try { await reexecSelf({ PATH: "/usr/bin:/bin" }, { execPath, execArgv: [], argv: [process.execPath, ${JSON.stringify(script)}] }); console.log("replaced?"); }
-      catch (error) { console.log("survived: " + (error.code ?? "") + " " + error.message); }
-    }
-    console.log("still pid " + process.pid);`;
-  const result = spawnSync(process.execPath, ["--input-type=module", "-e", child], { encoding: "utf8", timeout: 30_000 });
-  assert.equal(result.status, 0, result.stderr);
-  const lines = result.stdout.trim().split("\n");
-  assert.equal(lines.length, 3, result.stdout);
-  if (execveThrows()) assert.match(lines[0], /^survived: ENOEXEC /, "the syscall really ran and failed");
-  else assert.match(lines[0], /^survived: {2}this Node .* cannot reload in place/);
-  assert.match(lines[1], execveThrows() ? /^survived: {2}the Node executable .*missing-node cannot run \(ENOENT\)/ : /cannot reload in place/);
-  assert.match(lines[2], /^still pid \d+$/);
-});
-
-test("a real re-exec replaces the process in place, same pid, with the same arguments", { skip: !execveThrows() && `this Node (${process.version}) does not reload in place` }, (t) => {
+test("real replacement waits for readiness, preserves arguments and environment, then starts without another reload", (t) => {
   const s = setup(t);
   const next = join(s.dir, "next.mjs");
-  writeFileSync(next, `console.log(JSON.stringify({ pid: process.pid, args: process.argv.slice(2), from: process.env.FROM }));\n`);
   const runner = new URL("../cli/runner.mjs", import.meta.url).href;
+  writeFileSync(next, `
+    import { runRunner, RELOADED_FROM } from ${JSON.stringify(runner)};
+    const oldPid = process.ppid;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    process.kill(oldPid, 0); // The old runner must survive initialization.
+    console.log(JSON.stringify({ phase: 'initialized', pid: process.pid, args: process.argv.slice(2), from: process.env[RELOADED_FROM], flag: process.execArgv, custom: process.env.CUSTOM }));
+    let polls = 0;
+    await runRunner({ _: ['runner'], multi: {}, name: 'home:replacement', integrate: true }, {
+      credential: 'test', workspacePath: () => '.', wait: async () => {},
+      version: async () => (${JSON.stringify(answer(NEW))}),
+      queue: async () => { console.log('replacement polled'); if (++polls === 3) process.emit('SIGTERM'); return []; },
+      reload: { checkout: { dir: '.', head: async () => '${NEW}', contains: async (commit) => commit === '${NEW}' }, reexec: async () => { throw new Error('reload loop'); } },
+    });
+  `);
   const child = `
     const { reexecSelf } = await import(${JSON.stringify(runner)});
-    console.log(JSON.stringify({ pid: process.pid }));
-    await reexecSelf({ ...process.env, FROM: "old" }, { execArgv: [], argv: [process.execPath, ${JSON.stringify(next)}, "runner", "--name", "home:studio"] });
-    console.log("not replaced");`;
-  const result = spawnSync(process.execPath, ["--input-type=module", "-e", child], { encoding: "utf8", timeout: 30_000 });
+    console.log('old pid ' + process.pid);
+    await reexecSelf({ ...process.env, CUSTOM: 'preserved', ATELIER_RUNNER_RELOADED_FROM: '${OLD}', ATELIER_RUNNER_RELOAD_TARGET: '${NEW}' }, {
+      execArgv: ['--no-warnings'], argv: [process.execPath, ${JSON.stringify(next)}, 'runner', '--name', 'home:replacement'],
+    });
+    console.log('old resumed');
+  `;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', child], { encoding: 'utf8', timeout: 30_000 });
   assert.equal(result.status, 0, result.stderr);
-  const [before, after, ...rest] = result.stdout.trim().split("\n").map((l) => JSON.parse(l));
-  assert.deepEqual(rest, []);
-  assert.deepEqual(after, { pid: before.pid, args: ["runner", "--name", "home:studio"], from: "old" });
+  const lines = result.stdout.trim().split('\n');
+  const initialized = JSON.parse(lines.find((line) => line.startsWith('{')));
+  assert.notEqual(initialized.pid, Number(lines[0].slice(8)));
+  assert.deepEqual(initialized.args, ['runner', '--name', 'home:replacement']);
+  assert.deepEqual(initialized.flag, ['--no-warnings']);
+  assert.equal(initialized.from, OLD);
+  assert.equal(initialized.custom, 'preserved');
+  assert.match(result.stdout, /reloaded: was aaaaaaaa, now bbbbbbbb/);
+  assert.equal(lines.filter((line) => line === 'replacement polled').length, 3);
+  assert.doesNotMatch(result.stdout + result.stderr, /old resumed|reload loop|reloading:/);
 });

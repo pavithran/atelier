@@ -432,9 +432,10 @@ a poll that claimed nothing, a runner (build, review or the integrator) reads
 the deployed commit from `GET /api/version`. When the commit it started from
 does not contain the deployed one, and the checkout it runs from (the folder
 holding `cli/atelier.mjs`) now does, it logs `runner: reloading: started from
-OLD, the server runs NEW; re-executing in place (same pid) …` and replaces
-itself with the same command line through `process.execve`: the pid stays,
-so a launchd job stays loaded and is not restarted.
+OLD, the server runs NEW; starting replacement runner …` and spawns the
+same command line with the same environment. The replacement initializes,
+signals ready over IPC, and waits for the old process to release it before
+polling for work. The old process then exits. The replacement has a new pid.
 The new process logs `runner: reloaded: was OLD, now NEW`. Until the checkout
 holds the deployed commit it logs once `runner: behind: …`, with the `git -C
 CHECKOUT pull --ff-only` that updates it, and reloads at its first idle poll
@@ -447,16 +448,13 @@ or names no commit means no reload. A re-exec that fails logs `runner: reload
 failed: …` and the old process runs on; it is tried again only after the
 next deploy, or restart it by hand.
 
-Reloading in place needs Node 26.1 or later. Before 26.1 a failed
-`execve(2)` aborts Node (it calls `ABORT` in `node_process_methods.cc`)
-rather than throwing, which would kill the runner, so on an older Node
-(Atelier supports 24 or later, `engines` in package.json) a runner never
-tries: it logs once `runner: reload skipped: this Node (vX) cannot reload in
-place …` and runs on; restart it by hand after a deploy there. Before the
-call, the runner checks what the syscall needs: the Node executable is an
-executable file, the script is readable, and every argument and environment
-entry is a string without NUL (and a name without `=`); a check that fails
-is a failed re-exec, said as above.
+Reloading works on all supported Node versions (24 and later), without
+`process.execve`. If spawning fails, initialization exits, or readiness takes
+longer than 60 seconds, the old runner logs the failure and keeps running.
+A replacement that times out is killed before the old runner resumes.
+Supervisors must allow the replacement process to survive the original pid's
+exit; a supervisor that kills descendants or starts another runner on that
+exit needs its lifecycle configuration adjusted for this handoff.
 
 Save a config at `~/.config/atelier/runner.json`, or select one with `--config PATH`:
 
