@@ -25,8 +25,25 @@ export interface Brief {
   accept: string[];
   partAccept: string[] | null;
   criteria: string;
+  // Where the review of the criteria themselves stands (t438): one line,
+  // from the detail's criteriaReview, or null when the server sends none.
+  criteriaReview: string | null;
   evidence: string[];
   recommendation: { verdict: Verdict; reason: string };
+}
+
+// One line on the criteria review (t438): whether the project requires it,
+// and where it stands, as criteriaStatus words it.
+export function criteriaReviewLine(view: Detail["criteriaReview"] | undefined): string | null {
+  if (!view) return null;
+  const standing = view.status.approved ? `approved: ${view.status.reason}` : view.status.reason;
+  // The criteria the review flagged as checks after deploy (t457): the
+  // builder cannot verify them in its workspace, and is told so here.
+  const checks = view.checks ?? [];
+  const flagged = checks.length
+    ? `; checks after deploy, not verified in the builder's workspace: ${checks.map((c) => `criterion ${c.criterion} (${c.by === "owner" ? "the project owner's" : "the orchestrator's"}: ${c.text})`).join("; ")}`
+    : "";
+  return `${view.required ? "required before a build is dispatched or claimed; " : "not required by the project; "}${standing}${flagged}`;
 }
 
 export const SUMMARY_MAX = 600;
@@ -157,6 +174,7 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = detail.events):
     accept: item.accept ?? [],
     partAccept: item.partAccept ?? null,
     criteria: criteriaOf(item),
+    criteriaReview: criteriaReviewLine(detail.criteriaReview),
     evidence: lines.map((l) => l.text),
     recommendation,
   };
