@@ -405,16 +405,18 @@ had already merged), which the runner asks for at start.
 Runners no longer need restarting after a deploy (t265). An idle runner, the
 integrator included, reads the deployed commit (`GET /api/version`) after
 each poll that claimed nothing and, once its checkout holds that commit,
-re-executes itself in place with the same arguments: the pid stays, so
-launchd keeps the job loaded and does not restart it. It logs `runner:
+spawns a replacement with the same arguments and environment. Once the new
+runner signals ready, the old one exits and releases it to poll for work.
+The replacement has a new pid. It logs `runner:
 reloading: started from OLD, the server runs NEW; …`, and the new process
 `runner: reloaded: was OLD, now NEW`. Pull the checkout after a deploy
 (`git -C CHECKOUT pull --ff-only`); until then the runner logs once `runner:
 behind: …` and keeps running the old code. It never reloads mid-job. A failed
 re-exec logs `runner: reload failed: …` and keeps the old process running;
-restart that one by hand. Reloading in place needs Node 26.1 or later (an
-older Node aborts on a failed exec): there a runner logs once `runner: reload
-skipped: …` and still needs restarting after a deploy. Details:
+restart that one by hand. Reload works on every supported Node (24 or later)
+without `process.execve`. A replacement that exits before ready or times out
+also leaves the old runner running. Supervisors must allow the replacement
+to survive the original pid's exit without starting a duplicate. Details:
 docs/runners.md, "Reload on deploy".
 
 ## What the agents may and may not do
