@@ -345,24 +345,26 @@ function callWithArtifacts(method: string, path: string, body?: unknown) {
 
 const LUNA = "codex/gpt-6-luna";
 
-it("a project registered after a model was held starts with the owner's standing, and refuses the model before any pool change reaches it", async () => {
-  const I = index();
-  await I.putModel(entry("gpt-6-luna", "codex"));
-  // Held in the index alone: no pool change is sent to any project.
-  await I.setModel("gpt-6-luna", { state: "reserved", note: "luna's credits" }, AT);
+for (const [standing, change] of [...HELD.map(([name, change]) => [name, change] as const), ["wrong-role", { roles: ["review"] }] as const]) {
+  it(`a project registered with a ${standing} model refuses it before any pool change reaches the project`, async () => {
+    const I = index();
+    await I.putModel(entry("gpt-6-luna", "codex"));
+    // Held in the index alone: no pool change is sent to any project.
+    await I.setModel("gpt-6-luna", { state: "available", roles: ["build", "review", "plan"], ...change }, AT);
 
-  const name = "model-held-at-init";
-  const made = await callWithArtifacts("PUT", `/projects/${name}`, { checks: ["npm test"] });
-  expect(made.status, await made.text().catch(() => "")).toBe(200);
-  const L = ledger(name);
-  const { id } = await L.newItem("Small task", ["src/**"], "owner");
-  // Straight to the ledger, past the dispatch route's own refresh.
-  await refusal(L.dispatch(id, "owner", { to: "home", agent: "codex", model: "gpt-6-luna" }), "model_held", /codex\/gpt-6-luna is reserved since 2026-10-05 \(the owner's standing\): luna's credits/);
-  await refusal(L.claim(id, LUNA, RUNNER), "model_held", /codex\/gpt-6-luna is reserved since 2026-10-05/);
-  expect(await L.item(id)).toMatchObject({ state: "open", owner: null, dispatch: null });
+    const name = `model-held-at-init-${standing}`;
+    const made = await callWithArtifacts("PUT", `/projects/${name}`, { checks: ["npm test"] });
+    expect(made.status, await made.text().catch(() => "")).toBe(200);
+    const L = ledger(name);
+    const { id } = await L.newItem("Small task", ["src/**"], "owner");
+    // Straight to the ledger, past the dispatch route's own refresh.
+    await refusal(L.dispatch(id, "owner", { to: "home", agent: "codex", model: "gpt-6-luna" }), "model_held", /codex\/gpt-6-luna is/);
+    await refusal(L.claim(id, LUNA, RUNNER), "model_held", /codex\/gpt-6-luna is/);
+    expect(await L.item(id)).toMatchObject({ state: "open", owner: null, dispatch: null });
 
-  await I.setModel("gpt-6-luna", { state: "available" }, "2026-10-09T10:00:00.000Z");
-});
+    await I.setModel("gpt-6-luna", { state: "available", roles: ["build", "review", "plan"] }, "2026-10-09T10:00:00.000Z");
+  });
+}
 
 it("a dispatch that names a model reads the pool again, so a ledger the pool change never reached refuses a model held since", async () => {
   const I = index();
