@@ -75,13 +75,16 @@ for (const state of ['missing', 'behind', 'ahead', 'dirty', 'conflicted']) test(
   }
 });
 
-for (const failure of ['unavailable', 'configuration', 'race', 'backup', 'install']) test(`failed ${failure} stops recovery without losing the original`, async t => {
+for (const failure of ['unavailable', 'wrong fetched head', 'configuration', 'race', 'owner race', 'state race', 'backup', 'install']) test(`failed ${failure} stops recovery without losing the original`, async t => {
   const f = fixture(t); f.local('reset', '--hard', f.base);
   writeFileSync(join(f.dir, 'precious'), 'keep');
   const git = f.io.git, request = f.io.request;
   if (failure === 'unavailable') f.io.git = (args, opts) => { if (args[0] === 'fetch') throw new Error('SECRET-READ'); return git(args, opts); };
+  if (failure === 'wrong fetched head') f.io.git = (args, opts) => git(args[0] === 'fetch' ? [...args.slice(0, -1), 'main'] : args, opts);
   if (failure === 'configuration') f.io.git = (args, opts) => { if (args[0] === 'config') throw new Error('configuration failed'); return git(args, opts); };
   if (failure === 'race') f.io.request = async (...args) => args[0] === 'GET' ? { item: { ...f.detail.item, head: f.base } } : request(...args);
+  if (failure === 'owner race') f.io.request = async (...args) => args[0] === 'GET' ? { item: { ...f.detail.item, owner: 'another/builder' } } : request(...args);
+  if (failure === 'state race') f.io.request = async (...args) => args[0] === 'GET' ? { item: { ...f.detail.item, state: 'abandoned' } } : request(...args);
   if (failure === 'backup') f.io.renameWorkspace = () => { throw new Error('backup failed'); };
   if (failure === 'install') {
     const { renameSync } = await import('node:fs');
@@ -92,6 +95,30 @@ for (const failure of ['unavailable', 'configuration', 'race', 'backup', 'instal
   assert.equal(readFileSync(join(preserved, 'precious'), 'utf8'), 'keep');
   assert.equal(git(['rev-parse', 'HEAD'], { cwd: preserved }), f.base);
   assert.ok(!readdirSync(f.root).some(s => s.startsWith('workspace.prepare-')));
+});
+
+test('recovery fetches the exact recorded object using only the read credential', async t => {
+  const f = fixture(t), git = f.io.git, fetches = [];
+  f.local('reset', '--hard', f.base);
+  f.io.git = (args, opts) => {
+    if (args[0] === 'fetch') fetches.push({ args, token: opts.token, cwd: opts.cwd });
+    return git(args, opts);
+  };
+  await prepareRecordedWorkspace(f.io, f.ctx);
+  assert.equal(fetches.length, 1);
+  assert.deepEqual(fetches[0].args, ['fetch', '--quiet', '--no-tags', f.source, f.head]);
+  assert.equal(fetches[0].token, 'SECRET-READ');
+  assert.notEqual(fetches[0].cwd, f.dir);
+});
+
+test('a recorded object absent from the fork leaves the workspace untouched', async t => {
+  const f = fixture(t);
+  f.detail.item.head = '0'.repeat(40);
+  writeFileSync(join(f.dir, 'precious'), 'keep');
+  await assert.rejects(prepareRecordedWorkspace(f.io, f.ctx), /recorded commit .* is unavailable/);
+  assert.equal(f.local('rev-parse', 'HEAD'), f.head);
+  assert.equal(readFileSync(join(f.dir, 'precious'), 'utf8'), 'keep');
+  assert.equal(readdirSync(f.root).some(s => s.startsWith('workspace.backup-')), false);
 });
 
 test('dry run leaves an absent workspace absent and requests no token', async t => {

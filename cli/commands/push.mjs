@@ -68,8 +68,18 @@ export default async function pushCommand() {
   }
   const credential = ownerPort ? await call("POST", `${I(name, id)}/owner-port-token`, {}, as) : null;
   if (credential && credential.defaultBranch !== branch) die(`${id} fork branch changed; nothing was pushed`);
+  let credentialEnv;
+  if (credential) {
+    // A released workspace still includes its revoked, URL-scoped header.
+    // Git prefers that scope to a generic http.extraHeader. Reset its list
+    // and supply the fresh header at the same scope, for this process only.
+    const n = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? "", 10) || 0;
+    credentialEnv = { GIT_CONFIG_COUNT: String(n + 2),
+      [`GIT_CONFIG_KEY_${n}`]: `http.${credential.remote}.extraHeader`, [`GIT_CONFIG_VALUE_${n}`]: "",
+      [`GIT_CONFIG_KEY_${n + 1}`]: `http.${credential.remote}.extraHeader`, [`GIT_CONFIG_VALUE_${n + 1}`]: `Authorization: Bearer ${credential.token}` };
+  }
   const pushArgs = ["push", "--quiet", "--recurse-submodules=no", ...lease, credential?.remote ?? "origin", `HEAD:${branch}`];
-  const r = git(pushArgs, { allowFail: true, token: credential?.token });
+  const r = git(pushArgs, { allowFail: true, token: credential?.token, env: credentialEnv });
   if (r.status !== 0 || r.error) {
     // Git's refusal says nothing about why the fork refused. A runner's
     // workspace pushes through the Worker, which refuses the push once the
