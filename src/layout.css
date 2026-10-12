@@ -1,8 +1,9 @@
 /* Atelier's layout. Colours, faces, radii and durations are tokens from
-   theme.css, the portfolio design set, whose default theme is Night; light
-   and dark follow the device. Atelier adds only what the set has no role
-   for: one colour per family of agent, so a thread is seen to change hands,
-   and the colour of the main line. The three names after them only say
+   theme.css, the portfolio design set's Night theme; light and dark follow
+   the device. Atelier adds only what the set has no role for: one colour per
+   family of agent, so a thread is seen to change hands, and the colour of
+   the main line. The family colours are drawn only in charts, lane threads
+   and graph marks, and their legends. The three names after them only say
    which token plays which part here. */
 :root {
   --m-anthropic: #ff8a5b;
@@ -25,24 +26,37 @@
   --glow: 1;
 }
 @media (prefers-color-scheme: light) {
-  /* The same families, darkened to read as lines on warm paper. */
+  /* The same families, darkened to read as lines on warm paper, and as
+     AA text on their own bands (test/theme.test.ts). */
   :root {
-    --m-anthropic: #b4461c;
-    --m-openai: #0b7a5c;
-    --m-zai: #2f56c9;
-    --m-google: #b0307a;
-    --m-deepseek: #0f7d93;
-    --m-qwen: #4d7a12;
-    --m-minimax: #b04a1f;
-    --m-mistral: #8a5a00;
-    --m-meta: #3456a8;
+    --m-anthropic: #983b18;
+    --m-openai: #09654c;
+    --m-zai: #2c50bb;
+    --m-google: #9b2a6c;
+    --m-deepseek: #0c6071;
+    --m-qwen: #3f620f;
+    --m-minimax: #933e19;
+    --m-mistral: #7b5000;
+    --m-meta: #3354a5;
     --m-moonshot: #5f3fa8;
     --m-xai: #a32727;
-    --m-xiaomi: #a35a00;
-    --m-bytedance: #1d7a52;
-    --m-cohere: #a02a6a;
+    --m-xiaomi: #854a00;
+    --m-bytedance: #186544;
+    --m-cohere: #9d2968;
     --main-line: var(--text);
     --glow: 0;
+    /* Night's light stops for gold, green and red, a shade deeper than
+       theme.css so each meets AA on every panel (test/theme.test.ts).
+       theme.css is bin/sync-theme's copy and never edited here; these
+       belong upstream in ai-projects-design. */
+    --signal: #735200;
+    --signal-rgb: 115,82,0;
+    --music-accent: #735200;
+    --music-accent-rgb: 115,82,0;
+    --observed: #185a33;
+    --observed-rgb: 24,90,51;
+    --fault: #9e1539;
+    --fault-rgb: 158,21,57;
   }
 }
 :root {
@@ -62,7 +76,7 @@ a:hover { text-decoration-thickness: 2px; }
 button, input, textarea { font: inherit; }
 button, a, input, textarea, summary { touch-action: manipulation; }
 :is(a, button, summary, input, textarea, pre):focus-visible { outline: 2px solid var(--signal-hot); outline-offset: 4px; }
-button:disabled { opacity: .45; cursor: not-allowed; background: var(--inset); color: var(--text-muted); border-color: var(--line); }
+button:disabled { cursor: not-allowed; background: var(--inset); color: var(--text-dim); border-color: var(--line); }
 svg { flex-shrink: 0; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
@@ -188,6 +202,45 @@ button.primary:hover { background: var(--signal-hot); border-color: var(--signal
   text-decoration: underline; text-underline-offset: 4px;
 }
 .new-task > summary:hover { color: var(--signal); text-decoration-thickness: 2px; background: none; }
+/* The override's disclosure (t457) is a native details on a row of its own,
+   apart from the buttons, and reads as a disclosure: no button border, a
+   chevron that turns when it opens and a hint that changes from "show" to
+   "hide". Safari draws its own marker unless the webkit one is hidden. */
+.override-disclosure { flex-basis: 100%; max-width: 100%; border-top: 1px solid var(--line); padding-top: var(--space-md); }
+.override-disclosure > summary {
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-sm); list-style: none;
+  min-height: var(--ctl-h); padding: 6px 0; border: 0; background: none; color: var(--text);
+  font-weight: 600; cursor: pointer; text-decoration: underline; text-underline-offset: 4px;
+}
+.override-disclosure > summary::-webkit-details-marker { display: none; }
+.override-disclosure > summary:hover { color: var(--signal-hot); }
+.disclosure-marker {
+  display: inline-block; flex: none; width: .55em; height: .55em; margin: 0 .2em;
+  border-right: 2px solid currentColor; border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg); transition: transform var(--motion-tap) var(--curve-tap);
+}
+.override-disclosure[open] > summary .disclosure-marker { transform: rotate(45deg); }
+.disclosure-hint { font-weight: 400; text-decoration: none; }
+.override-disclosure .when-open, .override-disclosure[open] .when-closed { display: none; }
+.override-disclosure[open] .when-open { display: inline; }
+.override-disclosure > form { margin-top: var(--space-lg); padding-left: var(--space-lg); border-left: 2px solid var(--line); }
+.override-disclosure h4 { margin: 0; }
+@media (prefers-reduced-motion: reduce) { .disclosure-marker { transition: none; } }
+/* Where the owner's decision stands (t457): the four parts, each labelled,
+   and the one next move, beside the actions. */
+.owner-state { margin: var(--space-xl) 0 0; }
+.owner-state dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px var(--space-lg); margin: 0; font-size: 14px; }
+.owner-state dl > div { display: contents; }
+.owner-state dt { color: var(--text-muted); font-weight: 600; }
+.owner-state dd { margin: 0; overflow-wrap: anywhere; }
+.next-action { margin: var(--space-md) 0 0; font-size: 15px; }
+.approval-recorded { flex-basis: 100%; margin: 0; color: var(--text); }
+.approval-recorded strong { color: var(--observed); }
+.form-error { font-size: 14px; margin: var(--space-sm) 0 0; max-width: 60ch; }
+.kept-note { flex-basis: 100%; max-width: 60ch; }
+.kept-note p { margin: var(--space-sm) 0 0; }
+.kept-note blockquote { margin: 4px 0 0; padding-left: var(--space-sm); border-left: 3px solid var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 700px) { .owner-state dl { grid-template-columns: 1fr; gap: 2px; } .owner-state dd { margin-bottom: var(--space-sm); } }
 .revision { margin-bottom: var(--space-xl); }
 .review-nav { display: flex; flex-wrap: wrap; gap: 12px 28px; border-block: 1px solid var(--line); padding: var(--space-lg) 4px; margin: 30px 0 var(--space-xxl); }
 .review-nav a { color: var(--text); font-size: 14px; text-decoration: none; }
@@ -259,11 +312,12 @@ pre.diff span { display: block; padding: 0 14px; white-space: pre; }
 .track-svg .axis { stroke: var(--line-bright); stroke-width: 1.2; }
 .track-svg .now-line { stroke: var(--signal); stroke-width: 2; stroke-linecap: round; }
 /* Bands and threads take the holder's family colour (--c), as the Flow graph's threads do. */
-.span-past { fill: color-mix(in srgb, var(--c, var(--text)) 7%, transparent); }
-.span-now { fill: color-mix(in srgb, var(--c, var(--signal)) 13%, transparent); stroke: color-mix(in srgb, var(--c, var(--signal)) 40%, transparent); stroke-width: 1; }
-.span-label { font: 600 11px var(--font-mono); fill: var(--c, var(--text-dim)); opacity: .72; letter-spacing: .02em; }
-.span-label.now { opacity: 1; }
-.lane .who strong { color: var(--c, var(--text-bright)); }
+.span-past { fill: color-mix(in srgb, var(--c, var(--text)) 6%, transparent); }
+.span-now { fill: color-mix(in srgb, var(--c, var(--signal)) 10%, transparent); stroke: color-mix(in srgb, var(--c, var(--signal)) 40%, transparent); stroke-width: 1; }
+/* Past holders' labels are lighter in weight, not in colour, so each stays AA on its band (test/theme.test.ts). */
+.span-label { font: 500 11px var(--font-mono); fill: var(--c, var(--text-dim)); letter-spacing: .02em; }
+.span-label.now { font-weight: 700; }
+.lane .who strong { color: var(--text-bright); }
 .track-svg .g-thread { stroke-width: 3; }
 .latest { margin: 6px 0 0; }
 .latest strong { color: var(--text); font-weight: 600; }
@@ -425,7 +479,7 @@ h1, .brand { font-weight: 800; letter-spacing: -.04em; }
    first screen, not below a 72 px headline and its lead (finding 10). */
 .flow-hero h1 { font-size: clamp(34px, 4vw, 52px); line-height: 1.04; margin: 14px 0 0; text-wrap: balance; }
 .flow-hero h1 .you { color: var(--m-owner); }
-.flow-hero h1 .them { background: linear-gradient(90deg, var(--m-anthropic), var(--m-openai) 34%, var(--m-zai) 66%, var(--m-google)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.flow-hero h1 .them { color: var(--text-bright); }
 .flow-hero .lead { margin: 18px 0 0; }
 .tally { display: grid; gap: 14px; }
 .tally-bar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--line); }
@@ -503,12 +557,35 @@ h1, .brand { font-weight: 800; letter-spacing: -.04em; }
 
 .journey { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; counter-reset: step; }
 .journey li { position: relative; padding: 0 0 18px 34px; counter-increment: step; }
-.journey li::before { content: counter(step); position: absolute; left: 0; top: 1px; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font: 600 11px/1 var(--font-mono); color: var(--on-accent); background: var(--c, var(--main-line)); }
+.journey li::before { content: counter(step); position: absolute; left: 0; top: 1px; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font: 600 11px/1 var(--font-mono); color: var(--on-accent); background: var(--signal); }
 .journey li::after { content: ""; position: absolute; left: 10px; top: 26px; bottom: 2px; width: 2px; background: var(--line); }
 .journey li:last-child::after { display: none; }
-.journey b { display: block; font: 700 17px/1.3 var(--font-display); color: var(--text-bright); }
+.journey h3 { margin: 0; font: 700 17px/1.3 var(--font-display); color: var(--text-bright); }
+.journey .motto { color: var(--text); font-weight: 500; }
 .journey p { margin: 2px 0 0; color: var(--text-muted); font-size: 14px; }
-.journey .n { font: 500 12px/1.4 var(--font-mono); color: var(--c, var(--text)); }
+.journey .n { font: 500 12px/1.4 var(--font-mono); color: var(--text); }
+/* The three takeaways, where a page sums up the five steps. */
+.takeaways { margin: 4px 0 0; font: 700 17px/1.4 var(--font-display); color: var(--text-bright); }
+
+/* A task's progress through the five steps, on its own page. A step it has
+   passed keeps the accent's dim line, the current one is filled with the
+   accent; the rest are muted. Green and red stay with checks, so neither
+   marks a step. */
+.task-steps { list-style: none; margin: 0 0 var(--space-lg); padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--space-xs); counter-reset: step; }
+.task-steps li { counter-increment: step; padding: var(--space-sm) var(--space-md); border-top: 3px solid var(--line); color: var(--text-muted); font-size: 14px; min-width: 0; }
+.task-steps li b { display: block; font: 600 15px/1.3 var(--font-sans); color: inherit; }
+.task-steps li b::before { content: counter(step) " "; font: 500 12px var(--font-mono); color: var(--text-muted); }
+.task-steps li span { display: block; font-size: 12px; overflow-wrap: anywhere; }
+.task-steps li.done { border-top-color: var(--wire); color: var(--text); }
+.task-steps li.current { border-top-color: var(--signal); color: var(--text-bright); background: rgba(var(--signal-rgb), .10); border-radius: 0 0 var(--radius-small) var(--radius-small); }
+.task-steps li.current span { color: var(--signal-hot); }
+.task-steps-note { margin: calc(-1 * var(--space-sm)) 0 var(--space-lg); }
+@media (max-width: 720px) {
+  .task-steps { grid-template-columns: 1fr; }
+  .task-steps li { border-top: 0; border-left: 3px solid var(--line); }
+  .task-steps li.done { border-left-color: var(--wire); }
+  .task-steps li.current { border-left-color: var(--signal); border-radius: 0 var(--radius-small) var(--radius-small) 0; }
+}
 
 /* The resting review sheet on Decisions carries the latest graph. */
 .review-sheet.resting.has-graph { display: block; padding: 28px 24px; }
@@ -548,10 +625,11 @@ main .live-note { margin: 0 0 12px; }
 .g-bead { cursor: default; outline: none; }
 .g-bead:hover > :not(.hit), .g-bead:focus-visible > :not(.hit) { transform: scale(1.6); transform-box: fill-box; transform-origin: center; transition: transform var(--motion-tap, .12s) ease-out; }
 .graph .g-bead:focus-visible circle.hit { stroke: var(--signal); stroke-width: 1.5; }
-/* Pointing at a task lights its thread and lets the others fall back. */
-.graph:has(.g-task:hover) .g-task:not(:hover),
-.graph:has(.g-task:focus-within) .g-task:not(:focus-within) { opacity: .28; }
-.graph .g-task { transition: opacity .15s; }
+/* Pointing at a task lights its thread and lets the others' threads and
+   marks fall back; their labels keep full colour, so they stay legible. */
+.graph:has(.g-task:hover) .g-task:not(:hover) > :not(text, a),
+.graph:has(.g-task:focus-within) .g-task:not(:focus-within) > :not(text, a) { opacity: .28; }
+.graph .g-task > * { transition: opacity .15s; }
 /* A hidden card takes no pointer: it is hidden, not merely transparent. It
    stays visible a moment after the pointer leaves its mark, so the pointer
    can reach the card and its link; the card's own hover then keeps it. */
@@ -560,7 +638,7 @@ main .live-note { margin: 0 0 12px; }
 .g-card rect { fill: var(--shell); stroke: var(--c); stroke-width: 1.2; filter: drop-shadow(0 6px 18px rgba(var(--shadow-rgb), .35)); }
 .graph text.g-card-head { font-size: 11px; fill: var(--c, var(--text-muted)); }
 .graph text.g-card-body { font-size: 12.5px; fill: var(--text); font-family: var(--font-sans); }
-@media (prefers-reduced-motion: reduce) { .g-card { transition: visibility 0s linear .3s; } .graph .g-task, .g-bead > * { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .g-card { transition: visibility 0s linear .3s; } .graph .g-task > *, .g-bead > * { transition: none; } }
 
 /* Glows belong to the dark stage; on paper the lines stand on their own. */
 @media (prefers-color-scheme: light) {
@@ -587,10 +665,10 @@ main .live-note { margin: 0 0 12px; }
 .repo-tree .entry > a, .repo-tree .entry > span:first-child { display: block; padding: 9px 14px; font: 14px/1.4 var(--font-mono); color: var(--text); text-decoration: none; overflow-wrap: anywhere; }
 .repo-tree li.dir .entry > a { color: var(--signal); }
 .repo-tree .entry > a:hover { background: var(--inset); }
-/* A stripe per entry and per commit: the family of the agent the commit names, with the name in words beside it. */
+/* A stripe per entry and per commit an agent named, with the name in words beside it; company colours stay inside charts, so the stripe is neutral. */
 .repo-tree .entry { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .repo-tree li.striped { grid-template-columns: 4px minmax(0, 1fr) auto; padding-left: 10px; }
-.stripe { display: block; width: 4px; height: 22px; border-radius: 2px; background: var(--c, transparent); }
+.stripe { display: block; width: 4px; height: 22px; border-radius: 2px; background: var(--text-dim); }
 .stripe.none { background: var(--line); }
 .repo-tree .touch { padding-right: 14px; white-space: nowrap; }
 .repo-tree .touch a { color: var(--text-muted); }
@@ -604,7 +682,7 @@ main .live-note { margin: 0 0 12px; }
 .repo-log .msg { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 720px) { .repo-log li { grid-template-columns: 4px 76px minmax(0, 1fr); } .repo-log li .meta { grid-column: 3; } }
 .pager { display: flex; gap: var(--space-lg); margin-top: 16px; }
-.commit-head { border-left: 4px solid var(--c, var(--line)); padding-left: 16px; }
+.commit-head { border-left: 4px solid var(--line-bright); padding-left: 16px; }
 .commit-head h2 { font: 700 26px/1.2 var(--font-display); margin: 0 0 8px; color: var(--text-bright); overflow-wrap: anywhere; }
 .commit-body { white-space: pre-wrap; font: 14px/1.6 var(--font-mono); color: var(--text-muted); margin: 0 0 10px; }
 
@@ -651,7 +729,7 @@ body.public main { margin: 0 auto; padding: 28px 16px 64px; }
 /* ── models ─────────────────────────────────────────────────────────────── */
 .model-grid { list-style: none; margin: 0 0 8px; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 14px; }
 .model { position: relative; padding: 16px 18px 14px 22px; border: 1px solid var(--line); border-radius: var(--radius-medium); background: var(--sheet); overflow: hidden; }
-.model::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 5px; background: var(--c); }
+.model::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 5px; background: var(--line-bright); }
 .model-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .model-head strong { font-size: 15px; overflow-wrap: anywhere; color: var(--text-bright); }
 .model p { margin: 6px 0 0; }
@@ -760,7 +838,7 @@ button.quiet:hover { color: var(--text); border-color: var(--line-bright); }
 .timeline-day > ol { list-style: none; margin: 0 0 0 8px; padding: 0; border-left: 2px solid var(--line); }
 .merge-row a { display: grid; grid-template-columns: 20px 72px minmax(0, 1fr) auto; gap: 14px; align-items: baseline; padding: 12px 10px 12px 0; margin-left: -11px; color: var(--text); text-decoration: none; border-radius: var(--radius-small); }
 .merge-row a:hover { background: var(--sheet); }
-.family-mark { display: block; width: 12px; height: 12px; border-radius: 50%; background: var(--c); justify-self: center; align-self: center; box-shadow: 0 0 6px color-mix(in srgb, var(--c) calc(55% * var(--glow)), transparent); }
+.family-mark { display: block; width: 12px; height: 12px; border-radius: 50%; background: var(--signal); justify-self: center; align-self: center; box-shadow: 0 0 6px color-mix(in srgb, var(--signal) calc(55% * var(--glow)), transparent); }
 .family-mark.unknown { background: var(--sheet); border: 2px solid var(--text-dim); box-shadow: none; }
 .merge-row.closed .family-mark { width: 4px; height: 14px; border-radius: 2px; background: var(--text-dim); border: 0; box-shadow: none; }
 .merge-row time { font: 12px/1.5 var(--font-mono); color: var(--text-muted); }

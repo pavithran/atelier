@@ -121,7 +121,7 @@ names the findings it answers.
 
 **P3. The task page leads with one decision**
 - Scope: `src/ui.ts` (`renderItem`, `reviewBody`), `src/rules.ts` (`stateLabel`, `decisionFor`), `src/brief.ts`, tests.
-- Depends on: t367 (palette B, five steps), t498 (task headline, rounds; merged), t474 (owner actions).
+- Depends on: t367 (Night palette, five steps), t498 (task headline, rounds; merged), t474 (owner actions).
 - Traces: F3, F4, F5, F19, F23.
 - Criteria: The header shows one state word (brief §5), one sentence why and one primary action; a rejection, failed check, scope change or unreadable diff overrides Ready. Evidence precedes secondary actions. The brief folds after 3 lines. Round summaries wrap at 320 px.
 
@@ -187,7 +187,7 @@ names the findings it answers.
 
 **P14. Company colours only inside charts (d9)**
 - Scope: `src/layout.css` (`--m-*`), `src/ui.ts` (Studio lanes, Home, History marks), `src/browse/view.ts` (file and log stripes), tests.
-- Depends on: t367 (palette B, whose light family colours measure 5.30 or more: brief §1.1).
+- Depends on: t367 (Night palette, whose light family colours measure 5.30 or more: brief §1.1).
 - Traces: F17, standing decision d9.
 - Criteria: No --m-* colour is drawn outside a chart or its legend: no swatches, stripes, lane edges or coloured names; agents are named in text colour; graph lines keep 3:1 and legend text passes 4.5:1 in both schemes.
 
@@ -219,7 +219,7 @@ include t456 and t498, which had merged.
 
 | Task | Record (2026-10-11) | What its criteria cover | Findings it covers | Left as new work here | Captures to refresh after it lands |
 |---|---|---|---|---|---|
-| **t367** One vocabulary and palette B | **Submitted**, head 7d64b297, held by claude-code/opus-5.5; checks passed on a runner; waits for a review by another family | Palette B on every page (#4d8bff the only accent, company colours inside charts only, no copper or brown, AA tested); red only for failures, deletions and destructive actions; the five steps Claim, Fork, Prove, Review, Land on the task page, in /how, the showcase and the README; no route or field renamed | F17 (its light family colours pass: brief §1.1); F8 in part (/how's headings). Not F3: steps, not state names | Its vocabulary is the five *steps*, not the state names: brief §5's one name per state stays this plan's (P3, P4); P11 the copy; P14 checks that no family mark is left outside charts (d9) | all 48 states (palette); `task-*` (step strip); `public-how`, `public-showcase` (headings) |
+| **t367** One vocabulary and the Night palette | **Submitted**, head 7d64b297, held by claude-code/opus-5.5; checks passed on a runner; waits for a review by another family | The Night palette on every page (near-black ground, gold #ffd166 for links, primary actions and the owner, orange #ffb547 for caution, company colours only in charts, lane threads and graph marks, AA tested); red only for failures, deletions and destructive actions; the five steps Claim, Fork, Prove, Review, Land on the task page, in /how, the showcase and the README; no route or field renamed | F17 (its light family colours pass: brief §1.1); F8 in part (/how's headings). Not F3: steps, not state names | Its vocabulary is the five *steps*, not the state names: brief §5's one name per state stays this plan's (P3, P4); P11 the copy; P14 checks that no family mark is left outside charts (d9) | all 48 states (palette); `task-*` (step strip); `public-how`, `public-showcase` (headings) |
 | **t456** Tasks grouped by function, with each task's stage | **Merged** at d3ace584 (merge 92e5824e) | Areas with stable ids, `new/edit --area`, an Unsorted area; one pure stage function for web and CLI; both views show area purpose, title, stage and holder | F6 in part (grouping), F3 in part (one stage word per row) | P1 navigation; P4 state tags, plan kind, create behind a button; P10 tab merge; P15 seeds areas (the fixture has none, so `tasks` shows one Unsorted area) | none: in the c2915e3 captures (`tasks`, `tasks-empty`) |
 | **t474** Owner actions need a path that is not the terminal | **Open**, unclaimed, nothing pushed, checks waiting; the record holds a title and no parsable criteria | As titled: owner actions performed from the page rather than the terminal (t504's criterion 3 says "t474 performs it") | F5 in part | P3 orders state → evidence → actions and picks one primary, on t474's controls | `task-*`, `decisions*` |
 | **t496** Waiting on you lists only what needs the owner | **Abandoned**, nothing pushed; refiled as t504 with the same criteria | — | — | — | — |

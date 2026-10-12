@@ -10,6 +10,31 @@
 
 export type Lane = "owner" | "agent" | "reviewer";
 
+// The life of a task in five verbs, the words the app, the README, the docs
+// and the video share. They are labels only: the commands keep their names
+// (`start`, `push`, `check`, `review`, `land`, `merge`).
+export type Verb = "Claim" | "Fork" | "Prove" | "Review" | "Land";
+
+export interface Verbed {
+  verb: Verb;
+  // The step in a few words, as the video says it.
+  line: string;
+  // What the step means here, in a sentence or two.
+  about: string;
+}
+
+export const STEPS: Verbed[] = [
+  { verb: "Claim", line: "One holder per task.", about: "An agent claims an open task with `atelier start`. The project's Durable Object grants it atomically, so a second claimant is refused." },
+  { verb: "Fork", line: "Every task its own fork.", about: "The claim forks the baseline into a workspace for that task alone, with one write token for its holder. The agent commits and pushes there, never to the project." },
+  { verb: "Prove", line: "Atelier runs the tests.", about: "The required checks run on a clean clone of exactly the pushed head, and only those Observed results count; what an agent says it ran is shown and never counted." },
+  { verb: "Review", line: "Another company reviews, or in single-family mode another model.", about: "A change to a protected path needs an approval from a model of another family than every contributor by default; a project set to single-family mode takes a different model of its one company from every contributor, and says so wherever the review shows. No one reviews their own work." },
+  { verb: "Land", line: "One landing at a time, with a receipt.", about: "The owner accepts one exact head through the gate and it merges, one landing per project at a time, with the task's record attached as a git note." },
+];
+
+// Where a page sums the five steps up, it says these three words.
+export const TAKEAWAYS = "Proven. Reviewed. Recorded.";
+export const TAGLINE = "Git keeps the code. Atelier brings the receipts.";
+
 export interface Step {
   name: string;
   lane: Lane;
@@ -85,6 +110,8 @@ export const TERMS: Term[] = [
 
 export interface Rule {
   title: string;
+  // The step of the five it guards; /how lists the rules under it.
+  verb: Verb;
   // What the code does.
   enforced: string;
   // Why, in one sentence.
@@ -95,67 +122,67 @@ export interface Rule {
 
 export const RULES: Rule[] = [
   {
-    title: "One owner per task",
+    title: "One owner per task", verb: "Claim",
     enforced: "A task has at most one owner. The project's Durable Object handles one request at a time, so when two agents claim a task the second is refused. Ownership changes only through a recorded event: a claim, a handoff, a release, an abandonment or a merge.",
     why: "Two agents writing to one workspace overwrite each other, and nobody could say afterwards who did what.",
     where: [{ file: "src/rules.ts", symbol: "assertClaimable" }, { file: "src/rules.ts", symbol: "assertOwner" }],
   },
   {
-    title: "Separate forks for agents",
+    title: "Separate forks for agents", verb: "Fork",
     enforced: "A claim forks the baseline into a repository for that task, and the claimant's write token covers that repository alone. Only the owner token can obtain a write token for the baseline; an agent token is refused.",
     why: "A wrong or abandoned change in one workspace cannot touch the baseline or another task's work.",
     where: [{ file: "src/tokens.ts", symbol: "agentRoute" }],
   },
   {
-    title: "One write token per workspace",
+    title: "One write token per workspace", verb: "Fork",
     enforced: "A claim revokes the workspace's earlier write token before it mints a new one, so only one is live. The token lasts eight hours, and a handoff, a release or an abandonment revokes it.",
     why: "An agent that has handed work on or given it up must not be able to keep pushing to it.",
     where: [{ file: "src/index.ts", symbol: "revoke" }],
   },
   {
-    title: "Observed evidence only",
+    title: "Observed evidence only", verb: "Prove",
     enforced: "`atelier check` runs each required check on a clean clone of the head Artifacts holds and posts the result as a check. The Worker stores a check as Observed and a report as Reported, and the gate counts Observed results only. A required check with no Observed result at the head is Pending and blocks acceptance. Under `sandboxOnly`, only results from a Cloudflare container count. A check run with `--merged`, on the head's merge with main as it is now, is recorded against both revisions and never counts as the head's own check; it blocks acceptance only when it fails after main moved past the head the passing checks were recorded against.",
     why: "An agent's own statement that its tests pass is not evidence; the owner needs results taken from a clean clone of the head, though only a container result is produced by Atelier itself, and a local Observed result is posted by the machine that ran it.",
     where: [{ file: "src/rules.ts", symbol: "evidenceAt" }, { file: "src/rules.ts", symbol: "gate" }, { file: "src/rules.ts", symbol: "mergedBlockers" }],
   },
   {
-    title: "Evidence bound to a head",
+    title: "Evidence bound to a head", verb: "Prove",
     enforced: "A result, a review and an acceptance each name the head they apply to. Atelier refuses a result or a review for any head but the task's current one, reads the head from Artifacts instead of taking the agent's word for it, and withdraws acceptance when a push moves the head.",
     why: "An approval of one revision must not authorise another, and a pass at one revision says nothing about the next.",
     where: [{ file: "src/rules.ts", symbol: "assertRevision" }, { file: "src/ledger.ts", symbol: "recordPush" }],
   },
   {
-    title: "Independent review of protected paths",
+    title: "Independent review of protected paths", verb: "Review",
     enforced: "By default, a change that touches a protected path needs an approving review from a model of another family than every model that contributed to the task, in every project, with or without a ControlPlane policy. The family is read from the model's name, and under the default rule a family Atelier does not recognise never qualifies, in a reviewer or in a contributor. The project owner's approval is not this review; the owner accepts and merges. Nor is a tier review's approval: a project's review tier reviews beside this review, and its rejection blocks like any other. When no reviewer qualifies, the owner can override the review while accepting, giving a reason: the override is recorded as an event of its own, never as a review, counts only at that head, and the task page and the inbox show it with its reason. An override needs the owner's own confirmation, a factor no agent holds, never the owner token alone, which an agent session may hold, nor the browser session that token signs in: the task page's override form carries the factor, the owner's Cloudflare Access identity where the pages are behind Access, else the server's confirmation secret (OVERRIDE_SECRET), typed into the form and never given to a session; a server with neither can confirm no override. `atelier accept --override-review` is taken only within 15 minutes of the owner pressing Allow an override from the command line on that page with that factor, once per permission. Each project page and `atelier status` count the merges that went in by override and link each. A project set up with `atelier init --no-override` refuses every override, and counts none recorded before the setting. The protected paths are those the project lists (by default `AGENTS.md`, `CLAUDE.md`, `wrangler.*` and `.atelier/prompts/**`, the role prompts) and what a required check executes: the scripts it runs, the recipe files of make and just, the manifest and configuration a package manager or build tool runs scripts from, and the local binary npx would run. Under a ControlPlane policy a coordinated change, one that is neither protected nor direct, needs a review from a model different from every contributor's, under any harness name, and the owner's approval is not that review either. A project may opt out of the cross-company rule with `atelier init --single-family COMPANY`: building and reviewing then use that company's models alone, routing, dispatch and the landing pick no other, and a review counts when the reviewer is a different model of the company from every contributor; a model never counts as reviewer of a change it contributed to, in either mode, and `--no-override` refuses overrides in either mode. The mode is shown on the project page, in `atelier status`, in every review brief and in each merge's provenance note, so nobody takes such a review for a cross-company one, and `atelier init --cross-family` returns to the default; either switch is recorded with who made it and when.",
     why: "The model that wrote a change to the files that instruct agents or grade their work must not approve it, and nor should a model of its family, which is likely to share its blind spots; where a client allows one company's models alone, a different model of that company is the most independence there is, and the mode is named everywhere so nobody mistakes it for the stronger rule.",
     where: [{ file: "src/rules.ts", symbol: "changeClass" }, { file: "src/rules.ts", symbol: "checkFiles" }, { file: "src/rules.ts", symbol: "independentApproval" }, { file: "src/rules.ts", symbol: "reviewOverrideFor" }],
   },
   {
-    title: "No self-review",
+    title: "No self-review", verb: "Review",
     enforced: "The task's current owner cannot record a review of it. Everyone who has held the task or pushed to its workspace stays a contributor, so a review by any of them never counts as the independent one.",
     why: "A review by the author checks nothing.",
     where: [{ file: "src/ledger.ts", symbol: "addReview" }, { file: "src/rules.ts", symbol: "pushActors" }],
   },
   {
-    title: "Owner acceptance and merge",
+    title: "Owner acceptance and merge", verb: "Land",
     enforced: "Only the project owner can accept or merge. Acceptance is refused unless the task is in the submitted state and the gate is clear: every required check Observed passing at the current head, the changed paths measured, no rejection at that head, and a qualifying review where one is required, or the owner's recorded override of it. The merge lands only the accepted head, and the ledger records it only when the merge commit is found on the baseline with the accepted head as a parent.",
     why: "Work enters the project only by the owner's decision, made on evidence for one exact revision.",
     where: [{ file: "src/rules.ts", symbol: "gate" }, { file: "src/ledger.ts", symbol: "beginLanding" }],
   },
   {
-    title: "Tokens scoped to an actor",
+    title: "Tokens scoped to an actor", verb: "Claim",
     enforced: "An agent token binds every request to one actor: a request that names another actor is refused. The token expires (after 30 days unless set, and at most 365), can be limited to named projects, and opens only the agent workflow of claiming, pushing, posting results and reports, reviewing, submitting, handing off, releasing and reading, with these routes by name: `block`, `unblock`, `queue`, `sandbox`, `plan`, `integrated`, `integration-failed`, `refreshed`, `refresh-failed`, `refresh-lease`, `refresh-pushing` and `refresh-checked`. The Ledger still takes several of them only from the task's holder. Creating tasks, accepting, merging, dispatching, the model pool, project settings and token management need the owner token, and agent tokens cannot sign in to the browser.",
     why: "A leaked or misused agent token can act only as its own actor, in its own projects, and cannot decide for the owner.",
     where: [{ file: "src/tokens.ts", symbol: "agentRoute" }, { file: "src/tokens.ts", symbol: "tokenActive" }, { file: "src/tokens.ts", symbol: "inScope" }],
   },
   {
-    title: "Waiting work stays merged with main",
+    title: "Waiting work stays merged with main", verb: "Land",
     enforced: "When main advances, every unfinished task outside a plan with commits of its own (open after a release, submitted or accepted) is queued to take main's new head, one target per task, a newer head replacing an older one and the same head again changing nothing; a task with no commits of its own starts from main when claimed, and a finished one is dropped. A refresh waits, saying why, while a builder holds the task, it is blocked, a runner is about to rebuild it, a review of its head is under way, or it is landing. The integrator merges in a workspace of its own under a lease naming the head it found, says before it pushes (no landing begins meanwhile), pushes without force, and the Worker verifies the merge on the fork: its head, with that head and main's as its parents, and an Agent line naming who made it. The task's head moves as a push would move it; an acceptance never carries to the new head, which needs its checks and review again. A conflict whose every hunk is one of the documented mechanical transformations goes to a configured frontier resolver of another family than every reviewer whose approval stands, recorded among the contributors, and the runner verifies its files against the transformations before it commits; with none eligible the refresh waits, saying why. Any other conflict goes back to the builder with the merge base, both heads, the paths and the hunks. A refresh never claims, accepts or lands the task.",
     why: "A task that waits for review or landing would otherwise meet every conflict main made meanwhile at its landing, where it stops the queue.",
     where: [{ file: "src/refresh/standing.ts", symbol: "refreshStanding" }, { file: "src/refresh/queue.ts", symbol: "enqueue" }, { file: "src/refresh/mechanical.ts", symbol: "TRANSFORMATIONS" }, { file: "src/refresh/resolver.ts", symbol: "pickResolver" }, { file: "src/ledger.ts", symbol: "taskRefreshed" }, { file: "cli/task-refresh.mjs", symbol: "runTaskRefresh" }],
   },
   {
-    title: "Core files are built one change at a time",
+    title: "Core files are built one change at a time", verb: "Land",
     enforced: "A project's policy may name core files (`atelier init --core GLOB`). While a queued dispatch's scope overlaps, within a core file, the scope of a claimed item or of the item named by a live landing lease (unexpired, its item not yet merged or abandoned), the queue offers it to no runner and the owner's listing names every item it waits on. A submitted or accepted item that is not landing holds nothing. The dispatch is offered once each claimed blocker submits or is released and each landing ends. Items of one plan never hold each other, since the plan orders overlapping parts by their dependencies; a claimed plan item holds nothing, and the plan, integrate, refresh and review jobs are never held. The owner lets one task's dispatch through with `atelier dispatch ID --overlap-ok`. With no core files, nothing is held.",
     why: "Tasks built at once on the same hot files stop each other's landings on merge conflicts.",
     where: [{ file: "src/dispatch/rules.ts", symbol: "coreBlockers" }, { file: "src/ledger.ts", symbol: "waiting" }],

@@ -379,7 +379,9 @@ test("runRunner --integrate offers only the integrate, refresh and task-refresh 
     workspacePath: () => { throw new Error("nothing claimed"); },
     async queue(offer) { offers.push(offer); process.emit("SIGINT"); return []; },
   });
-  assert.deepEqual(offers, [{ runner: "home:studio", kind: "home", agents: [], jobs: ["integrate", "refresh", "task-refresh"] }]);
+  // The offer also says when the process started (t420).
+  assert.deepEqual(offers.map(({ started, ...offer }) => offer), [{ runner: "home:studio", kind: "home", agents: [], jobs: ["integrate", "refresh", "task-refresh"] }]);
+  assert.ok(Number.isFinite(Date.parse(offers[0].started)));
 });
 
 // t213: any error after the claim gives the plan item back; before, a failed

@@ -249,9 +249,11 @@ export const slotNote = (wrapper) => `Run each test command through the host slo
 export const testSlotNote = slotNote(SLOT_WRAPPER);
 
 // Starts a harness once node is known to be on its PATH (requireNode).
+// Always capture stderr for the adapter limit marker; keep streaming it
+// unless the caller requested private capture (for example, a review).
 export async function startHarness(argv, cwd, env, { capture = false, captureError = false, stream = false, signal, timeoutMs } = {}, executeChild = execute) {
   requireNode(env, cwd);
-  return executeChild(argv, { cwd, signal, timeoutMs, env, stream, ...(capture ? { capture } : {}), ...(captureError ? { captureError } : {}) });
+  return executeChild(argv, { cwd, signal, timeoutMs, env, stream, ...(capture ? { capture } : {}), captureError: true, streamError: !captureError });
 }
 
 // Throws unless `node` resolves on the PATH a harness will run with, since its
@@ -269,6 +271,9 @@ export function requireNode(env, cwd = process.cwd()) {
 
 const cli = fileURLToPath(new URL("./atelier.mjs", import.meta.url));
 const line = (message) => console.log(`runner: ${String(message).replace(/[\r\n]+/g, " ")}`);
+
+// How much of a child's standard error execute() keeps.
+const STDERR_KEEP = 256 * 1024;
 
 // The process groups execute() has started and not yet seen end.
 const liveGroups = new Set();
@@ -291,7 +296,7 @@ export function killGroups() {
 // SIGTERM. The result comes back once the group is gone, so nothing the
 // child started still runs in its folder. A process that leaves the group
 // (setsid) is beyond this.
-export function execute(argv, { cwd, signal, capture = false, captureError = false, stream = false, timeoutMs, env, captureLimit = Infinity, graceMs = 5000 } = {}) {
+export function execute(argv, { cwd, signal, capture = false, captureError = false, stream = false, streamError = false, timeoutMs, env, captureLimit = Infinity, graceMs = 5000 } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("interrupted"));
     const child = spawn(argv[0], argv.slice(1), { cwd, shell: false, detached: true, ...(env ? { env } : {}),
@@ -328,7 +333,7 @@ export function execute(argv, { cwd, signal, capture = false, captureError = fal
     const deadline = timeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; end(); }, timeoutMs);
     signal?.addEventListener("abort", end, { once: true });
     child.stdout?.on("data", (chunk) => { output = (output + chunk).slice(-captureLimit); if (stream) process.stdout.write(chunk); });
-    child.stderr?.on("data", (chunk) => { stderr = (stderr + chunk).slice(-captureLimit); });
+    child.stderr?.on("data", (chunk) => { stderr = (stderr + chunk).slice(-Math.min(captureLimit, STDERR_KEEP)); if (streamError) process.stderr.write(chunk); });
     child.on("error", (e) => { error = e; });
     // Once the child has exited, a deadline not yet passed no longer applies, and what it left in its group goes.
     child.on("exit", () => { clearTimeout(deadline); end(); });
@@ -1032,6 +1037,77 @@ export async function alreadyComplete(item, head, merges = [], isAncestor) {
   return { complete: true, why: `the workspace head ${short(head)} is the task's pushed head, ahead of its base ${short(item.base)}` };
 }
 
+// A provider's usage limit (t487). A shipped adapter (bin/harness/limit.mjs)
+// that finds its harness stopped by one ends with exit status
+// PROVIDER_LIMIT_EXIT and, as the last line of its standard error, the marker
+// and a JSON result. The limit is the provider's, not the model's: the job is
+// released to resume, no failure counter moves, no run is reported against
+// the model, and every model of that harness leaves this runner's offers
+// until the reset, `resetAt`, which the result gives. A result with no reset,
+// an unreadable one, one already past and one more than MAX_PAUSE_DAYS away
+// get a pause of FALLBACK_MINUTES (60) from the moment the runner sees the
+// limit; `fallback` says so. The pause is per runner and per harness,
+// kept in a file (limitFileFor) so a restart still honours it; another
+// runner process, or another machine on the same account, is not told.
+const MAX_PAUSE_DAYS = 8;
+// What the adapters (bin/harness/limit.mjs, which cannot be imported here:
+// the CLI is copied without bin/) end with; a test holds the two equal.
+export const PROVIDER_LIMIT_EXIT = 75;
+export const LIMIT_MARKER = "ATELIER_PROVIDER_LIMIT";
+export const FALLBACK_MINUTES = 60;
+
+// The pause a run's result says, or null when it ends in no provider limit:
+// { reason, resetAt (ms), fallback }.
+export function providerLimitOf(result, now = Date.now()) {
+  if (!result || result.timedOut || result.code !== PROVIDER_LIMIT_EXIT) return null;
+  const last = String(result.stderr ?? "").split("\n").map((l) => l.trim()).filter(Boolean).at(-1) ?? "";
+  if (!last.startsWith(`${LIMIT_MARKER} `)) return null;
+  let body;
+  try { body = JSON.parse(last.slice(LIMIT_MARKER.length + 1)); } catch { return null; }
+  if (!body || typeof body !== "object") return null;
+  const reason = oneLine(typeof body.reason === "string" ? body.reason : "").replace(/\s+/g, " ").trim().slice(0, 300) || "usage limit reached";
+  const at = typeof body.resetAt === "string" ? Date.parse(body.resetAt) : NaN;
+  const usable = Number.isFinite(at) && at > now && at <= now + MAX_PAUSE_DAYS * 86_400_000;
+  return { reason, resetAt: usable ? at : now + FALLBACK_MINUTES * 60_000, fallback: !usable };
+}
+
+// Where a runner keeps its pauses: a file of its own under the user's Atelier
+// config directory (ATELIER_CONFIG_DIR, else ~/.config/atelier).
+export function limitFileFor(runner, env = process.env, home = homedir()) {
+  const dir = env.ATELIER_CONFIG_DIR ?? join(home, ".config", "atelier");
+  return join(dir, "runner-limits", `${String(runner).replace(/[^a-z0-9._-]/gi, "-")}.json`);
+}
+
+// The file's pauses by harness, each { harness, reason, resetAt (ISO), since,
+// fallback }, with the recent events; a file that is missing, unreadable or
+// malformed holds none.
+export function readLimits(file) {
+  try {
+    const body = JSON.parse(readFileSync(file, "utf8"));
+    const pauses = {};
+    for (const [harness, p] of Object.entries(body?.pauses ?? {})) {
+      if (p && typeof p === "object" && Number.isFinite(Date.parse(p.resetAt))) pauses[harness] = { harness, reason: String(p.reason ?? ""), resetAt: p.resetAt, since: p.since ?? p.resetAt, fallback: !!p.fallback };
+    }
+    return { pauses, events: Array.isArray(body?.events) ? body.events.slice(-EVENTS_KEEP) : [] };
+  } catch { return { pauses: {}, events: [] }; }
+}
+const EVENTS_KEEP = 20;
+
+export function writeLimits(file, limits) {
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify({ pauses: limits.pauses, events: limits.events.slice(-EVENTS_KEEP) }, null, 2)}\n`, { mode: 0o600 });
+  renameSync(tmp, file);
+}
+
+// How a pause reads in the log and the status: the harness, why, and when it ends.
+export const pauseLine = (p) => `${p.harness} paused until ${p.resetAt}${p.fallback ? ` (no reset time given; the ${FALLBACK_MINUTES}-minute fallback)` : ""}: ${p.reason}`;
+
+// The offer without the models of any paused harness.
+export function unpausedOffer(offer, pauses) {
+  return { ...offer, agents: offer.agents.filter(({ agent }) => !pauses[agent]) };
+}
+
 export async function runTask(assignment, config, name, io) {
   let state = nextStep({ phase: "idle" }, { type: "queue", assignment });
   const advance = (result) => { state = nextStep(state, result); io.log(`${state.phase}${state.reason ? `: ${state.reason}` : ""}`); };
@@ -1061,6 +1137,8 @@ export async function runTask(assignment, config, name, io) {
         const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
         dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
         const result = await io.harness(commandFor(entry, { model, briefFile: resolution.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name, project, actor), { capture: true, stream: true });
+        const limit = !io.stopped() ? providerLimitOf(result, (io.now ?? Date.now)()) : null;
+        if (limit) throw Object.assign(new Error(`${agent} usage limit: ${limit.reason}`), { providerLimit: { ...limit, harness: agent } });
         await checkValidationReport(result);
         if (result.timedOut) throw new Error("harness timed out resolving main");
         if (result.code !== 0) throw new Error(`harness exited ${result.code} resolving main`);
@@ -1213,6 +1291,8 @@ export async function runTask(assignment, config, name, io) {
         }
       }
     }
+    const limit = result && !io.stopped() ? providerLimitOf(result, (io.now ?? Date.now)()) : null;
+    if (limit) throw Object.assign(new Error(`${agent} usage limit: ${limit.reason}`), { providerLimit: { ...limit, harness: agent } });
     await checkValidationReport(result);
     if (result?.timedOut) throw new Error("harness timed out");
     if (io.stopped()) throw new Error("interrupted");
@@ -1248,12 +1328,20 @@ export async function runTask(assignment, config, name, io) {
     // unchanged head was nothing to submit, as the log does.
     if (already && !already.complete && state.reason === "harness made no new commit") state = { ...state, detail: `${state.reason}: ${already.why}` };
     if (error.validationBlocked) state = { ...state, validationBlocked: true, taskFailure: false, skipped: true };
+    if (error.providerLimit) state = { ...state, providerLimit: error.providerLimit, taskFailure: false };
     if (!claimed && error.skipped) {
       state = { ...state, skipped: true };
       io.log(`skipped: ${error.message}`);
     } else if (!claimed && error.claimRefused) {
       state = { ...state, claimRefused: true };
       io.log(`claim refused: ${error.message}`);
+    } else if (error.providerLimit && claimed) {
+      // The commits stay in the workspace, which the next run resets only to
+      // its own head; the claim goes back so the same work resumes after the reset.
+      try {
+        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", releaseNote(limitNote(error.providerLimit))], workspace, { providerLimit: true });
+        io.log("released: the same work resumes when the provider's limit resets");
+      } catch (releaseError) { io.log(`claim preserved: release failed: ${releaseError.message}`); }
     } else if (claimed && state.head && item.kind === "part" && state.taskFailure) {
       // A part whose finish failed is released, not held (docs/orchestrator.md,
       // section 3): the fork keeps the commits, and the plan's tick sends the
@@ -1283,7 +1371,13 @@ export async function runTask(assignment, config, name, io) {
   return state;
 }
 
-export const taskKey = (task) => JSON.stringify([task.project, task.item.id]);
+// The note a release carries when a provider's limit stopped the job.
+const limitNote = (limit) => `${limit.harness} usage limit until ${new Date(limit.resetAt).toISOString()}: ${limit.reason}`;
+
+// A task's identity for the failure counts: its project, id and dispatch,
+// so dispatching it again starts the count afresh (t420), as the server's
+// skippedBy counts, while a release or a push under one dispatch does not.
+export const taskKey = (task) => JSON.stringify([task.project, task.item.id, task.item.dispatch?.at ?? null]);
 
 // The key a runner's per-process failure cap uses. A build's failures count
 // against the task itself; a review's against the review it answered — its
@@ -1366,12 +1460,13 @@ export async function runReview(assignment, config, name, runnerIO) {
     workspace = `${io.workspacePath(project, item.id)}-review-${randomUUID().slice(0, 8)}`;
     await io.clone(claimed.readToken.remote, claimed.readToken.token, workspace);
     if (io.stopped()) throw new Error("interrupted");
+    if (claimed.landed) await io.checkout(workspace, claimed.head);
     const compare = await reviewBase(io, workspace, claimed);
     if (io.stopped()) throw new Error("interrupted");
     if (compare.fallback) io.log(`review diff from the fork point: ${compare.fallback}`);
     // A merge-main job's merge is reviewed by what it resolved (mergeReview);
     // every other head by the diff from `compare`.
-    const merged = await mergeReview(io, workspace, claimed);
+    const merged = claimed.landed ? null : await mergeReview(io, workspace, claimed);
     if (io.stopped()) throw new Error("interrupted");
     if (merged?.skipped) io.log(`merge-main review read as a plain diff: ${merged.skipped}`);
     const diff = merged?.diff ?? await io.diff(workspace, compare.from, claimed.head);
@@ -1432,6 +1527,13 @@ export async function runReview(assignment, config, name, runnerIO) {
       }
     }
     if (io.stopped()) throw new Error("interrupted");
+    const limit = providerLimitOf(result, (io.now ?? Date.now)());
+    if (limit) {
+      const note = limitNote({ ...limit, harness: agent });
+      await release(note);
+      io.log(`review released: ${note}`);
+      return { phase: "failed", reason: note, providerLimit: { ...limit, harness: agent } };
+    }
     if (result.timedOut) {
       await release("harness timed out");
       return { phase: "failed", reason: "harness timed out", taskFailure: true };
@@ -1505,6 +1607,17 @@ export async function runReview(assignment, config, name, runnerIO) {
 export async function reviewBase(io, workspace, claimed) {
   const forkPoint = (fallback) => ({ from: claimed.item.base, fallback });
   const target = claimed.target;
+  if (claimed.landed) {
+    // Never use today's main as the merge base: it already contains the
+    // change and would produce an empty diff. Fail rather than fall back.
+    const commit = claimed.landed.commit;
+    if (commit !== claimed.head) throw new Error("post-merge claim names a different merge commit");
+    const parents = (await io.revParse(workspace, `${commit}^@`)).trim().split(/\s+/).filter(Boolean);
+    const fastForward = commit === claimed.landed.head && parents.length < 2;
+    const from = fastForward ? claimed.landed.base : parents[0];
+    if (!from) throw new Error("post-merge review has no readable original base");
+    return { from, target: from };
+  }
   if (!target?.remote || !target?.branch) return forkPoint("the review claim named no branch the task merges into");
   try {
     await io.fetch(workspace, target.remote, target.token, target.branch);
@@ -1838,12 +1951,42 @@ export function skipRetryPolls(misses) {
 // (t273): it is no task failure and no infrastructure failure, so the loop
 // keeps serving the item's jobs.
 export function failureCount(count, state) {
+  if (state.providerLimit) return count;
   return count + (state.phase === "failed" && state.taskFailure && !state.claimRefused && !state.skipped && !state.recorded ? 1 : 0);
 }
 
 export function infrastructureFailureCount(count, state) {
+  if (state.providerLimit) return count;
   if (state.terminalState) return count;
   return state.phase === "failed" && !state.taskFailure && !state.claimRefused && !state.skipped && !state.recorded ? count + 1 : 0;
+}
+
+// A claim that lost the race to a hold (the server's 409 held, t540): the
+// claim the task waits on came back between this runner's offer and its
+// claim. It is not refused for good, so the runner keeps no refusal of it:
+// the queue stops offering the task while the hold stands and offers it
+// again once it clears.
+export const lostToHold = (state) => !!state.claimRefused && /^atelier: held: /m.test(state.reason ?? "");
+
+// Why the runner's loop passes an offered task by, in words with what lets it
+// through, or null when it takes it: a job its offer does not name (jobOf), a
+// claim refused or a task skipped since the task last changed (refusedKey),
+// or the failures that skip it until it is dispatched again or this process
+// ends (failureCount, infrastructureFailureCount, keyed by failureKey). An idle
+// runner says these (t420).
+export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map() }) {
+  const job = jobOf(task);
+  if (!jobs.includes(job)) return `Not taken here: a ${job} job, which this runner's config does not offer; add it to the config's jobs, or leave it for a runner that offers it.`;
+  // A task the server answered task_terminal for while this runner held it
+  // (t476) is not taken again by this process, whatever later polls say.
+  const terminal = terminalTasks.get(taskKey(task));
+  if (terminal) return `Not taken again: the server says it is ${terminal === "abandoned" ? "closed" : terminal} (state: ${terminal}); this runner takes it no more until it restarts.`;
+  if (refused.has(refusedKey(task))) return `Passed by: its claim was refused or it was skipped here, and it has not changed since; it is tried again once it changes (status or show names what refuses it).`;
+  const failed = failures.get(failureKey(task)) ?? 0;
+  if (failed >= 2) return `Skipped after ${failed} failed runs under this dispatch; fix the cause, then dispatch it again (atelier dispatch ${task.item.id}) or restart this runner.`;
+  const broken = infrastructureFailures.get(failureKey(task)) ?? 0;
+  if (broken >= 3) return `Skipped after ${broken} infrastructure failures in a row under this dispatch; fix the runner's setup, then dispatch it again (atelier dispatch ${task.item.id}) or restart this runner.`;
+  return null;
 }
 
 // The file a plan job's harness writes the plan document to, inside the
@@ -1923,6 +2066,8 @@ export async function runPlanTask(assignment, config, name, io) {
     }
     if (result.timedOut) throw planHarnessFailure(result, "timed out");
     if (io.stopped()) throw new Error("interrupted");
+    const limit = providerLimitOf(result, (io.now ?? Date.now)());
+    if (limit) throw Object.assign(new Error(limitNote({ ...limit, harness: agent })), { providerLimit: { ...limit, harness: agent } });
     if (result.code !== 0) throw planHarnessFailure(result, `exited ${result.signal ?? result.code}`);
     let document;
     try { document = readFileSync(planFile, "utf8"); }
@@ -1945,7 +2090,8 @@ export async function runPlanTask(assignment, config, name, io) {
       return state;
     }
     state = { phase: "failed", reason: error.message };
-    state.taskFailure = taskFailure && !error.infrastructure && !io.stopped();
+    state.taskFailure = taskFailure && !error.infrastructure && !error.providerLimit && !io.stopped();
+    if (error.providerLimit) state.providerLimit = error.providerLimit;
     if (error.claimRefused) state.claimRefused = true;
     if (error.skipped) state.skipped = true;
     if (error.detail) state.detail = error.detail;
@@ -1960,7 +2106,7 @@ export async function runPlanTask(assignment, config, name, io) {
     if (!state.terminalState && (claimed || (claimAttempted && !state.claimRefused && !state.skipped))) {
       const note = state.phase === "failed" ? state.reason : "plan job done";
       try {
-        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", note], workspace);
+        await io.cli(["release", item.id, "--project", project, "--as", actor, "--note", note], workspace, { providerLimit: !!state.providerLimit });
         io.log(state.phase === "failed" ? "released: the plan job is back in the queue" : "released: the plan job is done");
       } catch (releaseError) { io.log(`claim not released: release failed: ${releaseError.message}`); }
     }
@@ -1978,6 +2124,7 @@ export async function runPlanTask(assignment, config, name, io) {
 // was refused, by the harness or its provider; a plan job whose harness
 // failed before posting a plan failed as a harness, not as an invalid proposal.
 export function runOutcome(state) {
+  if (state.providerLimit) return null;
   if (state.validationBlocked) return "validation_blocked";
   if (state.phase !== "failed" || !state.taskFailure || state.claimRefused || state.skipped) return null;
   if (state.reason === "harness timed out") return "timed-out";
@@ -1989,7 +2136,31 @@ export function runOutcome(state) {
 
 // `reportRun(body, runner, signal)` sends a run report; a report that fails
 // is logged and the loop goes on.
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, version, api }) {
+// `reportRunSkip(body, runner, signal)` says a build or plan job is given up
+// under its dispatch, kept and tried again as a review skip is (reportSkip).
+// How often a busy runner renews its last poll (t537): the index rewrites
+// an unchanged offer at most once a minute (askQueue), well inside the
+// RUNNER_GONE_MS after which a claim's runner counts as gone.
+export const HEARTBEAT_MS = 60_000;
+
+// Runs a job while `beat` renews the runner's last poll every `intervalMs`,
+// one beat in flight at a time. A beat that fails is said once per job and
+// does not fail the job; with no `beat` (a CLI without it) the job runs alone.
+export async function withHeartbeat(job, beat, { intervalMs = HEARTBEAT_MS, log = () => {}, stopped = () => false } = {}) {
+  if (!beat) return job();
+  let beating = false, said = false;
+  const timer = setInterval(async () => {
+    if (beating || stopped()) return;
+    beating = true;
+    try { await beat(); }
+    catch (error) { if (!said && !stopped()) { said = true; log(`heartbeat failed: ${error.message}`); } }
+    finally { beating = false; }
+  }, intervalMs);
+  timer.unref?.();
+  try { return await job(); } finally { clearInterval(timer); }
+}
+
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, version, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
@@ -2001,9 +2172,13 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // and the task refresh's (t462) alone, under the reserved actor, and
   // takes no config.
   const config = integrating ? { agents: [] } : readConfig(args.config);
-  const offer = integrating
-    ? { runner: args.name.toLowerCase(), kind: "home", agents: [], jobs: ["integrate", "refresh", "task-refresh"] }
-    : offerFrom(config, args.name);
+  // The offer says when this process started (t420): what it passes by
+  // after failures or a refused claim it forgets on a restart, so the
+  // server's reasons naming this runner count only from then.
+  const offer = {
+    ...(integrating ? { runner: args.name.toLowerCase(), kind: "home", agents: [], jobs: ["integrate", "refresh", "task-refresh"] } : offerFrom(config, args.name)),
+    started: new Date().toISOString(),
+  };
   const controller = new AbortController();
   // The first interrupt ends the active child's group with its grace
   // period; a second kills every group at once and exits.
@@ -2018,6 +2193,34 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // Tasks closed under this runner (t476), by taskKey: their exact state,
   // kept for this process so no later poll takes them again.
   const refused = new Set(), terminalTasks = new Map(), failures = new Map(), infrastructureFailures = new Map();
+  // The harnesses a provider's usage limit has paused (providerLimitOf), kept
+  // in a file so a restart honours them. A harness is paused for the whole
+  // runner process: every model of it leaves the offer until its reset.
+  const limitPath = limitFile ?? limitFileFor(offer.runner);
+  let limits = readLimits(limitPath);
+  const saveLimits = () => {
+    try { writeLimits(limitPath, limits); }
+    catch (error) { io.log(`could not keep the provider-limit pauses in ${limitPath}: ${error.message}`); }
+  };
+  // Pauses whose reset has come are lifted, and said so.
+  const liftExpired = () => {
+    const lifted = Object.values(limits.pauses).filter((p) => Date.parse(p.resetAt) <= now());
+    for (const p of lifted) { delete limits.pauses[p.harness]; io.log(`resumed: ${p.harness} usage limit reset at ${p.resetAt}; its models are offered again`); }
+    if (lifted.length) saveLimits();
+  };
+  const pauseHarness = (task, state) => {
+    const limit = state.providerLimit, at = now();
+    const held = limits.pauses[limit.harness];
+    const resetAt = new Date(Math.max(limit.resetAt, held ? Date.parse(held.resetAt) : 0)).toISOString();
+    const pause = { harness: limit.harness, reason: limit.reason, resetAt, since: held?.since ?? new Date(at).toISOString(), fallback: limit.fallback && (!held || held.fallback) };
+    limits.pauses[limit.harness] = pause;
+    const job = task.item.dispatch?.job === "plan" || task.item.dispatch?.job === "review" ? task.item.dispatch.job : jobOf(task);
+    limits.events = [...limits.events, { at: new Date(at).toISOString(), kind: "provider-limit", harness: pause.harness, job, project: task.project, item: task.item.id, ...(task.item.request !== undefined ? { request: task.item.request } : {}), resetAt, fallback: limit.fallback, reason: pause.reason }].slice(-EVENTS_KEEP);
+    saveLimits();
+    // An infrastructure event: the provider's, not the model's, so no run is
+    // reported and neither failure count moves.
+    io.log(`infrastructure event: provider limit on ${pause.harness} during ${job} of ${task.project}/${task.item.id}; ${pauseLine(pause)}`);
+  };
   // Review skip reports the server has not taken yet (t353), by the review's
   // refusal key: the report's body, how many tries in a row have failed, and
   // the poll (`polls`, counting the answered ones) on which it is next due.
@@ -2030,20 +2233,24 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // Sends one skip report. Taken, or refused for good (skipRefusedForGood),
   // the report is done with; failed any other way (the server down, busy or
   // slow, a timeout) it is kept, due again skipRetryPolls on.
-  const reportSkip = async (key, body, misses = 0) => {
+  // A build or plan job given up goes the same way, to run-skip (t420), so
+  // status and show name this runner as what passes it by, the
+  // infrastructure failures that send no run report among them.
+  const reportSkip = async (key, body, misses = 0, what = "review") => {
+    const send = what === "review" ? reportReviewSkip : reportRunSkip;
     try {
-      await reportReviewSkip(body, offer.runner, controller.signal);
+      await send(body, offer.runner, controller.signal);
       pendingSkips.delete(key);
-      io.log(`reported the review skip for ${body.project}/${body.item}`);
+      io.log(`reported the ${what} skip for ${body.project}/${body.item}`);
     } catch (error) {
       if (controller.signal.aborted) return;
       if (skipRefusedForGood(error)) {
         pendingSkips.delete(key);
-        io.log(`could not report the review skip for ${body.project}/${body.item}: ${error.message}`);
+        io.log(`could not report the ${what} skip for ${body.project}/${body.item}: ${error.message}`);
       } else {
         const after = skipRetryPolls(misses + 1);
-        pendingSkips.set(key, { body, misses: misses + 1, due: polls + after });
-        io.log(`could not report the review skip for ${body.project}/${body.item}: ${error.message}; trying again ${after === 1 ? "next poll" : `in ${after} polls`}`);
+        pendingSkips.set(key, { body, misses: misses + 1, due: polls + after, what });
+        io.log(`could not report the ${what} skip for ${body.project}/${body.item}: ${error.message}; trying again ${after === 1 ? "next poll" : `in ${after} polls`}`);
       }
     }
   };
@@ -2066,19 +2273,19 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     cli: async (argv, cwd, options = {}) => {
       // Lease control calls stay in the runner so shutdown can give each
       // request its own deadline, independent of the aborted child signal.
-      if (["review-renew", "review-release", "review-unparsable"].includes(argv[0]) && argv.includes("--request")) {
+      if ((argv[0] === "release" && options.providerLimit) || (["review-renew", "review-release", "review-unparsable"].includes(argv[0]) && argv.includes("--request"))) {
         // The CLI hands its own helpers in (api): inside `atelier runner`, a
         // dynamic import of atelier.mjs waits on that module's unfinished
         // top-level await, and Node exits 13 with nothing left to run (t505).
         const { server, I } = api ?? await import("./atelier.mjs");
         const value = (flag) => argv[argv.indexOf(flag) + 1];
-        const body = { request: Number(value("--request")), note: argv.includes("--note") ? value("--note") : "" };
+        const body = { ...(options.providerLimit ? { providerLimit: true } : { request: Number(value("--request")) }), note: argv.includes("--note") ? value("--note") : "" };
         if (argv[0] === "review-unparsable") {
           body.head = value("--head");
           body.reply = readFileSync(value("--reply-file"), "utf8");
         }
         const response = await fetch(`${server()}/api${I(value("--project"), argv[1])}/${argv[0]}`, {
-          method: "POST", redirect: "error", headers: { authorization: `Bearer ${options.token}`, "x-atelier-actor": value("--as"), "content-type": "application/json" },
+          method: "POST", redirect: "error", headers: { authorization: `Bearer ${options.token ?? credential}`, "x-atelier-actor": value("--as"), "content-type": "application/json" },
           body: JSON.stringify(body), signal: AbortSignal.timeout(5000),
         });
         if (!response.ok) throw Object.assign(new Error(`${argv[0]}: ${response.status}`), { status: response.status });
@@ -2149,6 +2356,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // fetch); a runner started without them takes no plan job and no part.
     ...(jobBrief ? { jobBrief } : {}), ...(postPlan ? { postPlan } : {}),
     clone: (remote, token, dir) => checked(["git", "clone", "--quiet", remote, dir], { env: gitAuth(token), signal: controller.signal, step: "clone" }, executeChild),
+    checkout: (dir, head) => checked(["git", "checkout", "--quiet", "--detach", head], { cwd: dir, signal: controller.signal, step: "checkout" }, executeChild),
     diff: (dir, base, head) => checked(["git", "diff", base, head], { cwd: dir, capture: true, signal: controller.signal, step: "diff" }, executeChild),
     mergeBase: (dir, a, b) => checked(["git", "merge-base", a, b], { cwd: dir, capture: true, signal: controller.signal, step: "merge-base" }, executeChild),
     // Whether `base` is an ancestor of `head` (alreadyComplete): git exits 0
@@ -2185,7 +2393,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     abortMerge: (cwd) => checked(["git", "merge", "--abort"], { cwd, capture: true, captureError: true, signal: controller.signal }, executeChild),
     // The workspace half of a rollback; runIntegrate and runRefresh push it with atelier push --rollback.
     rollback: (cwd, before) => checked(["git", "reset", "--hard", before], { cwd, capture: true, captureError: true, signal: controller.signal, step: "rollback" }, executeChild),
-    writeDiff, removeDiff, verdictPath, readVerdict,
+    writeDiff, removeDiff, verdictPath, readVerdict, now,
     // The task refresh's own workspace (t462, cli/task-refresh.mjs): a fresh
     // directory, never a builder's, removed when the job ends.
     tempDir: async (prefix) => mkdtempSync(join(tmpdir(), prefix)),
@@ -2231,15 +2439,41 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // exact jobs is read where the runner runs, not inferred from the
     // queue's silence.
     io.log(jobsLine(offer.jobs));
+    // Pauses a restart finds in the file, said as the runner's status.
+    for (const pause of Object.values(limits.pauses)) if (Date.parse(pause.resetAt) > now()) io.log(`still ${pauseLine(pause)}`);
     // Transient queue failures in a row (transientQueueError): the first is
     // logged, the rest are quiet until the queue answers again, and each
     // lengthens the wait before the next poll (queueBackoffMs).
     let misses = 0;
+    // Why this runner found nothing it may claim while dispatches wait (t420):
+    // first the tasks the queue offered that this process passes by
+    // (passedBy), then every other waiting dispatch with the reason the
+    // server gives this runner's poll asked with `why` (idleWhy), so an idle
+    // runner says once what holds each one, and stays quiet until that
+    // changes. A server that will not say is said too, once.
+    let lastWhy = null, pollOffer = offer;
+    const sayIdleWhy = async (passed) => {
+      let waiting = [], unread = null;
+      if (idleWhy) { try { waiting = await idleWhy(pollOffer, controller.signal); } catch (error) { if (controller.signal.aborted) return; unread = error.message; } }
+      const own = new Set(passed.map((p) => p.task));
+      const reasons = [...passed, ...(Array.isArray(waiting) ? waiting : []).filter((q) => q?.item?.why?.length && !own.has(`${q.project}/${q.item.id}`))
+        .flatMap((q) => q.item.why.map((r) => ({ task: `${q.project}/${q.item.id}`, line: r.line })))];
+      if (!reasons.length && !unread) { lastWhy = null; return; }
+      const signature = [...reasons.map((r) => `${r.task}  ${r.line}`), unread ?? ""].join("\n");
+      if (signature === lastWhy) return;
+      lastWhy = signature;
+      const n = new Set(reasons.map((r) => r.task)).size;
+      if (n) line(`found nothing to claim while ${n} dispatch${n === 1 ? "" : "es"} wait${n === 1 ? "s" : ""}:`);
+      for (const r of reasons) line(`  ${r.task}  ${r.line}`);
+      if (unread) line(`found nothing to claim; the server's reasons for the dispatches waiting could not be read (${unread}), so atelier status names them.`);
+    };
     while (!controller.signal.aborted) {
       let state;
       try {
+        liftExpired();
         let tasks;
-        try { tasks = await queue(offer, controller.signal); }
+        pollOffer = unpausedOffer(offer, limits.pauses);
+        try { tasks = await queue(pollOffer, controller.signal); }
         catch (error) {
           if (controller.signal.aborted || !transientQueueError(error)) throw error;
           misses++;
@@ -2259,7 +2493,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         // send them.
         for (const [key, pending] of [...pendingSkips]) {
           if (pending.due > polls) continue;
-          await reportSkip(key, pending.body, pending.misses);
+          await reportSkip(key, pending.body, pending.misses, pending.what);
           if (controller.signal.aborted) break;
         }
         if (controller.signal.aborted) break;
@@ -2270,27 +2504,38 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         // before t252's fix still lists, and they stay in the queue for a
         // runner that takes them.
         const ordered = [...tasks.filter((task) => task.item.dispatch?.job === "review"), ...tasks.filter((task) => task.item.dispatch?.job !== "review")];
-        for (const task of ordered.filter((task) => offer.jobs.includes(jobOf(task)) && !terminalTasks.has(taskKey(task)) && !refused.has(refusedKey(task)) && (failures.get(failureKey(task)) ?? 0) < 2 &&
-          (infrastructureFailures.get(failureKey(task)) ?? 0) < 3)) {
+        let ranTask = false;
+        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks });
+        for (const task of ordered.filter((task) => passBy(task) === null)) {
           // A poll can contain the same task more than once. Recheck after
           // each job, since filtering the batch preceded its terminal result.
-          if (terminalTasks.has(taskKey(task))) continue;
+          if (terminalTasks.has(taskKey(task)) || limits.pauses[task.agent]) continue;
+          // A task this runner may take is not an idle poll.
+          ranTask = true;
           // A dispatch carrying job: "plan" asks for the plan job, one
           // carrying "review" for the review job, "integrate" for the
           // integrate job and "refresh" for the refresh job
           // (docs/orchestrator.md, sections 2, 4 and 5); anything else is building.
-          state = task.item.dispatch?.job === "plan"
-            ? await runPlanTask(task, config, offer.runner, io)
+          // Polls stop while the job runs, so a heartbeat renews this
+          // runner's last poll meanwhile (t537): without it a build longer
+          // than RUNNER_GONE_MS would orphan its own claim.
+          state = await withHeartbeat(() => task.item.dispatch?.job === "plan"
+            ? runPlanTask(task, config, offer.runner, io)
             : task.item.dispatch?.job === "review"
-              ? await runReview(task, config, offer.runner, io)
+              ? runReview(task, config, offer.runner, io)
               : task.item.dispatch?.job === "integrate"
-                ? await runIntegrate(task, config, offer.runner, io)
+                ? runIntegrate(task, config, offer.runner, io)
                 : task.item.dispatch?.job === "refresh"
-                  ? await runRefresh(task, config, offer.runner, io)
+                  ? runRefresh(task, config, offer.runner, io)
                   : task.item.dispatch?.job === "task-refresh" || task.item.dispatch?.job === "task-resolve"
-                    ? await runTaskRefresh(task, config, offer.runner, io)
-                    : await runTask(task, config, offer.runner, io);
+                    ? runTaskRefresh(task, config, offer.runner, io)
+                    : runTask(task, config, offer.runner, io), heartbeat && (() => heartbeat(offer, controller.signal)), { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
           if (controller.signal.aborted) break;
+          if (state.providerLimit) {
+            pauseHarness(task, state);
+            if (args.once) break;
+            continue;
+          }
           const outcome = runOutcome(state);
           if (outcome && reportRun) {
             try {
@@ -2316,14 +2561,24 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           if (task.item.dispatch?.job === "review" && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && reportReviewSkip) {
             await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note: state.reason });
           }
+          // A build or plan job given up under this dispatch, after its
+          // failed runs or infrastructure failures in a row, is reported as
+          // such (t420): the second sends no run report at all (runOutcome).
+          // A task the server closed (t476) was not given up.
+          const gaveUp = state.terminalState ? null : count === 2 ? "failures" : infrastructureCount === 3 ? "infrastructure" : null;
+          if (task.item.dispatch?.job !== "review" && gaveUp && reportRunSkip) {
+            const role = task.item.dispatch?.job === "plan" ? "plan" : "build";
+            await reportSkip(`run-skip:${key}`, { project: task.project, item: task.item.id, actor: task.actor, role, kind: gaveUp, failures: gaveUp === "failures" ? count : infrastructureCount, note: state.reason ?? "" }, 0, "run");
+          }
           // Closure survives changes to the head or updatedAt in later polls
           // (t476). Remember its exact state for this process, by the task
           // itself, independently of the revision-specific refusals that a
           // new dispatch can supersede and of a review's per-request failures.
           if (state.terminalState) terminalTasks.set(taskKey(task), state.terminalState);
-          else if (state.claimRefused || state.skipped) refused.add(refusedKey(task));
+          else if (state.claimRefused && !lostToHold(state) || state.skipped) refused.add(refusedKey(task));
           else if (args.once || state.phase !== "failed" || state.taskFailure) break;
         }
+        if (!ranTask && !controller.signal.aborted) await sayIdleWhy(ordered.flatMap((task) => { const why = passBy(task); return why ? [{ task: `${task.project}/${task.item.id}`, line: why }] : []; }));
         state ??= { phase: "idle" };
       } catch (error) { state = nextStep({ phase: "idle" }, { error: error.message }); line(`failed: ${state.reason}`); }
       if (args.once) { if (state.phase === "failed" && !controller.signal.aborted) process.exitCode = 1; break; }

@@ -59,6 +59,7 @@ import command_revert from "./revert.ts";
 import command_review from "./review.ts";
 import command_review_claim from "./review-claim.ts";
 import command_review_release from "./review-release.ts";
+import command_review_request from "./review-request.ts";
 import command_review_unparsable from "./review-unparsable.ts";
 import command_run_report from "./run-report.ts";
 import command_runner from "./runner.ts";
@@ -140,6 +141,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/review.ts", spec: command_review },
   { path: "src/usage/commands/review-claim.ts", spec: command_review_claim },
   { path: "src/usage/commands/review-release.ts", spec: command_review_release },
+  { path: "src/usage/commands/review-request.ts", spec: command_review_request },
   { path: "src/usage/commands/review-unparsable.ts", spec: command_review_unparsable },
   { path: "src/usage/commands/run-report.ts", spec: command_run_report },
   { path: "src/usage/commands/runner.ts", spec: command_runner },
