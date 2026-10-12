@@ -429,9 +429,12 @@ export function redactGitArgs(args) {
 // a review, a new review request (t353). The queue's review task carries the
 // review request's number in `item.request`, so a refusal of one review
 // request never strands the next landing's, which asks again under its own
-// request and head.
+// request and head. A build refused for its criteria review (t438) is tried
+// again once a review of its criteria reaches a verdict, which changes
+// neither its head nor its updatedAt: the queue counts those verdicts on the
+// item (criteriaReviews), and an approval is always a new one.
 export function refusedKey(task) {
-  return JSON.stringify([task.project, task.item.id, task.item.head, task.item.updatedAt, task.item.request]);
+  return JSON.stringify([task.project, task.item.id, task.item.head, task.item.updatedAt, task.item.request, task.item.criteriaReviews ?? null]);
 }
 
 export function writeBrief(workspace, text) {
