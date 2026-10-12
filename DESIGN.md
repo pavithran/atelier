@@ -34,11 +34,12 @@ only a list of tasks.
   the current holder's band runs to the "now" line, where the head breathes.
   Every recorded event is a mark on the lane. The page refreshes every
   fifteen seconds without script.
-- **Code** and **Log** carry a neutral stripe per entry and per commit the
-  commit's message names an agent for, with that name in words beside it;
-  company colours stay inside charts (d9), so the stripe marks that an agent
-  is named, not which family. An entry's stripe is the commit that last
-  changed it; a commit naming none is drawn dimmer.
+- **Code** and **Log** carry the same neutral stripe on every entry and
+  every commit; company colours stay inside charts (d9), so the stripe never
+  says which family. The agent the commit's message names (or "no agent
+  named") is written beside it in words. An entry's stripe is the commit that
+  last changed it; an entry none of the commits read changed gets a fainter
+  stripe.
 - **The public showcase** is the owner's portfolio, read only: a card per
   project the owner opted in, with its two weeks of activity as a bar per day
   stacked by family, its tasks merged, sent back and in progress, and a few
