@@ -153,6 +153,34 @@ it("a merge-main part whose integration conflicted keeps its merge-main job and 
   expect(text).toContain(`The runner has merged the plan's branch at ffffffff (${MB}) into this workspace before you start.`);
 });
 
+// Under require-criteria-review (t438) the re-dispatch after a conflict is
+// the runner's merge-plan job, a merge like merge-main: the part's criteria
+// were judged when it was first dispatched, so the tick neither holds it for
+// a criteria review nor withdraws it once queued, and the claim takes it.
+it("a part sent back after a conflict is offered and claimable under require-criteria-review switched on after it was built, with no criteria review", async () => {
+  const name = "mp-criteria-gate";
+  const L = await setup(name);
+  const { id, b, builder } = await plan(L);
+  await L.setProject({ name, repo: `${name}--baseline`, policy: { ...policy, requireCriteriaReview: true }, createdAt: new Date().toISOString() }, "owner");
+  await failIntegration(L, id, "b", "conflict");
+  const d = (await L.item(b)).dispatch;
+  expect(d).toMatchObject({ planHead: MA });
+  expect(d?.job).toBeUndefined();
+  const offered = (await L.waiting()).find((i) => i.id === b);
+  expect(offered?.claimRefusal).toBeUndefined();
+  expect((await L.criteriaReviewWaiting()).map((i) => i.id)).toEqual([]);
+  expect(await L.criteriaReviewsFor(b)).toEqual([]);
+  // A later tick finds the part queued and leaves it so.
+  await L.retickDeployed("a1b2c3d4");
+  expect((await L.item(b)).dispatch).toMatchObject({ planHead: MA });
+  expect((await L.item(b)).state).toBe("open");
+  expect(((await L.events(b)) as unknown as LedgerEvent[]).filter((e) => e.kind === "item.undispatched")).toEqual([]);
+  await L.claim(b, builder, RUNNER);
+  const brief = await L.jobBrief(b, builder);
+  expect(brief.job).toBe("rework");
+  expect(brief.text).toContain("## Merging the plan's branch");
+});
+
 // ── the integrator's conflict pre-check, through the Worker ─────────────
 
 // A stand-in Artifacts over one object store: commits with their parents and

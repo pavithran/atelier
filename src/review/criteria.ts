@@ -118,12 +118,16 @@ export const CRITERIA_REVIEW_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 
 // The jobs a dispatch may carry that the criteria gate does not hold: the
 // planner's, the integrator's, the merges (whose criteria were judged when
-// the part or task was first dispatched) and the reviews. A dispatch with
-// none of these builds, and a build needs the approval.
+// the part or task was first dispatched) and the reviews. A part sent back
+// after an integration conflict carries no job name but names the plan
+// branch's head (`planHead`): the runner's merge-plan job, a merge too. A
+// dispatch with none of these builds, and a build needs the approval.
 export const CRITERIA_EXEMPT_JOBS: readonly string[] = ["plan", "review", "criteria-review", "integrate", "refresh", "merge-main"];
 
-export function buildJob(dispatch: { job?: string } | null | undefined): boolean {
-  return !dispatch?.job || !CRITERIA_EXEMPT_JOBS.includes(dispatch.job);
+export function buildJob(dispatch: { job?: string; planHead?: string | null } | null | undefined): boolean {
+  if (!dispatch) return true;
+  if (dispatch.planHead) return false;
+  return !dispatch.job || !CRITERIA_EXEMPT_JOBS.includes(dispatch.job);
 }
 
 // Atelier's own actors write criteria too (a merge-main part's), and are
