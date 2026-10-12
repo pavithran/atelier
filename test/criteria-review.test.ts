@@ -134,7 +134,7 @@ test("the build jobs the criteria gate holds, and the jobs it does not", () => {
   assert.equal(buildJob(null), true);
   assert.equal(buildJob({}), true);
   assert.equal(buildJob({ job: "merge-main" }), false);
-  for (const job of ["plan", "review", "criteria-review", "integrate", "refresh"]) assert.equal(buildJob({ job }), false, job);
+  for (const job of ["plan", "review", "prereview", "criteria-review", "integrate", "refresh"]) assert.equal(buildJob({ job }), false, job);
   // A part sent back after an integration conflict names the plan branch's
   // head and no job: the runner's merge-plan job, a merge the gate passes.
   assert.equal(buildJob({ planHead: "a".repeat(40) }), false);
