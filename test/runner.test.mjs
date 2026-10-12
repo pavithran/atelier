@@ -7,7 +7,7 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, passedBy, taskKey, failureKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, skipRefusedForGood, skipRetryPolls, jobsLine, gatewayMetadata, harnessRunEnv, codexBuildRefusal, validationBlockedReport, alreadyComplete } from "../cli/runner.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, makeDataHome, removeDataHome, redactGitArgs, refusedKey, failureCount, infrastructureFailureCount, passedBy, taskKey, failureKey, jobOf, runOutcome, harnessEnv, versionRefusal, transientQueueError, queueBackoffMs, skipRefusedForGood, skipRetryPolls, jobsLine, gatewayMetadata, harnessRunEnv, codexBuildRefusal, validationBlockedReport, alreadyComplete, lostToHold } from "../cli/runner.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
 import { helpText, ROLE_PROMPTS } from "../src/usage.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
@@ -1102,6 +1102,37 @@ test("runner skips refused revisions across polls and tries the next offered tas
     },
   });
   assert.deepEqual(claimed, ["t13", "t14", "t13"]);
+});
+
+// t540: a claim that lost the race to a hold (409 held) is not a refusal;
+// the runner keeps no refusal of the task and claims it at a later poll that
+// offers it, unchanged, where a refused claim passes it by.
+test("a claim lost to a hold is tried again at a later poll, the task unchanged", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-queue-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify(config));
+  t.mock.method(console, "log", () => {});
+  const { io } = fixture();
+  const claimed = [];
+  io.cli = async (argv) => {
+    if (argv[0] === "claim") {
+      claimed.push(argv[1]);
+      if (claimed.length === 1) throw Object.assign(new Error("atelier: held: t13 is held: the core files hold it: it waits on t1 (claimed by codex/gpt-6)\n"), { claimRefused: true });
+    }
+  };
+  let polls = 0;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+    workspacePath: io.workspacePath, taskIO: io, wait: () => tick(),
+    async queue() {
+      if (++polls > 2) { process.emit("SIGTERM"); return []; }
+      return [assignment];
+    },
+  });
+  assert.deepEqual(claimed, ["t13", "t13"]);
+  assert.equal(lostToHold({ claimRefused: true, reason: "atelier: held: t13 is held" }), true);
+  assert.equal(lostToHold({ claimRefused: true, reason: "atelier: runner_forbidden: no" }), false);
+  assert.equal(lostToHold({ reason: "atelier: held: t13 is held" }), false);
 });
 
 test("git error arguments redact scoped headers, separate values and bearer tokens", () => {
