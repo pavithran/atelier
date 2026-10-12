@@ -1,0 +1,37 @@
+atelier atelier/t551 "wait.test's ps stand-in overflows Node's 1 MB buffer on a busy host"
+accepted head 85c1b9ccb03f1fdb7f834614f86de36a400f1d98
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR claude-code/opus-5.5 (anthropic)
+OBSERVED FAIL npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-12T18:40:15.879Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-12T18:40:19.842Z
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-12T18:56:33.403Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-12T18:56:37.194Z
+REVIEW approve by codex/gpt-6-astra at 85c1b9ccb03f1fdb7f834614f86de36a400f1d98, recorded by codex/gpt-6-astra
+2026-10-12T17:51:51.703Z pavi item.created
+2026-10-12T17:51:57.155Z claude-code/opus-5.5 item.claimed
+2026-10-12T17:52:17.485Z claude-code/opus-5.5 fork.created
+2026-10-12T17:54:48.323Z claude-code/opus-5.5 push.observed
+2026-10-12T18:04:23.754Z claude-code/opus-5.5 evidence.observed
+2026-10-12T18:04:27.086Z claude-code/opus-5.5 evidence.observed
+2026-10-12T18:04:27.927Z claude-code/opus-5.5 item.submitted
+2026-10-12T18:27:17.906Z pavi land.lease
+2026-10-12T18:27:25.500Z pavi land.merge
+2026-10-12T18:27:40.707Z pavi land.regenerate
+2026-10-12T18:27:45.872Z claude-code/opus-5.5 push.observed
+2026-10-12T18:27:46.801Z pavi land.push
+2026-10-12T18:40:16.408Z claude-code/opus-5.5 evidence.observed
+2026-10-12T18:40:20.382Z claude-code/opus-5.5 evidence.observed
+2026-10-12T18:40:21.115Z pavi land.check
+2026-10-12T18:48:17.439Z pavi land.lease
+2026-10-12T18:48:24.792Z pavi land.merge
+2026-10-12T18:48:38.974Z pavi land.regenerate
+2026-10-12T18:48:41.055Z pavi land.push
+2026-10-12T18:56:34.089Z claude-code/opus-5.5 evidence.observed
+2026-10-12T18:56:37.419Z claude-code/opus-5.5 evidence.observed
+2026-10-12T18:56:37.943Z pavi land.check
+2026-10-12T18:56:42.050Z pavi review.requested
+2026-10-12T18:56:55.658Z codex/gpt-6-astra review.claimed
+2026-10-12T18:58:25.225Z codex/gpt-6-astra review.approved
+2026-10-12T18:58:30.063Z pavi land.review
+2026-10-12T18:58:31.048Z pavi item.accepted
+2026-10-12T18:58:31.099Z pavi land.accept
