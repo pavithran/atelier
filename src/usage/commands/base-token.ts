@@ -4,7 +4,7 @@ const spec: CommandSpec = {
   name: "base-token",
   forms: [
     {
-      group: "Agents", line: 4, slot: 20,
+      group: "Agents", line: 5, slot: 20,
       form: "base-token ID",
       about: "Reads a token for the repository the task is measured against: the plan's fork for a part, the baseline otherwise.",
     },

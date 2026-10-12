@@ -40,6 +40,7 @@ import { DIFF_INLINE_MAX, TEXT_CONTROLS } from "../text.ts";
 import { DECISIONS_HEADING, DECISIONS_RULE, NO_DECISIONS, decisionLines, type Decision } from "../decisions.ts";
 import { ownerVerdicts, refutedRejection, verdictOn, type OwnerVerdict, type ReviewRecord, type ReviewRequired } from "./needed.ts";
 import { DEFAULT_REVIEW_BAR, replyFormat } from "./verdict.ts";
+import { criteriaFindingsSection, deferredCriteria, type CriteriaResolution, type CriteriaReview } from "./criteria.ts";
 
 // An estimate of 10,000 tokens of diff, at about four characters a token, so
 // the brief fits a 32K window with room for the reply. A longer diff is not
@@ -91,6 +92,14 @@ export interface BriefInput {
   // ones not withdrawn. The brief carries them as decisions a reviewer must
   // not overrule; absent or empty, it says the owner recorded none.
   decisions?: readonly Pick<Decision, "id" | "text" | "quote" | "at">[] | null;
+  // The reviews of the item's acceptance criteria and the owner's
+  // resolutions of their findings (t438, src/review/criteria.ts), so the
+  // reviewer knows the criteria were judged before the change and how each
+  // question about them was answered. Absent or empty, the brief says none
+  // was recorded. `criteriaRev` is the revision the criteria are at now.
+  criteriaReviews?: readonly CriteriaReview[] | null;
+  criteriaResolutions?: readonly CriteriaResolution[] | null;
+  criteriaRev?: number | null;
   // The item's evidence (t490): every run Atelier recorded, observed or
   // reported, and the project's required checks, so the brief can tell a
   // required check's run from a supplemental one. The brief shows only the
@@ -293,6 +302,11 @@ export function reviewBrief(input: BriefInput): string {
   const summary = submission([...input.events], item.id, head)?.summary;
   section("## The builder's summary", "", summary ? block(summary) : "The builder gave no summary with this submission.");
 
+  // The reviews of the acceptance criteria themselves (t438), with the
+  // owner's resolutions, when any was recorded.
+  const criteriaSection = criteriaFindingsSection(input.criteriaReviews ?? [], input.criteriaResolutions ?? [], input.criteriaRev ?? 0);
+  if (criteriaSection) section(criteriaSection, "", "Judge the change against the criteria as they stand above; a resolution the project owner recorded on a criteria finding is the owner's decision on that reading of the criterion.");
+
   if (need.previous.length) section("## Earlier reviews", "", ...earlier(need.previous, head, owner, verdicts));
 
   const limit = input.diffLimit !== undefined && Number.isFinite(input.diffLimit) && input.diffLimit > 0 ? Math.floor(input.diffLimit) : BRIEF_LIMITS.diff;
@@ -377,8 +391,10 @@ export function reviewBrief(input: BriefInput): string {
   );
 
   // The reply numbers the criteria across both lists; the format says how
-  // the plan's numbers map onto it when both lists are carried.
-  section("## Reply format", "", replyFormat(criteria, accept.length));
+  // the plan's numbers map onto it when both lists are carried. The criteria
+  // the criteria review flagged as checks after deploy (t457) may be
+  // deferred in the reply; the runner hands parseVerdict the same numbers.
+  section("## Reply format", "", replyFormat(criteria, accept.length, deferredCriteria(input.criteriaReviews ?? [], input.criteriaRev ?? 0)));
   return out.join("\n\n");
 }
 
