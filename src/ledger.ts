@@ -1888,13 +1888,26 @@ export class Ledger extends DurableObject<Env> {
   // paths pass it; the Ledger's own tests, which run no scan, do not.
   recordPush(id: string, actor: string, observedHead: string, reportedHead: string | null, proved = false, lineage: PushLineage = { holdsRecorded: true, rebasedFrom: null }, authors: PushAuthor[] = [], scan = false): Item {
     const item = this.item(id);
-    if (item.state !== "accepted") assertLive(item);
-    assertOwner(item, actor);
+    // The owner may port work to a released fork without taking its claim
+    // or removing its dispatch. The next builder inherits the recorded head.
+    const ownerPort = actor === this.owner && item.owner === null && item.state === "open";
+    if (!ownerPort) {
+      if (item.state !== "accepted") assertLive(item);
+      assertOwner(item, actor);
+    }
     const landing = this.landing(id);
     if (item.state === "accepted" && landing && item.head !== observedHead) {
       throw new RuleError("landing", `${id} is being merged at ${landing.slice(0, 8)}; push again once it has landed`, 409);
     }
-    if (item.head === observedHead) return item;
+    if (item.head === observedHead) {
+      // The fork notification may have observed this port before the owner's
+      // push request. Still credit the owner, without moving the head again.
+      if (ownerPort && !item.pushActors?.includes(actor)) {
+        this.log(id, actor, "push.observed", { head: observedHead, ...this.otherAuthors(item, authors) }, new Date().toISOString(), proved);
+        return this.item(id);
+      }
+      return item;
+    }
     const rewritten = !!item.head && !lineage.holdsRecorded;
     const unverified = rewritten && lineage.holdsRecorded === null;
     if (rewritten && lineage.rebasedFrom !== item.head) {
@@ -1907,7 +1920,7 @@ export class Ledger extends DurableObject<Env> {
     const reopened = item.state === "accepted";
     this.update(id, {
       head: observedHead, last_push_at: now,
-      state: item.state === "submitted" ? "submitted" : "claimed",
+      state: ownerPort ? "open" : item.state === "submitted" ? "submitted" : "claimed",
       ...(reopened ? { accepted_head: null } : {}),
       ...(scan ? { secret_scan: observedHead } : {}),
     }, now);

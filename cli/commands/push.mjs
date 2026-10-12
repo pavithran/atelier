@@ -1,9 +1,16 @@
 // atelier push. Its forms, flags and help are declared in src/usage/commands/push.ts.
-import { I, actor, args, call, count, die, forkBranch, git, hasCommit, holds, itemArg, project, requireWorkspace, short, wsConfig } from "../atelier.mjs";
+import { I, OWNER, actor, args, call, count, die, forkBranch, git, hasCommit, holds, itemArg, project, requireWorkspace, short, wsConfig } from "../atelier.mjs";
 
 export default async function pushCommand() {
   const name = project(), id = itemArg(), as = await actor();
-  requireWorkspace("push", name, id, as);
+  // Keep the repository guard even when the owner ports an unclaimed task.
+  // The ledger authorizes the exception again when it observes the push.
+  let workspaceActor = as;
+  if (as === OWNER && wsConfig("project") === name && wsConfig("item") === id) {
+    const { item } = await call("GET", I(name, id), undefined, as);
+    if (item.owner === null && item.state === "open") workspaceActor = wsConfig("actor");
+  }
+  requireWorkspace("push", name, id, workspaceActor);
   // A push to any branch but the one the fork's HEAD names lands where
   // Atelier never reads, so it is refused before anything is sent. When
   // origin does not name its branch, the push goes ahead and the

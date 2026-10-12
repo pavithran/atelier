@@ -16,7 +16,7 @@ import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 const cli = resolve("cli/atelier.mjs");
 
-function fixture(t) {
+function fixture(t, { unclaimed = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-guard-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" } }).trim();
@@ -65,7 +65,7 @@ import { appendFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 const BASE = ${JSON.stringify(base)}, BASELINE = ${JSON.stringify(baseline)}, FORKS = ${JSON.stringify(forks)};
 const forkHead = (id) => execFileSync("git", ["--git-dir", FORKS[id], "rev-parse", "refs/heads/main"], { encoding: "utf8" }).trim();
-const item = (id) => ({ id, title: "Task " + id, scope: [], state: "claimed", owner: "codex/test", head: forkHead(id), acceptedHead: null, base: BASE, fork: "demo-" + id, dispatch: null });
+const item = (id) => ({ id, title: "Task " + id, scope: [], state: ${JSON.stringify(unclaimed ? "open" : "claimed")}, owner: ${JSON.stringify(unclaimed ? null : "codex/test")}, head: forkHead(id), acceptedHead: null, base: BASE, fork: "demo-" + id, dispatch: null });
 globalThis.fetch = async (url, options = {}) => {
   const path = new URL(url).pathname, method = options.method ?? "GET";
   if (path === "/api/version") return Response.json({ capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
@@ -172,4 +172,17 @@ test("push and update still run in the item's own workspace", (t) => {
   assert.match(updated.stdout, new RegExp(`t1 rebased onto baseline ${moved.slice(0, 8)}`));
   assert.equal(f.git(ws, "rev-parse", "HEAD^"), moved);
   assert.equal(f.git(ws, "log", "-1", "--format=%s"), "Work");
+});
+
+test("the owner can push an unclaimed task workspace without changing its configured actor", t => {
+  const f = fixture(t, { unclaimed: true }), dir = f.workspaces.t1;
+  writeFileSync(join(dir, "port.txt"), "owner port");
+  f.git(dir, "add", "."); f.git(dir, "commit", "-m", "Port change", "-m", "Agent: owner");
+  const head = f.git(dir, "rev-parse", "HEAD");
+  const r = f.run(dir, ["push", "t1", "--as", "owner"]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(f.forkMain("t1"), head);
+  assert.equal(f.git(dir, "config", "atelier.actor"), "codex/test");
+  assert.equal(f.writes().filter(x => x.path.endsWith("/push")).length, 1);
+  assert.equal(f.writes().filter(x => x.path.endsWith("/claim")).length, 0);
 });

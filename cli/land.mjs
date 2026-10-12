@@ -329,7 +329,8 @@ export async function runLand(io) {
   // queue it holds a place in, exactly as it releases a lease it took.
   const heldNote = lease && lease.item === id ? ` The landing lease of ${name} is still held for ${id} since ${since(lease)}, from an earlier landing; atelier land ${id} --release-lease frees it.` : "";
   const refuse = (message) => die(message + heldNote);
-  const preflight = async (throwing = false) => {
+  let needsPreparation = false;
+  const preflight = async (throwing = false, prepare = false) => {
     const no = (message) => { if (throwing) throw new StepError(message + heldNote); refuse(message); };
     const d = throwing ? await request("GET", itemPath) : detail;
     if (["merged", "abandoned"].includes(d.item.state)) no(`${id} is ${d.item.state}; there is nothing to land.`);
@@ -341,12 +342,13 @@ export async function runLand(io) {
     // its workspace work is behind it, and the landing goes on from the
     // acceptance (the merge the Workflow waits for).
     if (d.item.state === "accepted" && !workflow) no(`${id} is accepted at ${short(d.item.acceptedHead)}; merge it with: atelier merge ${id}.`);
-    const prepared = await prepareRecordedWorkspace(io, { dir, itemPath, detail: d, dryRun });
-    if (dryRun && prepared) return d;
+    // Inspect before queuing, but replace a workspace only while holding the lease.
+    needsPreparation = await prepareRecordedWorkspace(prepare || dryRun ? io : { ...io, print: () => {} }, { dir, itemPath, detail: d, dryRun: !prepare });
+    if (!prepare && needsPreparation) return d;
     if (!existsSync(join(dir, ".git"))) no(`${id} has no workspace on this Mac (${dir}); it has nothing to land. Run atelier claim ${id} --as H/M first, or land a task that has one.`);
     const held = { project: git(["config", "--local", "atelier.project"], { cwd: dir, allowFail: true }).stdout?.trim(), item: git(["config", "--local", "atelier.item"], { cwd: dir, allowFail: true }).stdout?.trim() };
     if (held.project !== name || held.item !== id) no(`${dir} is not ${id}'s workspace (its Git config names ${held.project ?? "no project"}/${held.item ?? "no item"}); land ${id} from the machine holding its workspace.`);
-    if (existsSync(join(dir, ".git", "MERGE_HEAD"))) no(`a Git merge is already in progress in ${id}'s workspace; resolve and commit it (or git merge --abort), then run atelier land ${id} again.`);
+    if (existsSync(join(dir, ".git", "MERGE_HEAD"))) no(`a Git merge is already in progress in ${id}'s workspace; resolve, commit and push it with atelier push (or git merge --abort), then run atelier land ${id} again.`);
     // An agent's notes and a harness's logs under .scratch/ are not work to
     // commit (excludeScratch, t257).
     excludeScratch(dir);
@@ -383,7 +385,7 @@ export async function runLand(io) {
   // and the checks, with the policy that requires it (t422). A dry run skips
   // it: measuring needs a baseline fetch into the workspace, and a dry run
   // changes nothing.
-  if (!noReview && !dryRun) {
+  if (!noReview && !dryRun && !needsPreparation) {
     const baseline = await request("POST", `/projects/${encodeURIComponent(name)}/items/${encodeURIComponent(id)}/base-token`, { scope: "read" }).catch(() => undefined);
     const notice = workspaceNotice((argv, o) => git(argv, { allowFail: true, ...o }), dir, d0.policy, { baseline, part: d0.item?.kind === "part" });
     if (notice) for (const line of notice) print(line);
@@ -426,10 +428,10 @@ export async function runLand(io) {
   // itself, in the order the landings asked.
   if (workflow) {
     if (wait) print("--wait is the Workflow's own behaviour: it queues for the lease in the order the landings asked, and takes it when its turn comes.");
-    await ensureWorkspaceToken(io, { dir, id, itemPath, item: d0.item });
+    if (!needsPreparation) await ensureWorkspaceToken(io, { dir, id, itemPath, item: d0.item });
     return runLandWorkflow(io, { d0, itemPath, dir, regenerate, triage, moved });
   }
-  await ensureWorkspaceToken(io, { dir, id, itemPath, item: d0.item });
+  if (!needsPreparation) await ensureWorkspaceToken(io, { dir, id, itemPath, item: d0.item });
 
   // From here every failure throws rather than dying, so the lease is
   // released and the step recorded before the command ends. The recorder
@@ -533,7 +535,7 @@ export async function runLand(io) {
         await queue();
         d0 = await preflight(true);
         // The wait can outlast the token checked before it.
-        await ensureWorkspaceToken(io, { dir, id, itemPath, item: d0.item });
+        if (!needsPreparation) await ensureWorkspaceToken(io, { dir, id, itemPath, item: d0.item });
       }
       // The lease step's duration is the taking alone: time spent queued
       // behind another landing is not this task's cost of landing.
@@ -629,6 +631,8 @@ export async function runLand(io) {
     const firstBeat = setTimeout(beat, LEASE_RENEW_MS);
     firstBeat.unref();
     await record("lease", Date.now() - t0);
+    d0 = await preflight(true, true);
+    await ensureWorkspaceToken(io, { dir, id, itemPath, item: d0.item });
 
     // Merge main into the workspace, no-ff, so the task carries main's
     // commits as a merge of their own; settle what the project's
@@ -1309,7 +1313,7 @@ async function compareMoved(io, { dir, id, name, record, moved, t0, mainHead }) 
   const fresh = moved.ok && approved
     ? `--moved-ok approved the findings at task ${short(approved.task)}, main ${short(approved.main)}, merge base ${short(approved.mergeBase)}; this comparison is at other revisions or found other edits, so it needs a fresh approval. `
     : "";
-  const instructions = `To port them: merge main into the workspace (in ${JSON.stringify(dir)}, or have the task's builder do it: atelier dispatch ${id} --job merge-main), make each edit again at its destination, commit, and run ${moved.again} again, which compares afresh. If a finding is wrong, ${moved.again} --moved-ok records your approval of exactly the findings it detects at those revisions and goes on.`;
+  const instructions = `To port them: merge main into the workspace (in ${JSON.stringify(dir)}, or have the task's builder do it: atelier dispatch ${id} --job merge-main), make each edit again at its destination, commit, push with atelier push, and run ${moved.again} again, which compares afresh. If a finding is wrong, ${moved.again} --moved-ok records your approval of exactly the findings it detects at those revisions and goes on.`;
   await log({ kind: "stopped", findings: report.findings, instructions });
   throw await stop(`${fresh}${id}'s edits lie in code main moved to another file, so the landing stops before merging main; Git and the workspace are unchanged (${shortRevs}):\n${listed}\nA merge would leave each edit in the old place, or stop on a conflict there, and the moved code would never get it. ${instructions}`, {
     reason: `moved-code comparison at ${revs}: ${findings} stopped the landing before the merge; port each edit to its destination, then land again: ${report.findings.map(describeFinding).join("; ")}`,
@@ -1426,7 +1430,7 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
         // cannot reach main. The holder is named, for a task that has one.
         const holder = typeof d0?.item?.owner === "string" && d0.item.owner.includes("/") ? d0.item.owner : null;
         throw new StepError(conflicts.length
-          ? `the merge of main at ${short(mainHead)} into ${id}'s workspace stops on conflicts in:\n${conflicts.join("\n")}\n${reason ? `Taking either side and regenerating did not settle them: ${reason}. ` : ""}The merge is left in the workspace for you to resolve: cd ${JSON.stringify(dir)}, fix the files, git add, git commit, then atelier push to record the resolution. Then run atelier land ${id} again. Or send them back to the task's builder${holder ? `, ${holder},` : ""} to resolve in this workspace: atelier dispatch ${id} --job merge-main${holder ? ` --agent ${holder.split("/")[0]} --model ${holder.split("/")[1]}` : ""}; its runner merges main at ${short(mainHead)} into the workspace again and leaves the conflicts for the builder to resolve and commit, and then atelier land ${id} again.`
+          ? `the merge of main at ${short(mainHead)} into ${id}'s workspace stops on conflicts in:\n${conflicts.join("\n")}\n${reason ? `Taking either side and regenerating did not settle them: ${reason}. ` : ""}The merge is left in the workspace for you to resolve: cd ${JSON.stringify(dir)}, fix the files, git add, git commit, then atelier push to record the resolution. Then run atelier land ${id} again. Or send them back to the task's builder${holder ? `, ${holder},` : ""} to resolve in this workspace: atelier dispatch ${id} --job merge-main${holder ? ` --agent ${holder.split("/")[0]} --model ${holder.split("/")[1]}` : ""}; its runner merges main at ${short(mainHead)} into the workspace again and leaves the conflicts for the builder to resolve, commit and push with atelier push, and then atelier land ${id} again.`
           : `the merge of main at ${short(mainHead)} into ${id}'s workspace failed:\n${(r.stderr || r.stdout).trim()}\nNothing was merged; git left the workspace as it was.`, data);
       }
     }
@@ -1715,7 +1719,7 @@ async function runLandWorkflow(io, { d0, itemPath, dir, regenerate, triage, move
         try { await send("workspace", conflicts ? { round, conflict: true, files: conflicts, reason } : { round, failed: true, reason }); }
         catch { /* the Workflow times out on its own and releases the lease */ }
         die(conflicts && error.data.moved
-          ? `${error.message}\nThe landing Workflow is paused at its conflict stage and has released the lease; no merge was made, so nothing is left to resolve in the index. Once the edits are ported and committed, run atelier land ${id} --workflow again: it resumes this landing and compares afresh (with --moved-ok, it records your approval of the findings it detects and goes on).`
+          ? `${error.message}\nThe landing Workflow is paused at its conflict stage and has released the lease; no merge was made, so nothing is left to resolve in the index. Once the edits are ported, committed and pushed with atelier push, run atelier land ${id} --workflow again: it resumes this landing and compares afresh (with --moved-ok, it records your approval of the findings it detects and goes on).`
           : conflicts
           ? `${error.message}\nThe landing Workflow is paused at its conflict stage and has released the lease. Once the conflicts are resolved, committed and pushed with atelier push, run atelier land ${id} --workflow again: it resumes this landing.`
           : error.message);
