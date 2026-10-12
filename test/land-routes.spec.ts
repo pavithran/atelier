@@ -196,7 +196,8 @@ it("the landing-lease route takes, renews and cancels the lease for the owner, a
   const L = await setup(project);
   const a = (await L.newItem("First", [], "owner")).id;
   const b = (await L.newItem("Second", [], "owner")).id;
-  const token = { ...env, ATELIER_TOKEN: "land-routes-token" } as typeof env;
+  const TOKEN = "land-routes-token";
+  const token = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
   const post = (body: Record<string, unknown>) => worker.fetch(new Request(`https://atelier.test/api/projects/${project}/landing-lease`, {
     method: "POST", headers: { authorization: "Bearer land-routes-token", "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify(body),
   }), token);
@@ -508,12 +509,13 @@ it("the merge steps atelier land posts reach the ledger whole through the land r
   const project = "land-merge-steps";
   const L = await setup(project);
   const id = (await L.newItem("Landing", [], "owner")).id;
-  const token = { ...env, ATELIER_TOKEN: "land-routes-token" } as typeof env;
+  const TOKEN = "land-routes-token";
+  const token = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
   // The bodies are what the CLI posted in test/land.test.mjs, which checks
   // them against this fixture, so a field it sends that the ledger refuses
   // fails here rather than as a warning in a real landing.
   const post = (body: Record<string, unknown>) => worker.fetch(new Request(`https://atelier.test/api/projects/${project}/items/${id}/land`, {
-    method: "POST", headers: { authorization: `Bearer ${token.ATELIER_TOKEN}`, "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify(body),
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify(body),
   }), token);
   for (const [name, body] of Object.entries(MERGE_STEPS)) {
     const r = await post(body);

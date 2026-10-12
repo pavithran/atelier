@@ -33,12 +33,14 @@ export default async function checkCommand() {
   // token, the read tokens for the fork and the baseline, and the write
   // token in the workspace's Git settings.
   const secrets = [apiToken(), ws.token, base.token, ...workspaceTokens(workspacePath(name, id))];
-  let failed = 0, recorded, mainHead;
+  let failed = 0, recorded, mainHead, provenance = "";
   try {
     // --merged checks the would-be merge: the head merged with main's head,
     // in this clone. The evidence is bound to both revisions, and the
-    // Worker refuses a main head that is not on main's line.
-    if (args.merged) mainHead = await mergeWithMain(dir, id);
+    // Worker refuses a main head that is not on main's line. What the merge
+    // regenerated or united, and where its generator logs are kept, goes at
+    // the head of each check's output, which outlives the clone.
+    if (args.merged) ({ main: mainHead, provenance } = await mergeWithMain(dir, id, name));
     await prepareChecks(policy.prepare, (cmd) => runCheck(cmd, dir, secrets, { project: name, task: id, actor: as }), secrets).catch((error) => die(error.message, 2));
     const on = mainHead ? ` merged with main ${short(mainHead)}` : "";
     for (const cmd of cmds) {
@@ -61,7 +63,7 @@ export default async function checkCommand() {
       // when the reply carries none. A merged check measures no paths.
       const d = await postEvidence(`${I(name, id)}/evidence`, {
         kind: "check", claim: cmd, head: ws.head, passed: r.passed, changedPaths: changed,
-        outputTail: `${r.output.slice(-LOCAL_OUTPUT_TAIL)}\n[sha256 of full output: ${r.sha}]`,
+        outputTail: provenance ? `${provenance}\n\n${r.output.slice(-Math.max(500, LOCAL_OUTPUT_TAIL - provenance.length))}\n[sha256 of full output: ${r.sha}]` : `${r.output.slice(-LOCAL_OUTPUT_TAIL)}\n[sha256 of full output: ${r.sha}]`,
         ...(mainHead ? { merged: true, mainHead } : {}),
       }, as);
       const row = d?.evidence?.filter?.((e) => e.head === ws.head && e.claim === cmd && !e.merged).at(-1);

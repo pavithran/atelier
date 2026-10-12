@@ -242,13 +242,15 @@ export default async function mergeCommand() {
         // (cli/merge-pipeline.mjs) and runs no generator here: outputs the
         // baseline would hold that neither the accepted revision nor the
         // baseline held were never checked or reviewed, so a merge that
-        // needs them regenerated is refused and goes back through a
-        // landing, whose workspace merge regenerates them, pushes a new
-        // head and has it checked and reviewed again. The approval stays
+        // needs them regenerated is refused and goes back to its builder
+        // (atelier land refuses an accepted task): a merge-main job or a
+        // handoff merges main into the workspace through the pipeline,
+        // regenerates them there, and the new head is checked, reviewed and
+        // accepted again. The approval stays
         // bound to the accepted head and never carries over to outputs
         // generated after it.
         const preview=previewMerge(cwd,local,target,{git});
-        if(!preview.error&&(preview.regenerate.length||preview.generated.length)){journal.clear();die(`merging ${id} would regenerate ${[...new Set([...preview.generated,...(readManifest(cwd,{git,rev:preview.tree})?.generators??[]).filter(g=>preview.regenerate.includes(g.name)).flatMap(g=>g.outputs)])].join(', ')}, since the baseline and the accepted revision both changed what ${preview.regenerate.length===1?'its generator reads':'their generators read'} (${preview.regenerate.join(', ')}). The regenerated outputs were never checked or reviewed, so nothing was merged and ${id} stays accepted. Land it with atelier land ${id}: the landing merges main into its workspace, regenerates them there, and the new head is checked and reviewed before it merges`);}
+        if(!preview.error&&(preview.regenerate.length||preview.generated.length)){journal.clear();die(`merging ${id} would regenerate ${[...new Set([...preview.generated,...(readManifest(cwd,{git,rev:preview.tree})?.generators??[]).filter(g=>preview.regenerate.includes(g.name)).flatMap(g=>g.outputs)])].join(', ')}, since the baseline and the accepted revision both changed what ${preview.regenerate.length===1?'its generator reads':'their generators read'} (${preview.regenerate.join(', ')}). The regenerated outputs were never checked or reviewed, so nothing was merged and ${id} stays accepted. The project owner can send it back to a runner with atelier dispatch ${id} --job merge-main, or hand it to a builder with atelier handoff ${id} --to H/M: main is merged into its workspace there and the outputs regenerated, and the new head is checked, reviewed and accepted again before it merges`);}
         const result=await mergeThrough(cwd,target,{git,commit:false,leave:false,generate:false});
         if(result.state==='conflicts'||result.state==='stopped'||result.state==='failed'){journal.clear();if(item.kind==='plan')await planConflicted(name,id,item);die(`merge conflicts; nothing was merged and ${id} stays accepted.${result.state==='conflicts'?`\n${describeConflicts(result,result.manifest)}\n`:` ${result.reason}. `}The project owner can send it back to a runner with atelier dispatch ${id} --job merge-main, or hand it to a builder with atelier handoff ${id} --to H/M. The builder resolves the conflicts, rechecks and submits a new revision for review and acceptance; earlier reviews and acceptance stay in the history`);}
         if (!existsSync(join(gitDir,'MERGE_HEAD'))) { journal.clear(); die('this revision is already in the checkout without this merge record; reconcile its history first'); }

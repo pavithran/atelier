@@ -1,6 +1,8 @@
 // The one merge pipeline (t463). Every merge Atelier makes — a landing's
 // merge of main into the workspace and the owner's merge onto the baseline,
-// atelier update's rebase, a runner's merge-main, integrate and refresh
+// atelier update's steps (a pipeline merge wherever a generator must run, a
+// rebase through the drivers only where none must and the preview finds no
+// declaration problem), a runner's merge-main, integrate and refresh
 // merges, and the speculative merge atelier check --merged checks — goes
 // through here, so generated outputs and record files merge the same way
 // wherever the merge runs:
@@ -277,12 +279,25 @@ function hashPath(dir, path) {
   return createHash("sha256").update(readFileSync(full)).digest("hex");
 }
 
-// Every path Git sees as changed or untracked in the work tree, with its
-// status and content hash: two snapshots differ exactly where something
-// wrote between them.
+// An ignored file's signature: its size, inode and change times to the
+// nanosecond, which any write moves. Ignored folders such as node_modules
+// can hold more files than are worth reading on every run.
+function statPath(dir, path) {
+  let stat;
+  try { stat = lstatSync(join(dir, path), { bigint: true }); } catch { return "gone"; }
+  return `stat:${stat.mode}:${stat.size}:${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}`;
+}
+
+// Every path Git sees as changed, untracked or ignored in the work tree,
+// with its status and its content hash (an ignored file's signature): two
+// snapshots differ exactly where something wrote between them, a write to
+// an ignored file included.
 async function snapshot(dir, git) {
-  const entries = (await git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"], { cwd: dir, raw: true })).split("\0").filter(Boolean);
-  return new Map(entries.map((e) => [e.slice(3), `${e.slice(0, 2)}:${hashPath(dir, e.slice(3))}`]));
+  const entries = (await git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=traditional", "--no-renames"], { cwd: dir, raw: true })).split("\0").filter(Boolean);
+  return new Map(entries.map((e) => {
+    const status = e.slice(0, 2), path = e.slice(3);
+    return [path, `${status}:${status === "!!" ? statPath(dir, path) : hashPath(dir, path)}`];
+  }));
 }
 
 const differences = (before, after) => [...new Set([...before.keys(), ...after.keys()])].filter((p) => before.get(p) !== after.get(p)).sort();

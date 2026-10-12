@@ -216,3 +216,82 @@ test("push --rollback refuses a head that is not an ancestor of the recorded one
   assert.equal(f.forkMain(), f.h2, "the fork's branch was overwritten");
   assert.deepEqual(f.pushes(), []);
 });
+
+// ── update through the merge pipeline (t463) ───────────────────────────────
+
+// Both the baseline and this workspace declare command entries one per file
+// under cmds/, a generator writing out/index.txt from them, and that index
+// routed to the generated driver. The workspace has taken the baseline, and
+// the fork holds what the workspace holds.
+const GENERATOR = `import { readdirSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+const names = readdirSync("cmds").sort().map((f) => /^name: (\\S+)/m.exec(readFileSync("cmds/" + f, "utf8"))[1]);
+mkdirSync("out", { recursive: true });
+writeFileSync("out/index.txt", names.map((n) => n + "\\n").join(""));
+`;
+function declaring(t) {
+  const f = fixture(t);
+  const seed = join(f.dir, "seed");
+  const manifest = { version: 1, generators: [{ name: "index", command: [process.execPath, "gen.mjs"], inputs: ["cmds/**", "gen.mjs"], outputs: ["out/index.txt"] }], registries: [{ name: "commands", dir: "cmds", key: "^name: (\\S+)" }] };
+  mkdirSync(join(seed, "bin")); mkdirSync(join(seed, "cmds"));
+  writeFileSync(join(seed, "bin", "merge-manifest.json"), JSON.stringify(manifest));
+  writeFileSync(join(seed, ".gitattributes"), "out/index.txt merge=atelier-generated\n");
+  writeFileSync(join(seed, "gen.mjs"), GENERATOR);
+  writeFileSync(join(seed, "cmds", "help.txt"), "name: help\n");
+  const add = (cwd, file, entry, subject) => {
+    writeFileSync(join(cwd, "cmds", file), `name: ${entry}\n`);
+    execFileSync(process.execPath, ["gen.mjs"], { cwd });
+    f.git(cwd, "add", "-A"); f.git(cwd, "commit", "-qm", subject);
+    return f.git(cwd, "rev-parse", "HEAD");
+  };
+  execFileSync(process.execPath, ["gen.mjs"], { cwd: seed });
+  f.git(seed, "add", "-A"); f.git(seed, "commit", "-qm", "Declare merges");
+  f.git(seed, "push", "-q", "origin", "main");
+  f.git(f.workspace, "fetch", "-q", join(f.dir, "baseline.git"), "main");
+  f.git(f.workspace, "rebase", "-q", "FETCH_HEAD");
+  f.git(f.workspace, "push", "-q", "--force", "origin", "HEAD:main");
+  f.git(f.workspace, "fetch", "-q", "origin");
+  return { ...f, seed, add };
+}
+
+test("update merges independent command additions through the pipeline, regenerating the index a rebase would stop on", (t) => {
+  const f = declaring(t);
+  f.add(f.seed, "push.txt", "push", "Main adds push");
+  f.git(f.seed, "push", "-q", "origin", "main");
+  const mine = f.add(f.workspace, "land.txt", "land", "A adds land");
+  const r = f.run(["update"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /t3 merged baseline \w{8} through the merge pipeline, which regenerated its outputs\. Push with: atelier push$/m);
+  assert.equal(readFileSync(join(f.workspace, "out", "index.txt"), "utf8"), "help\nland\npush\n");
+  assert.equal(f.git(f.workspace, "status", "--porcelain"), "");
+  assert.deepEqual(f.git(f.workspace, "rev-list", "--parents", "-n", "1", "HEAD").split(" ").slice(1), [mine, f.git(f.seed, "rev-parse", "HEAD")]);
+  assert.match(f.git(f.workspace, "log", "-1", "--format=%B"), /Atelier-Regenerated: index \(.+ gen\.mjs\): out\/index\.txt matches neither side; log sha256 [0-9a-f]{64}/);
+  assert.equal(existsSync(join(f.workspace, ".git", "rebase-merge")), false);
+});
+
+test("update refuses a baseline whose registry key this workspace declares too, and moves nothing", (t) => {
+  const f = declaring(t);
+  f.add(f.seed, "push.txt", "ship", "Main adds ship as push.txt");
+  f.git(f.seed, "push", "-q", "origin", "main");
+  const mine = f.add(f.workspace, "ship.txt", "ship", "A adds ship");
+  const r = f.run(["update"]);
+  assert.notEqual(r.status, 0, r.stdout);
+  assert.match(r.stderr, /would leave a declaration problem, so nothing was rebased or merged:\nDeclaration problems:\n {2}the commands registry key ship is declared by both cmds\/push\.txt and cmds\/ship\.txt\n/);
+  assert.match(r.stderr, /Fix them in this workspace's own commits .*, commit, and run atelier update again\./);
+  assert.equal(f.git(f.workspace, "rev-parse", "HEAD"), mine);
+  assert.equal(f.git(f.workspace, "status", "--porcelain"), "");
+  assert.equal(existsSync(join(f.workspace, ".git", "rebase-merge")), false);
+  assert.equal(existsSync(join(f.workspace, ".git", "MERGE_HEAD")), false);
+});
+
+test("update with nothing to regenerate still rebases, through the clone's merge drivers", (t) => {
+  const f = declaring(t);
+  writeFileSync(join(f.seed, "main-only.txt"), "main\n");
+  f.git(f.seed, "add", "-A"); f.git(f.seed, "commit", "-qm", "Main adds a plain file");
+  f.git(f.seed, "push", "-q", "origin", "main");
+  f.add(f.workspace, "land.txt", "land", "A adds land");
+  const r = f.run(["update"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /t3 rebased onto baseline \w{8}\. Push with: atelier push --force/);
+  assert.equal(f.git(f.workspace, "rev-list", "--merges", "--count", "HEAD"), "0");
+  assert.match(f.git(f.workspace, "config", "--local", "merge.atelier-generated.driver"), /merge-driver\.mjs' generated/);
+});
