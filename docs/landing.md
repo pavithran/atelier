@@ -169,7 +169,9 @@ The steps in between:
    route so a stuck lease can be freed while the server is behind, and
    before the lease is read. `claim`, `start`, `wrap`, `new`, `edit`, `init`, `publish`, `merge`, `plan refresh`,
    `review`, `review-claim`, `review-unparsable`, `token issue`, `token
-   store`, `area`, `board` and the integrator's `integrated`,
+   store`, `area`, `board`, the criteria review's `criteria-review`,
+   `criteria-review-claim`, `criteria-verdict`, `criteria-review-failed`
+   and `criteria-finding` (`reviews.criteria-review.v1`, t438) and the integrator's `integrated`,
    `integration-failed`, `refreshed` and `refresh-failed` declare theirs
    (`new` and `edit` declare the area assignment their `--area` posts, as
    `edit` declares the binding a change of criteria withdraws: a command
