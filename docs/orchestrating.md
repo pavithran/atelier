@@ -384,8 +384,11 @@ whose output is kept in a file (`docs/runners.md` sets them up):
 
 Restart a runner when:
 
-- **the server was deployed with a change the runner's code depends on**:
-  a runner keeps the code it started with (t265 makes it reload);
+- **its checkout is behind the deploy**: an idle runner reloads itself in
+  place once its checkout holds the deployed commit (t265), and says once in
+  its log when the checkout is behind; update the checkout (the post-merge
+  steps do on this Mac and the Studio) rather than restarting. A reload
+  starts a fresh process, which forgets the tasks it gave up on;
 - **its log says `atelier/tN needs the owner's attention after 2 failures;
   skipped for this process`**: the runner will not take tN again until it
   restarts. First read the two failures above that line and fix their cause;
