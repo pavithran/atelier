@@ -212,6 +212,9 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
         box.waiting = kept;
         answer = { lease: box.lease, waiting: kept };
       } else {
+        // Another landing's post-merge work refuses the lease, as many times
+        // as a test asks (t477).
+        if (box.postMergeBlocked > 0) { box.postMergeBlocked--; return fail(409, "post_merge_blocked", "t2's post-merge step publish is still running; the next landing waits for it"); }
         // Another queued landing takes the lease first, once, when a test asks.
         if (box.takenFirst) { box.lease = box.takenFirst; box.takenFirst = null; }
         let expired = null;
@@ -799,6 +802,18 @@ test("the lease held by another landing does not hold up the checks and the revi
   assert.ok(firstLease > recordedAt(f, "review"));
   assert.equal(grantedTo(f).length, 1);
   assert.deepEqual(f.posts("/land").map((x) => x.body.step), ["merge", "regenerate", "push", "check", "submit", "review", "lease", "accept", "merged", "release"]);
+  assert.equal(f.box.states.t1, "merged");
+});
+
+test("another landing's post-merge work holds the lease back: the landing waits and merges after it (t550 review)", async (t) => {
+  if (!canInspectSlots(t)) return;
+  const f = await landFixture(t);
+  f.box.postMergeBlocked = 2;
+  f.env = { ATELIER_LAND_POLL_MS: "20" };
+  const r = await f.run(f.checkout, "land", "t1", "--wait");
+  assert.equal(r.status, 0, r.output);
+  assert.equal(f.box.postMergeBlocked, 0);
+  assert.equal(grantedTo(f).length, 1);
   assert.equal(f.box.states.t1, "merged");
 });
 
