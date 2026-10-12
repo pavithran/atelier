@@ -127,7 +127,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     let raw = ""; for await (const chunk of req) raw += chunk;
     const body = raw ? JSON.parse(raw) : {};
     const url = req.url;
-    box.requests.push({ method: req.method, path: url, body });
+    box.requests.push({ method: req.method, path: url, body, as: req.headers["x-atelier-actor"] });
     const item = /\/items\/(t\d+)/.exec(url)?.[1];
     const head = item ? forkHead(item) : null;
     let answer = item ? detail(item) : {};
@@ -211,6 +211,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     else if (url === "/api/queue") answer = box.queue;
     else if (url === "/api/runners") answer = box.runners;
     else if (url.endsWith("/base-token") || url === "/api/projects/proj/baseline-token") (box.wf.baseTokenAt.push(box.wf.stage), answer = { remote: baseline, token: "fixture", defaultBranch: "main" });
+    else if (url.endsWith("/claim")) answer = { item: detail(item).item, workspace: { remote: join(p, `fork-${item}.git`), token: "fixture", defaultBranch: "main", expiresAt: "2999-01-01T00:00:00.000Z" } };
     else if (url.endsWith("/read-token")) answer = { remote: join(p, `fork-${item}.git`), token: "fixture", head, defaultBranch: "main" };
     else if (url.endsWith("/push")) { box.states[item] = "claimed"; answer = { ...answer.item, head }; }
     else if (url.endsWith("/evidence")) {
@@ -746,8 +747,8 @@ test("--wait asks the refusals again once the lease is free, so a workspace chan
   f.box.lease = { item: "t2", holder: "owner", at: "2026-10-06T09:30:00.000Z", renewedAt: new Date().toISOString() };
   f.env = { ATELIER_LAND_POLL_MS: "40" };
   let freeing = false;
-  f.onOutput = () => {
-    if (freeing) return;
+  f.onOutput = (out) => {
+    if (freeing || !out.includes("Waiting behind owner")) return;
     freeing = true;
     writeFileSync(join(f.workspace("t1"), "stray.txt"), "uncommitted\n");
     setTimeout(() => { f.box.lease = null; }, 120);
@@ -980,6 +981,7 @@ test("a rerun of a conflicted merge resolved by hand still compares and raises t
   writeFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "export const ROUTE_LEVEL = 9;\n");
   git(f.workspace("t1"), "add", ".");
   git(f.workspace("t1"), "commit", "-m", "Resolve the merge by hand");
+  git(f.workspace("t1"), "push", "-q", "origin", "main");
   f.box.requests.length = 0;
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
@@ -1007,6 +1009,7 @@ test("a rerun after the route level was raised compares the same levels and rais
   writeFileSync(join(f.workspace("t1"), "src", "route-level.ts"), "export const ROUTE_LEVEL = 9;\n");
   git(f.workspace("t1"), "add", ".");
   git(f.workspace("t1"), "commit", "-m", "Resolve the merge by hand");
+  git(f.workspace("t1"), "push", "-q", "origin", "main");
   const raised = await f.run(f.checkout, "land", "t1", "--no-review");
   assert.equal(raised.status, 0, raised.output);
   assert.match(raised.output, /so the level is raised to 11\./);
@@ -1642,7 +1645,7 @@ test("land --workflow pauses the Workflow on a conflict, and the rerun after the
   const r = await f.run(f.checkout, "land", "t1", "--workflow");
   assert.equal(r.status, 1, r.output);
   assert.match(r.output, /stops on conflicts in:\nwork\.txt/);
-  assert.match(r.output, /The landing Workflow is paused at its conflict stage and has released the lease\. Once the conflicts are resolved and committed, run atelier land t1 --workflow again: it resumes this landing\./);
+  assert.match(r.output, /The landing Workflow is paused at its conflict stage and has released the lease\. Once the conflicts are resolved, committed and pushed with atelier push, run atelier land t1 --workflow again: it resumes this landing\./);
   assert.equal(wf.events.length, 1);
   assert.deepEqual({ ...wf.events[0].payload, reason: undefined }, { round: 0, conflict: true, files: ["work.txt"], reason: undefined });
   assert.ok(existsSync(join(f.workspace("t1"), ".git", "MERGE_HEAD")));
@@ -1652,6 +1655,7 @@ test("land --workflow pauses the Workflow on a conflict, and the rerun after the
   // pause, and does the workspace steps of round 1 when the Workflow asks.
   writeFileSync(join(f.workspace("t1"), "work.txt"), "task and main\n");
   git(f.workspace("t1"), "add", "-A"); git(f.workspace("t1"), "commit", "--no-edit", "-q");
+  git(f.workspace("t1"), "push", "-q", "origin", "main");
   const again = await f.run(f.checkout, "land", "t1", "--workflow");
   assert.equal(again.status, 0, again.output);
   assert.match(again.output, /Attached to t1's landing Workflow \(instance land-t1-1, at conflict\)/);
@@ -1994,41 +1998,14 @@ test("a workspace whose recorded actor is not the task's holder is not refreshed
   }
 });
 
-test("land claims a released committed workspace as its builder and refreshes its token (t414)", async (t) => {
-  for (const expiresAt of [new Date(Date.now() - 60_000).toISOString(), new Date(Date.now() + 4 * 3600_000).toISOString()]) {
-    const l = tokenLanding(t, { holder: null, expiresAt });
-    await runLand(l.io);
-    assert.equal(l.claims().length, 1);
-    assert.equal(l.claims()[0].as, "codex/test");
-    assert.deepEqual(l.claims()[0].extra, {});
-    assert.equal(l.adopted[0].token, "fresh-token");
-    assert.deepEqual(l.commands, ["push", "check", "submit"]);
-    assert.ok(l.lines.some((x) => /Claiming t1 for its workspace's builder codex\/test/.test(x)));
-    assert.ok(l.calls.findIndex((c) => c.path.endsWith("/claim")) < l.calls.findIndex((c) => c.method === "POST" && c.path.endsWith("/landing-lease")));
-    assert.ok(!l.calls.some((c) => c.path.endsWith("/undispatch")));
-  }
-});
-
-test("land withdraws a waiting dispatch before claiming the committed workspace for its builder (t414)", async (t) => {
-  const l = tokenLanding(t, { holder: null, expiresAt: new Date(Date.now() - 60_000).toISOString(), dispatch: { to: "home" } });
-  await runLand(l.io);
-  const withdrawn = l.calls.findIndex((c) => c.path.endsWith("/undispatch"));
-  const claimed = l.calls.findIndex((c) => c.path.endsWith("/claim"));
-  assert.ok(withdrawn >= 0 && claimed > withdrawn);
-  assert.equal(l.claims()[0].as, "codex/test");
-  assert.equal(l.calls[withdrawn].as, undefined, "withdrawal uses the project owner's default identity");
-  assert.ok(l.lines.some((x) => /Withdrew t1's waiting dispatch/.test(x)));
-  assert.equal(l.adopted[0].token, "fresh-token");
-  assert.deepEqual(l.commands, ["push", "check", "submit"]);
-});
-
-test("land leaves an unheld dispatch alone without a recorded builder or committed head (t414)", async (t) => {
-  for (const missing of [{ actor: null }, { committed: false }]) {
-    const l = tokenLanding(t, { holder: null, dispatch: { to: "home" }, ...missing });
-    await assert.rejects(runLand(l.io), /no recorded actor|no committed head/);
+test("land preserves ownership and dispatch of an unclaimed workspace", async (t) => {
+  for (const dispatch of [null, { to: "home" }]) {
+    const l = tokenLanding(t, { holder: null, dispatch, expiresAt: null });
+    await assert.rejects(runLand(l.io), /unclaimed; landing cannot claim it or withdraw its dispatch/);
     assert.equal(l.claims().length, 0);
-    assert.ok(!l.calls.some((c) => c.path.endsWith("/undispatch")));
+    assert.ok(!l.calls.some(c => c.path.endsWith("/undispatch")));
     assert.equal(l.leaseTaken(), false);
+    assert.deepEqual(l.commands, []);
   }
 });
 
@@ -2140,4 +2117,46 @@ test("land accepts a project-admitted reviewer alias despite its harness lacking
   const result = await f.run(f.checkout, "land", "t1", "--reviewer", "opencode/studio-review");
   assert.equal(result.status, 0, result.output);
   assert.equal(f.posts("/review-request")[0].body.reviewer, "opencode/studio-review");
+});
+
+
+for (const state of ["missing", "stale", "ahead"]) test(`land reconstructs a ${state} workspace at the ledger head and runs the gates`, async t => {
+  const f = await landFixture(t);
+  const dir = f.workspace("t1"), head = git(dir, "rev-parse", "HEAD");
+  if (state === "missing") rmSync(dir, { recursive: true });
+  else if (state === "stale") {
+    git(dir, "reset", "--hard", "HEAD^");
+    writeFileSync(join(dir, "local-notes"), "keep me");
+  } else {
+    writeFileSync(join(dir, "local-only"), "not on the ledger");
+    git(dir, "add", "."); git(dir, "commit", "-m", "Unpublished work");
+  }
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  assert.ok(r.output.includes(`Prepared t1 at recorded source ${head}`), r.output);
+  const take = f.box.requests.findIndex(x => x.path.endsWith("/landing-lease") && x.method === "POST" && !x.body.cancel);
+  const read = f.box.requests.findIndex(x => x.path.endsWith("/read-token"));
+  assert.ok(take >= 0 && read > take, "recovery fetch follows lease acquisition");
+  if (state !== "missing") assert.match(r.output, /Preserved t1's previous workspace at .*backup-/);
+  assert.equal(existsSync(join(dir, "local-only")), false);
+  assert.equal(f.box.states.t1, "merged");
+  const steps = f.posts("/land").map(x => x.body.step);
+  for (const step of ["push", "check", "review", "accept", "merged"]) assert.ok(steps.includes(step), steps.join(", "));
+  assert.deepEqual(f.posts("/claim").map(x => x.as), ["codex/test"]);
+});
+
+for (const wait of [false, true]) test(`workspace recovery waits for the lease (wait: ${wait})`, async t => {
+  const f = await landFixture(t);
+  const dir = f.workspace("t1");
+  git(dir, "reset", "--hard", "HEAD^");
+  writeFileSync(join(dir, "precious"), "unpublished notes");
+  const before = git(dir, "rev-parse", "HEAD");
+  f.box.lease = { item: "t2", holder: "owner", at: new Date().toISOString(), renewedAt: new Date().toISOString() };
+  f.env = { ATELIER_LAND_POLL_MS: "10", ATELIER_LAND_WAIT_TIMEOUT: "150" };
+  const r = await f.run(f.checkout, "land", "t1", ...(wait ? ["--wait"] : []));
+  assert.equal(r.status, 1, r.output);
+  assert.equal(git(dir, "rev-parse", "HEAD"), before);
+  assert.equal(readFileSync(join(dir, "precious"), "utf8"), "unpublished notes");
+  assert.equal(f.posts("/read-token").length, 0);
+  assert.doesNotMatch(r.output, /Preserved|Prepared/);
 });
