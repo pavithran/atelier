@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ledger Core · Activity</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#07090c}
+a{color:#ffdf8f}a:hover{color:#fff0c7}
+summary{cursor:pointer;list-style:none}summary::-webkit-details-marker{display:none}
+@keyframes drawA{from{stroke-dashoffset:1}to{stroke-dashoffset:0}}
+@keyframes drawB{from{stroke-dashoffset:1}to{stroke-dashoffset:0}}
+@keyframes arriveA{from{opacity:0}to{opacity:1}}
+@keyframes arriveB{from{opacity:0}to{opacity:1}}
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.35}}
+@media (prefers-reduced-motion: reduce){*{animation:none !important}}
+</style>
+</helmet>
+<div style="background: #07090c; color: #eef2f5; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 15px; line-height: 1.5; min-height: 100vh">
+
+  <header style="background: #0a0e13; border-bottom: 1px solid #1c232c">
+    <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 24px; padding: 10px 32px; border-bottom: 1px solid #1c232c">
+      <a href="Decisions.dc.html" style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 22px; color: #ffffff; text-decoration: none">Atelier</a>
+      <nav aria-label="Atelier" style="display: flex; flex-wrap: wrap; gap: 4px; flex: 1 1 auto">
+        <a href="Decisions.dc.html" style="color: #eef2f5; text-decoration: none; padding: 10px 12px; border-radius: 8px">Decisions <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #07090c; background: #ffd166; border-radius: 999px; padding: 1px 7px">14</span></a>
+        <a href="Overview.dc.html" aria-current="page" style="color: #ffffff; text-decoration: none; padding: 10px 12px; border-radius: 8px; background: #121a24">Projects</a>
+        <a href="Studio.dc.html" style="color: #eef2f5; text-decoration: none; padding: 10px 12px; border-radius: 8px">Activity</a>
+      </nav>
+      <details style="position: relative"><summary style="padding: 10px 12px; border: 1px solid #2c3744; border-radius: 8px">Ledger Core ▾</summary></details>
+      <details style="position: relative"><summary style="padding: 10px 12px; border-radius: 8px; color: #8f9cab">Owner ▾</summary></details>
+    </div>
+    <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 24px; padding: 6px 32px">
+      <p style="margin: 0; font-size: 14px; color: #8f9cab"><a href="Overview.dc.html" style="color: #eef2f5; text-decoration: none">Ledger Core</a> › Activity</p>
+      <nav aria-label="Project" style="display: flex; flex-wrap: wrap; gap: 2px">
+        <a href="Overview.dc.html" style="color: #8f9cab; text-decoration: none; padding: 10px 12px">Overview</a>
+        <a href="#tasks" style="color: #8f9cab; text-decoration: none; padding: 10px 12px">Tasks (200)</a>
+        <a href="#code" style="color: #8f9cab; text-decoration: none; padding: 10px 12px">Code</a>
+        <a href="Activity.dc.html" aria-current="page" style="color: #ffffff; text-decoration: none; padding: 10px 12px; box-shadow: inset 0 -2px 0 #ffd166">Activity</a>
+        <a href="#settings" style="color: #8f9cab; text-decoration: none; padding: 10px 12px">Settings</a>
+      </nav>
+    </div>
+  </header>
+
+  <main style="max-width: 1360px; margin: 0 auto; padding: 28px 32px 48px">
+    <div style="display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 12px 24px">
+      <h1 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 36px; letter-spacing: -0.025em">Activity · in flight first · all families</h1>
+      <div style="display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 14px">
+        <span style="color: #8f9cab">Since</span><a href="#1d" style="color: #eef2f5">1 day</a><a href="#7d" style="color: #eef2f5">7 days</a><strong aria-current="true">All</strong>
+        <span style="color: #8f9cab; margin-left: 12px">Family</span><strong aria-current="true">All</strong><a href="#f" style="color: #eef2f5">Claude</a><a href="#f" style="color: #eef2f5">GPT</a><a href="#f" style="color: #eef2f5">GLM</a><a href="#f" style="color: #eef2f5">Gemini</a><a href="#f" style="color: #eef2f5">Qwen</a>
+      </div>
+    </div>
+
+    <p style="margin: 18px 0 8px"><a href="#stories">Skip the graph</a></p>
+
+    <section aria-label="Graph" style="background: #0c1015; border: 1px solid #1c232c; border-radius: 16px; padding: 14px 16px 10px; overflow-x: auto">
+      <div style="display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: #c9d1d9; padding: 0 4px 10px">
+        <sc-for list="{{families}}" as="f" hint-placeholder-count="6">
+          <span style="display: flex; align-items: center; gap: 6px"><span style="width: 16px; height: 3px; border-radius: 2px; background: {{f.c}}"></span>{{f.name}}</span>
+        </sc-for>
+        <span style="color: #8f9cab">· dashed: no push for 12 h</span>
+        <a href="#earlier" style="margin-left: auto; color: #8f9cab">156 merged earlier, folded · show</a>
+      </div>
+      <svg viewBox="0 0 1200 470" width="1200" height="470" role="img" aria-label="Ledger Core: tasks in flight and the latest merges, in the order events happened" style="display: block; min-width: 1000px; width: 100%; height: auto">
+        <text x="200" y="44" text-anchor="end" fill="#f4f1e8" font-family="IBM Plex Mono, monospace" font-size="13">main</text>
+        <path d="M212 40H1170" stroke="#f4f1e8" stroke-width="3" fill="none"></path>
+        <sc-for list="{{merges}}" as="mg" hint-placeholder-count="3">
+          <g>
+            <circle cx="{{mg.x}}" cy="40" r="6" fill="#5fe08f" stroke="#0c1015" stroke-width="2"></circle>
+            <text x="{{mg.x}}" y="24" text-anchor="middle" fill="#8f9cab" font-family="IBM Plex Mono, monospace" font-size="11">{{mg.hash}}</text>
+          </g>
+        </sc-for>
+        <sc-for list="{{threads}}" as="t" hint-placeholder-count="11">
+          <g>
+            <text x="200" y="{{t.ty}}" text-anchor="end" fill="#eef2f5" font-family="IBM Plex Mono, monospace" font-size="13">{{t.id}}</text>
+            <path d="{{t.d}}" pathLength="1" stroke="{{t.c}}" stroke-width="3" fill="none" stroke-linecap="round" style="stroke-dasharray: 1; animation: {{draw}} {{t.dur}}s linear {{t.delay}}s both"></path>
+            <path d="{{t.dStale}}" stroke="{{t.c}}" stroke-width="3" fill="none" stroke-dasharray="2 6" stroke-linecap="round" opacity="0.8" style="animation: {{arrive}} .4s ease-out 5s both"></path>
+            <path d="{{t.cap}}" stroke="#8f9cab" stroke-width="3" fill="none"></path>
+            <circle cx="{{t.hx}}" cy="{{t.y}}" r="{{t.hr}}" fill="{{t.c}}" style="animation: breathe 1.8s ease-in-out 5.5s infinite"></circle>
+          </g>
+        </sc-for>
+        <sc-for list="{{marks}}" as="m" hint-placeholder-count="40">
+          <g transform="translate({{m.x}} {{m.y}})" opacity="{{m.op}}" style="animation: {{arrive}} .3s ease-out {{m.delay}}s both">
+            <path d="{{m.ring}}" fill="none" stroke="#ff4d74" stroke-width="2"></path>
+            <path d="{{m.d}}" fill="{{m.fill}}" stroke="{{m.stroke}}" stroke-width="2" stroke-dasharray="{{m.dash}}"></path>
+          </g>
+        </sc-for>
+        <g transform="translate(856 300)">
+          <rect x="0" y="0" width="236" height="44" rx="8" fill="#121a24" stroke="#2c3744"></rect>
+          <text x="12" y="18" fill="#8f9cab" font-family="IBM Plex Mono, monospace" font-size="11">t197 · sent back</text>
+          <text x="12" y="35" fill="#eef2f5" font-family="IBM Plex Sans, sans-serif" font-size="13">opus-5.5 sent it back at 9be41d2</text>
+        </g>
+      </svg>
+      <div style="display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 8px 4px 2px; font-size: 13px; color: #c9d1d9">
+        <span><span aria-hidden="true">□</span> claimed</span><span><span aria-hidden="true">|</span> pushed</span><span><span aria-hidden="true" style="color: #5fe08f">●</span> check observed, container</span><span><span aria-hidden="true">○</span> check observed, runner</span><span><span aria-hidden="true" style="color: #8f9cab">◌</span> reported</span><span><span aria-hidden="true" style="color: #ff4d74">×</span> check failed</span><span><span aria-hidden="true">◇</span> submitted</span><span><span aria-hidden="true">▲</span> approved</span><span><span aria-hidden="true" style="color: #ff4d74">▽</span> sent back</span><span><span aria-hidden="true" style="color: #ffd166">»</span> handed off</span><span><span aria-hidden="true" style="color: #ffd166">●</span> accepted</span><span><span aria-hidden="true" style="color: #8f9cab">┃</span> closed</span>
+      </div>
+    </section>
+
+    <section aria-label="Step through" style="margin-top: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; background: #0a0e13; border: 1px solid #1c232c; border-radius: 12px; padding: 10px 14px">
+      <button type="button" onClick="{{prev}}" style="font: inherit; font-size: 14px; min-height: 44px; padding: 0 16px; border-radius: 8px; border: 1px solid #2c3744; background: transparent; color: #eef2f5; cursor: pointer">Previous</button>
+      <div style="flex: 1 1 200px; min-width: 0; height: 4px; background: #2c3744; border-radius: 2px; position: relative">
+        <span style="position: absolute; left: 0; top: 0; bottom: 0; width: {{pct}}%; background: #ffd166; border-radius: 2px"></span>
+      </div>
+      <button type="button" onClick="{{next}}" style="font: inherit; font-size: 14px; min-height: 44px; padding: 0 16px; border-radius: 8px; border: 1px solid #2c3744; background: transparent; color: #eef2f5; cursor: pointer">Next</button>
+      <button type="button" onClick="{{play}}" style="font: inherit; font-size: 14px; font-weight: 600; min-height: 44px; padding: 0 18px; border-radius: 8px; border: 0; background: #ffd166; color: #07090c; cursor: pointer">Play</button>
+      <p role="status" style="flex: 1 1 100%; margin: 2px 0 0; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #c9d1d9">{{narration}}</p>
+    </section>
+
+    <section id="stories" aria-labelledby="stories-h" style="margin-top: 28px">
+      <h2 id="stories-h" style="margin: 0 0 10px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 24px">Stories · 20 of 200</h2>
+      <ul style="margin: 0; padding: 0; list-style: none; border-top: 1px solid #1c232c">
+        <sc-for list="{{stories}}" as="s" hint-placeholder-count="8">
+          <li style="display: grid; grid-template-columns: 64px minmax(0, 1fr) 180px 170px; gap: 16px; align-items: baseline; padding: 11px 0; border-bottom: 1px solid #1c232c">
+            <a href="#task" style="font-family: 'IBM Plex Mono', monospace; color: #eef2f5">{{s.id}}</a>
+            <span>{{s.title}}</span>
+            <span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #8f9cab">{{s.holder}}</span>
+            <span style="color: {{s.rc}}">{{s.state}}</span>
+          </li>
+        </sc-for>
+      </ul>
+      <p style="margin: 12px 0 0"><a href="#more">Show 20 more</a></p>
+    </section>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1500}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const st = this.state || {};
+    const C = { claude: '#ff8a5b', gpt: '#3fe0b0', glm: '#6f9bff', gemini: '#ff8fcf', qwen: '#b5e55c', you: '#ffd166' };
+    const SURF = '#0c1015', TEXT = '#eef2f5';
+    const X = (v) => 220 + v * 9.3;
+    const circle = (r) => `M${-r} 0a${r} ${r} 0 1 0 ${2 * r} 0a${r} ${r} 0 1 0 ${-2 * r} 0`;
+    const shape = {
+      claim: (c) => ({ d: 'M-4 -4H4V4H-4Z', fill: SURF, stroke: c }),
+      push: () => ({ d: 'M0 -6V6', fill: 'none', stroke: TEXT }),
+      pass: (c) => ({ d: circle(3.6), fill: c, stroke: SURF }),
+      runner: (c) => ({ d: circle(3.6), fill: SURF, stroke: c }),
+      reported: () => ({ d: circle(4), fill: SURF, stroke: '#8f9cab', dash: '2 2' }),
+      fail: () => ({ d: 'M-4 -4L4 4M4 -4L-4 4', fill: 'none', stroke: '#ff4d74' }),
+      submit: () => ({ d: 'M0 -5L5 0L0 5L-5 0Z', fill: SURF, stroke: TEXT }),
+      approve: (c) => ({ d: 'M-5 3.5L0 -5.5L5 3.5Z', fill: c, stroke: SURF }),
+      reject: (c) => ({ d: 'M-4.5 -3L0 5.5L4.5 -3Z', fill: c, stroke: SURF, ring: circle(8) }),
+      handoff: () => ({ d: 'M-6 -4L0 0L-6 4M0 -4L6 0L0 4', fill: 'none', stroke: C.you }),
+      accept: () => ({ d: circle(5.5), fill: C.you, stroke: SURF }),
+    };
+    const verbs = { claim: 'took', push: 'pushed', pass: 'passed its checks in a container,', runner: 'passed its checks on a runner,', reported: 'reported a check on', fail: 'failed a check on', submit: 'submitted', approve: 'approved', reject: 'sent back', handoff: 'handed off', accept: 'accepted' };
+    // Each thread: id, colour, row, start, end (event order 0–100), merged hash, stale point, closed, live head, events [kind, at, colour?, actor].
+    const rows = [
+      ['t156', C.gpt, 4, 18, 'c41e0a7', null, false, false, 'codex', [['claim', 4], ['push', 7], ['pass', 10], ['submit', 12], ['approve', 14, C.claude, 'opus-5.5'], ['accept', 17, C.you, 'You']]],
+      ['t155', C.claude, 9, 30, '8d02b6f', null, false, false, 'claude-code', [['claim', 9, C.gemini, 'gemini'], ['push', 12], ['handoff', 15, C.you, 'You'], ['push', 20], ['runner', 23], ['submit', 25], ['approve', 27, C.gpt, 'gpt-6-astra'], ['accept', 29, C.you, 'You']]],
+      ['t159', C.qwen, 14, 26, null, null, true, false, 'opencode/qwen-4', [['claim', 14], ['push', 18], ['fail', 22]]],
+      ['t163', C.glm, 20, 100, null, 34, false, false, 'zcode', [['claim', 20], ['push', 26], ['push', 33]]],
+      ['t166', C.claude, 28, 100, null, null, false, false, 'claude-code', [['claim', 28], ['push', 36], ['runner', 40]]],
+      ['t182', C.claude, 38, 100, null, null, false, true, 'claude-code/opus-5.5', [['claim', 38], ['push', 52], ['push', 74], ['runner', 80], ['push', 96]]],
+      ['t188', C.glm, 44, 100, null, null, false, false, 'opencode', [['claim', 44], ['push', 55], ['submit', 64], ['fail', 70]]],
+      ['t192', C.gpt, 48, 100, null, null, false, false, 'codex', [['claim', 48], ['push', 58], ['runner', 66], ['submit', 68], ['approve', 78, C.claude, 'opus-5.5']]],
+      ['t195', C.claude, 56, 100, null, null, false, false, 'claude-code', [['claim', 56], ['push', 63], ['push', 72], ['runner', 79], ['submit', 82]]],
+      ['t196', C.qwen, 70, 100, null, null, false, true, 'opencode/qwen-4', [['claim', 70], ['push', 84], ['reported', 90], ['push', 97]]],
+      ['t197', C.gpt, 60, 100, null, null, false, true, 'codex', [['claim', 60], ['push', 69], ['runner', 75], ['submit', 77], ['reject', 86, C.claude, 'opus-5.5'], ['push', 94]]],
+    ];
+    const b = st.run === 'B';
+    const events = [];
+    const threads = rows.map(([id, c, s, e, hash, staleAt, closed, live, holder, evs], i) => {
+      const y = 78 + i * 34, bx = X(s), ex = X(e);
+      let d = `M${bx - 16} 40 C${bx - 4} 40 ${bx - 12} ${y} ${bx} ${y}H${staleAt ? X(staleAt) : ex}`;
+      if (hash) d += ` C${ex + 14} ${y} ${ex + 6} 40 ${ex + 20} 40`;
+      evs.forEach(([kind, at, rc, actor]) => events.push({ id, kind, at, x: X(at), y, c: rc || c, actor: actor || holder }));
+      return {
+        id, c, y, ty: y + 4, d,
+        dStale: staleAt ? `M${X(staleAt)} ${y}H${ex}` : '',
+        cap: closed ? `M${ex} ${y - 8}V${y + 8}` : '',
+        hx: live ? ex : -20, hr: live ? 5 : 0,
+        delay: (s * 0.05).toFixed(2), dur: Math.max(0.3, ((staleAt || e) - s) * 0.05).toFixed(2),
+      };
+    });
+    const merges = rows.filter((r) => r[4]).map((r) => ({ x: X(r[3]) + 20, hash: r[4] }));
+    events.sort((p, q) => p.at - q.at);
+    const total = events.length;
+    const step = st.step == null ? total : st.step;
+    const marks = events.map((ev, n) => {
+      const sh = shape[ev.kind](ev.c);
+      return { x: ev.x, y: ev.y, d: sh.d, fill: sh.fill, stroke: sh.stroke, dash: sh.dash || 'none', ring: sh.ring || '', op: n < step ? 1 : 0.12, delay: (ev.at * 0.05).toFixed(2) };
+    });
+    const cur = events[Math.max(0, step - 1)];
+    const narration = step === 0 ? `Step 0 of ${total}` : `Step ${step} of ${total} · ${cur.actor} ${verbs[cur.kind]} ${cur.id}`;
+    const families = [{ name: 'Claude', c: C.claude }, { name: 'GPT', c: C.gpt }, { name: 'GLM', c: C.glm }, { name: 'Gemini', c: C.gemini }, { name: 'Qwen', c: C.qwen }, { name: 'You', c: C.you }];
+    const R = { go: '#5fe08f', ask: '#ffd166', fault: '#ff4d74', caution: '#ffb547', neutral: '#eef2f5', done: '#8f9cab' };
+    const stories = [
+      ['t197', 'Round half-even in currency conversion', 'codex/gpt-6-astra', 'Sent back', R.fault],
+      ['t192', 'Add idempotency keys to the posting API', 'codex/gpt-6-astra', 'Ready to accept', R.go],
+      ['t195', 'Rotate the signing key for audit exports', 'claude-code/opus-5.5', 'Needs review', R.ask],
+      ['t188', 'Lock entries after the period closes', 'opencode/glm-5.3', 'Checks failed', R.fault],
+      ['t196', 'Reject postings to archived accounts', 'opencode/qwen-4', 'Working', R.neutral],
+      ['t182', 'Multi-currency trial balance export', 'claude-code/opus-5.5', 'Working', R.neutral],
+      ['t166', 'Reconcile bank feed timestamps', 'claude-code/opus-5.5', 'Blocked', R.caution],
+      ['t163', 'Migrate balances to integer cents', 'zcode/glm-5.3', 'Working · stale 2 d', R.caution],
+      ['t155', 'Show closing balance per period', 'claude-code/opus-5.5', 'Merged', R.done],
+      ['t156', 'Validate ISO 4217 codes on import', 'codex/gpt-6-astra', 'Merged', R.done],
+    ].map(([id, title, holder, state, rc]) => ({ id, title, holder, state, rc }));
+    return {
+      threads, marks, merges, families, stories, narration,
+      pct: Math.round((step / total) * 100),
+      draw: b ? 'drawB' : 'drawA', arrive: b ? 'arriveB' : 'arriveA',
+      prev: () => this.setState({ step: Math.max(0, step - 1) }),
+      next: () => this.setState({ step: Math.min(total, step + 1) }),
+      play: () => this.setState({ step: total, run: b ? 'A' : 'B' }),
+    };
+  }
+}
+</script>
+</body>
+</html>

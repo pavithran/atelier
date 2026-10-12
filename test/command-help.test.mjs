@@ -96,3 +96,9 @@ test("merge-main help distinguishes claim-time main from --head dispatch context
   assert.match(usage, /does not pin the merge target/);
   assert.doesNotMatch(usage, /main at the named head|full hash of main's head to merge/);
 });
+
+// A pre-review finding of t524's own review: unblock is also the retry after
+// a blocking pre-review fenced a landing, and its help did not say so.
+test("unblock help says it also lifts a pre-review's fence on the landing", () => {
+  assert.match(commandUsage("unblock"), /also lifts the fence a blocking pre-review left on the task's landing, so atelier land can queue it again/);
+});

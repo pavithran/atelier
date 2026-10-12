@@ -496,6 +496,69 @@ barrier cleared. `LAND_QUEUE_POST_MERGE=/absolute/path/to/hook` may replace
 the step only with an executable that performs all the same operations;
 zero means they all finished, any other status holds the queue.
 
+### Pre-review while the lease is busy
+
+While one landing holds the project's lease, Atelier pre-reviews the next
+two landings queued behind it (t524; `src/dispatch/prereview.ts`), so a
+defect is found before a task's turn rather than after it spends the lease.
+This replaces the orchestrator's hand-run `prereview.brief`. Every ask of the
+landing queue, by `atelier land --wait` or a landing Workflow, and every
+renewal of the lease asks what is missing: one request per waiter and
+binding (its recorded head, the criteria binding, its contributors, main's
+actual SHA and how many merges main has had), never a second for the same
+binding. Polling reads the baseline again, so a push without a recorded
+merge gives a settled pre-review a fresh binding. If that read is unavailable,
+the last observation remains; claims and verdicts still require a fresh read.
+A waiter whose landing stops asking, gives up its place or closes is no longer
+pre-reviewed: the queue's list of jobs and the claim check this themselves,
+so a waiter that expired is never offered to a runner even when no landing
+call has come since. While no lease is live, a pending pre-review waits.
+
+The reviewer is picked as a gate reviewer is picked: from the pool's models
+(an admitted reviewer included), of another family than every contributor,
+or a different model of the one company in single-family mode. Only models
+that a live runner offers for the `prereview` job count. A runner whose config takes
+`review` advertises `prereview` too. While no live runner advertises it,
+nothing is asked. A task with a gate review request open gets no
+pre-review, and a runner takes the gate's reviews before any pre-review.
+Pool changes withdraw open pre-reviews for models held from reviewing;
+claims and verdicts recheck that standing before they can affect the queue.
+
+The claim binds the request to main's head as the server reads it from the
+baseline then; a claim made while it cannot be read is refused and the
+request stays open. The runner clones the task's recorded head into a
+scratch folder of its own, merges that main into it as `atelier land` does
+(a baseline that moved before the merge makes the pre-review stale), raising the route level
+and regenerating the fixtures, and records the main head it merged and the
+tree it prepared. The reviewer's brief names the merged tree's tests for the
+changed files, the project's required checks to run there, the task's
+recorded results (from its own tree, not the merged one) and the evidence
+that is missing. Nothing is pushed, and the builder's workspace is never touched.
+
+The result is pre-review evidence only. It does not satisfy or reject the
+gate, answer a review request or count a round, and the landing never waits
+for it. It is checked before it is applied: a verdict whose head, main,
+criteria or contributors moved, or that came after its claim was lost, is
+recorded as stale and changes nothing. Main counts as moved when the
+baseline's head, read again when the verdict arrives, is not the main the
+tree was prepared from, whatever moved it (a merge, or `atelier sync`
+pushing without one). A rejection that names no blocking finding, or an
+approval that names one, is a malformed reply, however it was posted.
+
+| Result | What it does | Next step |
+| --- | --- | --- |
+| pass | Nothing: the task keeps its place | None |
+| blocking findings | The task leaves the queue and its landing is fenced (`prereview_blocked`, for the CLI and the Workflow alike). The builder and head stay; a runner's builder gets the claim back with the findings in its rework brief | Once they are fixed, `atelier unblock tN`, then `atelier land tN` again |
+| blocking, builder unavailable | As above, but the inbox says owner action is needed | Hand the task over (`atelier handoff`) or dispatch it, then unblock |
+| conflict, preparation failed | Recorded apart from a result; the task keeps its place | The landing will meet the same conflict or failure: resolve it ahead |
+| unavailable (no reviewer, skipped, timed out, malformed reply, runner failure) | Nothing: the task keeps its place and lands normally | None; it is tried at most three times in all, and after no reviewer qualified, not again for five minutes |
+| task took the lease first | The result is kept as evidence and controls nothing | None |
+
+The task detail (`GET /api/projects/P/items/tN`) carries `prereviews`, each
+with its state, binding, reviewer, findings and recovery, and
+`prereviewFence`. The landing status (`GET …/landing-lease`) adds each
+waiting row's newest `prereview`.
+
 ### Landing outcomes
 
 | `LANDQ tN:` says | What happened | Next step |
