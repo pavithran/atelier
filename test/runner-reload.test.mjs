@@ -249,7 +249,7 @@ test("real replacement waits for readiness, preserves arguments and environment,
   const child = `
     const { reexecSelf } = await import(${JSON.stringify(runner)});
     console.log('old pid ' + process.pid);
-    await reexecSelf({ ...process.env, CUSTOM: 'preserved', ATELIER_RUNNER_RELOADED_FROM: '${OLD}', ATELIER_RUNNER_RELOAD_TARGET: '${NEW}' }, {
+    await reexecSelf({ ...process.env, CUSTOM: 'preserved', XPC_SERVICE_NAME: 'application.com.apple.Terminal.123', ATELIER_RUNNER_SUPERVISED: '0', ATELIER_RUNNER_RELOADED_FROM: '${OLD}', ATELIER_RUNNER_RELOAD_TARGET: '${NEW}' }, {
       execArgv: ['--no-warnings'], argv: [process.execPath, ${JSON.stringify(next)}, 'runner', '--name', 'home:replacement'],
     });
     console.log('old resumed');
@@ -271,7 +271,9 @@ test("real replacement waits for readiness, preserves arguments and environment,
 
 test("supervised reload exits without spawning a replacement; supervisor restarts the same command", (t) => {
   const s = setup(t);
-  assert.equal(runnerSupervised({ XPC_SERVICE_NAME: "zone.atelier.runner" }), true);
+  assert.equal(runnerSupervised({ XPC_SERVICE_NAME: "zone.atelier.runner" }), false);
+  assert.equal(runnerSupervised({ XPC_SERVICE_NAME: "application.com.apple.Terminal.123" }), false);
+  assert.equal(runnerSupervised({ ATELIER_RUNNER_SUPERVISED: "0" }), false);
   assert.equal(runnerSupervised({ XPC_SERVICE_NAME: "0" }), false);
   assert.equal(runnerSupervised({ ATELIER_RUNNER_SUPERVISED: "1" }), true);
   const script = join(s.dir, "supervised.mjs"), marker = join(s.dir, "restarted");
@@ -280,7 +282,7 @@ test("supervised reload exits without spawning a replacement; supervisor restart
     import { reexecSelf } from ${JSON.stringify(new URL('../cli/runner.mjs', import.meta.url).href)};
     if (!existsSync(${JSON.stringify(marker)})) {
       writeFileSync(${JSON.stringify(marker)}, 'updated checkout');
-      await reexecSelf({ ...process.env, XPC_SERVICE_NAME: 'zone.atelier.runner', ATELIER_RUNNER_RELOADED_FROM: '${OLD}', ATELIER_RUNNER_RELOAD_TARGET: '${NEW}' }, { execPath: '/must-not-spawn' });
+      await reexecSelf({ ...process.env, ATELIER_RUNNER_SUPERVISED: '1', ATELIER_RUNNER_RELOADED_FROM: '${OLD}', ATELIER_RUNNER_RELOAD_TARGET: '${NEW}' }, { execPath: '/must-not-spawn' });
       throw new Error('old resumed');
     }
     console.log('supervisor started updated runner ' + process.argv.slice(2).join(' '));
@@ -297,12 +299,16 @@ test("supervised reload exits without spawning a replacement; supervisor restart
 
 for (const phase of ['initializing', 'released']) {
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-    test(`attached replacement stops on ${signal} while ${phase}`, async (t) => {
+    test(`attached replacement receives one group ${signal} while ${phase} and finishes cleanup`, async (t) => {
       const s = setup(t), next = join(s.dir, 'attached.mjs');
       const runner = new URL('../cli/runner.mjs', import.meta.url).href;
       writeFileSync(next, `
         import { runnerReady } from ${JSON.stringify(runner)};
-        process.on('${signal}', () => { console.log('child stopped'); process.exit(0); });
+        let interrupts = 0;
+        process.on('${signal}', () => {
+          if (++interrupts > 1) { console.error('duplicate interrupt'); process.exit(99); }
+          setTimeout(() => { console.log('child cleanup finished'); process.exit(0); }, 200);
+        });
         ${phase === 'released' ? 'await runnerReady();' : ''}
         console.log('child pid ' + process.pid);
         setInterval(() => {}, 1000);
@@ -315,7 +321,7 @@ for (const phase of ['initializing', 'released']) {
           execArgv: [], argv: [process.execPath, ${JSON.stringify(next)}], readyTimeoutMs: 5000,
         });
         console.log('old resumed');
-      `], { stdio: ['ignore', 'pipe', 'pipe'] });
+      `], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
       t.after(() => parent.kill('SIGKILL'));
       let output = '', errors = '', childPid;
       parent.stderr.on('data', chunk => { errors += chunk; });
@@ -325,7 +331,7 @@ for (const phase of ['initializing', 'released']) {
         if (match && !childPid) {
           childPid = Number(match[1]);
           process.kill(childPid, 0);
-          parent.kill(signal);
+          process.kill(-parent.pid, signal);
         }
       });
       const result = await new Promise((resolve, reject) => {
@@ -333,12 +339,54 @@ for (const phase of ['initializing', 'released']) {
         parent.once('exit', (code, signal) => { clearTimeout(timer); resolve({ code, signal }); });
       });
       assert.equal(result.code, { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[signal], errors);
-      assert.match(output, /child stopped/);
+      assert.match(output, /child cleanup finished/);
+      assert.doesNotMatch(errors, /duplicate interrupt/);
       assert.doesNotMatch(output, /old resumed/);
       assert.throws(() => process.kill(childPid, 0), /ESRCH/);
     });
   }
 }
+
+
+test("a second group interrupt is forwarded so the replacement owns forced cleanup", async (t) => {
+  const s = setup(t), next = join(s.dir, 'second-interrupt.mjs');
+  const runner = new URL('../cli/runner.mjs', import.meta.url).href;
+  writeFileSync(next, `
+    import { runnerReady } from ${JSON.stringify(runner)};
+    let interrupts = 0;
+    process.on('SIGINT', () => {
+      if (++interrupts === 1) console.log('first interrupt');
+      else { console.log('forced cleanup finished'); process.exit(130); }
+    });
+    await runnerReady();
+    console.log('released');
+    setInterval(() => {}, 1000);
+  `);
+  const parent = spawn(process.execPath, ['--input-type=module', '-e', `
+    import { reexecSelf } from ${JSON.stringify(runner)};
+    await reexecSelf({ ...process.env, ATELIER_RUNNER_SUPERVISED: '0' }, {
+      execArgv: [], argv: [process.execPath, ${JSON.stringify(next)}],
+    });
+  `], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  t.after(() => parent.kill('SIGKILL'));
+  let output = '', sent = 0;
+  parent.stdout.on('data', chunk => {
+    output += chunk;
+    if (sent === 0 && output.includes('released')) {
+      sent = 1;
+      process.kill(-parent.pid, 'SIGINT');
+    } else if (sent === 1 && output.includes('first interrupt')) {
+      sent = 2;
+      process.kill(-parent.pid, 'SIGINT');
+    }
+  });
+  const code = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { parent.kill('SIGKILL'); reject(new Error('second interrupt did not stop runner')); }, 10000);
+    parent.once('close', code => { clearTimeout(timer); resolve(code); });
+  });
+  assert.equal(code, 130);
+  assert.match(output, /forced cleanup finished/);
+});
 
 
 test("losing the waiting parent stops the released replacement", async (t) => {

@@ -2420,11 +2420,10 @@ export async function runnerReady() {
   });
 }
 
-// launchd identifies its jobs through XPC_SERVICE_NAME. Other supervisors
-// that restart on exit can opt in explicitly. Never spawn a competing runner.
+// Only explicitly configured supervisors may restart on exit. GUI apps also
+// inherit XPC_SERVICE_NAME; it does not promise that this runner restarts.
 export function runnerSupervised(env) {
-  return env.ATELIER_RUNNER_SUPERVISED === "1" ||
-    (!!env.XPC_SERVICE_NAME && env.XPC_SERVICE_NAME !== "0");
+  return env.ATELIER_RUNNER_SUPERVISED === "1";
 }
 
 // Without a supervisor, remain an attached waiting parent. Temporarily own
@@ -2436,6 +2435,8 @@ export async function reexecSelf(env, { argv = process.argv, execArgv = process.
     process.exit(0);
   }
   const child = spawn(execPath, [...execArgv, ...argv.slice(1)], {
+    // Isolate terminal group signals: the parent forwards each one exactly once.
+    detached: true,
     env: { ...env, [RELOAD_HANDOFF]: "1" },
     stdio: ["inherit", "inherit", "inherit", "ipc"],
   });
@@ -2443,9 +2444,8 @@ export async function reexecSelf(env, { argv = process.argv, execArgv = process.
   const previous = signals.map((signal) => process.rawListeners(signal));
   let interrupted = null, ready = false, releasing = false, failure;
   const forwards = signals.map((signal) => () => {
-    const repeated = interrupted !== null;
     interrupted ??= signal;
-    child.kill(repeated ? "SIGKILL" : signal);
+    child.kill(signal);
   });
   signals.forEach((signal, i) => {
     process.removeAllListeners(signal);
