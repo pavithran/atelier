@@ -4174,7 +4174,11 @@ export class Ledger extends DurableObject<Env> {
       // now. Held, it is not dispatched, and a dispatch record it had is
       // withdrawn, so the queue offers nothing until the approval stands.
       const queued = !want && !blocked && !!p.dispatch && waiting.has(p.partKey!);
-      if ((want || queued) && this.criteriaReviewHolds(p, id, approval, at, mainHead !== null)) {
+      // A merge-main part, or one sent back after an integration conflict
+      // (its dispatch names the plan's head: the runner's merge-plan job),
+      // merges and keeps the gates it had; neither waits for the review.
+      const merges = mainHead !== null || conflicted.has(p.partKey!) || !!p.dispatch?.planHead;
+      if ((want || queued) && this.criteriaReviewHolds(p, id, approval, at, merges)) {
         if (p.dispatch) {
           this.sql.exec(`UPDATE items SET dispatch = NULL WHERE id = ?`, p.id);
           this.log(p.id, ORCHESTRATOR, "item.undispatched", { reason: "the acceptance criteria wait for their review" }, at);
@@ -5359,9 +5363,11 @@ export class Ledger extends DurableObject<Env> {
   // review asked for, from the pool fixed at approval; one no reviewer
   // qualifies for, or whose rejection waits for the owner, is blocked with
   // what the owner can do, as a part no code reviewer remains for is. A
-  // merge-main part merges main and keeps the gates it had.
-  private criteriaReviewHolds(p: Item, planId: string, approval: PlanApproval, at: string, mergeMain: boolean): boolean {
-    if (!this.project().policy.requireCriteriaReview || mergeMain) return false;
+  // merge-main part, or one sent back after an integration conflict (the
+  // runner's merge-plan job), merges and keeps the gates it had: its
+  // criteria were judged when it was first dispatched (buildJob).
+  private criteriaReviewHolds(p: Item, planId: string, approval: PlanApproval, at: string, merges: boolean): boolean {
+    if (!this.project().policy.requireCriteriaReview || merges) return false;
     const status = this.criteriaReviewStatus(p.id, new Date(at));
     if (status.approved) return false;
     if (status.need === "review") {
