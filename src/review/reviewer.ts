@@ -21,6 +21,7 @@
 // opinion.
 
 import type { ModelEntry } from "../models/pool.ts";
+import { standingRefusal } from "../models/pool.ts";
 import { MODEL_PROFILES, type ModelProfile } from "../models/registry.ts";
 import { byPrecision, precisionLine, precisionOf, type PrecisionRecord } from "../models/precision.ts";
 import { paidPerToken, SIZE_M_CONTEXT, type Availability, type Choice, type PartRoute } from "../plans/route.ts";
@@ -57,7 +58,9 @@ type Source = { kind: "previous" | "tier" | "routed" | "pool" } | { kind: "alter
 
 const actorOf = (entry: ModelEntry) => `${entry.harness}/${entry.id}`;
 const namesOf = (entry: ModelEntry) => [entry.id, ...entry.aliases].map((id) => `${entry.harness}/${id}`.toLowerCase());
-const findEntry = (pool: readonly ModelEntry[], actor: string) => pool.find((entry) => namesOf(entry).includes(actor.toLowerCase()));
+// An actor's entry by sameActor, so a profile suffix or letter case does not
+// take it outside the pool and past the entry's standing.
+const findEntry = (pool: readonly ModelEntry[], actor: string) => pool.find((entry) => namesOf(entry).some((name) => sameActor(name, actor)));
 
 export function pickReviewer(input: PickInput): ReviewerPick {
   const contributors = contributorsOf(input.item);
@@ -149,7 +152,7 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
     else passed.push(`Another family (${actorFamily(actor)}) than every contributor: ${describeContributors(contributors)}`);
   }
 
-  const avoided = input.avoid?.find((a) => names.includes(a.actor.toLowerCase()));
+  const avoided = input.avoid?.find((a) => names.some((name) => sameActor(name, a.actor)));
   if (avoided) failed.push(avoided.reason);
 
   // Under a governed policy the gate counts only an assessor's review. Without
@@ -166,6 +169,13 @@ function judge(entry: ModelEntry, contributors: readonly string[], input: PickIn
   const status = entry.status;
   if (status?.state === "refused") failed.push(`status refused, reported by ${status.by} at ${status.at}${status.detail ? `: ${status.detail}` : ""}`);
   else passed.push(status ? `Status ${status.state}, reported by ${status.by} at ${status.at}` : "Status not checked yet");
+
+  // The owner's standing: a paused or reserved model is skipped, with its
+  // note, and so is one without the review role, since pickReviewer asks
+  // reviewers alone.
+  const held = standingRefusal(entry, "review");
+  if (held) failed.push(held);
+  else passed.push("The owner's standing is available");
 
   const { allowPaid, spend } = input;
   if (!paidPerToken(entry)) passed.push(`No per-token cost (${entry.provider})`);

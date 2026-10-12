@@ -1033,6 +1033,135 @@ it("a review claim carries the owner's standing decisions, and the brief marks t
   expect(reviewBrief({ need: none.need!, item: none.item, events: none.events, plan: none.plan, owner: none.owner, decisions: none.decisions })).toContain("The project owner has recorded no standing decision for this project.");
 });
 
+// The owner's standing for a model (src/models/pool.ts) reaches the reviews
+// a project's ledger asks without the index: the index sends the pool on each
+// change (poolChanged), and tier reviews and a plan's reviews skip a model
+// paused, reserved or kept from reviewing since approval.
+const held = (actor: string, change: Partial<ModelEntry>): ModelEntry => {
+  const [harness, id] = actor.split("/");
+  return { ...entry(id, harness as ModelEntry["harness"]), ...change };
+};
+
+it("a tier model the owner paused, reserved or kept from reviewing is never asked for the tier review", async () => {
+  for (const [name, change] of [
+    ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }],
+    ["reserved", { state: "reserved", stateAt: AT, note: "credits kept" }],
+    ["build-only", { roles: ["build"] }],
+  ] as const) {
+    const { L, partId, sibling } = await tiered(`review-tier-held-${name}`);
+    await L.poolChanged([...POOL, held(sibling, change)]);
+    await submitPart(L, partId, "a".repeat(40));
+    expect(await reviewWaiting(L), name).toEqual([{ id: partId, job: "review", agent: "codex", model: "gpt-6-astra" }]);
+    expect((await L.reviewRequests(partId)).filter((r) => r.tier), name).toEqual([]);
+  }
+});
+
+it("a plan's reviewer the owner reserves after approval is passed over, and its routing names why", async () => {
+  const L = await setup("review-held-after-approval");
+  const { id, partId, builder } = await approved(L);
+  await L.poolChanged(POOL.map((e) => e.id === "gpt-6-astra" ? { ...e, state: "reserved" as const, stateAt: AT, note: "astra's credits" } : e));
+  await submitPart(L, partId, "a".repeat(40));
+  const other = [OPUS, GLM].find((a) => a !== builder)!;
+  expect(await routedReviewer(L, partId)).toBe(other);
+  expect((await events(L, partId)).find((e) => e.kind === "plan.reviewer_changed")).toMatchObject({ data: { from: GPT, to: other, reason: expect.stringMatching(/reserved since 2026-10-06.*astra's credits/) } });
+  expect((await L.planView(id)).blocked).toBeNull();
+});
+
+it("an open review request is withdrawn when the owner pauses its reviewer or takes away its review role, and asked of another", async () => {
+  for (const [name, change, reason] of [
+    ["paused", { state: "paused", stateAt: AT }, /paused since 2026-10-06/],
+    ["build-only", { roles: ["build"] }, /not a reviewer; its roles are build/],
+  ] as const) {
+    const L = await setup(`review-held-open-${name}`);
+    const { partId, builder } = await approved(L);
+    await submitPart(L, partId, "a".repeat(40));
+    expect(await routedReviewer(L, partId)).toBe(GPT);
+    await L.poolChanged(POOL.map((e) => e.id === "gpt-6-astra" ? { ...e, ...change } : e));
+    expect(await routedReviewer(L, partId), name).toBe([OPUS, GLM].find((a) => a !== builder));
+    expect((await events(L, partId)).find((e) => e.kind === "review.withdrawn")).toMatchObject({ data: { reviewer: GPT, reason: expect.stringMatching(reason) } });
+  }
+});
+
+// Every model the owner names for a plan's job goes through the same check
+// (standingRefusal): a planner, a part's builder and a part's reviewer the
+// owner holds from that job are refused with the reason.
+it("a planner, builder or part reviewer the owner names while it is held from the job is refused with the reason", async () => {
+  const planning = await setup("named-held-planner");
+  const paused = POOL.map((e) => e.id === "glm-5.3" ? { ...e, state: "paused" as const, stateAt: AT, note: "AI Studio down" } : e);
+  await refusal(planning.newPlan("Ship it", ["src/**"], "owner", GLM, paused), "model_held", /zcode\/glm-5\.3 is paused since 2026-10-06 \(the owner's standing\): AI Studio down/);
+  const reviewOnly = POOL.map((e) => e.id === "glm-5.3" ? { ...e, roles: ["review" as const] } : e);
+  await refusal(planning.newPlan("Ship it", ["src/**"], "owner", GLM, reviewOnly), "model_held", /zcode\/glm-5\.3 is not a planner; its roles are review/);
+  // A new project's first plan keeps the pool it was started with, so a
+  // reroute of its planner, which reads no pool of its own, still refuses one
+  // the owner holds from planning.
+  const fresh = await setup("named-held-reroute");
+  const plan = await fresh.newPlan("Ship it", ["src/**"], "owner", OPUS, reviewOnly);
+  await refusal(fresh.reroutePlan(plan.item.id, "owner", GLM), "model_held", /zcode\/glm-5\.3 is not a planner; its roles are review/);
+
+  const L = await setup("named-held-part");
+  const { partId, builder } = await approved(L);
+  const other = [OPUS, GPT, GLM].find((a) => a !== builder)!;
+  const id = other.split("/")[1];
+  await L.poolChanged(POOL.map((e) => e.id === id ? { ...e, roles: ["review" as const] } : e));
+  await refusal(L.reroutePlan(partId, "owner", other), "model_held", new RegExp(`${other} is not a builder; its roles are review`));
+  await L.poolChanged(POOL);
+  await submitPart(L, partId, "a".repeat(40));
+  await L.poolChanged(POOL.map((e) => e.id === id ? { ...e, state: "reserved" as const, stateAt: AT, note: "credits" } : e));
+  await refusal(L.reroutePlan(partId, "owner", other), "model_held", new RegExp(`${other} is reserved since 2026-10-06 \\(the owner's standing\\): credits`));
+  await L.poolChanged(POOL.map((e) => e.id === id ? { ...e, roles: ["build" as const] } : e));
+  await refusal(L.reroutePlan(partId, "owner", other), "model_held", new RegExp(`${other} is not a reviewer; its roles are build`));
+});
+
+// A retry or a revision asks the plan's own planner again, so it goes through
+// the same check: one the owner has paused, reserved or kept from planning
+// since the plan started is refused before anything is logged or queued, and
+// the owner reroutes the plan to another.
+it("a planner held since the plan started is refused on retry and revise, and nothing is dispatched", async () => {
+  for (const [name, change, why] of [
+    ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }, /codex\/gpt-6-astra is paused since 2026-10-06 \(the owner's standing\): AI Studio down/],
+    ["reserved", { state: "reserved", stateAt: AT, note: "astra's credits" }, /codex\/gpt-6-astra is reserved since 2026-10-06 \(the owner's standing\): astra's credits/],
+    ["review-only", { roles: ["review"] }, /codex\/gpt-6-astra is not a planner; its roles are review/],
+  ] as const) {
+    const L = await setup(`planner-held-again-${name}`);
+    const { item } = await L.newPlan("Ship it", ["src/**"], "owner", GPT, POOL);
+    // The pool change withdraws the queued plan job; retry and revise then
+    // dispatch nothing and log nothing.
+    await L.poolChanged(POOL.map((e) => e.id === "gpt-6-astra" ? { ...e, ...change } : e));
+    expect((await L.item(item.id)).dispatch, name).toBeNull();
+    const logged = (await events(L, item.id)).length;
+    await refusal(L.retryPlan(item.id, "owner"), "model_held", why);
+    await refusal(L.revisePlan(item.id, "owner", "Smaller parts"), "model_held", why);
+    expect((await L.item(item.id)).dispatch, name).toBeNull();
+    expect((await events(L, item.id)).length, name).toBe(logged);
+    await L.reroutePlan(item.id, "owner", OPUS);
+    expect((await L.item(item.id)).dispatch, name).toMatchObject({ agent: "claude-code", model: "opus-5.5", job: "plan" });
+  }
+});
+
+// Every plan dispatch reads the saved routes through the owner's standing
+// now (standingRoute): a part waiting on a builder the owner then pauses,
+// reserves or keeps from building is taken back and goes to the next routed
+// builder, and the builder named by a profile is refused like its plain name.
+it("a part's builder held after approval is taken back and the part goes to the next routed builder", async () => {
+  for (const [name, change, why] of [
+    ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }, /paused since 2026-10-06 \(the owner's standing\): AI Studio down/],
+    ["reserved", { state: "reserved", stateAt: AT, note: "astra's credits" }, /reserved since 2026-10-06 \(the owner's standing\): astra's credits/],
+    ["review-only", { roles: ["review"] }, /not a builder; its roles are review/],
+  ] as const) {
+    const L = await setup(`plan-builder-held-${name}`);
+    const { id, partId, builder } = await approved(L);
+    const route = (await L.planView(id)).parts[0].route!;
+    const model = builder.split("/")[1];
+    await L.poolChanged(POOL.map((e) => e.id === model ? { ...e, ...change } : e));
+    const next = route.alternates[0].actor;
+    expect((await L.item(partId)).dispatch, name).toMatchObject({ agent: next.split("/")[0], model: next.split("/")[1] });
+    expect((await events(L, partId)).find((e) => e.kind === "item.undispatched"), name).toMatchObject({ data: { reason: expect.stringMatching(why) } });
+    await refusal(L.reroutePlan(partId, "owner", `${builder}:high`), "model_held", why);
+    // Back to available, the part stays with the builder it moved to.
+    await L.poolChanged(POOL);
+    expect((await L.item(partId)).dispatch, name).toMatchObject({ agent: next.split("/")[0], model: next.split("/")[1] });
+  }
+});
 
 // t396: an override waived a gate, not the right to audit what actually landed.
 async function overriddenMerge(project: string) {
@@ -1075,6 +1204,25 @@ it("a runner reviews an overridden merge, preserves its landing and records its 
   const record = buildReliability([{ project: "post-merge-approval", events: await events(L) }], [], "owner");
   expect(record.get("gpt-6-astra")?.approvals).toBe(1);
   expect(record.get("opus-5.5")).toMatchObject({ merged: 1, mergedReviewed: 1, rounds: 1 });
+});
+
+it("post-merge review requests retain current pool standing and refuse held reviewers", async () => {
+  const { L, id, head } = await overriddenMerge("post-merge-standing");
+  for (const change of [
+    { state: "paused" as const, stateAt: AT, note: "source unavailable" },
+    { state: "reserved" as const, stateAt: AT, note: "credits reserved" },
+    { roles: ["build" as const] },
+  ]) {
+    const pool = POOL.map((e) => e.id === "gpt-6-astra" ? { ...e, ...change } : e);
+    await refusal(L.requestReview(id, "owner", GPT, pool), "model_held", /codex\/gpt-6-astra is/);
+    expect(await L.reviewRequests(id)).toEqual([]);
+    // The request refreshes the ledger's pool even when its reviewer is
+    // refused; later claims must use that standing too.
+    const task = await L.newItem("Current standing", [], "owner");
+    if ("state" in change) await refusal(L.claim(task.id, GPT), "model_held", /codex\/gpt-6-astra is/);
+    expect(await L.item(id)).toMatchObject({ state: "merged", head, acceptedHead: head });
+  }
+  expect(await L.requestReview(id, "owner", GPT, POOL)).toMatchObject({ requested: true, reviewer: GPT });
 });
 
 it("blocking findings on an overridden merge file one linked defect and never reopen the merged task", async () => {
@@ -1415,6 +1563,39 @@ it("authenticated renewal and release require the current generation and the cla
   expect((await call(`${base}/review-renew`, token, GPT, { request: recovered.request })).status).toBe(200);
 });
 
+// A claimed request is asked again when its claim is released or lapses
+// (replaceReviewClaim), through the owner's standing like every request: a
+// reviewer paused, reserved or kept from reviewing while it held the claim is
+// not asked again, and the request is withdrawn with the reason.
+it("a released or lapsed claim of a reviewer the owner has since held is withdrawn, not asked again", async () => {
+  const change = { state: "paused" as const, stateAt: AT, note: "AI Studio down" };
+  const why = /codex\/gpt-6-astra is paused since 2026-10-06 \(the owner's standing\): AI Studio down/;
+  const released = await setup("review-held-claim-released");
+  let { partId } = await approved(released);
+  await submitPart(released, partId, "a".repeat(40));
+  let claim = await released.claimReview(partId, GPT, RUNNER, true) as unknown as ReviewClaim;
+  await released.poolChanged(POOL.map((e) => e.id === "gpt-6-astra" ? { ...e, ...change } : e));
+  await released.releaseReview(partId, GPT, "restart", true, claim.request);
+  expect((await reviewWaiting(released)).filter((r) => r.id === partId && r.model === "gpt-6-astra")).toEqual([]);
+  expect((await released.reviewRequests(partId)).filter((r) => r.state === "open" || r.state === "claimed")).toEqual([]);
+  expect((await events(released, partId)).find((e) => e.kind === "review.withdrawn")).toMatchObject({ data: { reviewer: GPT, request: claim.request, reason: expect.stringMatching(why) } });
+
+  const lapsed = await setup("review-held-claim-lapsed");
+  ({ partId } = await approved(lapsed));
+  await submitPart(lapsed, partId, "a".repeat(40));
+  claim = await lapsed.claimReview(partId, GPT, RUNNER, true) as unknown as ReviewClaim;
+  await lapsed.poolChanged(POOL.map((e) => e.id === "gpt-6-astra" ? { ...e, ...change } : e));
+  await runInDurableObject(lapsed, (instance: Ledger, state: DurableObjectState) => {
+    const start = Date.parse(state.storage.sql.exec(`SELECT claimedAt FROM review_requests WHERE id = ?`, claim.request).one().claimedAt as string);
+    const realNow = Date.now;
+    try {
+      Date.now = () => start + 300_000;
+      expect(instance.reviewWaiting().filter((r) => r.id === partId && r.dispatch?.model === "gpt-6-astra")).toEqual([]);
+    } finally { Date.now = realNow; }
+  });
+  expect((await events(lapsed, partId)).find((e) => e.kind === "review.withdrawn")).toMatchObject({ data: { reviewer: GPT, request: claim.request, reason: expect.stringMatching(why) } });
+  expect((await events(lapsed, partId)).find((e) => e.kind === "review.expired")).toMatchObject({ data: { request: claim.request } });
+});
 
 it("an expired post-merge claim can be claimed again with a fresh generation", async () => {
   const { L, id, merge } = await overriddenMerge("post-merge-expiry");
