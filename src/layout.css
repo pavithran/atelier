@@ -477,7 +477,8 @@ main:has(.login-backdrop) { overflow-x: clip; }
   .actions > form, .actions button { width: 100%; }
 }
 /* Below ~700px the Decisions desk is two views, never both at once: the
-   list when no decision is selected, and the selected decision with its back
+   list when the owner picked no decision (the first one, auto-selected for
+   the desktop's detail, stays hidden), and the picked decision with its back
    link otherwise. Neither the list nor the review sits below the other, and
    the page stays within the viewport. */
 @media (max-width: 700px) {

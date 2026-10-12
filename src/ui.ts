@@ -186,7 +186,9 @@ export interface Detail {
 export interface FormError { verb: "approve" | "reject" | "accept" | "override" | "allow-override"; message: string; note?: string }
 // `full` is set on the task's own page, the one place that shows the task's
 // brief and acceptance criteria; every other view shows its short title.
-export interface ReviewContext { project: ProjectRecord; detail: Detail; diff: ItemDiff | "unavailable" | null; thread?: boolean; full?: boolean }
+// `auto` marks the decision Decisions selects itself when the owner picked
+// none: the desktop shows it beside the list, a phone shows only the list.
+export interface ReviewContext { project: ProjectRecord; detail: Detail; diff: ItemDiff | "unavailable" | null; thread?: boolean; full?: boolean; auto?: boolean }
 // `events` is the project's recent record, newest first, when the page reads
 // it (Projects and History); `cut` says it was read up to a limit.
 export interface ProjectView { project: ProjectRecord; items: Item[]; unavailable?: boolean; events?: LedgerEvent[]; cut?: boolean }
@@ -502,10 +504,14 @@ export function renderInbox(
   ${projectViews.some((p) => p.unavailable) ? '<p role="status" class="error">Some projects could not be read. Refresh to try again; this list may be incomplete.</p>' : ""}
   ${!projects.length ? '<div class="empty"><h3>Bring your first project.</h3><p>In its checkout, run <code>atelier init</code> to register it.</p></div>' : ""}
 </section>`;
-  // On a phone the desk is two views: the list, or the selected decision with
-  // a back link to the list. The back link is drawn only there (layout.css
-  // hides it on wider screens), so the desktop's side-by-side desk keeps both.
-  const back = selected
+  // On a phone the desk is two views: the list, or the decision the owner
+  // picked with a back link to the list. The back link is drawn only there
+  // (layout.css hides it on wider screens), so the desktop's side-by-side desk
+  // keeps both. The first decision, selected when the owner picked none, is
+  // `auto-selected`, not `has-selection`: a phone shows the list for it, so
+  // every row stays in reach.
+  const picked = !!selected && !selected.auto;
+  const back = picked
     ? `<a class="review-back" href="/decisions">${icon("back")}<span>All decisions</span></a>`
     : "";
   const lead = selected && own.find(({ project, t }) => isSelected(project, t.id))?.t;
@@ -514,7 +520,7 @@ export function renderInbox(
     : latest?.story.threads.length
       ? `<section class="review-sheet resting has-graph" aria-label="Latest work">${restingGraph(latest.story, latest.owner, notRead)}</section>`
       : `<section class="review-sheet resting"><div>${icon("check")}<h2>Space to focus.</h2><p>Select a decision to see the changes, the evidence, and your next action.</p><a href="/studio">Watch the studio</a></div></section>`;
-  return page("Decisions", `<div class="desk${selected ? " has-selection" : ""}">${queue}${sheet}</div>`, "Decisions", ownerName, 0, true, live);
+  return page("Decisions", `<div class="desk${picked ? " has-selection" : selected ? " auto-selected" : ""}">${queue}${sheet}</div>`, "Decisions", ownerName, 0, true, live);
 }
 
 // ── flow ───────────────────────────────────────────────────────────────────
