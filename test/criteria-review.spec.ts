@@ -561,3 +561,92 @@ it("a part blocked for want of a criteria reviewer is unblocked and dispatched o
   // Two parts live: part c waits for a slot, not for a block.
   expect((await L.item(c)).dispatch).toBeNull();
 });
+
+// The owner's standing reaches a criteria review after it is asked, as it
+// reaches a code review (poolChanged, claimReview): a pool change withdraws
+// an unclaimed request to a model now paused, reserved or kept from
+// reviewing; a claim by a model held since the request is refused and
+// withdraws it; and a verdict from a model held since it claimed is refused,
+// records nothing, and withdraws the claim, so another may be asked.
+const HELD = [
+  ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }, /zcode\/glm-5\.3 is paused since 2026-10-10 \(the owner's standing\): AI Studio down/],
+  ["reserved", { state: "reserved", stateAt: AT, note: "credits" }, /zcode\/glm-5\.3 is reserved since 2026-10-10 \(the owner's standing\): credits/],
+  ["build-only", { roles: ["build"] }, /zcode\/glm-5\.3 is not a reviewer; its roles are build/],
+] as const;
+const holdingGlm = (change: Partial<ModelEntry>) => POOL.map((e) => e.id === "glm-5.3" ? { ...e, ...change } : e);
+const withdrawals = async (L: L, id: string) => (await events(L, id)).filter((e) => e.kind === "criteria_review.withdrawn").map((e) => e.data);
+
+it("a pool change withdraws an unclaimed criteria review asked of a model now paused, reserved or build-only, and the next request picks another", async () => {
+  for (const [name, change, reason] of HELD) {
+    const L = await setup(`criteria-held-${name}`);
+    await L.poolChanged(POOL);
+    const { id } = await L.newItem("Faster search", ["src/**"], "owner", { accept: ["Search answers within 200 ms"] });
+    expect(await L.requestCriteriaReview(id, "owner", null, POOL), name).toMatchObject({ requested: true, reviewer: GLM, request: 1 });
+    const pool = holdingGlm(change);
+    await L.poolChanged(pool);
+    expect((await L.criteriaReviewsFor(id)).map((r) => [r.id, r.state, r.failure]), name).toEqual([[1, "withdrawn", expect.stringMatching(reason)]]);
+    expect(await withdrawals(L, id), name).toEqual([{ review: 1, rev: 1, reviewer: GLM, reason: expect.stringMatching(reason) }]);
+    expect(await waiting(L), name).toEqual([]);
+    await refusal(L.claimCriteriaReview(id, GLM, RUNNER), "no_criteria_review", /has no open review of its acceptance criteria/);
+    expect((await status(L, id)), name).toMatchObject({ approved: false, need: "review" });
+    // The owner asks again: the held model is passed over for the next family.
+    expect(await L.requestCriteriaReview(id, "owner", null, pool), name).toMatchObject({ requested: true, reviewer: GPT, request: 2 });
+    expect(await waiting(L), name).toEqual([{ id, job: "criteria-review", reviewer: GPT }]);
+  }
+});
+
+it("a criteria review asked before its model was held is refused at claim and withdrawn", async () => {
+  for (const [name, change, reason] of HELD) {
+    const L = await setup(`criteria-held-claim-${name}`);
+    const { id } = await L.newItem("Faster search", ["src/**"], "owner", { accept: ["Search answers within 200 ms"] });
+    expect(await L.requestCriteriaReview(id, "owner", null, POOL), name).toMatchObject({ requested: true, reviewer: GLM, request: 1 });
+    // The ledger learns the new standing from another task's request, which
+    // carries the pool, without the pool change that would withdraw this one.
+    const { id: other } = await L.newItem("Slower search", ["src/**"], "owner", { accept: ["Search answers within 400 ms"] });
+    const pool = holdingGlm(change);
+    expect(await L.requestCriteriaReview(other, "owner", null, pool), name).toMatchObject({ requested: true, reviewer: GPT });
+    expect((await L.criteriaReviewsFor(id)).map((r) => r.state), name).toEqual(["open"]);
+    await refusal(L.claimCriteriaReview(id, GLM, RUNNER), "model_held", new RegExp(`${reason.source}; its review of ${id}'s acceptance criteria is withdrawn`));
+    expect((await L.criteriaReviewsFor(id)).map((r) => [r.state, r.claimedBy]), name).toEqual([["withdrawn", null]]);
+    expect(await withdrawals(L, id), name).toEqual([{ review: 1, rev: 1, reviewer: GLM, reason: expect.stringMatching(reason) }]);
+    expect((await status(L, id)), name).toMatchObject({ approved: false, need: "review" });
+    // A verdict from the held model answers nothing: the claim is gone.
+    const binding = (await L.criteriaReviewsFor(id))[0].criteria;
+    await refusal(L.addCriteriaReview({ itemId: id, by: GLM, rev: 1, criteria: binding, request: 1, approve: true, summary: "Clear." }, true), "stale_request", /is withdrawn/);
+    expect((await status(L, id)).approved, name).toBe(false);
+    expect(await L.requestCriteriaReview(id, "owner", null, pool), name).toMatchObject({ requested: true, reviewer: GPT });
+  }
+});
+
+it("a criteria reviewer held since it claimed cannot approve: its verdict is refused, not recorded, and the claim withdrawn", async () => {
+  for (const [name, change, reason] of HELD) {
+    const L = await setup(`criteria-held-verdict-${name}`);
+    await L.poolChanged(POOL);
+    const { id } = await L.newItem("Faster search", ["src/**"], "owner", { accept: ["Search answers within 200 ms"] });
+    expect(await L.requestCriteriaReview(id, "owner", null, POOL), name).toMatchObject({ requested: true, reviewer: GLM, request: 1 });
+    const claim = await L.claimCriteriaReview(id, GLM, RUNNER) as unknown as CriteriaReviewClaim;
+    // A pool change leaves the claimed review standing, as it leaves a
+    // claimed code review; the verdict is where the standing holds.
+    const pool = holdingGlm(change);
+    await L.poolChanged(pool);
+    expect((await L.criteriaReviewsFor(id)).map((r) => [r.state, r.claimedBy]), name).toEqual([["claimed", GLM]]);
+    const verdict = { itemId: id, by: GLM, rev: claim.rev, criteria: claim.criteria, request: claim.request, approve: true, summary: "Clear." };
+    await refusal(L.addCriteriaReview(verdict, true), "model_held", new RegExp(`${reason.source}; its review of ${id}'s acceptance criteria is withdrawn, and this verdict is not recorded`));
+    expect((await L.criteriaReviewsFor(id)).map((r) => [r.state, r.summary, r.failure]), name).toEqual([["withdrawn", null, expect.stringMatching(reason)]]);
+    expect(await withdrawals(L, id), name).toEqual([{ review: 1, rev: 1, reviewer: GLM, reason: expect.stringMatching(reason) }]);
+    expect((await events(L, id)).filter((e) => e.kind === "criteria_review.approved"), name).toEqual([]);
+    expect((await status(L, id)), name).toMatchObject({ approved: false, need: "review" });
+    await refusal(L.dispatch(id, "owner", { to: "home" }), "criteria_unreviewed", /cannot be dispatched/);
+    // The verdict sent again answers a review that is gone, and a rejection
+    // is refused as an approval is: the held model records nothing.
+    await refusal(L.addCriteriaReview(verdict, true), "stale_request", /is withdrawn/);
+    await refusal(L.addCriteriaReview({ ...verdict, approve: false, findings: [blocker()] }, true), "stale_request", /is withdrawn/);
+    // Another family reviews the criteria afresh, and the build goes through.
+    expect(await L.requestCriteriaReview(id, "owner", null, pool), name).toMatchObject({ requested: true, reviewer: GPT, request: 2 });
+    const again = await L.claimCriteriaReview(id, GPT, RUNNER) as unknown as CriteriaReviewClaim;
+    await L.addCriteriaReview({ itemId: id, by: GPT, rev: again.rev, criteria: again.criteria, request: again.request, approve: true, summary: "Clear." }, true);
+    expect((await status(L, id)).approved, name).toBe(true);
+    // A model held from reviewing but free to build still builds it.
+    if (name === "build-only") expect((await L.claim(id, GLM, RUNNER)).item, name).toMatchObject({ state: "claimed", owner: GLM });
+  }
+});
