@@ -1,3 +1,4 @@
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
@@ -353,4 +354,97 @@ it("a resolver's lease given back while main moved on queues the newer main head
   await L.noteMainHead(M2);
   await L.releaseRefreshLease(id, GPT, r.id, "limit", true);
   expect((await queue(L))[0].target).toMatchObject({ state: "queued", mainHead: M2, resolver: null });
+});
+
+// A lease whose runner died: its term ended a moment ago.
+async function lapse(L: L, id: string): Promise<void> {
+  await runInDurableObject(L, async (_instance, state) => {
+    const row = state.storage.sql.exec("SELECT json FROM refresh_targets WHERE item = ?", id).toArray()[0];
+    const target = JSON.parse(row.json as string);
+    target.lease.until = new Date(Date.now() - 1000).toISOString();
+    state.storage.sql.exec("UPDATE refresh_targets SET json = ? WHERE item = ?", JSON.stringify(target), id);
+  });
+}
+
+it("a clean refresh whose lease lapses while its checks run resumes them at the recorded head, rather than finding main already held", async () => {
+  const L = await setup("tr-resume-clean");
+  const id = await task(L, "Resumes", "submitted");
+  await L.noteMainHead(M1);
+  const l = await lease(L, id);
+  await L.taskRefreshed(id, INTEGRATOR, { ...report(l), head: R1, agent: INTEGRATOR }, true);
+  // The head as recorded, which a leaseholder whose answers were lost reads.
+  expect(await L.refreshLeaseStatus(id, INTEGRATOR, l.id)).toEqual({ head: R1, lease: true, checking: R1 });
+  expect(await L.refreshLeaseStatus(id, INTEGRATOR, "other")).toEqual({ head: R1, lease: false, checking: null });
+  await lapse(L, id);
+  const [job] = await L.refreshJobs();
+  expect(job.dispatch).toMatchObject({ job: "task-refresh", head: M1, expectedHead: R1 });
+  const resumed = await lease(L, id);
+  expect(resumed).toMatchObject({ job: "refresh", mainHead: M1, expectedHead: H1, checking: R1 });
+  expect(resumed.id).not.toBe(l.id);
+  await refusal(L.refreshChecked(id, INTEGRATOR, { ...report(l), passed: true, reason: "" }), "lease_lost");
+  expect((await L.refreshChecked(id, INTEGRATOR, { ...report(resumed), passed: true, reason: "" })).result).toMatchObject({ outcome: "refreshed", head: R1, reason: null });
+  expect(await queue(L)).toEqual([]);
+  expect(await L.item(id)).toMatchObject({ head: R1 });
+});
+
+it("a resolver's lease that lapses while its checks run is taken again by the resolver at the recorded head", async () => {
+  const L = await setup("tr-resume-resolve", { resolvers: [GPT] });
+  const id = await task(L, "Resolved", "submitted");
+  await L.noteMainHead(M1);
+  const l = await lease(L, id);
+  await L.taskRefreshFailed(id, INTEGRATOR, { ...report(l), outcome: "mechanical", reason: "imports" }, [offer("codex", "gpt-6-astra")]);
+  const r = await lease(L, id, GPT, "resolve");
+  await L.taskRefreshed(id, GPT, { ...report(r), head: R2, agent: GPT, transformations: ["import-union"] }, true);
+  await lapse(L, id);
+  const [job] = await L.refreshJobs();
+  expect(job.dispatch).toMatchObject({ job: "task-resolve", agent: "codex", model: "gpt-6-astra" });
+  await refusal(L.leaseRefresh(id, INTEGRATOR, null, "refresh"), "not_queued");
+  const resumed = await lease(L, id, GPT, "resolve");
+  expect(resumed).toMatchObject({ job: "resolve", mainHead: M1, expectedHead: H1, checking: R2 });
+  expect((await L.refreshChecked(id, GPT, { ...report(resumed), passed: false, reason: "FAIL npm test" })).result).toMatchObject({ outcome: "checks", head: R2 });
+  expect(await queue(L)).toEqual([]);
+});
+
+it("a resolver's lapsed lease on a task its builder has since moved queues a refresh from the new head", async () => {
+  const L = await setup("tr-lapsed-moved", { resolvers: [GPT] });
+  const id = await task(L, "Moved", "released");
+  await L.noteMainHead(M1);
+  const l = await lease(L, id);
+  await L.taskRefreshFailed(id, INTEGRATOR, { ...report(l), outcome: "mechanical", reason: "imports" }, [offer("codex", "gpt-6-astra")]);
+  await lease(L, id, GPT, "resolve");
+  await lapse(L, id);
+  await L.claim(id, OPUS);
+  await L.recordPush(id, OPUS, H2, H2);
+  await L.release(id, OPUS, "pushed a fix");
+  expect((await queue(L))[0].target).toMatchObject({ state: "queued", resolver: null, expectedHead: null });
+  expect((await lease(L, id)).expectedHead).toBe(H2);
+});
+
+it("a resolver no longer eligible when it takes its lease is refused, and the conflict waits for another, saying why", async () => {
+  const L = await setup("tr-recheck", { resolvers: [GPT, OPUS] });
+  const id = await task(L, "Rechecked", "submitted");
+  await L.noteMainHead(M1);
+  const l = await lease(L, id);
+  expect((await L.taskRefreshFailed(id, INTEGRATOR, { ...report(l), outcome: "mechanical", reason: "imports" }, [offer("codex", "gpt-6-astra")])).result.resolver).toBe(GPT);
+  // An approval from GPT's family arrives while the conflict waits for it.
+  await L.addReview({ itemId: id, by: "codex/gpt-6", head: H1, criteria: await L.criteria(id), approve: true, note: "fine", at: new Date().toISOString() });
+  await refusal(L.leaseRefresh(id, GPT, null, "resolve"), "not_resolver", /no longer resolve it: the review by codex\/gpt-6/);
+  const [row] = await queue(L);
+  expect(row.target).toMatchObject({ state: "waiting", resolver: null, lease: null, expectedHead: H1 });
+  expect((await events(L, id)).filter((e) => e.kind === "refresh.waiting").at(-1)?.data).toMatchObject({ refusals: [{ actor: GPT }] });
+  // Another eligible resolver offered ends the wait.
+  const [job] = await L.refreshJobs({ runner: "home:o", kind: "home", agents: [{ agent: "claude-code", models: ["opus-5.5"] }], jobs: ["task-resolve"] });
+  expect(job.dispatch).toMatchObject({ job: "task-resolve", agent: "claude-code", model: "opus-5.5" });
+});
+
+it("a resolver the policy dropped while the conflict waited for it is refused its lease", async () => {
+  const L = await setup("tr-recheck-policy", { resolvers: [GPT] });
+  const record = (policy: Partial<ProjectPolicy>) => ({ name: "tr-recheck-policy", repo: "tr-recheck-policy--baseline", policy: { checks: ["npm test"], protected: [], ...policy }, createdAt: new Date().toISOString() });
+  const id = await task(L, "Policy", "submitted");
+  await L.noteMainHead(M1);
+  const l = await lease(L, id);
+  await L.taskRefreshFailed(id, INTEGRATOR, { ...report(l), outcome: "mechanical", reason: "imports" }, [offer("codex", "gpt-6-astra")]);
+  await L.setProject(record({ resolvers: [] }), "owner");
+  await refusal(L.leaseRefresh(id, GPT, null, "resolve"), "not_resolver", /configured resolver set/);
+  expect((await queue(L))[0].target.state).toBe("waiting");
 });

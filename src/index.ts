@@ -761,8 +761,12 @@ async function scanRecorded(env: Env, L: ReturnType<typeof ledger>, item: Item):
 // A part whose fork holds nothing beyond the commit it forked from starts
 // from its plan branch's head when that branch has moved since, so its
 // builder sees every part integrated since (docs/orchestrator.md, section 5).
+// An ordinary task likewise starts from main's head (t462): a task claimed
+// and released without commits is branchless, which the task refresh leaves
+// alone because its next claim starts it from main as main is then
+// (src/refresh/standing.ts), and this is that start. A plan is never moved.
 // Artifacts cannot move a repository's branch, so the fork is deleted and
-// forked again from the plan's fork under the same name, which keeps the
+// forked again from the plan's fork, or the baseline, under the same name, which keeps the
 // workspace's remote, and the Ledger records the new head as the part's base
 // and head. A fork with a head of its own, in the Ledger or in Artifacts, is
 // left as it is; a fork found missing, which a move that did not finish
@@ -778,15 +782,20 @@ async function scanRecorded(env: Env, L: ReturnType<typeof ledger>, item: Item):
 // are gone. A move that only records the head returns false: the fork and
 // its tokens stand.
 const MOVE_BUDGET = { commits: 500, reads: 5 };
-async function movePartFork(env: Env, L: ReturnType<typeof ledger>, item: Item, project: ProjectRecord, actor: string, proved: boolean): Promise<boolean> {
-  if (item.kind !== "part" || !item.plan || !item.fork) return false;
+async function moveEmptyFork(env: Env, L: ReturnType<typeof ledger>, item: Item, project: ProjectRecord, actor: string, proved: boolean): Promise<boolean> {
+  if (item.kind === "plan" || (item.kind === "part" && !item.plan) || !item.fork) return false;
   if (item.head && item.head !== item.base) return false;
-  const planFork = (await L.item(item.plan)).fork;
+  // The branch the fork starts from: the plan's, for a part; main, for a task.
+  const planFork = item.kind === "part" ? (await L.item(item.plan!)).fork : project.repo;
   if (!planFork) return false;
   const fork = item.fork;
   // Every read and change against Artifacts here is a step a transient
   // failure retries, then answers as a 503 (artifactsStep, t349).
-  const planHead = await artifactsStep(`read the head of ${planFork}`, () => headOf(env, planFork), (err) => NOT_FOUND.test(codeOf(err)));
+  // Main's head that cannot be read leaves a task's claim on its fork as it
+  // stands, as a refresh would wait: the claim is not failed for it.
+  const planHead = item.kind === "part"
+    ? await artifactsStep(`read the head of ${planFork}`, () => headOf(env, planFork), (err) => NOT_FOUND.test(codeOf(err)))
+    : await mainHeadOf(env, L);
   if (!planHead || planHead === item.base) return false;
   const forkHead = () => artifactsStep(`read the head of ${fork}`, () => headOf(env, fork), (err) => NOT_FOUND.test(codeOf(err))).catch((err) => {
     if (!NOT_FOUND.test(codeOf(err))) throw err;
@@ -1638,11 +1647,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           throw err;
         }
       } else {
-        // A part with nothing of its own starts again from the plan's branch.
+        // A part or task with nothing of its own starts again from the plan's
+        // branch, or main.
         // A failed move gives up a claim this call took; a holder claiming
         // again keeps the item and can retry.
         try {
-          moved = await movePartFork(env, L, item, p, actor, !!c.token);
+          moved = await moveEmptyFork(env, L, item, p, actor, !!c.token);
         } catch (err) {
           if (before.owner !== actor) await L.unclaim(id, actor, codeOf(err).trim(), !!c.token, generation);
           throw err;
@@ -2264,6 +2274,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // back with no outcome (a provider's usage limit, a failure before any
       // report), and the lease's token is revoked.
       if (typeof body.renew === "string") return json({ lease: await L.renewRefreshLease(id, actor, body.renew) });
+      // Before a push it cannot tell recorded is taken back, the leaseholder
+      // reads the task's head as recorded now.
+      if (typeof body.status === "string") return json(await L.refreshLeaseStatus(id, actor, body.status));
       if (typeof body.release === "string") {
         const { revoke: token, ...released } = await L.releaseRefreshLease(id, actor, body.release, String(body.reason ?? ""), body.providerLimit === true);
         if (token) await revoke(env, released.item.fork, token);

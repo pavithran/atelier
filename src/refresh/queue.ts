@@ -113,6 +113,14 @@ export function takeLease(target: RefreshTarget, input: { job: RefreshJob; actor
     throw new RuleError("refresh_leased", `${target.item}'s refresh from main at ${target.lease.mainHead.slice(0, 8)} is leased to ${target.lease.by} until ${target.lease.until}`, 409);
   }
   const was = target.lease?.job ?? (target.state === "resolve" ? "resolve" : "refresh");
+  // A lease that lapsed while its holder ran the required checks at the head
+  // its refresh recorded resumes there: the same job, merging the same main
+  // head from the same starting head, with only the checks left to run.
+  const lapsed = target.lease;
+  if (target.state === "leased" && lapsed?.checking && job === lapsed.job && head === lapsed.checking && lapsed.mainHead === target.mainHead) {
+    if (job === "resolve" && (!target.resolver || !input.same(target.resolver, actor))) throw new RuleError("not_resolver", `${target.item}'s conflict is for ${target.resolver ?? "no resolver"}, not ${actor}`, 403);
+    return { id: input.id, job, by: actor, runner: input.runner, mainHead: lapsed.mainHead, expectedHead: lapsed.expectedHead, checking: lapsed.checking, at: new Date(now).toISOString(), until: new Date(now + LEASE_MS).toISOString() };
+  }
   if (job === "refresh" && !(target.state === "queued" || (target.state === "leased" && was === "refresh"))) {
     throw new RuleError("not_queued", `${target.item}'s refresh is ${target.state}${target.state === "resolve" ? `, waiting for its resolver ${target.resolver}` : target.wait ? `: ${target.wait}` : ""}`, 409);
   }
@@ -154,10 +162,22 @@ export function afterSettle(target: RefreshTarget, lease: RefreshLease, outcome:
 }
 
 // A target whose task moved on from the head it was waiting at (a builder's
-// push after a conflict was returned, say) is queued again.
-export function headMoved(target: RefreshTarget, head: string | null, at: string): RefreshTarget {
-  if (!["resolve", "waiting", "returned"].includes(target.state) || !target.expectedHead || target.expectedHead === head) return target;
+// push after a conflict was returned, say) is queued again; so is one whose
+// resolver's lease lapsed after the task moved, which no resolver could
+// take again. The lapsed lease is kept so the next lease revokes its token.
+export function headMoved(target: RefreshTarget, head: string | null, at: string, now = Date.parse(at)): RefreshTarget {
+  const waiting = ["resolve", "waiting", "returned"].includes(target.state);
+  const lapsed = target.state === "leased" && target.lease?.job === "resolve" && !leaseLive(target.lease, now);
+  if (!(waiting || lapsed) || !target.expectedHead || target.expectedHead === head) return target;
   return { ...target, state: "queued", updatedAt: at, expectedHead: null, resolver: null, wait: null, report: null };
+}
+
+// The target once its lease's refresh is recorded at `head` and its holder
+// runs the required checks there: the head it waits at is the recorded one,
+// so a lease that lapses before the checks are reported resumes from it
+// (takeLease), rather than finding the task moved or already holding main.
+export function checksPending(target: RefreshTarget, lease: RefreshLease, head: string, at: string): RefreshTarget {
+  return { ...target, expectedHead: head, lease: { ...lease, pushing: undefined, checking: head }, updatedAt: at };
 }
 
 // The lease its holder renews while its job runs long (a resolver's

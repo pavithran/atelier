@@ -59,9 +59,9 @@ import { gateServesTier, pickTierReviewer } from "./review/tier.ts";
 import type { LargeRef } from "./large.ts";
 import { linkVerdict, type Contradicts } from "./models/judgement.ts";
 import { queued as queuedStanding, refreshStanding, type RefreshStanding } from "./refresh/standing.ts";
-import { afterRelease, afterSettle, enqueue, HASH, headMoved, leaseLive, renewLease, reportedLease, resultKey, takeLease, type RefreshJob, type RefreshLease, type RefreshResult, type RefreshTarget } from "./refresh/queue.ts";
+import { afterRelease, afterSettle, checksPending, enqueue, HASH, headMoved, leaseLive, renewLease, reportedLease, resultKey, takeLease, type RefreshJob, type RefreshLease, type RefreshResult, type RefreshTarget } from "./refresh/queue.ts";
 import { parseReport } from "./refresh/mechanical.ts";
-import { pickResolver } from "./refresh/resolver.ts";
+import { pickResolver, resolverRefusal } from "./refresh/resolver.ts";
 import { refreshReview } from "./refresh/review.ts";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
@@ -2250,16 +2250,17 @@ export class Ledger extends DurableObject<Env> {
     if (base && this.item(id).kind === "plan") this.setMainHead(base, at);
   }
 
-  // A part's fork forked again from its plan's branch at `base`, as the
-  // claim route does for a part whose fork holds nothing beyond the commit
-  // it forked from (docs/orchestrator.md, section 5). The Ledger takes it
-  // only from the part's holder, for the fork and base the Worker read, and
-  // while no head of its own is recorded; the new base is its head.
+  // A part's fork forked again from its plan's branch at `base`, or a
+  // task's from main's (t462), as the claim route does for a fork that
+  // holds nothing beyond the commit it forked from (docs/orchestrator.md,
+  // section 5). The Ledger takes it only from the holder, for the fork and
+  // base the Worker read, and while no head of its own is recorded; the new
+  // base is its head. A plan's fork is never moved.
   moveFork(id: string, actor: string, fork: string, from: string | null, base: string, proved = false): void {
     const at = new Date().toISOString();
     const item = this.item(id);
-    if (item.kind !== "part" || item.owner !== actor || item.fork !== fork || item.base !== from || (item.head && item.head !== item.base)) {
-      throw new RuleError("fork_changed", `${id}'s fork changed while it was moved to the plan's branch; claim it again`, 409);
+    if (item.kind === "plan" || item.owner !== actor || item.fork !== fork || item.base !== from || (item.head && item.head !== item.base)) {
+      throw new RuleError("fork_changed", `${id}'s fork changed while it was moved to ${item.kind === "part" ? "the plan's branch" : "main"}; claim it again`, 409);
     }
     this.update(id, { base, head: base }, at);
     this.log(id, actor, "fork.moved", { fork, from, base }, at, proved);
@@ -5927,10 +5928,16 @@ export class Ledger extends DurableObject<Env> {
   // independent of every approval standing at `head`, which the refresh
   // would otherwise leave reviewed by a model it shares a family with.
   private pickRefreshResolver(item: Item, head: string, candidates: string[]) {
+    return pickResolver(candidates, this.resolverContext(item, head));
+  }
+
+  // What a resolver's eligibility is judged against now: the configured
+  // set, single-family mode, and the approvals standing at `head`.
+  private resolverContext(item: Item, head: string) {
     const policy = this.project().policy;
     const binding = { head, criteria: criteriaOf(item) };
     const retained = this.reviewsFor(item.id).filter((r) => r.approve && standingReview(r, binding));
-    return pickResolver(candidates, { configured: policy.resolvers ?? [], retained, single: singleFamily(policy) });
+    return { configured: policy.resolvers ?? [], retained, single: singleFamily(policy) };
   }
 
   // A lease on a task's refresh (the integrator's task-refresh job) or on
@@ -5945,8 +5952,22 @@ export class Ledger extends DurableObject<Env> {
     const standing = this.refreshStandingOf(item, at);
     if (standing.kind !== "eligible") throw new RuleError("refresh_deferred", standing.reason, 409);
     const lease = takeLease(target, { job, actor, runner, head: item.head!, now: Date.parse(at), id: crypto.randomUUID(), same: sameActor });
+    // The resolver chosen for the conflicts is judged again as it takes them:
+    // the policy may have dropped it or changed family mode, or an approval
+    // it is not independent of may have come, while it waited. One no longer
+    // eligible leaves the conflicts waiting for another, saying why. A lease
+    // resuming the checks of a merge already recorded resolves nothing.
+    if (lease.job === "resolve" && !lease.checking) {
+      const why = resolverRefusal(actor, this.resolverContext(item, item.head!));
+      if (why) {
+        const wait = `${actor} may no longer resolve it: ${why}`;
+        this.saveRefreshTarget(id, { ...target, state: "waiting", resolver: null, wait, updatedAt: at });
+        this.log(id, ORCHESTRATOR, "refresh.waiting", { mainHead: target.mainHead, head: item.head, wait, refusals: [{ actor, why }] }, at);
+        throw new RuleError("not_resolver", wait, 403);
+      }
+    }
     this.saveRefreshTarget(id, { ...target, state: "leased", lease, updatedAt: at });
-    this.log(id, actor, "refresh.leased", { job, lease: lease.id, mainHead: lease.mainHead, head: lease.expectedHead, ...(runner ? { runner } : {}) }, at);
+    this.log(id, actor, "refresh.leased", { job, lease: lease.id, mainHead: lease.mainHead, head: lease.expectedHead, ...(lease.checking ? { checking: lease.checking } : {}), ...(runner ? { runner } : {}) }, at);
     const binding = { head: item.head, criteria: criteriaOf(item) };
     return {
       item, lease, contributors: contributorsOf(item), resolvers: this.project().policy.resolvers ?? [],
@@ -5978,6 +5999,17 @@ export class Ledger extends DurableObject<Env> {
     const next = renewLease(lease, Date.now());
     this.saveRefreshTarget(id, { ...target!, lease: next });
     return next;
+  }
+
+  // What a leaseholder whose report went unanswered reads before it takes
+  // a push back off the fork: the task's head as recorded now, and whether
+  // its lease is still live and waiting on checks at a recorded head. A
+  // head that is already the one it pushed is recorded, and stays.
+  refreshLeaseStatus(id: string, actor: string, leaseId: string): { head: string | null; lease: boolean; checking: string | null } {
+    const item = this.item(id);
+    const lease = this.refreshTargetOf(id)?.lease;
+    const own = !!lease && lease.id === leaseId && sameActor(lease.by, actor);
+    return { head: item.head, lease: own, checking: own ? lease!.checking ?? null : null };
   }
 
   // The leaseholder gives its lease back with no outcome: a provider's
@@ -6081,7 +6113,7 @@ export class Ledger extends DurableObject<Env> {
     const checking = this.project().policy.checks.length > 0;
     const result: RefreshResult = { key, item: id, outcome: "refreshed", mainHead: report.mainHead, expectedHead: report.expectedHead, head: report.head, by: actor, at, resolver, ...(checking ? { reason: "checks pending" } : {}) };
     this.saveRefreshResult(result);
-    this.saveRefreshTarget(id, checking ? { ...target, lease: { ...lease, pushing: undefined, checking: report.head }, updatedAt: at } : afterSettle(target, lease, "refreshed", at));
+    this.saveRefreshTarget(id, checking ? checksPending(target, lease, report.head, at) : afterSettle(target, lease, "refreshed", at));
     this.reaskReview(id, at);
     return { item: this.item(id), result, revoke: checking ? null : lease.tokenId ?? null };
   }

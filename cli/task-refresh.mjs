@@ -32,8 +32,12 @@
 // overwritten, and reports the merge (refreshed --head), which the server
 // verifies on the fork. With required checks, it runs them at the new head
 // (atelier check) and reports them (refresh-checked); a failure goes back
-// to the builder. A push recorded nowhere is taken back off the fork, with
-// a lease on the head it pushed, so nothing anyone pushed since is lost.
+// to the builder. A lease that lapses while its checks run is taken again
+// at the recorded head, and the next job runs only the checks. A push
+// recorded nowhere is taken back off the fork, with a lease on the head it
+// pushed, so nothing anyone pushed since is lost; the task's recorded head
+// is read first (refresh-lease --status), and a push the server already
+// holds, its answers lost, stays.
 // Every report names the lease, and a report the server already holds
 // answers the recorded outcome, so a retry does no harm. The lease is
 // renewed while the job runs, and one that ends in no report (a provider's
@@ -120,6 +124,30 @@ export async function runTaskRefresh(assignment, config, name, io) {
       finally { renewing = false; }
     }, io.leaseRenewMs ?? LEASE_RENEW_MS);
     renewal.unref?.();
+    // The required checks at the head a refresh recorded, reported under the
+    // lease; a failure sends the task back to its builder.
+    const checkAt = async (head) => {
+      let failing = null;
+      try {
+        const output = await io.cli(["check", item.id, ...at]);
+        if (output) io.log(output);
+      } catch (error) {
+        if (error.code !== CHECKS_FAILED) throw error;
+        failing = String(error.output ?? "").split("\n").filter((l) => l.startsWith("FAIL")).map((l) => l.replace(/\s+/g, " ").trim()).join("; ") || error.message;
+      }
+      await report(["refresh-checked", ...leaseArgs(), ...(failing === null ? ["--passed"] : ["--failed", "--reason", `the required checks failed with main merged: ${failing}`.slice(0, 400)])]);
+      if (failing !== null) io.log(`${item.id}'s checks failed at the refreshed head ${short(head)}; it goes back to its builder`);
+      return failing === null ? { phase: "refreshed", head } : { phase: "failed", reason: "checks failed at the refreshed head", recorded: true };
+    };
+    // A lease taken again after one lapsed while its holder ran the checks
+    // at the head its refresh recorded resumes there: the merge is recorded,
+    // and only the checks are left.
+    if (lease.checking) {
+      if (!HASH.test(lease.checking)) throw new Error("the resumed refresh lease names no recorded head");
+      recorded = true;
+      io.log(`${item.id}'s refresh with main at ${short(mainHead)} is recorded at ${short(lease.checking)}; running its checks`);
+      return await checkAt(lease.checking);
+    }
     // A workspace of the refresh's own: the builder's is never touched.
     dir = await io.tempDir(`refresh-${project}-${item.id}-`);
     const git = (args, options = {}) => io.git(args, { cwd: dir, ...options });
@@ -250,22 +278,26 @@ export async function runTaskRefresh(assignment, config, name, io) {
     recorded = true;
     io.log(`${item.id} refreshed with main at ${short(mainHead)} as ${short(head)}${transformations.length ? ` (${transformations.join(", ")})` : ""}`);
     if (!(leased.checks ?? []).length || refreshed?.result?.reason !== "checks pending") return { phase: "refreshed", head };
-    let failing = null;
-    try {
-      const output = await io.cli(["check", item.id, ...at]);
-      if (output) io.log(output);
-    } catch (error) {
-      if (error.code !== CHECKS_FAILED) throw error;
-      failing = String(error.output ?? "").split("\n").filter((l) => l.startsWith("FAIL")).map((l) => l.replace(/\s+/g, " ").trim()).join("; ") || error.message;
-    }
-    await report(["refresh-checked", ...leaseArgs(), ...(failing === null ? ["--passed"] : ["--failed", "--reason", `the required checks failed with main merged: ${failing}`.slice(0, 400)])]);
-    if (failing !== null) io.log(`${item.id}'s checks failed at the refreshed head ${short(head)}; it goes back to its builder`);
-    return failing === null ? { phase: "refreshed", head } : { phase: "failed", reason: "checks failed at the refreshed head", recorded: true };
+    return await checkAt(head);
   } catch (error) {
     io.log(`refresh of ${item.id} failed: ${error.message}`);
     // A merge pushed and recorded nowhere is taken back off the fork, only
-    // while the fork is still at it.
+    // while the fork is still at it. Every answer to the report may have been
+    // lost with the refresh recorded, so the task's head is read first: one
+    // the server already holds as the pushed merge stays, and with checks
+    // pending its lease lapses and the next one resumes them. A head that
+    // cannot be read leaves the push where it is rather than risk taking
+    // back what is recorded.
     let takenBack = !pushed;
+    if (pushed && !recorded && workspace) {
+      const status = await report(["refresh-lease", "--status", lease.id]).catch((e) => ({ error: e }));
+      if (status.error || status.head === pushed) {
+        recorded = true;
+        io.log(status.error
+          ? `reading ${item.id}'s recorded head failed (${status.error.message}); the push of ${short(pushed)} is left on the fork`
+          : `${item.id}'s refresh is recorded at ${short(pushed)}${status.checking ? "; its checks resume under the next lease" : ""}; the push stays`);
+      }
+    }
     if (pushed && !recorded && workspace) {
       const branch = workspace.defaultBranch || "main";
       const back = await io.git(["push", "--quiet", `--force-with-lease=refs/heads/${branch}:${pushed}`, workspace.remote, `${lease.expectedHead}:refs/heads/${branch}`], { cwd: dir, token: workspace.token, allowFail: true })
