@@ -980,12 +980,12 @@ it("the project's area serves each tab, and the URLs that moved redirect permane
   const overHtml = await over.text();
   expect(overHtml).toContain('<nav aria-label="Project">');
   expect(overHtml).toContain('href="/p/area-routes" aria-current="page">Overview');
-  expect(overHtml).toContain('href="/p/area-routes/tasks">Tasks (1)</a>');
+  expect(overHtml).toContain('href="/p/area-routes/tasks">Tasks<span data-shell="tasks"> (1)</span></a>');
   expect(overHtml).toContain("Where it stands");
   const tasks = await get(`/p/${name}/tasks`);
   expect(tasks.status).toBe(200);
   const tasksHtml = await tasks.text();
-  expect(tasksHtml).toContain('href="/p/area-routes/tasks" aria-current="page">Tasks (1)');
+  expect(tasksHtml).toContain('href="/p/area-routes/tasks" aria-current="page">Tasks<span data-shell="tasks"> (1)</span>');
   expect(tasksHtml).toContain(`href="/p/${name}/t1"`);
   expect(tasksHtml).toContain(`action="/ui/${name}/new"`);
   expect(tasksHtml.match(/<ul class="task-list">/g)).toHaveLength(1);
@@ -1014,7 +1014,7 @@ it("the project's area serves each tab, and the URLs that moved redirect permane
   const task = await get(`/p/${name}/t1`);
   expect(task.status).toBe(200);
   const taskHtml = await task.text();
-  expect(taskHtml).toContain('href="/p/area-routes/tasks" aria-current="page">Tasks (1)');
+  expect(taskHtml).toContain('href="/p/area-routes/tasks" aria-current="page">Tasks<span data-shell="tasks"> (1)</span>');
   expect(taskHtml).toContain("Route work");
   const history = await get("/history");
   expect(history.status).toBe(200);

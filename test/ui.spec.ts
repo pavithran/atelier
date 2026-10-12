@@ -1,7 +1,7 @@
 import { taskPage } from "../src/task-page.ts";
 import {expect,it} from 'vitest';
 import { NO_CRITERIA } from "../src/criteria.ts";
-import {fillShell,hasShell,renderInbox,renderItem,renderProject,renderProjectTasks,renderProjectSettings,renderProjectFlow,renderProjectShip,renderHome,renderHistory,renderProjectPlans,renderModels,renderError,type Detail} from '../src/ui';
+import {fillShell,hasShell,projectPageAt,renderInbox,renderItem,renderProject,renderProjectTasks,renderProjectSettings,renderProjectFlow,renderProjectShip,renderHome,renderHistory,renderProjectPlans,renderModels,renderError,type Detail} from '../src/ui';
 import {buildFloor} from '../src/floor';
 import {attentionFor} from '../src/attention';
 import type {InboxEntry} from '../src/rules';
@@ -1452,7 +1452,7 @@ it('every owner page draws one bar: Decisions, Projects and Activity, the projec
  expect(account).toContain('<summary>PAVI</summary>');
  expect(account).toContain('href="/models"');expect(account).toContain('href="/usage"');expect(account).toContain('action="/logout"');
  const switcher=bar(home).split('<details class="bar-menu switcher">')[1].split('</details>')[0];
- expect(switcher).toContain('<summary>Project</summary>');expect(switcher).toContain('<a href="/home">All projects</a>');
+ expect(switcher).toContain('<summary><!--shell:title-->Project</summary>');expect(fillShell(home,{waiting:0,incomplete:false,projects:[]})).toContain('<summary>Project</summary>');expect(switcher).toContain('<a href="/home">All projects</a>');
  // Each page marks its own item, and only one.
  const s=story();
  expect(currents(row1(renderInbox([],[],'PAVI')))).toEqual(['/decisions Decisions']);
@@ -1467,7 +1467,7 @@ it('every owner page draws one bar: Decisions, Projects and Activity, the projec
 });
 
 it('a project\'s pages add the second row: Project › page and five tabs, the page\'s own tab current, with every old tab\'s page under one',()=>{
- const names=(html:string)=>[...row2(html).matchAll(/>([A-Za-z]+)(?:<!--[^>]*-->)?<\/a>/g)].map((m)=>m[1]);
+ const names=(html:string)=>[...row2(html).matchAll(/>([A-Za-z]+)(?:<span data-shell="[a-z]+">(?:<!--[^>]*-->)?<\/span>)?<\/a>/g)].map((m)=>m[1]);
  const over=renderProject(project,[],[],'PAVI');
  expect(names(over)).toEqual(['Overview','Tasks','Code','Activity','Settings']);
  for(const [label,url] of [['Overview','/p/example'],['Tasks','/p/example/tasks'],['Code','/p/example/code'],['Activity','/p/example/flow'],['Settings','/p/example/settings']])expect(row2(over)).toContain(`href="${url}"`+(label==='Overview'?' aria-current="page"':'')+`>${label}`);
@@ -1494,13 +1494,46 @@ it('the server fills the bar: the Decisions count, each project\'s task count, a
  const shell={waiting:14,incomplete:false,projects:[{name:'example',title:'Example <one>',tasks:200,waiting:9},{name:'gone',title:'Gone',tasks:null,waiting:null}]};
  const filled=fillShell(over,shell);
  expect(filled).not.toContain('<!--shell:');
- expect(row1(filled)).toContain('Decisions <span class="badge"><span class="visually-hidden">, waiting on you: </span>14</span></a>');
- expect(row2(filled)).toContain('aria-current="page">Overview</a>');expect(row2(filled)).toContain('>Tasks (200)</a>');
+ expect(row1(filled)).toContain('Decisions<span data-shell="waiting"> <span class="badge"><span class="visually-hidden">, waiting on you: </span>14</span></span></a>');
+ expect(row2(filled)).toContain('aria-current="page">Overview</a>');expect(row2(filled)).toContain('>Tasks<span data-shell="tasks"> (200)</span></a>');
  expect(bar(filled)).toContain('<a href="/p/example">Example &lt;one&gt; <span class="meta">9 waiting</span></a><a href="/p/gone">Gone</a>');
  // Nothing waiting, and every project read: no badge. A project not read: the count is uncertain.
  expect(fillShell(over,{...shell,waiting:0})).not.toContain('class="badge"');
  expect(fillShell(over,{...shell,waiting:0,incomplete:true})).toContain('waiting on you: </span>0?</span>');
  expect(hasShell(over)).toBe(true);expect(hasShell(renderLogin())).toBe(false);
+});
+
+// Gate finding 3: a page under /p/NAME whose body drew no project row (an
+// error, an empty repository) is given one from the address it was asked at.
+it('the bar gives an error page in a project its row, from the address',()=>{
+ const err=renderError('This repository has no commits yet.','/p/example','PAVI');
+ expect(bar(err)).not.toContain('aria-label="Project"');
+ const shell={waiting:1,incomplete:false,projects:[{name:'example',title:'Example',tasks:3,waiting:1}]};
+ for(const [rest,tab,crumb] of [[[],'/p/example Overview','Overview'],[['code'],'/p/example/code Code','Code'],[['log'],'/p/example/code Code','Log'],[['commit','abc'],'/p/example/code Code','Code'],[['plans'],'/p/example/tasks Tasks','Plans'],[['ship'],'/p/example/settings Settings','Ship'],[['flow'],'/p/example/flow Activity','Activity'],[['t9'],'/p/example/tasks Tasks','t9'],[['t9','code'],'/p/example/tasks Tasks','t9']] as [string[],string,string][]){
+  const filled=fillShell(err,{...shell,here:{project,...projectPageAt(rest)}});
+  expect(filled,rest.join('/')).not.toContain('<!--shell:');
+  expect(currents(row2(filled)),rest.join('/')).toEqual([tab]);
+  expect(bar(filled)).toContain(`› <span>${crumb}</span></p>`);
+  expect(bar(filled)).toContain('<summary>example</summary>');
+  expect(row2(filled)).toContain('>Tasks<span data-shell="tasks"> (3)</span></a>');
+ }
+ // A page that drew its own row keeps it; no second row is added.
+ const own=fillShell(renderProjectTasks(project,[]),{...shell,here:{project,active:'Overview'}});
+ expect(own.split('aria-label="Project"').length).toBe(2);expect(currents(row2(own))).toEqual(['/p/example/tasks Tasks']);
+ // An unreadable project's count is left out, not left as a marker.
+ expect(fillShell(err,{...shell,projects:[{...shell.projects[0],tasks:null}],here:{project,active:'Overview'}})).not.toContain('<!--shell:');
+});
+
+// Gate finding 4: the canvas is Night only (d24), so the owner's pages are
+// marked to keep the light blocks away (test/theme.test.ts); the public pages
+// keep following the device.
+it('every owner page is Night only, and the public pages follow the device',()=>{
+ for(const html of [renderHome([],'PAVI'),renderInbox([],[],'PAVI'),renderProject(project,[],[],'PAVI'),renderError('x','/home','PAVI')]){
+  expect(html).toContain('<html lang="en" data-theme="night" data-scheme="night">');
+  expect(html).toContain('<meta name="color-scheme" content="dark">');
+ }
+ const login=renderLogin();
+ expect(login).toContain('<html lang="en" data-theme="night"><head>');expect(login).toContain('<meta name="color-scheme" content="dark light">');
 });
 
 it('the error page keeps the owner\'s name, highlights nothing, and says Go back',()=>{

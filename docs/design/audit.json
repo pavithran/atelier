@@ -1,7 +1,7 @@
 {
   "generatedBy": "scripts/design/capture.ts",
-  "source": "98d8ba60dc7557e8cf1871abf79a0b4faafbcc63",
-  "sourceDirty": false,
+  "source": "a2b322f92c2e7d28d4268395c5141b03a67c1feb",
+  "sourceDirty": true,
   "browser": {
     "name": "chromium",
     "version": "156.0.8078.4",
@@ -656,7 +656,7 @@
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -1237,7 +1237,7 @@
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -1599,7 +1599,7 @@
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -2061,7 +2061,7 @@
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -2505,7 +2505,7 @@
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -2995,7 +2995,7 @@
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -3489,7 +3489,7 @@
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -4399,7 +4399,7 @@
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -4560,7 +4560,7 @@
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -4682,7 +4682,7 @@
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -4796,7 +4796,7 @@
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -5259,13 +5259,13 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 1684,
+            "checked": 1685,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 1684,
+            "checked": 1685,
             "unknown": 0,
             "failures": []
           }
@@ -5276,7 +5276,7 @@
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -5391,13 +5391,13 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 45,
+            "checked": 46,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 45,
+            "checked": 46,
             "unknown": 0,
             "failures": []
           }
@@ -5408,7 +5408,7 @@
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -5435,7 +5435,7 @@
     "project-unavailable": {
       "390": {
         "structure": {
-          "height": 947,
+          "height": 1030,
           "navs": [
             {
               "label": "Atelier",
@@ -5443,6 +5443,16 @@
                 "Decisions , waiting on you: 14?",
                 "Projects",
                 "Activity"
+              ]
+            },
+            {
+              "label": "Project",
+              "links": [
+                "Overview",
+                "Tasks",
+                "Code",
+                "Activity",
+                "Settings"
               ]
             }
           ],
@@ -5453,14 +5463,14 @@
           "words": 25
         },
         "targets": {
-          "total": 17,
+          "total": 23,
           "small": [],
           "smallCount": 0
         }
       },
       "1440": {
         "structure": {
-          "height": 968,
+          "height": 1026,
           "navs": [
             {
               "label": "Atelier",
@@ -5468,6 +5478,16 @@
                 "Decisions , waiting on you: 14?",
                 "Projects",
                 "Activity"
+              ]
+            },
+            {
+              "label": "Project",
+              "links": [
+                "Overview",
+                "Tasks",
+                "Code",
+                "Activity",
+                "Settings"
               ]
             }
           ],
@@ -5478,31 +5498,31 @@
           "words": 25
         },
         "targets": {
-          "total": 17,
+          "total": 23,
           "small": [],
           "smallCount": 0
         },
         "contrast": [
           {
             "scheme": "light",
-            "checked": 24,
+            "checked": 32,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 24,
+            "checked": 32,
             "unknown": 0,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 8,
+          "stops": 14,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -5529,7 +5549,7 @@
     "tasks": {
       "390": {
         "structure": {
-          "height": 111210,
+          "height": 111256,
           "navs": [
             {
               "label": "Atelier",
@@ -5548,6 +5568,12 @@
                 "Activity",
                 "Settings"
               ]
+            },
+            {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
             }
           ],
           "h1": 1,
@@ -5558,7 +5584,7 @@
           "words": 2288
         },
         "targets": {
-          "total": 227,
+          "total": 228,
           "small": [],
           "smallCount": 0
         }
@@ -5584,6 +5610,12 @@
                 "Activity",
                 "Settings"
               ]
+            },
+            {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
             }
           ],
           "h1": 1,
@@ -5594,20 +5626,20 @@
           "words": 2288
         },
         "targets": {
-          "total": 227,
+          "total": 228,
           "small": [],
           "smallCount": 0
         },
         "contrast": [
           {
             "scheme": "light",
-            "checked": 839,
+            "checked": 841,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 839,
+            "checked": 841,
             "unknown": 0,
             "failures": []
           }
@@ -5618,7 +5650,7 @@
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -5645,7 +5677,7 @@
     "tasks-empty": {
       "390": {
         "structure": {
-          "height": 1030,
+          "height": 1076,
           "navs": [
             {
               "label": "Atelier",
@@ -5664,6 +5696,12 @@
                 "Activity",
                 "Settings"
               ]
+            },
+            {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
             }
           ],
           "h1": 1,
@@ -5674,7 +5712,7 @@
           "words": 51
         },
         "targets": {
-          "total": 27,
+          "total": 28,
           "small": [],
           "smallCount": 0
         }
@@ -5700,6 +5738,12 @@
                 "Activity",
                 "Settings"
               ]
+            },
+            {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
             }
           ],
           "h1": 1,
@@ -5710,31 +5754,31 @@
           "words": 51
         },
         "targets": {
-          "total": 27,
+          "total": 28,
           "small": [],
           "smallCount": 0
         },
         "contrast": [
           {
             "scheme": "light",
-            "checked": 40,
+            "checked": 42,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 40,
+            "checked": 42,
             "unknown": 0,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 14,
+          "stops": 15,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -6197,13 +6241,13 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 69,
+            "checked": 70,
             "unknown": 214,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 69,
+            "checked": 70,
             "unknown": 214,
             "failures": []
           }
@@ -6214,7 +6258,7 @@
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -6800,7 +6844,7 @@
     "plans": {
       "390": {
         "structure": {
-          "height": 1030,
+          "height": 1076,
           "navs": [
             {
               "label": "Atelier",
@@ -6819,6 +6863,12 @@
                 "Activity",
                 "Settings"
               ]
+            },
+            {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
             }
           ],
           "h1": 1,
@@ -6828,7 +6878,7 @@
           "words": 61
         },
         "targets": {
-          "total": 22,
+          "total": 23,
           "small": [],
           "smallCount": 0
         }
@@ -6854,6 +6904,12 @@
                 "Activity",
                 "Settings"
               ]
+            },
+            {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
             }
           ],
           "h1": 1,
@@ -6863,31 +6919,31 @@
           "words": 61
         },
         "targets": {
-          "total": 22,
+          "total": 23,
           "small": [],
           "smallCount": 0
         },
         "contrast": [
           {
             "scheme": "light",
-            "checked": 34,
+            "checked": 36,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 34,
+            "checked": 36,
             "unknown": 0,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 13,
+          "stops": 14,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -6914,7 +6970,7 @@
     "ship": {
       "390": {
         "structure": {
-          "height": 1030,
+          "height": 1076,
           "navs": [
             {
               "label": "Atelier",
@@ -6933,6 +6989,12 @@
                 "Activity",
                 "Settings"
               ]
+            },
+            {
+              "label": "Settings holds",
+              "links": [
+                "Ship"
+              ]
             }
           ],
           "h1": 1,
@@ -6943,7 +7005,7 @@
           "words": 108
         },
         "targets": {
-          "total": 27,
+          "total": 28,
           "small": [],
           "smallCount": 0
         }
@@ -6969,6 +7031,12 @@
                 "Activity",
                 "Settings"
               ]
+            },
+            {
+              "label": "Settings holds",
+              "links": [
+                "Ship"
+              ]
             }
           ],
           "h1": 1,
@@ -6979,31 +7047,31 @@
           "words": 108
         },
         "targets": {
-          "total": 27,
+          "total": 28,
           "small": [],
           "smallCount": 0
         },
         "contrast": [
           {
             "scheme": "light",
-            "checked": 42,
+            "checked": 44,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 42,
+            "checked": 44,
             "unknown": 0,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 14,
+          "stops": 15,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -7030,7 +7098,7 @@
     "settings": {
       "390": {
         "structure": {
-          "height": 1077,
+          "height": 1123,
           "navs": [
             {
               "label": "Atelier",
@@ -7049,6 +7117,12 @@
                 "Activity",
                 "Settings"
               ]
+            },
+            {
+              "label": "Settings holds",
+              "links": [
+                "Ship"
+              ]
             }
           ],
           "h1": 1,
@@ -7059,7 +7133,7 @@
           "words": 94
         },
         "targets": {
-          "total": 22,
+          "total": 23,
           "small": [],
           "smallCount": 0
         }
@@ -7085,6 +7159,12 @@
                 "Activity",
                 "Settings"
               ]
+            },
+            {
+              "label": "Settings holds",
+              "links": [
+                "Ship"
+              ]
             }
           ],
           "h1": 1,
@@ -7095,31 +7175,31 @@
           "words": 94
         },
         "targets": {
-          "total": 22,
+          "total": 23,
           "small": [],
           "smallCount": 0
         },
         "contrast": [
           {
             "scheme": "light",
-            "checked": 50,
+            "checked": 52,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 50,
+            "checked": 52,
             "unknown": 0,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 13,
+          "stops": 14,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -7146,7 +7226,7 @@
     "code": {
       "390": {
         "structure": {
-          "height": 1030,
+          "height": 1076,
           "navs": [
             {
               "label": "Atelier",
@@ -7167,6 +7247,12 @@
               ]
             },
             {
+              "label": "Code holds",
+              "links": [
+                "Log"
+              ]
+            },
+            {
               "label": null,
               "links": [
                 "Home",
@@ -7181,7 +7267,7 @@
           "words": 76
         },
         "targets": {
-          "total": 31,
+          "total": 32,
           "small": [
             {
               "tag": "a",
@@ -7216,6 +7302,12 @@
               ]
             },
             {
+              "label": "Code holds",
+              "links": [
+                "Log"
+              ]
+            },
+            {
               "label": null,
               "links": [
                 "Home",
@@ -7230,7 +7322,7 @@
           "words": 76
         },
         "targets": {
-          "total": 31,
+          "total": 32,
           "small": [
             {
               "tag": "a",
@@ -7244,24 +7336,24 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 44,
+            "checked": 46,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 44,
+            "checked": 46,
             "unknown": 0,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 22,
+          "stops": 23,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -7288,7 +7380,7 @@
     "code-dir": {
       "390": {
         "structure": {
-          "height": 1030,
+          "height": 1076,
           "navs": [
             {
               "label": "Atelier",
@@ -7309,6 +7401,12 @@
               ]
             },
             {
+              "label": "Code holds",
+              "links": [
+                "Log"
+              ]
+            },
+            {
               "label": null,
               "links": [
                 "Home",
@@ -7323,7 +7421,7 @@
           "words": 80
         },
         "targets": {
-          "total": 33,
+          "total": 34,
           "small": [],
           "smallCount": 0
         }
@@ -7351,6 +7449,12 @@
               ]
             },
             {
+              "label": "Code holds",
+              "links": [
+                "Log"
+              ]
+            },
+            {
               "label": null,
               "links": [
                 "Home",
@@ -7365,31 +7469,31 @@
           "words": 80
         },
         "targets": {
-          "total": 33,
+          "total": 34,
           "small": [],
           "smallCount": 0
         },
         "contrast": [
           {
             "scheme": "light",
-            "checked": 49,
+            "checked": 51,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 49,
+            "checked": 51,
             "unknown": 0,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 24,
+          "stops": 25,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -7416,7 +7520,7 @@
     "code-file": {
       "390": {
         "structure": {
-          "height": 1033,
+          "height": 1079,
           "navs": [
             {
               "label": "Atelier",
@@ -7437,6 +7541,12 @@
               ]
             },
             {
+              "label": "Code holds",
+              "links": [
+                "Log"
+              ]
+            },
+            {
               "label": null,
               "links": [
                 "Home",
@@ -7451,7 +7561,7 @@
           "words": 92
         },
         "targets": {
-          "total": 26,
+          "total": 27,
           "small": [],
           "smallCount": 0
         }
@@ -7479,6 +7589,12 @@
               ]
             },
             {
+              "label": "Code holds",
+              "links": [
+                "Log"
+              ]
+            },
+            {
               "label": null,
               "links": [
                 "Home",
@@ -7493,31 +7609,31 @@
           "words": 92
         },
         "targets": {
-          "total": 26,
+          "total": 27,
           "small": [],
           "smallCount": 0
         },
         "contrast": [
           {
             "scheme": "light",
-            "checked": 64,
+            "checked": 66,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 64,
+            "checked": 66,
             "unknown": 0,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 18,
+          "stops": 19,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -7544,7 +7660,7 @@
     "code-no-commits": {
       "390": {
         "structure": {
-          "height": 947,
+          "height": 1030,
           "navs": [
             {
               "label": "Atelier",
@@ -7552,6 +7668,22 @@
                 "Decisions , waiting on you: 14?",
                 "Projects",
                 "Activity"
+              ]
+            },
+            {
+              "label": "Project",
+              "links": [
+                "Overview",
+                "Tasks (0)",
+                "Code",
+                "Activity",
+                "Settings"
+              ]
+            },
+            {
+              "label": "Code holds",
+              "links": [
+                "Log"
               ]
             }
           ],
@@ -7562,14 +7694,14 @@
           "words": 21
         },
         "targets": {
-          "total": 17,
+          "total": 24,
           "small": [],
           "smallCount": 0
         }
       },
       "1440": {
         "structure": {
-          "height": 968,
+          "height": 1026,
           "navs": [
             {
               "label": "Atelier",
@@ -7577,6 +7709,22 @@
                 "Decisions , waiting on you: 14?",
                 "Projects",
                 "Activity"
+              ]
+            },
+            {
+              "label": "Project",
+              "links": [
+                "Overview",
+                "Tasks (0)",
+                "Code",
+                "Activity",
+                "Settings"
+              ]
+            },
+            {
+              "label": "Code holds",
+              "links": [
+                "Log"
               ]
             }
           ],
@@ -7587,31 +7735,31 @@
           "words": 21
         },
         "targets": {
-          "total": 17,
+          "total": 24,
           "small": [],
           "smallCount": 0
         },
         "contrast": [
           {
             "scheme": "light",
-            "checked": 24,
+            "checked": 34,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 24,
+            "checked": 34,
             "unknown": 0,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 8,
+          "stops": 15,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -7638,7 +7786,7 @@
     "log": {
       "390": {
         "structure": {
-          "height": 4857,
+          "height": 4903,
           "navs": [
             {
               "label": "Atelier",
@@ -7656,6 +7804,12 @@
                 "Code",
                 "Activity",
                 "Settings"
+              ]
+            },
+            {
+              "label": "Code holds",
+              "links": [
+                "Log"
               ]
             },
             {
@@ -7679,7 +7833,7 @@
           "words": 687
         },
         "targets": {
-          "total": 74,
+          "total": 75,
           "small": [
             {
               "tag": "a",
@@ -7888,6 +8042,12 @@
               ]
             },
             {
+              "label": "Code holds",
+              "links": [
+                "Log"
+              ]
+            },
+            {
               "label": null,
               "links": [
                 "Home",
@@ -7908,7 +8068,7 @@
           "words": 687
         },
         "targets": {
-          "total": 74,
+          "total": 75,
           "small": [
             {
               "tag": "a",
@@ -8096,24 +8256,24 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 183,
+            "checked": 185,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 183,
+            "checked": 185,
             "unknown": 0,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 65,
+          "stops": 66,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -8140,7 +8300,7 @@
     "log-page-2": {
       "390": {
         "structure": {
-          "height": 4857,
+          "height": 4903,
           "navs": [
             {
               "label": "Atelier",
@@ -8158,6 +8318,12 @@
                 "Code",
                 "Activity",
                 "Settings"
+              ]
+            },
+            {
+              "label": "Code holds",
+              "links": [
+                "Log"
               ]
             },
             {
@@ -8182,7 +8348,7 @@
           "words": 687
         },
         "targets": {
-          "total": 75,
+          "total": 76,
           "small": [
             {
               "tag": "a",
@@ -8391,6 +8557,12 @@
               ]
             },
             {
+              "label": "Code holds",
+              "links": [
+                "Log"
+              ]
+            },
+            {
               "label": null,
               "links": [
                 "Home",
@@ -8412,7 +8584,7 @@
           "words": 687
         },
         "targets": {
-          "total": 75,
+          "total": 76,
           "small": [
             {
               "tag": "a",
@@ -8600,24 +8772,24 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 184,
+            "checked": 186,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 184,
+            "checked": 186,
             "unknown": 0,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 66,
+          "stops": 67,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -8644,7 +8816,7 @@
     "commit": {
       "390": {
         "structure": {
-          "height": 1575,
+          "height": 1621,
           "navs": [
             {
               "label": "Atelier",
@@ -8665,6 +8837,12 @@
               ]
             },
             {
+              "label": "Code holds",
+              "links": [
+                "Log"
+              ]
+            },
+            {
               "label": null,
               "links": [
                 "Home",
@@ -8680,7 +8858,7 @@
           "words": 94
         },
         "targets": {
-          "total": 31,
+          "total": 32,
           "small": [],
           "smallCount": 0
         }
@@ -8708,6 +8886,12 @@
               ]
             },
             {
+              "label": "Code holds",
+              "links": [
+                "Log"
+              ]
+            },
+            {
               "label": null,
               "links": [
                 "Home",
@@ -8723,31 +8907,31 @@
           "words": 94
         },
         "targets": {
-          "total": 31,
+          "total": 32,
           "small": [],
           "smallCount": 0
         },
         "contrast": [
           {
             "scheme": "light",
-            "checked": 75,
+            "checked": 77,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 75,
+            "checked": 77,
             "unknown": 0,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 30,
+          "stops": 31,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -8774,7 +8958,7 @@
     "path-history": {
       "390": {
         "structure": {
-          "height": 1867,
+          "height": 1913,
           "navs": [
             {
               "label": "Atelier",
@@ -8795,6 +8979,12 @@
               ]
             },
             {
+              "label": "Code holds",
+              "links": [
+                "Log"
+              ]
+            },
+            {
               "label": null,
               "links": [
                 "Home",
@@ -8809,7 +8999,7 @@
           "words": 255
         },
         "targets": {
-          "total": 41,
+          "total": 42,
           "small": [
             {
               "tag": "a",
@@ -8934,6 +9124,12 @@
               ]
             },
             {
+              "label": "Code holds",
+              "links": [
+                "Log"
+              ]
+            },
+            {
               "label": null,
               "links": [
                 "Home",
@@ -8948,7 +9144,7 @@
           "words": 255
         },
         "targets": {
-          "total": 41,
+          "total": 42,
           "small": [
             {
               "tag": "a",
@@ -9052,24 +9248,24 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 84,
+            "checked": 86,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 84,
+            "checked": 86,
             "unknown": 0,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 32,
+          "stops": 33,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -9096,7 +9292,7 @@
     "task-open-long": {
       "390": {
         "structure": {
-          "height": 2309,
+          "height": 2355,
           "navs": [
             {
               "label": "Atelier",
@@ -9115,6 +9311,12 @@
                 "Activity",
                 "Settings"
               ]
+            },
+            {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
             }
           ],
           "h1": 0,
@@ -9124,7 +9326,7 @@
           "words": 550
         },
         "targets": {
-          "total": 36,
+          "total": 37,
           "small": [
             {
               "tag": "summary",
@@ -9157,6 +9359,12 @@
                 "Activity",
                 "Settings"
               ]
+            },
+            {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
             }
           ],
           "h1": 0,
@@ -9166,7 +9374,7 @@
           "words": 550
         },
         "targets": {
-          "total": 36,
+          "total": 37,
           "small": [
             {
               "tag": "summary",
@@ -9180,24 +9388,24 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 41,
+            "checked": 43,
             "unknown": 47,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 41,
+            "checked": 43,
             "unknown": 47,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 17,
+          "stops": 18,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -9264,7 +9472,7 @@
     "task-working": {
       "390": {
         "structure": {
-          "height": 3006,
+          "height": 3052,
           "navs": [
             {
               "label": "Atelier",
@@ -9285,6 +9493,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -9302,7 +9516,7 @@
           "words": 395
         },
         "targets": {
-          "total": 54,
+          "total": 55,
           "small": [
             {
               "tag": "a",
@@ -9391,6 +9605,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -9408,7 +9628,7 @@
           "words": 395
         },
         "targets": {
-          "total": 54,
+          "total": 55,
           "small": [
             {
               "tag": "a",
@@ -9476,24 +9696,24 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 58,
+            "checked": 60,
             "unknown": 93,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 58,
+            "checked": 60,
             "unknown": 93,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 32,
+          "stops": 33,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -9520,7 +9740,7 @@
     "task-stale": {
       "390": {
         "structure": {
-          "height": 3006,
+          "height": 3052,
           "navs": [
             {
               "label": "Atelier",
@@ -9541,6 +9761,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -9558,7 +9784,7 @@
           "words": 395
         },
         "targets": {
-          "total": 54,
+          "total": 55,
           "small": [
             {
               "tag": "a",
@@ -9647,6 +9873,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -9664,7 +9896,7 @@
           "words": 395
         },
         "targets": {
-          "total": 54,
+          "total": 55,
           "small": [
             {
               "tag": "a",
@@ -9732,24 +9964,24 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 58,
+            "checked": 60,
             "unknown": 93,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 58,
+            "checked": 60,
             "unknown": 93,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 32,
+          "stops": 33,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -9776,7 +10008,7 @@
     "task-blocked": {
       "390": {
         "structure": {
-          "height": 3418,
+          "height": 3464,
           "navs": [
             {
               "label": "Atelier",
@@ -9797,6 +10029,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -9814,7 +10052,7 @@
           "words": 442
         },
         "targets": {
-          "total": 45,
+          "total": 46,
           "small": [
             {
               "tag": "a",
@@ -9909,6 +10147,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -9926,7 +10170,7 @@
           "words": 442
         },
         "targets": {
-          "total": 45,
+          "total": 46,
           "small": [
             {
               "tag": "a",
@@ -10000,24 +10244,24 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 63,
+            "checked": 65,
             "unknown": 80,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 63,
+            "checked": 65,
             "unknown": 80,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 30,
+          "stops": 31,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -10044,7 +10288,7 @@
     "task-failed": {
       "390": {
         "structure": {
-          "height": 3365,
+          "height": 3411,
           "navs": [
             {
               "label": "Atelier",
@@ -10065,6 +10309,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -10082,7 +10332,7 @@
           "words": 555
         },
         "targets": {
-          "total": 60,
+          "total": 61,
           "small": [
             {
               "tag": "a",
@@ -10201,6 +10451,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -10218,7 +10474,7 @@
           "words": 555
         },
         "targets": {
-          "total": 60,
+          "total": 61,
           "small": [
             {
               "tag": "a",
@@ -10316,24 +10572,24 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 64,
+            "checked": 66,
             "unknown": 104,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 64,
+            "checked": 66,
             "unknown": 104,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 37,
+          "stops": 38,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -10370,7 +10626,7 @@
     "task-unreadable": {
       "390": {
         "structure": {
-          "height": 3357,
+          "height": 3403,
           "navs": [
             {
               "label": "Atelier",
@@ -10391,6 +10647,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -10408,7 +10670,7 @@
           "words": 558
         },
         "targets": {
-          "total": 59,
+          "total": 60,
           "small": [
             {
               "tag": "a",
@@ -10527,6 +10789,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -10544,7 +10812,7 @@
           "words": 558
         },
         "targets": {
-          "total": 59,
+          "total": 60,
           "small": [
             {
               "tag": "a",
@@ -10642,24 +10910,24 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 57,
+            "checked": 59,
             "unknown": 102,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 57,
+            "checked": 59,
             "unknown": 102,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 34,
+          "stops": 35,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -10696,7 +10964,7 @@
     "task-ready": {
       "390": {
         "structure": {
-          "height": 3356,
+          "height": 3402,
           "navs": [
             {
               "label": "Atelier",
@@ -10717,6 +10985,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -10734,7 +11008,7 @@
           "words": 518
         },
         "targets": {
-          "total": 60,
+          "total": 61,
           "small": [
             {
               "tag": "a",
@@ -10853,6 +11127,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -10870,7 +11150,7 @@
           "words": 518
         },
         "targets": {
-          "total": 60,
+          "total": 61,
           "small": [
             {
               "tag": "a",
@@ -10968,24 +11248,24 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 63,
+            "checked": 65,
             "unknown": 104,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 63,
+            "checked": 65,
             "unknown": 104,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 36,
+          "stops": 37,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -11022,7 +11302,7 @@
     "task-protected": {
       "390": {
         "structure": {
-          "height": 4002,
+          "height": 4048,
           "navs": [
             {
               "label": "Atelier",
@@ -11043,6 +11323,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -11060,7 +11346,7 @@
           "words": 784
         },
         "targets": {
-          "total": 65,
+          "total": 66,
           "small": [
             {
               "tag": "a",
@@ -11179,6 +11465,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -11196,7 +11488,7 @@
           "words": 784
         },
         "targets": {
-          "total": 65,
+          "total": 66,
           "small": [
             {
               "tag": "a",
@@ -11294,24 +11586,24 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 63,
+            "checked": 65,
             "unknown": 119,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 63,
+            "checked": 65,
             "unknown": 119,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 39,
+          "stops": 40,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -11348,7 +11640,7 @@
     "task-sent-back": {
       "390": {
         "structure": {
-          "height": 3727,
+          "height": 3773,
           "navs": [
             {
               "label": "Atelier",
@@ -11369,6 +11661,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -11386,7 +11684,7 @@
           "words": 691
         },
         "targets": {
-          "total": 63,
+          "total": 64,
           "small": [
             {
               "tag": "a",
@@ -11517,6 +11815,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -11534,7 +11838,7 @@
           "words": 691
         },
         "targets": {
-          "total": 63,
+          "total": 64,
           "small": [
             {
               "tag": "a",
@@ -11644,24 +11948,24 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 64,
+            "checked": 66,
             "unknown": 114,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 64,
+            "checked": 66,
             "unknown": 114,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 38,
+          "stops": 39,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -11698,7 +12002,7 @@
     "task-accepted": {
       "390": {
         "structure": {
-          "height": 3361,
+          "height": 3407,
           "navs": [
             {
               "label": "Atelier",
@@ -11719,6 +12023,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -11736,7 +12046,7 @@
           "words": 570
         },
         "targets": {
-          "total": 52,
+          "total": 53,
           "small": [
             {
               "tag": "a",
@@ -11861,6 +12171,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -11878,7 +12194,7 @@
           "words": 570
         },
         "targets": {
-          "total": 52,
+          "total": 53,
           "small": [
             {
               "tag": "a",
@@ -11982,24 +12298,24 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 64,
+            "checked": 66,
             "unknown": 99,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 64,
+            "checked": 66,
             "unknown": 99,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 36,
+          "stops": 37,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -12045,7 +12361,7 @@
     "task-scope": {
       "390": {
         "structure": {
-          "height": 3321,
+          "height": 3367,
           "navs": [
             {
               "label": "Atelier",
@@ -12066,6 +12382,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -12083,7 +12405,7 @@
           "words": 538
         },
         "targets": {
-          "total": 61,
+          "total": 62,
           "small": [
             {
               "tag": "a",
@@ -12202,6 +12524,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -12219,7 +12547,7 @@
           "words": 538
         },
         "targets": {
-          "total": 61,
+          "total": 62,
           "small": [
             {
               "tag": "a",
@@ -12317,24 +12645,24 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 66,
+            "checked": 68,
             "unknown": 103,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 66,
+            "checked": 68,
             "unknown": 103,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 37,
+          "stops": 38,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -12371,7 +12699,7 @@
     "task-merged": {
       "390": {
         "structure": {
-          "height": 2690,
+          "height": 2736,
           "navs": [
             {
               "label": "Atelier",
@@ -12392,6 +12720,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -12409,7 +12743,7 @@
           "words": 425
         },
         "targets": {
-          "total": 49,
+          "total": 50,
           "small": [
             {
               "tag": "a",
@@ -12540,6 +12874,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -12557,7 +12897,7 @@
           "words": 425
         },
         "targets": {
-          "total": 49,
+          "total": 50,
           "small": [
             {
               "tag": "a",
@@ -12667,24 +13007,24 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 63,
+            "checked": 65,
             "unknown": 89,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 63,
+            "checked": 65,
             "unknown": 89,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 34,
+          "stops": 35,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -12730,7 +13070,7 @@
     "task-abandoned": {
       "390": {
         "structure": {
-          "height": 2577,
+          "height": 2623,
           "navs": [
             {
               "label": "Atelier",
@@ -12751,6 +13091,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -12768,7 +13114,7 @@
           "words": 287
         },
         "targets": {
-          "total": 42,
+          "total": 43,
           "small": [
             {
               "tag": "a",
@@ -12863,6 +13209,12 @@
               ]
             },
             {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
+              ]
+            },
+            {
               "label": "In this review",
               "links": [
                 "Changes",
@@ -12880,7 +13232,7 @@
           "words": 287
         },
         "targets": {
-          "total": 42,
+          "total": 43,
           "small": [
             {
               "tag": "a",
@@ -12954,24 +13306,24 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 60,
+            "checked": 62,
             "unknown": 72,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 60,
+            "checked": 62,
             "unknown": 72,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 29,
+          "stops": 30,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -12998,7 +13350,7 @@
     "task-not-found": {
       "390": {
         "structure": {
-          "height": 947,
+          "height": 1076,
           "navs": [
             {
               "label": "Atelier",
@@ -13006,6 +13358,22 @@
                 "Decisions , waiting on you: 14?",
                 "Projects",
                 "Activity"
+              ]
+            },
+            {
+              "label": "Project",
+              "links": [
+                "Overview",
+                "Tasks (200)",
+                "Code",
+                "Activity",
+                "Settings"
+              ]
+            },
+            {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
               ]
             }
           ],
@@ -13016,14 +13384,14 @@
           "words": 18
         },
         "targets": {
-          "total": 17,
+          "total": 24,
           "small": [],
           "smallCount": 0
         }
       },
       "1440": {
         "structure": {
-          "height": 968,
+          "height": 1026,
           "navs": [
             {
               "label": "Atelier",
@@ -13031,6 +13399,22 @@
                 "Decisions , waiting on you: 14?",
                 "Projects",
                 "Activity"
+              ]
+            },
+            {
+              "label": "Project",
+              "links": [
+                "Overview",
+                "Tasks (200)",
+                "Code",
+                "Activity",
+                "Settings"
+              ]
+            },
+            {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
               ]
             }
           ],
@@ -13041,31 +13425,31 @@
           "words": 18
         },
         "targets": {
-          "total": 17,
+          "total": 24,
           "small": [],
           "smallCount": 0
         },
         "contrast": [
           {
             "scheme": "light",
-            "checked": 24,
+            "checked": 34,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 24,
+            "checked": 34,
             "unknown": 0,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 8,
+          "stops": 15,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -13092,7 +13476,7 @@
     "fork-code": {
       "390": {
         "structure": {
-          "height": 1030,
+          "height": 1076,
           "navs": [
             {
               "label": "Atelier",
@@ -13113,6 +13497,12 @@
               ]
             },
             {
+              "label": "Code holds",
+              "links": [
+                "Log"
+              ]
+            },
+            {
               "label": null,
               "links": [
                 "Home",
@@ -13128,7 +13518,7 @@
           "words": 76
         },
         "targets": {
-          "total": 34,
+          "total": 35,
           "small": [
             {
               "tag": "a",
@@ -13163,6 +13553,12 @@
               ]
             },
             {
+              "label": "Code holds",
+              "links": [
+                "Log"
+              ]
+            },
+            {
               "label": null,
               "links": [
                 "Home",
@@ -13178,7 +13574,7 @@
           "words": 76
         },
         "targets": {
-          "total": 34,
+          "total": 35,
           "small": [
             {
               "tag": "a",
@@ -13192,24 +13588,24 @@
         "contrast": [
           {
             "scheme": "light",
-            "checked": 49,
+            "checked": 51,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 49,
+            "checked": 51,
             "unknown": 0,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 25,
+          "stops": 26,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -13236,7 +13632,7 @@
     "fork-none": {
       "390": {
         "structure": {
-          "height": 947,
+          "height": 1076,
           "navs": [
             {
               "label": "Atelier",
@@ -13244,6 +13640,22 @@
                 "Decisions , waiting on you: 14?",
                 "Projects",
                 "Activity"
+              ]
+            },
+            {
+              "label": "Project",
+              "links": [
+                "Overview",
+                "Tasks (200)",
+                "Code",
+                "Activity",
+                "Settings"
+              ]
+            },
+            {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
               ]
             }
           ],
@@ -13254,14 +13666,14 @@
           "words": 26
         },
         "targets": {
-          "total": 17,
+          "total": 24,
           "small": [],
           "smallCount": 0
         }
       },
       "1440": {
         "structure": {
-          "height": 968,
+          "height": 1026,
           "navs": [
             {
               "label": "Atelier",
@@ -13269,6 +13681,22 @@
                 "Decisions , waiting on you: 14?",
                 "Projects",
                 "Activity"
+              ]
+            },
+            {
+              "label": "Project",
+              "links": [
+                "Overview",
+                "Tasks (200)",
+                "Code",
+                "Activity",
+                "Settings"
+              ]
+            },
+            {
+              "label": "Tasks holds",
+              "links": [
+                "Plans"
               ]
             }
           ],
@@ -13279,31 +13707,31 @@
           "words": 26
         },
         "targets": {
-          "total": 17,
+          "total": 24,
           "small": [],
           "smallCount": 0
         },
         "contrast": [
           {
             "scheme": "light",
-            "checked": 24,
+            "checked": 34,
             "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 24,
+            "checked": 34,
             "unknown": 0,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 8,
+          "stops": 15,
           "first": {
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49
@@ -13397,7 +13825,7 @@
             "tag": "a",
             "label": "Skip to content",
             "href": "#main",
-            "indicator": "outline 2px solid rgb(107, 75, 0)",
+            "indicator": "outline 2px solid rgb(255, 223, 143)",
             "onScreen": true,
             "width": 132,
             "height": 49

@@ -66,7 +66,7 @@ it("every owner route answers with the bar, its own item current, and every link
     if (tab) {
       expect(current(row(html, "Project")), path).toEqual([tab]);
       expect(row(html, "Project"), path).toContain(`href="/p/${NAME}/tasks"`);
-      expect(row(html, "Project"), path).toMatch(/>Tasks \(2\)</);
+      expect(row(html, "Project"), path).toMatch(/>Tasks<span data-shell="tasks"> \(2\)<\/span></);
       expect(bar(html), path).toContain("<summary>Shell Area</summary>");
     } else expect(bar(html), path).not.toContain('aria-label="Project"');
     for (const m of bar(html).matchAll(/<a [^>]*href="([^"]+)"/g)) links.add(m[1]);
@@ -116,4 +116,62 @@ it("each tab that holds a page links to it from the bar", async () => {
     const html = await res.text();
     expect(bar(html), `/p/shell-held/${tabPath}`).toContain(`href="/p/shell-held/${held}"`);
   }
+});
+
+// Gate finding 3: a page in a project's area that fails, or has nothing to
+// draw, still has the project row, drawn from the address, with the page it
+// names current.
+it("an error or empty page under /p/NAME has the project row from its address", async () => {
+  const name = "shell-error";
+  await project(name, "Shell Error");
+  await L(name).newItem("Only task", ["src/**"], "owner");
+  const cookie = await signIn(TOKEN, testEnv);
+  const get = async (path: string) => {
+    const res = await worker.fetch(new Request(`https://atelier.test${path}`, { headers: { cookie }, redirect: "manual" }), testEnv);
+    return { status: res.status, html: await res.text() };
+  };
+  // An empty repository (no commits) and a commit that is not in it, under Code; a task that does not exist, under Tasks.
+  for (const [path, tab, crumb] of [
+    [`/p/${name}/code`, `/p/${name}/code`, "Code"],
+    [`/p/${name}/log`, `/p/${name}/code`, "Log"],
+    [`/p/${name}/commit/${"0".repeat(40)}`, `/p/${name}/code`, "Code"],
+    [`/p/${name}/t99`, `/p/${name}/tasks`, "t99"],
+  ] as const) {
+    const { status, html } = await get(path);
+    expect(status, path).not.toBe(200);
+    expect(html, path).toContain('<header class="owner-bar">');
+    expect(html, path).not.toContain("<!--shell:");
+    expect(current(row(html, "Project")), path).toEqual([tab]);
+    expect(bar(html), path).toContain(`<p class="crumb"><a href="/p/${name}">Shell Error</a> › <span>${crumb}</span></p>`);
+    expect(bar(html), path).toContain("<summary>Shell Error</summary>");
+    expect(row(html, "Project"), path).toContain('>Tasks<span data-shell="tasks"> (1)</span>');
+  }
+  // Outside a project, and under a project that does not exist, an error has no project row.
+  for (const path of ["/p/no-such-project", "/p/no-such-project/code"]) {
+    const { status, html } = await get(path);
+    expect(status, path).not.toBe(200);
+    expect(bar(html), path).not.toContain('aria-label="Project"');
+    expect(bar(html), path).toContain("<summary>Project</summary>");
+    expect(html, path).not.toContain("<!--shell:");
+  }
+});
+
+// Gate finding 1: the parts of the bar that carry a count are marked for the
+// live refresh (src/live.ts refreshShell), so a later copy brings them up to
+// date; here the Decisions part a refresh would fetch carries the new count.
+it("the bar's counts are marked for the live refresh, and a later copy carries the new count", async () => {
+  const name = "shell-live";
+  await project(name);
+  for (const t of ["One", "Two"]) await L(name).newItem(t, ["src/**"], "owner");
+  const cookie = await signIn(TOKEN, testEnv);
+  const html = async (path: string) => (await worker.fetch(new Request(`https://atelier.test${path}`, { headers: { cookie } }), testEnv)).text();
+  const part = (page: string, key: string) => new RegExp(`<(span|div) data-shell="${key}">(.*?)</\\1>(?=</a>|</details>)`, "s").exec(bar(page))?.[2];
+  const first = await html(`/p/${name}/flow`);
+  expect(first).toContain('data-live-refresh="');
+  for (const key of ["waiting", "projects", "tasks"]) expect(part(first, key), key).toBeDefined();
+  const before = badge(first);
+  await L(name).block("t1", "owner", "needs the owner");
+  const later = await html(`/p/${name}/flow`);
+  expect(Number(badge(later))).toBe(Number(before ?? 0) + 1);
+  expect(part(later, "waiting")).not.toBe(part(first, "waiting"));
 });
