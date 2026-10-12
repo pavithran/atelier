@@ -8,6 +8,7 @@ import { parseRuleError, type Evidence, type Item, type ProjectPolicy, type Revi
 import type { Detail } from "../src/ui.ts";
 import { signIn } from "./signin.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
+import { taskProgress } from "../src/ui.ts";
 
 // The Ledger driven end to end over Durable Object RPC, with its real SQLite
 // storage, inside the Workers test pool. The pure policy underneath is tested
@@ -160,6 +161,20 @@ it("an item moves from creation to merge, gated by observed evidence", async () 
   ]);
 });
 
+// t367: the task page's steps read from what the Ledger records. A fresh
+// fork's head is its base, so Fork stays current until a push moves it.
+it("a fresh fork is at Fork, and a push that moves the head brings it to Prove", async () => {
+  const L = await setup("progress");
+  await L.newItem("Show the steps", ["src/**"], "owner");
+  await L.claim("t1", A);
+  const at = async () => taskProgress(await L.item("t1"), []).steps.find((s) => s.state === "current")?.verb;
+  await L.setFork("t1", "progress--t1", H0, A);
+  expect(await L.item("t1")).toMatchObject({ base: H0, head: H0 });
+  expect(await at()).toBe("Fork");
+  await L.recordPush("t1", A, H1, H1);
+  expect(await at()).toBe("Prove");
+});
+
 // t168: a merged revision whose declared protected actions have not run asks
 // the owner to ship it, and a recorded run of each kind retires the reminder.
 it("the inbox reminds the owner of a merged revision whose declared protected actions have not run", async () => {
@@ -272,7 +287,9 @@ it("decision 2026-10-06: only the owner overrides a missing review, with a reaso
   expect(accepted.overrideConfirmation).toBeUndefined();
   const events = await L.events("t1") as unknown as LedgerEvent[];
   expect(events.slice(0, 2).map((e) => [e.kind, e.actor])).toEqual([["item.accepted", "owner"], ["review.overridden", "owner"]]);
-  expect(events[1].data).toEqual({ head: H2, reason, waived: "touches a protected path; needs approval from a model of another family than every contributor", contributors: [A], confirmed: "command line", confirmedAt: allowed.overrideConfirmation!.at, factor: "secret" });
+  expect(events[1].data).toEqual({ head: H2, reason, waived: "touches a protected path; needs approval from a model of another family than every contributor", contributors: [A], confirmed: "command line", confirmedAt: allowed.overrideConfirmation!.at, factor: "secret",
+    // t457: called with no reviewer looked for, the record says so, as unknown.
+    availability: { known: false, reviewer: null, source: "none", at: events[1].at, why: "no reviewer was looked for as the override was made" } });
   expect(events[0].data).toMatchObject({ head: H2, reviewOverridden: true });
   // It is not a review: none was recorded for it.
   expect((await L.reviewsFor("t1")).filter((r) => r.head === H2)).toEqual([]);

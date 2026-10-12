@@ -1282,7 +1282,10 @@ export async function runTask(assignment, config, name, io) {
   return state;
 }
 
-export const taskKey = (task) => JSON.stringify([task.project, task.item.id]);
+// A task's identity for the failure counts: its project, id and dispatch,
+// so dispatching it again starts the count afresh (t420), as the server's
+// skippedBy counts, while a release or a push under one dispatch does not.
+export const taskKey = (task) => JSON.stringify([task.project, task.item.id, task.item.dispatch?.at ?? null]);
 
 // The key a runner's per-process failure cap uses. A build's failures count
 // against the task itself; a review's against the review it answered — its
@@ -1845,6 +1848,27 @@ export function infrastructureFailureCount(count, state) {
   return state.phase === "failed" && !state.taskFailure && !state.claimRefused && !state.skipped && !state.recorded ? count + 1 : 0;
 }
 
+// Why the runner's loop passes an offered task by, in words with what lets it
+// through, or null when it takes it: a job its offer does not name (jobOf), a
+// claim refused or a task skipped since the task last changed (refusedKey),
+// or the failures that skip it until it is dispatched again or this process
+// ends (failureCount, infrastructureFailureCount, keyed by failureKey). An idle
+// runner says these (t420).
+export function passedBy(task, jobs, { refused, failures, infrastructureFailures, terminalTasks = new Map() }) {
+  const job = jobOf(task);
+  if (!jobs.includes(job)) return `Not taken here: a ${job} job, which this runner's config does not offer; add it to the config's jobs, or leave it for a runner that offers it.`;
+  // A task the server answered task_terminal for while this runner held it
+  // (t476) is not taken again by this process, whatever later polls say.
+  const terminal = terminalTasks.get(taskKey(task));
+  if (terminal) return `Not taken again: the server says it is ${terminal === "abandoned" ? "closed" : terminal} (state: ${terminal}); this runner takes it no more until it restarts.`;
+  if (refused.has(refusedKey(task))) return `Passed by: its claim was refused or it was skipped here, and it has not changed since; it is tried again once it changes (status or show names what refuses it).`;
+  const failed = failures.get(failureKey(task)) ?? 0;
+  if (failed >= 2) return `Skipped after ${failed} failed runs under this dispatch; fix the cause, then dispatch it again (atelier dispatch ${task.item.id}) or restart this runner.`;
+  const broken = infrastructureFailures.get(failureKey(task)) ?? 0;
+  if (broken >= 3) return `Skipped after ${broken} infrastructure failures in a row under this dispatch; fix the runner's setup, then dispatch it again (atelier dispatch ${task.item.id}) or restart this runner.`;
+  return null;
+}
+
 // The file a plan job's harness writes the plan document to, inside the
 // workspace: the runner's reset cleans a stale one away before each run, the
 // harness is told to commit nothing, and the runner reads it back as the
@@ -1988,7 +2012,9 @@ export function runOutcome(state) {
 
 // `reportRun(body, runner, signal)` sends a run report; a report that fails
 // is logged and the loop goes on.
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, version, api }) {
+// `reportRunSkip(body, runner, signal)` says a build or plan job is given up
+// under its dispatch, kept and tried again as a review skip is (reportSkip).
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, version, idleWhy, api }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
@@ -1999,9 +2025,13 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // The integrator runs no model: it offers the integrate and refresh jobs
   // alone, under the reserved actor, and takes no config.
   const config = integrating ? { agents: [] } : readConfig(args.config);
-  const offer = integrating
-    ? { runner: args.name.toLowerCase(), kind: "home", agents: [], jobs: ["integrate", "refresh"] }
-    : offerFrom(config, args.name);
+  // The offer says when this process started (t420): what it passes by
+  // after failures or a refused claim it forgets on a restart, so the
+  // server's reasons naming this runner count only from then.
+  const offer = {
+    ...(integrating ? { runner: args.name.toLowerCase(), kind: "home", agents: [], jobs: ["integrate", "refresh"] } : offerFrom(config, args.name)),
+    started: new Date().toISOString(),
+  };
   const controller = new AbortController();
   // The first interrupt ends the active child's group with its grace
   // period; a second kills every group at once and exits.
@@ -2028,20 +2058,24 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // Sends one skip report. Taken, or refused for good (skipRefusedForGood),
   // the report is done with; failed any other way (the server down, busy or
   // slow, a timeout) it is kept, due again skipRetryPolls on.
-  const reportSkip = async (key, body, misses = 0) => {
+  // A build or plan job given up goes the same way, to run-skip (t420), so
+  // status and show name this runner as what passes it by, the
+  // infrastructure failures that send no run report among them.
+  const reportSkip = async (key, body, misses = 0, what = "review") => {
+    const send = what === "review" ? reportReviewSkip : reportRunSkip;
     try {
-      await reportReviewSkip(body, offer.runner, controller.signal);
+      await send(body, offer.runner, controller.signal);
       pendingSkips.delete(key);
-      io.log(`reported the review skip for ${body.project}/${body.item}`);
+      io.log(`reported the ${what} skip for ${body.project}/${body.item}`);
     } catch (error) {
       if (controller.signal.aborted) return;
       if (skipRefusedForGood(error)) {
         pendingSkips.delete(key);
-        io.log(`could not report the review skip for ${body.project}/${body.item}: ${error.message}`);
+        io.log(`could not report the ${what} skip for ${body.project}/${body.item}: ${error.message}`);
       } else {
         const after = skipRetryPolls(misses + 1);
-        pendingSkips.set(key, { body, misses: misses + 1, due: polls + after });
-        io.log(`could not report the review skip for ${body.project}/${body.item}: ${error.message}; trying again ${after === 1 ? "next poll" : `in ${after} polls`}`);
+        pendingSkips.set(key, { body, misses: misses + 1, due: polls + after, what });
+        io.log(`could not report the ${what} skip for ${body.project}/${body.item}: ${error.message}; trying again ${after === 1 ? "next poll" : `in ${after} polls`}`);
       }
     }
   };
@@ -2205,6 +2239,28 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // logged, the rest are quiet until the queue answers again, and each
     // lengthens the wait before the next poll (queueBackoffMs).
     let misses = 0;
+    // Why this runner found nothing it may claim while dispatches wait (t420):
+    // first the tasks the queue offered that this process passes by
+    // (passedBy), then every other waiting dispatch with the reason the
+    // server gives this runner's poll asked with `why` (idleWhy), so an idle
+    // runner says once what holds each one, and stays quiet until that
+    // changes. A server that will not say is said too, once.
+    let lastWhy = null;
+    const sayIdleWhy = async (passed) => {
+      let waiting = [], unread = null;
+      if (idleWhy) { try { waiting = await idleWhy(offer, controller.signal); } catch (error) { if (controller.signal.aborted) return; unread = error.message; } }
+      const own = new Set(passed.map((p) => p.task));
+      const reasons = [...passed, ...(Array.isArray(waiting) ? waiting : []).filter((q) => q?.item?.why?.length && !own.has(`${q.project}/${q.item.id}`))
+        .flatMap((q) => q.item.why.map((r) => ({ task: `${q.project}/${q.item.id}`, line: r.line })))];
+      if (!reasons.length && !unread) { lastWhy = null; return; }
+      const signature = [...reasons.map((r) => `${r.task}  ${r.line}`), unread ?? ""].join("\n");
+      if (signature === lastWhy) return;
+      lastWhy = signature;
+      const n = new Set(reasons.map((r) => r.task)).size;
+      if (n) line(`found nothing to claim while ${n} dispatch${n === 1 ? "" : "es"} wait${n === 1 ? "s" : ""}:`);
+      for (const r of reasons) line(`  ${r.task}  ${r.line}`);
+      if (unread) line(`found nothing to claim; the server's reasons for the dispatches waiting could not be read (${unread}), so atelier status names them.`);
+    };
     while (!controller.signal.aborted) {
       let state;
       try {
@@ -2229,7 +2285,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         // send them.
         for (const [key, pending] of [...pendingSkips]) {
           if (pending.due > polls) continue;
-          await reportSkip(key, pending.body, pending.misses);
+          await reportSkip(key, pending.body, pending.misses, pending.what);
           if (controller.signal.aborted) break;
         }
         if (controller.signal.aborted) break;
@@ -2240,11 +2296,14 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         // before t252's fix still lists, and they stay in the queue for a
         // runner that takes them.
         const ordered = [...tasks.filter((task) => task.item.dispatch?.job === "review"), ...tasks.filter((task) => task.item.dispatch?.job !== "review")];
-        for (const task of ordered.filter((task) => offer.jobs.includes(jobOf(task)) && !terminalTasks.has(taskKey(task)) && !refused.has(refusedKey(task)) && (failures.get(failureKey(task)) ?? 0) < 2 &&
-          (infrastructureFailures.get(failureKey(task)) ?? 0) < 3)) {
+        let ranTask = false;
+        const passBy = (task) => passedBy(task, offer.jobs, { refused, failures, infrastructureFailures, terminalTasks });
+        for (const task of ordered.filter((task) => passBy(task) === null)) {
           // A poll can contain the same task more than once. Recheck after
           // each job, since filtering the batch preceded its terminal result.
           if (terminalTasks.has(taskKey(task))) continue;
+          // A task this runner may take is not an idle poll.
+          ranTask = true;
           // A dispatch carrying job: "plan" asks for the plan job, one
           // carrying "review" for the review job, "integrate" for the
           // integrate job and "refresh" for the refresh job
@@ -2284,6 +2343,15 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           if (task.item.dispatch?.job === "review" && (state.claimRefused || state.skipped || count === 2 || infrastructureCount === 3) && reportReviewSkip) {
             await reportSkip(refusedKey(task), { project: task.project, item: task.item.id, head: task.item.head, request: task.item.request, actor: task.actor, note: state.reason });
           }
+          // A build or plan job given up under this dispatch, after its
+          // failed runs or infrastructure failures in a row, is reported as
+          // such (t420): the second sends no run report at all (runOutcome).
+          // A task the server closed (t476) was not given up.
+          const gaveUp = state.terminalState ? null : count === 2 ? "failures" : infrastructureCount === 3 ? "infrastructure" : null;
+          if (task.item.dispatch?.job !== "review" && gaveUp && reportRunSkip) {
+            const role = task.item.dispatch?.job === "plan" ? "plan" : "build";
+            await reportSkip(`run-skip:${key}`, { project: task.project, item: task.item.id, actor: task.actor, role, kind: gaveUp, failures: gaveUp === "failures" ? count : infrastructureCount, note: state.reason ?? "" }, 0, "run");
+          }
           // Closure survives changes to the head or updatedAt in later polls
           // (t476). Remember its exact state for this process, by the task
           // itself, independently of the revision-specific refusals that a
@@ -2292,6 +2360,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           else if (state.claimRefused || state.skipped) refused.add(refusedKey(task));
           else if (args.once || state.phase !== "failed" || state.taskFailure) break;
         }
+        if (!ranTask && !controller.signal.aborted) await sayIdleWhy(ordered.flatMap((task) => { const why = passBy(task); return why ? [{ task: `${task.project}/${task.item.id}`, line: why }] : []; }));
         state ??= { phase: "idle" };
       } catch (error) { state = nextStep({ phase: "idle" }, { error: error.message }); line(`failed: ${state.reason}`); }
       if (args.once) { if (state.phase === "failed" && !controller.signal.aborted) process.exitCode = 1; break; }
