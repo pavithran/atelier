@@ -16,7 +16,7 @@ import { triageRecord } from "../src/review/triage.ts";
 // test/triage.test.mjs.
 
 const TOKEN = "triage-routes-token";
-const H0 = "0".repeat(40), H1 = "a".repeat(40), BASE = "b".repeat(40);
+const H0 = "0".repeat(40), H1 = "a".repeat(40), BASE = "b".repeat(40), MAIN = "c".repeat(40);
 const OPUS = "claude-code/opus-5.5", GPT = "codex/gpt-6-astra";
 const CRITERIA = ["The widget renders", "The route answers 200"];
 
@@ -92,16 +92,17 @@ it("a Workflow landing that triages submits and goes on to the review once the t
   await wf.modify(async (m) => {
     await m.disableSleeps();
     await m.mockStepResult({ name: "confirm the fork's head" }, { head: H1 });
+    await m.mockStepResult({ name: "confirm main has not moved" }, { main: MAIN });
     await m.mockStepResult({ name: "wait for the merge #0" }, true);
   });
   await env.LANDING_WORKFLOW.create({ id: "triage-wf-pass-1", params: params("triage-wf-pass", id) });
   await L.landEvent(id, "owner", "triage", 10, triageRecord(binding(), "passed", { triager: GPT }));
-  await send("triage-wf-pass-1", { round: 0, head: H1, mainHead: null, mergedIn: false, triage: { base: BASE, criteria: binding().criteria } });
+  await send("triage-wf-pass-1", { round: 0, head: H1, mainHead: MAIN, mergedIn: false, triage: { base: BASE, criteria: binding().criteria } });
   await wf.waitForStatus("complete");
   expect((await L.item(id)).state).toBe("accepted");
   // The triage is its own record, beside the review the gate decided on.
   const kinds = await landKinds(L, id);
-  expect(kinds.filter((k) => k !== "land.lease")).toEqual(["land.triage", "land.check", "item.submitted", "land.submit", "land.review", "land.accept"]);
+  expect(kinds.filter((k) => k !== "land.lease" && k !== "land.release")).toEqual(["land.triage", "land.check", "item.submitted", "land.submit", "land.review", "land.accept"]);
 });
 
 it("a Workflow landing that triages submits nothing when the criteria changed since the triage, the report carries no binding, or the triage recorded there stopped (t475)", async () => {
@@ -141,7 +142,7 @@ it("a Workflow landing that triages submits nothing when the criteria changed si
     await wf.modify(async (m) => { await m.disableSleeps(); await m.disableRetryDelays(); });
     await env.LANDING_WORKFLOW.create({ id: instance, params: params(project, id) });
     await c.prepare(L, id);
-    await send(instance, { round: 0, head: H1, mainHead: null, mergedIn: false, ...c.report });
+    await send(instance, { round: 0, head: H1, mainHead: MAIN, mergedIn: false, ...c.report });
     await wf.waitForStatus("errored");
     const message = (await L.landingWorkflowOf(id))?.detail ?? "";
     expect(message, c.name).toMatch(c.why);
@@ -167,7 +168,7 @@ it("a Workflow landing that triages asks for no review when the criteria changed
   await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, "triage-wf-late-1");
   await wf.modify(async (m) => { await m.disableSleeps(); await m.disableRetryDelays(); });
   await env.LANDING_WORKFLOW.create({ id: "triage-wf-late-1", params: params("triage-wf-late", id) });
-  await send("triage-wf-late-1", { round: 0, head: H1, mainHead: null, mergedIn: false, triage: { base: BASE, criteria: binding().criteria } });
+  await send("triage-wf-late-1", { round: 0, head: H1, mainHead: MAIN, mergedIn: false, triage: { base: BASE, criteria: binding().criteria } });
   await wf.waitForStatus("errored");
   const message = (await L.landingWorkflowOf(id))?.detail ?? "";
   expect(message).toMatch(/the acceptance criteria changed since the triage/);
@@ -184,7 +185,7 @@ it("a Workflow landing with the owner's bypass or override recorded at the bindi
     await wf.modify(async (m) => { await m.disableSleeps(); });
     await env.LANDING_WORKFLOW.create({ id: instance, params: params(project, id, { noReview: true }) });
     await L.landEvent(id, "owner", "triage", 0, triageRecord(binding(), outcome, { reason: "checked by hand" }));
-    await send(instance, { round: 0, head: H1, mainHead: null, mergedIn: false, triage: { base: BASE, criteria: binding().criteria } });
+    await send(instance, { round: 0, head: H1, mainHead: MAIN, mergedIn: false, triage: { base: BASE, criteria: binding().criteria } });
     await wf.waitForStatus("complete");
     expect((await L.item(id)).state, outcome).toBe("submitted");
   }
@@ -192,7 +193,7 @@ it("a Workflow landing with the owner's bypass or override recorded at the bindi
   await using wf = await introspectWorkflowInstance(env.LANDING_WORKFLOW, "triage-wf-off-1");
   await wf.modify(async (m) => { await m.disableSleeps(); });
   await env.LANDING_WORKFLOW.create({ id: "triage-wf-off-1", params: params("triage-wf-off", id, { triage: false, noReview: true }) });
-  await send("triage-wf-off-1", { round: 0, head: H1, mainHead: null, mergedIn: false });
+  await send("triage-wf-off-1", { round: 0, head: H1, mainHead: MAIN, mergedIn: false });
   await wf.waitForStatus("complete");
   expect((await L.item(id)).state).toBe("submitted");
 });
@@ -209,7 +210,7 @@ it("the landing-workflow route starts a triaging Workflow only when the landing 
   expect(res.status).toBe(201);
   const { instance } = (await res.json()) as { instance: string };
   await until(() => L.landingWorkflowOf(id), (r) => r?.stage === "workspace");
-  await send(instance, { round: 0, head: H1, mainHead: null, mergedIn: false });
+  await send(instance, { round: 0, head: H1, mainHead: MAIN, mergedIn: false });
   await until(async () => (await env.LANDING_WORKFLOW.get(instance)).status(), (st) => st.status === "errored");
   expect((await L.landingWorkflowOf(id))?.detail).toMatch(/the workspace reported no triage binding/);
   expect((await L.item(id)).state).toBe("claimed");
@@ -254,7 +255,7 @@ it("a landing instance recreated for a claimant that died before creating it kee
   expect(created).toHaveLength(1);
   expect(created[0]).toMatchObject({ id: claimed!.instance, params: { triage: true } });
   await until(() => L.landingWorkflowOf(id), (r) => r?.stage === "workspace");
-  await send(claimed!.instance, { round: 0, head: H1, mainHead: null, mergedIn: false });
+  await send(claimed!.instance, { round: 0, head: H1, mainHead: MAIN, mergedIn: false });
   await until(async () => (await env.LANDING_WORKFLOW.get(claimed!.instance)).status(), (st) => st.status === "errored");
   expect((await L.landingWorkflowOf(id))?.detail).toMatch(/the workspace reported no triage binding/);
   expect((await L.item(id)).state).toBe("claimed");
