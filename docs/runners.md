@@ -33,7 +33,7 @@ response names it in the `X-Atelier-Incomplete` header and `atelier queue` says 
 `atelier undispatch` withdraws a dispatch while the task is open; a claimed
 or submitted task keeps its dispatch, which applies again if it is released.
 
-A runner's name is declared independently of its actor token; what a dispatch guarantees
+An owner or model-bound agent token can declare a runner name; a runner token binds that name at issue time. What a dispatch guarantees
 is that the task goes to the first matching runner that asks, and to no one
 else, while it waits. Names are matched and stored in lower case, so
 `home:Studio` and `home:studio` are one runner. A claim belongs to the runner
@@ -56,12 +56,327 @@ merged, and the landing picks up from the push. Without this a conflicted
 task dead-ended outside a plan (t234): a plain rework dispatch resets the
 workspace to the task's head, where the builder cannot reach main.
 
+## Build and plan runners without an owner token
+
+Projects can declare a workspace preparation command with `init --prepare`
+and its input and output paths. The runner runs it after workspace reset and
+automatic merges, before build or plan harnesses and harness-free merge
+finishes. Reviews, integrate and refresh jobs do not run preparation. Manual
+claims print the command and workspace directory for the caller to run.
+
+Local and container checks also run this command once in each clean checked
+tree, after merging for `--merged`, before any checks or not-applicable
+results. This includes both Workflow check modes. Clean-clone preparation is
+not cached between attempts and uses the same command safety policy and
+execution deadline as checks (`ATELIER_CHECK_TIMEOUT`, default 20 minutes,
+locally; 30 minutes in the container). A failure stops the attempt without
+adding check evidence; earlier evidence remains. Its report names the command,
+exit status or signal and a redacted output tail of at most 4,000 characters.
+
+`ATELIER_PREPARE_TIMEOUT` sets the preparation deadline in positive integer
+milliseconds, from `1` through `2147483647`; it defaults to `600000` (ten
+minutes). Invalid values stop runner startup. Timeout or cancellation
+terminates and cleans up the preparation process group before claim handling.
+Failed preparation is an infrastructure failure and is never cached.
+
+Issue a runner credential **on the owner's machine**:
+
+```sh
+atelier token issue --runner home:studio --project demo --days 30
+```
+
+`Studio` also means `home:studio`; names are normalized to lower case.
+`atelier token issue --help` and `atelier token store --help` describe these
+subcommands. Exactly one existing project is required. Renaming that project preserves
+access through both its old and new names. The token cannot act as the
+owner or choose an actor independently of the current dispatched job.
+
+On the runner machine, install Node and the harness, copy the runner config
+prepared on the owner's machine, and configure the server. Do not run owner
+login on this machine. Store the issued value at the hidden prompt:
+
+```sh
+export ATELIER_SERVER=https://YOUR-WORKER-ADDRESS
+atelier token store --runner home:studio
+atelier runner --name home:studio --config ./runner.json --once
+```
+
+The secret entry is `runner.home:studio` and contains its server binding.
+`ATELIER_RUNNER_TOKEN` overrides that entry for polling, direct API calls and
+child CLI commands. An empty, invalid, expired or revoked explicit credential
+fails without trying the owner credential. A stored entry is never sent to a
+different server. For direct CLI work using the stored entry, set
+`ATELIER_RUNNER_NAME=home:studio`; an explicit environment token needs no
+store or owner login. The runner passes credentials to its CLI children,
+never to harness environments or logs. As with existing runner isolation,
+the harness is trusted local code; environment filtering is not an OS sandbox
+that prevents it reading the user's credential store.
+
+For example, this config offers builds and plans with a local wrapper:
+
+```json
+{
+  "jobs": ["build", "plan"],
+  "agents": [{
+    "agent": "codex",
+    "models": ["gpt-6-astra"],
+    "command": ["/absolute/path/to/wrapper", "{model}", "{brief_file}", "{workspace}", "{plan_file}"]
+  }]
+}
+```
+
+The wrapper follows the contract below: for a build it edits and commits;
+for a plan it writes an `atelier.plan.v1` document to `{plan_file}`. With a
+build dispatched by the owner, `runner --once` claims, runs the wrapper,
+pushes, checks and submits. With a plan job queued by the owner, the same
+command claims, reads the job brief, runs the wrapper, posts the document
+and releases. Neither completion needs an owner token. A restart polls and
+resumes jobs held by the same runner before taking new jobs.
+
+Only polling, configuration/base reads, authorized job reads, claiming,
+Git push, checks/evidence, submission, plan posting, release, job reports
+and review skips (a runner's word that it will not serve a review job its
+poll was offered, posted as that job's actor) are permitted. Owner acceptance, merge/land, overrides, criteria edits,
+decisions, token administration, policy changes and browser access return
+403 with the runner name and token ID, never the secret. Invalid, expired or
+revoked API credentials return 401. Reviews still use the model's own agent
+token from `tokens`; integration still uses its dedicated integrator token.
+Owner-only setup/discovery and usage administration stay on the owner's
+machine.
+
+### Revocable Git access and deployment smoke check
+
+Runner workspace remotes use `/git/runner/PROJECT/ITEM.git`. Each Git HTTP
+request validates a separate opaque Git credential, its parent runner token
+and the current claim before forwarding to Artifacts. Expiry/revocation,
+release, reassignment and a later claim invalidate old write access even for
+plain `git push`. The upstream Artifacts write credential stays inside the
+Worker, lasts 60 seconds and is revoked after the response is read. Requests
+already authorized may finish; subsequent requests must authenticate again.
+
+This depends on deployed Workers forwarding Artifacts smart HTTP correctly.
+The gateway currently buffers a Git request/response, so Worker memory and
+request-size limits also apply; local Artifacts doubles cannot reproduce
+those platform limits. **Before and after deploying this change**, the owner
+must run this remote smoke check on a disposable project using a runner
+machine with no owner token:
+
+1. Dispatch one build and one plan on the owner machine. Run the runner to
+   submission and plan posting, including a restart with held work.
+2. Clone the returned gateway remote and make a real Git commit/push through
+   its Git credential. Check a representative maximum-size repository too.
+3. Revoke the parent token on the owner machine. Verify both polling and
+   plain Git push fail. Repeat with expiration, release and reassignment;
+   the baseline and another job must never accept this credential.
+4. Try an owner action and a mismatched runner/actor; verify 403 includes
+   only the runner name/token ID. Try the model review and dedicated
+   integration credentials separately to confirm those flows still work.
+
+Do not promote the deployment if this smoke check fails. Local validation:
+`npm test`, `npm run typecheck`, `node --test cli/runner-token.test.mjs cli/runner-git.test.mjs` and
+`npx vitest run src/runner-token.spec.mjs` (it runs under `npm test` too). The task-specific
+tests live in `src/` and `cli/` to stay within this task's scope.
+
+## Setting up a runner
+
+Prepare configuration and provider keys on the owner machine using the steps
+below. For a build/plan machine without owner credentials, use the preceding
+section and copy the prepared runner config there.
+
+Everything a runner needs to start agents ships in this repository: the four
+harness adapters in `bin/harness/`, the agent rules they give every agent,
+the provider catalogue in `cli/harness/providers.mjs` and `atelier runner
+setup`, which writes the configs. The only things a machine adds are the
+harnesses themselves and the credentials, which live in the credential store
+(the macOS Keychain, the Linux Secret Service or the file `atelier login
+--store` names) and never in a file this repository or setup writes.
+
+### Owner machine setup (legacy owner-backed setup)
+
+1. Install Node 22 or newer and clone this repository; `npm ci` in it. Put
+   `cli/atelier.mjs` on the PATH as `atelier` (`npm link`, or an alias).
+2. Install the harnesses this machine will run, any of: Claude Code
+   (`claude`, signed in to its plan), Codex (`codex`, signed in), opencode
+   (`opencode`) and Antigravity (`agy`, signed in to a Google account with
+   Gemini). Setup finds each by its command on the PATH.
+3. `atelier login --server https://YOUR-WORKER-ADDRESS` as the owner, the
+   address of the Atelier server the runner takes work from (Setup in
+   [setup.md](setup.md)); it asks for the owner's token without echo.
+4. Store the keys opencode's providers need, each by the name setup prints
+   (the pool entry's `--keychain` name when it gives one): `zai.API_KEY`,
+   `deepseek.API_KEY` and `openrouter.API_KEY`, and `CF_AIG_TOKEN` (a
+   Cloudflare API token with AI Gateway · Run) when an AI Gateway is named.
+   On Linux the adapter runs without the session bus the Secret Service
+   needs, so store them in the file store (`ATELIER_SECRET_STORE=file`).
+   The runner gives a harness no `ATELIER_` variable, so it names its own
+   `ATELIER_SECRET_STORE` and `ATELIER_CONFIG_DIR` to the opencode adapter
+   as `--secret-store` and `--secrets-dir`, which reach the store alone.
+   On macOS each is an item `atelier.NAME`, typed without echo:
+
+   ```sh
+   security add-generic-password -U -T /usr/bin/security -s atelier.deepseek.API_KEY -a "$USER" -w
+   ```
+
+5. For each model this machine reviews as, issue its agent token and store
+   it as `agent.MODEL` (Reviewers post under their own agent token, below):
+
+   ```sh
+   atelier token issue --as codex/gpt-6-astra --project atelier --days 90 --label "home:NAME reviews"
+   security add-generic-password -U -T /usr/bin/security -s atelier.agent.gpt-6-astra -a "$USER" -w
+   ```
+
+6. Name the AI Gateway the pay-per-use providers go through, if any, as
+   `ATELIER_GATEWAY=ACCOUNT/GATEWAY` (or `CF_ACCOUNT_ID`, with the gateway
+   `atelier`), then run setup and start the runner:
+
+   ```sh
+   ATELIER_GATEWAY=0123abcd/atelier atelier runner setup --dry-run   # what it would write
+   ATELIER_GATEWAY=0123abcd/atelier atelier runner setup
+   atelier runner --name home:NAME
+   ```
+
+The runner then builds tasks dispatched to any of its models and serves
+reviews as any of them, so a build by one company's model and its review by
+another's can both run on this machine. `atelier runner setup --config PATH`
+writes the config to PATH instead; a second runner with a config of its own,
+`"jobs": ["review"]`, keeps reviews from waiting behind a build (One job at a
+time, below). Each config's opencode provider configs have a folder of their
+own, so setting up the second runner leaves the first one's as they were.
+
+### What setup writes
+
+`atelier runner setup [--config PATH] [--dry-run]` reads the pool from
+Atelier and looks for `claude`, `codex`, `opencode` and `agy` on the PATH.
+It writes, beside the runner config (`runner.json` in the config folder
+unless `--config` names another file):
+
+- the runner config: one entry per harness found, listing the pool's home
+  models for that harness, with every job including `review` and, for each
+  model, `tokens` naming the Keychain entry `agent.MODEL`. No entry names a
+  command, so the runner runs Atelier's adapter for each harness (The
+  adapters, below). Setup refuses to overwrite a runner config that exists.
+- `opencode/NAME/PROVIDER.json`, NAME the runner config's whole file name
+  (`opencode/runner.json/` for `runner.json`): one opencode provider
+  config per provider the opencode models use (`zai-coding`, `deepseek-api`,
+  `openrouter-api`, and `ai-studio` for a local OpenAI-compatible server at
+  the pool entry's endpoint), and `opencode/NAME/models.json`, the index the
+  opencode adapter reads to find each model's provider, config and key name.
+  The runner's default opencode command names this folder
+  (`--providers`), so two runner configs never share an index.
+
+A pool model for a harness this machine lacks is named and left out. An
+opencode model is refused, and left out with the reason printed, when:
+
+- its configured context or output limit exceeds what its provider serves.
+  What is served is read from the provider where it publishes it
+  (OpenRouter's model list; a local server's `/models`, through LM Studio's
+  `loaded_context_length` or `max_context_length`, vLLM's `max_model_len` or
+  a `context_length`), and otherwise from the dated figures in
+  `cli/harness/providers.mjs` (`SERVED`). A model whose served limits cannot
+  be read is refused, not guessed.
+- its provider states no output limit for it (OpenRouter listing a model
+  with no `max_completion_tokens`, say): the context is no bound on what a
+  provider returns, so the output Atelier would configure cannot be checked.
+  A local server has no output cap of its own; it generates until the
+  context it serves is full, so its served output is that context.
+- its context is below what the harness itself starts with
+  (`HARNESS_START`: opencode's system prompt and tool definitions with room
+  for the brief, 24,000 tokens), which would leave the model no room to work.
+
+The configured limits are `CONFIGURED` in the same file for the models
+Atelier knows, and what the provider serves (with output capped at 32,000
+tokens and a quarter of the context) for the rest. A limit is corrected in
+that file, in a change reviewed like any other.
+
+Each generated provider config:
+
+- names the variable its key is read from (`{env:DEEPSEEK_API_KEY}`), never
+  the key;
+- sends the AI Gateway metadata header, `cf-aig-metadata`, naming the run's
+  task, role and runner, and, through a gateway, `cf-aig-authorization`;
+- allows `git add` and `git commit` explicitly, denies `git push` and every
+  `atelier` command, denies paths outside the workspace and web fetches, and
+  configures no MCP server.
+
+The metadata header needs care. opencode replaces each `{env:VAR}` in a
+config's raw text before it parses the text, so a variable holding the
+runner's JSON object (`{"task":"t1",...}`) inside a JSON string ends the
+string at its first quote, and every config fails to parse: this broke every
+opencode run on 2026-10-09. The configs therefore read
+`{env:CF_AIG_METADATA_ESCAPED}`, which the opencode adapter sets to the
+runner's `CF_AIG_METADATA` escaped for a JSON string; after substitution and
+parsing, the header's value is the JSON object itself
+(`test/harness-adapters.test.mjs` holds this).
+
+### The adapters
+
+`bin/harness/atelier-claude.mjs`, `atelier-codex.mjs`, `atelier-opencode.mjs`
+and `atelier-agy.mjs` take the wrapper contract's six arguments (The wrapper
+contract in `bin/orchestrate/README.md`); the shared code is
+`cli/harness/adapter.mjs`. An entry with no `command` runs its harness's
+adapter with this Node and every placeholder, so one command builds, plans
+and reviews. An entry for `zcode` or `gemini-cli` still names its own
+command, since no adapter ships for them; a `command` given for any harness
+replaces the default.
+
+Each adapter puts the agent rules in front of the brief (only the workspace
+may be read or written; commit with plain `git add` and `git commit -m`
+commands ending `Agent: HARNESS/MODEL`; never push or run `atelier`; for a
+plan, write the plan file and commit nothing) and gives the whole prompt to
+the harness on standard input, never as an argument. A review's prompt is the
+brief and the diff, and the answer goes to the verdict file. Per harness:
+
+| Adapter | Runs | Permissions |
+| --- | --- | --- |
+| `atelier-claude` | `claude -p --model claude-MODEL` (`opus-5.5` is `claude-opus-5-5`) | `--strict-mcp-config` with no server; edits accepted; Bash only for `git add`, `git commit` and other named Git, npm and Node commands; `git push`, `atelier` and the web denied; a review gets no edit tools |
+| `atelier-codex` | `codex exec --model MODEL -` | no MCP server: plugins, apps, browser and computer use switched off as features (`--disable FEATURE`), each server defined in a `config.toml` switched off by name (`-c mcp_servers.NAME.enabled=false`), and both checked with `codex mcp list --json` before the job; `workspace-write` sandbox with `.git` writable for a build, `read-only` for a review, whose last message is the verdict |
+| `atelier-opencode` | `opencode run --model PROVIDER/MODEL` | the provider config setup wrote (`OPENCODE_CONFIG`) and no other: an empty folder of the run's own, outside the workspace and removed as the run ends, as `HOME` and every XDG folder (`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`), so neither `~/.opencode` nor `~/.config/opencode` is read, with git given the owner's global git config as `GIT_CONFIG_GLOBAL` so commits keep their identity; `OPENCODE_DISABLE_PROJECT_CONFIG` and `OPENCODE_DISABLE_CLAUDE_CODE` set, `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG_CONTENT` and `OPENCODE_PERMISSION` dropped; its key and the gateway token read from the credential store at run time and given to opencode alone |
+| `atelier-agy` | `agy --model MODEL` (`gemini-3.1-pro` is `gemini-3.1-pro-high`) | `--sandbox`, the workspace its working folder; a review's answer is `agy`'s JSON `response` |
+
+A harness that needs no key (Claude Code, Codex and Antigravity on their
+plans) uses its own login. A key the opencode adapter cannot find stops the
+run before opencode starts, naming the entry to store and never a value.
+
+Codex keeps the MCP servers of its user and project configuration even when a
+run sets `-c mcp_servers={}`, and it cannot load its configuration when
+`enabled=false` names a server that a plugin or app provides rather than a
+`config.toml` (codex-cli 0.160.0: `invalid transport in
+mcp_servers.code-review`). So before each job the codex adapter runs, from the
+workspace:
+
+1. `codex --disable plugins --disable apps --disable browser_use
+   --disable browser_use_external --disable computer_use
+   --disable in_app_browser mcp list --json`, which leaves only the servers
+   defined in a `config.toml`;
+2. the same with `-c mcp_servers.NAME.enabled=false` added for each of those,
+   the very flags the job gets, which must load and show no server enabled.
+
+If either list fails or cannot be read, a server's name is not letters,
+digits, `-` and `_` (which a `-c` key cannot carry), or a server is still
+enabled, the job stops before codex starts rather than run with a server on.
+
+opencode merges the config `OPENCODE_CONFIG` names with the global one
+(`~/.config/opencode`), the workspace's own (`opencode.json`, `.opencode/`)
+and Claude Code's files, so without the isolation above a global MCP server
+or a project's permissions would reach an Atelier run. With it, the
+generated config's permissions and empty `mcp` are the run's. The run's
+folder, which holds its home and its config, data, cache and state folders,
+is made under the system's temporary folder, outside the workspace, and
+removed as opencode ends. The adapter sets `XDG_DATA_HOME` to this folder's
+`data` whatever the runner gave it, so the data folder the runner makes
+beside the workspace (below) is not the one the shipped adapter's opencode
+uses; that folder serves an opencode entry with a custom `command`.
+
 ## Home runner
 
-`atelier runner --name home:NAME [--once] [--config PATH] [--integrate]` polls the queue every 30 seconds, claims one eligible job, and runs its configured harness. A runner offers `build`, `plan`, `merge-main`, `merge-main-task` and `merge-plan` jobs for every harness in its config, and `review` when its config lists it. A build or plan job runs the harness in the claimed workspace; a review job clones the head into a folder of its own, reads the diff and writes a verdict. The task brief is kept outside the workspace. A runner with `--integrate` runs no harness and takes no config: it offers only the `integrate` and `refresh` jobs, merging each part onto its plan's branch as `atelier/integrator`. Each opencode run also gets a data folder of its own
-(`XDG_DATA_HOME`) beside the workspace, removed as the harness ends, however
-it ends: opencode processes sharing `~/.local/share/opencode/opencode.db`
-deadlock on it. Such a run finds its provider keys in the variables its
+`atelier runner --name home:NAME [--once] [--config PATH] [--integrate]` polls the queue every 30 seconds, claims one eligible job, and runs its configured harness. A runner offers `build`, `plan`, `merge-main`, `merge-main-task` and `merge-plan` jobs for every harness in its config, and `review` when its config lists it. A build or plan job runs the harness in the claimed workspace; a review job clones the head into a folder of its own, reads the diff and writes a verdict. The task brief is kept outside the workspace. A runner with `--integrate` runs no harness and takes no config: it offers only the `integrate` and `refresh` jobs, merging each part onto its plan's branch as `atelier/integrator`. Before its first poll every runner reads `GET /api/version` and refuses to start while the server lacks a capability one of the jobs it offers declares (`JOB_CAPABILITIES`, `src/route-level.ts`; the integrator's jobs need `projects.commit-identity.v1`, `plans.integration.v1` and `runners.scoped-token.v1`; the review job needs the review skip, `reviews.skip.v1` and `reviews.skip-as-runner.v1`, beside the binding and the unparsable route; every other job, the integrator's included, needs the run skip it reports a job it gives up to, `runners.run-skip.v1`), naming the missing capabilities and the deploy to run, so a runner that would fail its calls one by one stops at once instead. The runner gives each opencode run a data folder of
+its own (`XDG_DATA_HOME`) beside the workspace, removed as the harness ends,
+however it ends: opencode processes sharing
+`~/.local/share/opencode/opencode.db` deadlock on it. The shipped
+`atelier-opencode` adapter replaces that folder with the `data` folder of its
+own temporary run folder and reads its keys from the credential store
+(above), so the runner's folder matters only to an opencode entry with a
+custom `command`. Such a run finds its provider keys in the variables its
 config entry names and in opencode's config; a key saved with
 `opencode auth login` lives in the shared data folder and is not seen.
 A harness does not inherit the runner's environment. It gets what a local
@@ -79,8 +394,21 @@ task for the rest of the process. A separate counter skips it after three consec
 including claim errors other than refusals, workspace preparation errors,
 HEAD read errors after successful harness exits, and finish exit 4. This
 counter resets on a task failure, success, claim refusal or validation skip. Claim refusals and validation skips do not
-increase either counter. Interruptions stop the runner without updating either
-counter. An infrastructure failure moves on to the next offered task in the
+increase either counter. A task merged or abandoned under the runner's job is
+answered `task_terminal` with its state, and the CLI ends with exit 5 (merged)
+or 6 (abandoned, shown as closed) from claim, push and every step of finish:
+the runner logs the state, keeps the workspace and its commits, releases
+nothing, never offers the task to a harness again in that process, and charges
+neither counter. The state is told only to the runner whose claim still held
+the job when it closed, or to one a poll offered it to while no claim ever
+took it; a runner that was
+offered a job someone then claimed, under a runner token or an owner's or
+agent's credential with or without a runner name, stays `runner_forbidden`
+once that task closes. Release, handoff, re-dispatch that releases a claim,
+and every successful replacement claim (including an owner-credential claim)
+retire the previous runner hold. A former holder stays `runner_forbidden`
+unless a new assignment authorizes it. Interruptions stop the runner without
+updating either counter. An infrastructure failure moves on to the next offered task in the
 same poll; `--once` still handles at most one task.
 Reaching either cap logs that the task needs the owner's attention; the
 infrastructure message includes the reason. Project names rejected by runner
@@ -135,6 +463,13 @@ with the ordinary CLI. Set `taskTimeoutMs` in the config to change the harness
 deadline from 45 minutes, and `finishTimeoutMs` to change the whole finish
 deadline from 60 minutes. Expiry ends the process group as above. A finish
 timeout leaves the claim held.
+
+Runner admission no longer uses load average. Individual test commands share
+[the host test-slot pool](test-slots.md), including commands an agent runs
+through the documented wrapper. Review harnesses inherit review priority;
+build and plan harnesses inherit ordinary priority. The runner includes the
+wrapper's absolute path in build, plan and review briefs. The old `loadLimit`
+setting is ignored.
 
 ```sh
 atelier runner --name home:studio
@@ -196,7 +531,7 @@ mkdir -p -m 700 ~/.config/atelier/tokens && (umask 077; cat > ~/.config/atelier/
 token revoke ID` ends one, and the runner's next review as that model is
 refused until a new token is stored. A config that carries something shaped
 like a token in `tokens` is refused, and so is one that names the owner's
-own credential there (`API_TOKEN`, the entry `atelier login` stores to, or
+own credential there (`API_TOKEN`, the entry `atelier login --server URL` stores to, or
 any name the store reads from `ATELIER_TOKEN`); an entry or file of another
 name that turns out to hold the owner's token is refused when the job
 starts, before anything is claimed, with a message naming the entry and
@@ -304,3 +639,33 @@ stay on the merged task and count on Models. Blocking findings create a bugfix
 task linked to the original task and the review request; the original task and
 its override remain as historical records. Reposting an answered request's
 verdict is refused, so retries do not file duplicate defects.
+
+### Build validation blocked by the harness
+
+Codex build commands must explicitly establish unrestricted check execution:
+`codex exec --sandbox danger-full-access` (or the explicit sandbox bypass).
+The runner refuses restricted defaults, `--full-auto`, `workspace-write`,
+`read-only`, and opaque wrappers before claiming, naming localhost listening,
+the npm cache and network access as the unavailable check capabilities. This
+is a refusal, not a request to silently weaken an adapter's confinement.
+
+Build stdout is captured while it streams. A final report that required checks
+could not run records `validation_blocked` rather than a model test failure.
+The build brief asks for a `validation_blocked: why` line; a report that says
+it unasked counts only when it names the checks beside the failure to run them
+("could not run npm test", "the tests could not be run") or an environment
+error beside a failed check ("npm test failed: listen EPERM"). Mentioning
+`validation_blocked` or "did not run any atelier command" in passing does not.
+This outcome is excluded from the model reliability penalty.
+The runner does not call `finish`, so it does not push that build. The task page
+shows the report above clean-clone results, with the actor, runner and reason.
+Structured Codex transcripts use the final agent message, excluding tool logs.
+
+Committed work remains local. A `.git/atelier-validation-blocked` marker,
+naming the actor and the unverified head, stops a restarted runner from
+automatically finishing it as an interrupted build. It holds back only that
+actor at that head: another builder dispatched to the task, or the same one
+after the head moved, runs its harness and the checks as usual.
+After fixing the harness and running the required checks successfully, the
+operator can remove this marker to resume. Changing the command configuration
+alone does not clear a blocked validation report or prove that checks passed.

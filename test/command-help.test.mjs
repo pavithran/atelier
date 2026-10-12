@@ -7,9 +7,9 @@ import { join, resolve } from "node:path";
 import { COMMON, FLAGS } from "../cli/atelier.mjs";
 import { COMMAND_HELP, COMMAND_USAGE, HELP_FORMS, commandUsage } from "../cli/help.mjs";
 
-// The flag table in cli/atelier.mjs is what the parser accepts; the help in
-// cli/help.mjs is what the CLI says it accepts. These tests hold the two
-// together: every flag the parser takes is in the command's help, the help
+// Each command declares, in src/usage/commands/NAME.ts, the flags the parser
+// accepts (FLAGS in cli/atelier.mjs) and the help that says what the CLI
+// accepts (cli/help.mjs). These tests hold the two together: every flag the parser takes is in the command's help, the help
 // names no flag the parser refuses, and every command answers --help with
 // usage of its own.
 
@@ -85,4 +85,14 @@ test("every command answers --help with its usage, what it does, its flags and a
       assert.ok(lines.at(-2).startsWith(`Example: atelier ${cmd}`), `${cmd}: the help does not end with an example`);
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test("merge-main help distinguishes claim-time main from --head dispatch context", () => {
+  const usage = commandUsage("dispatch");
+  assert.match(usage, /fetches and merges the baseline's current main head at claim time/);
+  assert.match(usage, /--head.*full hash recorded as dispatch context/);
+  assert.match(usage, /defaults to main's head as the baseline holds it at dispatch/);
+  assert.match(usage, /does not pin the merge target/);
+  assert.doesNotMatch(usage, /main at the named head|full hash of main's head to merge/);
 });

@@ -1,5 +1,14 @@
 # Models, reliability and usage
 
+The cross-company rules below describe the default policy. With
+`atelier init --single-family COMPANY`, building and reviewing use only that
+company's models: a reviewer must be a different model from every contributor,
+never a contributor under another harness. This exception also applies to
+criteria review, handoffs and conflict contributors. Only that company's tier
+models qualify; if none qualifies, no separate tier review is requested.
+`atelier init --cross-family` restores the default; both switches record who
+made them and when. See [Single-family mode](gate.md#single-family-mode).
+
 The model pool Atelier dispatches to, the record it keeps of each model's
 work, the usage and balance reports from home runners, and the AI Gateway
 figures that count pay-per-use calls. The README's "Costs and usage" section
@@ -25,7 +34,9 @@ atelier models
 A model's family (Claude, GPT, GLM, Gemini, DeepSeek, Qwen and others) is
 recognised from its name, so a new release is coloured correctly on the
 graph the day it appears; a name no family claims is shown as not
-recognised. A runner reports what it finds for each model through
+recognised. The family is also what the gate's review rule reads, and what
+`atelier init --single-family COMPANY` names when a project is to run on one
+company's models alone (see [Single-family mode](gate.md#single-family-mode)). A runner reports what it finds for each model through
 `POST /api/models/ID/status`, naming itself in `X-Atelier-Runner`: a home
 model is reported only by a home runner and a cloud model only by a cloud
 runner, and the Models page shows each report with the runner that made it.
@@ -80,8 +91,9 @@ the tier and then the pool in precision order), the separate tier review
 more precise reviewer first, at (held + 1) / (judged + 2); a reviewer with
 fewer than 5 judged orders as neutral, one half. A re-review still goes
 first to the previous round's reviewer. Precision never makes a reviewer
-qualify, so a same-family or paused reviewer is passed over however
-precise.
+qualify, so a reviewer disallowed by the family policy or paused is passed over
+however precise. In single-family mode, a different model of the selected
+company qualifies; another company never does.
 
 ```text
 atelier defect t12 --note "pagination drops the last page" --found-in t19
@@ -223,10 +235,13 @@ last segment. The gateway is authenticated, so each call also carries a
 with AI Gateway · Run on the account), which opencode reads from the
 runner's environment. A `cf-aig-metadata` header, a JSON object of at most
 five entries, says whose call it is; the runner sets it per run as
-`CF_AIG_METADATA`, so the config reads it from the environment and every
-call of one run carries the same task, role and runner
-(`bin/orchestrate/run-agent.sh` sets the same variable for a hand
-dispatch):
+`CF_AIG_METADATA`, and every call of one run carries the same task, role
+and runner (`bin/orchestrate/run-agent.sh` sets the same variable for a hand
+dispatch). opencode substitutes `{env:VAR}` into the config's raw text before
+parsing it, so the JSON cannot go into a JSON string as it is: the opencode
+adapter sets `CF_AIG_METADATA_ESCAPED`, the same object escaped for a JSON
+string, and the configs `atelier runner setup` writes read that
+(docs/runners.md, "What setup writes"):
 
 ```json
 {
@@ -236,7 +251,7 @@ dispatch):
         "baseURL": "https://gateway.ai.cloudflare.com/v1/ACCOUNT/atelier/deepseek",
         "headers": {
           "cf-aig-authorization": "Bearer {env:CF_AIG_TOKEN}",
-          "cf-aig-metadata": "{env:CF_AIG_METADATA}"
+          "cf-aig-metadata": "{env:CF_AIG_METADATA_ESCAPED}"
         }
       }
     }
@@ -272,3 +287,48 @@ bucket, so close medians count as the same pace and a few runs' noise does
 not reorder models. No caller passes it yet: the plan routing in the Ledger reads one
 project's events, and the speed record needs every project's, as the
 reliability tie-breaker does.
+
+## Admitting an outside reviewer
+
+The project owner can admit a registered model as a reviewer in one project:
+
+```text
+atelier models add Qwen3-Coder-Next --harness opencode --where home --endpoint http://ai-server:8000/v1 --alias studio-review
+atelier models admit Qwen3-Coder-Next --project weblog --reason "Qualified against the full diff"
+atelier models reviewers --project weblog
+atelier land t21 --project weblog --reviewer opencode/studio-review
+atelier models withdraw Qwen3-Coder-Next --project weblog --reason "Retiring this reviewer"
+```
+
+Admissions use the registered canonical id and its aliases, irrespective of
+harness. They grant the assessor role only in that project; they grant no
+builder role. Admit and withdraw both record the owner, reason and server time
+in the project event history. Repeat `models admit` to readmit a model.
+An unknown family or an alias that disguises another family is refused.
+
+Each new admitted review must be from another family than **every** contributor
+by default. In single-family mode it must instead come from a different model
+of the selected company from every contributor; no other company qualifies.
+Every admitted review must name the current head and acceptance-criteria binding. Admission does
+not turn an owner-token assertion into a proved review: the model must use its
+own actor token or answer a review request it claimed, as before. A recorded
+review retains its admission snapshot. Withdrawal cancels outstanding requests
+and refuses new verdicts; it preserves past approvals at their original head
+and criteria. Readmission never revives a withdrawn claim.
+
+Named reviewers must be registered or admitted, and eligible under project
+policy. An admitted review dispatch uses the registered harness, canonical id
+and home/cloud location. A live runner must offer that model and the `review`
+job. For a home endpoint, configure the runner on a machine that can reach
+ai-server (`atelier runner setup` reads the registered endpoint and checks its
+model list). With no matching offer, landing names the unavailable model and
+fails before creating a request.
+
+Local tests mock dispatch and endpoint access. Network reachability from the
+actual runner to ai-server cannot be established by those tests. Before and
+after deploying this change, run a remote smoke check on a disposable project:
+register the endpoint, set up a home runner that can reach it, admit the model,
+request and claim a review of a passing cross-family task, and verify the
+approval's head, criteria and admission snapshot. Withdraw during a second
+claimed review and verify that its late verdict is refused while the first
+approval remains valid. A failed smoke check blocks promotion.

@@ -3,7 +3,7 @@ import { NO_CRITERIA } from "../src/criteria.ts";
 import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
-import type { Ledger, LedgerEvent } from "../src/ledger.ts";
+import type { ReviewClaim, Ledger, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { Evidence, Gate, Item, Review } from "../src/rules.ts";
 
@@ -105,8 +105,8 @@ it("an owner-recorded approval that answers a review request the reviewer claime
   const L = await setup("provenance-claimed");
   await submitted(L);
   await L.requestReview("t1", "owner", GPT, POOL);
-  await L.claimReview("t1", GPT, RUNNER);
-  await L.addReview(review(GPT), undefined, false, "api");
+  const lease1 = await L.claimReview("t1", GPT, RUNNER) as unknown as ReviewClaim;
+  await L.addReview({ ...review(GPT), request: lease1.request }, undefined, false, "api");
   const d = await L.detail("t1") as unknown as Detail;
   expect(d.reviews.at(-1)).toMatchObject({ by: GPT, recordedBy: "owner", proved: false, claimed: true });
   expect(d.gate).toMatchObject({ ready: true, blockers: [] });

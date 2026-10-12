@@ -1,12 +1,15 @@
+import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync, execFileSync } from "node:child_process";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { constants as osConstants } from "node:os";
 import { createHash } from "node:crypto";
 
 import { buildHistory, savePairs, loadPairs } from "../cli/fresh.mjs";
 import { landingDir, landingJournalFile, oldLandingJournalFile } from "../cli/landing.mjs";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 const cli = resolve("cli/atelier.mjs");
 function fixture(t) {
@@ -43,6 +46,7 @@ const previous = { actor: "owner", at: "2026-10-04T12:00:00Z", data: { summary: 
 let taskCount = 0;
 globalThis.fetch = async (url, options) => {
   const path = new URL(url).pathname;
+  if (path === "/api/version") return Response.json({ capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
   appendFileSync(${JSON.stringify(join(dir, "requests.jsonl"))}, JSON.stringify({ method: options.method, path, body: options.body }) + "\\n");
   let result;
   if (options.method === "POST") {
@@ -53,19 +57,21 @@ globalThis.fetch = async (url, options) => {
   } else if (path.endsWith("/standing")) result = { project: { name: "demo", title: "Demo" }, generatedAt: "2026-10-05T12:00:00Z", live: [], waiting: [], queued: [], merged: [], handoffs: [], partial: [], controlPlane: null };
   else if (path.endsWith("/baseline-head")) result = { head: ${JSON.stringify(head)} };
   else if (path.endsWith("/sessions")) result = [previous];
-  else if (path === "/api/projects/demo") result = { project: { policy: { checks: JSON.parse(process.env.FAKE_CHECKS ?? '["exit 7"]') } } };
+  else if (path === "/api/projects/demo") result = { project: { policy: { checks: JSON.parse(process.env.FAKE_CHECKS ?? '["exit 7"]'), ...(process.env.FAKE_IDENTITY ? { commitIdentity: JSON.parse(process.env.FAKE_IDENTITY) } : {}) } } };
   else throw Error("unexpected route " + path);
   return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
 };
 `);
   const runWith = (env, ...args) => spawnSync(process.execPath, ["--import", preload, cli, ...args], { cwd: checkout, encoding: "utf8", env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: join(dir, "cache"), ATELIER_TOKEN: "fake", ATELIER_SERVER: "https://fake.invalid", ATELIER_ACTOR: "owner", GIT_CONFIG_NOSYSTEM: "1", ...env } });
   const run = (...args) => runWith({}, ...args);
+  // The same command started rather than awaited, so a test can signal it.
+  const spawnWith = (env, ...args) => spawn(process.execPath, ["--import", preload, cli, ...args], { cwd: checkout, stdio: "ignore", env: { ...process.env, ATELIER_CONFIG_DIR: dir, ATELIER_CACHE: join(dir, "cache"), ATELIER_TOKEN: "fake", ATELIER_SERVER: "https://fake.invalid", ATELIER_ACTOR: "owner", GIT_CONFIG_NOSYSTEM: "1", ...env } });
   // A command that refuses before any request leaves no log.
   const requests = () => existsSync(join(dir, "requests.jsonl")) ? readFileSync(join(dir, "requests.jsonl"), "utf8").trim().split("\n").map(JSON.parse) : [];
   const clean = () => rmSync(join(checkout, "loose.txt"));
   // Every git command the CLI ran, as its argument list; the preload logs them.
   const gitCalls = () => existsSync(join(dir, "git.jsonl")) ? readFileSync(join(dir, "git.jsonl"), "utf8").trim().split("\n").map(JSON.parse) : [];
-  return { dir, checkout, git, head, baseline, run, runWith, requests, clean, gitCalls };
+  return { dir, checkout, git, head, baseline, run, runWith, spawnWith, requests, clean, gitCalls };
 }
 function snapshot(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? snapshot(join(dir, e.name)) : [[join(dir, e.name), createHash("sha256").update(readFileSync(join(dir, e.name))).digest("hex")]]);
@@ -157,6 +163,7 @@ test("unwrap reports a tracking ref it cannot compare and carries on", (t) => {
 });
 
 test("wrap commits with summary, next and trailer when the checks pass, and updates the baseline", (t) => {
+  if (!canInspectSlots(t)) return;
   const f = fixture(t);
   const result = f.runWith({ FAKE_CHECKS: JSON.stringify(["true"]) }, "wrap", "Finished", "--next", "Fix check");
   assert.equal(result.status, 0, result.stderr);
@@ -197,6 +204,7 @@ function refusesFailingChecks(f, env, say) {
 }
 
 test("wrap refuses to commit when a registered check fails, naming it with its exit status", (t) => {
+  if (!canInspectSlots(t)) return;
   const f = fixture(t);
   const r = refusesFailingChecks(f, {}, /^atelier: wrap refuses to commit with a failing check: exit 7 \(exited 7\)\. Fix it, or run again with --allow-failing to commit anyway\./m);
   assert.match(r.stdout, /Reported: exit 7: failed \(owner's checkout, not a clean clone\)\./, "the result was printed before the refusal");
@@ -204,13 +212,39 @@ test("wrap refuses to commit when a registered check fails, naming it with its e
 });
 
 test("the refusal names every failed check, with the signal that ended one that did not exit", (t) => {
+  if (!canInspectSlots(t)) return;
   const f = fixture(t);
   const r = refusesFailingChecks(f, { FAKE_CHECKS: JSON.stringify(["exit 7", "true", "kill -TERM $$"]) },
     /wrap refuses to commit with 2 failing checks: exit 7 \(exited 7\), kill -TERM \$\$ \(ended by SIGTERM\)\. Fix them, or run again with --allow-failing/);
   assert.match(r.stdout, /Reported: true: passed/);
 });
 
+// t419: a registered check's group, and what it started, ends with the
+// command running it when that command is interrupted, hung up on or
+// SIGTERMed, and the command ends with the signal's status.
+test("SIGINT, SIGTERM and SIGHUP to wrap end the running check's process group", { timeout: 30_000 }, async (t) => {
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    const f = fixture(t);
+    const pidFile = join(f.dir, "check-sleeper.pid");
+    const child = f.spawnWith({ FAKE_CHECKS: JSON.stringify([`sleep 300 & echo $! > ${pidFile}; wait`]) }, "wrap", "Interrupted", "--next", "x");
+    t.after(() => child.kill("SIGKILL"));
+    const ended = new Promise((ok) => child.on("close", (status, sig) => ok({ status, sig })));
+    const until = Date.now() + 15_000;
+    while (!(existsSync(pidFile) && readFileSync(pidFile, "utf8").trim())) {
+      assert.ok(Date.now() < until, "the check never started its sleeper");
+      await new Promise((ok) => setTimeout(ok, 25));
+    }
+    const sleeper = Number(readFileSync(pidFile, "utf8"));
+    child.kill(signal);
+    assert.deepEqual(await ended, { status: 128 + osConstants.signals[signal], sig: null });
+    const alive = () => { try { process.kill(sleeper, 0); return true; } catch { return false; } };
+    for (const stop = Date.now() + 2000; alive() && Date.now() < stop;) await new Promise((ok) => setTimeout(ok, 50));
+    assert.equal(alive(), false, `after ${signal}, the check's sleeper ${sleeper} outlived wrap`);
+  }
+});
+
 test("wrap --allow-failing commits past a failing check and records the override in the note", (t) => {
+  if (!canInspectSlots(t)) return;
   const f = fixture(t);
   const result = f.run("wrap", "Finished", "--next", "Fix check", "--allow-failing");
   assert.equal(result.status, 0, result.stderr);
@@ -231,6 +265,7 @@ test("wrap --allow-failing commits past a failing check and records the override
 });
 
 test("wrap --allow-failing with passing checks records no override", (t) => {
+  if (!canInspectSlots(t)) return;
   const f = fixture(t);
   const r = f.runWith({ FAKE_CHECKS: JSON.stringify(["true"]) }, "wrap", "Fine", "--allow-failing");
   assert.equal(r.status, 0, r.stderr);
@@ -490,6 +525,7 @@ function refuses(f, say) {
 }
 for (const [state, { say, make }] of Object.entries(unfinished)) {
   test(`wrap refuses ${state} on a tree with nothing else in it`, (t) => {
+    if (/conflict markers/.test(say.source) && !canInspectSlots(t)) return;
     const f = fixture(t);
     f.clean();
     make(f);
@@ -508,6 +544,7 @@ test("a refusal stages nothing of the changes waiting beside it", (t) => {
 });
 
 test("wrap asks again whether the checkout is ready once the registered checks have run", (t) => {
+  if (!canInspectSlots(t)) return;
   // A registered check can leave work unfinished: the first look at the checkout passed.
   const f = fixture(t);
   f.clean();
@@ -579,6 +616,7 @@ test("a policy that is not committed yet applies from the session after it is", 
 });
 
 test("wrap asks again about the ceiling once the registered checks have run", (t) => {
+  if (!canInspectSlots(t)) return;
   const f = fixture(t);
   commitPolicy(f, 2);
   f.clean();
@@ -630,6 +668,45 @@ test("wrap pushes each remote, continues after failure, files found tasks and th
   assert.match(r.stdout, /Relay: session closed with a failed push to broken\./);
   assert.match(r.stdout, /Remote broken: failed\./);
 });
+test("wrap pushes a declared public mirror only the project's no-reply address: an agent address the landing allows is not published", (t) => {
+  const f = fixture(t), path = remote(f, "github"), own = remote(f, "origin");
+  const branch = f.git("branch", "--show-current");
+  // History the mirror already holds is not read again, whatever it carries.
+  f.git("push", "-q", "github", branch);
+  const identity = JSON.stringify({ name: "Owner", email: "123+owner@users.noreply.github.com", agentEmails: ["agents@atelier.example"], publicMirrors: ["github"] });
+  // A commit under the project's no-reply address is published.
+  f.git("config", "user.email", "123+owner@users.noreply.github.com");
+  const pushed = f.runWith({ FAKE_IDENTITY: identity }, "wrap", "Owner", "--push", "--no-check");
+  assert.equal(pushed.status, 0, pushed.stderr);
+  assert.match(pushed.stdout, /Remote github: pushed\./);
+  const published = f.git("rev-parse", "HEAD");
+  assert.equal(f.git("--git-dir", path, "rev-parse", `refs/heads/${branch}`), published);
+  // One under an agent address the landing allows is not.
+  f.git("config", "user.email", "agents@atelier.example");
+  writeFileSync(join(f.checkout, "agent.txt"), "agent work\n");
+  const refused = f.runWith({ FAKE_IDENTITY: identity }, "wrap", "Agent", "--push", "--no-check");
+  assert.equal(refused.status, 1, refused.stderr);
+  const commit = f.git("rev-parse", "HEAD");
+  assert.match(refused.stdout, new RegExp(`Remote github: not pushed; it would publish addresses that are not public:\\n  commit ${commit.slice(0, 12)}: the author email agents@atelier\\.example is not the project's public address 123\\+owner@users\\.noreply\\.github\\.com \\(commitEmail\\), the only one a public mirror \\(publicMirrors\\) takes\\n  commit ${commit.slice(0, 12)}: the committer email agents@atelier\\.example`));
+  assert.doesNotMatch(refused.stdout, /test@example\.invalid/, "what the mirror already holds is outside the range");
+  assert.equal(f.git("--git-dir", path, "rev-parse", `refs/heads/${branch}`), published);
+  // A remote the policy does not declare a public mirror is the owner's own, and takes the agent's commit.
+  assert.match(refused.stdout, /Remote origin: pushed\./);
+  assert.equal(f.git("--git-dir", own, "rev-parse", `refs/heads/${branch}`), commit);
+  assert.match(refused.stderr, /the push failed for 1 remote: github/);
+});
+
+test("wrap checks no remote as a public mirror when the policy declares none", (t) => {
+  const f = fixture(t), path = remote(f, "github");
+  const branch = f.git("branch", "--show-current");
+  const identity = JSON.stringify({ name: "Owner", email: "123+owner@users.noreply.github.com", agentEmails: ["agents@atelier.example"] });
+  f.git("config", "user.email", "agents@atelier.example");
+  const r = f.runWith({ FAKE_IDENTITY: identity }, "wrap", "Agent", "--push", "--no-check");
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /Remote github: pushed\./);
+  assert.equal(f.git("--git-dir", path, "rev-parse", `refs/heads/${branch}`), f.git("rev-parse", "HEAD"));
+});
+
 test("wrap names every failed push in the relay line, beside an overridden failing check", (t) => {
   const f = fixture(t);
   f.git("remote", "add", "gone", join(f.dir, "gone.git"));

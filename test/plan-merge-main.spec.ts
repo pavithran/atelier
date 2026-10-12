@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
-import type { LedgerEvent } from "../src/ledger.ts";
+import type { ReviewClaim, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import { planText, type PlanPartView, type PlanView } from "../src/plans/show.ts";
@@ -96,8 +96,8 @@ async function submitApproved(L: L, partId: string, head: string, path: string) 
   await L.submit(partId, builder);
   const waiting = (await L.reviewWaiting()).filter((w) => w.id === partId);
   const reviewer = `${waiting[0].dispatch!.agent}/${waiting[0].dispatch!.model}`;
-  await L.claimReview(partId, reviewer, RUNNER);
-  await L.addReview({ itemId: partId, criteria: await L.criteria(partId), by: reviewer, head, approve: true, note: "Good", at: new Date().toISOString() });
+  const reviewClaim1 = await L.claimReview(partId, reviewer, RUNNER) as unknown as ReviewClaim;
+  await L.addReview({ request: reviewClaim1.request, itemId: partId, criteria: await L.criteria(partId), by: reviewer, head, approve: true, note: "Good", at: new Date().toISOString() });
   return { builder, reviewer };
 }
 
@@ -163,7 +163,7 @@ it("its brief says main is merged with conflicts left, and failing checks add no
   const brief = await L.jobBrief(m.id, builder);
   expect(brief.job).toBe("build");
   expect(brief.text).toContain(`# Build part \`${KEY}\`: Merge main at 11111111 into the plan's branch`);
-  expect(brief.text).toContain(`## Merging main\n\nMain at 11111111 (${M1}) conflicts with the plan's branch.`);
+  expect(brief.text).toContain(`## Merging main\n\nThis part was queued for main at 11111111 (${M1}); that is dispatch context, not the merge target.`);
   expect(brief.text).toContain(`it already ends with the line Agent: ${builder}`);
   // Main moves on while the part is built and its builder gives up: the part goes again, with no refresh before it.
   await L.noteMainHead(M2);

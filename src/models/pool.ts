@@ -21,6 +21,15 @@ export interface ModelStatus {
   detail?: string;
 }
 
+export interface ModelNote {
+  at: string;
+  by: string;                 // the owner who wrote it
+  text: string;
+  item?: string;              // the task it concerns; a note with none bears on every task
+  project?: string;           // the project's stable key, not its name: task ids repeat across projects
+  projectName?: string;       // the project's current name, read with the note and never stored
+}
+
 export interface ModelEntry {
   id: string;                 // as the harness names it; the second half of an actor name
   harness: PoolHarness;
@@ -34,6 +43,7 @@ export interface ModelEntry {
   addedBy: string;
   addedAt: string;
   status?: ModelStatus;
+  notes?: ModelNote[];        // oldest first; read with the entry, never stored on it
 }
 
 // Names, as patterns, oldest-established first within each family. Anything
@@ -54,6 +64,10 @@ const FAMILIES: [PoolFamily, RegExp][] = [
   ["bytedance", /^seed\b|bytedance|doubao/i],
   ["cohere", /^command\b|cohere|^north\b/i],
 ];
+
+// Every family a name can be recognised as, in the order above: the
+// companies a project may run on alone (`atelier init --single-family`).
+export const POOL_FAMILIES: readonly PoolFamily[] = FAMILIES.map(([family]) => family);
 
 export function familyOf(model: string): PoolFamily {
   const name = model.split("/").pop() ?? model;
@@ -77,8 +91,8 @@ const plain = (s: string) => s.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
 const KEY_PREFIX = /(?<![A-Za-z0-9])(?:sk-|sk_|hf_|AIza|ghp_|gho_|github_pat_|xox[abpr]-|AKIA|eyJ)[A-Za-z0-9_\-.]{8,}|Bearer [A-Za-z0-9._\-]{8,}/;
 // A long run of letters and digits, mixing both, as random keys are and
 // names are not; some keys join two such runs with a dot (id.secret).
-const KEY_RUN = /[A-Za-z0-9]*(?:[A-Za-z][A-Za-z0-9]*[0-9]|[0-9][A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]*/g;
-const hasKeyRun = (s: string) => (s.match(KEY_RUN) ?? []).some((run) => run.length >= 24);
+// Scan each run once: failure logs can contain very long alphabetic lines.
+const hasKeyRun = (s: string) => (s.match(/[A-Za-z0-9]+/g) ?? []).some((run) => run.length >= 24 && /[A-Za-z]/.test(run) && /[0-9]/.test(run));
 const LOOKS_LIKE_KEY = { test: (s: string) => KEY_PREFIX.test(s) || hasKeyRun(s) };
 // Any part of an endpoint's path that looks like a key.
 const keyInPath = (path: string) => path.split("/").some((seg) => LOOKS_LIKE_KEY.test(seg));
@@ -149,3 +163,27 @@ export function cleanStatus(body: Record<string, unknown>, at: string, by: strin
 // The fields a status was observed under: change one and the status no
 // longer describes the entry.
 export const OBSERVED_UNDER = ["harness", "where", "provider", "endpoint", "keychain"] as const;
+
+export function cleanNote(body: Record<string, unknown>, by: string, at: string): ModelNote {
+  const bad = (detail: string) => new RuleError("bad_note", detail, 400);
+  const text = plain(str(body.text)).trim();
+  if (!text) throw bad("a note needs text");
+  if (text.length > 500) throw bad("a note is at most 500 characters");
+  if (LOOKS_LIKE_KEY.test(text)) throw bad("the note looks like it carries a key; a key belongs in the Keychain");
+  const item = str(body.item);
+  if (item && !/^t[1-9]\d*$/.test(item)) throw bad("a note names the task it concerns, such as t406, or none");
+  const project = plain(str(body.project)).trim();
+  if (item && !project) throw bad("a note on a task names its project, such as alpha");
+  if (project && !item) throw bad("a note names a project only with the task it concerns");
+  if (project.length > 100) throw bad("a project name is at most 100 characters");
+  return { at, by, text, ...(item ? { item, project } : {}) };
+}
+
+const noteTask = (n: ModelNote) => (n.project ? `${n.projectName ?? n.project}/${n.item}` : n.item ?? "");
+
+// The latest of an entry's notes that bears on a task: one that names no task, or that names this task in this project's key.
+export function latestNote(entry: Pick<ModelEntry, "notes">, projectKey: string, item: string): ModelNote | undefined {
+  return (entry.notes ?? []).filter((n) => !n.item || (n.item === item && n.project === projectKey)).at(-1);
+}
+
+export const noteLine = (n: ModelNote) => `Latest note, ${n.at.slice(0, 10)} by ${n.by}${n.item ? ` on ${noteTask(n)}` : ""}: ${n.text}`;
