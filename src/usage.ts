@@ -297,6 +297,11 @@ Standing rules:
   Write with each criterion the edge cases it implies, and have a model of
   another company than you (in single-family mode, another model of the
   selected company) read the criteria before the task is dispatched.
+- A criterion that requires every path to be guarded asks for one guarded
+  entry point that the low-level write enforces at run time, tested by
+  calling the low-level write directly; never for a test that scans the
+  source for paths, which can never prove none is missed (t389 was rejected
+  ten rounds running, each time over a form the scanner missed).
 - Before asking for the independent review, read the diff against the
   criteria yourself; it does not count at the gate, but it catches plain misses.
 - Resolve a mechanical merge conflict yourself (both sides adding help text,
