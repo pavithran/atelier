@@ -9,7 +9,7 @@ import { carryTask, loadPairs, rebuild, savePairs } from "../fresh.mjs";
 import { provenanceNote } from "../provenance.mjs";
 import { COMMAND_USAGE } from "../help.mjs";
 import { IDENTITY_LOG_FORMAT, isPublicMirror, NO_IDENTITY, parseIdentityLog, publicRefusals } from "../../src/commit-identity.ts";
-import { I, OWNER, P, actor, args, at, call, cfg, die, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, overrideArg, project, refreshControlPlane, request, server, short, writeReceipt } from "../atelier.mjs";
+import { I, OWNER, P, actingHeaders, actor, args, at, call, cfg, die, git, gitEnv, identityEnv, identityRangeRefusals, itemArg, landingGit, landingHome, overrideArg, project, refreshControlPlane, request, server, short, writeReceipt } from "../atelier.mjs";
 
 // The project owner merges an exact revision. With --head, a submitted item
 // is first approved (with --approve) and accepted at that revision only.
@@ -131,7 +131,7 @@ export default async function mergeCommand() {
       if (d.item.head!==args.head) die("the task changed; review the new revision before merging");
       // The owner approves here the criteria this command read with the head.
       if (args.approve) await call("POST",`${I(name,id)}/review`,{head:args.head,criteria:d.criteria,approve:true,note:args.note??""},OWNER);
-      await call("POST",`${I(name,id)}/accept`,{head:args.head,...(reason!==undefined?{overrideReview:reason}:{})},OWNER);
+      await call("POST",`${I(name,id)}/accept`,{head:args.head,...(reason!==undefined?{overrideReview:reason}:{})},OWNER,reason!==undefined?actingHeaders():{});
     }
   }
   const gitDir=git(["rev-parse","--absolute-git-dir"],{cwd}), landing=landingHome(gitDir);
@@ -257,7 +257,7 @@ export default async function mergeCommand() {
     // merge commit is kept for reconciliation.
     await call('POST',`${I(name,id)}/landing`,{head:item.acceptedHead},OWNER);
     // The note goes to the public remote too, so it names reviewers and verdicts but never their text (cli/provenance.mjs).
-    const note=provenanceNote({name,id,item,view,reviews,events:d.events});
+    const note=provenanceNote({name,id,item,view,reviews,events:d.events,policy:d.policy,acceptanceFamily:d.acceptanceFamily});
     // The notes commits refs/notes/atelier holds that FROM (a remote's notes
     // tip, or nothing) does not, checked against the policy's identity.
     // A remote the policy declares a public mirror takes only the project's own

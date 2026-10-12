@@ -20,13 +20,18 @@ const spec: CommandSpec = {
     },
     {
       group: "Models", line: 1, slot: 10,
-      form: "models",
-      about: "Lists the model pool: each model's harness, where it runs, its family and what a runner last found.",
+      form: "models [--json]",
+      about: "Lists the model pool: each model's harness, where it runs, its family, what a runner last found and its dated notes, and, with `--json`, the whole pool as JSON carrying each entry's state, roles, tier and notes.",
     },
     {
       group: "Models", line: 1, slot: 20,
-      form: "models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... [--note TEXT]",
+      form: "models add ID --harness H --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME] [--alias A]... [--note TEXT] [--state paused|reserved|available] [--roles build,review,plan] [--tier frontier|execution|budget]",
       about: "Adds or replaces a pool entry. Atelier never stores a key: `--keychain` names the Keychain entry that holds it, and a request that carries a key is refused. `--note` keeps a note with the entry.",
+    },
+    {
+      group: "Models", line: 1, slot: 25,
+      form: "models set ID --state paused|reserved|available [--note TEXT] [--roles build,review,plan] [--tier frontier|execution|budget]",
+      about: "Changes an entry's standing, note, roles and tier.",
     },
     {
       group: "Models", line: 1, slot: 30,
@@ -44,15 +49,19 @@ const spec: CommandSpec = {
       about: "Removes a model from the pool.",
     },
   ],
-  flags: { reason: false, harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, item: false, key: false, "api-key": false, token: false },
+  flags: { reason: false, harness: false, where: false, provider: false, endpoint: false, keychain: false, alias: false, note: false, item: false, key: false, "api-key": false, token: false, json: true, state: false, roles: false, tier: false },
   // The pool itself is listed, added to and pruned on any server; the dated
-  // notes, which `note` posts and `show` prints, need models.note.v1.
+  // notes, which `note` posts and `show` prints, need models.note.v1, and the
+  // standing (t389), which `set` posts, needs models.standing.v1, as does
+  // `add` when it gives --state, --roles or --tier (requiredForCommand).
   subcommands: {
     admit: { capabilities: ["reviews.admission.v1"] },
     withdraw: { capabilities: ["reviews.admission.v1"] },
     reviewers: { capabilities: ["reviews.admission.v1"] },
     note: { capabilities: ["models.note.v1"] },
     show: { capabilities: ["models.note.v1"] },
+    set: { capabilities: ["models.standing.v1"] },
+    add: { capabilities: ["models.standing.v1"] },
   },
   help: {
     flags: {
@@ -64,6 +73,10 @@ const spec: CommandSpec = {
       "--keychain NAME": "the Keychain entry that holds the key; the key itself is never sent",
       "--alias A": "another name the harness reports the model under; once per alias",
       "--note TEXT": "a note kept with the entry",
+      "--state paused|reserved|available": "with set, the owner's standing; paused and reserved keep the model out of routing, dispatch suggestions and review requests",
+      "--roles build,review,plan": "with set or add, the jobs the model may take; a review-only model is never a builder",
+      "--tier frontier|execution|budget": "with set or add, the model's tier, stored and returned in JSON",
+      "--json": "prints the pool as JSON, carrying each entry's state, roles, tier and notes",
       "--item tN": "the task a dated note concerns; without it the note bears on every task the model is suggested for",
     },
     example: "atelier models add gpt-6-astra --harness codex --where cloud",

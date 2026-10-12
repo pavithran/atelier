@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { ROUTE_LEVEL } from "../src/route-level.ts";
-import { detectMovedEdits, describeFinding, findingKey, parseHunks, parseRawZ, showPath, MIN_MATCH_LINES } from "../src/moved-code.ts";
+import { detectMovedEdits, detectMovedEditsAsync, describeFinding, findingKey, parseHunks, parseRawZ, showPath, MIN_MATCH_LINES } from "../src/moved-code.ts";
 import { readMovedCodeRecords } from "../cli/landing.mjs";
 
 // The landing's poll is read when cli/land.mjs loads, so it is set first.
@@ -121,6 +121,22 @@ test("t437 after t426: Git merges the handler edit cleanly into the loader, and 
   assert.equal(f.sample[0], 'const r = await call("POST", "/evidence", { claim: args._[2] });');
   assert.match(describeFinding(f), /^cli\/atelier\.mjs lines 6-11 moved to cli\/commands\/report\.mjs lines 2-7: the task inserted 1 line between base lines 9 and 10 there \(its line 10 at the task's head\); 6 lines match, whitespace aside/);
   assert.deepEqual({ task: report.task, main: report.main, mergeBase: report.mergeBase }, s.revs);
+});
+
+// A build's runner runs the comparison before it submits (t435), through a
+// git that runs each command as a child and answers a promise: the same
+// reads, in the same order, and the same report.
+test("the comparison through a git that answers a promise reads the same commands and finds the same move", async (t) => {
+  const s = scenario(t, regression);
+  const syncReads = [], asyncReads = [];
+  const sync = detectMovedEdits((args) => { syncReads.push(args); return read(s.dir)(args); }, s.revs);
+  const report = await detectMovedEditsAsync(async (args) => { asyncReads.push(args); await new Promise((r) => setTimeout(r, 1)); return read(s.dir)(args); }, s.revs);
+  assert.deepEqual(report, sync);
+  assert.equal(report.findings.length, 1);
+  assert.deepEqual(asyncReads, syncReads);
+  assert.deepEqual([...new Set(asyncReads.map((args) => args[0]))].sort(), ["cat-file", "diff", "diff-tree"]);
+  // A read that fails ends the comparison with its error, as the synchronous one does.
+  await assert.rejects(detectMovedEditsAsync(async () => { throw new Error("git unavailable"); }, s.revs), /git unavailable/);
 });
 
 test("the repository's diff configuration changes nothing: with interHunkContext and context raised, the same findings come back", (t) => {
@@ -393,7 +409,7 @@ test("plain land: an edit in moved code stops it before the merge, Git unchanged
   const error = await l.land();
   assert.ok(error, "the landing stops");
   assert.match(error.message, /t1's edits lie in code main moved to another file, so the landing stops before merging main; Git and the workspace are unchanged \(task [0-9a-f]{8}, main [0-9a-f]{8}, merge base [0-9a-f]{8}\):\n  - cli\/atelier\.mjs lines 6-11 moved to cli\/commands\/report\.mjs lines 2-7/);
-  assert.match(error.message, /To port them: merge main into the workspace .*atelier dispatch t1 --job merge-main\), make each edit again at its destination, commit, and run atelier land t1 again, which compares afresh\. If a finding is wrong, atelier land t1 --moved-ok records your approval/);
+  assert.match(error.message, /To port them: merge main into the workspace .*atelier dispatch t1 --job merge-main\), make each edit again at its destination, commit, push with atelier push, and run atelier land t1 again, which compares afresh\. If a finding is wrong, atelier land t1 --moved-ok records your approval/);
   unchanged(w, head);
   assert.ok(l.released());
   assert.deepEqual(l.commands, []);
@@ -511,7 +527,7 @@ test("Workflow land: an edit in moved code pauses the Workflow at its conflict s
   const first = landIo(w, { args: { workflow: true }, wf });
   const error = await first.land();
   assert.match(error.message, /t1's edits lie in code main moved to another file/);
-  assert.match(error.message, /The landing Workflow is paused at its conflict stage and has released the lease; no merge was made, so nothing is left to resolve in the index\. Once the edits are ported and committed, run atelier land t1 --workflow again/);
+  assert.match(error.message, /The landing Workflow is paused at its conflict stage and has released the lease; no merge was made, so nothing is left to resolve in the index\. Once the edits are ported, committed and pushed with atelier push, run atelier land t1 --workflow again/);
   assert.match(error.message, /run atelier land t1 --workflow again, which compares afresh/);
   assert.deepEqual(wf.events.map((e) => [e.type, e.payload.round, e.payload.conflict, e.payload.files]), [["workspace", 0, true, ["cli/atelier.mjs", "cli/commands/report.mjs"]]]);
   assert.equal(wf.stage, "conflict");

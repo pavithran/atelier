@@ -1,0 +1,17 @@
+TAP version 13
+# Subtest: adds numbers
+ok 1 - adds numbers
+  ---
+  duration_ms: 0.239416
+  ...
+# Subtest: skipped one
+ok 2 - skipped one # SKIP
+  ---
+  duration_ms: 0.040125
+  ...
+1..2
+# tests 2
+# pass 1
+# fail 0
+# skipped 1
+[atelier] check timed out after 1200000ms; its process group was killed

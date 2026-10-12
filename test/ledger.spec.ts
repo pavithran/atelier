@@ -8,6 +8,7 @@ import { parseRuleError, type Evidence, type Item, type ProjectPolicy, type Revi
 import type { Detail } from "../src/ui.ts";
 import { signIn } from "./signin.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
+import { taskProgress } from "../src/ui.ts";
 
 // The Ledger driven end to end over Durable Object RPC, with its real SQLite
 // storage, inside the Workers test pool. The pure policy underneath is tested
@@ -160,6 +161,20 @@ it("an item moves from creation to merge, gated by observed evidence", async () 
   ]);
 });
 
+// t367: the task page's steps read from what the Ledger records. A fresh
+// fork's head is its base, so Fork stays current until a push moves it.
+it("a fresh fork is at Fork, and a push that moves the head brings it to Prove", async () => {
+  const L = await setup("progress");
+  await L.newItem("Show the steps", ["src/**"], "owner");
+  await L.claim("t1", A);
+  const at = async () => taskProgress(await L.item("t1"), []).steps.find((s) => s.state === "current")?.verb;
+  await L.setFork("t1", "progress--t1", H0, A);
+  expect(await L.item("t1")).toMatchObject({ base: H0, head: H0 });
+  expect(await at()).toBe("Fork");
+  await L.recordPush("t1", A, H1, H1);
+  expect(await at()).toBe("Prove");
+});
+
 // t168: a merged revision whose declared protected actions have not run asks
 // the owner to ship it, and a recorded run of each kind retires the reminder.
 it("the inbox reminds the owner of a merged revision whose declared protected actions have not run", async () => {
@@ -272,7 +287,9 @@ it("decision 2026-10-06: only the owner overrides a missing review, with a reaso
   expect(accepted.overrideConfirmation).toBeUndefined();
   const events = await L.events("t1") as unknown as LedgerEvent[];
   expect(events.slice(0, 2).map((e) => [e.kind, e.actor])).toEqual([["item.accepted", "owner"], ["review.overridden", "owner"]]);
-  expect(events[1].data).toEqual({ head: H2, reason, waived: "touches a protected path; needs approval from a model of another family than every contributor", contributors: [A], confirmed: "command line", confirmedAt: allowed.overrideConfirmation!.at, factor: "secret" });
+  expect(events[1].data).toEqual({ head: H2, reason, waived: "touches a protected path; needs approval from a model of another family than every contributor", contributors: [A], confirmed: "command line", confirmedAt: allowed.overrideConfirmation!.at, factor: "secret",
+    // t457: called with no reviewer looked for, the record says so, as unknown.
+    availability: { known: false, reviewer: null, source: "none", at: events[1].at, why: "no reviewer was looked for as the override was made" } });
   expect(events[0].data).toMatchObject({ head: H2, reviewOverridden: true });
   // It is not a review: none was recorded for it.
   expect((await L.reviewsFor("t1")).filter((r) => r.head === H2)).toEqual([]);
@@ -346,7 +363,8 @@ it("decision 2026-10-09: the inbox names the reviewer a land would use for an as
   // Only the contributor's own model is available: the entry names no reviewer.
   const none = await L.inbox(T, [entry("opus-5.5", { harness: "claude-code" })]);
   expect(none[0].reviewer).toBeNull();
-  expect((await L.inbox(T)).map((e) => [e.kind, e.reviewer])).toEqual([["assess", null]]);
+  // With no pool given the reviewer is left unset: not read, never "none qualifies".
+  expect((await L.inbox(T)).map((e) => [e.kind, e.reviewer])).toEqual([["assess", undefined]]);
 });
 
 it("the holder under another letter case, profile or registered name cannot review, and that model's approval does not count", async () => {
@@ -995,6 +1013,15 @@ it("an init is merged into the project in one step and keeps every field it does
   expect(mergeProject(tiered, { ...base, title: "V" }, "later").policy.reviewTier).toEqual(["claude-code/opus-5.5", "codex/gpt-6.1-sol"]);
   expect(mergeProject(tiered, { ...base, reviewTier: [] }, "later").policy).not.toHaveProperty("reviewTier");
   expect(mergeProject(tiered, { ...base, reset: true }, "later").policy).not.toHaveProperty("reviewTier");
+  // t394: the model policy is unset by default; a switch is stamped with the
+  // init's time and who made it, kept by an init that does not name it, and
+  // a return to cross-family review is recorded the same way, not dropped.
+  expect(full.policy).not.toHaveProperty("familyMode");
+  const single = mergeProject(full, { ...base, familyMode: { single: "anthropic", by: "pavi" } }, "2026-10-09T10:00:00Z");
+  expect(single.policy.familyMode).toEqual({ single: "anthropic", by: "pavi", at: "2026-10-09T10:00:00Z" });
+  expect(mergeProject(single, { ...base, title: "V" }, "later").policy.familyMode).toEqual({ single: "anthropic", by: "pavi", at: "2026-10-09T10:00:00Z" });
+  expect(mergeProject(single, { ...base, familyMode: { single: null, by: "pavi" } }, "2026-10-10T10:00:00Z").policy.familyMode).toEqual({ single: null, by: "pavi", at: "2026-10-10T10:00:00Z" });
+  expect(mergeProject(single, { ...base, reset: true }, "later").policy).not.toHaveProperty("familyMode");
   // reset starts the policy over and keeps the project's identity.
   const reset = mergeProject(full, { ...base, reset: true }, "later");
   expect(reset.policy).toEqual({ checks: [], protected: ["AGENTS.md", "CLAUDE.md", "wrangler.*", ".atelier/prompts/**"], eligible: [], refuseOverlap: false, sandboxOnly: false });

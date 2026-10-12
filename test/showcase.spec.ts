@@ -151,7 +151,14 @@ it("the showcase leads with what Atelier is and keeps the tally as its sub-head"
   await I().setShowcase("lead-check", "named");
   const body = await (await worker.fetch(new Request("https://atelier.test/showcase"), testEnv)).text();
   expect(body).toContain("<h1>A Git platform for multiple coding agents</h1>");
-  expect(body.indexOf("One owner per task, evidence observed, another model family reviews, the owner decides.")).toBeGreaterThan(0);
+  expect(body.indexOf("<strong>Proven. Reviewed. Recorded.</strong> Git keeps the code. Atelier brings the receipts.")).toBeGreaterThan(0);
+  // How a task travels names the five steps as its headings, then sums them up.
+  const travels = body.slice(body.indexOf('aria-label="How a task travels"'));
+  const verbs = [...travels.matchAll(/<h3>([A-Za-z]+)<\/h3>/g)].map((m) => m[1]).slice(0, 5);
+  expect(verbs).toEqual(["Claim", "Fork", "Prove", "Review", "Land"]);
+  expect(travels).toContain('<p class="takeaways">Proven. Reviewed. Recorded.</p>');
+  // The steps take the accent, not the agents' family colours.
+  expect(travels.slice(0, travels.indexOf("</section>"))).not.toContain("--m-");
   expect(body.indexOf('class="subhead"')).toBeGreaterThan(body.indexOf("<h1>A Git platform"));
   expect(body).toContain("The owner made 0 decisions.");
 });
