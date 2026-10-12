@@ -86,7 +86,7 @@ test("every page a mockup draws has both a desktop (1440) and a phone (390) fram
   }
 });
 
-test("the mockups draw palette B with the values brief.md §1.1 fixes", () => {
+test("the mockups draw the Night palette with the values brief.md §1.1 fixes", () => {
   const brief = read("brief.md");
   const css = read("mockups/mockup.css");
   const light = css.slice(css.indexOf("@media (prefers-color-scheme: light)"));
@@ -104,7 +104,7 @@ test("the mockups draw palette B with the values brief.md §1.1 fixes", () => {
     });
   }
   assert.ok(checked >= 15, `${checked} palette tokens checked`);
-  assert.equal(value(dark, "--signal"), "#4d8bff", "palette B's one accent");
+  assert.equal(value(dark, "--signal"), "#ffd166", "Night's gold accent");
 });
 
 test("the mockups draw company colours only inside charts (d9)", () => {
