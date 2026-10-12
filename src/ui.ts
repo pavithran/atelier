@@ -15,7 +15,7 @@ import { DISPATCH_NOTE_MAX, notePreview, TEXT_CONTROLS } from "./text.ts";
 import { appliesText, checkClasses, classText, type CheckClass } from "./checks.ts";
 import theme from "./theme.css";
 import layout from "./layout.css";
-import type { ProjectRecord, LedgerEvent, ReviewerAvailability } from "./ledger";
+import type { CriteriaReviewView, ProjectRecord, LedgerEvent, ReviewerAvailability } from "./ledger";
 import { landingOf } from "./diff";
 import type { FileChange, ItemDiff, Landed } from "./diff";
 import { ago, position, splitActor, staggers, type Bench, type Floor, type MarkKind } from "./floor";
@@ -249,6 +249,9 @@ export interface Detail {
   prereviews?: PrereviewView[];
   prereviewFence?: PrereviewFence | null;
   gate: Gate;
+  // Where the review of the item's acceptance criteria stands (t438), with
+  // every criteria review and resolution; absent from an older server.
+  criteriaReview?: CriteriaReviewView;
   events: LedgerEvent[];
 }
 export interface FormError { verb: "approve" | "reject" | "accept" | "override" | "allow-override"; message: string; note?: string }
