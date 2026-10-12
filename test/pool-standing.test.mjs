@@ -144,6 +144,10 @@ const PATHS = [
   ['src/ledger.ts', 'bindReview', 'actorStanding(', 'a review bound to a reviewer'],
   ['src/ledger.ts', 'poolChanged', 'actorStanding(', 'a change in the pool standing'],
   ['src/ledger.ts', 'handoffAllowed', 'this.assertStanding(', 'a task handed off to a new owner'],
+  ['src/review/criteria.ts', 'pickCriteriaReviewer', 'standingRefusal(', "a criteria review's reviewer, picked from the pool (t438)"],
+  ['src/ledger.ts', 'askCriteriaReview', 'this.standingDispatch(', "a criteria review's reviewer, named or picked (t438)"],
+  ['src/ledger.ts', 'claimCriteriaReview', 'actorStanding(', 'a criteria review claimed by the reviewer asked (t438)'],
+  ['src/ledger.ts', 'addCriteriaReview', 'actorStanding(', "a criteria reviewer's verdict (t438)"],
 ];
 
 // The body of a top-level function or a class method, up to the next one.

@@ -12,6 +12,11 @@ import command_board from "./board.mjs";
 import command_check from "./check.mjs";
 import command_check_log from "./check-log.mjs";
 import command_claim from "./claim.mjs";
+import command_criteria_finding from "./criteria-finding.mjs";
+import command_criteria_review from "./criteria-review.mjs";
+import command_criteria_review_claim from "./criteria-review-claim.mjs";
+import command_criteria_review_failed from "./criteria-review-failed.mjs";
+import command_criteria_verdict from "./criteria-verdict.mjs";
 import command_decide from "./decide.mjs";
 import command_decisions from "./decisions.mjs";
 import command_defect from "./defect.mjs";
@@ -90,6 +95,11 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/check.mjs", run: command_check },
   { path: "cli/commands/check-log.mjs", run: command_check_log },
   { path: "cli/commands/claim.mjs", run: command_claim },
+  { path: "cli/commands/criteria-finding.mjs", run: command_criteria_finding },
+  { path: "cli/commands/criteria-review.mjs", run: command_criteria_review },
+  { path: "cli/commands/criteria-review-claim.mjs", run: command_criteria_review_claim },
+  { path: "cli/commands/criteria-review-failed.mjs", run: command_criteria_review_failed },
+  { path: "cli/commands/criteria-verdict.mjs", run: command_criteria_verdict },
   { path: "cli/commands/decide.mjs", run: command_decide },
   { path: "cli/commands/decisions.mjs", run: command_decisions },
   { path: "cli/commands/defect.mjs", run: command_defect },
