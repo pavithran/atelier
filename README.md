@@ -100,16 +100,16 @@ the commit when multiple agents work at once, and that is what Atelier adds.
 | Which model is worth it? | Nothing records it. | Each model's track record and reliability from the ledger, and its calls, cost and latency from AI Gateway. |
 | Who did what? | Commit metadata, which an agent writes itself. | Every claim, push, check, review, decision and merge is an event in the ledger, and each merge's builder, reviewer and head go into Git as provenance notes. |
 
-The record shows what this catches. In Atelier's own project, in the ledger
-as read at 2026-10-08 15:43 UTC (the export in `video/data/ledger.json`,
-derived by `video/scripts/derive.mjs`), models recorded 346 reviews; 99 sent
-the work back, with 70 findings marked blocking, each found before the change
-merged. Of the 240 merged (239 tasks and one plan), 192 carry an approval
-from another model family at the revision that merged, and every task merged
-after 22:11 UTC on 2026-10-06 does (103 tasks, besides one plan), since the
-project owner extended the rule to every path in the project that day. The public showcase
-at [atelier.zone](https://atelier.zone), read at 2026-10-12 22:35 UTC, counts
-365 merged all time.
+The record shows what this catches. Atelier's own project was read from its
+ledger at 2026-10-12 23:03 UTC with `atelier ls --all --json` and then
+`atelier receipt ID --json` for each of the 568 items listed, counted the way
+`video/scripts/derive.mjs` counts them. Models recorded 681 reviews; 268 sent
+the work back, with 360 findings marked blocking, each found before the
+change merged. Of the 365 merged (364 tasks and one plan), 317 carry an
+approval from another model family at the revision that merged, and every
+task merged after 22:11 UTC on 2026-10-06 does (228 tasks), since the project
+owner extended the rule to every path in the project that day. The public
+showcase at [atelier.zone](https://atelier.zone) counts the same 365 merged.
 
 ## Built on Cloudflare
 
@@ -147,7 +147,8 @@ node test/preview.mjs
 ```
 
 serves a read-only preview of the pages with illustrative content, with no
-account, token or network call; it prints its address
+account or token and no call to any Atelier server (the pages load their
+fonts from Google Fonts); it prints its address
 ([Local visual review](docs/setup.md#local-visual-review)).
 
 **1. Build and test.**
@@ -158,24 +159,24 @@ cd atelier
 npm ci && npm run types && npm test
 ```
 
-`npm test` runs the whole suite, which takes about ten minutes. Among its
-output are lines such as `uncaught exception … 403` or `… 409`: workerd logs
-each refusal the Workers runtime tests assert as an uncaught rejection, so
-those lines are the refusals under test, not failures; the summary at the end
-says whether anything failed
-([Local development](docs/setup.md#local-development)).
+`npm test` runs the whole suite. On the owner's Mac, the 143 landing check
+runs that passed from 2026-10-11 to 2026-10-12 (each `npm ci`, this suite
+and the typecheck, in a clean clone) took 4.4 to 10.6 minutes, median 6.0
+(the `land.check` events in the ledger). Among the suite's output are lines
+such as `uncaught exception … 403` or `… 409`: workerd logs each refusal the
+Workers runtime tests assert as an uncaught rejection, so those lines are the
+refusals under test, not failures; the summary at the end says whether
+anything failed ([Local development](docs/setup.md#local-development)).
 
 **2. Deploy the Worker.** `wrangler.jsonc` routes the Worker to atelier.zone
 as a custom domain and turns `workers.dev` off. In your copy, replace the
 route with a domain on your own account, or remove `routes` and set
-`workers_dev` to `true`. Choose a server token (a random one is fine, kept
-where you can paste it from), deploy, and give the Worker the token as a
-secret; wrangler reads it from the prompt, so it is not written on a command
-line:
-
-The Worker binds the R2 bucket `atelier-large` (`r2_buckets` in
-`wrangler.jsonc`), and a deploy whose bucket does not exist fails, so create
-it first, once:
+`workers_dev` to `true`. The Worker binds the R2 bucket `atelier-large`
+(`r2_buckets` in `wrangler.jsonc`), and a deploy whose bucket does not exist
+fails, so the first command creates it, once. Then choose a server token (a
+random one is fine, kept where you can paste it from), deploy, and give the
+Worker the token as a secret; wrangler reads it from the prompt, so it is not
+written on a command line:
 
 ```sh
 npx wrangler r2 bucket create atelier-large
@@ -190,22 +191,11 @@ land` refuses to run against a server whose route level is below the CLI's.
 
 The server token is not enough for everything. Overriding a review that no
 model qualified to give needs the owner's own confirmation, a factor no agent
-session holds: either the owner's pages behind Cloudflare Access, with
-`CF_ACCESS_ISS`, `CF_ACCESS_AUD` and `CF_ACCESS_OWNER_EMAIL` set
-([setup](docs/setup.md#cloudflare-access-in-front-of-the-owners-pages)), or
-a confirmation secret, `OVERRIDE_SECRET`. A server with neither confirms no
-override (`NO_OWNER_FACTOR` in `src/rules.ts`). Without Access, choose a
-second random value, keep it apart from the server token, and give it to the
-Worker the same way:
-
-```sh
-openssl rand -hex 32
-npx wrangler secret put OVERRIDE_SECRET
-```
-
-The owner types it into the task page's override form when pressing Allow an
-override from the command line; no session or agent is ever given it
-([Confirming an override](docs/setup.md#confirming-an-override)).
+session holds: either the owner's pages behind Cloudflare Access, or a
+confirmation secret, `OVERRIDE_SECRET`, given to the Worker as a second
+secret. A server with neither confirms no override (`NO_OWNER_FACTOR` in
+`src/rules.ts`). [Confirming an override](docs/setup.md#confirming-an-override)
+sets up either.
 
 **3. Install the CLI and sign in.** `login` asks for the token, checks it
 against the server, and only then stores it (in the macOS Keychain, the
@@ -839,13 +829,17 @@ proof also reports how many of the git pushes ran at once (its peak live git
 subprocesses): the pushes are concurrent, so all N overlap, and that figure is
 asserted in the tests.
 
-On 2026-10-09 the owner ran the claim race once against the live server:
-1,000 agents raced for one task on atelier.zone (the report is `race.json`,
-from t364, which taught the proof to read the holder from the ledger). One
-agent got the task, 976 were refused with a refusal naming the holder, and
-23 were answered with a retryable 503, the server saying it was busy. No
-second agent was granted the task. This README reports only what a
-run measured.
+On 2026-10-09 the claim race ran once against the live server (deploy
+3cad79b5): 1,000 agents raced for one task on atelier.zone. One agent got the
+task, 976 were refused with a refusal naming the holder, and 23 were answered
+with a retryable 503, the server saying it was busy. No second agent was
+granted the task. These figures are as the orchestrating session reported
+the run, and the run was not repeated. The ledger keeps them in the brief of
+t364, the task filed that day to fix how the proof read the holder
+(`atelier receipt t364 --json`; its page,
+[atelier.zone/p/atelier/t364](https://atelier.zone/p/atelier/t364), is behind
+the owner's sign-in), all but the count of 503s, which only that report
+gives.
 
 ## Licence
 

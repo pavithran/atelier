@@ -470,7 +470,8 @@ and no network access; `tsc -p test` typechecks them against the types
 `wrangler types` generates. Workerd logs each refusal those tests assert as
 an uncaught promise rejection (`uncaught exception … 403`, `… 409`,
 `… owned` and the like); those lines are the refusals under test, not
-failures. The whole suite takes about ten minutes.
+failures. The README's Quickstart gives how long the suite took on
+recent landings.
 
 ## Local visual review
 
