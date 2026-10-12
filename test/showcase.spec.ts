@@ -65,12 +65,12 @@ it("an anonymised project's names, titles, paths, commands, notes and addresses 
   }
   // What the page says instead: a neutral label from the project's kind, the
   // kind of work of each task story, and the card's counts and families.
-  expect(body).toContain("<h2>An iOS app</h2>");
+  expect(body).toContain("<h3>An iOS app</h3>");
   expect(body).toContain("A fix");
-  expect(body).toMatch(/<b>0<\/b>merged, last two weeks/);
-  expect(body).toMatch(/<b>0<\/b>merged, all time/);
-  expect(body).toMatch(/<b>1<\/b>sent back/);
-  expect(body).toMatch(/<b>1<\/b>in progress/);
+  expect(body).toContain("<dt>merged, last two weeks</dt><dd>0</dd>");
+  expect(body).toContain("<dt>merged, all time</dt><dd>0</dd>");
+  expect(body).toContain("<dt>sent back, last two weeks</dt><dd>1</dd>");
+  expect(body).toContain("<dt>in progress, last two weeks</dt><dd>1</dd>");
   expect(body).toContain('class="pulse-graph"');
   expect(body).toContain(">GPT<");
   expect(body).toContain(">GLM<");
@@ -93,10 +93,10 @@ it("a project shown named appears by name, beside the anonymised one", async () 
   await I().setShowcase("hush-app", "anonymous");
   await I().setShowcase("open-tool", "named");
   const body = await (await worker.fetch(new Request("https://atelier.test/showcase"), testEnv)).text();
-  expect(body).toContain("<h2>Open Tool</h2>");
-  expect(body).toContain("Polish the handle");
+  expect(body).toContain("<h3>Open Tool</h3>");
+  expect(body).toContain('<span class="meta">Open Tool · </span>gpt-6 took t1');
   expect(body).not.toContain("Hush Secret Title");
-  expect(body).toContain("<h2>An iOS app</h2>");
+  expect(body).toContain("<h3>An iOS app</h3>");
 });
 
 it("the setting is the owner's alone: agent tokens and unsigned callers cannot change it", async () => {
@@ -151,15 +151,19 @@ it("the showcase leads with what Atelier is and keeps the tally as its sub-head"
   await I().setShowcase("lead-check", "named");
   const body = await (await worker.fetch(new Request("https://atelier.test/showcase"), testEnv)).text();
   expect(body).toContain("<h1>A Git platform for multiple coding agents</h1>");
-  expect(body.indexOf("<strong>Proven. Reviewed. Recorded.</strong> Git keeps the code. Atelier brings the receipts.")).toBeGreaterThan(0);
-  // How a task travels names the five steps as its headings, then sums them up.
-  const travels = body.slice(body.indexOf('aria-label="How a task travels"'));
-  const verbs = [...travels.matchAll(/<h3>([A-Za-z]+)<\/h3>/g)].map((m) => m[1]).slice(0, 5);
-  expect(verbs).toEqual(["Claim", "Fork", "Prove", "Review", "Land"]);
-  expect(travels).toContain('<p class="takeaways">Proven. Reviewed. Recorded.</p>');
+  // The canvas's order (d29): the hero, the comparison when there is one, the
+  // tally with its evidence key, the portfolio, one task, the steps, the
+  // moves, where it runs.
+  const order = ['id="top"', 'id="tally-h"', 'class="evidence-key"', 'id="portfolio-h"', 'id="story-h"', 'id="travels-h"', 'id="moves-h"', 'id="where-h"', 'class="show-foot"'].map((m) => body.indexOf(m));
+  expect(order.every((at) => at > 0)).toBe(true);
+  expect([...order].sort((a, b) => a - b)).toEqual(order);
+  // How a task travels names its seven steps, each counted from the tally.
+  const travels = body.slice(body.indexOf('id="travels-h"'), body.indexOf('id="moves-h"'));
+  expect([...travels.matchAll(/<h3>([A-Za-z]+)<\/h3>/g)].map((m) => m[1])).toEqual(["Planned", "Claimed", "Worked", "Checked", "Reviewed", "Decided", "Merged"]);
+  expect(travels).toMatch(/<span class="travel-count">\d+ planned<\/span>/);
+  expect(travels).toMatch(/<span class="travel-count">\d+ claims?, \d+ handoffs?<\/span>/);
   // The steps take the accent, not the agents' family colours.
-  expect(travels.slice(0, travels.indexOf("</section>"))).not.toContain("--m-");
-  expect(body.indexOf('class="subhead"')).toBeGreaterThan(body.indexOf("<h1>A Git platform"));
+  expect(travels).not.toContain("--m-");
   expect(body).toContain("The owner made 0 decisions.");
 });
 
@@ -181,11 +185,11 @@ it("the comparison uses the shown project with the largest imported history when
     { project: { name: "photograph", repo: "photograph", policy: { checks: [], protected: [] }, createdAt: time }, mode: "named", story: photo },
   ];
   const html = renderShowcase([samey, photo], samey.tally, "pavi", "PAVI", false, imported, cards);
-  const before = html.split('class="compare-card before"')[1].split("</a>")[0];
+  const before = html.split('class="compare-card before"')[1].split("</article>")[0];
   expect(before).toContain(">Photograph<");
-  expect(before).toContain("<b>3,000</b> commits");
+  expect(before).toContain("<dt>3,000</dt><dd>commits</dd>");
   expect(before).not.toContain(">Samey<");
-  expect(html.split('class="compare-card with"')[1].split("</a>")[0]).toContain(">Samey<");
+  expect(html.split('class="compare-card with"')[1].split("</article>")[0]).toContain(">Samey<");
 });
 
 it("the comparison prefers a project with a substantial history of its own over a busier one whose history is thin", async () => {
@@ -206,10 +210,10 @@ it("the comparison prefers a project with a substantial history of its own over 
   ]);
   const card = (name: string, s: typeof busy): ShownProject => ({ project: { name, repo: name, policy: { checks: [], protected: [] }, createdAt: time }, mode: "named", story: s });
   const html = renderShowcase([busy, deep, photo], busy.tally, "pavi", "PAVI", false, imported, [card("busy", busy), card("deep", deep), card("photograph", photo)]);
-  const before = html.split('class="compare-card before"')[1].split("</a>")[0];
+  const before = html.split('class="compare-card before"')[1].split("</article>")[0];
   expect(before).toContain(">Deep<");
-  expect(before).toContain("<b>400</b> commits");
-  expect(html.split('class="compare-card with"')[1].split("</a>")[0]).toContain(">Deep<");
+  expect(before).toContain("<dt>400</dt><dd>commits</dd>");
+  expect(html.split('class="compare-card with"')[1].split("</article>")[0]).toContain(">Deep<");
 });
 
 it("the How page's command reference arrives collapsed, each group closed until opened", async () => {
@@ -269,9 +273,9 @@ it("an anonymised project's commit hashes never reach the showcase or the sign-i
   await I().setShowcase("hush-hash", "anonymous");
   await I().setShowcase("named-hash", "named");
   const body = await (await worker.fetch(new Request("https://atelier.test/showcase"), testEnv)).text();
-  expect(body.match(/<b>1<\/b>merged, all time/g)?.length).toBeGreaterThanOrEqual(2);
-  expect(body).toContain("5eedba5e");    // a named project's revisions stay named
-  expect(body).toContain("dec0ded5");
+  expect(body.match(/<dt>merged, all time<\/dt><dd>1<\/dd>/g)?.length).toBeGreaterThanOrEqual(2);
+  // A named project's revisions stay named: its merge, in the latest moves.
+  expect(body).toContain("accepted t1; merged into main as dec0ded5");
   expect(body).not.toContain("e7a1c0de"); // an anonymised project's hashes are gone
   expect(body).not.toContain("c0ffee42");
   // The sign-in page draws the same anonymised activity behind its form.

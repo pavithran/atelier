@@ -226,19 +226,22 @@ it("is linked from the sign-in page and the public showcase, which stay free of 
   expect((await (await get("/login")).text())).toContain('href="/how"');
 });
 
-it("the How page and the showcase draw where Atelier runs, layer by layer", async () => {
-  const pages: [string, string][] = [["/how", (await page()).body], ["/showcase", renderShowcase([], undefined as never, "pavi", "PAVI")]];
-  for (const [path, body] of pages) {
-    expect(body, path).toContain('class="lay-fig"');
-    expect(body, path).toContain("normally reach Cloudflare through the CLI");
-    expect(body, path).toContain("its token limits what it can do");
-    expect(body, path).not.toContain("one path to Cloudflare");
-    expect(body, path).not.toContain("internet off;");
-    expect(body, path).toContain("reaches only the npm registry, read-only");
-    expect(body, path).toContain(">Check container<");
-    expect(body, path).toContain(">npm registry only, read-only<");
-  }
-  expect(pages[0][1].indexOf('id="where-it-runs"')).toBeLessThan(pages[0][1].indexOf('id="the-loop"'));
+it("the How page draws where Atelier runs, layer by layer, and the showcase names the layers in short", async () => {
+  const how = (await page()).body;
+  expect(how).toContain('class="lay-fig"');
+  expect(how).toContain("normally reach Cloudflare through the CLI");
+  expect(how).toContain("its token limits what it can do");
+  expect(how).not.toContain("one path to Cloudflare");
+  expect(how).not.toContain("internet off;");
+  expect(how).toContain("reaches only the npm registry, read-only");
+  expect(how).toContain(">Check container<");
+  expect(how).toContain(">npm registry only, read-only<");
+  expect(how.indexOf('id="where-it-runs"')).toBeLessThan(how.indexOf('id="the-loop"'));
+  // The showcase's short form (the d29 canvas): one row per layer.
+  const showcase = renderShowcase([], undefined as never, "pavi", "PAVI");
+  const where = showcase.split('id="where-h"')[1].split("</section>")[0];
+  expect([...where.matchAll(/<dt>([^<]+)<\/dt>/g)].map((m) => m[1])).toEqual(["Who acts", "Your Mac", "Agents", "Cloudflare"]);
+  expect(where).toContain("<span>Check container · npm registry only</span>");
 });
 
 it("the rules say who produces a check result, which routes a token opens and what acceptance needs (t216)", () => {
