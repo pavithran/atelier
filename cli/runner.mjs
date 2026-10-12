@@ -18,6 +18,7 @@ import { submission } from "../src/brief.ts";
 import { parseVerdict, replyFormat, VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { outcomeNote, PREREVIEW_JOB, prereviewBrief, prereviewEnvelope, relevantTests } from "../src/dispatch/prereview.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
+import { BUILDER_TESTS } from "../src/plans/brief.ts";
 import { checkCapabilities, requiredForJobs } from "../src/route-level.ts";
 import { TERMINAL_TASK_EXITS } from "../src/tokens.ts";
 import { rolePrompt, ROLE_PROMPT_MAX } from "../src/usage.ts";
@@ -141,7 +142,9 @@ export function briefFor(item, project) {
     "Rules:",
     "Stay in scope. Work only in this workspace.",
     "Write tests for new behaviour.",
-    "Run npm test and npm run typecheck. Both must pass.",
+    // t552: the tests the change touches and npm run typecheck, not the full
+    // npm test, which the finish's clean-clone checks run (BUILDER_TESTS).
+    ...BUILDER_TESTS.map((line) => line.replace("and the typecheck", "and npm run typecheck").replace("the full suite unless", "the full npm test suite unless")),
     // t302: a local model that finished its work four times lost it to the
     // commit each time — `git add … && git commit -F - <<'EOF' …`, a heredoc
     // and && chain its harness refuses — so the rule names the commands
@@ -991,10 +994,17 @@ export function codexBuildRefusal(entry) {
 // validation_blocked does not hold back a good build.
 const CHECKS = String.raw`(?:required checks?|checks?|tests?|test suite|suite|typecheck|vitest|npm test|npm run [\w:-]+)`;
 const SANDBOX = String.raw`(?:EPERM|EACCES|permission denied|sandbox|no network|network access|ENOTFOUND|EAI_AGAIN)`;
+const RUN_OBJECT = String.raw`(?:(?:the|all|any|full|required|project's|whole|complete)\s+){0,3}${CHECKS}\b`;
 const VALIDATION_BLOCKED = [
   /^[\s*_`>-]*validation[_ ]blocked[*_`]*\s*:/im,
-  new RegExp(String.raw`(?:could not|couldn't|cannot|can't|unable to|not able to|did not|didn't)\s+(?:fully\s+|successfully\s+)?(?:run|execute)\s+(?:(?:the|all|any|full|required|project's|whole|complete)\s+){0,3}${CHECKS}\b`, "i"),
-  new RegExp(String.raw`\b${CHECKS}\s+(?:could not|couldn't|cannot|can't|did not|didn't)\s+(?:be\s+)?(?:run|executed?|start|complete)`, "i"),
+  new RegExp(String.raw`(?:could not|couldn't|cannot|can't|unable to|not able to)\s+(?:fully\s+|successfully\s+)?(?:run|execute)\s+${RUN_OBJECT}`, "i"),
+  // "Did not run" is a blocker only beside the environment that stopped it:
+  // the build brief tells a builder not to run the full suite (t552), and a
+  // report that says it did not is a good build, not a blocked one.
+  new RegExp(String.raw`(?:did not|didn't)\s+(?:fully\s+|successfully\s+)?(?:run|execute)\s+${RUN_OBJECT}[^\n.]{0,80}${SANDBOX}`, "i"),
+  new RegExp(String.raw`\b${CHECKS}\s+(?:could not|couldn't|cannot|can't)\s+(?:be\s+)?(?:run|executed?|start|complete)`, "i"),
+  // The passive "tests did not run" is a blocker only beside the environment too.
+  new RegExp(String.raw`\b${CHECKS}\s+(?:did not|didn't)\s+(?:be\s+)?(?:run|execute|start|complete)[^\n.]{0,80}${SANDBOX}`, "i"),
   new RegExp(String.raw`\b${CHECKS}\b[^\n.]{0,80}\b(?:blocked|failed|fails|errored|refused)\b[^\n.]{0,80}${SANDBOX}`, "i"),
   new RegExp(String.raw`${SANDBOX}[^\n.]{0,60}\b(?:blocked|prevented|stopped)\b[^\n.]{0,40}\b${CHECKS}\b`, "i"),
 ];
@@ -2494,7 +2504,148 @@ export async function withHeartbeat(job, beat, { intervalMs = HEARTBEAT_MS, log 
   try { return await job(); } finally { clearInterval(timer); }
 }
 
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, version, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile }) {
+// ── reload on deploy (t265) ───────────────────────────────────────────────
+
+// The checkout this CLI runs from: a runner reloads from it after a deploy.
+export const RUNNER_CHECKOUT = fileURLToPath(new URL("..", import.meta.url));
+// Set on the re-executed process, naming the commit the old one ran.
+export const RELOADED_FROM = "ATELIER_RUNNER_RELOADED_FROM";
+const COMMIT = /^[0-9a-f]{40}$/;
+const short = (commit) => commit ? commit.slice(0, 8) : "unknown";
+
+// The runner's checkout through git: its HEAD (null when it cannot be read,
+// an installed copy without .git, say) and whether `ref` contains `commit`
+// (false for a commit the checkout has never fetched). Git that cannot run
+// answers as a failure, never a throw.
+export function runnerCheckout(dir = RUNNER_CHECKOUT, executeChild = execute) {
+  const git = (argv) => executeChild(["git", ...argv], { cwd: dir, capture: true, captureError: true, timeoutMs: 10_000 }).catch(() => ({ code: null }));
+  return {
+    dir,
+    head: async () => {
+      const result = await git(["rev-parse", "--verify", "HEAD^{commit}"]);
+      const head = result.code === 0 ? (result.output ?? "").trim() : "";
+      return COMMIT.test(head) ? head : null;
+    },
+    contains: async (commit, ref) => COMMIT.test(commit) && (await git(["merge-base", "--is-ancestor", commit, ref])).code === 0,
+  };
+}
+
+// A replacement signals readiness only after runner initialization, and waits
+// for the old process to release it before polling. No job can overlap the
+// handoff. These APIs work on every supported Node, without process.execve.
+export const RELOAD_HANDOFF = "ATELIER_RUNNER_HANDOFF";
+export const RELOAD_TARGET = "ATELIER_RUNNER_RELOAD_TARGET";
+export async function runnerReady() {
+  if (!process.env[RELOAD_HANDOFF]) return;
+  delete process.env[RELOAD_HANDOFF];
+  if (!process.connected || !process.send) throw new Error("reload IPC channel is missing");
+  // Losing the waiting parent (including SIGKILL) ends this runner too.
+  process.once("disconnect", () => process.kill(process.pid, "SIGHUP"));
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("reload release timed out")), 60_000);
+    process.on("message", function release(message) {
+      if (message?.type !== "runner-release") return;
+      clearTimeout(timer);
+      process.off("message", release);
+      process.channel?.unref();
+      resolve();
+    });
+    process.send({ type: "runner-ready" }, (error) => {
+      if (error) { clearTimeout(timer); reject(error); }
+    });
+  });
+}
+
+// Only explicitly configured supervisors may restart on exit. GUI apps also
+// inherit XPC_SERVICE_NAME; it does not promise that this runner restarts.
+export function runnerSupervised(env) {
+  return env.ATELIER_RUNNER_SUPERVISED === "1";
+}
+
+// Without a supervisor, remain an attached waiting parent. Temporarily own
+// signals so the idle runner's second-interrupt handler cannot orphan a child.
+// A startup failure kills and reaps the replacement before restoring polling.
+export async function reexecSelf(env, { argv = process.argv, execArgv = process.execArgv, execPath = process.execPath, readyTimeoutMs = 60_000 } = {}) {
+  if (runnerSupervised(env)) {
+    console.log(`runner: supervisor restart: was ${short(env[RELOADED_FROM])}, target ${short(env[RELOAD_TARGET])}`);
+    process.exit(0);
+  }
+  const child = spawn(execPath, [...execArgv, ...argv.slice(1)], {
+    // Isolate terminal group signals: the parent forwards each one exactly once.
+    detached: true,
+    env: { ...env, [RELOAD_HANDOFF]: "1" },
+    stdio: ["inherit", "inherit", "inherit", "ipc"],
+  });
+  const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
+  const previous = signals.map((signal) => process.rawListeners(signal));
+  let interrupted = null, ready = false, releasing = false, failure;
+  const forwards = signals.map((signal) => () => {
+    interrupted ??= signal;
+    child.kill(signal);
+  });
+  signals.forEach((signal, i) => {
+    process.removeAllListeners(signal);
+    process.on(signal, forwards[i]);
+  });
+  const cleanupChild = () => child.kill("SIGKILL");
+  process.once("exit", cleanupChild);
+  try {
+    await new Promise((resolve, reject) => {
+      const fail = (error) => {
+        if (failure) return;
+        failure = error;
+        clearTimeout(timer);
+        if (child.pid) child.kill("SIGKILL");
+        else reject(error);
+      };
+      const timer = setTimeout(() => fail(new Error("replacement runner readiness timed out")), readyTimeoutMs);
+      child.on("error", fail);
+      child.once("exit", (code, signal) => {
+        clearTimeout(timer);
+        if (ready || interrupted) {
+          const exitSignal = signal ?? interrupted;
+          process.exit(exitSignal ? { SIGINT: 130, SIGTERM: 143, SIGHUP: 129, SIGKILL: 137 }[exitSignal] ?? 1 : code ?? 1);
+        }
+        reject(failure ?? new Error(`replacement runner exited before ready (${signal ?? code})`));
+      });
+      child.on("message", (message) => {
+        if (failure || releasing || message?.type !== "runner-ready") return;
+        releasing = true;
+        // Even an interrupted startup needs release so its aborted runner
+        // loop can finish. It must not wait out the readiness deadline.
+        child.send({ type: "runner-release" }, (error) => {
+          if (error) { fail(error); return; }
+          clearTimeout(timer);
+          ready = true;
+        });
+      });
+    });
+  } finally {
+    process.off("exit", cleanupChild);
+    signals.forEach((signal, i) => {
+      process.off(signal, forwards[i]);
+      for (const listener of previous[i]) process.on(signal, listener);
+    });
+  }
+}
+
+// What an idle runner does about the deployed commit: nothing while the
+// server cannot say which it is (no answer, no commit), or while the commit
+// it started from already contains it (the reloaded process, or a checkout
+// ahead of the deploy, so nothing reloads twice); "reload" when the
+// checkout's HEAD now contains it; "behind" until then.
+export async function reloadCheck(started, { version, checkout, signal }) {
+  if (!started || !version || !checkout) return { action: "none" };
+  let answer = null;
+  try { answer = await version(signal); } catch { return { action: "none" }; }
+  const deployed = answer?.commit;
+  if (typeof deployed !== "string" || !COMMIT.test(deployed) || deployed === started) return { action: "none" };
+  if (await checkout.contains(deployed, started)) return { action: "none" };
+  const head = await checkout.head();
+  return { action: head && await checkout.contains(deployed, head) ? "reload" : "behind", deployed, head };
+}
+
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, version, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, reload }) {
   if (args._.length !== 1 || Object.keys(args.multi).some((key) => !["name", "once", "config", "integrate"].includes(key) || args.multi[key].length !== 1) ||
       (args.once !== undefined && args.once !== true) || (args.config !== undefined && typeof args.config !== "string")) {
     throw new Error("usage: atelier runner --name home:NAME [--once] [--config PATH] [--integrate]");
@@ -2780,6 +2931,42 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     // exact jobs is read where the runner runs, not inferred from the
     // queue's silence.
     io.log(jobsLine(offer.jobs));
+    // The commit this process started from (t265), against which an idle
+    // runner compares the deployed one. A --once run never reloads.
+    const reloading = reload && !args.once;
+    const started = reloading ? await reload.checkout.head().catch(() => null) : null;
+    const target = process.env[RELOAD_TARGET];
+    delete process.env[RELOAD_TARGET];
+    if (target && (!started || !await reload.checkout.contains(target, started))) {
+      throw new Error("replacement checkout no longer contains the deployed commit");
+    }
+    const reloadedFrom = process.env[RELOADED_FROM];
+    delete process.env[RELOADED_FROM];
+    if (reloading && reloadedFrom) line(`reloaded: was ${short(reloadedFrom)}, now ${short(started)}`);
+    if (reloading && !started) line(`the commit this runner started from cannot be read in ${reload.checkout.dir}; it will not reload itself after a deploy`);
+    // The deployed commit last said to be missing from the checkout, and the
+    // one a re-exec failed for: each is said once, and a failed one is not
+    // tried again until the next deploy.
+    let saidBehind = null, failedReload = null;
+    const reloadIfDeployed = async () => {
+      const check = await reloadCheck(started, { version, checkout: reload.checkout, signal: controller.signal });
+      if (controller.signal.aborted || check.action === "none") return;
+      if (check.action === "behind") {
+        if (saidBehind === check.deployed) return;
+        saidBehind = check.deployed;
+        line(`behind: started from ${short(started)}, the server runs ${short(check.deployed)}, and this checkout (${reload.checkout.dir}) at ${short(check.head)} does not contain it; update it (git -C '${reload.checkout.dir}' pull --ff-only) and this runner reloads itself when next idle`);
+        return;
+      }
+      // A skip report not yet taken lives only in this process: the reload
+      // waits until the server has it.
+      if (failedReload === check.deployed || pendingSkips.size) return;
+      line(`reloading: started from ${short(started)}, the server runs ${short(check.deployed)}; starting replacement runner from ${reload.checkout.dir} at ${short(check.head)}`);
+      try { await reload.reexec({ ...process.env, [RELOADED_FROM]: started, [RELOAD_TARGET]: check.deployed }); }
+      catch (error) {
+        failedReload = check.deployed;
+        line(`reload failed: ${error.message}; still running ${short(started)}. Restart this runner by hand to load ${short(check.deployed)}`);
+      }
+    };
     // Pauses a restart finds in the file, said as the runner's status.
     for (const pause of Object.values(limits.pauses)) if (Date.parse(pause.resetAt) > now()) io.log(`still ${pauseLine(pause)}`);
     // Transient queue failures in a row (transientQueueError): the first is
@@ -2808,6 +2995,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       for (const r of reasons) line(`  ${r.task}  ${r.line}`);
       if (unread) line(`found nothing to claim; the server's reasons for the dispatches waiting could not be read (${unread}), so atelier status names them.`);
     };
+    await runnerReady();
     while (!controller.signal.aborted) {
       let state;
       try {
@@ -2929,6 +3117,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           else if (args.once || state.phase !== "failed" || state.taskFailure) break;
         }
         if (!ranTask && !controller.signal.aborted) await sayIdleWhy(ordered.flatMap((task) => { const why = passBy(task); return why ? [{ task: `${task.project}/${task.item.id}`, line: why }] : []; }));
+        // Idle, after a poll that claimed nothing, and only then: no claim,
+        // review, merge, refresh or check of a job is held (t265).
+        if (!ranTask && reloading && !controller.signal.aborted) await reloadIfDeployed();
         state ??= { phase: "idle" };
       } catch (error) { state = nextStep({ phase: "idle" }, { error: error.message }); line(`failed: ${state.reason}`); }
       if (args.once) { if (state.phase === "failed" && !controller.signal.aborted) process.exitCode = 1; break; }

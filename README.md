@@ -128,9 +128,10 @@ path in the project that day.
 
 ## Quickstart
 
-From a clone to a first task landed. It needs Node 24 or later, git, a
-Cloudflare account on the Workers Paid plan (Artifacts is in open beta
-there), and `wrangler` logged in.
+From a clone to a first task landed. It needs Node 24 or later (`engines`
+in package.json; runners reload themselves after a deploy on all supported
+Node versions, see docs/runners.md), git, a Cloudflare account on the Workers
+Paid plan (Artifacts is in open beta there), and `wrangler` logged in.
 
 **1. Build and test.**
 

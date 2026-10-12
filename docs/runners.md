@@ -430,6 +430,44 @@ its own (`setsid`) leaves the group and is not ended. SIGINT stops polling and
 interrupts the active child process. A second interrupt kills every group at
 once and exits.
 
+### Reload on deploy
+
+Runners no longer need restarting after a deploy (t265). Between jobs, after
+a poll that claimed nothing, a runner (build, review or the integrator) reads
+the deployed commit from `GET /api/version`. When the commit it started from
+does not contain the deployed one, and the checkout it runs from (the folder
+holding `cli/atelier.mjs`) now does, it logs `runner: reloading: started from
+OLD, the server runs NEW; starting replacement runner …` and spawns the
+same command line with the same environment. The replacement initializes,
+signals ready over IPC, and waits for the old process to release it before
+polling for work. The old process waits for the attached replacement to exit
+and forwards every SIGINT, SIGTERM and SIGHUP, including during startup.
+The replacement has its own process group so terminal signals reach it once.
+It has a new pid; Ctrl-C and session end still stop it.
+The new process logs `runner: reloaded: was OLD, now NEW`. Until the checkout
+holds the deployed commit it logs once `runner: behind: …`, with the `git -C
+CHECKOUT pull --ff-only` that updates it, and reloads at its first idle poll
+after the pull. It never reloads mid-job (while it holds a claim, a review, a
+merge, a refresh or a check), nor while a skip report waits to be sent, nor
+under `--once`. A process started from a commit that contains the deployed
+one never reloads, so a reloaded runner, or one whose checkout is ahead of
+the deploy, does not reload again. A version endpoint that does not answer
+or names no commit means no reload. A re-exec that fails logs `runner: reload
+failed: …` and the old process runs on; it is tried again only after the
+next deploy, or restart it by hand.
+
+Reloading works on all supported Node versions (24 and later), without
+`process.execve`. If spawning fails, initialization exits, or readiness takes
+longer than 60 seconds, the old runner logs the failure and keeps running.
+A replacement that times out is killed before the old runner resumes.
+For supervisors configured to restart on exit (including launchd with
+KeepAlive), explicitly set `ATELIER_RUNNER_SUPERVISED=1`. The idle runner
+then logs the old and target commits and exits; the supervisor starts the
+same command from the updated checkout, without a competing child.
+`XPC_SERVICE_NAME` alone does not enable this mode. The supervisor owns
+startup failures in this mode. Terminal runners retain the readiness fallback
+described above; losing their waiting parent also stops the replacement.
+
 Save a config at `~/.config/atelier/runner.json`, or select one with `--config PATH`:
 
 ```json
@@ -658,11 +696,18 @@ is a refusal, not a request to silently weaken an adapter's confinement.
 
 Build stdout is captured while it streams. A final report that required checks
 could not run records `validation_blocked` rather than a model test failure.
-The build brief asks for a `validation_blocked: why` line; a report that says
-it unasked counts only when it names the checks beside the failure to run them
-("could not run npm test", "the tests could not be run") or an environment
-error beside a failed check ("npm test failed: listen EPERM"). Mentioning
-`validation_blocked` or "did not run any atelier command" in passing does not.
+The build brief tells a builder to run the tests for the files it changes and
+the typecheck, not the full suite, which the clean-clone checks after the push
+run; to commit when those pass; and to report `validation_blocked: why` only for
+a failure in its own change's tests that it cannot fix (t552). A builder that
+ran the full suite on a loaded host saw it time out and ended
+`validation_blocked` with nothing committed, losing the work. A report that
+says it unasked counts only when it names the checks beside the failure to run
+them ("could not run npm test", "the tests could not be run") or an environment
+error beside a failed check ("npm test failed: listen EPERM"). "Did not run"
+counts only beside such an error, since not running the full suite is what the
+brief asks. Mentioning `validation_blocked` or "did not run any atelier
+command" in passing does not.
 This outcome is excluded from the model reliability penalty.
 The runner does not call `finish`, so it does not push that build. The task page
 shows the report above clean-clone results, with the actor, runner and reason.
