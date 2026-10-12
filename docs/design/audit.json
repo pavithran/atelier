@@ -1,7 +1,7 @@
 {
   "generatedBy": "scripts/design/capture.ts",
-  "source": "a2b322f92c2e7d28d4268395c5141b03a67c1feb",
-  "sourceDirty": true,
+  "source": "361c787707b7855bac92cbafcb520ba215f90390",
+  "sourceDirty": false,
   "browser": {
     "name": "chromium",
     "version": "156.0.8078.4",
@@ -317,7 +317,7 @@
             "h2 Using Atelier well",
             "h2 Commands"
           ],
-          "words": 15537
+          "words": 15557
         },
         "targets": {
           "total": 29,
@@ -455,7 +455,7 @@
             "h2 Using Atelier well",
             "h2 Commands"
           ],
-          "words": 15537
+          "words": 15557
         },
         "targets": {
           "total": 29,
@@ -1264,7 +1264,7 @@
     "decisions": {
       "390": {
         "structure": {
-          "height": 2791,
+          "height": 2669,
           "navs": [
             {
               "label": "Atelier",
@@ -1273,97 +1273,208 @@
                 "Projects",
                 "Activity"
               ]
-            },
-            {
-              "label": "In this review",
-              "links": [
-                "Changes",
-                "Checks",
-                "History",
-                "Browse the fork",
-                "Its log"
-              ]
             }
           ],
           "h1": 1,
           "headings": [
-            "h1 Decisions",
-            "h2 On the floor",
-            "h2 Needs your attention",
+            "h1 Decisions · 14",
+            "h2 Field Notes · 3",
+            "h2 Ledger Core · 9",
+            "h2 Open Tool · 2",
             "h2 Fix the Keychain.swift crash for jo@private.example (blocked"
           ],
-          "words": 3728
+          "words": 2168
         },
         "targets": {
-          "total": 34,
+          "total": 527,
           "small": [
             {
               "tag": "a",
-              "label": "Changes",
-              "width": 54,
+              "label": "",
+              "width": 216,
               "height": 22
             },
             {
               "tag": "a",
-              "label": "Checks",
-              "width": 45,
+              "label": "",
+              "width": 216,
               "height": 22
             },
             {
               "tag": "a",
-              "label": "History",
-              "width": 45,
+              "label": "",
+              "width": 250,
               "height": 22
             },
             {
               "tag": "a",
-              "label": "Browse the fork",
-              "width": 99,
+              "label": "",
+              "width": 247,
               "height": 22
             },
             {
               "tag": "a",
-              "label": "Its log",
-              "width": 40,
+              "label": "",
+              "width": 209,
               "height": 22
             },
             {
-              "tag": "summary",
+              "tag": "a",
               "label": "",
-              "width": 296,
-              "height": 20
+              "width": 187,
+              "height": 22
             },
             {
-              "tag": "summary",
+              "tag": "a",
               "label": "",
-              "width": 296,
-              "height": 20
+              "width": 236,
+              "height": 22
             },
             {
-              "tag": "summary",
+              "tag": "a",
               "label": "",
-              "width": 296,
-              "height": 20
+              "width": 236,
+              "height": 22
             },
             {
-              "tag": "summary",
+              "tag": "a",
               "label": "",
-              "width": 296,
-              "height": 20
+              "width": 270,
+              "height": 22
             },
             {
-              "tag": "summary",
+              "tag": "a",
               "label": "",
-              "width": 296,
-              "height": 20
+              "width": 185,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 188,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 225,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 188,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 226,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 226,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 208,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 192,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 207,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 192,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 218,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 246,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 195,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 217,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 192,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 223,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 206,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 208,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 246,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 246,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 202,
+              "height": 22
             }
           ],
-          "smallCount": 10
+          "smallCount": 488
         }
       },
       "1440": {
         "structure": {
-          "height": 5435,
+          "height": 1915,
           "navs": [
             {
               "label": "Atelier",
@@ -1372,229 +1483,220 @@
                 "Projects",
                 "Activity"
               ]
-            },
-            {
-              "label": "In this review",
-              "links": [
-                "Changes",
-                "Checks",
-                "History",
-                "Browse the fork",
-                "Its log"
-              ]
             }
           ],
           "h1": 1,
           "headings": [
-            "h1 Decisions",
-            "h2 On the floor",
-            "h2 Needs your attention",
+            "h1 Decisions · 14",
+            "h2 Field Notes · 3",
+            "h2 Ledger Core · 9",
+            "h2 Open Tool · 2",
             "h2 Fix the Keychain.swift crash for jo@private.example (blocked"
           ],
-          "words": 3728
+          "words": 2168
         },
         "targets": {
-          "total": 605,
+          "total": 530,
           "small": [
             {
               "tag": "a",
-              "label": "On the floor",
-              "width": 82,
-              "height": 19
+              "label": "",
+              "width": 393,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 28,
-              "height": 20
+              "width": 216,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "a",
-              "label": "Open the task page",
-              "width": 113,
-              "height": 17
+              "width": 216,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 28,
-              "height": 20
+              "width": 250,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
+              "width": 247,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "a",
-              "label": "Open the task page",
-              "width": 113,
-              "height": 17
+              "width": 402,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 28,
-              "height": 20
+              "width": 209,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
+              "width": 187,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "a",
-              "label": "Open the task page",
-              "width": 113,
-              "height": 17
+              "width": 413,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 37,
-              "height": 20
+              "width": 236,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "a",
-              "label": "Open the task page",
-              "width": 113,
-              "height": 17
+              "width": 236,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 37,
-              "height": 20
+              "width": 270,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "a",
-              "label": "Open the task page",
-              "width": 113,
-              "height": 17
+              "width": 398,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 37,
-              "height": 20
+              "width": 185,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
+              "width": 188,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
+              "width": 225,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "a",
-              "label": "Open the task page",
-              "width": 113,
-              "height": 17
+              "width": 514,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 37,
-              "height": 20
+              "width": 188,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
+              "width": 226,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
+              "width": 226,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "a",
-              "label": "Open the task page",
-              "width": 113,
-              "height": 17
+              "width": 208,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 37,
-              "height": 20
+              "width": 192,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
+              "width": 207,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 192,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 218,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 246,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 195,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 217,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 192,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 223,
+              "height": 22
             }
           ],
-          "smallCount": 557
+          "smallCount": 493
         },
         "contrast": [
           {
             "scheme": "light",
-            "checked": 960,
-            "unknown": 67,
+            "checked": 874,
+            "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 960,
-            "unknown": 67,
+            "checked": 874,
+            "unknown": 0,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 106,
+          "stops": 28,
           "first": {
             "tag": "a",
             "label": "Skip to content",
@@ -1604,89 +1706,7 @@
             "width": 132,
             "height": 49
           },
-          "noIndicator": [
-            {
-              "tag": "g",
-              "label": "2026-10-10 23:51 UTC, submitted: gpt-6-astra submi",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-11 00:32 UTC, submitted: glm-5.3 submitted",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-10 12:38 UTC, submitted: gpt-6-astra submi",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-10 13:19 UTC, submitted: glm-5.3 submitted",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-10 14:00 UTC, submitted: gemini-3.1-pro su",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-10 14:41 UTC, submitted: qwen-4 submitted ",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-10 19:57 UTC, submitted: gpt-6-astra submi",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-10 15:22 UTC, submitted: gpt-6-astra submi",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-10 16:03 UTC, submitted: glm-5.3 submitted",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            }
-          ],
+          "noIndicator": [],
           "offScreen": []
         },
         "reflow320": {
@@ -1708,7 +1728,7 @@
     "decisions-sent-back": {
       "390": {
         "structure": {
-          "height": 3064,
+          "height": 1103,
           "navs": [
             {
               "label": "Atelier",
@@ -1717,115 +1737,27 @@
                 "Projects",
                 "Activity"
               ]
-            },
-            {
-              "label": "In this review",
-              "links": [
-                "Changes",
-                "Checks",
-                "History",
-                "Browse the fork",
-                "Its log"
-              ]
             }
           ],
           "h1": 1,
           "headings": [
-            "h1 Decisions",
-            "h2 On the floor",
-            "h2 Needs your attention",
+            "h1 Decisions · 14",
+            "h2 Field Notes · 3",
+            "h2 Ledger Core · 9",
+            "h2 Open Tool · 2",
             "h2 Fix the decision line (sentBack 1)"
           ],
-          "words": 3922
+          "words": 2181
         },
         "targets": {
-          "total": 50,
-          "small": [
-            {
-              "tag": "a",
-              "label": "Changes",
-              "width": 54,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Checks",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "History",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Browse the fork",
-              "width": 99,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Its log",
-              "width": 40,
-              "height": 22
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            }
-          ],
-          "smallCount": 13
+          "total": 19,
+          "small": [],
+          "smallCount": 0
         }
       },
       "1440": {
         "structure": {
-          "height": 5435,
+          "height": 1915,
           "navs": [
             {
               "label": "Atelier",
@@ -1834,229 +1766,220 @@
                 "Projects",
                 "Activity"
               ]
-            },
-            {
-              "label": "In this review",
-              "links": [
-                "Changes",
-                "Checks",
-                "History",
-                "Browse the fork",
-                "Its log"
-              ]
             }
           ],
           "h1": 1,
           "headings": [
-            "h1 Decisions",
-            "h2 On the floor",
-            "h2 Needs your attention",
+            "h1 Decisions · 14",
+            "h2 Field Notes · 3",
+            "h2 Ledger Core · 9",
+            "h2 Open Tool · 2",
             "h2 Fix the decision line (sentBack 1)"
           ],
-          "words": 3922
+          "words": 2181
         },
         "targets": {
-          "total": 621,
+          "total": 529,
           "small": [
             {
               "tag": "a",
-              "label": "On the floor",
-              "width": 82,
-              "height": 19
+              "label": "",
+              "width": 393,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 28,
-              "height": 20
+              "width": 216,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "a",
-              "label": "Open the task page",
-              "width": 113,
-              "height": 17
+              "width": 216,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 28,
-              "height": 20
+              "width": 250,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
+              "width": 247,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "a",
-              "label": "Open the task page",
-              "width": 113,
-              "height": 17
+              "width": 402,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 28,
-              "height": 20
+              "width": 209,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
+              "width": 187,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "a",
-              "label": "Open the task page",
-              "width": 113,
-              "height": 17
+              "width": 413,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 37,
-              "height": 20
+              "width": 236,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "a",
-              "label": "Open the task page",
-              "width": 113,
-              "height": 17
+              "width": 236,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 37,
-              "height": 20
+              "width": 270,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "a",
-              "label": "Open the task page",
-              "width": 113,
-              "height": 17
+              "width": 398,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 37,
-              "height": 20
+              "width": 185,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
+              "width": 188,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
+              "width": 225,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "a",
-              "label": "Open the task page",
-              "width": 113,
-              "height": 17
+              "width": 514,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 37,
-              "height": 20
+              "width": 188,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
+              "width": 226,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
+              "width": 226,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "a",
-              "label": "Open the task page",
-              "width": 113,
-              "height": 17
+              "width": 208,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 37,
-              "height": 20
+              "width": 192,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
+              "width": 207,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 192,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 218,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 246,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 195,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 217,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 192,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 223,
+              "height": 22
             }
           ],
-          "smallCount": 560
+          "smallCount": 493
         },
         "contrast": [
           {
             "scheme": "light",
-            "checked": 960,
-            "unknown": 103,
+            "checked": 879,
+            "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 960,
-            "unknown": 103,
+            "checked": 879,
+            "unknown": 0,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 111,
+          "stops": 27,
           "first": {
             "tag": "a",
             "label": "Skip to content",
@@ -2066,95 +1989,13 @@
             "width": 132,
             "height": 49
           },
-          "noIndicator": [
-            {
-              "tag": "g",
-              "label": "2026-10-10 23:51 UTC, submitted: gpt-6-astra submi",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-11 00:32 UTC, submitted: glm-5.3 submitted",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-10 12:38 UTC, submitted: gpt-6-astra submi",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-10 13:19 UTC, submitted: glm-5.3 submitted",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-10 14:00 UTC, submitted: gemini-3.1-pro su",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-10 14:41 UTC, submitted: qwen-4 submitted ",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-10 19:57 UTC, submitted: gpt-6-astra submi",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-10 15:22 UTC, submitted: gpt-6-astra submi",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-10 16:03 UTC, submitted: glm-5.3 submitted",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            }
-          ],
+          "noIndicator": [],
           "offScreen": []
         },
         "reflow320": {
           "width": 320,
-          "scrollWidth": 357,
-          "overflows": true,
+          "scrollWidth": 320,
+          "overflows": false,
           "offenders": [
             {
               "selector": "div",
@@ -2170,7 +2011,7 @@
     "decisions-blocked": {
       "390": {
         "structure": {
-          "height": 2736,
+          "height": 1014,
           "navs": [
             {
               "label": "Atelier",
@@ -2179,97 +2020,27 @@
                 "Projects",
                 "Activity"
               ]
-            },
-            {
-              "label": "In this review",
-              "links": [
-                "Changes",
-                "Checks",
-                "History",
-                "Browse the fork",
-                "Its log"
-              ]
             }
           ],
           "h1": 1,
           "headings": [
-            "h1 Decisions",
-            "h2 On the floor",
-            "h2 Needs your attention",
+            "h1 Decisions · 14",
+            "h2 Field Notes · 3",
+            "h2 Ledger Core · 9",
+            "h2 Open Tool · 2",
             "h2 Fix the decision line (blocked 1)"
           ],
-          "words": 3731
+          "words": 2167
         },
         "targets": {
-          "total": 35,
-          "small": [
-            {
-              "tag": "a",
-              "label": "Changes",
-              "width": 54,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Checks",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "History",
-              "width": 45,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Browse the fork",
-              "width": 99,
-              "height": 22
-            },
-            {
-              "tag": "a",
-              "label": "Its log",
-              "width": 40,
-              "height": 22
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            },
-            {
-              "tag": "summary",
-              "label": "",
-              "width": 296,
-              "height": 20
-            }
-          ],
-          "smallCount": 10
+          "total": 20,
+          "small": [],
+          "smallCount": 0
         }
       },
       "1440": {
         "structure": {
-          "height": 5435,
+          "height": 1915,
           "navs": [
             {
               "label": "Atelier",
@@ -2278,229 +2049,220 @@
                 "Projects",
                 "Activity"
               ]
-            },
-            {
-              "label": "In this review",
-              "links": [
-                "Changes",
-                "Checks",
-                "History",
-                "Browse the fork",
-                "Its log"
-              ]
             }
           ],
           "h1": 1,
           "headings": [
-            "h1 Decisions",
-            "h2 On the floor",
-            "h2 Needs your attention",
+            "h1 Decisions · 14",
+            "h2 Field Notes · 3",
+            "h2 Ledger Core · 9",
+            "h2 Open Tool · 2",
             "h2 Fix the decision line (blocked 1)"
           ],
-          "words": 3731
+          "words": 2167
         },
         "targets": {
-          "total": 606,
+          "total": 530,
           "small": [
             {
               "tag": "a",
-              "label": "On the floor",
-              "width": 82,
-              "height": 19
+              "label": "",
+              "width": 393,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 28,
-              "height": 20
+              "width": 216,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "a",
-              "label": "Open the task page",
-              "width": 113,
-              "height": 17
+              "width": 216,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 28,
-              "height": 20
+              "width": 250,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
+              "width": 247,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "a",
-              "label": "Open the task page",
-              "width": 113,
-              "height": 17
+              "width": 402,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 28,
-              "height": 20
+              "width": 209,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
+              "width": 187,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "a",
-              "label": "Open the task page",
-              "width": 113,
-              "height": 17
+              "width": 413,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 37,
-              "height": 20
+              "width": 236,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "a",
-              "label": "Open the task page",
-              "width": 113,
-              "height": 17
+              "width": 236,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 37,
-              "height": 20
+              "width": 270,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "a",
-              "label": "Open the task page",
-              "width": 113,
-              "height": 17
+              "width": 398,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 37,
-              "height": 20
+              "width": 185,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
+              "width": 188,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
+              "width": 225,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "a",
-              "label": "Open the task page",
-              "width": 113,
-              "height": 17
+              "width": 514,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 37,
-              "height": 20
+              "width": 188,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
+              "width": 226,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
+              "width": 226,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "a",
-              "label": "Open the task page",
-              "width": 113,
-              "height": 17
+              "width": 208,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 37,
-              "height": 20
+              "width": 192,
+              "height": 22
             },
             {
               "tag": "a",
               "label": "",
-              "width": 20,
-              "height": 20
+              "width": 207,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 192,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 218,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 246,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 195,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 217,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 192,
+              "height": 22
+            },
+            {
+              "tag": "a",
+              "label": "",
+              "width": 223,
+              "height": 22
             }
           ],
-          "smallCount": 557
+          "smallCount": 493
         },
         "contrast": [
           {
             "scheme": "light",
-            "checked": 960,
-            "unknown": 70,
+            "checked": 876,
+            "unknown": 0,
             "failures": []
           },
           {
             "scheme": "dark",
-            "checked": 960,
-            "unknown": 70,
+            "checked": 876,
+            "unknown": 0,
             "failures": []
           }
         ],
         "focus": {
-          "stops": 107,
+          "stops": 28,
           "first": {
             "tag": "a",
             "label": "Skip to content",
@@ -2510,89 +2272,7 @@
             "width": 132,
             "height": 49
           },
-          "noIndicator": [
-            {
-              "tag": "g",
-              "label": "2026-10-10 23:51 UTC, submitted: gpt-6-astra submi",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-11 00:32 UTC, submitted: glm-5.3 submitted",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-10 12:38 UTC, submitted: gpt-6-astra submi",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-10 13:19 UTC, submitted: glm-5.3 submitted",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-10 14:00 UTC, submitted: gemini-3.1-pro su",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-10 14:41 UTC, submitted: qwen-4 submitted ",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-10 19:57 UTC, submitted: gpt-6-astra submi",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-10 15:22 UTC, submitted: gpt-6-astra submi",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            },
-            {
-              "tag": "g",
-              "label": "2026-10-10 16:03 UTC, submitted: glm-5.3 submitted",
-              "href": null,
-              "indicator": null,
-              "onScreen": true,
-              "width": 20,
-              "height": 20
-            }
-          ],
+          "noIndicator": [],
           "offScreen": []
         },
         "reflow320": {
