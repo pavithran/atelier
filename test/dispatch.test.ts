@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, assign, coreHold, describe, liveOffers, makeDispatch, OFFER_LIVE_MS, offeredActors, parseRunner, type RunnerOffer, type SeenOffer } from "../src/dispatch/rules.ts";
+import { assertDispatchable, assertDispatchClaimable, assertDispatchedClaim, assign, coreHold, describe, liveOffers, makeDispatch, OFFER_LIVE_MS, offeredActors, overlapRefusal, parseRunner, refusedBy, reportedSkips, sameRevision, SKIP_AFTER, skippedBy, unclaimed, type RunnerOffer, type SeenOffer } from "../src/dispatch/rules.ts";
 import type { ProjectPolicy } from "../src/rules.ts";
 
 const T = "2026-10-04T12:00:00.000Z";
@@ -187,6 +187,166 @@ test("a dispatch keeps the owner's overlap override only when it is asked for", 
   assert.equal(makeDispatch({ overlapOk: true }, "pavi", T).overlapOk, true);
   assert.equal("overlapOk" in makeDispatch({ overlapOk: false }, "pavi", T), false);
   assert.throws(() => makeDispatch({ overlapOk: "yes" }, "pavi", T), /overlapOk must be true or false/);
+});
+
+// t420: the queue names why a dispatched task is not being taken, in words
+// and with the command that releases it, so status and show can say it. Each
+// reason is its own case here.
+const dispatched = (over: Record<string, unknown> = {}) => item({ id: "t9", dispatch: makeDispatch({ to: "home", agent: "opencode", model: "glm-5.3-flash" }, "pavi", T), ...over });
+
+test("overlap refusal names the live item whose scope overlaps, for every claimed job and only claimed or submitted items", () => {
+  const live = item({ id: "t1", scope: ["src/**"], state: "claimed", owner: "codex/gpt-6" });
+  assert.deepEqual(overlapRefusal(dispatched({ scope: ["src/index.ts"] }), [live]), { id: "t1", owner: "codex/gpt-6", title: "Work", state: "claimed" });
+  // Outside every scope, and a part of the same plan, do not refuse.
+  assert.equal(overlapRefusal(dispatched({ scope: ["docs/**"] }), [live]), null);
+  assert.equal(overlapRefusal(dispatched({ scope: ["src/**"], kind: "part", plan: "t2" }), [item({ id: "t1", scope: ["src/**"], state: "claimed", owner: "x/y", kind: "part", plan: "t2" })]), null);
+  // It is the claim's own test (assertClaimAllowed): an accepted item still
+  // holds its scope until it merges, so it refuses as a claimed or submitted
+  // one does; a merged, abandoned or open one does not.
+  for (const state of ["claimed", "submitted", "accepted"] as const) assert.equal(overlapRefusal(dispatched({ scope: ["src/index.ts"] }), [{ ...live, state }])?.id, "t1", state);
+  for (const state of ["merged", "abandoned", "open"] as const) assert.equal(overlapRefusal(dispatched({ scope: ["src/index.ts"] }), [{ ...live, state }]), null, state);
+  // The claim does not count an item the claimant already holds, so a
+  // dispatch naming that agent and model is not refused against it; one
+  // naming no model may go to any claimant, so the item counts.
+  assert.equal(overlapRefusal(dispatched({ scope: ["src/index.ts"] }), [{ ...live, owner: "opencode/glm-5.3-flash" }]), null);
+  assert.equal(overlapRefusal(dispatched({ scope: ["src/index.ts"], dispatch: makeDispatch({ to: "home", agent: "opencode" }, "pavi", T) }), [{ ...live, owner: "opencode/glm-5.3-flash" }])?.id, "t1");
+  // Review requests claim nothing, and atelier/integrator's integrate and
+  // refresh jobs are exempt from the claim policy.
+  for (const job of ["review", "integrate", "refresh"]) {
+    assert.equal(overlapRefusal(dispatched({ scope: ["src/index.ts"], dispatch: { ...makeDispatch({}, "pavi", T), job } }), [live]), null, job);
+  }
+  // A planner's claim is refused like a build's, and so is a merge-main.
+  assert.equal(overlapRefusal(dispatched({ kind: "plan", scope: ["src/index.ts"], dispatch: { ...makeDispatch({}, "pavi", T), job: "plan" } }), [live])?.id, "t1");
+  assert.equal(overlapRefusal(dispatched({ scope: ["src/index.ts"], dispatch: { ...makeDispatch({}, "pavi", T), job: "merge-main" } }), [live])?.id, "t1");
+  // The owner's --overlap-ok passes the core-file hold, not this: the claim
+  // still refuses an overlap (assertClaimAllowed), so the reason stays.
+  assert.equal(overlapRefusal(dispatched({ scope: ["src/index.ts"], dispatch: makeDispatch({ overlapOk: true }, "pavi", T) }), [live])?.id, "t1");
+});
+
+test("a runner skips a task after SKIP_AFTER failed build runs of its own, and only a live runner is named", () => {
+  const run = (over = {}) => ({ project: "demo", item: "t9", role: "build", outcome: "stalled", runner: "home:studio", at: T, ...over });
+  const later = new Date(Date.parse(T) + 60_000).toISOString();
+  assert.equal(SKIP_AFTER, 2);
+  assert.deepEqual(skippedBy([], "demo", "t9"), []);
+  assert.deepEqual(skippedBy([run(), run({ outcome: "refused", at: later })], "demo", "t9"), [{ runner: "home:studio", failures: 2, last: "refused" }]);
+  // Newest first, as the index lists them: the last outcome is still the newest.
+  assert.deepEqual(skippedBy([run({ outcome: "timed-out", at: later }), run()], "demo", "t9"), [{ runner: "home:studio", failures: 2, last: "timed-out" }]);
+  // Another project, item, role, a non-failure, or another runner's failure does not count.
+  for (const other of [{ project: "other" }, { item: "t8" }, { role: "review" }, { outcome: "early_stop" }, { runner: "home:desk" }]) {
+    assert.deepEqual(skippedBy([run(), run(other)], "demo", "t9"), [], JSON.stringify(other));
+  }
+  // With the offers known, a runner no longer live is skipping nothing.
+  const offer = (at: string): SeenOffer => ({ runner: "home:studio", kind: "home", jobs: [], agents: [], at });
+  assert.equal(skippedBy([run(), run()], "demo", "t9", [offer(T)], new Date(T)).length, 1);
+  assert.deepEqual(skippedBy([run(), run()], "demo", "t9", [offer(T)], new Date(Date.parse(T) + OFFER_LIVE_MS + 1)), []);
+});
+
+test("a skip counts only the failures since the task was dispatched and since the runner started", () => {
+  const at = (s: number) => new Date(Date.parse(T) + s * 1000).toISOString();
+  const run = (s: number) => ({ project: "demo", item: "t9", role: "build", outcome: "stalled", runner: "home:studio", at: at(s) });
+  const runs = [run(30), run(20), run(10)];
+  assert.equal(skippedBy(runs, "demo", "t9")[0].failures, 3);
+  // Dispatched again at 25s: one failure since, not yet a skip; at 15s: two; at 5s: all three.
+  assert.deepEqual(skippedBy(runs, "demo", "t9", null, new Date(T), at(25)), []);
+  assert.equal(skippedBy(runs, "demo", "t9", null, new Date(T), at(15))[0].failures, 2);
+  assert.equal(skippedBy(runs, "demo", "t9", null, new Date(T), at(5))[0].failures, 3);
+  // The runner restarted at 25s: it forgot the two before, so it skips nothing.
+  const offer = (started: string): SeenOffer => ({ runner: "home:studio", kind: "home", jobs: [], agents: [], at: at(30), started });
+  assert.deepEqual(skippedBy(runs, "demo", "t9", [offer(at(25))], new Date(at(30))), []);
+  assert.equal(skippedBy(runs, "demo", "t9", [offer(at(15))], new Date(at(30)))[0].failures, 2);
+  assert.equal(skippedBy(runs, "demo", "t9", [offer(at(5))], new Date(at(30)))[0].failures, 3);
+  // An older runner says no start: every failure since the dispatch counts.
+  assert.equal(skippedBy(runs, "demo", "t9", [{ runner: "home:studio", kind: "home", jobs: [], agents: [], at: at(30) }], new Date(at(30)))[0].failures, 3);
+});
+
+test("a refused claim names its runner and the dispatch again that releases it, under the current dispatch and a live runner only", () => {
+  const d = dispatched({ scope: ["src/index.ts"] });
+  const refusal = { runner: "home:studio", actor: "opencode/glm-5.3-flash", error: "runner_forbidden", detail: "its offer does not cover this dispatch", dispatchAt: T, head: null, updatedAt: T, at: T };
+  const reasons = unclaimed(d, { refusals: [refusal] });
+  assert.deepEqual(reasons.map((r) => r.kind), ["refused"]);
+  assert.equal(reasons[0].line, "Claim refused: home:studio claimed it as opencode/glm-5.3-flash and was refused (runner_forbidden: its offer does not cover this dispatch); that runner passes it by until it changes, so once that is fixed, dispatch it again with atelier dispatch t9 --to home --agent opencode --model glm-5.3-flash.");
+  // A refusal under an earlier dispatch is not this one's.
+  assert.deepEqual(refusedBy([{ ...refusal, dispatchAt: "2026-10-01T00:00:00.000Z" }], d), []);
+  // A runner no longer live, or restarted since, passes nothing by.
+  const offer = (over: Partial<SeenOffer>): SeenOffer => ({ runner: "home:studio", kind: "home", jobs: [], agents: [], at: T, ...over });
+  assert.equal(refusedBy([refusal], d, [offer({})], new Date(T)).length, 1);
+  assert.deepEqual(refusedBy([refusal], d, [offer({})], new Date(Date.parse(T) + OFFER_LIVE_MS + 1)), []);
+  assert.deepEqual(refusedBy([refusal], d, [offer({ started: new Date(Date.parse(T) + 1).toISOString() })], new Date(T)), []);
+});
+
+// The runner passes a refused task by under refusedKey, its head and its
+// last change: an edit of its scope, a push or a dispatch again lets the
+// runner claim afresh, so the refusal stops being said then too.
+test("a refused claim holds only the task as it was refused: a change of scope, head or dispatch ends it", () => {
+  const d = dispatched({ scope: ["src/index.ts"] });
+  const refusal = { runner: "home:studio", actor: "opencode/glm-5.3-flash", error: "overlap", detail: "overlaps t1", dispatchAt: T, head: null, updatedAt: T, at: T };
+  assert.equal(refusedBy([refusal], d).length, 1);
+  assert.ok(sameRevision(refusal, d));
+  const later = new Date(Date.parse(T) + 1000).toISOString();
+  // Narrowed by atelier edit: updatedAt moves while the dispatch stays.
+  const narrowed = dispatched({ scope: ["src/rules.ts"], updatedAt: later });
+  assert.equal((narrowed as { dispatch: { at: string } }).dispatch.at, T);
+  assert.deepEqual(refusedBy([refusal], narrowed), []);
+  assert.deepEqual(unclaimed(narrowed, { refusals: [refusal] }), []);
+  // A new head, under the same dispatch and change time, ends it too.
+  assert.deepEqual(refusedBy([refusal], dispatched({ scope: ["src/index.ts"], head: "a".repeat(40) })), []);
+  assert.equal(refusedBy([{ ...refusal, head: "a".repeat(40) }], dispatched({ scope: ["src/index.ts"], head: "a".repeat(40) })).length, 1);
+});
+
+// t420: a runner's own report of a skip, after its failed runs or after
+// infrastructure failures in a row (which send no run report), is said with
+// the command that releases it, under the current dispatch, from a live
+// runner since it started; it outranks the run reports for that runner.
+test("a reported skip names the runner, its kind and the dispatch again that releases it", () => {
+  const d = dispatched({ scope: ["docs/**"] });
+  const skip = { runner: "home:studio", actor: "opencode/glm-5.3-flash", kind: "infrastructure" as const, failures: 3, note: "git reset failed: index.lock exists", dispatchAt: T, at: T };
+  const offers: SeenOffer[] = [{ runner: "home:studio", kind: "home", jobs: [], agents: [{ agent: "opencode", models: ["glm-5.3-flash"] }], at: T }];
+  const infra = unclaimed(d, { skips: [skip], offers, project: "demo", now: new Date(T) });
+  assert.deepEqual(infra, [{ kind: "skipped", line: "Skipped by home:studio after 3 infrastructure failures in a row under this dispatch (the last: git reset failed: index.lock exists); that runner passes it by until it is dispatched again or the runner restarts: fix the runner's workspace, git or harness, then atelier dispatch t9 --to home --agent opencode --model glm-5.3-flash." }]);
+  const failed = unclaimed(d, { skips: [{ ...skip, kind: "failures", failures: 2, note: "harness made no new commit" }], offers, project: "demo", now: new Date(T) });
+  assert.equal(failed[0].line, "Skipped by home:studio after 2 failed runs under this dispatch (the last: harness made no new commit); that runner passes it by until it is dispatched again or the runner restarts: fix the cause, then atelier dispatch t9 --to home --agent opencode --model glm-5.3-flash.");
+  // The run reports of the same runner are not said twice; another runner's are.
+  const run = (runner: string) => ({ project: "demo", item: "t9", role: "build", outcome: "stalled", runner, at: T });
+  const both = unclaimed(d, { skips: [skip], runs: [run("home:studio"), run("home:studio"), run("home:desk"), run("home:desk")], project: "demo", now: new Date(T) });
+  assert.deepEqual(both.map((r) => r.line.split(" after ")[0]), ["Skipped by home:desk", "Skipped by home:studio"]);
+  assert.match(both[1].line, /infrastructure failures/);
+  // An earlier dispatch's skip, a runner no longer live, or one restarted since, says nothing.
+  assert.deepEqual(reportedSkips([{ ...skip, dispatchAt: "2026-10-01T00:00:00.000Z" }], d), []);
+  assert.deepEqual(reportedSkips([skip], d, offers, new Date(Date.parse(T) + OFFER_LIVE_MS + 1)), []);
+  assert.deepEqual(reportedSkips([skip], d, [{ ...offers[0], started: new Date(Date.parse(T) + 1).toISOString() }], new Date(T)), []);
+  assert.equal(reportedSkips([skip], d, offers, new Date(T)).length, 1);
+});
+
+test("asked by one runner, a dispatch nothing else holds that it is not offered is for another runner", () => {
+  const d = dispatched({ scope: ["docs/**"] });
+  const studio: SeenOffer = { runner: "home:studio", kind: "home", jobs: [], agents: [{ agent: "opencode", models: ["glm-5.3-flash"] }], at: T };
+  const desk: SeenOffer = { runner: "home:desk", kind: "home", jobs: [], agents: [{ agent: "codex", models: ["gpt-6"] }], at: T };
+  const why = unclaimed(d, { offers: [studio, desk], offer: desk, project: "demo", now: new Date(T) });
+  assert.deepEqual(why, [{ kind: "elsewhere", line: "Not for home:desk: it is dispatched to a home runner, opencode with glm-5.3-flash, which this runner does not offer, and a live runner that does will take it." }]);
+  // The runner it is for hears nothing; the owner's listing names no runner.
+  assert.deepEqual(unclaimed(d, { offers: [studio, desk], offer: studio, project: "demo", now: new Date(T) }), []);
+  assert.deepEqual(unclaimed(d, { offers: [studio, desk], project: "demo", now: new Date(T) }), []);
+  // When no live runner offers it at all, that is the reason, said once.
+  assert.deepEqual(unclaimed(d, { offers: [desk], offer: desk, project: "demo", now: new Date(T) }).map((r) => r.kind), ["unoffered"]);
+});
+
+test("unclaimed says each reason in words, with the command that releases it, in the queue's order", () => {
+  const d = dispatched({ scope: ["src/index.ts"] });
+  const live = item({ id: "t1", scope: ["src/**"], state: "claimed", owner: "codex/gpt-6" });
+  const held = { id: "t1", owner: "codex/gpt-6", state: "claimed", title: "Work", core: "src/index.ts" };
+  const offers: SeenOffer[] = [{ runner: "home:studio", kind: "home", jobs: [], agents: [{ agent: "opencode", models: ["glm-5.3-flash"] }], at: T }];
+  const reasons = unclaimed(d, { held, overlap: { id: "t1", owner: "codex/gpt-6", title: "Work", state: "claimed" }, runs: [{ project: "demo", item: "t9", role: "build", outcome: "refused", runner: "home:studio", at: T }, { project: "demo", item: "t9", role: "build", outcome: "stalled", runner: "home:studio", at: T }], project: "demo", offers: [{ ...offers[0], agents: [{ agent: "opencode", models: ["qwen3-coder-next"] }] }], now: new Date(T) });
+  assert.deepEqual(reasons.map((r) => r.kind), ["held", "overlap", "skipped", "unoffered"]);
+  assert.equal(reasons[0].line, "Held: waits on t1 (claimed by codex/gpt-6): both scopes reach core file src/index.ts; offered once t1 submits or is released, or at once with atelier dispatch t9 --overlap-ok.");
+  assert.match(reasons[1].line, /^Overlap refused: t1 \(claimed by codex\/gpt-6\) holds a scope that overlaps this one.*atelier init --refuse-overlap=false\.$/);
+  assert.equal(reasons[2].line, "Skipped by home:studio after 2 failed runs under this dispatch (the last refused); that runner passes it by until it is dispatched again or the runner restarts: fix the cause, then atelier dispatch t9 --to home --agent opencode --model glm-5.3-flash.");
+  assert.match(reasons[3].line, /^No live runner can take it:/);
+  assert.match(reasons[3].line, /atelier dispatch t9 --agent H --model M/);
+  // With nothing holding it and a live runner offering it, nothing is said.
+  assert.deepEqual(unclaimed(dispatched({ scope: ["docs/**"] }), { offers, project: "demo", now: new Date(T) }), []);
+  // A held part takes no owner override, and a task under SKIP_AFTER is not yet skipped.
+  assert.match(unclaimed(dispatched({ scope: ["src/index.ts"], kind: "part", plan: "t2" }), { held, project: "demo" })[0].line, /offered once t1 submits or is released\.$/);
+  assert.deepEqual(unclaimed(d, { runs: [{ project: "demo", item: "t9", role: "build", outcome: "stalled", runner: "home:studio", at: T }], project: "demo" }), []);
 });
 
 // A dispatch is refused now where the claim would refuse it later, with the
