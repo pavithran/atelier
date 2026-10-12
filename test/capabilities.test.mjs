@@ -146,7 +146,7 @@ test("a command or job with no declaration needs nothing", () => {
 // set of commands that depend on one; a command dropped from it, or one that
 // starts depending on a capability without declaring it, fails here.
 test("each command that relies on a named capability declares it in its module", () => {
-  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["adopt", "area", "board", "claim", "edit", "init", "integrated", "integration-failed", "land", "merge", "models", "new", "plan", "refresh-failed", "refreshed", "revert", "review", "review-claim", "review-unparsable", "start", "stuck", "token", "wrap"]);
+  assert.deepEqual(Object.keys(COMMAND_CAPABILITIES).sort(), ["adopt", "area", "board", "claim", "edit", "init", "integrated", "integration-failed", "land", "merge", "models", "new", "plan", "push", "refresh-failed", "refreshed", "revert", "review", "review-claim", "review-unparsable", "start", "stuck", "token", "wrap"]);
   for (const command of ["integrated", "integration-failed", "refreshed", "refresh-failed"]) assert.deepEqual(COMMAND_CAPABILITIES[command], ["plans.integration.v1"], command);
   // land counts the runners that skipped its review request by the request number the answer carries (t353).
   assert.deepEqual(COMMAND_CAPABILITIES.land, ["projects.commit-identity.v1", "land.workflow.v1", "items.brief-criteria.v1", "reviews.criteria-binding.v1", "projects.require-criteria.v1", "reviews.skip.v1", "land.post-merge.v1", "land.triage.v1"]);
@@ -168,8 +168,9 @@ test("each command that relies on a named capability declares it in its module",
     const declared = [...new Set([...(spec.capabilities ?? []), ...Object.values(spec.subcommands ?? {}).flatMap((s) => s.capabilities ?? [])])];
     assert.deepEqual(COMMAND_CAPABILITIES[spec.name] ?? [], declared, spec.name);
   }
-  // land alone leaves the check to its handler, for --release-lease's sake.
-  assert.deepEqual(COMMAND_MODULES.filter(({ spec }) => spec.capabilityCheck === "handler").map(({ spec }) => spec.name), ["land"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.push, ["items.owner-port.v1"]);
+  // land exempts --release-lease; push checks only when porting as the owner.
+  assert.deepEqual(COMMAND_MODULES.filter(({ spec }) => spec.capabilityCheck === "handler").map(({ spec }) => spec.name), ["land", "push"]);
 });
 
 test("a subcommand's capabilities are asked only when that subcommand runs", () => {

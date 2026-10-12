@@ -7,7 +7,7 @@ import { OBSERVED_UNDER, type ModelEntry, type ModelNote, type ModelStatus, type
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
 import {
-  preparationPaths,
+  preparationPaths, ownerPortAllowed,
   REVIEW_RENEW_MS, reviewLeaseExpired,
   reviewerAdmission, admissionActor, familyRefusal, modelKey, type ReviewerAdmission,
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
@@ -1620,6 +1620,24 @@ export class Ledger extends DurableObject<Env> {
     return { generation: row.claim_gen as number, replaces: (row.token_id as string | null) ?? null };
   }
 
+  // Share the claim generation and token slot so a later claim revokes an
+  // owner port credential too, without changing ownership or dispatch here.
+  reserveOwnerPort(id: string, actor: string) {
+    const item = this.item(id);
+    if (!ownerPortAllowed(item, actor, this.owner)) throw new RuleError("owner_port", "only the project owner may port to an open, unclaimed task", 403);
+    if (!item.fork) throw new RuleError("no_fork", `${id} has no workspace yet`);
+    return { item, ...this.reserve(id) };
+  }
+
+  recordOwnerPortToken(id: string, actor: string, generation: number, replaces: string | null, tokenId: string, expiresAt: string): boolean {
+    if (!ownerPortAllowed(this.item(id), actor, this.owner)) return false;
+    const row = this.sql.exec(`SELECT claim_gen, token_id FROM items WHERE id = ?`, id).one();
+    if (row.claim_gen !== generation || ((row.token_id as string | null) ?? null) !== replaces) return false;
+    this.sql.exec(`UPDATE items SET token_id = ? WHERE id = ?`, tokenId, id);
+    this.log(id, actor, "owner-port.token", { tokenId, expiresAt }, new Date().toISOString());
+    return true;
+  }
+
   // Minting a token waits on Artifacts, and meanwhile the item can be handed
   // off, released, abandoned or claimed again. So the token a claim minted is
   // recorded only while that claim still stands: the claimer owns the item,
@@ -2019,7 +2037,7 @@ export class Ledger extends DurableObject<Env> {
     const item = this.item(id);
     // The owner may port work to a released fork without taking its claim
     // or removing its dispatch. The next builder inherits the recorded head.
-    const ownerPort = actor === this.owner && item.owner === null && item.state === "open";
+    const ownerPort = ownerPortAllowed(item, actor, this.owner);
     if (!ownerPort) {
       if (item.state !== "accepted") assertLive(item);
       assertOwner(item, actor);

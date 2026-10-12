@@ -2,6 +2,8 @@ import type { CommandSpec } from "../command.ts";
 
 const spec: CommandSpec = {
   name: "push",
+  capabilities: ["items.owner-port.v1"],
+  capabilityCheck: "handler",
   forms: [
     {
       group: "Agents", line: 2, slot: 30,
