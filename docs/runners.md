@@ -631,6 +631,17 @@ a request that failed in transit (retry later). `atelier ops` has exit codes
 of its own (see [Operations](owner.md#operations)).
 
 
+The owner can request an audit after a task has merged, including one landed
+with an override: `atelier review-request ID --reviewer H/M --project NAME`.
+A review runner reads the recorded merge from the baseline (a merged plan
+part from its integration branch), compares it with its original first parent,
+and judges it against the task's criteria. A fast-forward is compared with the
+fork point. Today's main is never the comparison base. The verdict and findings
+stay on the merged task and count on Models. Blocking findings create a bugfix
+task linked to the original task and the review request; the original task and
+its override remain as historical records. Reposting an answered request's
+verdict is refused, so retries do not file duplicate defects.
+
 ### Build validation blocked by the harness
 
 Codex build commands must explicitly establish unrestricted check execution:
