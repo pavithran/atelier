@@ -44,9 +44,11 @@ export const prereviewRequest = (id: number): number => PREREVIEW_REQUEST_BASE +
 export const isPrereviewRequest = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n > PREREVIEW_REQUEST_BASE;
 export const prereviewId = (n: number): number => n - PREREVIEW_REQUEST_BASE;
 
-// Retries are bounded: a binding is asked at most this many times, and an
-// unavailable result that may clear (no reviewer yet, a runner failure, a
-// timeout, a malformed reply) is asked again no sooner than the delay after it.
+// Retries are bounded: a binding is asked at most this many times. An
+// unavailable result that may clear (retryable) is asked again while the task
+// waits: one with no reviewer yet no sooner than PREREVIEW_RETRY_MS after it,
+// and a runner failure, a timeout or a malformed reply at the next sweep,
+// of another reviewer where one qualifies (askPrereview in src/ledger.ts).
 export const PREREVIEW_ATTEMPTS = 3;
 export const PREREVIEW_RETRY_MS = 5 * 60_000;
 
@@ -232,6 +234,32 @@ export function prereviewRecovery(v: Omit<PrereviewView, "recovery">): string {
     case "stale": return `none: ${v.detail ?? "its inputs changed"}; it changes nothing, and a new pre-review is asked while the task waits`;
     case "withdrawn": return `none: ${v.detail ?? "the task is no longer an eligible waiter"}`;
   }
+}
+
+// A pre-review in words, for `atelier show` and the task page (criterion 9):
+// its state and reviewer, the binding it was asked under, its verdict or the
+// reason it has none, each finding, and the recovery action. One line each.
+export function prereviewLines(v: PrereviewView): string[] {
+  const b = v.binding;
+  const short = (sha: string | null, none: string) => sha ? sha.slice(0, 8) : none;
+  const lines = [
+    `Pre-review ${v.request}: ${v.state}${v.outcome ? ` (${v.outcome})` : ""}${v.detached ? ", detached from the queue" : ""}; reviewer ${v.reviewer ?? "none yet"}${v.runner ? ` on ${v.runner}` : ""}; attempt ${v.attempts} of ${PREREVIEW_ATTEMPTS}`,
+    `Binding: head ${short(b.head, "unknown")} merged with main ${short(b.main, "not captured yet")}, tree ${short(b.tree, "not prepared yet")}, criteria ${b.criteria.slice(0, 12)}, contributors ${b.contributors.join(", ") || "none"}`,
+  ];
+  if (v.verdict) lines.push(`Verdict: ${v.verdict}${v.note ? `: ${v.note}` : ""}`);
+  if (v.detail) lines.push(`Detail: ${v.detail}`);
+  if (v.files.length) lines.push(`Files: ${v.files.join(", ")}`);
+  for (const f of v.findings) lines.push(`  ${f.file}${f.line ? `:${f.line}` : ""} · ${f.severity} · ${f.text}`);
+  lines.push(`Recovery: ${v.recovery}`);
+  return lines;
+}
+
+// The same in one clause, for the line `atelier land --wait` prints while
+// the task waits for the landing lease.
+export function prereviewClause(v: PrereviewView): string {
+  const blocking = v.findings.filter((f) => f.severity === "blocking").length;
+  const found = v.findings.length ? `, ${v.findings.length} finding${v.findings.length === 1 ? "" : "s"}${blocking ? ` (${blocking} blocking)` : ""}` : "";
+  return `pre-review ${v.request} ${v.state}${v.outcome ? ` (${v.outcome})` : ""} by ${v.reviewer ?? "no reviewer yet"} at ${v.binding.head.slice(0, 8)}${v.binding.main ? ` with main ${v.binding.main.slice(0, 8)}` : ""}${found}; recovery: ${v.recovery}`;
 }
 
 // Whether `actor` is the reviewer a pre-review dispatch asked for.

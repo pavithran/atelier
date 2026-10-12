@@ -35,6 +35,7 @@ import { addTally, buildStory, emptyTally, VENDOR_NAMES, type Story } from "./gr
 import { buildPulse } from "./pulse";
 import { projectKind } from "./kind";
 import { assign, parseRunner, unclaimed, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
+import { PREREVIEW_JOB } from "./dispatch/prereview.ts";
 import { attentionFor } from "./attention.ts";
 import { readStanding, type StandingSource } from "./standing-read.ts";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
@@ -2611,17 +2612,23 @@ function isHeld(item: Item): boolean {
   return item.state === "claimed" && !!item.owner;
 }
 
+// A review request in the queue: a gate review, or a pre-review (t524),
+// which the queue lists beside them. Neither is a build, so neither carries
+// a build's reasons for not being taken.
+const reviewJob = (item: Item): boolean => item.dispatch?.job === "review" || item.dispatch?.job === PREREVIEW_JOB;
+
 // Why each queued dispatch the owner's listing shows is not being taken,
 // attached as `why` so `atelier status` and `atelier show` say it: the core
 // file hold, overlap refusal and refused claims the Ledger already read
 // beside it, the live runners that gave it up after failing it (from the run
 // reports), and the model or job no live runner offers (unclaimed in
 // src/dispatch/rules.ts); asked by one runner (`offer`), also a dispatch
-// meant for another. A review request is listed apart, so it carries none.
+// meant for another. A review or pre-review request is listed apart, so it
+// carries none.
 async function queueWhy(env: Env, queued: { project: string; item: Item & { held?: CoreHold; overlap?: OverlapRefusal; refusals?: ClaimRefusal[]; skips?: RunSkip[] } }[], offer: RunnerOffer | null = null, runner: string | null = null): Promise<{ project: string; item: (Item | RunnerWhyItem) & { why?: UnclaimedReason[] } }[]> {
   // Each waiting dispatch's build runs since it was dispatched, read task by
   // task, so the newest reports of other tasks never push its failures out.
-  const asks = queued.flatMap(({ project, item }) => item.dispatch && item.dispatch.job !== "review" ? [{ project, item: item.id, since: item.dispatch.at }] : []);
+  const asks = queued.flatMap(({ project, item }) => item.dispatch && !reviewJob(item) ? [{ project, item: item.id, since: item.dispatch.at }] : []);
   const [offers, runs] = await Promise.all([index(env).runnerOffers(), asks.length ? index(env).buildRunsSince(asks) : []]);
   // Asked under a runner token, the reasons are built from that runner's own
   // refusals, skips and run reports only, and each entry is cut to what the
@@ -2630,7 +2637,7 @@ async function queueWhy(env: Env, queued: { project: string; item: Item & { held
   const mine = <T extends { runner: string }>(list: readonly T[] | undefined) => list && runner ? list.filter((r) => r.runner === runner) : list ?? null;
   const reports = mine(runs.map((r) => ({ project: r.project, item: r.item, role: r.role, outcome: r.outcome, runner: r.runner, at: r.at }))) ?? [];
   return queued.map(({ project, item }) => {
-    if (item.dispatch?.job === "review") return { project, item: runner ? runnerWhyItem(item, undefined) : item };
+    if (reviewJob(item)) return { project, item: runner ? runnerWhyItem(item, undefined) : item };
     const why = unclaimed(item, { held: item.held ?? null, overlap: item.overlap ?? null, refusals: mine(item.refusals), skips: mine(item.skips), offers, runs: reports, project, offer });
     if (runner) return { project, item: runnerWhyItem(item, why) };
     // Always carried, empty when nothing holds it, so the CLI can tell this

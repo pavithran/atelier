@@ -7,6 +7,7 @@ import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { parseRuleError, type Evidence, type InboxEntry, type ProjectPolicy } from "../src/rules.ts";
 import { isPrereviewRequest, outcomeNote, PREREVIEW_REQUEST_BASE, type PrereviewFence, type PrereviewView } from "../src/dispatch/prereview.ts";
 import { assign, type Dispatch } from "../src/dispatch/rules.ts";
+import { renderItem, type Detail } from "../src/ui.ts";
 
 // Pre-review on the Ledger (t524): while a landing holds the project's lease
 // the next two live FIFO waiters are pre-reviewed, deduplicated by binding;
@@ -202,6 +203,29 @@ it("a fresh blocking verdict takes the waiter out at once, fences CLI and Workfl
   expect(await queueIds(L)).toEqual([t3, t4, t2]);
 });
 
+// Pre-review findings of t524's own review: the owner's queue listing gave a
+// pre-review entry a build's "not taken" reasons (queueWhy took every job
+// that was not "review" for a build), and criterion 9's state, binding,
+// reviewer, findings and recovery were in JSON alone, not on the task page.
+it("a pre-review's queue entry carries no build reasons, and the task page says its state, binding, reviewer, findings and recovery", async () => {
+  const { L, t2 } = await landing("pre-words");
+  const res = await worker.fetch(new Request("https://atelier.test/api/queue", { headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner" } }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
+  expect(res.status).toBe(200);
+  const listed = ((await res.json()) as { project: string; item: { id: string; dispatch?: { job?: string }; why?: unknown } }[]).filter((q) => q.project === "pre-words" && q.item.dispatch?.job === "prereview");
+  expect(listed.map((q) => q.item.id)).toContain(t2);
+  for (const q of listed) expect(q.item.why).toBeUndefined();
+  const c = await claim(L, t2);
+  await verdict(L, t2, c, false, [BLOCKING]);
+  const d = (await L.detail(t2)) as unknown as Detail;
+  const page = renderItem({ name: "pre-words", repo: "pre-words--baseline", policy, createdAt: AT }, d, "PAVI", null);
+  expect(page).toContain("Pre-review blocked the landing");
+  expect(page).toContain(`Pre-review ${c.request}: blocked; reviewer ${GPT}`);
+  expect(page).toContain(`Binding: head ${head(2).slice(0, 8)} merged with main ${MAIN.slice(0, 8)}`);
+  expect(page).toContain("src/a.ts:3 · blocking · the queue loses a waiter");
+  expect(page).toContain(`Recovery: rework: the builder addresses the blocking findings; then atelier unblock ${t2}`);
+  expect(page).toContain("it neither satisfies nor rejects the gate");
+});
+
 it("a builder no live runner offers is not handed the rework: the owner is told what to do", async () => {
   const { L, t2 } = await landing("pre-owner");
   await offer(["review", "prereview"], [{ agent: "codex", models: ["gpt-6-astra"] }]);
@@ -324,6 +348,11 @@ it("conflicts, failed preparation, malformed replies, skips and runner failures 
   const cq = await claim(q.L, q.t2);
   await q.L.releaseReview(q.t2, GPT, "harness exited 1", true, cq.request);
   expect((await views(q.L, q.t2))[0]).toMatchObject({ state: "unavailable", outcome: "runner" });
+  // A runner failure is asked again at the next poll, not after
+  // PREREVIEW_RETRY_MS, which only a no-reviewer result waits out (the
+  // comment at PREREVIEW_RETRY_MS once said every retryable result waited).
+  await q.L.queueProjectLanding(q.t2, "owner");
+  expect((await views(q.L, q.t2)).map((v) => [v.state, v.attempts])).toEqual([["open", 2], ["unavailable", 1]]);
 });
 
 it("a gate review is never displaced: none is asked beside it, and the claim binds the gate's first", async () => {
