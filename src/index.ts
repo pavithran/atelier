@@ -1104,9 +1104,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // over settles it, finishing the commits the dead run made, before
         // it starts new work.
         const L = ledgerOf(env, p);
-        // A runner token's poll records its offer with the polls it is
-        // judged with, and answers in the same call, so its claim is judged
-        // as its offer was (t540).
+        // A runner token's poll records the polls and its offer, and is
+        // answered from them in the same call. The claim check reads the
+        // same record of the polls, kept current by every poll and
+        // heartbeat, so it judges an orphaned claim as the queue does (t540).
         const queue = c.token?.runner && offer ? await L.runnerPoll(c.token, offer, polls) : null;
         const [held, { waiting, reviews }] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), queue ?? L.queued(polls)]);
         return [...held, ...waiting, ...reviews].map((item) => ({ project: p.name, item }));
@@ -3368,7 +3369,10 @@ export default {
           ? token?.runner ?? parseRunner(req.headers.get("x-atelier-runner"))?.runner ?? null : null;
         const noteRefusal = async (error: unknown) => {
           const rule = parseRuleError(error);
-          if (!claimRunner || !ref || !rule || rule.status >= 500) return;
+          // A claim that lost the race to a hold (held, t540) is no
+          // refusal: the queue stops offering the task while the hold
+          // stands, and offers it again once it clears.
+          if (!claimRunner || !ref || !rule || rule.status >= 500 || rule.code === "held") return;
           try { await ledger(env, ref.key).noteClaimRefusal(parts[4], claimRunner, actor, rule.code, rule.detail, token?.runner ? token : undefined); }
           catch (e) { console.error("claim refusal not recorded", String(e)); }
         };
@@ -3387,7 +3391,11 @@ export default {
             // its poll was offered, checked as that job's run report is.
             else if (parts[5] === "run-skip") await ledger(env, ref.key).assertRunnerReport(token, parts[4], actor, input.role === "plan" ? "plan" : "build");
             else {
-              try { await ledger(env, ref.key).assertRunnerJob(token, parts[4], actor, parts[5] === "claim"); }
+              // A claim is judged from the runners' polls as the index has
+              // them now, recorded first in the project's one record of them
+              // (t540), as the queue, atelier queue and atelier stuck judge.
+              const polls = parts[5] === "claim" ? (await index(env).runnerOffers()).map(({ runner, at }) => ({ runner, at })) : undefined;
+              try { await ledger(env, ref.key).assertRunnerJob(token, parts[4], actor, parts[5] === "claim", polls); }
               catch (error) { await noteRefusal(error); throw error; }
             }
             // The authenticated runner, never a caller-selected identity, goes to the atomic claim.
