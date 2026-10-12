@@ -3091,6 +3091,7 @@ async function decisionsPage(c: Ctx, live: { nonce: string; refresh: number }): 
   const queued = views.flatMap((v) => v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch).map((item) => ({ project: v.project, item })));
   const projectName = c.url.searchParams.get("project") ?? first[0]?.project;
   const task = c.url.searchParams.get("task") ?? first[0]?.itemId;
+  const auto = !c.url.searchParams.has("task");
   const project = projectName === undefined ? undefined : projectNamed(projects, projectName);
   let selected: ReviewContext | undefined;
   if (project && task) {
@@ -3100,7 +3101,7 @@ async function decisionsPage(c: Ctx, live: { nonce: string; refresh: number }): 
     const read: Detail = await L.detail(task);
     const detail: Detail = { ...read, ownerFactor: ownerFactorOf(env) };
     const selectedItem = await L.item(task);
-    selected = {project,detail,diff:await diffFor(env,L,project.repo,selectedItem,detail.events)};
+    selected = {project,detail,diff:await diffFor(env,L,project.repo,selectedItem,detail.events),auto};
   }
   const recent = (v: FloorView) => v.events[0]?.at ?? "";
   const busiest = [...floorViews].sort((a, b) => recent(b).localeCompare(recent(a)))[0];

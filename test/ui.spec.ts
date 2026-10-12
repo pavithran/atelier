@@ -799,6 +799,12 @@ it('an empty inbox counts nothing and says so; a selected decision carries a bac
  expect(selected).toContain('class="desk has-selection"');
  expect(selected).toContain('class="review-back" href="/decisions"');
  expect(selected).toContain('>All decisions</span>');
+ // The first decision, selected for the desktop when the owner picked none,
+ // is auto-selected: a phone keeps the list, and there is no back link.
+ const auto=renderInbox([att],[project],'PAVI',{project,detail:threaded(),diff:null,auto:true});
+ expect(auto).toContain('<div class="desk auto-selected">');
+ expect(auto).not.toContain('class="desk has-selection"');expect(auto).not.toContain('class="review-back"');
+ expect(auto).toContain('<section class="review-sheet decision-detail"');
  const rest=renderInbox([att],[project],'PAVI');
  expect(rest).toContain('class="desk">');
  expect(rest).not.toContain('class="desk has-selection"');
