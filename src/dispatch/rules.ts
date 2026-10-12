@@ -241,6 +241,8 @@ export const RUNNER_GONE_MS = 5 * 60_000;
 export interface OrphanedClaim extends CoreBlocker {
   runner: string;
   lastPoll: string;
+  // A plan's part is recovered through its plan, never by dispatch.
+  kind?: Item["kind"];
 }
 
 export function orphanedBy(o: Pick<Item, "state" | "runner">, runners: RunnerPolls | null | undefined, now = Date.now()): { runner: string; lastPoll: string } | null {
@@ -284,7 +286,7 @@ export function coreOrphans(item: Item, items: readonly Item[], coreFiles: reado
   if (!runners) return [];
   return coreOverlaps(item, items, coreFiles, lease, now).flatMap((b) => {
     const gone = orphan(b, runners, now);
-    return gone ? [{ ...blockerOf(b), ...gone }] : [];
+    return gone ? [{ ...blockerOf(b), ...gone, ...(b.item.kind ? { kind: b.item.kind } : {}) }] : [];
   });
 }
 
@@ -319,18 +321,27 @@ export function blockerChains(id: string, graph: ReadonlyMap<string, readonly st
   return paths;
 }
 
-export function holdText(h: CoreHold): string {
+export function holdText(h: CoreHold, project?: string): string {
   const blockers = (h.blockers ?? [h]).map((b) => `${b.id} (${b.state}${b.owner ? ` by ${b.owner}` : ""}): both scopes reach core file ${b.core}`).join("; ");
   const age = h.elapsedMs === undefined ? "" : `; held for ${Math.floor(h.elapsedMs / 60_000)}m ${Math.floor(h.elapsedMs / 1000) % 60}s`;
   const chains = (h.chains ?? []).filter((c) => c.deadlock || c.path.length > 2).map((c) => `; ${c.deadlock ? "deadlock" : "blocked chain"}: ${c.path.join(" -> ")}`).join("");
-  return `${h.warning ? "WARNING: core-file hold; " : ""}waits on ${blockers}${age}${chains}${h.claimRefusal ? `; separate claim refusal: ${h.claimRefusal}` : ""}${h.orphaned?.length ? `; ${orphanText(h.orphaned)}` : ""}`;
+  return `${h.warning ? "WARNING: core-file hold; " : ""}waits on ${blockers}${age}${chains}${h.claimRefusal ? `; separate claim refusal: ${h.claimRefusal}` : ""}${h.orphaned?.length ? `; ${orphanText(h.orphaned, project)}` : ""}`;
 }
 
 // The claims a dispatch no longer waits on because their runners stopped
 // polling, in words, each with its recovery: dispatching the orphaned task
-// again releases the claim and offers it to a live runner.
-export function orphanText(orphaned: readonly OrphanedClaim[]): string {
-  return orphaned.map((o) => `${o.id} (${o.state}${o.owner ? ` by ${o.owner}` : ""}) is orphaned, not a blocker: its runner ${o.runner} last polled at ${o.lastPoll.slice(0, 16).replace("T", " ")} UTC, so its claim on core file ${o.core} holds nothing; recover it with atelier dispatch ${o.id}`).join("; ");
+// again releases the claim and offers it to a live runner; a plan's part,
+// which ordinary dispatch refuses, is released and retried through its plan,
+// as the stuck report recovers one. A listing of several projects names the
+// orphan's own, so the command never acts on a task of the same id elsewhere.
+export function orphanRecovery(o: Pick<OrphanedClaim, "id" | "kind">, project?: string): string {
+  const flag = project ? ` --project ${project}` : "";
+  return o.kind
+    ? `atelier release ${o.id}${flag} --note "Requeue work its runner orphaned"; atelier plan retry ${o.id}${flag}`
+    : `atelier dispatch ${o.id}${flag}`;
+}
+export function orphanText(orphaned: readonly OrphanedClaim[], project?: string): string {
+  return orphaned.map((o) => `${o.id} (${o.state}${o.owner ? ` by ${o.owner}` : ""}) is orphaned, not a blocker: its runner ${o.runner} last polled at ${o.lastPoll.slice(0, 16).replace("T", " ")} UTC, so its claim on core file ${o.core} holds nothing; recover it with ${orphanRecovery(o, project)}`).join("; ");
 }
 
 // When the hold lifts: once every blocker stops holding. A claimed item stops

@@ -19,7 +19,7 @@ export default async function queueCommand() {
     if (preview) console.log(`  note: ${flat(preview)}`);
     // A claim whose runner stopped polling holds nothing (t537): said in
     // the hold's text when a live blocker holds the task too, else alone.
-    if (item.held) console.log(`  held: ${holdText(item.held)}`);
-    else if (item.orphaned?.length) console.log(`  held: ${orphanText(item.orphaned)}`);
+    if (item.held) console.log(`  held: ${holdText(item.held, project)}`);
+    else if (item.orphaned?.length) console.log(`  held: ${orphanText(item.orphaned, project)}`);
   }
 }

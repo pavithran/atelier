@@ -149,6 +149,25 @@ test("atelier queue's held: line says the claim is orphaned instead of naming it
   assert.equal(r.status, 0, r.stderr);
   const held = r.stdout.split("\n").filter((l) => l.startsWith("  held: "));
   assert.equal(held.length, 1, r.stdout);
-  assert.match(held[0], /^ {2}held: t463 \(claimed by opencode\/glm-5\.3-flash\) is orphaned, not a blocker: its runner home:studio-5 last polled at 2026-10-10 20:51 UTC, so its claim on core file src\/dispatch\/rules\.ts holds nothing; recover it with atelier dispatch t463$/);
+  assert.match(held[0], /^ {2}held: t463 \(claimed by opencode\/glm-5\.3-flash\) is orphaned, not a blocker: its runner home:studio-5 last polled at 2026-10-10 20:51 UTC, so its claim on core file src\/dispatch\/rules\.ts holds nothing; recover it with atelier dispatch t463 --project atelier$/);
   assert.doesNotMatch(held[0], /waits on/);
+});
+
+// gpt-6-astra's review at a1d72a9c: atelier queue lists every project, so an
+// orphan's recovery names its project; and a plan's part, which ordinary
+// dispatch refuses (plan_dispatch), is recovered through its plan.
+test("an orphan's recovery names its project, and a part's goes through its plan", () => {
+  const held = claim("home:studio-5");
+  const waiting = item("t358");
+  const runners = polls(CLAIMED);
+  const [task] = coreOrphans(waiting, [held, waiting], core, null, NOW, runners);
+  assert.match(orphanText([task], "atelier"), /recover it with atelier dispatch t463 --project atelier$/);
+  const part = item("t463", { state: "claimed", owner: "opencode/glm-5.3-flash", runner: "home:studio-5", kind: "part" } as Partial<Item>);
+  const [orphanPart] = coreOrphans(waiting, [part, waiting], core, null, NOW, runners);
+  assert.equal(orphanPart.kind, "part");
+  const line = orphanText([orphanPart], "atelier");
+  assert.doesNotMatch(line, /atelier dispatch/);
+  assert.match(line, /recover it with atelier release t463 --project atelier --note "[^"]+"; atelier plan retry t463 --project atelier$/);
+  const hold = holdText({ id: "t500", owner: null, state: "claimed", title: "Live", core: "src/**", orphaned: [orphanPart] }, "atelier");
+  assert.match(hold, /atelier plan retry t463 --project atelier/);
 });
