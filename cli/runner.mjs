@@ -1000,6 +1000,8 @@ const VALIDATION_BLOCKED = [
   // report that says it did not is a good build, not a blocked one.
   new RegExp(String.raw`(?:did not|didn't)\s+(?:fully\s+|successfully\s+)?(?:run|execute)\s+${RUN_OBJECT}[^\n.]{0,80}${SANDBOX}`, "i"),
   new RegExp(String.raw`\b${CHECKS}\s+(?:could not|couldn't|cannot|can't)\s+(?:be\s+)?(?:run|executed?|start|complete)`, "i"),
+  // The passive "tests did not run" is a blocker only beside the environment too.
+  new RegExp(String.raw`\b${CHECKS}\s+(?:did not|didn't)\s+(?:be\s+)?(?:run|execute|start|complete)[^\n.]{0,80}${SANDBOX}`, "i"),
   new RegExp(String.raw`\b${CHECKS}\b[^\n.]{0,80}\b(?:blocked|failed|fails|errored|refused)\b[^\n.]{0,80}${SANDBOX}`, "i"),
   new RegExp(String.raw`${SANDBOX}[^\n.]{0,60}\b(?:blocked|prevented|stopped)\b[^\n.]{0,40}\b${CHECKS}\b`, "i"),
 ];
