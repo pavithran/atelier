@@ -103,7 +103,7 @@ test("atelier stuck lists the orphaned claim with its runner, last poll and atel
   assert.equal(orphan[0].since, CLAIMED);
   assert.equal(orphan[0].reason, `claim by opencode/glm-5.3-flash orphaned by its runner home:studio-5, which last polled at ${CLAIMED}; it no longer holds t358, t396`);
   assert.match(orphan[0].recovery, /^atelier dispatch t463 --to home --agent opencode --model glm-5\.3-flash/);
-  assert.match(orphan[0].recovery, /--project "atelier"$/);
+  assert.match(orphan[0].recovery, /--project atelier$/);
   assert.equal(orphan[0].evidence, "https://example.org/api/runners");
   // The orphaned claim holds nothing, so no core hold is reported against it.
   assert.deepEqual(r.entries.filter((e) => e.kind === "core-hold"), []);

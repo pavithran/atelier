@@ -1,7 +1,7 @@
 // Diagnostics are observations only. Unknown data never establishes absence.
 import type { Item } from "../rules.ts";
 import type { LedgerEvent, LandingWorkflowRecord } from "../ledger.ts";
-import { coreHold, coreOrphans, OFFER_REFRESH_MS, orphanedBy, RUNNER_GONE_MS, type RunnerPolls, type SeenOffer } from "../dispatch/rules.ts";
+import { coreHold, coreOrphans, OFFER_REFRESH_MS, orphanedBy, RUNNER_GONE_MS, shellWord, type RunnerPolls, type SeenOffer } from "../dispatch/rules.ts";
 import { landingLeaseLapsed, type LandingLease } from "../landing-lease.ts";
 import type { RunReport } from "../models/reliability.ts";
 import { detectStuck, holdStart, pushObservedAt } from "./rules.ts";
@@ -46,7 +46,7 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
     return `${flags.join(" ")}${overlapOk ? " --overlap-ok" : ""}`;
   };
   const heldDispatch = (item: Item) => redispatch(item, true);
-  const projectFlag = `--project ${JSON.stringify(project)}`;
+  const projectFlag = `--project ${shellWord(project)}`;
   const command = (cmd: string) => `atelier ${cmd} ${projectFlag}`;
   const add = (kind: string, subject: string, reason: string, since: string, recovery: string, evidence = `${base}/${subject}`) => {
     entries.push({ kind, subject, reason, since, ageMs: age(since), evidence, recovery });
