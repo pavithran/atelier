@@ -15,5 +15,5 @@ export default defineConfig({
       remoteBindings: false,
     }),
   ],
-  test: { include: ["test/**/*.spec.ts", "src/runner-token.spec.mjs"] },
+  test: { include: ["test/**/*.spec.ts", "src/runner-token.spec.mjs", "cli/stuck.worker.spec.mjs"] },
 });
