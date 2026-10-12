@@ -89,11 +89,13 @@ seeded fixture (`test/fixtures/design/`) by `npm run design:capture`.
 | **Owner, watching** | `/studio`, `/flow`, `/history` | "Who is working on what right now, and what moved?" |
 | **Owner, administering** | `/models`, `/usage`, a project's Settings and Ship | "Is the pool healthy and within limits; what policy applies?" |
 | **Visitor (public)** | `/`, `/how` | "What is Atelier, and is real work happening here?" |
-| **Owner, signed out** | `/login` (behind Access) | "Am I on the right page to sign in?" |
+| **Owner, signed out** | `/login` (a server without Access) | "Am I on the right page to sign in?" |
 
 ## 3. HTML routes (from `src/index.ts`)
 
-Owner routes need Cloudflare Access's assertion and an Atelier session.
+Owner routes need Cloudflare Access's assertion and an Atelier session;
+behind Access the assertion starts the session itself (t534), so `/login`
+draws its token form only on a server without Access.
 
 | Route | Renderer | Audience | Navigation drawn today |
 |---|---|---|---|
@@ -133,7 +135,8 @@ Form posts (not pages): `/login`, `/logout`, `/projects/showcase`,
 | `/projects` | 301 to `/home` | fixture.spec.ts |
 | `/flow?project=NAME` | 301 to `/p/NAME/flow` | fixture.spec.ts |
 | `/p/FORMER-NAME/…` | 301 to the project's current name | src/index.ts `movedTo` |
-| an owner route, Access signed in, no session | 303 to `/login` | fixture.spec.ts |
+| an owner route, Access signed in, no session | the page, starting a session | test/access.spec.ts |
+| an owner route, no Access configured, no session | 303 to `/login` | fixture.spec.ts |
 | an owner route without Access's assertion | 401 error page | captured: `public-owner-route` |
 | an unknown path | 404 `Not found.` as bare text, no page | src/index.ts |
 
@@ -153,7 +156,7 @@ field-notes 70, open-tool 40), plus `blank-slate` (no tasks) and
 | `public-showcase-none` | `/` | public | No project shown publicly (404) |
 | `public-how` | `/how` | public | The explainer |
 | `public-owner-route` | `/p/ledger-core` | public | A visitor on an owner URL without Access (401) |
-| `signin` | `/login` | Access only | Sign-in over the anonymised backdrop |
+| `signin` | `/login` | no Access configured | Sign-in over the anonymised backdrop |
 | `home` | `/home` | owner | Portfolio: dense, empty and unavailable projects |
 | `decisions` | `/decisions` | owner | Inbox, first decision selected |
 | `decisions-sent-back` | `/decisions?project=ledger-core&task=t197` | owner | A sent-back task selected |

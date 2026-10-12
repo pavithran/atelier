@@ -76,7 +76,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
   // claimed as soon as it is made, as a review.claimed event. `items` and `queue` answer
   // the project's items and the runner queue, which the wait explains from.
   const box = {
-    states: {}, reviews: { t1: [], t2: [] }, lease: null, waiting: [], version: null, routeLevel: ROUTE_LEVEL,
+    states: {}, reviews: { t1: [], t2: [] }, lease: null, waiting: [], version: null, routeLevel: ROUTE_LEVEL, policy: {},
     review: { needed: true, reviewer: "codex/gpt-6-astra", approve: true, pending: false, at: null, approveAfter: 0, claimed: false, skips: [] },
     requests: [], regen: "echo generated > gen-fixtures.txt", checks: ["exit 0"], items: [], queue: [], runners: null, renewFails: false, kinds: {},
     // The evidence each check posts, as the server records it (t436): the
@@ -119,7 +119,7 @@ async function landFixture(t, { mainChange = null, taskChange = "task\n", confli
     ];
     return {
       item: { id, title: `Fixture ${id}`, state, owner: "codex/test", ...(box.pushActors ? { pushActors: box.pushActors } : {}), head, ...(box.kinds[id] ? { kind: box.kinds[id] } : {}), acceptedHead: state === "accepted" || state === "merged" ? head : null },
-      policy: { reviewerAdmissions: box.reviewerAdmissions, checks: box.checks, protected: ["work.txt"], regenerate: box.regen, commitIdentity: { name: "Fixture", email: "fixture@example.invalid", agentEmails: [] }, ...(box.agents ? { agents: box.agents } : {}), ...(box.eligible ? { eligible: box.eligible } : {}) },
+      policy: { reviewerAdmissions: box.reviewerAdmissions, checks: box.checks, protected: ["work.txt"], regenerate: box.regen, commitIdentity: { name: "Fixture", email: "fixture@example.invalid", agentEmails: [] }, ...(box.agents ? { agents: box.agents } : {}), ...(box.eligible ? { eligible: box.eligible } : {}), ...box.policy },
       gate: { ready: true, outOfScope: [], blockers: [] }, evidence: box.evidence[id] ?? [], reviews, events,
     };
   };
@@ -455,7 +455,8 @@ test("a needed:false answer for failing checks prints the server's reason, never
   const r = await f.run(f.checkout, "land", "t1");
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /No review request was needed: npm test failed at 1a2b3c4d; the builder fixes that before a review\./);
-  assert.doesNotMatch(r.output, /protected path|touched no/);
+  // The early notice (t422) names the protected glob, so look past it.
+  assert.doesNotMatch(r.output.slice(r.output.indexOf("No review request was needed")), /protected path|touched no/);
 });
 
 test("--no-review leaves the task submitted, accepts and merges nothing, and releases the lease", async (t) => {
@@ -1591,7 +1592,10 @@ test("land --workflow starts the Workflow, merges main and pushes only once the 
   assert.match(r.output, /t1 landed through the landing Workflow/);
   // The merge of main began only when the Workflow held the lease (the
   // merge in the checkout reads the baseline's token later, at `merge`).
-  assert.equal(wf.baseTokenAt[0], "workspace");
+  // (The early review notice reads the baseline before any Workflow
+  // exists, so that read has no stage: t422.)
+  const staged = wf.baseTokenAt.filter((stage) => stage !== null);
+  assert.equal(staged[0], "workspace");
   assert.ok(!wf.baseTokenAt.includes("lease"));
   // The workspace report names the round, the pushed head and main's head.
   const head = git(f.workspace("t1"), "rev-parse", "HEAD");
@@ -2036,6 +2040,37 @@ test("a push that fails for any other reason is not refreshed or retried (t275)"
   await assert.rejects(runLand(l.io), /non-fast-forward/);
   assert.deepEqual(l.commands, ["push"]);
   assert.equal(l.claims().length, 0);
+});
+
+// The early review notice (t422): land says which policy requires a review
+// before it takes the lease or runs a check, though the task's fork already
+// holds the head, and says nothing under --no-review.
+for (const postMerge of [false, true]) test(`land prints the review notice before it takes the lease or runs a check (post-merge policy: ${postMerge})`, async (t) => {
+  const f = await landFixture(t);
+  if (postMerge) f.box.policy = {
+    protected: [],
+    postMerge: {
+      version: 1,
+      approval: { by: "owner", at: "2026-10-09T00:00:00Z", reason: "run checks after landing" },
+      steps: [{ name: "check", command: "node scripts/check.mjs", class: "check", when: "always", protect: ["scripts/**"], timeoutMs: 1000 }],
+    },
+  };
+  f.box.checks = ["echo CHECK-RAN"];
+  const r = await f.run(f.checkout, "land", "t1");
+  assert.equal(r.status, 0, r.output);
+  const notice = r.output.indexOf("A review will be needed before this lands");
+  assert.ok(notice >= 0, r.output);
+  assert.match(r.output, postMerge
+    ? /work\.txt matches the protected glob \*\*, from the post-merge policy/
+    : /work\.txt matches the protected glob work\.txt/);
+  if (postMerge) assert.match(r.output, /Controlling policy:.*post-merge policy/);
+  const ran = r.output.indexOf("CHECK-RAN");
+  assert.ok(ran > notice, r.output);
+  const firstLease = f.box.requests.findIndex((x) => x.path.endsWith("/landing-lease") && x.method === "POST");
+  const baseToken = f.box.requests.findIndex((x) => x.path.endsWith("/base-token"));
+  assert.ok(baseToken >= 0 && baseToken < firstLease, "the baseline was read before the lease was taken");
+  const quiet = await (await landFixture(t)).run(f.checkout, "land", "t1", "--no-review", "--dry-run");
+  assert.doesNotMatch(quiet.output, /A review will be needed/);
 });
 
 for (const queued of [true, false]) test(`land --workflow exits non-zero on losing a queued instance and reports queue membership (${queued})`, async (t) => {

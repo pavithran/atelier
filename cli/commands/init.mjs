@@ -178,6 +178,9 @@ export default async function initCommand() {
     // What may block a review, stated in every review brief; omitted keeps
     // it, "" restores the default bar.
     ...(args["review-bar"] !== undefined ? { reviewBar: args["review-bar"] } : {}),
+    // The model that triages a landing's diff against the task's criteria
+    // before its review (t475), harness/model; omitted keeps it, "" clears it.
+    ...(args.triage !== undefined ? { triage: args.triage } : {}),
     // The top review tier, harness/model actors separated by commas, each
     // reviewing every protected change beside the gate's review; omitted
     // keeps it, "" clears it.
@@ -244,6 +247,9 @@ export default async function initCommand() {
   console.log(`Review bar: ${pol.reviewBar ?? "the default, which blocks for a correctness, security or data-loss defect, a behaviour change without a test that covers it, docs or help that now contradict the code, a breaking change to a command, route or API field without a migration, or a visible regression on a user-facing page; anything else is a follow-up"}`);
   // A server older than the review bar ignores it and answers without one.
   if (typeof args["review-bar"] === "string" && args["review-bar"].trim() && !pol.reviewBar) console.log("Warning: the server did not record the review bar; deploy the server, then run atelier init --review-bar again.");
+  console.log(`Triage:     ${pol.triage ? `${pol.triage}, which triages each landing's diff against the task's acceptance criteria before the review is asked for (atelier land --triage H/M names another, --no-triage REASON skips it)` : "none, unless a landing names a model with atelier land --triage H/M"}`);
+  // A server older than the triage setting ignores it and answers without one.
+  if (typeof args.triage === "string" && args.triage.trim() && !pol.triage) console.log("Warning: the server did not record the triage model; deploy the server, then run atelier init --triage again.");
   console.log(`Review tier: ${pol.reviewTier?.length ? `${pol.reviewTier.join(", ")}, one of which reviews every protected change: the gate's review goes to the tier first, and a separate tier review is asked only when the gate's reviewer is outside it` : "none"}`);
   if (typeof args["review-tier"] === "string" && args["review-tier"].trim() && !pol.reviewTier?.length) console.log("Warning: the server did not record the review tier; deploy the server, then run atelier init --review-tier again.");
   console.log(`Models:     ${familyModeText(pol)}`);
