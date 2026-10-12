@@ -243,6 +243,10 @@ export interface OrphanedClaim extends CoreBlocker {
   lastPoll: string;
   // A plan's part is recovered through its plan, never by dispatch.
   kind?: Item["kind"];
+  // The project the claim is in, set by the ledger that found it, so its
+  // recovery names that project wherever the hold is printed (a listing of
+  // every project's queue or status included).
+  project?: string;
 }
 
 export function orphanedBy(o: Pick<Item, "state" | "runner">, runners: RunnerPolls | null | undefined, now = Date.now()): { runner: string; lastPoll: string } | null {
@@ -338,8 +342,9 @@ export function holdText(h: CoreHold, project?: string): string {
 // (a quote inside closed, escaped and reopened), so a project name with a
 // space or a shell metacharacter is passed whole and never run.
 export const shellWord = (word: string): string => /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
-export function orphanRecovery(o: Pick<OrphanedClaim, "id" | "kind">, project?: string): string {
-  const flag = project ? ` --project ${shellWord(project)}` : "";
+export function orphanRecovery(o: Pick<OrphanedClaim, "id" | "kind" | "project">, project?: string): string {
+  const name = o.project ?? project;
+  const flag = name ? ` --project ${shellWord(name)}` : "";
   return o.kind
     ? `atelier release ${o.id}${flag} --note "Requeue work its runner orphaned"; atelier plan retry ${o.id}${flag}`
     : `atelier dispatch ${o.id}${flag}`;

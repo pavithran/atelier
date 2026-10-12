@@ -186,3 +186,17 @@ test("an orphan's recovery quotes its project as one shell word", () => {
     assert.deepEqual(r.stdout.trimEnd().split("\n"), ["dispatch", "t463", "--project", name]);
   }
 });
+
+// gpt-6-astra's review at c2655314: status renders a hold with no project
+// argument (heldReasonLine, cli/status.mjs), so the orphan carries its own
+// project and its recovery names it however the hold is printed.
+test("an orphan's recovery names the orphan's own project wherever the hold is printed", () => {
+  const held = claim("home:studio-5");
+  const waiting = item("t358");
+  const [orphan] = coreOrphans(waiting, [held, waiting], core, null, NOW, polls(CLAIMED));
+  const inB = { ...orphan, project: "project b" };
+  const hold = { id: "t500", owner: "codex/gpt-6", state: "claimed" as const, title: "Live", core: "src/**", orphaned: [inB] };
+  assert.match(holdText(hold), /waits on t500 .*recover it with atelier dispatch t463 --project 'project b'$/);
+  assert.match(holdText(hold, "project a"), /--project 'project b'$/);
+  assert.match(orphanText([inB]), /--project 'project b'$/);
+});
