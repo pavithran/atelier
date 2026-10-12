@@ -1896,7 +1896,7 @@ export function ownerState(d: Detail, evidenceVisible: boolean, now = Date.now()
   const reviewed = kind === "protected" || (d.policy.execution !== undefined && kind === "coordinated") ? kind : null;
   const contributors = contributorsOf(item);
   const independentReview = reviewed
-    ? countingReviews(d.reviews, binding, d.policy, owner).filter((r) => independentApproval(r, reviewed, contributors, owner)).sort((a, b) => b.at.localeCompare(a.at))[0]
+    ? countingReviews(d.reviews, binding, d.policy, owner).filter((r) => independentApproval(r, reviewed, contributors, owner, singleFamily(d.policy))).sort((a, b) => b.at.localeCompare(a.at))[0]
     : undefined;
   const independentRejection = latest.find((r) => r.by !== owner && !r.approve);
   const independent: StateCell = { label: "Independent review", ...(

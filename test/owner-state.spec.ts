@@ -327,3 +327,14 @@ it("criterion 2: a rejection from a reviewer who has since lost eligibility is r
   const own = detail(); own.policy = ineligible; own.reviews = [review({ approve: false, note: "tighten" })];
   expect(ownerState(own, true, NOW).approval.text).toMatch(/^You requested changes/);
 });
+
+it("in single-family mode the independent-review cell credits a different model of the project's company, as the gate does", () => {
+  // Review finding at 0822b37a: the display called independentApproval
+  // without the project's family, so a qualifying same-company review the
+  // gate counts showed as not given.
+  const d = detail();
+  d.policy = { ...d.policy, familyMode: { single: "openai", by: "pavi", at: time } } as typeof d.policy;
+  d.reviews = [review({ by: "codex/gpt-6-astra" })];
+  d.gate = { ready: true, needsAssessor: false, blockers: [], outOfScope: [] };
+  expect(ownerState(d, true, NOW).independent.text).toBe("Approved by codex/gpt-6-astra");
+});
