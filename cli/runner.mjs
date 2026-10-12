@@ -19,6 +19,7 @@ import { submission } from "../src/brief.ts";
 import { parseVerdict, replyFormat, VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { outcomeNote, PREREVIEW_JOB, prereviewBrief, prereviewEnvelope, relevantTests } from "../src/dispatch/prereview.ts";
 import { MERGE_MAIN } from "../src/plans/state.ts";
+import { BUILDER_TESTS } from "../src/plans/brief.ts";
 import { checkCapabilities, requiredForJobs } from "../src/route-level.ts";
 import { TERMINAL_TASK_EXITS } from "../src/tokens.ts";
 import { rolePrompt, ROLE_PROMPT_MAX } from "../src/usage.ts";
@@ -141,7 +142,9 @@ export function briefFor(item, project) {
     "Rules:",
     "Stay in scope. Work only in this workspace.",
     "Write tests for new behaviour.",
-    "Run npm test and npm run typecheck. Both must pass.",
+    // t552: the tests the change touches and npm run typecheck, not the full
+    // npm test, which the finish's clean-clone checks run (BUILDER_TESTS).
+    ...BUILDER_TESTS.map((line) => line.replace("and the typecheck", "and npm run typecheck").replace("the full suite unless", "the full npm test suite unless")),
     // t302: a local model that finished its work four times lost it to the
     // commit each time — `git add … && git commit -F - <<'EOF' …`, a heredoc
     // and && chain its harness refuses — so the rule names the commands
@@ -1010,10 +1013,17 @@ export function codexBuildRefusal(entry) {
 // validation_blocked does not hold back a good build.
 const CHECKS = String.raw`(?:required checks?|checks?|tests?|test suite|suite|typecheck|vitest|npm test|npm run [\w:-]+)`;
 const SANDBOX = String.raw`(?:EPERM|EACCES|permission denied|sandbox|no network|network access|ENOTFOUND|EAI_AGAIN)`;
+const RUN_OBJECT = String.raw`(?:(?:the|all|any|full|required|project's|whole|complete)\s+){0,3}${CHECKS}\b`;
 const VALIDATION_BLOCKED = [
   /^[\s*_`>-]*validation[_ ]blocked[*_`]*\s*:/im,
-  new RegExp(String.raw`(?:could not|couldn't|cannot|can't|unable to|not able to|did not|didn't)\s+(?:fully\s+|successfully\s+)?(?:run|execute)\s+(?:(?:the|all|any|full|required|project's|whole|complete)\s+){0,3}${CHECKS}\b`, "i"),
-  new RegExp(String.raw`\b${CHECKS}\s+(?:could not|couldn't|cannot|can't|did not|didn't)\s+(?:be\s+)?(?:run|executed?|start|complete)`, "i"),
+  new RegExp(String.raw`(?:could not|couldn't|cannot|can't|unable to|not able to)\s+(?:fully\s+|successfully\s+)?(?:run|execute)\s+${RUN_OBJECT}`, "i"),
+  // "Did not run" is a blocker only beside the environment that stopped it:
+  // the build brief tells a builder not to run the full suite (t552), and a
+  // report that says it did not is a good build, not a blocked one.
+  new RegExp(String.raw`(?:did not|didn't)\s+(?:fully\s+|successfully\s+)?(?:run|execute)\s+${RUN_OBJECT}[^\n.]{0,80}${SANDBOX}`, "i"),
+  new RegExp(String.raw`\b${CHECKS}\s+(?:could not|couldn't|cannot|can't)\s+(?:be\s+)?(?:run|executed?|start|complete)`, "i"),
+  // The passive "tests did not run" is a blocker only beside the environment too.
+  new RegExp(String.raw`\b${CHECKS}\s+(?:did not|didn't)\s+(?:be\s+)?(?:run|execute|start|complete)[^\n.]{0,80}${SANDBOX}`, "i"),
   new RegExp(String.raw`\b${CHECKS}\b[^\n.]{0,80}\b(?:blocked|failed|fails|errored|refused)\b[^\n.]{0,80}${SANDBOX}`, "i"),
   new RegExp(String.raw`${SANDBOX}[^\n.]{0,60}\b(?:blocked|prevented|stopped)\b[^\n.]{0,40}\b${CHECKS}\b`, "i"),
 ];
