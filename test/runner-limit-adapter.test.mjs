@@ -129,6 +129,23 @@ test("a marker printed by the harness is removed and an ordinary failure retains
   assert.equal(r.result.status, 3);
   assert.equal(r.err, "error: broke\n");
 });
+// A harness run under the adapter is piped, not inherited: the adapter must
+// read the whole output to tell a provider limit from an answer, so what the
+// harness printed reaches the runner once it ends, not as it is written
+// (docs/runners.md, "Provider usage limits"). Gemini's tier review of
+// 19d050b1 asked for this behaviour to be pinned.
+test("a harness run is piped, and its output is printed once, after it ends", () => {
+  let printedBeforeEnd = false;
+  const out = [];
+  const spawn = (exe, argv, options) => {
+    assert.deepEqual(options.stdio, ["pipe", "pipe", "pipe"], "the harness's output is captured, not inherited");
+    printedBeforeEnd = out.length > 0;
+    return { status: 0, stdout: `${JSON.stringify({ type: "result", is_error: false, result: "the answer\n" })}\n`, stderr: "" };
+  };
+  limitSpawn("claude-code", { spawn, now: () => NOW, timeZone: NY, stdout: (s) => out.push(s), stderr: () => {} })("harness", [], { input: "prompt", stdio: ["pipe", "inherit", "inherit"] });
+  assert.equal(printedBeforeEnd, false);
+  assert.deepEqual(out, ["the answer\n"]);
+});
 test("MCP discovery passes through untouched", () => {
   const options = { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] };
   limitSpawn("codex", { spawn(exe, argv, actual) { assert.equal(actual, options); return { status: 0 }; } })("codex", ["mcp", "list"], options);
