@@ -225,9 +225,18 @@ The steps in between:
 
 2. Main is fetched into the task's workspace and merged with `--no-ff`
    through the merge pipeline (`cli/merge-pipeline.mjs`), the same one
-   every merge Atelier makes goes through: the owner's merge onto the
-   baseline, `atelier update`, a runner's merge-main, integrate and refresh
-   merges, and the speculative merge `atelier check --merged` checks.
+   every merge Atelier makes with Git goes through: the owner's merge onto
+   the baseline, `atelier update` (a pipeline merge wherever a declared
+   generator must run, otherwise a rebase through the clone's merge
+   drivers), a runner's merge-main, integrate and refresh merges, and the
+   speculative merge `atelier check --merged` checks in its clean clone.
+   The Worker makes no Git merge: the item page's merge preview, a plan's
+   and a part's mergeability, and the merged tree `atelier check --merged
+   --sandbox` checks read the same declarations through
+   `src/merge-declarations.ts`, uniting record files by key and listing
+   regenerable outputs apart from source conflicts. No generator runs
+   there, so a sandbox merged check whose merge needs one is refused,
+   naming `atelier check --merged`.
    `bin/merge-manifest.json` declares each generator (its name, its command
    as an argument list, the source inputs it reads and the outputs it
    writes), the record files that unite by key, and the registries whose

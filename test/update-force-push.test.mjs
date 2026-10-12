@@ -295,3 +295,22 @@ test("update with nothing to regenerate still rebases, through the clone's merge
   assert.equal(f.git(f.workspace, "rev-list", "--merges", "--count", "HEAD"), "0");
   assert.match(f.git(f.workspace, "config", "--local", "merge.atelier-generated.driver"), /merge-driver\.mjs' generated/);
 });
+
+// The help and the docs say what update does now (t463): a preview first,
+// a pipeline merge that regenerates and names atelier push where a declared
+// generator must run, and a rebase naming push --force only otherwise.
+test("update's help and the gate's command table describe the pipeline merge and the rebase, and which push each names", async () => {
+  const { default: spec } = await import("../src/usage/commands/update.ts");
+  const about = spec.forms[0].about;
+  const row = readFileSync(resolve("docs/gate.md"), "utf8").split("\n").find((line) => line.startsWith("| `atelier update` |"));
+  for (const text of [about, row]) {
+    assert.doesNotMatch(text, /^(\| `atelier update` \| the item's owner \| )?Rebases the workspace/, "update no longer only rebases");
+    assert.match(text, /previewed first/);
+    assert.match(text, /bin\/merge-manifest\.json/);
+    assert.match(text, /merge pipeline[^.]*regenerates the outputs/);
+    assert.match(text, /names `atelier push`/);
+    assert.match(text, /rebases through the clone's merge drivers and names `atelier push --force`/);
+  }
+  const usage = JSON.parse(readFileSync(resolve("test/fixtures/cli/usage.json"), "utf8"));
+  assert.match(usage.update, /merges through the merge pipeline/);
+});

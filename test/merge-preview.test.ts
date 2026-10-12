@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { bytesOf, changedRegions, commitsSince, linesConflict, linesOf, mergeLines, mergePatch, mergeTrees, mergeability, overlaps, previewAgainstMain } from "../src/preview/merge.ts";
+import { bytesOf, changedRegions, commitsSince, linesConflict, linesOf, mergeLines, mergePatch, mergeTrees, mergeability, mergedTreeRefusal, overlaps, previewAgainstMain } from "../src/preview/merge.ts";
 import type { Reader } from "../src/diff.ts";
 
 // A content-addressed toy: files are named by their text, trees by a label.
@@ -220,4 +220,72 @@ test("mergeTrees reads the fork point, main's head and the task's head as the pr
   const A = artifactsOf({ main: { log: ["m1", "base"], trees }, fork: { log: ["task", "base"], trees }, apart: { log: ["x"], trees } });
   assert.deepEqual(await mergeTrees(await A.get("main"), await A.get("fork")), { base: "base", baseTree: "base", main: "m1", mainTree: "m1", head: "task", headTree: "task" });
   assert.equal(await mergeTrees(await A.get("main"), await A.get("apart")), null, "no fork point");
+});
+
+// Trees with folders, for the merge declarations (t463): each label's files
+// by path, its folders named LABEL:FOLDER.
+function nested(trees: Record<string, Record<string, string>>): Reader {
+  const blobs = new Map<string, Uint8Array>();
+  const nodes = new Map<string, { name: string; mode: string; hash: string; type: string }[]>();
+  for (const [label, files] of Object.entries(trees)) {
+    const at = (dir: string) => (dir ? `${label}:${dir}` : label);
+    nodes.set(label, []);
+    for (const [path, text] of Object.entries(files)) {
+      const parts = path.split("/");
+      for (let i = 0; i < parts.length; i++) {
+        const dir = parts.slice(0, i).join("/"), entries = nodes.get(at(dir)) ?? [];
+        nodes.set(at(dir), entries);
+        if (i === parts.length - 1) { blobs.set(id(text), enc(text)); entries.push({ name: parts[i], mode: "100644", hash: id(text), type: "blob" }); }
+        else if (!entries.some((e) => e.name === parts[i])) { entries.push({ name: parts[i], mode: "40000", hash: at(parts.slice(0, i + 1).join("/")), type: "tree" }); nodes.set(at(parts.slice(0, i + 1).join("/")), nodes.get(at(parts.slice(0, i + 1).join("/"))) ?? []); }
+      }
+    }
+  }
+  return { tree: async (h) => nodes.get(h) ?? null, blob: async (h) => blobs.get(h) ?? null };
+}
+const MANIFEST = JSON.stringify({
+  version: 1,
+  generators: [{ name: "indexes", command: ["node", "gen.mjs"], inputs: ["cmds/**"], outputs: ["out/index.txt"] }],
+  records: [{ path: "routes.tsv", key: "^(\\S+)\\t" }],
+});
+const declaring = (files: Record<string, string>) => ({ "bin/merge-manifest.json": MANIFEST, ...files });
+
+test("the preview reads the merge declarations: a generated output both sides changed is regenerable, not a conflict, and record files unite by key (t463)", async () => {
+  const base = declaring({ "out/index.txt": "base\n", "routes.tsv": "/a\tA\n", "cmds/base.txt": "b\n" });
+  const both = nested({ base, ours: { ...base, "out/index.txt": "base\nmain\n", "routes.tsv": "/a\tA\n/main\tM\n", "cmds/main.txt": "m\n" }, theirs: { ...base, "out/index.txt": "base\ntask\n", "routes.tsv": "/a\tA\n/task\tT\n", "cmds/task.txt": "t\n" } });
+  const m = await mergeability(both, both, "base", "ours", "theirs");
+  assert.deepEqual(m.conflicts, []);
+  assert.equal(m.clean, true);
+  assert.deepEqual(m.regenerable, ["out/index.txt"]);
+  assert.deepEqual(m.generators, ["indexes"]);
+  // Without the manifest the same changes are two conflicts on the same lines.
+  const strip = (files: Record<string, string>) => Object.fromEntries(Object.entries(files).filter(([p]) => p !== "bin/merge-manifest.json"));
+  const plain = nested({ base: strip(base), ours: strip({ ...base, "out/index.txt": "base\nmain\n", "routes.tsv": "/a\tA\n/main\tM\n" }), theirs: strip({ ...base, "out/index.txt": "base\ntask\n", "routes.tsv": "/a\tA\n/task\tT\n" }) });
+  assert.deepEqual((await mergeability(plain, plain, "base", "ours", "theirs")).conflicts.map((c) => c.path), ["out/index.txt", "routes.tsv"]);
+  // A generator whose inputs both sides changed regenerates its outputs even where one side alone changed them.
+  const inputs = nested({ base, ours: { ...base, "cmds/main.txt": "m\n", "out/index.txt": "base\nmain\n" }, theirs: { ...base, "cmds/task.txt": "t\n" } });
+  assert.deepEqual((await mergeability(inputs, inputs, "base", "ours", "theirs")).regenerable, ["out/index.txt"]);
+});
+
+test("the preview keeps a record key both sides changed differently, and a misdeclared manifest, as conflicts (t463)", async () => {
+  const base = declaring({ "routes.tsv": "/a\tA\n" });
+  const r = nested({ base, ours: { ...base, "routes.tsv": "/a\tA\n/x\tMAIN\n" }, theirs: { ...base, "routes.tsv": "/a\tA\n/x\tTASK\n" } });
+  const m = await mergeability(r, r, "base", "ours", "theirs");
+  assert.deepEqual(m.conflicts, [{ path: "routes.tsv", reason: "records both sides changed differently: /x: added by both sides with different records" }]);
+  const bad = nested({ base, ours: { ...base, "x.txt": "m\n" }, theirs: { ...base, "bin/merge-manifest.json": "{" } });
+  assert.match((await mergeability(bad, bad, "base", "ours", "theirs")).conflicts[0]?.reason ?? "", /bin\/merge-manifest\.json is not valid JSON/);
+});
+
+test("the sandbox's merged tree unites records by key, and a merge needing a generator gives no tree but names the local merged check (t463)", async () => {
+  const base = declaring({ "out/index.txt": "base\n", "routes.tsv": "/a\tA\n", "cmds/base.txt": "b\n" });
+  const records = nested({ base, ours: { ...base, "routes.tsv": "/a\tA\n/main\tM\n" }, theirs: { ...base, "routes.tsv": "/a\tA\n/task\tT\n" } });
+  const merged = await mergePatch(records, records, "base", "ours", "theirs");
+  assert.deepEqual(merged.conflicts, []);
+  assert.equal(new TextDecoder().decode(merged.patch.get("routes.tsv")!.data), "/a\tA\n/main\tM\n/task\tT\n");
+  assert.equal(mergedTreeRefusal(merged, "f".repeat(40)), null);
+  const gen = nested({ base, ours: { ...base, "cmds/main.txt": "m\n", "out/index.txt": "base\nmain\n" }, theirs: { ...base, "cmds/task.txt": "t\n", "out/index.txt": "base\ntask\n" } });
+  const refused = await mergePatch(gen, gen, "base", "ours", "theirs");
+  assert.equal(refused.patch.size, 0);
+  assert.deepEqual(refused.regenerable, ["out/index.txt"]);
+  assert.equal(mergedTreeRefusal(refused, "f".repeat(40)), "the merge with main at ffffffff needs indexes to regenerate out/index.txt (declared in bin/merge-manifest.json), and no generator runs in the sandbox; check the merge with atelier check --merged without --sandbox, which merges through the merge pipeline and regenerates them, or bring main into the workspace with atelier update and check its head");
+  assert.match(mergedTreeRefusal({ conflicts: [{ path: "a.ts", reason: "both sides changed the same lines" }] }, "f".repeat(40)) ?? "", /stops on conflicts: a\.ts \(both sides changed the same lines\)/);
 });

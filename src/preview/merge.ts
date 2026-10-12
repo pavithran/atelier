@@ -5,14 +5,26 @@
 // on both sides merges only when the changes touch separate lines of the
 // base, as git's own merge would decide, and is otherwise a conflict. Nothing
 // here writes; `atelier merge` still makes the merge.
+//
+// The project's merge declarations (bin/merge-manifest.json, read through
+// src/merge-declarations.ts, t463) are read as the CLI's merge pipeline
+// reads them: a declared record file both sides changed merges by key, and
+// a declared generated output is never a conflict but regenerable, listed
+// apart with every output of a generator whose inputs both sides changed,
+// since the pipeline regenerates those once the sources merge. No
+// generator runs here.
 
 import { changedPaths, diffLines, mergeBase, repoReader, splitLines, type Reader } from "../diff.ts";
+import { MANIFEST_PATH, generatorsToRun, mergeRecords, parseManifest, type Manifest } from "../merge-declarations.ts";
+import { globToRegExp } from "../rules.ts";
 
 export interface Conflict { path: string; reason: string }
 export interface Mergeability {
   clean: boolean;
   conflicts: Conflict[];
   both: string[];               // paths both sides changed, conflicting or not
+  regenerable?: string[];       // declared generated outputs the merge regenerates (not conflicts)
+  generators?: string[];        // the generators that would regenerate them
   ours: number;                 // paths changed on main since the fork point
   theirs: number;               // paths the task changed
 }
@@ -110,7 +122,14 @@ export async function mergeability(
   const both = theirsPaths.filter((p) => ourSet.has(p)).sort();
   const atMain = locator(main), atTask = locator(task);
   const conflicts: Conflict[] = [];
+  const declared = await declarations(main, task, oursTree, theirsTree, theirsPaths.includes(MANIFEST_PATH));
+  if ("problem" in declared) conflicts.push({ path: MANIFEST_PATH, reason: declared.problem });
+  const manifest = "manifest" in declared ? declared.manifest : null;
+  const outputs = new Set(manifest?.generators.flatMap((g) => g.outputs) ?? []);
+  const generators = generatorsToRun(manifest, { mb: baseTree, a: oursPaths, b: theirsPaths, conflicted: both.filter((p) => outputs.has(p)) }, globToRegExp);
+  const regenerable = [...new Set([...both.filter((p) => outputs.has(p)), ...generators.flatMap((g) => g.outputs)])].sort();
   for (const path of both) {
+    if (outputs.has(path)) continue;                          // regenerated once the sources merge
     const [b, o, t] = await Promise.all([atMain(baseTree, path), atMain(oursTree, path), atTask(theirsTree, path)]);
     if (o === t) continue;                                    // the same change on both sides
     if (!o || !t) { conflicts.push({ path, reason: o ? "deleted by the task, changed on main" : t ? "deleted on main, changed by the task" : "removed or replaced on both sides" }); continue; }
@@ -118,6 +137,13 @@ export async function mergeability(
     if (!bb || !ob || !tb) { conflicts.push({ path, reason: "could not be read" }); continue; }
     if ([bb, ob, tb].some((x) => x.length > BLOB_LIMIT)) { conflicts.push({ path, reason: "too large to compare here" }); continue; }
     if ([bb, ob, tb].some(isBinary)) { conflicts.push({ path, reason: "a binary file changed on both sides" }); continue; }
+    const record = manifest?.records.find((r) => r.path === path);
+    if (record) {
+      const merged = mergeRecords(...[bb, ob, tb].map((x) => new TextDecoder().decode(x)) as [string, string, string], record.pattern, record.framed);
+      if (merged.problems.length) conflicts.push({ path, reason: `a declared record file that breaks its format: ${merged.problems.join("; ")}` });
+      else if (merged.conflicts.length) conflicts.push({ path, reason: `records both sides changed differently: ${merged.conflicts.join("; ")}` });
+      continue;
+    }
     const clash = linesConflict(linesOf(bb), linesOf(ob), linesOf(tb));
     if (clash === null) conflicts.push({ path, reason: "too large to compare here" });
     else if (clash) conflicts.push({ path, reason: b ? "both sides changed the same lines" : "added on both sides with different contents" });
@@ -143,7 +169,24 @@ export async function mergeability(
     }
   }
   for (const path of [...collisions].sort()) conflicts.push({ path, reason: "a file on one side and a folder on the other" });
-  return { clean: conflicts.length === 0, conflicts, both, ours: oursPaths.length, theirs: theirsPaths.length };
+  return {
+    clean: conflicts.length === 0, conflicts, both, ours: oursPaths.length, theirs: theirsPaths.length,
+    ...(regenerable.length ? { regenerable, generators: generators.map((g) => g.name) } : {}),
+  };
+}
+
+// The merge declarations the merged tree would hold: the task's where it
+// changed the manifest, main's otherwise. None where the tree has no
+// manifest; a problem where it cannot be read or parsed, which stops the
+// pipeline's merge too.
+async function declarations(main: Reader, task: Reader, oursTree: string, theirsTree: string, taskChanged: boolean): Promise<{ manifest: Manifest } | { problem: string } | { none: true }> {
+  const [reader, tree] = taskChanged ? [task, theirsTree] : [main, oursTree];
+  const hash = await locator(reader)(tree, MANIFEST_PATH);
+  if (!hash) return { none: true };
+  const bytes = await reader.blob(hash);
+  if (!bytes) return { problem: "the merge manifest could not be read" };
+  try { return { manifest: parseManifest(new TextDecoder().decode(bytes)) }; }
+  catch (error) { return { problem: (error as Error).message.split("\n").join(" ") }; }
 }
 
 // A file's lines, with a missing final newline kept as part of the last line,
@@ -199,10 +242,15 @@ export interface Patch { type: Leaf["type"]; hash?: string; data?: Uint8Array }
 
 export async function mergePatch(
   main: Reader, task: Reader, baseTree: string, oursTree: string, theirsTree: string,
-): Promise<{ patch: Map<string, Patch | null>; conflicts: Conflict[] }> {
+): Promise<{ patch: Map<string, Patch | null>; conflicts: Conflict[]; regenerable?: string[]; generators?: string[] }> {
   const m = await mergeability(main, task, baseTree, oursTree, theirsTree);
   const patch = new Map<string, Patch | null>();
   if (!m.clean) return { patch, conflicts: m.conflicts };
+  // Outputs only a generator can write: no tree here, since no generator
+  // runs in the Worker (the caller says where the merge can be checked).
+  if (m.regenerable?.length) return { patch, conflicts: [], regenerable: m.regenerable, generators: m.generators };
+  const declared = await declarations(main, task, oursTree, theirsTree, m.both.includes(MANIFEST_PATH));
+  const records = "manifest" in declared ? declared.manifest.records : [];
   const both = new Set(m.both);
   const atMain = leafLocator(main), atTask = leafLocator(task);
   for (const path of baseTree === oursTree ? [] : await changedPaths(main, baseTree, oursTree)) {
@@ -212,11 +260,32 @@ export async function mergePatch(
     if (!o || !t || o.hash === t.hash) continue;
     const b = await atMain(baseTree, path);
     const [bb, ob, tb] = await Promise.all([b ? main.blob(b.hash) : Promise.resolve(new Uint8Array()), main.blob(o.hash), task.blob(t.hash)]);
+    const record = records.find((r) => r.path === path);
+    if (record && bb && ob && tb) {
+      // A declared record file merges by key, as the records driver merges it.
+      const merged = mergeRecords(...[bb, ob, tb].map((x) => new TextDecoder().decode(x)) as [string, string, string], record.pattern, record.framed);
+      if (merged.problems.length || merged.conflicts.length) return { patch: new Map(), conflicts: [{ path, reason: "could not be merged here" }] };
+      patch.set(path, { type: t.type, data: new TextEncoder().encode(merged.text) });
+      continue;
+    }
     const lines = bb && ob && tb ? mergeLines(linesOf(bb), linesOf(ob), linesOf(tb)) : null;
     if (!lines) return { patch: new Map(), conflicts: [{ path, reason: "could not be merged here" }] };
     patch.set(path, { type: t.type, data: bytesOf(lines) });
   }
   return { patch, conflicts: [] };
+}
+
+// Why a sandbox merged check has no tree to check, or null where mergePatch
+// gave it one. Conflicts are the preview's. A merge that needs a declared
+// generator (bin/merge-manifest.json, t463) is refused too: the Worker runs
+// no generator, and a text merge of generated outputs is a tree no landing
+// pushes, so the check names the local merged check, which merges through
+// the CLI's merge pipeline and regenerates them.
+export function mergedTreeRefusal(merge: { conflicts: Conflict[]; regenerable?: string[]; generators?: string[] }, mainHead: string): string | null {
+  const at = `the merge with main at ${mainHead.slice(0, 8)}`;
+  if (merge.conflicts.length) return `${at} stops on conflicts: ${merge.conflicts.map((c) => `${c.path} (${c.reason})`).join(", ")}; bring main into the workspace and resolve them`;
+  if (merge.regenerable?.length) return `${at} needs ${merge.generators?.join(", ") || "a declared generator"} to regenerate ${merge.regenerable.join(", ")} (declared in ${MANIFEST_PATH}), and no generator runs in the sandbox; check the merge with atelier check --merged without --sandbox, which merges through the merge pipeline and regenerates them, or bring main into the workspace with atelier update and check its head`;
+  return null;
 }
 
 // Live tasks whose changes touch the same paths, as pairs with the shared
