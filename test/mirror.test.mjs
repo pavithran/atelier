@@ -335,6 +335,9 @@ test("globs: a name matches at any depth, ** crosses folders, * does not", () =>
   assert.ok(d("private/a") && d("private/x/y") && !d("x/private/a"));
   const s = globMatcher("docs/*.md");
   assert.ok(s("docs/a.md") && !s("docs/x/a.md"));
+  // Case is folded: PROJECT.md is project.md on a case-insensitive checkout.
+  const p = globMatcher("project.md");
+  assert.ok(p("PROJECT.md") && p("x/Project.MD") && globMatcher("Private/**")("private/a"));
 });
 
 test("publish REMOTE requires the server policy; bare publish still requests a baseline token", (t) => {

@@ -24,15 +24,20 @@ test("setup.md lists every publication flag init takes, and the migration to des
   assert.match(setup, /`wrap --push` gives every\s+checkout remote this check/);
 });
 
-test("init's help and setup.md say what a declared mirror changes and which route level carries the fields", async () => {
+test("init's help and setup.md say what a declared mirror changes and that a named capability, not a route level, carries the fields", async () => {
   const { default: spec } = await import("../src/usage/commands/init.ts");
   const help = spec.help.flags["--public-mirror REMOTE"];
   assert.match(spec.forms[0].about, /checks every other checkout remote/);
   assert.doesNotMatch(help, /pushed as before/);
   assert.match(help, /every other checkout remote the same check/);
-  const routeLevel = readFileSync(new URL("../src/route-level.ts", import.meta.url), "utf8");
-  const level = routeLevel.match(/\/\/ (\d+): init records publicMirrorDestinations/)?.[1];
-  assert.ok(level, "route-level.ts names the level of the t433 fields");
+  // Since t522 the route level is frozen and new capabilities take none, so
+  // a server reporting only level 28 would drop the fields; init refuses it.
+  const declarations = readFileSync(new URL("../src/capability-declarations.ts", import.meta.url), "utf8");
+  const line = declarations.split("\n").find((l) => l.includes('"projects.publication-policy.v1"'));
+  assert.ok(line, "capability-declarations.ts declares the t433 fields");
+  assert.doesNotMatch(line, /level:/);
+  assert.ok(spec.capabilities.includes("projects.publication-policy.v1"));
   assert.doesNotMatch(setup, /raise the route level to 24/);
-  assert.match(setup, new RegExp(`\`privatePatterns\` with\\s+route level ${level}`));
+  assert.doesNotMatch(setup, /`privatePatterns` with\s+route level/);
+  assert.match(setup, /`privatePatterns` with the named capability\s+`projects\.publication-policy\.v1`/);
 });

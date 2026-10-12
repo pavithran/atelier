@@ -84,6 +84,8 @@ export function readPolicy(policy) {
 
 // A path glob as a test: `**` crosses folders, `*` and `?` stay in one; a glob
 // without `/` matches the name at any depth; a trailing `/` takes the folder.
+// Case is folded, as matchesFolded does for paths (src/rules.ts): on a
+// case-insensitive checkout PROJECT.md and project.md are the same file.
 export function globMatcher(glob) {
   let g = glob.replace(/^\.\//, "");
   const anywhere = !g.includes("/");
@@ -97,7 +99,7 @@ export function globMatcher(glob) {
     else if (c === "?") re += "[^/]";
     else re += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
   }
-  const rx = new RegExp(`^${anywhere ? "(?:.*/)?" : ""}${re}$`);
+  const rx = new RegExp(`^${anywhere ? "(?:.*/)?" : ""}${re}$`, "i");
   return (path) => rx.test(path);
 }
 
