@@ -5,9 +5,10 @@ import { assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed } from ".
 import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { changedPaths, itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
 import { scanCommit } from "./secret-scan.ts";
+import { criteriaOf } from "./criteria.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
-import { assertNameFree, assertProjectRemovable, LANDING_DETAIL_MAX, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
+import { assertNameFree, assertProjectRemovable, LANDING_DETAIL_MAX, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim, type ReviewerAvailability } from "./ledger.ts";
 import { accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
@@ -16,7 +17,7 @@ import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, 
 import { briefFor, cleanSummary } from "./brief.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
-import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
+import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanNote, cleanStatus, POOL_FAMILIES, type ModelEntry, type PoolFamily } from "./models/pool";
@@ -2226,9 +2227,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // owner's standing permission from the task's page (t371); the
       // refusal names that page on this server and the factor it takes.
       const overrideReview = body.overrideReview === undefined ? undefined : typeof body.overrideReview === "string" ? body.overrideReview : "";
+      const availability = overrideReview !== undefined ? await reviewerAvailability(env, L, id) : undefined;
       let item: Item;
       try {
-        item = await L.accept(id, actor, String(body.head ?? ""), overrideReview, typeof body.note === "string" ? body.note : undefined, undefined, c.acting ?? null);
+        item = await L.accept(id, actor, String(body.head ?? ""), overrideReview, typeof body.note === "string" ? body.note : undefined, undefined, availability, undefined, c.acting ?? null);
       } catch (err) {
         const rule = parseRuleError(err);
         if (rule?.code === "override_unconfirmed") {
@@ -2239,8 +2241,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // An override the owner records while a reviewer of another family was
       // available is answered with that reviewer, so the owner sees the
       // `atelier land ID --reviewer H/M` command that would have replaced it
-      // (t395).
-      const availableReviewer = overrideReview !== undefined ? await L.availableReviewer(id, await index(env).models()) : null;
+      // (t395). It is the one looked for as the override was made, and
+      // recorded with it (t457).
+      const availableReviewer = availability?.reviewer ?? null;
       return json({ ...item, ...(availableReviewer ? { availableReviewer } : {}) });
     }
     case "merged": {
@@ -2710,6 +2713,9 @@ async function assertPlanMergeable(env: Env, L: ReturnType<typeof ledger>, id: s
   throw new RuleError("conflicts_with_main", `${id}'s branch would conflict with main at ${preview.head.slice(0, 8)}: ${paths}. Take main into the branch first with atelier plan refresh ${id}, which puts the plan back to building and merges main's head, adding a merge-main part whose builder resolves the conflict when it does not merge cleanly (--resolve adds that part at once); the integrator submits the plan again once every part is integrated, and it is accepted then`, 409);
 }
 
+// The task page's forms whose refusal is drawn beside them (t457).
+const TASK_FORMS = new Set<string>(["approve", "reject", "accept", "override", "allow-override"] satisfies FormError["verb"][]);
+
 async function verifyRevision(env: Env, key: string, id: string, expected: string) {
   const item = await ledger(env,key).item(id);
   assertRevision(item,expected);
@@ -2777,57 +2783,86 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       await actionForm(L, verb, form, owner, async (commit) => onMainLine(env, (await L.project()).repo, commit));
       return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/ship`, c.url).toString(), 303);
     }
-    const before = await L.item(id);
-    const expected = String(form.get("head") ?? "");
-    if (before.head) assertRevision(before, expected);
-    if (["accept", "override", "allow-override", "approve", "reject"].includes(verb)) await verifyRevision(env, ref.key, id, expected);
-    if (verb === "accept" || verb === "override") await assertPlanMergeable(env, L, id);
-    // The override forms are the owner's confirmation only with the factor
-    // no agent holds (t371, ownerFactorIn): posted with the owner token as a
-    // bearer, as an agent could, or from a session alone, which that token
-    // buys, they are refused as the API's override is.
-    let factor: OwnerFactor | undefined;
-    if (verb === "override" || verb === "allow-override") {
-      if (!c.signedIn) throw new RuleError("override_unconfirmed", `an override of the independent review needs the owner's own sign-in, not the owner token: ${overrideConfirmationHint(project, id, c.url.origin, ownerFactorOf(env))}`, 403);
-      factor = ownerFactorIn(env, c, form, project, id);
+    // A refusal of one of the task page's own forms (approve, request
+    // changes, accept, override, the command-line permission) is answered
+    // with the task's page, drawn again from the record, the refusal beside
+    // the form it came from and the reason typed kept; never the
+    // confirmation secret (t457). Any other failure goes to the error page.
+    try {
+      const before = await L.item(id);
+      const expected = String(form.get("head") ?? "");
+      if (before.head) assertRevision(before, expected);
+      if (["accept", "override", "allow-override", "approve", "reject"].includes(verb)) await verifyRevision(env, ref.key, id, expected);
+      // Every form of the page carries the criteria it showed beside the
+      // head: the decision forms must name them, and any form that does is
+      // refused once they changed, so an override or a permission is never
+      // made from a page showing other criteria than the task's (t457).
+      const shownCriteria = form.get("criteria");
+      if ((TASK_FORMS.has(verb) || shownCriteria !== null) && shownCriteria !== criteriaOf(before)) {
+        throw new RuleError("stale_criteria", `${id}'s acceptance criteria changed since you opened this page; reload it and read them again`, 409);
+      }
+      // An override sent from a page drawn before the task was accepted (an
+      // old tab) would record a second override and acceptance; it is
+      // refused, the page drawn again with the acceptance on it (t457).
+      if (verb === "override" && before.state !== "submitted") {
+        throw new RuleError("not_submitted", before.state === "accepted"
+          ? `${id} was already accepted at ${(before.acceptedHead ?? before.head ?? "").slice(0, 8)} since this page was drawn, so this override would record a second override and acceptance`
+          : `${id} is ${before.state}; an override is made only on a submitted revision`, 409);
+      }
+      if (verb === "accept" || verb === "override") await assertPlanMergeable(env, L, id);
+      // The override forms are the owner's confirmation only with the factor
+      // no agent holds (t371, ownerFactorIn): posted with the owner token as a
+      // bearer, as an agent could, or from a session alone, which that token
+      // buys, they are refused as the API's override is.
+      let factor: OwnerFactor | undefined;
+      if (verb === "override" || verb === "allow-override") {
+        if (!c.signedIn) throw new RuleError("override_unconfirmed", `an override of the independent review needs the owner's own sign-in, not the owner token: ${overrideConfirmationHint(project, id, c.url.origin, ownerFactorOf(env))}`, 403);
+        factor = ownerFactorIn(env, c, form, project, id);
+      }
+      // A change of owner takes the write token with it, as on the API routes:
+      // the Ledger clears the id read here only if it is still the one recorded.
+      const oldToken = await L.tokenId(id);
+      // As on the API routes: a change of owner is checked, the holder's
+      // write token revoked, and only then the change made. The workspace is
+      // read after the token id, not taken from `before`: a token is recorded
+      // only once its workspace exists, so the workspace read here is the
+      // one the token was made for, even if a claim made both after `before`
+      // was read. With `before.fork` that token would go unrevoked, and the
+      // change would then take it off the record while it still works.
+      const moving = verb === "abandon" || verb === "release" || verb === "handoff" || verb === "dispatch";
+      if (moving) {
+        if (verb === "dispatch") await L.checkDispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note });
+        else if (verb === "abandon") await L.checkAbandon(id, owner, note);
+        else if (verb === "release") await L.checkRelease(id, owner, note);
+        else await L.checkHandoff(id, owner, String(form.get("to") ?? ""), note);
+        const { fork } = await L.item(id);
+        await revoke(env, fork, oldToken);
+      }
+      if (verb === "dispatch") await L.dispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note }, oldToken);
+      else if (verb === "undispatch") await L.undispatch(id, owner);
+      else if (verb === "accept") await L.accept(id, owner, expected, undefined, undefined, undefined, undefined, String(shownCriteria));
+      // The page's override form: accept with the owner's override of a missing
+      // independent review, its reason in the note.
+      else if (verb === "override") await L.accept(id, owner, expected, note, undefined, factor, await reviewerAvailability(env, L, id), String(shownCriteria));
+      // The page's permission for an override from the command line (t371).
+      else if (verb === "allow-override") await L.confirmOverride(id, owner, expected, factor!, String(shownCriteria));
+      else if (verb === "abandon") await L.abandon(id, owner, note, oldToken);
+      else if (verb === "block") await L.block(id, owner, note);
+      else if (verb === "unblock") await L.unblock(id, owner);
+      else if (verb === "clear-secret") await L.clearSecret(id, owner, note);
+      else if (verb === "release") await L.release(id, owner, note, false, oldToken);
+      else if (verb === "handoff") await L.handoff(id, owner, String(form.get("to") ?? ""), note, false, oldToken);
+      else if (verb === "approve" || verb === "reject") {
+        await L.addReview({ itemId: id, by: owner, head: expected, criteria: String(form.get("criteria") ?? ""), approve: verb === "approve", note, at: new Date().toISOString() }, c.url.origin, false, "page");
+      } else return html(renderError("Unknown action.", "/home", ownerName(env)), 400);
+      return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
+    } catch (err) {
+      const rule = parseRuleError(err);
+      if (!rule || !TASK_FORMS.has(verb)) throw err;
+      const kept = verb === "override" || verb === "reject" ? note : "";
+      const formError: FormError = { verb: verb as FormError["verb"], message: rule.detail, ...(kept ? { note: kept } : {}) };
+      return html(await taskPage(env, L, id, formError), rule.status);
     }
-    // A change of owner takes the write token with it, as on the API routes:
-    // the Ledger clears the id read here only if it is still the one recorded.
-    const oldToken = await L.tokenId(id);
-    // As on the API routes: a change of owner is checked, the holder's
-    // write token revoked, and only then the change made. The workspace is
-    // read after the token id, not taken from `before`: a token is recorded
-    // only once its workspace exists, so the workspace read here is the
-    // one the token was made for, even if a claim made both after `before`
-    // was read. With `before.fork` that token would go unrevoked, and the
-    // change would then take it off the record while it still works.
-    const moving = verb === "abandon" || verb === "release" || verb === "handoff" || verb === "dispatch";
-    if (moving) {
-      if (verb === "dispatch") await L.checkDispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note });
-      else if (verb === "abandon") await L.checkAbandon(id, owner, note);
-      else if (verb === "release") await L.checkRelease(id, owner, note);
-      else await L.checkHandoff(id, owner, String(form.get("to") ?? ""), note);
-      const { fork } = await L.item(id);
-      await revoke(env, fork, oldToken);
-    }
-    if (verb === "dispatch") await L.dispatch(id, owner, { to: form.get("to"), agent: form.get("agent"), model: form.get("model"), note }, oldToken);
-    else if (verb === "undispatch") await L.undispatch(id, owner);
-    else if (verb === "accept") await L.accept(id, owner, expected);
-    // The page's override form: accept with the owner's override of a missing
-    // independent review, its reason in the note.
-    else if (verb === "override") await L.accept(id, owner, expected, note, undefined, factor);
-    // The page's permission for an override from the command line (t371).
-    else if (verb === "allow-override") await L.confirmOverride(id, owner, expected, factor!);
-    else if (verb === "abandon") await L.abandon(id, owner, note, oldToken);
-    else if (verb === "block") await L.block(id, owner, note);
-    else if (verb === "unblock") await L.unblock(id, owner);
-    else if (verb === "clear-secret") await L.clearSecret(id, owner, note);
-    else if (verb === "release") await L.release(id, owner, note, false, oldToken);
-    else if (verb === "handoff") await L.handoff(id, owner, String(form.get("to") ?? ""), note, false, oldToken);
-    else if (verb === "approve" || verb === "reject") {
-      await L.addReview({ itemId: id, by: owner, head: expected, criteria: String(form.get("criteria") ?? ""), approve: verb === "approve", note, at: new Date().toISOString() }, c.url.origin, false, "page");
-    } else return html(renderError("Unknown action.", "/home", ownerName(env)), 400);
-    return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
   }
   if (req.method !== "GET") return html("Not found.", 404);
   // Old URLs moved by organising the site by project (PAVI's direction,
@@ -3064,16 +3099,37 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
   }
   const res = await browse(env, c.url, ref, parts.slice(2));
   if (res) return res;
-  if (parts.length === 3) {
-    const p = await L.project();
-    const item = await L.item(parts[2]);
-    // The page's override forms ask for the factor this server takes (t371).
-    const read: Detail = await L.detail(parts[2]);
-    const detail: Detail = { ...read, ownerFactor: ownerFactorOf(env) };
-    detail.runs = await index(env).runsForItem(p.name, parts[2]);
-    return html(renderItem(p, detail, ownerName(env), await diffFor(env, L, p.repo, item, detail.events), live), 200, nonce);
-  }
+  if (parts.length === 3) return html(await taskPage(env, L, parts[2], undefined, live), 200, nonce);
   return html("Not found.", 404);
+}
+
+// A task's page, as its GET draws it and as a refused form of it is answered
+// (t457): `formError` draws the refusal beside the form it came from, on a
+// page read from the record after the refusal, so it claims nothing the
+// record does not hold. Not live: a refresh would drop the reason kept.
+async function taskPage(env: Env, L: ReturnType<typeof ledger>, id: string, formError?: FormError, live?: Live): Promise<string> {
+  const p = await L.project();
+  const item = await L.item(id);
+  // The page's override forms ask for the factor this server takes (t371).
+  const read: Detail = await L.detail(id);
+  const detail: Detail = { ...read, ownerFactor: ownerFactorOf(env), ...(formError ? { formError } : {}) };
+  detail.runs = await index(env).runsForItem(p.name, id);
+  return renderItem(p, detail, ownerName(env), await diffFor(env, L, p.repo, item, detail.events), live);
+}
+
+// Whether a reviewer of another family was available when the owner
+// overrode the independent review (t457), looked for as the override is
+// made, on the page and from the command line alike, and kept with it in
+// review.overridden. A pool that cannot be read is recorded as unknown,
+// never as no reviewer.
+async function reviewerAvailability(env: Env, L: ReturnType<typeof ledger>, id: string): Promise<ReviewerAvailability> {
+  const at = new Date().toISOString();
+  try {
+    return { known: true, reviewer: await L.availableReviewer(id, await index(env).models()), source: "model pool", at };
+  } catch (err) {
+    console.error(errorLine(`reviewer availability for ${id}`, err));
+    return { known: false, reviewer: null, source: "model pool", at, why: "the model pool could not be read" };
+  }
 }
 
 // ── entry ──────────────────────────────────────────────────────────────────
