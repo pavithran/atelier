@@ -1863,12 +1863,13 @@ export class Ledger extends DurableObject<Env> {
       }
     }
     // Under require-criteria-review a build is claimed only while a criteria
-    // review approves the criteria as they are now (t438). A re-claim by the
-    // holder refreshes a token and starts no build, so it is not held; the
-    // planner's and the integrator's claims are exempt, and a merge job keeps
-    // the gates it had. A runner token's job is recorded below, once every
-    // refusal is past (t444, t476).
-    if (item.owner !== actor && !integrating && item.kind !== "plan") this.assertCriteriaReviewed(item, item.dispatch ?? null, "claimed");
+    // review approves the criteria as they are now (t438). Every build runner
+    // claims before starting its harness, including a holder recovering from
+    // a crash before committing. Renewals therefore pass the same gate as
+    // fresh claims. The planner's and integrator's claims are exempt, and a
+    // merge job keeps its existing gates. Record the runner token's job only
+    // once every refusal is past (t444, t476).
+    if (!integrating && item.kind !== "plan") this.assertCriteriaReviewed(item, item.dispatch ?? null, "claimed");
     if (item.owner === actor) {
       // Re-claiming refreshes the write token, so it is allowed only from where
       // the claim is held: two runners offering the same agent and model share
