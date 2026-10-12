@@ -35,7 +35,10 @@
 // to the builder. A push recorded nowhere is taken back off the fork, with
 // a lease on the head it pushed, so nothing anyone pushed since is lost.
 // Every report names the lease, and a report the server already holds
-// answers the recorded outcome, so a retry does no harm.
+// answers the recorded outcome, so a retry does no harm. The lease is
+// renewed while the job runs, and one that ends in no report (a provider's
+// usage limit on the resolver's harness, a failure before any report) is
+// given back at once, saying why, rather than held until it lapses.
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -44,6 +47,11 @@ import { DETECTOR_ENV, describeFinding, detectMovedEditsAsync } from "../src/mov
 
 const HASH = /^[a-f0-9]{40,64}$/;
 const CHECKS_FAILED = 2;
+// How often the leaseholder renews its 30-minute lease (LEASE_MS in
+// src/refresh/queue.ts) while the job runs: a resolver's harness or the
+// required checks can outlast it, and the runner's heartbeat renews only
+// its poll.
+export const LEASE_RENEW_MS = 10 * 60_000;
 const short = (h) => String(h ?? "").slice(0, 8);
 
 // The identity of the task's own change, as the refresh compares it before
@@ -89,7 +97,7 @@ export async function runTaskRefresh(assignment, config, name, io) {
   const d = item.dispatch ?? {};
   const job = d.job === "task-resolve" ? "resolve" : "refresh";
   const at = ["--project", project, "--as", actor];
-  let lease = null, dir = null, pushed = null, recorded = false, workspace = null;
+  let lease = null, dir = null, pushed = null, recorded = false, workspace = null, renewal = null, renewing = false;
   const report = async (argv) => JSON.parse(await io.cli([argv[0], item.id, ...at, ...argv.slice(1)]) || "{}");
   const leaseArgs = () => ["--lease", lease.id, "--main-head", lease.mainHead, "--expected-head", lease.expectedHead];
   try {
@@ -102,6 +110,16 @@ export async function runTaskRefresh(assignment, config, name, io) {
     workspace = leased.workspace;
     if (!lease?.id || !HASH.test(lease.mainHead ?? "") || !HASH.test(lease.expectedHead ?? "") || !workspace?.remote || !leased.baseline?.remote) throw new Error("the refresh lease names no lease, heads or repositories");
     const { mainHead, expectedHead } = lease;
+    // Renewed while the job runs; one renewal in flight, and a failure is
+    // said and tried again on the next interval.
+    renewal = setInterval(async () => {
+      if (renewing || io.stopped?.()) return;
+      renewing = true;
+      try { await report(["refresh-lease", "--renew", lease.id]); }
+      catch (error) { io.log(`renewing ${item.id}'s refresh lease failed: ${error.message}`); }
+      finally { renewing = false; }
+    }, io.leaseRenewMs ?? LEASE_RENEW_MS);
+    renewal.unref?.();
     // A workspace of the refresh's own: the builder's is never touched.
     dir = await io.tempDir(`refresh-${project}-${item.id}-`);
     const git = (args, options = {}) => io.git(args, { cwd: dir, ...options });
@@ -125,7 +143,8 @@ export async function runTaskRefresh(assignment, config, name, io) {
     // the merge base, and a landing compares nothing. Git merges such an
     // edit cleanly into the file main left behind, so a finding is the
     // builder's to port: it goes back with the paths, and nothing is pushed.
-    const moved = await detectMovedEditsAsync((args) => git(args, { raw: true, env: DETECTOR_ENV }), { task: expectedHead, main: mainHead, mergeBase });
+    const moved = await detectMovedEditsAsync((args) => git(args, { raw: true, env: DETECTOR_ENV }), { task: expectedHead, main: mainHead, mergeBase })
+      .catch((error) => { throw new Error(`comparing the task's edits with code main moved failed: ${error.message}`); });
     if (moved.findings.length) {
       const conflict = movedReport({ base: mergeBase, head: expectedHead, main: mainHead }, moved.findings);
       const file = join(await io.tempDir(`refresh-report-${item.id}-`), "report.json");
@@ -246,16 +265,37 @@ export async function runTaskRefresh(assignment, config, name, io) {
     io.log(`refresh of ${item.id} failed: ${error.message}`);
     // A merge pushed and recorded nowhere is taken back off the fork, only
     // while the fork is still at it.
+    let takenBack = !pushed;
     if (pushed && !recorded && workspace) {
       const branch = workspace.defaultBranch || "main";
-      await io.git(["push", "--quiet", `--force-with-lease=refs/heads/${branch}:${pushed}`, workspace.remote, `${lease.expectedHead}:refs/heads/${branch}`], { cwd: dir, token: workspace.token, allowFail: true })
-        .catch((e) => io.log(`taking the push back failed: ${e.message}`));
+      const back = await io.git(["push", "--quiet", `--force-with-lease=refs/heads/${branch}:${pushed}`, workspace.remote, `${lease.expectedHead}:refs/heads/${branch}`], { cwd: dir, token: workspace.token, allowFail: true })
+        .catch((e) => ({ status: 1, stderr: e.message }));
+      takenBack = back.status === 0;
+      if (!takenBack) io.log(`taking the push back failed: ${(back.stderr || "").trim()}`);
+    }
+    // A lease that ended in no report is given back at once, with why, so
+    // the task's log says what stopped it and the same work is offered
+    // again, rather than held until the lease lapses: a provider's usage
+    // limit on the resolver's harness (which pauses the harness, as a
+    // build's does, and counts toward neither cap), or a failure before any
+    // report, a detector's or git's. A push left on the fork keeps its
+    // lease, which lapses.
+    if (lease?.id && !recorded && takenBack) {
+      clearInterval(renewal);
+      try {
+        const answer = await report(["refresh-lease", "--release", lease.id, "--reason", error.message.slice(0, 400), ...(error.providerLimit ? ["--provider-limit"] : [])]);
+        if (answer.released !== false) io.log(`released ${item.id}'s refresh lease${error.providerLimit ? "; the same work resumes when the provider's limit resets" : ""}`);
+      } catch (releaseError) { io.log(`releasing ${item.id}'s refresh lease failed: ${releaseError.message}`); }
     }
     // A lease the server refused (the task became busy, another runner took
     // it) is the queue's state, not a failure: counted toward neither cap,
     // and offered again when the queue offers it.
-    return { phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}), ...(!lease && !error.skipped ? { recorded: true } : {}) };
+    return {
+      phase: "failed", reason: error.message, ...(error.skipped ? { skipped: true } : {}), ...(!lease && !error.skipped ? { recorded: true } : {}),
+      ...(error.providerLimit ? { providerLimit: error.providerLimit } : {}),
+    };
   } finally {
+    clearInterval(renewal);
     if (dir) await io.removeTree(dir);
   }
 }

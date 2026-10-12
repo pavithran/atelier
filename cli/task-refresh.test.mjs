@@ -5,13 +5,17 @@
 // resolution outside the transformations, behavioural and uncertain
 // conflicts, a builder's push under the refresh, a refused push, failed
 // checks, a recorded push the server would not take, and an edit in code
-// main moved to another file (t471), which neither job merges.
+// main moved to another file (t471), which neither job merges; and the
+// lease, renewed through a long run and given back, saying why, when a
+// provider's usage limit stops the resolver or a failure precedes any report.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
+import { DETECTOR_ENV } from "../src/moved-code.ts";
 import { diffIdentity, runTaskRefresh } from "./task-refresh.mjs";
 
 const ENV = { ...process.env, GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@example.com", GIT_CONFIG_NOSYSTEM: "1", HOME: tmpdir() };
@@ -52,12 +56,12 @@ function fixture(t, { base = {}, task = {}, main = {} } = {}) {
 // The runner's io for the job, with git run for real and the CLI faked:
 // `answers[verb]` answers a command (a function of its argv), and every
 // call is kept in `calls`.
-function harness(f, { job = "task-refresh", actor = job === "task-resolve" ? "claude-code/opus-5.5" : "atelier/integrator", answers = {}, resolve, checks = [] } = {}) {
+function harness(f, { job = "task-refresh", actor = job === "task-resolve" ? "claude-code/opus-5.5" : "atelier/integrator", answers = {}, resolve, checks = [], gitFault, renewMs } = {}) {
   const calls = [], logs = [], reports = [];
   const lease = { id: "L1", job: job === "task-resolve" ? "resolve" : "refresh", by: actor, mainHead: f.main, expectedHead: f.task };
   const flag = (argv, name) => argv[argv.indexOf(name) + 1];
   const defaults = {
-    "refresh-lease": () => ({ lease, workspace: { remote: f.fork, token: "w", defaultBranch: "main" }, baseline: { remote: f.baseline, token: "r", defaultBranch: "main" }, checks, commitIdentity: null }),
+    "refresh-lease": (argv) => argv.includes("--renew") ? { lease } : argv.includes("--release") ? { released: true } : ({ lease, workspace: { remote: f.fork, token: "w", defaultBranch: "main" }, baseline: { remote: f.baseline, token: "r", defaultBranch: "main" }, checks, commitIdentity: null }),
     "refresh-pushing": () => ({ ...lease, pushing: {} }),
     refreshed: (argv) => ({ result: { outcome: argv.includes("--head") ? "refreshed" : "held", reason: checks.length && argv.includes("--head") ? "checks pending" : null } }),
     "refresh-failed": (argv) => {
@@ -76,7 +80,8 @@ function harness(f, { job = "task-refresh", actor = job === "task-resolve" ? "cl
       const out = await answer(argv);
       return typeof out === "string" ? out : JSON.stringify(out);
     },
-    git: async (args, { cwd, allowFail = false, raw = false } = {}) => {
+    git: async (args, { cwd, allowFail = false, raw = false, env } = {}) => {
+      if (gitFault?.(args, env)) throw new Error(`git ${args[0]} failed: fatal: bad object`);
       const r = spawnSync("git", args, { cwd, env: ENV, encoding: "utf8" });
       if (allowFail) return { status: r.status, stdout: r.stdout, stderr: r.stderr };
       if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed:\n${r.stderr}`);
@@ -88,6 +93,7 @@ function harness(f, { job = "task-refresh", actor = job === "task-resolve" ? "cl
     tempDir: async (prefix) => mkdtempSync(join(f.root, prefix)),
     removeTree: async (dir) => rmSync(dir, { recursive: true, force: true }),
     resolveConflicts: async (assignment, cwd, brief) => { calls.push(["resolve", brief]); await resolve(cwd); },
+    ...(renewMs ? { leaseRenewMs: renewMs } : {}),
   };
   const assignment = { project: "demo", actor, agent: actor.split("/")[0], model: actor.split("/")[1], item: { id: "t7", head: f.task, dispatch: { job, head: f.main, expectedHead: f.task } } };
   return { io, calls, logs, reports, assignment, verbs: () => calls.map((c) => c[0]), run: () => runTaskRefresh(assignment, { agents: [] }, "home:test", io) };
@@ -328,6 +334,91 @@ test("a refused lease is no failure the runner counts", async (t) => {
   const state = await h.run();
   assert.equal(state.recorded, true);
   assert.deepEqual(h.verbs(), ["refresh-lease"]);
+});
+
+const MECHANICAL = { base: { "index.ts": IMPORTS }, task: { "index.ts": IMPORTS.replace('from "./b.ts";\n', 'from "./b.ts";\nimport { task } from "./task.ts";\n') }, main: { "index.ts": IMPORTS.replace('from "./b.ts";\n', 'from "./b.ts";\nimport { main } from "./main.ts";\n') } };
+const released = (h) => h.calls.filter((c) => c[0] === "refresh-lease" && c.includes("--release"));
+
+test("a provider's usage limit on the resolver's harness gives the lease back at once, carrying the limit, with nothing pushed or reported", async (t) => {
+  const f = fixture(t, MECHANICAL);
+  const limit = { reason: "usage limit reached", resetAt: Date.now() + 3_600_000, fallback: false, harness: "claude-code" };
+  const h = harness(f, { job: "task-resolve", resolve: () => { throw Object.assign(new Error("claude-code usage limit: usage limit reached"), { providerLimit: limit }); } });
+  const state = await h.run();
+  // The loop pauses the harness on providerLimit and counts no failure (test/runner-limit.test.mjs).
+  assert.deepEqual([state.phase, state.providerLimit], ["failed", limit]);
+  assert.ok(!state.recorded);
+  const [release] = released(h);
+  assert.equal(release[release.indexOf("--release") + 1], "L1");
+  assert.ok(release.includes("--provider-limit"));
+  assert.match(release[release.indexOf("--reason") + 1], /usage limit reached/);
+  assert.ok(!h.verbs().some((v) => ["refresh-failed", "refresh-pushing", "refreshed"].includes(v)));
+  assert.equal(forkHead(f), f.task);
+  assert.ok(h.logs.some((l) => /released t7's refresh lease; the same work resumes when the provider's limit resets/.test(l)));
+});
+
+test("an exception from the moved-code detector is reported as the lease's release, not left holding it", async (t) => {
+  const f = fixture(t, { task: { "task.txt": "task\n" }, main: { "main.txt": "main\n" } });
+  const h = harness(f, { gitFault: (args, env) => env === DETECTOR_ENV });
+  const state = await h.run();
+  assert.equal(state.phase, "failed");
+  assert.ok(!state.providerLimit && !state.recorded, "an infrastructure failure the loop counts");
+  const [release] = released(h);
+  assert.ok(release, "the lease is given back");
+  assert.ok(!release.includes("--provider-limit"));
+  assert.match(release[release.indexOf("--reason") + 1], /^comparing the task's edits with code main moved failed: git .* failed: fatal: bad object/);
+  assert.ok(!h.verbs().some((v) => ["refresh-failed", "refresh-pushing", "refreshed"].includes(v)));
+  assert.equal(forkHead(f), f.task);
+});
+
+test("a push the server would not record is taken back, then its lease given back", async (t) => {
+  const f = fixture(t, { task: { "task.txt": "task\n" }, main: { "main.txt": "main\n" } });
+  const h = harness(f, { answers: { refreshed: () => { throw new Error("head_moved"); } } });
+  await h.run();
+  assert.equal(forkHead(f), f.task);
+  assert.equal(released(h).length, 1);
+  assert.deepEqual(h.verbs().slice(-1), ["refresh-lease"]);
+});
+
+test("a recorded outcome is never followed by a release", async (t) => {
+  const f = fixture(t, { base: { "limit.ts": "export const limit = 10;\n" }, task: { "limit.ts": "export const limit = 20;\n" }, main: { "limit.ts": "export const limit = 30;\n" } });
+  const h = harness(f);
+  assert.equal((await h.run()).returned, true);
+  assert.deepEqual(released(h), []);
+  const g = fixture(t, { task: { "task.txt": "task\n" }, main: { "main.txt": "main\n" } });
+  const k = harness(g, { checks: ["npm test"], answers: { check: () => { throw Object.assign(new Error("npm cache refused"), { code: 4 }); } } });
+  assert.equal((await k.run()).phase, "failed");
+  assert.deepEqual(released(k), [], "a lease checking a recorded head is not given back");
+});
+
+test("the lease is renewed while a long run holds it, and no longer once the job ends", async (t) => {
+  const f = fixture(t, MECHANICAL);
+  const resolved = 'import { a } from "./a.ts";\nimport { b } from "./b.ts";\nimport { main } from "./main.ts";\nimport { task } from "./task.ts";\n\nexport const all = [a, b];\n';
+  // A resolver's harness and checks that outlast several renewal intervals.
+  const h = harness(f, { job: "task-resolve", renewMs: 5, checks: ["npm test"],
+    resolve: async (cwd) => { await sleep(60); writeFileSync(join(cwd, "index.ts"), resolved); },
+    answers: { check: async () => { const before = renewals(); await sleep(60); assert.ok(renewals() > before, "renewed during the checks"); return "PASS  npm test"; } } });
+  const renewals = () => h.calls.filter((c) => c[0] === "refresh-lease" && c.includes("--renew")).length;
+  const resolveAt = () => h.calls.findIndex((c) => c[0] === "resolve");
+  const state = await h.run();
+  assert.equal(state.phase, "refreshed");
+  const renew = h.calls.find((c) => c.includes("--renew"));
+  assert.equal(renew[renew.indexOf("--renew") + 1], "L1");
+  assert.ok(h.calls.slice(resolveAt()).some((c) => c.includes("--renew")), "renewed during the resolver's run");
+  const after = renewals();
+  await sleep(30);
+  assert.equal(renewals(), after, "the renewal stops with the job");
+  assert.deepEqual(released(h), []);
+});
+
+test("a renewal that fails is said, and the job goes on", async (t) => {
+  const f = fixture(t, MECHANICAL);
+  const resolved = 'import { a } from "./a.ts";\nimport { b } from "./b.ts";\nimport { main } from "./main.ts";\nimport { task } from "./task.ts";\n\nexport const all = [a, b];\n';
+  let lease;
+  const h = harness(f, { job: "task-resolve", renewMs: 5, resolve: async (cwd) => { await sleep(40); writeFileSync(join(cwd, "index.ts"), resolved); },
+    answers: { "refresh-lease": (argv) => { if (argv.includes("--renew")) throw new Error("socket hang up"); return lease; } } });
+  lease = { lease: { id: "L1", job: "resolve", by: "claude-code/opus-5.5", mainHead: f.main, expectedHead: f.task }, workspace: { remote: f.fork, token: "w", defaultBranch: "main" }, baseline: { remote: f.baseline, token: "r", defaultBranch: "main" }, checks: [], commitIdentity: null };
+  assert.equal((await h.run()).phase, "refreshed");
+  assert.ok(h.logs.some((l) => l === "renewing t7's refresh lease failed: socket hang up"));
 });
 
 test("the diff identity ignores line numbers and blob ids", () => {

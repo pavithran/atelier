@@ -620,7 +620,9 @@ export function removeDataHome({ dir, onExit }) {
 // command fails; every other command's goes to the runner's own output, as
 // the owner watching it expects. The integrate and refresh jobs read check's
 // to say what failed, and log it either way.
-const READS_OUTPUT = new Set(["review-claim", "read-token", "integrated", "integration-failed", "refreshed", "refresh-failed", "base-token", "baseline-token", "check"]);
+// The task refresh (cli/task-refresh.mjs) reads its lease and the answers
+// to its reports.
+const READS_OUTPUT = new Set(["review-claim", "read-token", "integrated", "integration-failed", "refreshed", "refresh-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "base-token", "baseline-token", "check"]);
 export const readsOutput = (argv) => READS_OUTPUT.has(argv[0]);
 
 export async function checked(argv, options, executeChild = execute) {
@@ -2294,7 +2296,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       return checked([process.execPath, cli, ...argv], { cwd, signal: controller.signal, captureError: true, capture: readsOutput(argv), claim: argv[0] === "claim",
         env: runnerChildEnv(process.env, offer.runner, credential, options.token),
         step: argv[0], timeoutMs: argv[0] === "finish" ? config.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS : undefined,
-        ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable") && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild);
+        ...((argv[0] === "release" || argv[0] === "review-release" || argv[0] === "review-unparsable" || (argv[0] === "refresh-lease" && argv.includes("--release"))) && controller.signal.aborted ? { ...cleanupOptions(), signal: undefined } : {}) }, executeChild);
     },
     prepareSubmission: (assignment, workspace, resolve) => prepareBuildSubmission(assignment, workspace, io, resolve),
     // Git as the landing's merge of main calls it (mergeMainAndRegenerate in
@@ -2410,6 +2412,11 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
         dataHome = OWN_DATA_HOME.has(assignment.agent) ? makeDataHome(cwd) : null;
         const result = await io.harness(commandFor(entry, { model: assignment.model, briefFile: brief.file, workspace: cwd }), cwd, harnessRunEnv(env, dataHome, assignment.item.id, "build", offer.runner, assignment.project, assignment.actor), { capture: true, stream: true });
+        // A provider's usage limit is routed as a build's is (t487): the job
+        // gives its lease back and the loop pauses the harness, with no
+        // failure counted.
+        const limit = !io.stopped() ? providerLimitOf(result, now()) : null;
+        if (limit) throw Object.assign(new Error(`${assignment.agent} usage limit: ${limit.reason}`), { providerLimit: { ...limit, harness: assignment.agent } });
         if (result.timedOut) throw new Error("harness timed out resolving the refresh");
         if (result.code !== 0) throw new Error(`harness exited ${result.code} resolving the refresh`);
       } finally {
