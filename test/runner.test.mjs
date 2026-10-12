@@ -777,9 +777,9 @@ test("versionRefusal names the missing capabilities and says to deploy, and clea
   assert.equal(versionRefusal({ capabilities: [...SERVER_CAPABILITIES, "future.thing.v1"] }), null);
   assert.equal(versionRefusal({ capabilities: SERVER_CAPABILITIES }, ["merge-main"]), null);
   // The run skip (t420) is named, with no legacy level: a server that reports
-  // only a route level is refused for every job but the review.
+  // only a route level is refused; reviews also need post-merge support by name.
   assert.match(versionRefusal({ routeLevel: ROUTE_LEVEL }, ["merge-main"]), /lacks capabilities runners\.run-skip\.v1/);
-  assert.equal(versionRefusal({ routeLevel: ROUTE_LEVEL }, ["review"]), null);
+  assert.match(versionRefusal({ routeLevel: ROUTE_LEVEL }, ["review"]), /lacks capabilities reviews\.post-merge\.v1/);
   assert.match(versionRefusal({ capabilities: ["items.brief-criteria.v1"] }, ["review"]), /reviews\.unparsable\.v1/);
   // A legacy server at 19 has the routes but not the runner credential;
   // one at 21 refuses a runner token's review skip (t353), which the review

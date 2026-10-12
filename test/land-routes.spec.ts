@@ -300,6 +300,32 @@ it("a submitted task with a protected change gets a review request, named or pic
   expect(after.reason).toMatch(/the gate already counts an independent approval/);
 });
 
+// The owner's standing (src/models/pool.ts, standingRefusal) binds a named
+// reviewer too: one paused, reserved or without the review role is refused
+// with the reason, and nothing is requested or withdrawn.
+it("a named reviewer the owner paused, reserved or kept from reviewing is refused with the reason", async () => {
+  for (const [name, change, why] of [
+    ["paused", { state: "paused", stateAt: AT, note: "AI Studio down" }, /codex\/gpt-6-astra is paused since 2026-10-06 \(the owner's standing\): AI Studio down/],
+    ["reserved", { state: "reserved", stateAt: AT, note: "astra's credits" }, /codex\/gpt-6-astra is reserved since 2026-10-06 \(the owner's standing\): astra's credits/],
+    ["build-only", { roles: ["build"] }, /codex\/gpt-6-astra is not a reviewer; its roles are build/],
+  ] as const) {
+    const L = await setup(`land-review-held-${name}`);
+    const id = (await L.newItem("Landing", [], "owner")).id;
+    await submittedTask(L, id, "a".repeat(40));
+    const pool = POOL.map((e) => e.id === "gpt-6-astra" ? { ...e, ...change } : e);
+    await refusal(L.requestReview(id, "owner", GPT, pool), "model_held", why);
+    await refusal(L.requestReview(id, "owner", GPT, pool, true), "model_held", why);
+    // A profile or another letter case names the same model, held the same.
+    for (const named of [`${GPT}:high`, "CODEX/GPT-6-Astra:fast"]) {
+      await refusal(L.requestReview(id, "owner", named, pool), "model_held", new RegExp(why.source.replace("codex\\/gpt-6-astra is", `${named.replace(/[/.]/g, "\\$&")} is`)));
+    }
+    expect(await L.reviewRequests(id), name).toEqual([]);
+    expect((await events(L, id)).filter((e) => e.kind === "review.requested"), name).toEqual([]);
+    // Back to available, the same name is asked.
+    expect(await L.requestReview(id, "owner", GPT, POOL), name).toMatchObject({ requested: true, reviewer: GPT });
+  }
+});
+
 // t353: a review request every live runner that offers its reviewer has
 // skipped will never be claimed, since each runner keeps its skip until the
 // request changes. The owner asking again, with the live offers, withdraws

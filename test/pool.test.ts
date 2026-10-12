@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cleanEntry, cleanNote, cleanStatus, familyOf, latestNote, LOCAL_BUILD, noteLine } from "../src/models/pool.ts";
+import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, familyOf, hasModelRole, latestNote, LOCAL_BUILD, modelState, noteLine, offThePool, actorStanding, withStanding } from "../src/models/pool.ts";
 
 const AT = "2026-10-04T12:00:00.000Z";
 
@@ -83,6 +83,76 @@ test("an entry is validated, its family derived, and no secret is accepted", () 
     [{ id: "x", harness: "opencode", where: "cloud", provider: "openai-compatible", endpoint: "https://open.bigmodel.cn/k/0f3a9c2b7d4e1f6a8b5c3d2e1f0a9b8c.Xy7Zq2Lm9Np4Rs6T/v1" }, /path looks like it carries a key/],
     [{ id: "m".repeat(65), harness: "codex", where: "cloud" }, /not a model id/],
   ] as const) assert.throws(() => cleanEntry(body as Record<string, unknown>, "pavi", AT), why);
+});
+
+test("an entry records its state, roles and tier, and defaults mean nothing is held or limited", () => {
+  const e = cleanEntry({ id: "gpt-6-luna", harness: "codex", where: "cloud", state: "reserved", roles: "review", tier: "frontier", note: "astra's credits" }, "pavi", AT);
+  assert.equal(e.state, "reserved");
+  assert.equal(e.stateAt, AT);
+  assert.deepEqual(e.roles, ["review"]);
+  assert.equal(e.tier, "frontier");
+  assert.equal(offThePool(e), true);
+  assert.equal(hasModelRole(e, "review"), true);
+  assert.equal(hasModelRole(e, "build"), false);
+  // A paused entry records its date; roles may be a list or comma-separated names.
+  const paused = cleanEntry({ id: "glm-5.3", harness: "zcode", where: "cloud", state: "paused", roles: ["build", "review"] }, "pavi", AT);
+  assert.equal(paused.state, "paused");
+  assert.equal(modelState(paused), "paused");
+  assert.deepEqual(paused.roles, ["build", "review"]);
+  // No state, roles or tier: available, every role, no tier, and none is stored.
+  const bare = cleanEntry({ id: "opus-5.5", harness: "claude-code", where: "cloud" }, "pavi", AT);
+  assert.equal(bare.state, undefined);
+  assert.equal(bare.roles, undefined);
+  assert.equal(bare.tier, undefined);
+  assert.equal(offThePool(bare), false);
+  assert.equal(modelState(bare), "available");
+  assert.equal(hasModelRole(bare, "plan"), true);
+  // An explicit available state is stored with its date, as models set stores
+  // it, so an entry put again with --state available turns a paused one back on;
+  // one put with no state keeps the state it has (putModel).
+  const back = cleanEntry({ id: "x", harness: "codex", where: "cloud", state: "available" }, "pavi", AT);
+  assert.equal(back.state, "available");
+  assert.equal(back.stateAt, AT);
+  assert.equal(offThePool(back), false);
+  for (const [body, why] of [
+    [{ id: "x", harness: "codex", where: "cloud", state: "off" }, /state must be one of available, paused, reserved/],
+    [{ id: "x", harness: "codex", where: "cloud", roles: "sing" }, /roles must be some of build, review, plan/],
+    [{ id: "x", harness: "codex", where: "cloud", tier: "elite" }, /tier must be one of frontier, execution, budget/],
+    [{ id: "x", harness: "codex", where: "cloud", roles: ["build", "boss"] }, /roles must be/],
+  ] as const) assert.throws(() => cleanEntry(body as Record<string, unknown>, "pavi", AT), why);
+});
+
+test("a set changes only the fields it names, and refuses keys and bad values", () => {
+  assert.deepEqual(cleanModelSet({ state: "paused", note: "source down" }), { state: "paused", note: "source down" });
+  assert.deepEqual(cleanModelSet({ roles: "build,review", tier: "budget" }), { roles: ["build", "review"], tier: "budget" });
+  assert.deepEqual(cleanModelSet({ note: "" }), { note: "" });
+  assert.deepEqual(cleanModelSet({}), {});
+  for (const [body, why] of [
+    [{ state: "gone" }, /state must be one of available, paused, reserved/],
+    [{ tier: "premium" }, /tier must be one of frontier, execution, budget/],
+    [{ roles: ["boss"] }, /roles must be some of build, review, plan/],
+    [{ note: "key is AIzaSyD-abcdefghijklmnopqrstu" }, /looks like it carries a key/],
+  ] as const) assert.throws(() => cleanModelSet(body), why);
+});
+
+test("a saved pool takes the owner's standing now, and a held model or one without the review role is kept from reviewing", () => {
+  const astra = cleanEntry({ id: "gpt-6-astra", harness: "codex", where: "cloud", aliases: ["astra"] }, "pavi", AT);
+  const luna = cleanEntry({ id: "gpt-6-luna", harness: "codex", where: "cloud", roles: "review" }, "pavi", AT);
+  const now = [{ ...astra, state: "reserved" as const, stateAt: "2026-10-09T00:00:00.000Z", note: "credits" }, { ...luna, roles: ["build" as const] }];
+  const [a, l] = withStanding([astra, luna], now);
+  assert.equal(a.state, "reserved");
+  assert.equal(a.note, "credits");
+  assert.deepEqual(l.roles, ["build"]);
+  // Back to available, the saved state does not linger.
+  assert.equal(withStanding([a], [astra])[0].state, undefined);
+  // An entry the pool no longer has keeps what was saved.
+  assert.deepEqual(withStanding([luna], []), [luna]);
+  assert.match(actorStanding(now, "codex/astra", "review")!, /^codex\/astra is reserved since 2026-10-09 \(the owner's standing\): credits/);
+  assert.match(actorStanding(now, "codex/gpt-6-luna", "review")!, /not a reviewer; its roles are build/);
+  assert.equal(actorStanding(now, "codex/gpt-6-luna", "build"), null);
+  assert.match(actorStanding(now, "codex/astra", "build")!, /reserved since/);
+  assert.equal(actorStanding([astra, luna], "codex/gpt-6-astra", "review"), null);
+  assert.equal(actorStanding(now, "claude-code/opus-5.5", "review"), null);
 });
 
 test("a status report is one of four states, with what was served", () => {

@@ -179,6 +179,8 @@ The steps in between:
    The identity consumers (`adopt`, `revert`, `claim`, `start`, `wrap`, `init`, `merge`,
    `land` and runner jobs) require `projects.commit-identity.v1`;
    `models admit`, `withdraw` and `reviewers` require `reviews.admission.v1`;
+   `models set` requires the pool's standing, `models.standing.v1` (t389),
+   and `models add` asks for it only with `--state`, `--roles` or `--tier`;
    `init` and `land` require the durable post-merge runs, `land.post-merge.v1`
    (t477), and `land --post-merge` asks for that one alone; they also
    require the landing's triage step, `land.triage.v1` (t475); `stuck` requires
