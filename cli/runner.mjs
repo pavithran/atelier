@@ -1127,10 +1127,27 @@ export async function runTask(assignment, config, name, io) {
     await io.writeValidationBlock?.(workspace, { actor, head, detail: blocked, prepared: !!preparation && !preparation.deferred, ...(preparation?.key ? { prepareKey: preparation.key } : {}) });
     throw Object.assign(new Error(blocked), { validationBlocked: true });
   };
+  // The brief context the server alone holds, fetched the same way before
+  // every harness a build starts (t438): a fresh task, one recovered after a
+  // crash before its first commit (held at its recorded head), one sent back
+  // with an earlier attempt committed, a merge job, and the resolution of
+  // main at finish. A part's context is its whole brief; any other task's
+  // adds to the local briefFor what a rejecting review found at its head,
+  // what the criteria reviews found with the owner's resolutions, and the
+  // checks deferred to after deploy. Which of those the task carries is the
+  // server's to know, so the runner asks every time instead of guessing
+  // from the item: a runner started with no way to ask builds an ordinary
+  // task from the local brief alone (a part refuses to start, above).
+  const briefContext = async () => {
+    if (!io.jobBrief) return null;
+    const context = await io.jobBrief(project, item.id, actor);
+    if (!context || typeof context.text !== "string") throw new Error("the server's job brief has no text");
+    return context;
+  };
   const finish = async () => {
     const merged = io.prepareSubmission ? await io.prepareSubmission(assignment, workspace, async (merge) => {
       const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
-      const context = io.jobBrief ? await io.jobBrief(project, item.id, actor) : null;
+      const context = await briefContext();
       const resolution = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${briefFor({ ...item, owner: actor }, project)}\n${context?.text ?? ""}\n${mergeMainSection(merge)}\n\n${conflictsSection(merge)}\n`);
       let dataHome;
       try {
@@ -1249,18 +1266,16 @@ export async function runTask(assignment, config, name, io) {
         advance({ type: "finish" });
         return state;
       }
-      // A part's brief comes from the server (GET items/tN/job-brief): the
-      // plan's spec, its checks and any rework to carry. Any other task keeps
-      // the local briefFor below, and a merge-main task's adds the job's own
-      // instructions (mergeMainSection) beside it.
-      const serverBrief = item.kind === "part" ? await io.jobBrief(project, item.id, actor) : null;
-      if (serverBrief && typeof serverBrief.text !== "string") throw new Error("the server's job brief has no text");
-      // A task sent back with an earlier attempt committed keeps briefFor, and
-      // adds the review's findings the server holds for its head, if any. A
-      // task whose acceptance criteria were reviewed (t438) adds what those
-      // reviews found and how the owner answered, which the server holds too.
-      const reworked = !serverBrief && io.jobBrief && ((item.head && item.base && item.head !== item.base) || item.criteriaReviews) ? await io.jobBrief(project, item.id, actor) : null;
-      if (reworked && typeof reworked.text !== "string") throw new Error("the server's job brief has no text");
+      // Every build fetches its brief context the same way (briefContext),
+      // whatever kind of item the queue offered. A part's brief comes from
+      // the server (GET items/tN/job-brief): the plan's spec, its checks and
+      // any rework to carry. Any other task keeps the local briefFor below
+      // and adds what the server holds for it, if anything, after it; a
+      // merge-main task's adds the job's own instructions (mergeMainSection)
+      // beside it.
+      const context = await briefContext();
+      const serverBrief = item.kind === "part" ? context : null;
+      const reworked = item.kind === "part" ? null : context;
       const local = briefFor({ ...item, owner: actor }, project);
       // A merge-main task's brief (t243) is the local one with the job's own
       // instructions (mergeMainSection) and the conflicts after it.
