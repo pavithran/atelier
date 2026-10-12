@@ -236,6 +236,15 @@ function structuredArgs(harness, argv) {
 }
 
 function answerOutput(harness, stdout) {
+  if (harness === "codex") {
+    const final = records(stdout, harness).filter((v) => v?.type === "item.completed"
+      && v.item?.type === "agent_message" && typeof v.item.text === "string").at(-1);
+    return final?.item.text ?? "";
+  }
+  if (harness === "antigravity") {
+    const result = records(stdout, harness)[0];
+    return typeof result?.response === "string" ? result.response : "";
+  }
   if (harness === "claude-code") {
     const result = records(stdout, harness).find((v) => v?.type === "result" && v.is_error === false);
     return typeof result?.result === "string" ? result.result : "";
@@ -264,7 +273,9 @@ export function limitSpawn(harness, io = {}) {
     const limit = detectLimit(run, { now: io.now?.() ?? Date.now(), timeZone: io.timeZone, harness });
     // A marker line a harness printed itself is not the adapter's.
     const stderr = String(run.stderr ?? "").split("\n").filter((l) => !l.startsWith(LIMIT_MARKER)).join("\n");
-    const stdout = run.status === 0 ? answerOutput(harness, run.stdout) : run.stdout;
+    // Antigravity's captured review output is decoded by runAdapter itself.
+    const stdout = run.status === 0 && (harness !== "antigravity" || inheritsStdout)
+      ? answerOutput(harness, run.stdout) : run.stdout;
     if (inheritsStdout && stdout) out(String(stdout));
     if (stderr) err(stderr.endsWith("\n") ? stderr : `${stderr}\n`);
     if (!limit) return run.status === 0 ? { ...run, stdout } : run;

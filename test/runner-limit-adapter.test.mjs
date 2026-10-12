@@ -274,11 +274,54 @@ test("provider envelopes cannot be borrowed across harnesses", () => {
   }
 });
 
-for (const name of ["claude-code", "opencode"]) {
+for (const name of NAMES) {
   test(`${name}: successful build still forwards the plain final report`, () => {
     const text = "validation_blocked: tests could not run";
     const r = through(name, { status: 0, stdout: answer(name, text) });
     assert.equal(r.out, text);
     assert.equal(r.result.status, 0);
   });
+  test(`${name}: real adapter prints only the successful build answer`, (t) => {
+    const h = harness(t);
+    const text = "Build complete.\nvalidation_blocked: tests could not run";
+    const r = runBin(h, name, { FAKE_EXIT: "0", FAKE_STDOUT: answer(name, text) });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, text);
+    assert.ok(!r.stderr.includes(LIMIT_MARKER));
+  });
+  for (const stream of ["FAKE_STDOUT", "FAKE_STDERR"]) {
+    test(`${name}: real adapter build limit on ${stream} ends with exit 75 and the marker`, (t) => {
+      const h = harness(t);
+      const r = runBin(h, name, { FAKE_EXIT: "1", [stream]: failure(name) });
+      assert.equal(r.status, PROVIDER_LIMIT_EXIT, r.stderr);
+      const last = r.stderr.trimEnd().split("\n").at(-1);
+      assert.ok(last.startsWith(`${LIMIT_MARKER} `));
+      const limit = JSON.parse(last.slice(LIMIT_MARKER.length + 1));
+      assert.equal(limit.harness, name);
+      assert.ok(Number.isFinite(Date.parse(limit.resetAt)));
+    });
+  }
 }
+
+test("codex extracts the final completed agent message for printed and captured output", () => {
+  const text = 'Final answer.\n{"error":"Too many requests"}';
+  const stdout = [
+    JSON.stringify({ type: "thread.started", thread_id: "fixture" }),
+    answer("codex", "Earlier progress message"),
+    JSON.stringify({ type: "item.completed", item: { type: "command_execution", aggregated_output: "tool output" } }),
+    answer("codex", text),
+    JSON.stringify({ type: "item.updated", item: { type: "agent_message", text: "incomplete" } }),
+    JSON.stringify({ type: "turn.completed", usage: { input_tokens: 10, output_tokens: 5 } }),
+    "",
+  ].join("\n");
+  for (const mode of ["inherit", "pipe"]) {
+    const r = through("codex", { status: 0, stdout }, { stdio: ["pipe", mode, "inherit"] });
+    assert.equal(r.result.stdout, text);
+    assert.equal(r.out, mode === "inherit" ? text : "");
+    assert.equal(r.result.status, 0);
+    assert.equal(r.err, "");
+  }
+  const empty = through("codex", { status: 0, stdout: '{"type":"turn.completed"}\n' });
+  assert.equal(empty.out, "");
+  assert.equal(empty.result.stdout, "");
+});
