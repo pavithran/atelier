@@ -1628,13 +1628,23 @@ export class Ledger extends DurableObject<Env> {
     return row ? JSON.parse(row.value as string) : null;
   }
 
-  runnerPoll(token: AgentToken, offer: RunnerOffer): void {
+  // A runner token's poll (the queue route): records the runners' last polls
+  // it was given, then the offer, then answers the queue as queued() does,
+  // in this one call. The polls go to the project's one record of them
+  // (recordRunnerPolls), which the offer, the claim check, atelier queue and
+  // atelier stuck all read, so each judges an orphaned claim from the polls
+  // as they stand when it asks (t540).
+  runnerPoll(token: AgentToken, offer: RunnerOffer, polls?: readonly { runner: string; at: string }[]): { waiting: Waiting[]; reviews: (Item & { request: number })[] } {
     if (!token.runner || offer.runner !== token.runner) throw runnerDenied(token);
+    if (polls) this.recordRunnerPolls(polls);
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-offer:${token.id}`, JSON.stringify({ ...offer, at: new Date().toISOString() }));
+    // The polls an offer was judged with, which an earlier build kept per
+    // token, are judged with no longer.
+    this.sql.exec(`DELETE FROM meta WHERE key = ?`, `runner-offer-polls:${token.id}`);
     // A report may follow a failed claim or a review run authenticated with
     // its model token. Remember only jobs this poll actually authorizes,
     // separately from the grants that authorize build/plan operations.
-    const { waiting, reviews } = this.queued();
+    const queue = this.queued(), { waiting, reviews } = queue;
     for (const item of [...this.heldJobs(offer.runner), ...waiting, ...reviews]) {
       if (!item.dispatch || "held" in item && item.held) continue;
       const assignment = assign(item.dispatch, offer);
@@ -1645,6 +1655,7 @@ export class Ledger extends DurableObject<Env> {
       const role = reviewing ? "review" : item.dispatch.job === "plan" ? "plan" : "build";
       this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-report:${token.id}:${item.id}:${assignment.actor}:${role}`, JSON.stringify(item.dispatch.at));
     }
+    return queue;
   }
 
   assertRunnerReport(token: AgentToken, id: string, actor: string, role: string): void {
@@ -1666,7 +1677,10 @@ export class Ledger extends DurableObject<Env> {
   // otherwise tell it what became of another's task. Nothing else changes:
   // another actor or runner, a task never offered to this one, and a blocked
   // task are refused as before; accepted and integrated are not closed.
-  assertRunnerJob(token: AgentToken, id: string, actor: string, claim = false): void {
+  // A claim's check is given the runners' last polls as the index has them,
+  // and records them first, as a poll does (t540).
+  assertRunnerJob(token: AgentToken, id: string, actor: string, claim = false, polls?: readonly { runner: string; at: string }[]): void {
+    if (polls) this.recordRunnerPolls(polls);
     let item: Item;
     try { item = this.item(id); } catch { throw runnerDenied(token); }
     const held = this.runnerMeta<{ actor: string; runner: string }>(`runner-job:${token.id}:${id}`);
@@ -1680,7 +1694,17 @@ export class Ledger extends DurableObject<Env> {
     }
     if (claim && (item.state === "open" && !item.owner || item.state === "claimed" && item.owner === actor && item.runner === token.runner) && item.dispatch && !["review", "integrate", "refresh"].includes(item.dispatch.job ?? "")) {
       const offer = this.runnerMeta<SeenOffer>(`runner-offer:${token.id}`);
-      if (offer && liveOffers([offer]).length && assign(item.dispatch, offer)?.actor === actor && !coreHold(item, this.items(), this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls())) return;
+      if (offer && liveOffers([offer]).length && assign(item.dispatch, offer)?.actor === actor) {
+        // A hold its offer did not see is a race the claim lost: the claim
+        // the dispatch waits on is no longer orphaned, its runner having
+        // polled since the offer, and the queue, atelier queue and atelier
+        // stuck now show the hold too. It is answered as such (409 held,
+        // naming the holder), not as a refusal, so the runner is not offered
+        // the task while the hold stands and tries it again once it clears.
+        const held = coreHold(item, this.items(), this.project().policy.coreFiles, this.projectLanding(), Date.now(), this.runnerPolls());
+        if (!held) return;
+        throw new RuleError("held", `${item.id} is held: the core files hold it: it ${holdText(held)}. The claim it waits on is live, its runner polling, so ${item.id} is not offered while it holds; the queue offers it again once the hold clears`, 409);
+      }
     }
     throw runnerDenied(token);
   }
@@ -4157,8 +4181,12 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // Newest first. `before` pages back: only events with a lower seq than it.
-  // Read-only diagnostic snapshot: no tick, lease renewal or status observation.
-  stuckSnapshot() {
+  // Diagnostic snapshot: no tick, lease renewal or status observation. It
+  // writes only the runners' last polls it is given, to the project's one
+  // record of them, before it reads (t540): the stuck report, the queue and
+  // the claim check judge orphaned claims from that record alike.
+  stuckSnapshot(polls?: readonly { runner: string; at: string }[]) {
+    if (polls) this.recordRunnerPolls(polls);
     const items = this.items();
     return {
       items, events: this.events(undefined, Number.MAX_SAFE_INTEGER),
