@@ -288,16 +288,20 @@ So land one task at a time, in this order:
    pushing main to its own remotes.
 
 `atelier land` (task t187, `cli/land.mjs`) is the default way to land a
-task: `atelier land ID --reviewer H/M` does these steps under the
-project's landing lease, taken on the server, so two sessions never land
-at once: while one landing runs, another in the same project is refused
-with who holds the lease and since when. It regenerates the project's
-fixtures when its policy declares how, asks the server for the
+task: `atelier land ID --reviewer H/M` does these steps. Since t550 it
+merges main, regenerates the project's fixtures when its policy declares
+how, pushes, runs the checks, submits, asks the server for the
 independent review the gate needs and waits for the verdict (`--reviewer
-H/M` names the reviewer, `--no-review` leaves the task submitted), then
-accepts and merges. Each step and how long it took are recorded on the
-task as `land.*` events, and a landing stopped partway is resumed by
-running the same command again, which takes its lease back. The same
+H/M` names the reviewer, `--no-review` leaves the task submitted) without
+the project's landing lease, beside any other task's landing. Only once
+the head is checked and approved does it take the lease, for the merge
+alone, so two sessions never merge at once: a second landing that reaches
+that point queues behind the first and merges in its turn. Under the
+lease it confirms main is still the commit the head was checked and
+reviewed against (if not, it releases the lease and goes round again from
+the merge of main), then accepts and merges. Each step and how long it
+took are recorded on the task as `land.*` events, and a landing stopped
+partway is resumed by running the same command again. The same
 lease guards every merge, a plan's included (`POST items/tP/landing` in
 `cli/atelier.mjs`). To wait on a landing, a runner's build or an agent, use
 `atelier wait ID` (`cli/wait.mjs`), never a hand-written `pgrep` or `lsof`
