@@ -20,6 +20,7 @@ import type { FileChange, ItemDiff, Landed } from "./diff";
 import { ago, position, splitActor, staggers, type Bench, type Floor, type MarkKind } from "./floor";
 import { briefFor, submission, type Verdict } from "./brief";
 import { describe as describeDispatch } from "./dispatch/rules";
+import { fenceText, prereviewLines, type PrereviewFence, type PrereviewView } from "./dispatch/prereview.ts";
 import { drawImported, laneColour } from "./import/draw";
 import { NO_AGENT, type ImportedHistory } from "./import/history";
 import { HARNESSES, PROVIDERS, type ModelEntry } from "./models/pool";
@@ -179,6 +180,10 @@ export interface Detail {
   // Replies no verdict could be read from, kept on the task (t407), oldest
   // first; the reviews above carry none of them.
   unparsable?: UnparsableReply[];
+  // The task's pre-reviews, newest first, and the fence a blocking one left
+  // on its landing (t524); unset on a server from before pre-review.
+  prereviews?: PrereviewView[];
+  prereviewFence?: PrereviewFence | null;
   gate: Gate;
   events: LedgerEvent[];
 }
@@ -2331,6 +2336,15 @@ ${submissionRounds(d)}
   const counting = new Set(countingReviews(d.reviews, bindingOf(item), d.policy, d.ownerActor ?? DEFAULT_OWNER));
   const reviews = latestReviews(d.reviews, bindingOf(item)).map((r) => `<div class="review-note">${tag(r.approve ? "Approved" : "Changes requested", r.approve ? "go" : "ask")}${counting.has(r) ? "" : ` ${tag("Not counted")}`}
     <p>${e(r.note || "No note provided.")}</p><p class="meta">${counting.has(r) ? "" : "not counted: the reviewer is no longer authorised to review this project · "}${r.tier ? "tier review · " : r.topTier ? "gate review, top tier · " : ""}${e(r.by)} · ${when(r.at)}${recordedText(r, d.ownerActor ?? DEFAULT_OWNER) ? ` · ${e(recordedText(r, d.ownerActor ?? DEFAULT_OWNER)!)}` : ""}</p></div>`).join("");
+  // The newest pre-review (t524): evidence beside the gate, never a review
+  // of it, so it is drawn apart, with its binding, reviewer, findings and
+  // recovery action, and the fence a blocking one left on the landing.
+  const pre = d.prereviews?.[0], fence = d.prereviewFence ?? null;
+  const prereview = pre || fence
+    ? `<div class="review-note">${tag(fence ? "Pre-review blocked the landing" : "Pre-review", fence || pre?.state === "blocked" ? "ask" : undefined)}
+    ${pre ? `<ul>${prereviewLines(pre).map((l) => `<li>${e(l.trim())}</li>`).join("")}</ul>` : ""}${fence ? `<p>${e(fenceText(item.id, fence))}</p>` : ""}
+    <p class="meta">Pre-review evidence: it neither satisfies nor rejects the gate.</p></div>`
+    : "";
   const overridden = overrideAt(item, d.ownerActor ?? DEFAULT_OWNER);
   // An override recorded before the project forbade overrides (t371) counts
   // for nothing on a task still in hand, as gate counts none; a merged task's
@@ -2352,7 +2366,7 @@ ${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
 <section id="checks" class="review-section"><h3>Checks and reviews</h3>
   <p class="meta">${view.checks.length ? `${decision.passed} of ${view.checks.length} required checks passed at this revision.` : view.notApplicable.length ? "No required check applies to this revision." : "This project requires no checks."}${view.checks.length && view.notApplicable.length ? ` ${view.notApplicable.length} more ${view.notApplicable.length === 1 ? "does" : "do"} not apply to it.` : ""}${d.policy.sandboxOnly ? " Only checks run in a Cloudflare container count for this project." : ""}</p>
   ${notices}
-  ${checkRows}${notApplicableRows}${reports}${reviews}${overrideNote}${blockers}
+  ${checkRows}${notApplicableRows}${reports}${reviews}${prereview}${overrideNote}${blockers}
 </section>
 ${submissionRounds(d)}
 <details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>

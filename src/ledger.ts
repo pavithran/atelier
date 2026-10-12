@@ -3076,8 +3076,10 @@ export class Ledger extends DurableObject<Env> {
 
   // Asks one waiter's pre-review, once per binding. A binding already asked
   // is asked again only when its last request was withdrawn, went stale, or
-  // ended unavailable for a reason that may clear, after PREREVIEW_RETRY_MS,
-  // and never more than PREREVIEW_ATTEMPTS times in all.
+  // ended unavailable for a reason that may clear, once its retryAt has
+  // passed (PREREVIEW_RETRY_MS after a no-reviewer result, at once after a
+  // timeout, a malformed reply or a runner failure), and never more than
+  // PREREVIEW_ATTEMPTS times in all.
   private askPrereview(id: string, pool: readonly ModelEntry[], live: readonly SeenOffer[], at: string): void {
     if (this.prereviewFence(id)) return;
     const item = this.item(id);
