@@ -294,16 +294,23 @@ left its group or ran before that held.
 
 ## Local cache cleanup
 
-`atelier gc --project NAME` previews local directories eligible for removal.
-Add `--apply` to remove them. `--dry-run` explicitly requests the preview.
+`atelier merge` (and so `atelier land`) removes the merged task's workspace on
+this Mac once it is eligible, and otherwise prints `Kept ID's workspace PATH:`
+and the reason; a removal that fails never fails the merge. For workspaces
+left from before, or abandoned tasks, `atelier clean --project NAME` removes
+every eligible one and names each it keeps, with a count of finished tasks'
+workspaces kept; `--dry-run` previews. `atelier gc --project NAME` is the same
+pass previewing by default: add `--apply` to remove.
 The command uses the configured cache (`ATELIER_CACHE` when set) and never
 deletes Artifacts repositories or changes the project's checkout.
 
 A workspace is eligible only when the server confirms that its item merged or
-was abandoned, its HEAD equals the accepted head of the merge or, for an
-abandoned item, the last head Atelier recorded, and it has no changed or
-untracked files (files git ignores do not count as unpublished work), extra
-commits in refs or reflogs, linked worktrees, initialized
+was abandoned, its HEAD is a head Atelier recorded (the fork's last head or
+the accepted head of the merge) or is in main (an ancestor of the registered
+branch in the project's checkout), and it has no changed or untracked files
+(files git ignores, such as node_modules, do not count as unpublished work),
+no commit in refs or reflogs that neither a recorded head nor main holds, no
+linked worktrees, initialized
 submodules, or a Git operation in progress. Cleanup checks
 its recorded project and item identity and refreshes the item's state before
 removal. The current directory and its ancestors are preserved. Symlinked
