@@ -1897,6 +1897,11 @@ export function assertCriteria(item: Item, expected: unknown): void {
   }
 }
 
+// Porting to a released fork does not take its claim or dispatch.
+export function ownerPortAllowed(item: Pick<Item, "owner" | "state">, actor: string, owner = DEFAULT_OWNER): boolean {
+  return actor === owner && item.owner === null && item.state === "open";
+}
+
 export function assertLive(item: Item): void {
   assertNotBlocked(item);
   if (!["claimed", "submitted"].includes(item.state)) throw new RuleError("closed", `${item.id} is ${item.state}`);
