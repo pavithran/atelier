@@ -296,8 +296,11 @@ test("plain status prints this machine's runners and agents by task without comm
       mkdirSync(bin);
       for (const [name, output] of [["ps", PS], ["lsof", LSOF.replaceAll("/cache/work", join(dir, "cache/work"))]]) {
         const script = name === "ps"
-          ? `import { execFileSync } from "node:child_process";
-process.stdout.write(process.argv.includes("pid=,ppid=,etime=,args=") ? ${JSON.stringify(output)} : execFileSync("/bin/ps", process.argv.slice(2)));`
+          ? `import { spawnSync } from "node:child_process";
+// Any other listing goes to the real ps unbuffered: its output (with every
+// process's environment) passed Node's 1 MB buffer on a busy host (t551).
+if (process.argv.includes("pid=,ppid=,etime=,args=")) process.stdout.write(${JSON.stringify(output)});
+else process.exitCode = spawnSync("/bin/ps", process.argv.slice(2), { stdio: "inherit" }).status ?? 1;`
           : `process.stdout.write(${JSON.stringify(output)});`;
         writeFileSync(join(bin, name), `#!${process.execPath}\n${script}\n`, { mode: 0o755 });
       }
