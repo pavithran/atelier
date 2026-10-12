@@ -696,11 +696,18 @@ is a refusal, not a request to silently weaken an adapter's confinement.
 
 Build stdout is captured while it streams. A final report that required checks
 could not run records `validation_blocked` rather than a model test failure.
-The build brief asks for a `validation_blocked: why` line; a report that says
-it unasked counts only when it names the checks beside the failure to run them
-("could not run npm test", "the tests could not be run") or an environment
-error beside a failed check ("npm test failed: listen EPERM"). Mentioning
-`validation_blocked` or "did not run any atelier command" in passing does not.
+The build brief tells a builder to run the tests for the files it changes and
+the typecheck, not the full suite, which the clean-clone checks after the push
+run; to commit when those pass; and to report `validation_blocked: why` only for
+a failure in its own change's tests that it cannot fix (t552). A builder that
+ran the full suite on a loaded host saw it time out and ended
+`validation_blocked` with nothing committed, losing the work. A report that
+says it unasked counts only when it names the checks beside the failure to run
+them ("could not run npm test", "the tests could not be run") or an environment
+error beside a failed check ("npm test failed: listen EPERM"). "Did not run"
+counts only beside such an error, since not running the full suite is what the
+brief asks. Mentioning `validation_blocked` or "did not run any atelier
+command" in passing does not.
 This outcome is excluded from the model reliability penalty.
 The runner does not call `finish`, so it does not push that build. The task page
 shows the report above clean-clone results, with the actor, runner and reason.
