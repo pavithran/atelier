@@ -1,8 +1,19 @@
 #!/bin/sh
 # Copy the portfolio's rendered theme tokens in. ai-projects-design owns them;
-# this file is a copy, never an edit. Run after that project re-renders.
+# this file is a copy, never an edit. Run after that project re-renders, or
+# name another rendered copy as the first argument.
+#
+# The owner's pages are Night only, as the re-imagined canvas draws them
+# (d24): they set data-scheme="night" on <html>, and the copy keeps each
+# light block from them, so a viewer's light preference changes only the
+# public pages.
 set -eu
 here="$(cd "$(dirname "$0")/.." && pwd)"
-src="$here/../ai-projects-design/rendered/themes.css"
-{ printf '/* Copied from ai-projects-design/rendered/themes.css by bin/sync-theme. Do not edit. */\n'; cat "$src"; } > "$here/src/theme.css"
+src="${1:-$here/../ai-projects-design/rendered/themes.css}"
+night=':not([data-scheme="night"])'
+{
+  printf '/* Copied from ai-projects-design/rendered/themes.css by bin/sync-theme. Do not edit. */\n'
+  sed "/^@media (prefers-color-scheme: light) {\$/{n;/data-scheme/!s/^\\(  :root[^ {]*\\) {\$/\\1$night {/;}" "$src"
+} > "$here/src/theme.css.new"
+mv "$here/src/theme.css.new" "$here/src/theme.css"
 echo "theme synced from $src"
