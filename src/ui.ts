@@ -91,20 +91,70 @@ const ICONS: Record<string, string> = {
 const icon = (name: string) =>
   `<svg aria-hidden="true" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] ?? ""}</svg>`;
 
-// The site is organised by project: the rail holds the owner's cross-project
-// views only (the portfolio, the inbox, the floor), because everything else
-// lives inside a project's own area at /p/NAME. The pages about the owner's
-// own setup sit under the account menu, out of the work navigation.
-const NAV: [string, string, string][] = [
-  ["Home", "/home", "projects"],
-  ["Decisions", "/decisions", "decisions"],
-  ["Studio", "/studio", "studio"],
+// One bar in two rows for every owner page (docs/design/plan.md §2, P1; the
+// canvas in docs/design/reimagined/). Row 1 says where in Atelier: Decisions
+// with the count waiting on the owner, Projects, Activity, the project
+// switcher and the owner's menu. Row 2, under /p/NAME only, says where in the
+// project: Project › page, and the five tabs. The brand leads to Decisions,
+// the owner's first question.
+const NAV: [label: string, url: string][] = [
+  ["Decisions", "/decisions"],
+  ["Projects", "/home"],
+  ["Activity", "/studio"],
 ];
+// Which row-1 item each page's `active` makes current: Home and every page in
+// a project's area are Projects; the Studio, Flow and History are Activity's
+// Now, Flow and Merges.
+const NAV_OF: Record<string, string> = { Decisions: "Decisions", Home: "Projects", Projects: "Projects", Studio: "Activity", Flow: "Activity", History: "Activity", Activity: "Activity" };
 
 const ACCOUNT: [string, string][] = [
   ["Models", "/models"],
   ["Usage", "/usage"],
 ];
+
+// What the bar needs from more than the page it is drawn on: the number
+// waiting on the owner (the Decisions list's count, one per task, from the
+// same attention the list reads), whether every project was read for it,
+// and the projects for the switcher with their task and waiting counts. The
+// renderers draw the bar with markers where these go; the server fills them
+// for the request (fillShell), so a page drawn without one simply has no
+// badge and no project list.
+export interface Shell {
+  waiting: number;
+  incomplete: boolean;
+  projects: { name: string; title: string; tasks: number | null; waiting: number | null }[];
+}
+const MARK = {
+  waiting: "<!--shell:waiting-->",
+  projects: "<!--shell:projects-->",
+  tasks: (name: string) => `<!--shell:tasks:${encodeURIComponent(name)}-->`,
+};
+export const hasShell = (html: string) => html.includes(MARK.waiting);
+
+export function fillShell(html: string, s: Shell): string {
+  const n = `${s.waiting}${s.incomplete ? "?" : ""}`;
+  const badge = s.waiting || s.incomplete ? ` <span class="badge"><span class="visually-hidden">, waiting on you: </span>${n}</span>` : "";
+  const projects = s.projects.map((p) =>
+    `<a href="${href("p", p.name)}">${e(p.title)}${p.waiting ? ` <span class="meta">${p.waiting} waiting</span>` : ""}</a>`).join("");
+  let out = html.replaceAll(MARK.waiting, badge).replaceAll(MARK.projects, projects);
+  for (const p of s.projects) if (p.tasks !== null) out = out.replaceAll(MARK.tasks(p.name), ` (${p.tasks})`);
+  return out;
+}
+
+// Row 2 is drawn by projectTabs, which the pages call in their bodies; the
+// frame lifts it out of the body into the header, so a page in a project's
+// area, browse pages included, has one bar and no second tab row.
+const ROW2 = ["<!--project-row:", "<!--/project-row-->"] as const;
+
+function liftProjectRow(body: string): { body: string; row: string; title: string | null } {
+  const at = body.indexOf(ROW2[0]);
+  if (at < 0) return { body, row: "", title: null };
+  const open = body.indexOf("-->", at);
+  const end = body.indexOf(ROW2[1], open);
+  if (open < 0 || end < 0) return { body, row: "", title: null };
+  const title = decodeURIComponent(body.slice(at + ROW2[0].length, open));
+  return { body: body.slice(0, at) + body.slice(end + ROW2[1].length), row: body.slice(open + 3, end), title };
+}
 
 // One line about Atelier (src/how-data.ts), used here and as the sign-in
 // page's headline, so the two never say different things.
@@ -112,16 +162,20 @@ const ACCOUNT: [string, string][] = [
 // src/render-check.ts lets the render check's browser load exactly this URL.
 export const FONTS = "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap";
 
-// `signedIn` draws the sign-out form in the rail; the sign-in page has none.
-// `live` adds the script under its nonce; with a refresh, <main> says how
-// often, and a small note in the rail's foot, revealed by the script and
-// widened on hover, says when this copy was drawn.
+// `signedIn` draws the sign-out form in the owner's menu; the sign-in page
+// has none. `live` adds the script under its nonce; with a refresh, <main>
+// says how often, and a small note in the bar, revealed by the script and
+// widened on hover, says when this copy was drawn. On a phone the two menus
+// stack under the brand and the three destinations, and open in the page's
+// flow (layout.css), so nothing scrolls sideways.
 export function page(title: string, body: string, active = "Decisions", ownerName: string | null = null, refreshSeconds = 0, signedIn = true, live?: Live): string {
-  const nav = NAV.map(([label, url, glyph]) =>
-    `<a href="${url}"${label === active ? ' aria-current="page"' : ""}>${icon(glyph)}<span>${label}</span></a>`).join("");
-  const accountOpen = active === "Models" || active === "Usage";
-  const account = `<details class="account"${accountOpen ? " open" : ""}><summary>Settings</summary>
-    <div>${ACCOUNT.map(([label, url]) => `<a href="${url}"${label === active ? ' aria-current="page"' : ""}>${label}</a>`).join("")}</div></details>`;
+  const lifted = liftProjectRow(body);
+  const current = NAV_OF[active] ?? "";
+  const cur = (on: boolean) => (on ? ' aria-current="page"' : "");
+  const nav = NAV.map(([label, url]) => `<a href="${url}"${cur(label === current)}>${label}${label === "Decisions" ? MARK.waiting : ""}</a>`).join("");
+  const account = ACCOUNT.map(([label, url]) => `<a href="${url}"${cur(label === active)}>${label}</a>`).join("");
+  const signout = signedIn ? `<form method="post" action="/logout" class="signout"><button type="submit" class="quiet">Sign out</button></form>` : "";
+  const who = e(ownerName || "Owner");
   const liveAttr = live?.refresh ? ` data-live-refresh="${live.refresh}"` : "";
   const liveNote = live?.refresh
     ? `<p class="meta live-note" hidden><span class="pulse" aria-hidden="true"></span>Live<span class="live-when"> · this copy is from ${e(clock(new Date().toISOString()))}; it refreshes every ${live.refresh} seconds.</span></p>`
@@ -134,16 +188,16 @@ export function page(title: string, body: string, active = "Decisions", ownerNam
 <link rel="stylesheet" href="${FONTS}">${refreshSeconds ? `\n<meta http-equiv="refresh" content="${refreshSeconds}">` : ""}
 <title>${e(title)} · Atelier</title><style>${theme}\n${layout}</style></head><body>
 <a class="skip" href="#main">Skip to content</a>
-<aside class="rail">
-  <a class="brand" href="/home">Atelier</a>
-  <nav aria-label="Main navigation">${nav}</nav>
-  ${account}
-  <div class="rail-foot"><span class="avatar">${e((ownerName || "P").slice(0, 1))}</span><strong>${e(ownerName || "Project owner")}</strong>
-  <p>${e(TAGLINE)}</p>${liveNote}${signedIn ? `
-  <form method="post" action="/logout" class="signout"><button type="submit" class="quiet">Sign out</button></form>` : ""}
-</div>
-</aside>
-<main id="main"${liveAttr}>${body}</main>${script}</body></html>`;
+<header class="owner-bar">
+  <div class="bar-row">
+    <a class="brand" href="/decisions">Atelier</a>
+    <nav class="bar-nav" aria-label="Atelier">${nav}</nav>
+    ${liveNote}
+    <details class="bar-menu switcher"><summary>${e(lifted.title ?? "Project")}</summary><div><a href="/home">All projects</a>${MARK.projects}</div></details>
+    <details class="bar-menu account"><summary>${who}</summary><div>${account}${signout}</div></details>
+  </div>${lifted.row}
+</header>
+<main id="main"${liveAttr}>${lifted.body}</main>${script}</body></html>`;
 }
 
 // The shell of the pages anyone can read: no rail, and no link into a signed-in
@@ -677,7 +731,7 @@ export function renderFlow(stories: Story[], _total: Tally, owner: string, owner
   ${filters}
   ${unavailable ? '<p role="status" class="error">Some projects could not be read; the flow may be incomplete.</p>' : ""}
   ${body}
-</div>`, "Home", ownerName, 0, true, live);
+</div>`, "Flow", ownerName, 0, true, live);
 }
 
 // ── showcase ───────────────────────────────────────────────────────────────
@@ -1507,23 +1561,34 @@ function taskRows(p: ProjectRecord, items: Item[]): string {
 }
 
 // ── a project's area ───────────────────────────────────────────────────────
-// Every page under /p/NAME shares one tab bar, so the project is the unit the
-// owner moves in (PAVI's direction, 2026-10-06). The area hangs from Home.
+// Every page under /p/NAME shares the bar's second row, so the project is the
+// unit the owner moves in (PAVI's direction, 2026-10-06): Project › page on
+// the left, and five tabs (plan.md P10). The pages the eight tabs held stay
+// at their URLs, each under the tab that holds it now: Plans under Tasks,
+// Log, commits and path history under Code, Flow is Activity, and Ship's
+// protected actions under Settings.
 
-const PROJECT_TABS: [string, string][] = [
+const PROJECT_TABS: [label: string, sub: string][] = [
   ["Overview", ""],
   ["Tasks", "tasks"],
-  ["Flow", "flow"],
-  ["Plans", "plans"],
   ["Code", "code"],
-  ["Log", "log"],
-  ["Ship", "ship"],
+  ["Activity", "flow"],
   ["Settings", "settings"],
 ];
+const TAB_OF: Record<string, string> = { Plans: "Tasks", Log: "Code", Flow: "Activity", Ship: "Settings" };
 
-export function projectTabs(p: ProjectRecord, active: string): string {
-  return `<nav class="repo-tabs proj-tabs" aria-label="${e(titleOf(p))}">${PROJECT_TABS.map(([label, sub]) =>
-    `<a href="${href("p", p.name, ...sub ? [sub] : [])}"${label === active ? ' aria-current="page"' : ""}>${label}</a>`).join("")}</nav>`;
+// `active` is the page's own name, a tab's or one it holds; `crumb` ends the
+// location instead of it, as a task's id does on the task's page. The row is
+// drawn into the bar by page(), wherever in the body it is called.
+export function projectTabs(p: ProjectRecord, active: string, crumb?: string): string {
+  const tab = TAB_OF[active] ?? active;
+  const tabs = PROJECT_TABS.map(([label, sub]) =>
+    `<a href="${href("p", p.name, ...sub ? [sub] : [])}"${label === tab ? ' aria-current="page"' : ""}>${label}${label === "Tasks" ? MARK.tasks(p.name) : ""}</a>`).join("");
+  return `${ROW2[0]}${encodeURIComponent(titleOf(p))}-->
+  <div class="bar-row project-row">
+    <p class="crumb"><a href="${href("p", p.name)}">${e(titleOf(p))}</a> › <span>${e(crumb ?? (active === "Flow" ? "Activity" : active))}</span></p>
+    <nav aria-label="Project">${tabs}</nav>
+  </div>${ROW2[1]}`;
 }
 
 // The frame every page in a project's area shares: the project's name over
@@ -1720,7 +1785,7 @@ export function renderHistory(views: ProjectView[], ownerName: string | null = n
   ${entries.length ? familyLegend([], "You", capKey) : ""}
   <ol class="merge-timeline">${days}</ol>
   ${!entries.length ? '<p class="empty">Completed tasks will appear here after they merge or close.</p>' : ""}
-</div>`, "Home", ownerName);
+</div>`, "History", ownerName);
 }
 
 // Whether a qualifying reviewer was available when the owner overrode the
@@ -1806,8 +1871,7 @@ function progressBlock(item: Item, checks: { grade: string; passed: boolean | nu
 // the sheet, the task's current one marked.
 export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null = null, diff: ItemDiff | "unavailable" | null = null, live?: Live): string {
   return page(d.item.title, `<div class="page-width">
-  <nav class="breadcrumbs"><a href="/home">Home</a> / <a href="${href("p", p.name)}">${e(titleOf(p))}</a> / ${e(d.item.id)}</nav>
-  ${projectTabs(p, "Tasks")}
+  ${projectTabs(p, "Tasks", d.item.id)}
   ${progressBlock(d.item, evidenceAt(d.policy, d.evidence, d.item.head).checks)}
   <article class="review-sheet standalone" id="review">${reviewBody({ project: p, detail: d, diff, thread: true, full: true })}</article>
 </div>`, "Home", ownerName, 0, true, live);

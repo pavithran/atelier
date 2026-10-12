@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Decisions · Atelier</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#07090c}
+a{color:#ffdf8f}a:hover{color:#fff0c7}
+summary{cursor:pointer;list-style:none}summary::-webkit-details-marker{display:none}
+</style>
+</helmet>
+<div style="background: #07090c; color: #eef2f5; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 15px; line-height: 1.5; min-height: 100vh">
+
+  <header style="background: #0a0e13; border-bottom: 1px solid #1c232c">
+    <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 24px; padding: 10px 32px">
+      <a href="Decisions.dc.html" style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 22px; color: #ffffff; text-decoration: none">Atelier</a>
+      <nav aria-label="Atelier" style="display: flex; flex-wrap: wrap; gap: 4px; flex: 1 1 auto">
+        <a href="Decisions.dc.html" aria-current="page" style="color: #ffffff; text-decoration: none; padding: 10px 12px; border-radius: 8px; background: #121a24">Decisions <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #07090c; background: #ffd166; border-radius: 999px; padding: 1px 7px">14</span></a>
+        <a href="Overview.dc.html" style="color: #eef2f5; text-decoration: none; padding: 10px 12px; border-radius: 8px">Projects</a>
+        <a href="Studio.dc.html" style="color: #eef2f5; text-decoration: none; padding: 10px 12px; border-radius: 8px">Activity</a>
+      </nav>
+      <details><summary style="padding: 10px 12px; border: 1px solid #2c3744; border-radius: 8px">Project ▾</summary></details>
+      <details><summary style="padding: 10px 12px; border-radius: 8px; color: #8f9cab">Owner ▾</summary></details>
+    </div>
+  </header>
+
+  <main style="max-width: 1360px; margin: 0 auto; padding: 28px 32px 48px; display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start">
+    <section aria-labelledby="dec-h" style="flex: 1 1 460px; max-width: 540px; min-width: 0">
+      <h1 id="dec-h" style="margin: 0 0 18px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 40px; letter-spacing: -0.03em; line-height: 1">Decisions · 14</h1>
+      <sc-for list="{{projects}}" as="p" hint-placeholder-count="3">
+        <div style="margin-bottom: 18px">
+          <h2 style="margin: 0 0 6px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: #8f9cab">{{p.name}}</h2>
+          <ul style="margin: 0; padding: 0; list-style: none; border-top: 1px solid #1c232c">
+            <sc-for list="{{p.items}}" as="d" hint-placeholder-count="4">
+              <li style="background: {{d.bg}}; box-shadow: {{d.edge}}; border-bottom: 1px solid #1c232c">
+                <a href="#detail" style="display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; gap: 2px 12px; padding: 11px 12px; text-decoration: none; color: #eef2f5">
+                  <span style="font-family: 'IBM Plex Mono', monospace">{{d.id}}</span>
+                  <span>{{d.title}}</span>
+                  <span style="color: {{d.rc}}; font-weight: 500; white-space: nowrap">{{d.state}}</span>
+                  <span></span><span style="grid-column: 2 / -1; font-size: 14px; color: #8f9cab">{{d.why}}</span>
+                </a>
+              </li>
+            </sc-for>
+          </ul>
+        </div>
+      </sc-for>
+      <details style="border-top: 1px solid #1c232c; padding-top: 10px"><summary style="color: #8f9cab">Handled by the orchestrator · 5</summary></details>
+    </section>
+
+    <section id="detail" aria-labelledby="sel-h" style="flex: 999 1 520px; min-width: 0; background: #0c1015; border: 1px solid #1c232c; border-radius: 16px; padding: 28px 32px">
+      <p style="margin: 0; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #8f9cab">Ledger Core · t195 · claude-code/opus-5.5</p>
+      <h2 id="sel-h" style="margin: 8px 0 18px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 34px; letter-spacing: -0.025em; line-height: 1.08">Rotate the signing key for audit exports</h2>
+      <p style="margin: 0; font-size: 22px; font-weight: 600; color: #ffd166">Needs review</p>
+      <p style="margin: 6px 0 20px; max-width: 60ch; color: #c9d1d9">It changes <code style="font-family: 'IBM Plex Mono', monospace">src/audit/sign.ts</code>, a protected path; checks passed on a runner, in a clean clone, at <code style="font-family: 'IBM Plex Mono', monospace">e41c7a0</code>.</p>
+      <div style="display: flex; flex-wrap: wrap; gap: 10px">
+        <button type="button" style="font: inherit; font-weight: 600; min-height: 44px; padding: 0 20px; border: 0; border-radius: 8px; background: #ffd166; color: #07090c; cursor: pointer">Ask a reviewer</button>
+        <a href="#diff" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; border: 1px solid #2c3744; border-radius: 8px; color: #eef2f5; text-decoration: none">Review the diff</a>
+        <a href="#task" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; color: #eef2f5">Open the task</a>
+      </div>
+
+      <h3 style="margin: 28px 0 8px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: #8f9cab">Evidence</h3>
+      <ul style="margin: 0; padding: 0; list-style: none; border-top: 1px solid #1c232c">
+        <li style="display: grid; grid-template-columns: 92px minmax(0, 1fr) auto; gap: 12px; padding: 10px 0; border-bottom: 1px solid #1c232c; align-items: baseline"><span style="font-weight: 600; color: #5fe08f">Passed</span><span style="font-family: 'IBM Plex Mono', monospace">npm test</span><span style="font-size: 14px; color: #8f9cab">runner mac-mini-2, clean clone · 11:41 UTC</span></li>
+        <li style="display: grid; grid-template-columns: 92px minmax(0, 1fr) auto; gap: 12px; padding: 10px 0; border-bottom: 1px solid #1c232c; align-items: baseline"><span style="font-weight: 600; color: #5fe08f">Passed</span><span style="font-family: 'IBM Plex Mono', monospace">npm run typecheck</span><span style="font-size: 14px; color: #8f9cab">runner mac-mini-2, clean clone · 11:42 UTC</span></li>
+        <li style="display: grid; grid-template-columns: 92px minmax(0, 1fr) auto; gap: 12px; padding: 10px 0; border-bottom: 1px solid #1c232c; align-items: baseline"><span style="font-weight: 600; color: #8f9cab">Diff</span><span>3 files, +64 −12 · 1 protected</span><span></span></li>
+        <li style="display: grid; grid-template-columns: 92px minmax(0, 1fr) auto; gap: 12px; padding: 10px 0; border-bottom: 1px solid #1c232c; align-items: baseline"><span style="font-weight: 600; color: #ffd166">Review</span><span>None yet. Needs a model of another family than every agent that worked on it.</span><span></span></li>
+      </ul>
+      <p style="margin: 16px 0 0; font-size: 14px; color: #8f9cab">No reviewer available? <a href="#admit">Admit an outside reviewer</a>, or, as a last resort, <a href="#override">record an override</a>.</p>
+    </section>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const R = { go: '#5fe08f', ask: '#ffd166', caution: '#ffb547' };
+    const item = (id, title, state, rc, why, sel) => ({ id, title, state, rc, why, bg: sel ? '#121a24' : 'transparent', edge: sel ? 'inset 3px 0 0 #ffd166' : 'none' });
+    const projects = [
+      { name: 'Ledger Core · 9', items: [
+        item('t195', 'Rotate the signing key for audit exports', 'Needs review', R.ask, 'Protected path: an independent review is required.', true),
+        item('t200', 'Paginate account statements', 'Needs review', R.ask, '1 file outside its scope.'),
+        item('t192', 'Add idempotency keys to the posting API', 'Ready to accept', R.go, 'Checks passed on a runner, in a clean clone.'),
+        item('t166', 'Reconcile bank feed timestamps', 'Blocked', R.caution, 'Waits on bank sandbox keys: unblock or close.'),
+        item('t163', 'Migrate balances to integer cents', 'Working · stale 2 d', R.caution, 'Nothing pushed since 8 Oct: hand off or release.'),
+        item('+4', 't191, t193, t194, t190', 'Ready to accept', R.go, ''),
+      ]},
+      { name: 'Field Notes · 4', items: [
+        item('t64', 'Store sync token in the keychain', 'Needs review', R.ask, ''),
+        item('+3', 't61, t66, t67', 'Ready to accept', R.go, ''),
+      ]},
+      { name: 'Open Tool · 1', items: [
+        item('t38', 'Publish the 0.4.0 changelog', 'Ready to accept', R.go, ''),
+      ]},
+    ];
+    return { projects };
+  }
+}
+</script>
+</body>
+</html>
