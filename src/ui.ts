@@ -118,16 +118,21 @@ const ACCOUNT: [string, string][] = [
 // and the projects for the switcher with their task and waiting counts. The
 // renderers draw the bar with markers where these go; the server fills them
 // for the request (fillShell), so a page drawn without one simply has no
-// badge and no project list.
+// badge and no project list. `here` is the project the request's address
+// names, and the page there: a page in a project's area whose body drew no
+// project row (an error, an empty repository) is given one from it.
 export interface Shell {
   waiting: number;
   incomplete: boolean;
   projects: { name: string; title: string; tasks: number | null; waiting: number | null }[];
+  here?: { project: ProjectRecord; active: string; crumb?: string } | null;
 }
 const MARK = {
   waiting: "<!--shell:waiting-->",
   projects: "<!--shell:projects-->",
   tasks: (name: string) => `<!--shell:tasks:${encodeURIComponent(name)}-->`,
+  row: "<!--shell:row-->",
+  title: "<!--shell:title-->",
 };
 export const hasShell = (html: string) => html.includes(MARK.waiting);
 
@@ -137,7 +142,11 @@ export function fillShell(html: string, s: Shell): string {
   const projects = s.projects.map((p) =>
     `<a href="${href("p", p.name)}">${e(p.title)}${p.waiting ? ` <span class="meta">${p.waiting} waiting</span>` : ""}</a>`).join("");
   let out = html.replaceAll(MARK.waiting, badge).replaceAll(MARK.projects, projects);
-  for (const p of s.projects) if (p.tasks !== null) out = out.replaceAll(MARK.tasks(p.name), ` (${p.tasks})`);
+  if (s.here && out.includes(MARK.row)) {
+    out = out.replace(MARK.row, projectRow(s.here.project, s.here.active, s.here.crumb)).replace(`${MARK.title}Project`, e(titleOf(s.here.project)));
+  }
+  out = out.replaceAll(MARK.row, "").replaceAll(MARK.title, "");
+  for (const p of s.projects) out = out.replaceAll(MARK.tasks(p.name), p.tasks === null ? "" : ` (${p.tasks})`);
   return out;
 }
 
@@ -172,7 +181,7 @@ export function page(title: string, body: string, active = "Decisions", ownerNam
   const lifted = liftProjectRow(body);
   const current = NAV_OF[active] ?? "";
   const cur = (on: boolean) => (on ? ' aria-current="page"' : "");
-  const nav = NAV.map(([label, url]) => `<a href="${url}"${cur(label === current)}>${label}${label === "Decisions" ? MARK.waiting : ""}</a>`).join("");
+  const nav = NAV.map(([label, url]) => `<a href="${url}"${cur(label === current)}>${label}${label === "Decisions" ? `<span data-shell="waiting">${MARK.waiting}</span>` : ""}</a>`).join("");
   const account = ACCOUNT.map(([label, url]) => `<a href="${url}"${cur(label === active)}>${label}</a>`).join("");
   const signout = signedIn ? `<form method="post" action="/logout" class="signout"><button type="submit" class="quiet">Sign out</button></form>` : "";
   const who = e(ownerName || "Owner");
@@ -181,9 +190,9 @@ export function page(title: string, body: string, active = "Decisions", ownerNam
     ? `<p class="meta live-note" hidden><span class="pulse" aria-hidden="true"></span>Live<span class="live-when"> · this copy is from ${e(clock(new Date().toISOString()))}; it refreshes every ${live.refresh} seconds.</span></p>`
     : "";
   const script = live ? `\n<script nonce="${e(live.nonce)}" src="/live.js" defer></script>` : "";
-  return `<!doctype html><html lang="en" data-theme="night"><head><meta charset="utf-8">
+  return `<!doctype html><html lang="en" data-theme="night" data-scheme="night"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark light">
+<meta name="color-scheme" content="dark">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="${FONTS}">${refreshSeconds ? `\n<meta http-equiv="refresh" content="${refreshSeconds}">` : ""}
 <title>${e(title)} · Atelier</title><style>${theme}\n${layout}</style></head><body>
@@ -193,9 +202,9 @@ export function page(title: string, body: string, active = "Decisions", ownerNam
     <a class="brand" href="/decisions">Atelier</a>
     <nav class="bar-nav" aria-label="Atelier">${nav}</nav>
     ${liveNote}
-    <details class="bar-menu switcher"><summary>${e(lifted.title ?? "Project")}</summary><div><a href="/home">All projects</a>${MARK.projects}</div></details>
+    <details class="bar-menu switcher"><summary>${lifted.title === null ? `${MARK.title}Project` : e(lifted.title)}</summary><div data-shell="projects"><a href="/home">All projects</a>${MARK.projects}</div></details>
     <details class="bar-menu account"><summary>${who}</summary><div>${account}${signout}</div></details>
-  </div>${lifted.row}
+  </div>${lifted.title === null ? MARK.row : lifted.row}
 </header>
 <main id="main"${liveAttr}>${lifted.body}</main>${script}</body></html>`;
 }
@@ -1589,15 +1598,29 @@ const HELD: Record<string, [label: string, sub: string][]> = {
 // location instead of it, as a task's id does on the task's page. The row is
 // drawn into the bar by page(), wherever in the body it is called.
 export function projectTabs(p: ProjectRecord, active: string, crumb?: string): string {
+  return `${ROW2[0]}${encodeURIComponent(titleOf(p))}-->${projectRow(p, active, crumb)}${ROW2[1]}`;
+}
+
+// The page of a project's area an address names, for the row of a page
+// whose body drew none: `rest` is the path after /p/NAME, decoded. A task's
+// pages, its fork's browsing included, are under Tasks with its id.
+const PAGE_AT: Record<string, string> = { tasks: "Tasks", plans: "Plans", flow: "Flow", ship: "Ship", settings: "Settings", code: "Code", log: "Log", commit: "Code", history: "Code" };
+export function projectPageAt(rest: string[]): { active: string; crumb?: string } {
+  const [first] = rest;
+  if (!first) return { active: "Overview" };
+  return PAGE_AT[first] ? { active: PAGE_AT[first] } : { active: "Tasks", crumb: first };
+}
+
+function projectRow(p: ProjectRecord, active: string, crumb?: string): string {
   const tab = TAB_OF[active] ?? active;
   const tabs = PROJECT_TABS.map(([label, sub]) =>
-    `<a href="${href("p", p.name, ...sub ? [sub] : [])}"${label === tab ? ' aria-current="page"' : ""}>${label}${label === "Tasks" ? MARK.tasks(p.name) : ""}</a>`).join("");
-  return `${ROW2[0]}${encodeURIComponent(titleOf(p))}-->
+    `<a href="${href("p", p.name, ...sub ? [sub] : [])}"${label === tab ? ' aria-current="page"' : ""}>${label}${label === "Tasks" ? `<span data-shell="tasks">${MARK.tasks(p.name)}</span>` : ""}</a>`).join("");
+  return `
   <div class="bar-row project-row">
     <p class="crumb"><a href="${href("p", p.name)}">${e(titleOf(p))}</a> › <span>${e(crumb ?? (active === "Flow" ? "Activity" : active))}</span></p>
     <nav aria-label="Project">${tabs}</nav>${HELD[tab] ? `
     <nav aria-label="${tab} holds" class="held">${HELD[tab].map(([label, sub]) => `<a href="${href("p", p.name, sub)}"${label === active ? ' aria-current="page"' : ""}>${label}</a>`).join("")}</nav>` : ""}
-  </div>${ROW2[1]}`;
+  </div>`;
 }
 
 // The frame every page in a project's area shares: the project's name over

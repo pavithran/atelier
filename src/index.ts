@@ -17,7 +17,7 @@ import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, 
 import { briefFor, cleanSummary } from "./brief.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
-import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, fillShell, hasShell, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type ShownProject, type Standing } from "./ui";
+import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, type ModelEntry, type PoolFamily } from "./models/pool";
@@ -3008,16 +3008,21 @@ async function ownerAttention(env: Env, views: ProjectView[], now: Date) {
 // The owner's bar on every owner page (src/ui.ts page): the Decisions count,
 // one per task waiting on the owner as the Decisions list counts them, said
 // as uncertain where a project was not read in full, and the projects for
-// the switcher with their task and waiting counts. A page whose bar cannot
-// be read is still served, with no count and no list.
-async function withShell(env: Env, res: Response): Promise<Response> {
+// the switcher with their task and waiting counts. Under /p/NAME the bar's
+// project row is drawn from the address when the page's body drew none, as
+// an error or an empty repository does not. A page whose bar cannot be read
+// is still served, with no count and no list.
+async function withShell(env: Env, url: URL, res: Response): Promise<Response> {
   if (!(res.headers.get("content-type") ?? "").startsWith("text/html")) return res;
   const body = await res.text();
   if (!hasShell(body)) return new Response(body, res);
   const shell = await (async (): Promise<Shell> => {
     const { views } = await projectViews(env);
     const attention = await ownerAttention(env, views, new Date());
+    const [first, name, ...rest] = url.pathname.split("/").slice(1).map((part) => { try { return decodeURIComponent(part); } catch { return part; } });
+    const at = first === "p" ? views.find((v) => v.project.name === name)?.project : undefined;
     return {
+      here: at ? { project: at, ...projectPageAt(rest.filter(Boolean)) } : null,
       waiting: attention.reduce((n, a) => n + a.owner.length, 0),
       incomplete: views.some((v) => v.unavailable) || attention.some((a) => a.unknown.length > 0),
       projects: views.map((v, i) => ({ name: v.project.name, title: titleOf(v.project), tasks: v.unavailable ? null : v.items.length, waiting: v.unavailable ? null : attention[i].owner.length })),
@@ -3496,7 +3501,7 @@ export default {
         // and is served as signed in (t534). A form post is not a sign-in:
         // it is sent to /login, as before, which starts the session there.
         if (access && (req.method === "GET" || req.method === "HEAD")) {
-          return await accessSignIn(req, env, url, url.pathname + url.search, async () => withShell(env, await ui({ env, req, url, actor: ownerActor(env), body: null, signedIn: true, access: true }, parts).catch((err) => failed(err, req, url, pathname, env))));
+          return await accessSignIn(req, env, url, url.pathname + url.search, async () => withShell(env, url, await ui({ env, req, url, actor: ownerActor(env), body: null, signedIn: true, access: true }, parts).catch((err) => failed(err, req, url, pathname, env))));
         }
         return Response.redirect(new URL("/login", url).toString(), 303);
       }
@@ -3505,7 +3510,7 @@ export default {
       // the server names its Access team.
       // An owner page that fails is answered with the error page in the
       // same bar, filled as every owner page is.
-      return await withShell(env, await ui({ env, req, url, actor: ownerActor(env), body: null, signedIn: how === "ui", access: access !== null }, parts).catch((err) => failed(err, req, url, pathname, env)));
+      return await withShell(env, url, await ui({ env, req, url, actor: ownerActor(env), body: null, signedIn: how === "ui", access: access !== null }, parts).catch((err) => failed(err, req, url, pathname, env)));
     } catch (err) {
       return failed(err, req, url, pathname, env);
     }

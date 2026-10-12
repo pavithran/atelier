@@ -1,8 +1,9 @@
 /* Atelier's layout. Colours, faces, radii and durations are tokens from
-   theme.css, the portfolio design set's Night theme; light and dark follow
-   the device. Atelier adds only what the set has no role for: one colour per
-   family of agent, so a thread is seen to change hands, and the colour of
-   the main line. The family colours are drawn only in charts, lane threads
+   theme.css, the portfolio design set's Night theme; on the public pages
+   light and dark follow the device, and the owner's pages are Night.
+   Atelier adds only what the set has no role for: one colour per family of
+   agent, so a thread is seen to change hands, and the colour of the main
+   line. The family colours are drawn only in charts, lane threads
    and graph marks, and their legends. The three names after them only say
    which token plays which part here. */
 :root {
@@ -27,8 +28,9 @@
 }
 @media (prefers-color-scheme: light) {
   /* The same families, darkened to read as lines on warm paper, and as
-     AA text on their own bands (test/theme.test.ts). */
-  :root {
+     AA text on their own bands (test/theme.test.ts). The owner's pages
+     are Night only (data-scheme="night", bin/sync-theme). */
+  :root:not([data-scheme="night"]) {
     --m-anthropic: #983b18;
     --m-openai: #09654c;
     --m-zai: #2c50bb;
@@ -119,6 +121,9 @@ svg { flex-shrink: 0; }
 .project-row nav { display: flex; flex-wrap: wrap; gap: 2px; }
 .project-row nav a { display: inline-flex; align-items: center; min-height: 44px; padding: 10px 12px; color: var(--text-muted); text-decoration: none; white-space: nowrap; }
 .project-row nav a:hover { color: var(--text); }
+/* The Tasks count is its own part for the live refresh; as a flex item its
+   leading space would collapse into "Tasks(3)". */
+.project-row nav a > [data-shell] { white-space: pre; }
 .project-row nav a[aria-current] { color: var(--text-bright); box-shadow: inset 0 -2px 0 var(--signal); }
 .project-row nav.held { border-left: 1px solid var(--line); padding-left: 8px; }
 .project-row nav.held a { font-size: 14px; }
@@ -661,7 +666,7 @@ main .live-note { margin: 0 0 12px; }
 
 /* Glows belong to the dark stage; on paper the lines stand on their own. */
 @media (prefers-color-scheme: light) {
-  .g-lane, .g-head, .g-merge, .g-main { filter: none; }
+  :root:not([data-scheme="night"]) :is(.g-lane, .g-head, .g-merge, .g-main) { filter: none; }
 }
 
 /* ── repository browsing ─────────────────────────────────────────────────── */
