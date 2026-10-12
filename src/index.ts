@@ -1433,6 +1433,17 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     const instance = typeof body.instance === "string" && body.instance ? body.instance : undefined;
     if (body.cancel === true) return json(await L.cancelProjectLanding(String(body.item ?? ""), actor, instance));
     if (body.renew === true) return json({ lease: await L.renewProjectLanding(String(body.item ?? ""), actor, instance) });
+    // { item, confirm: true, main } (t550): the holder found main unmoved
+    // under the lease. The server reads the baseline's head itself and
+    // records it only where it is that main, so the merge's guard
+    // (beginLanding) holds the head to the main it was checked against.
+    if (body.confirm === true) {
+      const item = String(body.item ?? ""), main = String(body.main ?? "");
+      const [project, task] = await Promise.all([L.project(), L.item(item)]);
+      const top = task.kind === "part" ? null : await headOf(env, project.repo);
+      if (top && top !== main) throw new RuleError("main_moved", `main is at ${top.slice(0, 8)}, not ${main.slice(0, 8)}, the commit ${item}'s head was merged with; release the lease and merge main again`, 409);
+      return json({ confirmed: await L.confirmLeaseMain(item, actor, main, instance) });
+    }
     if (body.queued === true) return json(await L.queueProjectLanding(String(body.item ?? ""), actor, body.leave === true, instance));
     return json(await L.beginProjectLanding(String(body.item ?? ""), actor, instance));
   }
