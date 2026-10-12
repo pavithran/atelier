@@ -1,14 +1,16 @@
-// t540: the queue's offer and the runner's claim judge an orphaned claim
-// from the same runners' polls, and atelier stuck, the queue and the claim
-// check name the same orphans at the same moment. On 2026-10-12 runners were
-// offered tasks a claim (t539) no longer held, its runner gone, and refused
-// them at the claim: its runner had polled in between, and the claim read
-// the ledger's copy of the polls another poll had rewritten since the offer.
+// t540: the queue's offer, the runner's claim, atelier queue and atelier
+// stuck judge an orphaned claim from one record of the runners' polls per
+// project, kept current by every poll, heartbeat and claim before it judges.
+// On 2026-10-12 runners were offered tasks a claim (t539) no longer held, its
+// runner gone, and refused at the claim (403 runner_forbidden) once its
+// runner had polled in between; they then passed the tasks by until they
+// were dispatched again. A claim that loses that race is now answered 409
+// held, naming the holder, as the queue and stuck show it at that moment, and
+// the runner is offered the task again once the hold clears.
 import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
-import { OFFER_LIVE_MS, OFFER_REFRESH_MS, RUNNER_GONE_MS } from "../src/dispatch/rules.ts";
+import { OFFER_REFRESH_MS, RUNNER_GONE_MS } from "../src/dispatch/rules.ts";
 import type { Item } from "../src/rules.ts";
 
 const A = "codex/gpt-6-astra", OWNER = "orphan-agreement-owner";
@@ -53,8 +55,8 @@ async function setup(name: string) {
       claim: (id: string) => api(`/projects/${name}/items/${id}/claim`, "POST", {}, token, A),
     };
   };
-  // The held runner's heartbeat, which records its poll in the project's
-  // ledger as any queue call does.
+  // The held runner's heartbeat, which records its poll in the index and in
+  // the project's ledger, as any queue call does.
   const issued = await api("/tokens", "POST", { runner: held, projects: [name] });
   const { token: heldToken } = await issued.json() as { token: string };
   const beat = async () => {
@@ -64,108 +66,81 @@ async function setup(name: string) {
   return { L, held, runner, beat };
 }
 
-it("a task offered free past an orphaned claim is claimed, though that claim's runner polls between the offer and the claim", async () => {
-  const name = "orphan-agreement-late";
-  const { L, held, runner, beat } = await setup(name);
-  const [one, two] = [await runner(1), await runner(2)];
-  // The held runner has not polled past the limit: runner 1 is offered t2.
-  await polled(held, GONE);
-  expect(await one.poll()).toContain("t2");
-  // The held runner comes back between the offer and the claim, and its
-  // poll reaches the project's ledger.
-  await beat();
-  expect((await L.waiting())[0].held?.id).toBe("t1");
-  // Runner 2, polling now, is not offered t2, and its claim is refused for
-  // the hold its offer saw: its offer and claim agree.
-  expect(await two.poll()).not.toContain("t2");
-  const refused = await two.claim("t2");
-  expect(refused.status).toBe(403);
-  // Runner 1's claim is judged with the polls its offer was: it was offered
-  // t2 free, so it is not refused for t1's hold.
-  await notRefused(await one.claim("t2"));
-  expect((await L.waiting()).find((i) => i.id === "t2")?.refusals?.filter((r) => r.runner === `home:${name}-1`) ?? []).toEqual([]);
-});
-
-// An offer still live but no longer recent (OFFER_REFRESH_MS) is judged with
-// the ledger's current polls: the offer's frozen polls do not outlast the
-// queue, which already shows the hold back.
-async function ageOffers(L: DurableObjectStub, runner: string, ms: number) {
-  await runInDurableObject(L, async (_instance, state) => {
-    for (const row of state.storage.sql.exec("SELECT key, value FROM meta WHERE key LIKE 'runner-offer:%'").toArray()) {
-      const value = JSON.parse(row.value as string);
-      if (value.runner !== runner) continue;
-      value.at = new Date(Date.now() - ms).toISOString();
-      state.storage.sql.exec("UPDATE meta SET value = ? WHERE key = ?", JSON.stringify(value), row.key);
-    }
-  });
+// What atelier queue (GET /queue) and atelier stuck say of t1 and t2 now.
+async function diagnostics(name: string) {
+  const queue = await (await api("/queue")).json() as { project: string; item: Item & { held?: { id: string }; orphaned?: { id: string }[] } }[];
+  const listed = queue.find((q) => q.project === name && q.item.id === "t2")!.item;
+  const stuck = await api(`/projects/${name}/stuck`);
+  expect(stuck.status, await stuck.clone().text()).toBe(200);
+  const entries = (await stuck.json() as { entries: { kind: string; subject: string }[] }).entries;
+  return { held: listed.held?.id ?? null, orphaned: listed.orphaned?.map((o) => o.id) ?? [], stuckOrphans: entries.filter((e) => e.kind === "orphaned-claim").map((e) => e.subject) };
 }
 
-it("a claim on a live but stale offer is judged with the current polls, as the queue is", async () => {
-  const name = "orphan-agreement-stale";
+it("the 2026-10-12 case: a holder back between the offer and the claim loses the claim the race, as queue and stuck say, and the runner is offered the task once it clears", async () => {
+  const name = "orphan-agreement-race";
   const { L, held, runner, beat } = await setup(name);
   const one = await runner(1);
-  // Runner 1 is offered t2 while t1's runner is gone.
+  // t1's runner has not polled past the limit: runner 1 is offered t2 free.
   await polled(held, GONE);
   expect(await one.poll()).toContain("t2");
-  // t1's runner returns, and the queue holds t2 again.
+  // t1's runner comes back between the offer and the claim, and runner 1
+  // claims without polling again.
   await beat();
-  expect((await L.waiting())[0].held?.id).toBe("t1");
-  // Ninety minutes on, the offer is still live (OFFER_LIVE_MS) but long past
-  // OFFER_REFRESH_MS: its claim is refused for the hold the queue shows.
-  const age = 90 * 60_000;
-  expect(age).toBeLessThan(OFFER_LIVE_MS);
-  await ageOffers(L, `home:${name}-1`, age);
-  expect((await one.claim("t2")).status).toBe(403);
-  const why = (await L.waiting())[0].refusals?.map((r) => r.detail) ?? [];
-  expect(why.some((d) => d.includes("the core files hold it") && d.includes("t1"))).toBe(true);
-  // A claim just within OFFER_REFRESH_MS of its offer is still judged with
-  // the offer's polls.
+  const lost = await one.claim("t2");
+  const answer = await lost.json() as { error: string; detail: string };
+  expect(lost.status, JSON.stringify(answer)).toBe(409);
+  expect(answer.error).toBe("held");
+  expect(answer.detail).toContain(`t1 (claimed by ${A})`);
+  // atelier queue and atelier stuck say the same at that moment: t1 holds t2
+  // and is orphaned no more.
+  expect(await diagnostics(name)).toEqual({ held: "t1", orphaned: [], stuckOrphans: [] });
+  // A lost race is no refusal: none is kept on the task.
+  const t2 = (await L.waiting()).find((i) => i.id === "t2")!;
+  expect(t2.refusals ?? []).toEqual([]);
+  // Runner 1's next poll is not offered t2 while the hold stands.
+  expect(await one.poll()).not.toContain("t2");
+  // t1's runner goes quiet again: t2 is offered and claimed.
   await polled(held, GONE);
+  expect(await diagnostics(name)).toEqual({ held: null, orphaned: ["t1"], stuckOrphans: ["t1"] });
   expect(await one.poll()).toContain("t2");
-  await beat();
-  await ageOffers(L, `home:${name}-1`, OFFER_REFRESH_MS - 5_000);
   await notRefused(await one.claim("t2"));
 });
 
-it("a claim refused after its offer names the hold that offer saw, not a later one", async () => {
-  const name = "orphan-agreement-reason";
-  const { L, held, runner, beat } = await setup(name);
-  const one = await runner(1);
-  // The held runner polled just now: t2 is held and not offered.
-  await polled(held, 1000);
-  await beat();
-  expect(await one.poll()).not.toContain("t2");
-  // Its runner goes quiet past the limit and the index alone records it
-  // (no queue call reaches the project): the claim is judged as the offer
-  // was, so it is refused, as the queue did not offer it.
+it("a holder that polls late, after the claim or the index alone, is judged by the claim as the queue and stuck judge it", async () => {
+  const name = "orphan-agreement-late";
+  const { held, runner } = await setup(name);
+  const [one, two] = [await runner(1), await runner(2)];
+  // Offered free, nothing between offer and claim: the claim agrees.
   await polled(held, GONE);
-  expect((await one.claim("t2")).status).toBe(403);
-  const why = (await L.waiting())[0].refusals?.map((r) => r.detail) ?? [];
-  expect(why.some((d) => d.includes("the core files hold it") && d.includes("t1"))).toBe(true);
+  expect(await one.poll()).toContain("t2");
+  await notRefused(await one.claim("t2"));
+  // Runner 2 is offered t2 free too; then t1's runner polls, and only the
+  // index records it (no queue call reaches this project). The claim reads
+  // the polls as the index has them, and is held, as queue and stuck say.
+  await polled(held, GONE);
+  expect(await two.poll()).toContain("t2");
+  await polled(held, 1000);
+  const lost = await two.claim("t2");
+  expect(lost.status, await lost.clone().text()).toBe(409);
+  expect((await lost.json() as { error: string }).error).toBe("held");
+  expect(await diagnostics(name)).toEqual({ held: "t1", orphaned: [], stuckOrphans: [] });
 });
 
 it("atelier stuck, the queue and the claim check name the same orphans at the same moment", async () => {
   const name = "orphan-agreement-stuck";
-  const { L, held, runner } = await setup(name);
+  const { L, held, runner, beat } = await setup(name);
   const one = await runner(1);
-  // The held runner polled just now, and a poll records that in the project.
-  await polled(held, 1000);
+  // t1's runner polled just now: t2 is held, not offered, and all agree.
+  await beat();
   expect(await one.poll()).not.toContain("t2");
-  // It goes quiet past the limit; only the index knows yet.
+  expect(await diagnostics(name)).toEqual({ held: "t1", orphaned: [], stuckOrphans: [] });
+  expect((await L.waiting())[0].held?.id).toBe("t1");
+  // It goes quiet past the limit; only the index knows yet. atelier stuck
+  // and atelier queue name t1 orphaned, the project's own hold agrees, and
+  // runner 1, without polling again, claims t2 on its earlier offer.
   await polled(held, GONE);
-  // atelier stuck names t1 orphaned, and at that moment the project's own
-  // hold, which the claim check reads, agrees: t2 is free.
-  const stuck = await api(`/projects/${name}/stuck`);
-  expect(stuck.status, await stuck.clone().text()).toBe(200);
-  const entries = (await stuck.json() as { entries: { kind: string; subject: string }[] }).entries;
-  expect(entries.filter((e) => e.kind === "orphaned-claim").map((e) => e.subject)).toEqual(["t1"]);
+  expect(await diagnostics(name)).toEqual({ held: null, orphaned: ["t1"], stuckOrphans: ["t1"] });
   const waiting = (await L.waiting())[0];
-  expect(waiting.held).toBeUndefined();
-  expect(waiting.orphaned?.map((o) => o.id)).toEqual(["t1"]);
-  // atelier queue names the same orphan, and the runner offered t2 claims it.
-  const queue = await (await api("/queue")).json() as { project: string; item: Item & { held?: unknown; orphaned?: { id: string }[] } }[];
-  const listed = queue.find((q) => q.project === name && q.item.id === "t2")!.item;
-  expect([listed.held, listed.orphaned?.map((o) => o.id)]).toEqual([undefined, ["t1"]]);
-  expect(await one.poll()).toContain("t2");
+  expect([waiting.held, waiting.orphaned?.map((o) => o.id)]).toEqual([undefined, ["t1"]]);
   await notRefused(await one.claim("t2"));
 });
