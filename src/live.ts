@@ -57,6 +57,25 @@ export function decideRefresh(current: string[], fetched: string[], dirty: boole
   return dirty ? "hold" : "swap";
 }
 
+// The bar's counts: the Decisions badge, the switcher's projects and the
+// Tasks tab's count sit in the header, outside <main>, so a refresh that
+// swapped only <main> left them as the page first drew them. Each part of
+// the bar that carries a count is marked data-shell="KEY"; from every copy
+// fetched, each takes the fetched copy's part of the same key, whatever
+// happens to <main>. Returns how many parts changed.
+interface ShellPart { getAttribute(name: string): string | null; innerHTML: string }
+interface ShellDoc { querySelectorAll(selector: string): ArrayLike<ShellPart>; querySelector(selector: string): ShellPart | null }
+export function refreshShell(page: ShellDoc, fetched: ShellDoc): number {
+  let changed = 0;
+  const parts = page.querySelectorAll("[data-shell]");
+  for (let i = 0; i < parts.length; i++) {
+    const key = parts[i].getAttribute("data-shell");
+    const fresh = key ? fetched.querySelector('[data-shell="' + key + '"]') : null;
+    if (fresh && fresh.innerHTML !== parts[i].innerHTML) { parts[i].innerHTML = fresh.innerHTML; changed++; }
+  }
+  return changed;
+}
+
 // What the script does, in two parts.
 //
 // Refresh: on a page whose <main> carries data-live-refresh, the same page
@@ -74,7 +93,8 @@ export function decideRefresh(current: string[], fetched: string[], dirty: boole
 // refreshing. Swaps keep open disclosures open and the scroll position, and
 // marks that were not on the page before arrive with the pop animation, so
 // the graph never redraws itself whole. A response that lands on another
-// page (the session ended) reloads the page.
+// page (the session ended) reloads the page. Every copy fetched also
+// brings the bar's counts up to date (refreshShell, above).
 //
 // Scrubber: under every graph that carries positions (data-pos on its marks,
 // data-from and data-to on its thread segments), a range input with Previous,
@@ -82,6 +102,7 @@ export function decideRefresh(current: string[], fetched: string[], dirty: boole
 // picture as it stood after each one and saying which event that was.
 export const LIVE_SCRIPT = `${headsIn.toString()}
 ${decideRefresh.toString()}
+${refreshShell.toString()}
 (() => {
   "use strict";
   var main = document.getElementById("main");
@@ -253,6 +274,7 @@ ${decideRefresh.toString()}
       }).then(function (html) {
         if (html === null) return;
         var doc = new DOMParser().parseFromString(html, "text/html");
+        refreshShell(document, doc);
         var fresh = doc.getElementById("main");
         if (!fresh) return;
         var copy = fresh.innerHTML;

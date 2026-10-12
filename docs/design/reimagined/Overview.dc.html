@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ledger Core · Overview</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#07090c}
+a{color:#ffdf8f}a:hover{color:#fff0c7}
+summary{cursor:pointer;list-style:none}summary::-webkit-details-marker{display:none}
+</style>
+</helmet>
+<div style="background: #07090c; color: #eef2f5; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 15px; line-height: 1.5; min-height: 100vh">
+
+  <header style="background: #0a0e13; border-bottom: 1px solid #1c232c">
+    <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 24px; padding: 10px 32px; border-bottom: 1px solid #1c232c">
+      <a href="Decisions.dc.html" style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 22px; color: #ffffff; text-decoration: none">Atelier</a>
+      <nav aria-label="Atelier" style="display: flex; flex-wrap: wrap; gap: 4px; flex: 1 1 auto">
+        <a href="Decisions.dc.html" style="color: #eef2f5; text-decoration: none; padding: 10px 12px; border-radius: 8px">Decisions <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #07090c; background: #ffd166; border-radius: 999px; padding: 1px 7px">14</span></a>
+        <a href="Overview.dc.html" aria-current="page" style="color: #ffffff; text-decoration: none; padding: 10px 12px; border-radius: 8px; background: #121a24">Projects</a>
+        <a href="Studio.dc.html" style="color: #eef2f5; text-decoration: none; padding: 10px 12px; border-radius: 8px">Activity</a>
+      </nav>
+      <details><summary style="padding: 10px 12px; border: 1px solid #2c3744; border-radius: 8px">Ledger Core ▾</summary></details>
+      <details><summary style="padding: 10px 12px; border-radius: 8px; color: #8f9cab">Owner ▾</summary></details>
+    </div>
+    <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 24px; padding: 6px 32px">
+      <p style="margin: 0; font-size: 14px; color: #8f9cab"><span style="color: #eef2f5">Ledger Core</span> › Overview</p>
+      <nav aria-label="Project" style="display: flex; flex-wrap: wrap; gap: 2px">
+        <a href="Overview.dc.html" aria-current="page" style="color: #ffffff; text-decoration: none; padding: 10px 12px; box-shadow: inset 0 -2px 0 #ffd166">Overview</a>
+        <a href="#tasks" style="color: #8f9cab; text-decoration: none; padding: 10px 12px">Tasks (200)</a>
+        <a href="#code" style="color: #8f9cab; text-decoration: none; padding: 10px 12px">Code</a>
+        <a href="Activity.dc.html" style="color: #8f9cab; text-decoration: none; padding: 10px 12px">Activity</a>
+        <a href="#settings" style="color: #8f9cab; text-decoration: none; padding: 10px 12px">Settings</a>
+      </nav>
+    </div>
+  </header>
+
+  <main style="max-width: 1240px; margin: 0 auto; padding: 32px 32px 56px">
+    <h1 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 44px; letter-spacing: -0.03em; line-height: 1">Ledger Core</h1>
+    <p style="margin: 10px 0 24px; color: #8f9cab">200 tasks · 9 waiting on you · last merge 2 h ago</p>
+
+    <ul aria-label="Tasks by state" style="margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 1px; background: #1c232c; border: 1px solid #1c232c; border-radius: 12px; overflow: hidden">
+      <sc-for list="{{counts}}" as="c" hint-placeholder-count="10">
+        <li style="background: #0c1015"><a href="#tasks" style="display: block; padding: 14px 16px; text-decoration: none; color: #eef2f5"><span style="display: block; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 30px; line-height: 1; color: {{c.rc}}">{{c.n}}</span><span style="display: block; margin-top: 6px; font-size: 13px; color: #c9d1d9">{{c.word}}</span></a></li>
+      </sc-for>
+    </ul>
+
+    <div style="display: flex; flex-wrap: wrap; gap: 24px; margin-top: 28px">
+      <section aria-labelledby="wait-h" style="flex: 3 1 560px; min-width: 0">
+        <h2 id="wait-h" style="margin: 0 0 8px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 24px">Waiting on you · 9</h2>
+        <ul style="margin: 0; padding: 0; list-style: none; border-top: 1px solid #1c232c">
+          <sc-for list="{{waiting}}" as="w" hint-placeholder-count="5">
+            <li style="display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; gap: 4px 16px; padding: 12px 0; border-bottom: 1px solid #1c232c">
+              <a href="#task" style="font-family: 'IBM Plex Mono', monospace; color: #eef2f5">{{w.id}}</a>
+              <span>{{w.title}}</span>
+              <span style="color: {{w.rc}}; font-weight: 500; white-space: nowrap">{{w.state}}</span>
+              <span></span><span style="grid-column: 2 / -1; font-size: 14px; color: #8f9cab">{{w.why}}</span>
+            </li>
+          </sc-for>
+        </ul>
+        <p style="margin: 10px 0 0"><a href="Decisions.dc.html">All 9 waiting</a></p>
+      </section>
+
+      <div style="flex: 2 1 360px; min-width: 0; display: flex; flex-direction: column; gap: 28px">
+        <section aria-labelledby="run-h">
+          <h2 id="run-h" style="margin: 0 0 8px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 24px">Running · 9</h2>
+          <ul style="margin: 0; padding: 0; list-style: none; border-top: 1px solid #1c232c">
+            <sc-for list="{{running}}" as="r" hint-placeholder-count="3">
+              <li style="display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 2px 12px; padding: 10px 0; border-bottom: 1px solid #1c232c">
+                <a href="#task" style="font-family: 'IBM Plex Mono', monospace; color: #eef2f5">{{r.id}}</a>
+                <span>{{r.title}}</span>
+                <span></span><span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #8f9cab">{{r.who}}</span>
+              </li>
+            </sc-for>
+          </ul>
+          <p style="margin: 10px 0 0"><a href="Studio.dc.html">All 9 working</a></p>
+        </section>
+
+        <section aria-labelledby="merge-h">
+          <h2 id="merge-h" style="margin: 0 0 8px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 24px">Last five merges</h2>
+          <ul style="margin: 0; padding: 0; list-style: none; border-top: 1px solid #1c232c">
+            <sc-for list="{{merged}}" as="m" hint-placeholder-count="5">
+              <li style="display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; gap: 12px; padding: 9px 0; border-bottom: 1px solid #1c232c; font-size: 14px">
+                <a href="#task" style="font-family: 'IBM Plex Mono', monospace; color: #eef2f5">{{m.id}}</a>
+                <span>{{m.title}}</span>
+                <span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #8f9cab">{{m.ago}}</span>
+              </li>
+            </sc-for>
+          </ul>
+          <p style="margin: 10px 0 0"><a href="Activity.dc.html">Activity</a></p>
+        </section>
+
+        <section aria-labelledby="ship-h">
+          <h2 id="ship-h" style="margin: 0 0 6px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 24px">Ship requests</h2>
+          <p style="margin: 0; color: #8f9cab">None pending. Approvals are in <a href="#settings">Settings</a>.</p>
+        </section>
+      </div>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1100}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const R = { go: '#5fe08f', ask: '#ffd166', fault: '#ff4d74', caution: '#ffb547', neutral: '#eef2f5', done: '#8f9cab' };
+    const counts = [
+      [14, 'Ready to start', R.neutral], [9, 'Working (1 stale)', R.neutral], [5, 'Ready to accept', R.go],
+      [2, 'Needs review', R.ask], [1, 'Sent back', R.fault], [3, 'Checks failed', R.fault],
+      [2, 'Ready to merge', R.go], [2, 'Blocked', R.caution], [156, 'Merged', R.done], [6, 'Closed', R.done],
+    ].map(([n, word, rc]) => ({ n, word, rc }));
+    const waiting = [
+      ['t195', 'Rotate the signing key for audit exports', 'Needs review', R.ask, 'Protected path: ask a reviewer of another family.'],
+      ['t200', 'Paginate account statements', 'Needs review', R.ask, '1 file outside its scope.'],
+      ['t192', 'Add idempotency keys to the posting API', 'Ready to accept', R.go, 'Checks passed on a runner, in a clean clone.'],
+      ['t166', 'Reconcile bank feed timestamps', 'Blocked', R.caution, 'Waits on bank sandbox keys: unblock or close.'],
+      ['t163', 'Migrate balances to integer cents', 'Working · stale 2 d', R.caution, 'Nothing pushed since 8 Oct: hand off or release.'],
+    ].map(([id, title, state, rc, why]) => ({ id, title, state, rc, why }));
+    const running = [
+      ['t196', 'Reject postings to archived accounts', 'opencode/qwen-4 · pushed 20 min ago'],
+      ['t182', 'Multi-currency trial balance export', 'claude-code/opus-5.5 · pushed 1 h ago'],
+      ['t197', 'Round half-even in currency conversion', 'codex/gpt-6-astra · revising'],
+    ].map(([id, title, who]) => ({ id, title, who }));
+    const merged = [
+      ['t156', 'Validate ISO 4217 codes on import', '2 h'], ['t155', 'Show closing balance per period', '5 h'],
+      ['t153', 'Fix off-by-one in statement ranges', '9 h'], ['t151', 'Seed chart of accounts for tests', '1 d'],
+      ['t150', 'Rename Txn to Entry in the API', '1 d'],
+    ].map(([id, title, ago]) => ({ id, title, ago }));
+    return { counts, waiting, running, merged };
+  }
+}
+</script>
+</body>
+</html>
