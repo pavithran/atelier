@@ -63,6 +63,9 @@ it("a claim whose runner stopped polling holds nothing, and its runner's return 
   const item = await listed();
   expect(item.held).toBeUndefined();
   expect(item.orphaned?.map((o) => [o.id, o.runner])).toEqual([["t1", runner]]);
+  // The orphan carries its project, so a listing of every project's queue or
+  // status prints a recovery that names it (gpt-6-astra, c2655314).
+  expect(item.orphaned?.map((o) => (o as { project?: string }).project)).toEqual([name]);
   expect(Math.abs(Date.parse(item.orphaned![0].lastPoll) - gone)).toBeLessThan(5000);
   // Every reading of the hold uses the polls the queue last passed.
   expect((await L.waiting())[0].held).toBeUndefined();

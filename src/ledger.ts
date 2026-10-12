@@ -1983,7 +1983,7 @@ export class Ledger extends DurableObject<Env> {
   private dispatchWaiting(pushHistory = false): Waiting[] {
     const rows = this.sql.exec(`SELECT * FROM items WHERE state = 'open' AND (owner IS NULL OR owner = '') AND dispatch IS NOT NULL AND dispatch != '' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
     const open = rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)) : [];
-    const policy = this.project().policy, lease = this.projectLanding(), now = Date.now(), runners = this.runnerPolls();
+    const project = this.project(), policy = project.policy, projectName = project.name, lease = this.projectLanding(), now = Date.now(), runners = this.runnerPolls();
     const live = open.length && policy.coreFiles?.length ? this.sql.exec(`SELECT * FROM items WHERE state = 'claimed' OR id = ? ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`, lease?.item ?? "").toArray().map(toItem) : [];
     const all = policy.refuseOverlap || [...open, ...live].some((i) => i.deps?.length) ? this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem) : [...open, ...live];
     const graph = holdGraph(all, policy.coreFiles, lease, now, runners);
@@ -1995,7 +1995,7 @@ export class Ledger extends DurableObject<Env> {
       const claimant = d.agent && d.model ? `${d.agent}/${d.model}` : "\u0000dispatch";
       const claimRefusal = policy.refuseOverlap ? overlappingRefusal(i, all, claimant) : null;
       const blockers = coreBlockers(i, live, policy.coreFiles, lease, now, runners);
-      const orphaned = coreOrphans(i, live, policy.coreFiles, lease, now, runners);
+      const orphaned = coreOrphans(i, live, policy.coreFiles, lease, now, runners).map((o) => ({ ...o, project: projectName }));
       const gone = orphaned.length ? { orphaned } : {};
       if (!blockers.length) return { ...i, ...gone, ...(claimRefusal ? { claimRefusal } : {}) };
       const old = previous[i.id];
