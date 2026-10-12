@@ -512,6 +512,7 @@ function reviewFindings(r: Review): ReviewFindings | null {
 
 export class Ledger extends DurableObject<Env> {
   private sql: SqlStorage;
+  #ownerAssignment = false;
 
   private get owner(): string {
     return (this.env as unknown as { OWNER_ACTOR?: string }).OWNER_ACTOR || DEFAULT_OWNER;
@@ -580,6 +581,23 @@ export class Ledger extends DurableObject<Env> {
     // owner. A write token is recorded only under the generation its claim
     // reserved (see recordToken).
     if (!columns.includes("claim_gen")) this.sql.exec(`ALTER TABLE items ADD COLUMN claim_gen INTEGER NOT NULL DEFAULT 0`);
+    // Database guards cover direct SQL as well as update records assembled by
+    // future callers. Only assignOwner opens this gate, inside a synchronous
+    // transaction; no permission survives a return, exception or restart.
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS owner_assignment (id TEXT PRIMARY KEY, actor TEXT NOT NULL);
+      CREATE TRIGGER IF NOT EXISTS items_owner_update BEFORE UPDATE OF owner ON items
+      WHEN NEW.owner IS NOT NULL AND NOT EXISTS (SELECT 1 FROM owner_assignment WHERE id = NEW.id AND actor = NEW.owner)
+      BEGIN SELECT RAISE(ABORT, 'owner assignment requires assignOwner'); END;
+      CREATE TRIGGER IF NOT EXISTS items_owner_insert BEFORE INSERT ON items
+      WHEN NEW.owner IS NOT NULL OR NEW.claim_gen != 0
+      BEGIN SELECT RAISE(ABORT, 'owner assignment requires assignOwner'); END;
+      CREATE TRIGGER IF NOT EXISTS items_claim_reserve BEFORE UPDATE OF claim_gen ON items
+      WHEN NEW.claim_gen != OLD.claim_gen
+        AND NOT (NEW.owner IS NULL AND OLD.owner IS NOT NULL AND NEW.claim_gen = OLD.claim_gen + 1)
+        AND NOT EXISTS (SELECT 1 FROM owner_assignment WHERE id = NEW.id AND actor = NEW.owner)
+      BEGIN SELECT RAISE(ABORT, 'claim reservation requires assignOwner'); END;
+    `);
     // The owner's framing of a task (JSON lists and one line of text), and
     // the block record while a task is blocked (see Block in rules.ts).
     if (!columns.includes("non_goals")) this.sql.exec(`ALTER TABLE items ADD COLUMN non_goals TEXT`);
@@ -1709,26 +1727,43 @@ export class Ledger extends DurableObject<Env> {
       const held = item.runner ?? null, asking = runner?.runner ?? null;
       // After a handoff the new owner holds no runner yet; the first runner to
       // claim as that owner takes the claim, and any other is refused above.
+      const reserved = this.assignOwner(id, actor, !held && asking ? { runner: asking } : {}, at, true);
       if (!held && asking) {
-        this.update(id, { owner: actor, runner: asking }, at);
         this.log(id, actor, "item.runner_adopted", { runner: asking }, at, proved);
       }
-      return { item: this.item(id), needsFork: !item.fork, ...this.reserve(id) };
+      return { item: this.item(id), needsFork: !item.fork, ...reserved };
     }
-    this.update(id, { owner: actor, state: "claimed", runner: runner?.runner ?? null }, at);
+    const reserved = this.assignOwner(id, actor, { state: "claimed", runner: runner?.runner ?? null }, at, true);
     // The claim records the binding of the criteria the holder takes the
     // task under (src/criteria.ts), so the record shows what it was asked.
     this.log(id, actor, "item.claimed", { ...(runner ? { runner: runner.runner } : {}), criteria: criteriaOf(item) }, at, proved);
-    const reserved = this.reserve(id);
     this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `claim-rollback:${id}`, JSON.stringify({
       generation: reserved.generation, state: item.state, owner: item.owner, runner: item.runner ?? null,
     }));
     return { item: this.item(id), needsFork: !item.fork, ...reserved };
   }
 
-  private reserve(id: string): { generation: number; replaces: string | null } {
-    const row = this.sql.exec(`UPDATE items SET claim_gen = claim_gen + 1 WHERE id = ? RETURNING claim_gen, token_id`, id).one();
-    return { generation: row.claim_gen as number, replaces: (row.token_id as string | null) ?? null };
+  // The only boundary for assigning an owner or renewing a claim generation.
+  // The role is derived here, never trusted to the caller. The orchestrator's
+  // integrator is the sole non-model actor; claim verifies its bound token.
+  private assignOwner(id: string, actor: string, fields: Record<string, string | null>, at: string, reserveClaim = false): { generation: number; replaces: string | null } {
+    const item = this.item(id);
+    if (actor !== INTEGRATOR) this.assertStanding(actor, claimRole(item) ?? "build");
+    return this.ctx.storage.transactionSync(() => {
+      this.sql.exec(`INSERT INTO owner_assignment (id, actor) VALUES (?, ?)`, id, actor);
+      this.#ownerAssignment = true;
+      try {
+        // Renewal alone keeps the owner/runner and advances just one generation.
+        if (item.owner !== actor || Object.keys(fields).length) this.update(id, { ...fields, owner: actor }, at);
+        const row = reserveClaim
+          ? this.sql.exec(`UPDATE items SET claim_gen = claim_gen + 1 WHERE id = ? RETURNING claim_gen, token_id`, id).one()
+          : this.sql.exec(`SELECT claim_gen, token_id FROM items WHERE id = ?`, id).one();
+        return { generation: row.claim_gen as number, replaces: (row.token_id as string | null) ?? null };
+      } finally {
+        this.#ownerAssignment = false;
+        this.sql.exec(`DELETE FROM owner_assignment WHERE id = ?`, id);
+      }
+    });
   }
 
   // Minting a token waits on Artifacts, and meanwhile the item can be handed
@@ -1958,8 +1993,11 @@ export class Ledger extends DurableObject<Env> {
     const prior = JSON.parse(saved.value as string) as { generation: number; state: string; owner: string | null; runner: string | null };
     if (row.claim_gen !== prior.generation || (generation !== undefined && generation !== prior.generation)) return;
     const at = new Date().toISOString();
+    // t506 rollback restores only an unowned snapshot from a fresh claim.
+    // It clears ownership, never assigns one or mints a claim generation.
+    if (prior.owner) throw new RuleError("owner_assignment", "claim rollback must restore an unowned item", 409);
     this.dropRunnerJobs(id);
-    this.update(id, { owner: prior.owner, state: prior.state, runner: prior.runner }, at);
+    this.update(id, { owner: null, state: prior.state, runner: prior.runner }, at);
     this.sql.exec(`DELETE FROM meta WHERE key = ?`, `claim-rollback:${id}`);
     this.log(id, actor, "item.claim_failed", { reason }, at, proved);
   }
@@ -2491,7 +2529,7 @@ export class Ledger extends DurableObject<Env> {
     this.dropToken(id, token);
     this.dropRunnerJobs(id);
     const at = new Date().toISOString();
-    this.update(id, { owner: to, state: "claimed", accepted_head: null }, at);
+    this.assignOwner(id, to, { state: "claimed", accepted_head: null }, at);
     this.log(id, from, "item.handoff", { from: item.owner, to, note }, at, proved);
     return this.item(id);
   }
@@ -5460,6 +5498,9 @@ export class Ledger extends DurableObject<Env> {
   // log alike, so an item's updatedAt and the event that changed it never
   // differ, and a reader comparing the two sees one moment.
   private update(id: string, fields: Record<string, string | null>, at: string): void {
+    if (("owner" in fields && fields.owner !== null || "claim_gen" in fields) && !this.#ownerAssignment) {
+      throw new RuleError("owner_assignment", "owner assignment and claim reservation require assignOwner", 409);
+    }
     if (fields.state === "merged" || fields.state === "abandoned") {
       this.ctx.storage.transactionSync(() => {
         const state = fields.state!;
@@ -5482,7 +5523,12 @@ export class Ledger extends DurableObject<Env> {
     const owning = "owner" in fields;
     if (owning && !("runner" in fields)) fields = { ...fields, runner: null };
     const keys = Object.keys(fields);
-    const set = [...keys.map((k) => `${k} = ?`), ...(owning ? ["claim_gen = claim_gen + 1"] : [])].join(", ");
+    // Clearing an already unowned item reserves nothing; clearing a holder
+    // invalidates its generation, which the database guard permits explicitly.
+    const generation = fields.owner === null
+      ? "claim_gen = claim_gen + CASE WHEN owner IS NULL THEN 0 ELSE 1 END"
+      : "claim_gen = claim_gen + 1";
+    const set = [...keys.map((k) => `${k} = ?`), ...(owning ? [generation] : [])].join(", ");
     // Every change of an item's head is written here (a push, a push seen on
     // the fork, a landing's merge of main pushed, a fork made or moved), so
     // the review requests at the head it leaves are closed here, once, for
