@@ -100,3 +100,15 @@ it("a long build keeps its hold: the busy runner's heartbeat renews its last pol
   const item = await L.item("t1");
   expect([item.state, item.runner]).toEqual(["claimed", runner]);
 });
+
+// The heartbeat reads no queue: a task the busy runner could take, outside
+// every hold, is offered to an ordinary poll but never to its heartbeat.
+it("a heartbeat is offered nothing, even a task its runner could take", async () => {
+  const name = "orphaned-claim-beat", runner = "home:orphaned-beat";
+  const { L, offered, beat } = await setup(name, runner);
+  await L.newItem("Free", ["docs/**"], "owner");
+  await L.dispatch("t3", "owner", {});
+  await polled(runner, 1000);
+  expect(await offered()).toContain("t3");
+  expect(await beat()).toEqual([]);
+});
