@@ -1433,7 +1433,9 @@ test("jobs is the exact list a runner offers, and unknown job names are refused"
   const reviewer = { agent: "opencode", models: ["glm-5.3"], command: ["opencode", "run", "--model", "{model}", "--file", "{brief_file}", "{verdict_file}"] };
   for (const jobs of [["review"], ["build", "review"], DEFAULT_JOBS]) {
     assert.deepEqual(parseConfig({ agents: [reviewer], jobs }).jobs, jobs, JSON.stringify(jobs));
-    assert.deepEqual(offerFrom({ agents: [reviewer], jobs }, "home:rev").jobs, jobs, JSON.stringify(jobs));
+    // The offer is the list, and a runner that takes reviews also
+    // advertises the pre-review job it can run with them (t524).
+    assert.deepEqual(offerFrom({ agents: [reviewer], jobs }, "home:rev").jobs, jobs.includes("review") ? [...jobs, "prereview"] : jobs, JSON.stringify(jobs));
   }
   for (const jobs of [[], ["other"], ["reviews"], ["review", "other"], ["integrate"], ["refresh"]]) {
     const errors = parseConfig({ agents: [reviewer], jobs }).errors.join(" ");
@@ -1442,7 +1444,7 @@ test("jobs is the exact list a runner offers, and unknown job names are refused"
   assert.match(parseConfig({ agents: [reviewer], jobs: ["integrate"] }).errors.join(" "), /the integrator's alone/);
   assert.match(parseConfig({ agents: [reviewer], jobs: ["other"] }).errors.join(" "), /build, plan, merge-main, merge-main-task, merge-plan and review/);
   // The offer carries the parsed names, trimmed and deduped as parseConfig has them.
-  assert.deepEqual(offerFrom({ agents: [reviewer], jobs: [" review ", "review"] }, "home:rev").jobs, ["review"]);
+  assert.deepEqual(offerFrom({ agents: [reviewer], jobs: [" review ", "review"] }, "home:rev").jobs, ["review", "prereview"]);
 });
 
 // t289: t252 made a config's jobs the exact list a runner takes, so a config
