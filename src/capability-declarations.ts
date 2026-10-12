@@ -1,0 +1,25 @@
+// One capability per line, without level for new entries. Existing levels are legacy metadata.
+// Git unions independent additions; buildCapabilities validates names.
+export const CAPABILITY_DECLARATIONS = [
+  { name: "reviews.post-merge.v1", summary: "review requests and verdicts audit recorded merges and file linked defects for blocking findings" },
+  { name: "plans.integration.v1", level: 6, summary: "the integrated, integration-failed, refreshed and refresh-failed routes a plan's integrator posts" },
+  { name: "plans.refresh.v1", level: 6, summary: "the plan refresh route, which atelier plan refresh and atelier merge post to take main into a plan's branch" },
+  { name: "land.workflow.v1", level: 14, summary: "the landing-workflow routes behind atelier land --workflow" },
+  { name: "items.brief-criteria.v1", level: 15, summary: "items take a brief and acceptance criteria apart from the title; edit takes a title" },
+  { name: "reviews.criteria-binding.v1", level: 16, summary: "a review names the binding of the criteria it judged and the request it claimed" },
+  { name: "reviews.unparsable.v1", level: 17, summary: "the review-unparsable route a runner's review job calls" },
+  { name: "reviews.skip.v1", level: 21, summary: "the review-skip route a runner posts for a review it will not serve; the queue's review tasks and the review request's answer name the request's number, and the landing counts skips by it" },
+  { name: "reviews.skip-as-runner.v1", level: 22, summary: "a runner token posts review-skip for a review job it was offered, under the job's actor" },
+  { name: "reviews.admission.v1", level: 25, summary: "owner admission, withdrawal and listing of outside reviewers" },
+  { name: "models.note.v1", level: 18, summary: "dated owner notes under a pool model" },
+  { name: "projects.require-criteria.v1", level: 19, summary: "a project that requires criteria refuses a task filed or cleared without them" },
+  { name: "projects.commit-identity.v1", level: 24, summary: "project policy carries commitIdentity; init records commitName, commitEmail, agentEmails, privateEmails and publicMirrors" },
+  { name: "runners.scoped-token.v1", level: 20, summary: "runner-scoped API credentials and the revocable Git gateway" },
+  { name: "areas.manage.v1", level: 23, summary: "the area routes (list, create, rename, remove) and a task's assignment to an area by new and edit --area" },
+  { name: "reviews.lease.v1", level: 26, summary: "five-minute review claim leases: review-renew, and release, unparsable and verdicts naming the claim generation (--request)" },
+  { name: "areas.board.v1", level: 23, summary: "the board snapshot, every task grouped by function area, which atelier board and the project page read" },
+  { name: "runners.run-skip.v1", summary: "the run-skip route a runner posts for a job other than a review it gives up after its failures, and the queue poll with why: true that says why each dispatch waits" },
+  { name: "land.triage.v1", level: 28, summary: "the landing's triage step: the land step route records a triage, a --no-triage bypass and an --override-triage with the head, merge base and criteria binding, the project policy carries the triage model, and a landing Workflow triages before the review" },
+  { name: "land.post-merge.v1", level: 27, summary: "durable post-merge runs: the project policy's owner-approved postMerge steps, the post-merge run routes (status, prepare, start, command, finish, retry, skip, reconcile) and the merge and landing reservations that block later merges until a run completes" },
+  { name: "projects.stuck.v1", summary: "the owner-only read-only stuck report, GET /projects/:p/stuck, which atelier stuck reads" },
+] as const;

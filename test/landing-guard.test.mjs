@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
 import { commandWords, executablePaths, hooksOff, landingDir, landingJournalFile, landingSymlinks, touchedExecutables, treeEntries } from '../cli/landing.mjs';
+import { SERVER_CAPABILITIES } from '../src/route-level.ts';
 
 // The client hooks a landing's Git commands could start.
 const HOOKS = ['pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit', 'pre-merge-commit', 'post-merge', 'post-checkout', 'pre-push', 'reference-transaction', 'post-index-change', 'post-rewrite', 'pre-auto-gc'];
@@ -74,11 +75,13 @@ async function landFixture(t, { setup = () => {}, change, controlPlane = false, 
     let raw = '';
     for await (const chunk of req) raw += chunk;
     const body = raw ? JSON.parse(raw) : {}, path = new URL(req.url, 'http://x').pathname;
+    // merge checks the server's capabilities first (t458).
+    if (path === '/api/version') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ capabilities: SERVER_CAPABILITIES })); }
     box.requests.push(`${req.method} ${path}`);
     const item = { id: 't1', title: 'Task one', scope: [], state: box.state, owner: 'codex/test', head, acceptedHead: head, base };
     let answer = {};
     if (path === '/api/projects/proj' && req.method === 'GET') answer = { project: { name: 'proj', policy: { protected: PROTECTED, eligible: [], refuseOverlap: false } }, items: [], events: [] };
-    else if (path === '/api/projects/proj/items/t1') answer = { item, policy: { checks: [], protected: [] }, gate: { ready: true, blockers: [], changeClass: 'coordinated' }, evidence: [], reviews: [], acceptanceProtected: PROTECTED, events: [{ kind: 'item.claimed', actor: 'codex/test', at: '2026-10-06T00:00:00Z', data: {} }] };
+    else if (path === '/api/projects/proj/items/t1') answer = { item, policy: { checks: [], protected: [], commitIdentity: { name: 'Owner', email: 'owner@example.invalid', agentEmails: [] } }, gate: { ready: true, blockers: [], changeClass: 'coordinated' }, evidence: [], reviews: [], acceptanceProtected: PROTECTED, events: [{ kind: 'item.claimed', actor: 'codex/test', at: '2026-10-06T00:00:00Z', data: {} }] };
     else if (path.endsWith('/baseline-token')) answer = { remote: baseline, token: 'fixture', defaultBranch: 'main' };
     else if (path.endsWith('/read-token')) answer = { remote: fork, token: 'fixture', defaultBranch: 'main', head, base };
     else if (path.endsWith('/landing') && body.cancel !== true && box.failLanding) {

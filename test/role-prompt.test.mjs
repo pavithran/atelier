@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { ROLES, ROLE_PROMPTS, ROLE_PROMPT_MAX, rolePrompt, guideText } from "../src/usage.ts";
-import { roleText } from "../cli/runner.mjs";
+import { roleText, reviewRoleText } from "../cli/runner.mjs";
 
 // The role prompts behind `atelier guide --role ROLE`: each role has default
 // text in src/usage.ts, a project may override it with `.atelier/prompts/ROLE.md`,
@@ -50,10 +50,14 @@ const ORCHESTRATE_RULES = [
   /reviewed by a model from another\s+company/,
   /Never override[^.]*except on the owner's own\s+confirmation/,
   /Judge each review finding against the code[^.]*record every\s+verdict/,
-  /Land one task at a time/,
+  /`atelier finding \.\.\. --as H\/M`, naming yourself/,
+  /Land one task at a time[^.]*--reviewer H\/M/,
+  /override[\s\S]*?last resort[\s\S]*?never the\s+way to land another\s+agent's work/,
   /Report every run that ended without a result/,
   /On a stall/,
-  /repeated rejection/,
+  /two rejections on the same\s+point/,
+  /edge cases it\s+implies/,
+  /mechanical\s+(merge\s+)?conflict/,
 ];
 
 test("the orchestrate guide states each standing rule and names docs/orchestrating.md", () => {
@@ -66,6 +70,23 @@ test("the orchestrate guide states each standing rule and names docs/orchestrati
 test("docs/orchestrating.md states the same standing rules", () => {
   const doc = readFileSync("docs/orchestrating.md", "utf8");
   for (const rule of ORCHESTRATE_RULES) assert.match(doc, rule);
+});
+
+test("the orchestrate guide names the handbook's public URL, and --full prints the handbook from outside the checkout", () => {
+  assert.ok(ROLE_PROMPTS.orchestrate.includes("https://github.com/pavithran/atelier/blob/main/docs/orchestrating.md"));
+  const full = run(["guide", "--role", "orchestrate", "--full"]);
+  assert.equal(full.status, 0, full.stderr);
+  assert.equal(full.stdout, readFileSync("docs/orchestrating.md", "utf8"));
+  assert.equal(full.stderr, "");
+});
+
+test("atelier guide --full refuses a role other than orchestrate, and no role", () => {
+  for (const args of [["guide", "--role", "build", "--full"], ["guide", "--full"]]) {
+    const r = run(args);
+    assert.equal(r.status, 1, args.join(" "));
+    assert.match(r.stderr, /--full prints the orchestrate handbook/);
+    assert.equal(r.stdout, "");
+  }
 });
 
 test("atelier guide --role refuses a role it does not know, and a --role with no value", () => {
@@ -136,4 +157,19 @@ test("atelier guide --role --project for a project not registered on this Mac di
     rmSync(cfgDir, { recursive: true, force: true });
     rmSync(projectDir, { recursive: true, force: true });
   }
+});
+
+test("under single-family mode the runner's default review role never asks for another family (t394)", async () => {
+  const none = { show: async () => { throw new Error("no override"); } };
+  for (const compare of [null, { target: "abc123" }]) {
+    const single = await reviewRoleText(none, "/ws", compare, "anthropic");
+    assert.doesNotMatch(single, /another family/, single);
+    assert.match(single, /single-family mode/);
+    assert.match(single, /a different anthropic model from every agent that worked on the task/);
+    // Cross-family projects keep the default text unchanged.
+    assert.equal(await reviewRoleText(none, "/ws", compare, null), rolePrompt("review").replace(/\s+$/, ""));
+  }
+  // A project's own review prompt is the owner's text, used as written in either mode.
+  const own = { show: async () => "## Reviewing\n\nThe project's own review instructions.\n" };
+  assert.equal(await reviewRoleText(own, "/ws", { target: "abc123" }, "anthropic"), "## Reviewing\n\nThe project's own review instructions.");
 });

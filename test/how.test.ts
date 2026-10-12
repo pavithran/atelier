@@ -13,7 +13,10 @@ import { LAYERS_CAPTION, LAYERS_LABEL, PLAN_FLOW, PLAN_FLOW_CAPTION, PLAN_FLOW_L
 // a sentence still describes a function's behaviour, which is a reviewer's job.
 
 const root = resolve(".");
-const read = (file: string) => readFileSync(join(root, file), "utf8");
+// src/usage.ts assembles the help from each command's declaration, so code
+// named there is looked for in src/usage/commands/ too.
+const declarations = () => readdirSync(join(root, "src/usage/commands")).map((name) => readFileSync(join(root, "src/usage/commands", name), "utf8")).join("\n");
+const read = (file: string) => readFileSync(join(root, file), "utf8") + (file === "src/usage.ts" ? `\n${declarations()}` : "");
 const named = (symbol: string) => new RegExp(`\\b${symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
 
 function sources(dir: string): string[] {
@@ -64,8 +67,14 @@ test("the review code is called by the ledger and the runner, and the page says 
   // The part brief (src/plans/brief.ts) shares the verdict's finding type and
   // limits, and the CLI reads the reply limit alone, to cut what it keeps of
   // an unparsable reply (t407); neither calls any of the review code.
-  const sharesTypes = new Set([join("src", "plans", "brief.ts"), join("cli", "atelier.mjs")]);
-  const callers = [...sources("src"), ...sources("cli")].filter((file) => !file.startsWith(inside) && !sharesTypes.has(file) && imports.test(read(file)));
+  const sharesTypes = new Set([join("src", "plans", "brief.ts"), join("cli", "commands", "review-unparsable.mjs")]);
+  // The landing's triage before the review (t475) lives in src/review/triage.ts
+  // and is not review code: the landing, the landing Workflow that checks its
+  // binding and the init route that records the project's triage model
+  // import it, and nothing else from src/review.
+  const triageOnly = (file: string) => [join("cli", "land.mjs"), join("src", "landing-workflow.ts"), join("src", "index.ts")].includes(file)
+    && [...read(file).matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*)["'](?:[^"']*\/)?review\/([^"']+)["']/g)].every((m) => m[1] === "triage.ts");
+  const callers = [...sources("src"), ...sources("cli")].filter((file) => !file.startsWith(inside) && !sharesTypes.has(file) && !triageOnly(file) && imports.test(read(file)));
   assert.deepEqual([...callers].sort(), ["cli/runner.mjs", "src/ledger.ts"], "the review code should be called by the ledger and the runner alone");
   const requests = ORCHESTRATOR.find((p) => p.name === "Review requests and runner job")!;
   assert.ok(requests.built);
@@ -228,4 +237,26 @@ test("each diagram label is short enough for its box at the drawn size", () => {
     for (const line of s.records) assert.ok(line.length <= 18, `${s.name}: "${line}" is too long for a 112 unit box`);
     assert.ok(s.moves.length <= 16 && s.command.length <= 12);
   }
+});
+
+// t473: only claimed items and the item a live landing lease names hold core
+// files. Nothing the owner or an agent reads may still say a submitted or
+// accepted item holds them, or that a hold lasts until the item merges.
+test("the How page, help and docs state the current core-file hold rule", () => {
+  const texts: [string, string][] = [
+    ...RULES.map((r): [string, string] => [`rule ${r.title}`, `${r.enforced} ${r.why}`]),
+    ...LOOP.map((s): [string, string] => [`loop ${s.title}`, JSON.stringify(s)]),
+    ["src/usage commands", declarations()],
+    ["src/usage.ts", readFileSync(join(root, "src/usage.ts"), "utf8")],
+    ...["docs/orchestrator.md", "docs/orchestrating.md", "README.md"].map((f): [string, string] => [f, readFileSync(join(root, f), "utf8")]),
+  ];
+  const stale = [/live item(?:'s)? \(claimed, submitted or accepted/, /live task's in a core file/,/one claimed, submitted or accepted/, /a submitted or accepted plan item does/, /(?:merges|merged) or is abandoned/, /until (?:that|the live) item merges/];
+  for (const [where, text] of texts) {
+    const flat = text.replace(/\s+/g, " ");
+    for (const old of stale) assert.doesNotMatch(flat, old, `${where} still states the old core-file hold rule`);
+  }
+  const core = RULES.find((r) => r.title === "Core files are built one change at a time")!;
+  assert.match(core.enforced, /claimed item or of the item named by a live landing lease/);
+  assert.match(core.enforced, /submitted or accepted item that is not landing holds nothing/);
+  assert.match(core.enforced, /once each claimed blocker submits or is released and each landing ends/);
 });

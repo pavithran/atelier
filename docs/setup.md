@@ -89,7 +89,7 @@ dashboard, made before the secrets below so the owner is never locked out:
    ```
 
    These are every path the Worker serves to the signed-in owner: Home, the
-   sign-in page and its token form, Decisions, Studio, Flow, History, the
+   sign-in page, Decisions, Studio, Flow, History, the
    Models and Usage pages and the Models form, the old `/projects` address and
    the showcase form under it, the task forms under `/ui`, and each project's
    area under `/p`. A new owner page needs its path added here.
@@ -122,11 +122,16 @@ audience must be the team and the application, and its email claim must name
 application, does not vouch. Any route that needs a sign-in is refused without
 that vouching, even a request carrying a session cookie, so the pages hold
 even if the Access application stops covering the server. `/login` is behind
-the check too, form and all: the server token cannot be tried without Access's
-sign-in first, which closes the open token form the 2026-10-06 audit noted.
+the check too, and takes no server token there, which closes the open token
+form the 2026-10-06 audit noted.
 The public pages (`/`, `/showcase`, `/how`, `/live.js`), the sign-out form and
-the `/api` routes stay open in the Worker, and signing in takes both, Access first
-and the server token after. With any of the three unset the server stands as
+the `/api` routes stay open in the Worker. Behind Access the owner's verified
+assertion is the sign-in: `/login`, or any owner page opened without a session,
+starts the thirty-day session at once, with no token form. A request from
+another site starts none; the hop back from Access's own prompt gets a page
+that reloads the address from the server's origin, where the session starts.
+Sign out ends the session; the next owner page opened under the same Access
+sign-in starts a new one. With any of the three unset the server stands as
 it always has, without the second check; a value that is set but unusable,
 such as an issuer without `https://`, logs a warning once rather than quietly
 leaving the pages unguarded.
@@ -165,8 +170,10 @@ summary 600, a report or a check's command 500, a check's output 4,000. The
 head a push reports must be a commit hash.
 Creating tasks, owner decisions, project settings, model
 registry access, dispatch configuration and token management require the
-owner token. Agent tokens cannot sign in to the browser. Signing in to the
-browser with the owner token starts a session: a random id, sent only in the
+owner token. Agent tokens cannot sign in to the browser. On a server without
+Cloudflare Access, signing in to the browser means pasting the owner token at
+`/login`; behind Access the owner's Access sign-in starts the session itself
+(above). Either way the session is a random id, sent only in the
 cookie, whose hash the Worker stores with a thirty day expiry it enforces.
 Sign out, in the rail of every page, ends the session at once. The token
 itself is never a cookie. Events from agent
@@ -235,6 +242,87 @@ config entry and then returns. It does not rename a server project (see
 [Renaming a project](owner.md#renaming-a-project)), update its title or policy, or
 push a baseline. The server refuses a new project when its baseline
 repository belongs to another registered project.
+
+## Commit identity
+
+A project's policy names the identity its commits carry (t451,
+`src/commit-identity.ts`):
+
+```sh
+atelier init --commit-name "Project Owner" --commit-email 123+owner@users.noreply.github.com \
+  --agent-email agents@example.com --private-email owner@personal.example
+```
+
+- `--commit-name` and `--commit-email` are the project's own name and address.
+  The server refuses a missing name, an address that is not one, and an
+  address Git guesses from a machine (`user@host.local`, `user@host.(none)`,
+  a bare host name).
+- `--agent-email`, once per address, lists the addresses agents may commit
+  under beside the project's own. Nothing else is allowed by default.
+- `--private-email`, once per address, declares addresses no commit may carry,
+  such as the owner's personal one. Neither the project's address nor an
+  agent's may be one of them.
+- `--public-mirror`, once per remote, names the checkout's remotes that are
+  public mirrors, such as `--public-mirror github`. A project that declares
+  one must have a GitHub no-reply `--commit-email`.
+
+Each flag replaces what is recorded; `--agent-email ""`, `--private-email ""`
+or `--public-mirror ""` alone clears the list, and `--reset` drops the
+identity with the rest of the policy. The fields travel in
+`PUT /api/projects/NAME` as `commitName`, `commitEmail`, `agentEmails`,
+`privateEmails` and `publicMirrors`, and are stored as
+`policy.commitIdentity`. They raise the route level to 24
+(`src/route-level.ts`): `atelier land` and the runner refuse a server below
+it, since one would not record or return the identity.
+
+Where the identity is enforced:
+
+- **Every claim**, of a new clone or a reused one, on any machine, with or
+  without a registered checkout, writes the name and address into the
+  workspace's `.git/config` and keeps the policy in
+  `.git/atelier-identity.json`. A write that does not read back fails the
+  claim. An agent claiming for itself is refused when its environment would
+  commit under another identity (`GIT_AUTHOR_EMAIL`, say).
+- **A runner**, before it starts a builder, resolves the author and committer
+  Git would use in the builder's own environment: `GIT_AUTHOR_*` and
+  `GIT_COMMITTER_*`, then `author.*` and `committer.*`, then `user.*`, then
+  `EMAIL`. A field nothing sets (Git's guess), a guessed address, a declared
+  private one, or one the policy does not allow, refuses the build, naming
+  the setting to fix. The task is released, not counted against the model.
+- **A landing** (`atelier merge`, and `atelier land` through it) checks every
+  commit it would add to the baseline: the task's own, the merge-main and
+  regeneration commits made in the workspace, and the landing's merge commit,
+  which it makes under the project's identity whatever the checkout or its
+  environment says. Commits the baseline already holds are not read. A
+  refusal names the commit and the field.
+- **A public mirror** asks more: `atelier wrap --push` pushes a remote the
+  policy declares in `publicMirrors` only when every commit it lacks carries
+  the project's own no-reply address (`commitEmail`) as author and committer.
+  An agent address allowed for landing is not thereby public, nor is another
+  no-reply address. Remotes not declared are the owner's own and are pushed
+  as before.
+
+### Migrating a project from before t451
+
+A project registered before t451 has no `policy.commitIdentity`. Until the
+owner sets one, a claim warns and copies the registered checkout's identity
+as before, a runner refuses to start a builder, and `atelier merge` refuses to
+land, each naming the command below. To migrate:
+
+1. Read the identity the checkout commits under: `git config user.name` and
+   `git config user.email` in the project checkout.
+2. Run `atelier init --commit-name NAME --commit-email EMAIL` there, adding
+   `--agent-email` for each address the project's agents commit under, and
+   `--private-email` for addresses that must never appear, and
+   `--public-mirror` for each remote that is a public mirror. Until a remote
+   is declared, `atelier wrap --push` checks it as no public mirror.
+3. Claim again (`atelier claim ID`) in any open workspace, so it takes the
+   identity; a runner's next claim does this itself.
+
+History already on the baseline is grandfathered: no check reads it. A task
+whose accepted revision holds commits outside the policy is refused at
+landing; its builder rewrites them under an allowed identity and submits again,
+or the owner allows the address with `--agent-email`.
 
 ## Notifications
 

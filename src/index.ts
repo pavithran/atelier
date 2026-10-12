@@ -1,27 +1,31 @@
-import { assertReviewAllowed } from "./rules.ts";
-import { agentRoute, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
-import { itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
+import { reportLimits, stuckReport, type Snapshot } from "./stuck/report.ts";
+import { parsePostMerge, currentStep } from "./post-merge.ts";
+import { runnerGitRequest } from "./runner-git.ts";
+import { assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed } from "./rules.ts";
+import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
+import { changedPaths, itemDiff, landingOf, measureWorkspace, mergedDiff, renderDiffText, repoReader, type ItemDiff } from "./diff";
 import { scanCommit } from "./secret-scan.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone } from "./time";
-import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
+import { assertNameFree, assertProjectRemovable, LANDING_DETAIL_MAX, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim } from "./ledger.ts";
 import { accessSettings, accessVouches } from "./access.ts";
-import { ROUTE_LEVEL } from "./route-level.ts";
+import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, refusalOf, refusalText } from "./checks.ts";
 import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
-import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, type Evidence, type Item } from "./rules";
+import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, type Evidence, type Item, type OwnerFactor } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
-import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderStudio, buildStanding, standingTasks, STANDING_BRIEFS, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
+import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, type Detail, type ReviewContext, type ProjectView, type HomeView, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
-import { cleanEntry, cleanStatus, type ModelEntry } from "./models/pool";
+import { cleanEntry, cleanNote, cleanStatus, POOL_FAMILIES, type ModelEntry, type PoolFamily } from "./models/pool";
 import { suggestionRecords } from "./models/suggestion-records.ts";
 import { suggestBuilder } from "./models/suggest.ts";
 import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { buildPrecision, precisionWindow } from "./models/precision.ts";
+import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, registeredActing } from "./models/judgement.ts";
 import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
@@ -29,7 +33,9 @@ import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderB
 import { addTally, buildStory, emptyTally, VENDOR_NAMES, type Story } from "./graph";
 import { buildPulse } from "./pulse";
 import { projectKind } from "./kind";
-import { assign, parseRunner, type RunnerOffer } from "./dispatch/rules";
+import { assign, parseRunner, unclaimed, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
+import { attentionFor } from "./attention.ts";
+import { readStanding, type StandingSource } from "./standing-read.ts";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
 import { renderUsage } from "./usage/page.ts";
 import { readGatewayFigures, type GatewayView } from "./usage/gateway.ts";
@@ -45,14 +51,25 @@ import { renderActions } from "./actions-page.ts";
 export { CheckRunner, Egress, Ledger };
 export { LandingWorkflow } from "./landing-workflow.ts";
 import { LANDING_CHECKS_MODES, type LandingChecksMode } from "./landing-workflow.ts";
+import { ENDED, LANDING_CREATE_RECONCILE_MS, replacementFor, terminateConfirmed, type Replacement } from "./landing/replace.ts";
+import { replacementInstanceId } from "./landing/lease-wait.ts";
 import { renderHow } from "./how.ts";
+import { triageSettingRefusal } from "./review/triage.ts";
 
 const WRITE_TTL = 8 * 3600;
 const READ_TTL = 3600;
 
 // `ref` is the project an API path names, resolved once at the entry (see
 // resolveProject); null when the path names none.
-type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null; waitUntil?: (p: Promise<unknown>) => void };
+// `signedIn` is set on a browser request a session cookie from /login
+// answers for, never on one the owner token alone authorises; `access` on
+// one Cloudflare Access vouched for as the owner's (checked at the entry).
+// The override forms need the first and, as the owner's confirmation (t371),
+// the second or the confirmation secret (ownerFactorIn): a session alone is
+// not that confirmation, since without Access the owner token buys one.
+// `acting` is the harness/model an owner-token request names as acting for
+// the owner (X-Atelier-Acting, src/models/judgement.ts), or null.
+type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null; acting?: string | null; waitUntil?: (p: Promise<unknown>) => void; signedIn?: boolean; access?: boolean };
 
 // ── auth ───────────────────────────────────────────────────────────────────
 // The owner bearer token may declare any actor for orchestration. Agent tokens
@@ -79,7 +96,41 @@ type Settings = {
   // as the token's email claim must name it. All three set, and every owner
   // route — /login among them — must carry an assertion Access signed.
   CF_ACCESS_ISS?: string; CF_ACCESS_AUD?: string; CF_ACCESS_OWNER_EMAIL?: string;
+  // The confirmation secret an override needs on a server not behind Access
+  // (t371): a Worker secret the owner types into the task page's override
+  // forms, and never gives a session. Behind Access it is not read: the
+  // owner's Access identity is the factor there (ownerFactorOf).
+  OVERRIDE_SECRET?: string;
 };
+
+// The factor no agent holds, which an override's confirmation rests on
+// (OwnerFactor in src/rules.ts): the Access identity where the server names
+// its Access team, since every owner page then carries one the entry
+// verified; else the confirmation secret where one is set; else none, and
+// no override can be confirmed until one is. The owner token and the browser
+// session it buys at /login are neither.
+function ownerFactorOf(env: Env): OwnerFactor | null {
+  if (accessSettings(env as unknown as Record<string, string | undefined>)) return "access";
+  if ((env as unknown as Settings).OVERRIDE_SECRET?.trim()) return "secret";
+  return null;
+}
+
+// The factor the override forms carry, checked (t371): behind Access, the
+// request's vouched identity (`c.access`, set at the entry); else the secret
+// the form's `confirmation` field holds, compared in constant time. Refused,
+// naming how to confirm on this server, when the form carries no factor, or
+// the server takes none.
+function ownerFactorIn(env: Env, c: Ctx, form: FormData, project: string, id: string): OwnerFactor {
+  const factor = ownerFactorOf(env);
+  const hint = overrideConfirmationHint(project, id, c.url.origin, factor);
+  if (factor === "access" && c.access) return "access";
+  if (factor === "secret") {
+    const given = String(form.get("confirmation") ?? "");
+    if (given && sameString(given, (env as unknown as Settings).OVERRIDE_SECRET!.trim())) return "secret";
+    throw new RuleError("override_unconfirmed", `an override of the independent review needs the confirmation secret, which was ${given ? "not this server's" : "not given"}: ${hint}`, 403);
+  }
+  throw new RuleError("override_unconfirmed", `an override of the independent review needs the owner's confirmation, which ${factor === null ? "this server cannot take" : "this request does not carry"}: ${hint}`, 403);
+}
 
 function thresholds(env: Env): Thresholds {
   return thresholdsFrom(env as unknown as Record<string, string | undefined>);
@@ -245,20 +296,22 @@ const TASK_EVENTS = 300;
 // Where a project stands, from its Ledger: the page and the JSON route share it.
 // Each section reads its own source: items for holders and merges, and the
 // events of the tasks it names, never a window over the whole project's record.
+// What cannot be read is labelled, not fatal (readStanding).
 async function standingOf(env: Env, key: string): Promise<Standing> {
-  const L = ledger(env, key);
-  const now = new Date();
-  const [project, items, inbox] = await Promise.all([L.project(), L.items(), L.inbox(now.toISOString())]);
-  const taskEvents = new Map<string, LedgerEvent[]>();
-  await Promise.all(standingTasks(items).map(async (id) => {
-    try { taskEvents.set(id, (await L.events(id, TASK_EVENTS)) as unknown as LedgerEvent[]); } catch { /* reported as not read */ }
-  }));
-  const ids = [...new Set(inbox.filter((x) => x.kind !== "failing").map((x) => x.itemId))].slice(0, STANDING_BRIEFS);
-  const details = new Map<string, Detail>();
-  await Promise.all(ids.map(async (id) => {
-    try { details.set(id, (await L.detail(id)) as unknown as Detail); } catch { /* the line keeps the inbox's own reason */ }
-  }));
-  return { ...buildStanding(project, items, taskEvents, TASK_EVENTS, inbox, details, now), session: (await L.sessions(1))[0] };
+  const [offers, pool] = await Promise.all([offersOf(env), poolOf(env)]);
+  return readStanding(ledger(env, key) as unknown as StandingSource, offers, pool, TASK_EVENTS, new Date());
+}
+
+// The runner offers as the index recorded them, or null when they could not
+// be read, which the waiting lists say rather than read as no runner.
+async function offersOf(env: Env): Promise<SeenOffer[] | null> {
+  try { return await index(env).runnerOffers(); } catch { return null; }
+}
+// The model pool, which tells whether a protected change has a qualifying
+// reviewer or waits on the owner's override, or null when it could not be
+// read, which leaves that unknown and says so rather than counting none.
+async function poolOf(env: Env): Promise<ModelEntry[] | null> {
+  try { return await index(env).models(); } catch { return null; }
 }
 // Waiting decisions drawn as cards; the rest of the list stays as plain rows.
 const CARD_LIMIT = 12;
@@ -275,7 +328,8 @@ function serverToken(env: Env): string | undefined {
   return (env as unknown as { ATELIER_TOKEN?: string }).ATELIER_TOKEN;
 }
 
-// Browser sessions. Signing in with the owner token issues a fresh random id,
+// Browser sessions. Signing in — with the owner token, or behind Access with
+// the owner's assertion (accessSignIn) — issues a fresh random id,
 // sent only in the cookie; the index Durable Object stores its hash with an
 // expiry, as it stores agent tokens, and every browser request looks the hash
 // up there. The server enforces the expiry, so a copied cookie stops working
@@ -302,12 +356,42 @@ async function endSession(req: Request, env: Env): Promise<string> {
   return `atelier=; ${cookieFlags}; Max-Age=0`;
 }
 
+// Whether a browser request came from another site: a foreign Origin, or
+// Fetch Metadata saying so. A request with neither header (no browser sent
+// it) is judged by the rest of the check, as a form post without Origin is.
+function crossSite(req: Request, url: URL): boolean {
+  const origin = req.headers.get("origin");
+  if (origin !== null && origin !== url.origin) return true;
+  const site = req.headers.get("sec-fetch-site");
+  return site !== null && site !== "same-origin" && site !== "none";
+}
+
+// Signing in through Cloudflare Access (t534): called only for a request
+// whose assertion the entry has verified as the owner's and that holds no
+// session. A same-origin request starts the 30-day session and is answered
+// by `serve` with the cookie set; logout ends it as any other. A request from
+// another site starts nothing: a post is refused, and a page load — the hop
+// back from Access's sign-in is one — gets a page that reloads `path` from
+// this origin, where the session starts.
+async function accessSignIn(req: Request, env: Env, url: URL, path: string, serve: () => Promise<Response>): Promise<Response> {
+  if (crossSite(req, url)) {
+    if (req.method !== "GET" && req.method !== "HEAD") return html("Cross-origin form refused.", 403);
+    return html(renderSignInContinue(/^\/(?![/\\])/.test(path) ? path : "/home"));
+  }
+  const cookie = await startSession(env, Date.now());
+  const served = await serve();
+  const res = new Response(served.body, served);
+  res.headers.append("set-cookie", cookie);
+  return res;
+}
+
 async function authorised(req: Request, env: Env): Promise<"api" | "ui" | AgentToken | null> {
   const want = serverToken(env);
   if (!want) return null;
   const bearer = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
   if (bearer && sameString(bearer, want)) return "api";
-  if (bearer) {
+  if (req.headers.has("authorization")) {
+    if (!bearer) return null;
     const token = await index(env).agentToken(await sha256(bearer));
     return token && tokenActive(token, Date.now()) ? token : null;
   }
@@ -557,6 +641,9 @@ function branchArg(value: unknown): string {
   return value;
 }
 
+// The commit identity's fields as init sends them (src/commit-identity.ts).
+const IDENTITY_FIELDS = ["commitName", "commitEmail", "agentEmails", "privateEmails", "publicMirrors"];
+
 // The approval a policy records, as init sends it: the owner's own text,
 // stored with the policy, so one over its limit is refused, never cut.
 function approvalArg(value: unknown): string | null {
@@ -577,6 +664,16 @@ function reviewBarArg(value: unknown): string | null {
   return text || null;
 }
 
+// The project's triage model (src/review/triage.ts) as init sends it:
+// harness/model under a harness Atelier ships an adapter for; null or ""
+// clears it, and a landing then triages only when it names a model.
+function triageArg(value: unknown): string | null {
+  if (value === null || value === "") return null;
+  const refusal = triageSettingRefusal(value);
+  if (refusal) throw new RuleError("bad_triage", refusal, 400);
+  return value as string;
+}
+
 // The project's review tier (src/review/tier.ts) as init sends it: a list
 // of harness/model actors, or one string of them separated by commas. Blank
 // entries are dropped and repeats kept once, in the owner's order; an empty
@@ -593,6 +690,18 @@ function parseReviewTier(value: unknown): string[] {
   }
   if (out.length > REVIEW_TIER_MAX) throw new RuleError("too_long", `the review tier lists at most ${REVIEW_TIER_MAX} models`, 400);
   return out;
+}
+
+// The company a project runs on alone (`atelier init --single-family`,
+// ProjectPolicy.familyMode): one of the families a model's name is
+// recognised as, in any letter case. Null or "" returns the project to
+// cross-family review (`--cross-family`).
+function singleFamilyArg(value: unknown): PoolFamily | null {
+  if (value === null || value === "") return null;
+  if (typeof value !== "string") throw new RuleError("bad_single_family", `single-family mode names one company, one of ${POOL_FAMILIES.join(", ")}, or "" to return to cross-family review`, 400);
+  const family = value.trim().toLowerCase() as PoolFamily;
+  if (!POOL_FAMILIES.includes(family)) throw new RuleError("bad_single_family", `"${value}" is not a company Atelier recognises models by; single-family mode takes one of ${POOL_FAMILIES.join(", ")}`, 400);
+  return family;
 }
 
 // A token for one repository. `branch` is the project's branch, from
@@ -767,7 +876,7 @@ const TOKEN_GONE = /NOT_FOUND|not found|expired|already revoked/i;
 // it: the holder keeps the item, the token stays recorded, and a retry
 // revokes it.
 async function revoke(env: Env, repo: string | null, tokenId: string | null) {
-  if (!repo || !tokenId) return;
+  if (!repo || !tokenId || tokenId.startsWith("runner:")) return;
   const gone = (err: unknown) => TOKEN_GONE.test(codeOf(err));
   try {
     // A transient failure is retried first (t349); revoking twice is harmless.
@@ -808,6 +917,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (parts.length === 1 && m === "GET") return json(await I.agentTokens());
     if (parts.length === 1 && m === "POST") {
       const options = tokenOptions(body, ownerActor(env), Date.now());
+      if (options.runner) {
+        const ref = await resolveProject(env, options.projects![0]);
+        if (!ref.registered) throw new RuleError("no_project", "runner tokens require an existing project", 400);
+      }
       const token = tokenFromBytes(crypto.getRandomValues(new Uint8Array(32)));
       const hash = await sha256(token);
       const record = { ...options, id: crypto.randomUUID().replaceAll("-", "").slice(0, 16), hash };
@@ -848,7 +961,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     }
     throw new RuleError("not_found", "no such route", 404);
   }
-  if (parts[0] === "inbox" && m === "GET") return json(await inbox(env, c.token));
+  if (parts[0] === "inbox" && m === "GET") {
+    const read = await inbox(env, c.token);
+    const res = json(c.url.searchParams.get("unread") === "1" ? read : read.entries);
+    // Older clients keep the list shape, but a failed read is still labelled.
+    if (read.unread.length) res.headers.set("x-atelier-incomplete", read.unread.slice().sort().join(","));
+    return res;
+  }
   // The model pool requires the owner token. Owner tools may read it and
   // report runner status; changes also require the owner actor.
   if (parts[0] === "models") {
@@ -862,6 +981,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (parts.length === 2 && m === "DELETE") {
       requireOwner(env, actor);
       return json({ removed: await I.removeModel(id) });
+    }
+    if (parts.length === 3 && parts[2] === "notes" && m === "POST") {
+      requireOwner(env, actor);
+      return json(await I.addModelNote(id, cleanNote(body, actor, new Date().toISOString())));
     }
     if (parts.length === 3 && parts[2] === "status" && m === "POST") {
       const runner = parseRunner(req.headers.get("x-atelier-runner"));
@@ -905,8 +1028,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[0] === "reliability" && parts.length === 1 && m === "GET") {
     // `speed` is each model's pace over the window; `atelier runner --usage`
     // prints it, and says so when an older server sends none.
-    const { reliability, speed, events, unread } = await trackRecords(env);
-    const res = json({ events, models: reliabilityJson(reliability), speed });
+    // `judgement` is each acting model's verdicts on findings, decisions and
+    // overrides over its window, with the window's totals.
+    const { sources, reliability, speed, events, unread } = await trackRecords(env);
+    const judgement = buildJudgement(sources, judgementWindow(new Date()), ownerActor(env), await index(env).models());
+    const res = json({ events, models: reliabilityJson(reliability), speed, judgement: { ...judgement, totals: judgementTotals(judgement) } });
     if (unread.length) res.headers.set("x-atelier-incomplete", unread.map((p) => p.name).sort().join(","));
     return res;
   }
@@ -914,9 +1040,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // the project's core files hold carrying `held`, the live item it waits on;
   // a runner POSTs what it can run and gets back the tasks it may claim, with
   // the name to claim under, leaving out every held one (coreHold in
-  // src/dispatch/rules.ts).
+  // src/dispatch/rules.ts). A runner that finds nothing to claim POSTs its
+  // offer with `why: true` (t420), and gets back the listing GET gives, its
+  // token's projects only, each dispatch with why it is not being taken and
+  // those for another runner said as such: a runner token may not GET it.
+  // A runner token gets each entry as id, title, dispatch (its note left
+  // out) and why alone, and only its own refusals and skips among the
+  // reasons: the full item is what GET items/tN refuses it with 403.
   if (parts[0] === "queue" && parts.length === 1 && (m === "GET" || m === "POST")) {
     const offer = m === "POST" ? runnerOffer(body) : null;
+    if (c.token?.runner && (!offer || offer.runner !== c.token.runner)) throw runnerDenied(c.token);
     // Each step's time in milliseconds goes out in a server-timing header
     // (index, projects, total), so a slow poll can be measured live.
     const started = Date.now();
@@ -937,6 +1070,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // over settles it, finishing the commits the dead run made, before
         // it starts new work.
         const L = ledgerOf(env, p);
+        if (c.token?.runner && offer) await L.runnerPoll(c.token, offer);
         const [held, { waiting, reviews }] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), L.queued()]);
         return [...held, ...waiting, ...reviews].map((item) => ({ project: p.name, item }));
       }
@@ -947,16 +1081,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // the claim a dead run left behind is settled before new work starts.
     const queued = lists.flat().sort((a, b) => Number(isHeld(b.item)) - Number(isHeld(a.item)) ||
       (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
-    const result = offer
+    const result = offer && body.why !== true
       ? queued.flatMap(({ project, item }) => {
           if ("held" in item && item.held) return [];
           const a = item.dispatch ? assign(item.dispatch, offer) : null;
           // A held job is offered only as the claim it already is: the
           // assignment must name its holder, or the re-claim would be refused
           // as another's claim (claim guards the runner name; assign the actor).
-          return a && (!c.token || a.actor === actor) && (!isHeld(item) || item.owner === a.actor) ? [{ project, item, ...a }] : [];
+          return a && (!c.token?.runner || !["integrate", "refresh"].includes(item.dispatch?.job ?? "")) && (!c.token || c.token.runner || a.actor === actor) && (!isHeld(item) || item.owner === a.actor) ? [{ project, item, ...a }] : [];
         })
-      : queued;
+      : await queueWhy(env, queued.filter(({ item }) => !isHeld(item)), offer, c.token?.runner ? c.token.runner : null);
     // A project that could not be read is named, so a missing task is never silent.
     const res = json(result);
     if (unreadable.length) res.headers.set("x-atelier-incomplete", unreadable.sort().join(","));
@@ -985,6 +1119,47 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   const project = ref.name;
   const L = ledger(env, ref.key);
 
+  if (parts[2] === "stuck" && parts.length === 3 && m === "GET") {
+    requireOwner(env, actor);
+    let limits;
+    try { limits = reportLimits(Object.fromEntries(c.url.searchParams)); }
+    catch (error) { throw new RuleError("bad_limit", String((error as Error).message), 400); }
+    const now = new Date(), unavailable: string[] = [];
+    async function read<T>(source: string, action: () => Promise<T>): Promise<T | null> {
+      try { return await action(); }
+      catch (error) { unavailable.push(`${source}: ${String((error as Error).message ?? error)}`); return null; }
+    }
+    const [snapshot, offers, runs, projects] = await Promise.all([
+      read<Snapshot>("project ledger", () => L.stuckSnapshot()),
+      read("runner offers", () => index(env).runnerOffers()),
+      read("run reports", () => index(env).runs(Number.MAX_SAFE_INTEGER)),
+      read("project index", () => index(env).projects()),
+    ]);
+    if (snapshot) await Promise.all(snapshot.workflows.map(async (w) => {
+      const status = await read(`Workflow ${w.record.instance}`, async () => (await (await env.LANDING_WORKFLOW.get(w.record.instance)).status()).status);
+      w.status = status ?? "unknown";
+      if (status === "unknown") unavailable.push(`Workflow ${w.record.instance}: indeterminate status`);
+    }));
+    const active: string[] = [];
+    let jobsAvailable = projects !== null;
+    if (projects) await Promise.all(projects.map(async (p) => {
+      const other = p.key === ref.key ? snapshot : await read<Snapshot>(`active jobs ${p.name}`, () => ledgerOf(env, p).stuckSnapshot());
+      if (!other) { jobsAvailable = false; return; }
+      for (const i of other.items) if (i.runner && i.owner && i.state === "claimed") active.push(i.runner);
+      for (const r of other.reviews) if (r.runner) active.push(r.runner);
+    }));
+    return json(stuckReport(project, c.url.origin, now, limits, snapshot, offers, runs, jobsAvailable ? active : null, unavailable));
+  }
+
+  if (parts[2] === "reviewers") {
+    requireOwner(env, actor);
+    if (parts.length === 3 && m === "GET") return json(await L.reviewerAdmissions());
+    if (parts.length === 4 && (m === "PUT" || m === "DELETE")) {
+      return json(await L.admitReviewer(parts[3], m === "PUT", body.reason, actor, await index(env).models()));
+    }
+    throw new RuleError("not_found", "no such reviewer admission route", 404);
+  }
+
   if (parts.length === 2 && m === "PUT") {
     requireOwner(env, actor);
     // A name is new when no project is registered under it and no Ledger,
@@ -1006,6 +1181,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       name: project, repo, reset: body.reset === true,
       ...(branch ? { branch } : {}),
       ...(has("title") ? { title: cleanTitle(body.title) ?? null } : {}),
+      ...(has("prepare") ? { prepare: (() => {
+        const value = body.prepare;
+        if (value === null || value === "") return null;
+        if (!value || typeof value !== "object" || Array.isArray(value)) throw new RuleError("bad_prepare", "prepare must declare command, inputs and outputs, or be empty to clear it", 400);
+        return { command: value.command, inputs: value.inputs, outputs: value.outputs,
+          ...(value.declaration !== undefined ? { declaration: parseDeclarations([value.declaration])[0] } : {}) };
+      })() } : {}),
+      ...(has("postMerge") ? { postMerge: parsePostMerge(body.postMerge, actor, new Date().toISOString()) } : {}),
       ...(has("checks") ? { checks: asStrings(body.checks, "checks") } : {}),
       ...(has("checkClasses") ? { checkClasses: parseDeclarations(body.checkClasses) } : {}),
       ...(has("checkPaths") ? { checkPaths: parseCheckPaths(body.checkPaths) } : {}),
@@ -1021,6 +1204,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // What may block a review, stated in every review brief: text, or
       // null or "" to clear it and state the default bar.
       ...(has("reviewBar") ? { reviewBar: reviewBarArg(body.reviewBar) } : {}),
+      // The model that triages a landing before its review (t475):
+      // harness/model, or null or "" to clear it.
+      ...(has("triage") ? { triage: triageArg(body.triage) } : {}),
       // The top review tier: harness/model actors, or [] or "" to clear it.
       ...(has("reviewTier") ? { reviewTier: body.reviewTier === null ? [] : parseReviewTier(body.reviewTier) } : {}),
       ...(has("protected") ? { protected: asStrings(body.protected, "protected") } : {}),
@@ -1028,10 +1214,20 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       ...(has("execution") ? { execution: parseExecution(body.execution) } : {}),
       ...(has("eligible") ? { eligible: asStrings(body.eligible, "eligible") } : {}),
       ...(has("refuseOverlap") ? { refuseOverlap: Boolean(body.refuseOverlap) } : {}),
+      ...(has("requireCriteria") ? { requireCriteria: Boolean(body.requireCriteria) } : {}),
       // The core-file globs the queue holds overlapping dispatches on; [] clears them.
       ...(has("coreFiles") ? { coreFiles: asStrings(body.coreFiles, "coreFiles") } : {}),
       ...(has("sandboxOnly") ? { sandboxOnly: Boolean(body.sandboxOnly) } : {}),
+      // Overrides of the independent review refused in this project (t371).
+      ...(has("noOverride") ? { noOverride: Boolean(body.noOverride) } : {}),
       ...(has("approval") ? { approval: approvalArg(body.approval) } : {}),
+      // The model policy (t394): a company to run on alone, or null or ""
+      // to return to cross-family review; the switch records who made it.
+      ...(has("singleFamily") ? { familyMode: { single: singleFamilyArg(body.singleFamily), by: actor } } : {}),
+      // The project's commit identity (t451): each field given replaces the
+      // recorded one, and the whole is checked as the policy is merged
+      // (settleCommitIdentity), so an invalid one is refused before anything is made.
+      ...(IDENTITY_FIELDS.some(has) ? { commitIdentity: Object.fromEntries(IDENTITY_FIELDS.filter(has).map((k) => [k, body[k]])) } : {}),
     };
     // A check that is not read-only is refused before the baseline is made;
     // the Ledger decides the same again when it records the init.
@@ -1060,6 +1256,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     return json({ removed: true });
   }
   if (parts.length === 2 && m === "GET") {
+    // Runner clients need policy/configuration here, not unrelated tasks or
+    // their history. Job detail routes below enforce the claim binding.
+    if (c.token?.runner) return json({ project: await L.project(), items: [], events: [] });
     return json({ project: await L.project(), items: await L.items(), events: await L.events(undefined, 50) });
   }
   // The owner gives the project a new name. The index decides and refuses a
@@ -1113,14 +1312,59 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   // place in the queue and answers the lease and the queue as the server
   // sees them (with leave: true it gives up its place instead), and {
   // cancel: true, item } releases that task's lease, answering which task
-  // held it since when, and leaves another task's lease alone.
+  // held it since when, and leaves another task's lease alone. A call that
+  // names the landing Workflow `instance` it acts for (the Workflow
+  // executor's) is refused once another instance replaced it (t430).
   if (parts[2] === "landing-lease" && parts.length === 3) {
-    if (m === "GET") return json({ lease: await L.readProjectLanding(), waiting: await L.readLandingQueue() });
+    if (m === "GET") {
+      const postMerge = await L.activePostMerge();
+      return json({ lease: await L.readProjectLanding(), waiting: await L.readLandingQueue(), ...(postMerge ? { postMerge } : {}) });
+    }
     requireOwner(env, actor);
-    if (body.cancel === true) return json(await L.cancelProjectLanding(String(body.item ?? ""), actor));
-    if (body.renew === true) return json({ lease: await L.renewProjectLanding(String(body.item ?? ""), actor) });
-    if (body.queued === true) return json(await L.queueProjectLanding(String(body.item ?? ""), actor, body.leave === true));
-    return json(await L.beginProjectLanding(String(body.item ?? ""), actor));
+    const instance = typeof body.instance === "string" && body.instance ? body.instance : undefined;
+    if (body.cancel === true) return json(await L.cancelProjectLanding(String(body.item ?? ""), actor, instance));
+    if (body.renew === true) return json({ lease: await L.renewProjectLanding(String(body.item ?? ""), actor, instance) });
+    if (body.queued === true) return json(await L.queueProjectLanding(String(body.item ?? ""), actor, body.leave === true, instance));
+    return json(await L.beginProjectLanding(String(body.item ?? ""), actor, instance));
+  }
+  if (parts[2] === "post-merge" && parts.length === 4) {
+    const item = parts[3];
+    if (m === "GET") return json({ run: await L.postMergeRun(item) });
+    requireOwner(env, actor);
+    const run = await L.postMergeRun(item);
+    if (!run || run.id !== body.run) throw new RuleError("stale_run", "post-merge run changed", 409);
+    if (body.action === "prepare") {
+      if (!run.after) throw new RuleError("post_merge_blocked", "merge not recorded", 409);
+      using repo = await env.ARTIFACTS.get((await L.project()).repo);
+      const before = await repo.readCommit(run.before), after = await repo.readCommit(run.after);
+      if (!before || !after) throw new RuleError("missing_history", "post-merge diff history is unavailable", 409);
+      const paths = await changedPaths(repoReader(repo), before.treeHash, after.treeHash);
+      return json({ run: await L.preparePostMerge(item, run.id, paths, actor) });
+    }
+    let deployment;
+    const step = run.policy.steps.find(s => s.name === currentStep(run)?.name);
+    if (step?.class === "deploy" && ((body.action === "finish" && body.passed === true) || (body.action === "reconcile" && body.resolution === "completed"))) {
+      // Observe independently of the executor's command result. No owner
+      // credential is sent to the version endpoint and redirects are refused.
+      using repo = await env.ARTIFACTS.get((await L.project()).repo);
+      const commit = await repo.readCommit(run.after!);
+      if (!commit) throw new RuleError("missing_history", "deployment source unavailable", 409);
+      const node = await walk(repoReader(repo), commit.treeHash, ["src", "route-level.ts"]);
+      let requiredLevel = ROUTE_LEVEL;
+      if (node) {
+        if (node.kind !== "blob") throw new RuleError("missing_history", "deployment route level is not a file", 409);
+        const blob = await repo.readBlob(node.hash);
+        if (!blob || blob.size > 65536) throw new RuleError("missing_history", "deployment route level is unavailable", 409);
+        const level = /export\s+const\s+ROUTE_LEVEL\s*=\s*(\d+)\s*;/.exec(await blob.text());
+        if (!level) throw new RuleError("missing_history", "deployment route level cannot be read", 409);
+        requiredLevel = Math.max(requiredLevel, Number(level[1]));
+      }
+      const response = await fetch(step.versionUrl!, { redirect: "error", signal: AbortSignal.timeout(15000) });
+      const v = await response.json() as { commit?: unknown; routeLevel?: unknown };
+      if (!response.ok || v.commit !== run.after || !Number.isInteger(v.routeLevel) || Number(v.routeLevel) < requiredLevel) throw new RuleError("deployment_unverified", "deployment does not report the pinned commit and required route level", 409);
+      deployment = { commit: String(v.commit), routeLevel: Number(v.routeLevel) };
+    }
+    return json({ run: await L.postMergeAction(item, actor, { run: String(body.run), action: String(body.action), attempt: typeof body.attempt === "string" ? body.attempt : undefined, passed: body.passed === true, output: body.output, commandOutcome: body.commandOutcome === "passed" ? "passed" : "failed", publication: body.publication as { source: string; remote: string | null; commits: number } | undefined, reason: body.reason, resolution: body.resolution }, deployment) });
   }
   if (parts[2] === "baseline-token" && m === "POST") {
     const scope = body.scope === "write" ? "write" : "read";
@@ -1141,14 +1385,23 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "decisions") {
     if (parts.length === 3 && m === "GET") return json({ decisions: await L.decisions() });
     requireOwner(env, actor);
-    if (parts.length === 3 && m === "POST") return json(await L.recordDecision(body, actor), 201);
-    if (parts.length === 5 && parts[4] === "withdraw" && m === "POST") return json(await L.withdrawDecision(parts[3], actor, body.note));
+    if (parts.length === 3 && m === "POST") return json(await L.recordDecision(body, actor, c.acting ?? null), 201);
+    if (parts.length === 5 && parts[4] === "withdraw" && m === "POST") return json(await L.withdrawDecision(parts[3], actor, body.note, c.acting ?? null));
     throw new RuleError("not_found", "no such route", 404);
   }
   // Protected actions: the owner's approvals and the steps a ship ran (src/actions-api.ts).
   if (parts[2] === "actions") {
     const r = await actionsApi(L, m, parts.slice(3), body, actor, ownerActor(env), async (commit) => onMainLine(env, (await L.project()).repo, commit));
     return json(r.data, r.status);
+  }
+  if (parts[2] === "board" && parts.length === 3 && m === "GET") return json(await L.board());
+  if (parts[2] === "areas") {
+    if (parts.length === 3 && m === "GET") return json(await L.areas());
+    requireOwner(env, actor);
+    if (parts.length === 3 && m === "POST") return json(await L.saveArea(actor, body.name, body.purpose), 201);
+    if (parts.length === 4 && m === "POST") return json(await L.saveArea(actor, body.name, body.purpose, parts[3]));
+    if (parts.length === 4 && m === "DELETE") { await L.removeArea(parts[3], actor); return json({ removed: parts[3] }); }
+    throw new RuleError("not_found", "no such route", 404);
   }
   if (parts[2] !== "items") throw new RuleError("not_found", "no such route", 404);
   // A plan is an item too: { kind: "plan", goal, scope?, planner? } starts
@@ -1159,7 +1412,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (body.planner !== undefined && typeof body.planner !== "string") throw new RuleError("bad_actor", "planner must be harness/model", 400);
     return json(await L.newPlan(body.goal, asStrings(body.scope, "scope"), actor, body.planner ?? null, await index(env).models()), 201);
   }
-  if (parts.length === 3 && m === "POST") return json(await L.newItem(String(body.title ?? ""), asStrings(body.scope, "scope"), actor, itemFields(body)), 201);
+  if (parts.length === 3 && m === "POST") {
+    const fields = itemFields(body);
+    assertCriteriaAllowed((await L.project().catch(() => null))?.policy ?? {}, fields.accept);
+    return json(await L.newItem(String(body.title ?? ""), asStrings(body.scope, "scope"), actor, fields), 201);
+  }
   if (parts.length === 3 && m === "GET") return json(await L.items());
 
   const id = parts[3];
@@ -1226,8 +1483,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     requireOwner(env, actor);
     const remembered = await L.landingWorkflowOf(id);
     if (!remembered) return json({ instance: null, status: null, stage: null });
-    const status = await env.LANDING_WORKFLOW.get(remembered.instance).then((i) => i.status()).catch(() => null);
-    return json({ ...remembered, status });
+    let status: InstanceStatus | null = null;
+    let readError: string | undefined;
+    try {
+      status = await (await env.LANDING_WORKFLOW.get(remembered.instance)).status();
+      await L.observeLandingWorkflowStatus(id, remembered.instance, status);
+    } catch (error) {
+      readError = String((error as Error)?.message ?? error);
+    }
+    const queued = (await L.readLandingQueue()).some((row) => row.item === id);
+    return json({ ...remembered, status, lastStatus: status && status.status !== "unknown" ? { status: status.status, ...(status.error ? { error: { name: status.error.name.slice(0, 200), message: status.error.message.slice(0, LANDING_DETAIL_MAX) } } : {}) } : remembered.lastStatus ?? null, ...(readError ? { readError } : {}), queued });
   }
   if (m !== "POST") throw new RuleError("not_found", "no such route", 404);
 
@@ -1237,6 +1502,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // predicted conflict sends the part back to its builder without a runner
       // trip (docs/orchestrator.md, section 5).
       const before = await L.item(id);
+      assertNotTerminal(before);
       if (before.kind === "plan" && before.dispatch?.job === "integrate" && before.dispatch.part && actor === INTEGRATOR) {
         const conflict = await predictConflict(env, L, before);
         if (conflict) {
@@ -1244,7 +1510,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           throw new RuleError("conflict_predicted", `the part conflicts with the plan's branch: ${conflict}; it was sent back to its builder`, 409);
         }
       }
-      const { item, needsFork, generation, replaces } = await L.claim(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token);
+      const { item, needsFork, generation, replaces } = await L.claim(id, actor, parseRunner(req.headers.get("x-atelier-runner")), !!c.token, c.token?.runner ? c.token : undefined);
       const p = await L.project();
       let fork = item.fork, moved = false;
       if (needsFork) {
@@ -1270,7 +1536,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // A give-up that fails is logged, and the claim's own failure is
           // answered: the claimer still holds an item with no fork, which its
           // retry forks (t349).
-          await L.unclaim(id, actor, codeOf(err).trim(), !!c.token).catch((e) => console.error(errorLine(`give up ${id} after a failed fork`, e)));
+          await L.unclaim(id, actor, codeOf(err).trim(), !!c.token, generation).catch((e) => console.error(errorLine(`give up ${id} after a failed fork`, e)));
           throw err;
         }
       } else {
@@ -1280,7 +1546,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         try {
           moved = await movePartFork(env, L, item, p, actor, !!c.token);
         } catch (err) {
-          if (before.owner !== actor) await L.unclaim(id, actor, codeOf(err).trim(), !!c.token);
+          if (before.owner !== actor) await L.unclaim(id, actor, codeOf(err).trim(), !!c.token, generation);
           throw err;
         }
       }
@@ -1296,6 +1562,20 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // its tokens with the repository it replaced.
       if (!moved) await revoke(env, fork, replaces);
       const branch = await projectBranch(env, p);
+      if (c.token?.runner) {
+        const secret = tokenFromBytes(crypto.getRandomValues(new Uint8Array(32)));
+        const hash = await sha256(secret);
+        if (!await L.recordRunnerGit(id, actor, generation, replaces, hash, c.token)) {
+          throw new RuleError("claim_superseded", "the claim changed before its Git credential was recorded", 409);
+        }
+        const b = await mint(env, p.repo, "read", branch);
+        return json({ item: await L.item(id), workspace: {
+          remote: `${c.url.origin}/git/runner/${encodeURIComponent(ref.key)}/${id}.git`, token: secret,
+          expiresAt: c.token.expiresAt, defaultBranch: branch,
+        }, baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
+        // A runner's claim sets the same identity as any other (t451).
+        commitIdentity: p.policy.commitIdentity ?? null });
+      }
       const w = await mint(env, fork!, "write", branch);
       // The Ledger records the token only if this claim still stands (see
       // recordToken). If it does not, the token is revoked and never
@@ -1309,6 +1589,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         item: await L.item(id),
         workspace: { remote: w.remote, token: w.token, expiresAt: w.expiresAt, defaultBranch: w.defaultBranch },
         baseline: { remote: b.remote, token: b.token, defaultBranch: b.defaultBranch },
+        // What the claim writes into the workspace's Git config, on whatever
+        // machine it runs (t451); null when the project names none yet.
+        commitIdentity: p.policy.commitIdentity ?? null,
       });
     }
     case "read-token": {
@@ -1387,6 +1670,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         by: actor,
         at: new Date().toISOString(),
         ...(check ? { changedPaths: null, outputTail, where: "runner" as const } : {}),
+        // The load the caller read when the check started (t403); a number or
+        // nothing, never a value the caller made up for it.
+        ...(check && Number.isFinite(Number(body.load)) ? { load: Number(body.load) } : {}),
       };
       if (!e.claim) throw new RuleError("bad_claim", "evidence needs a claim", 400);
       // Atelier counts no result from a command that is never read-only.
@@ -1438,7 +1724,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (!item.fork || !item.head) throw new RuleError("nothing_pushed", `${id} has nothing pushed to check`);
       const p = await L.project();
       if (!p.policy.checks.length) throw new RuleError("no_checks", `${project} has no required checks`);
-      const refused = p.policy.checks.flatMap((claim) => { const why = refusalOf(claim); return why ? [refusalText(claim, why)] : []; });
+      const refused = [...(p.policy.prepare ? [p.policy.prepare.command] : []), ...p.policy.checks].flatMap((claim) => { const why = refusalOf(claim); return why ? [refusalText(claim, why)] : []; });
       if (refused.length) throw new RuleError("not_read_only", `${refused.join(". ")}. The project owner replaces it with atelier init --check; until then the container runs nothing.`, 409);
       // The run is named and the runner records to the Ledger by the key, so a
       // run started under one of the project's names is read under any other.
@@ -1446,6 +1732,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const request: RunRequest = {
         runId, project: ref.key, itemId: id, baselineRepo: await baseRepo(env, L, item, p.repo), fork: item.fork, head: item.head,
         checks: p.policy.checks, requestedBy: actor,
+        ...(p.policy.prepare ? { prepare: p.policy.prepare } : {}),
         ...(body.merged === true ? { merged: true } : {}),
       };
       if (p.policy.checkPaths?.length) request.checkPaths = p.policy.checkPaths;
@@ -1455,13 +1742,26 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json({ runId, state }, 202);
     }
     case "dispatch": {
+      assertNotTerminal(await L.item(id));
+      // --overlap-ok alone on a waiting dispatch releases its hold and keeps
+      // everything else. An explicit snapshot is checked atomically even if
+      // a runner has since claimed it; an already-owned task is redispatched.
+      if (body.retain === true) {
+        requireOwner(env, actor);
+        const waiting = await L.item(id);
+        if (body.retainAt !== undefined || (waiting.state === "open" && !waiting.owner && waiting.dispatch)) {
+          return json(await L.releaseHold(id, actor, { ...body, retainAt: body.retainAt !== undefined ? body.retainAt : waiting.dispatch!.at }));
+        }
+      }
       let suggestion;
       // atelier dispatch with no --agent asks for the suggestion; a dispatch
       // that names no agent without asking stays open to any runner's agent.
-      if (body.suggest === true && !body.agent && body.job !== "merge-main") {
+      // An overlap override of an existing dispatch keeps its builder
+      // restrictions unless named, so it asks for no suggestion.
+      if (body.suggest === true && !body.agent && body.job !== "merge-main" && !(body.overlapOk === true && (await L.item(id)).dispatch)) {
         requireOwner(env, actor);
         const [pool, track, item, p] = await Promise.all([index(env).models(), suggestionRecords(index(env), (p) => ledgerOf(env, p)), L.item(id), L.project()]);
-        suggestion = suggestBuilder({ ...track, item, project: p.name, pool, policy: p.policy, owner: ownerActor(env) }, body);
+        suggestion = suggestBuilder({ ...track, item, project: ref.key, pool, policy: p.policy, owner: ownerActor(env) }, body);
         const slash = suggestion.actor.indexOf("/");
         body.agent = suggestion.actor.slice(0, slash);
         body.model = suggestion.actor.slice(slash + 1);
@@ -1488,9 +1788,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       return json(await L.undispatch(id, actor));
     // The owner's framing of a task: agentRoute gives an agent token no edit
     // route, and requireOwner refuses any other actor the owner token names.
-    case "edit":
+    case "edit": {
       requireOwner(env, actor);
-      return json(await L.editItem(id, actor, { ...itemFields(body), ...(body.title !== undefined ? { title: titleLine(body.title) } : {}) }, body.scope !== undefined ? asStrings(body.scope, "scope") : undefined));
+      const fields = { ...itemFields(body), ...(body.title !== undefined ? { title: titleLine(body.title) } : {}) };
+      if (fields.accept !== undefined) assertCriteriaAllowed((await L.project().catch(() => null))?.policy ?? {}, fields.accept);
+      return json(await L.editItem(id, actor, fields, body.scope !== undefined ? asStrings(body.scope, "scope") : undefined));
+    }
     // The holder or the owner blocks and unblocks; the Ledger checks which.
     case "block":
       return json(await L.block(id, actor, body.reason, !!c.token));
@@ -1550,9 +1853,53 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       }
       return json({ ...claim, ...(diffRef ? { diffRef } : {}) });
     }
+    case "review-renew": {
+      await L.renewReview(id, actor, Number(body.request));
+      return json({ renewed: true });
+    }
     case "review-release": {
-      await L.releaseReview(id, actor, String(body.note ?? ""), !!c.token);
+      await L.releaseReview(id, actor, String(body.note ?? ""), !!c.token, body.request);
       return json({ released: true });
+    }
+    // A runner's word that it will not serve the review of this head (t353):
+    // the owner token the runner holds authorises it, as the run reports are,
+    // or a runner token does, for a review job its poll was offered, under
+    // that job's actor (the gateway checks the offer as it checks a run
+    // report, and sets the runner's name from the token). The runner's name
+    // names it, so the landing waiting on the review can say, by runner,
+    // when every runner that offers the reviewer has skipped.
+    case "review-skip": {
+      if (!c.token?.runner) requireOwner(env, actor);
+      const runner = parseRunner(req.headers.get("x-atelier-runner"));
+      if (!runner) throw new RuleError("bad_runner", "a review skip names its runner in X-Atelier-Runner", 400);
+      const head = String(body.head ?? "");
+      if (!/^[a-f0-9]{40,64}$/.test(head)) throw new RuleError("bad_head", "a review skip names the head it refused as a full commit hash", 400);
+      // The request's number, as the queue gave it: a skip is counted
+      // against that request alone, never against a later one at the same head.
+      const request = body.request;
+      if (typeof request !== "number" || !Number.isInteger(request) || request < 1) throw new RuleError("bad_request", "a review skip names the review request it refused, by number", 400);
+      await L.recordReviewSkip(id, request, head, runner.runner, actor, String(body.note ?? ""), !!c.token);
+      return json({ skipped: true });
+    }
+    // A runner's word that it gives up a dispatched build or plan job under
+    // its current dispatch (t420): after its failed runs (`failures`), or
+    // after workspace, git or harness failures in a row (`infrastructure`),
+    // which send no run report. Authorised as review-skip is: the owner
+    // token the runner holds, or a runner token for a job its poll was
+    // offered, under that job's actor. Kept on the task, so status and show
+    // name the runner that passes it by and the command that releases it.
+    case "run-skip": {
+      if (!c.token?.runner) requireOwner(env, actor);
+      const runner = parseRunner(req.headers.get("x-atelier-runner"));
+      if (!runner) throw new RuleError("bad_runner", "a run skip names its runner in X-Atelier-Runner", 400);
+      const kind = body.kind;
+      if (kind !== "failures" && kind !== "infrastructure") throw new RuleError("bad_kind", "a run skip's kind is failures or infrastructure", 400);
+      const failures = body.failures;
+      if (typeof failures !== "number" || !Number.isInteger(failures) || failures < 1 || failures > 1000) throw new RuleError("bad_failures", "a run skip names how many failures it gave up after", 400);
+      // Under a runner token the job's actor is the caller, checked at the gateway.
+      const by = c.token?.runner ? actor : String(body.actor ?? "");
+      if (!validActor(by)) throw new RuleError("bad_actor", "a run skip names the harness/model the job ran under", 400);
+      return json({ kept: await L.recordRunSkip(id, runner.runner, by, kind, failures, String(body.note ?? "")) });
     }
     // t407: a reviewer's reply parseVerdict could not read is kept on the
     // task, its last VERDICT_LIMITS.reply characters with the reviewer and
@@ -1563,7 +1910,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review-unparsable": {
       const head = String(body.head ?? "");
       if (!/^[a-f0-9]{40,64}$/.test(head)) throw new RuleError("bad_head", "--head must be the full revision the review read", 400);
-      return json({ kept: true, ...await L.unparsableReview(id, actor, head, String(body.note ?? ""), String(body.reply ?? ""), !!c.token) });
+      return json({ kept: true, ...await L.unparsableReview(id, actor, head, String(body.note ?? ""), String(body.reply ?? ""), !!c.token, body.request) });
     }
     // A review request for an item outside a plan (atelier land): the owner
     // asks for the independent review the gate needs, naming the reviewer or
@@ -1573,8 +1920,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "review-request": {
       requireOwner(env, actor);
       const reviewer = body.reviewer === undefined || body.reviewer === null ? null : String(body.reviewer);
-      const track = reviewer === null ? await suggestionRecords(index(env), (p) => ledgerOf(env, p)) : undefined;
-      return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true, false, track));
+      const track = reviewer === null ? { ...await suggestionRecords(index(env), (p) => ledgerOf(env, p)), project: ref.key } : undefined;
+      // The live offers go with the ask (t353): a request at this head every
+      // runner offering its reviewer has skipped is withdrawn and asked anew.
+      return json(await L.requestReview(id, actor, reviewer, await index(env).models(), body.wanted === true, false, track, await index(env).runnerOffers()));
     }
     // One recorded step of a landing (atelier land): what it was, how long it
     // took and what it settled, for the integration record (t186).
@@ -1598,6 +1947,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "landing-workflow": {
       requireOwner(env, actor);
       const remembered = await L.landingWorkflowOf(id);
+      const replacementReport = (record: Pick<NonNullable<typeof remembered>, "instance" | "replaced">) => record.replaced ? { replaced: { ...record.replaced, to: record.instance } } : {};
       if (body.event !== undefined) {
         const event = body.event as { type?: unknown; payload?: unknown };
         if (!remembered) throw new RuleError("no_workflow", `${id} has no landing Workflow; start one with atelier land ${id} --workflow`, 404);
@@ -1605,6 +1955,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // the workspace steps, and the owner's resume after a conflict.
         if (event.type !== "workspace" && event.type !== "resume") throw new RuleError("bad_event", "a landing Workflow takes a workspace or a resume event", 400);
         if (typeof event.payload !== "object" || event.payload === null || !Number.isInteger((event.payload as { round?: unknown }).round)) throw new RuleError("bad_event", "an event's payload names the round it answers", 400);
+        // The executor names the instance it attached to (t430): one attached
+        // to an instance since replaced cannot advance the replacement with a
+        // report or a resume meant for the old one.
+        if (typeof body.instance !== "string" || !body.instance) throw new RuleError("bad_event", `an event names the instance it answers ({ event, instance }); update the atelier command and run atelier land ${id} --workflow again`, 400);
+        if (body.instance !== remembered.instance) throw new RuleError("stale_landing", `${body.instance} is no longer ${id}'s landing Workflow: ${remembered.instance} replaced it${remembered.replaced ? ` (${remembered.replaced.reason}: ${remembered.replaced.detail})` : ""}, so the ${event.type} event is not sent. Run atelier land ${id} --workflow again to attach to it`, 409);
         const type: string = event.type;
         try {
           await env.LANDING_WORKFLOW.get(remembered.instance).then((i) => i.sendEvent({ type, payload: event.payload ?? {} }));
@@ -1618,10 +1973,83 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // runs no checks on its machine.
       if (body.checks !== undefined && !LANDING_CHECKS_MODES.includes(body.checks as LandingChecksMode)) throw new RuleError("bad_checks", "checks must be local or container", 400);
       const checks: LandingChecksMode = body.checks === "local" ? "local" : "container";
-      const live = async () => remembered ? await env.LANDING_WORKFLOW.get(remembered.instance).then((i) => i.status()).catch(() => null) : null;
-      const standing = await live();
-      if (standing && ["queued", "running", "waiting", "waitingForPause", "paused"].includes(standing.status)) {
-        return json({ ...remembered!, created: false, status: standing });
+      const named = typeof body.reviewer === "string" && body.reviewer ? body.reviewer : null;
+      let standing: InstanceStatus | null = null;
+      let handle: WorkflowInstance | undefined;
+      // The instance the record names when this request decides to start
+      // one: the remembered one, or none for the first start.
+      const expected = remembered?.instance ?? null;
+      if (remembered) {
+        try {
+          // Only a confirmed missing instance from get() permits replacement.
+          // A status() failure still leaves an executor that might be running.
+          try {
+            handle = await env.LANDING_WORKFLOW.get(remembered.instance);
+          } catch (error) {
+            if (!/\binstance\.not_found$/.test(String((error as Error)?.message ?? error))) throw error;
+            // A claimed successor may not have reached create yet. Missing
+            // alone cannot distinguish that from an expired instance. Keep
+            // ownership intact unless an ended status or terminal stage was
+            // recorded. The Workflow writes done/failed itself, including for
+            // older records with no observed status, before retention purges it.
+            if (remembered.lastStatus && ENDED.includes(remembered.lastStatus.status)) {
+              standing = remembered.lastStatus;
+            } else if (remembered.stage === "done" || remembered.stage === "failed") {
+              standing = { status: remembered.stage === "done" ? "complete" : "errored" };
+            } else if (!remembered.lastStatus && remembered.stage === "lease" && Date.now() - Date.parse(remembered.at) >= LANDING_CREATE_RECONCILE_MS) {
+              // Recover a claimant that died before create, using its SAME ID
+              // and recorded options. Concurrent retries (or a delayed owner)
+              // cannot create a second instance with this ID. Never turn an
+              // unreadable status into permission to create another executor.
+              try {
+                handle = await env.LANDING_WORKFLOW.create({
+                  id: remembered.instance,
+                  params: { project, key: ref.key, item: id, actor, origin: c.url.origin,
+                    checks: remembered.checks ?? "container",
+                    ...(remembered.reviewer ? { reviewer: remembered.reviewer } : {}),
+                    ...(remembered.noReview ? { noReview: true } : {}),
+                    ...(remembered.triage ? { triage: true } : {}),
+                  },
+                });
+              } catch {
+                // A competing create may have won; only a readable instance
+                // confirms that. Keep the claim on any ambiguous failure.
+                handle = await env.LANDING_WORKFLOW.get(remembered.instance);
+              }
+            } else {
+              throw new Error("instance is missing but its end is not confirmed; its create may still be in progress");
+            }
+          }
+          if (handle) {
+            standing = await handle.status();
+            await L.observeLandingWorkflowStatus(id, remembered.instance, standing);
+          }
+        } catch (error) {
+          // A failed read does not prove the instance ended. Never start a
+          // second executor beside a landing whose state we cannot establish.
+          throw new RuleError("workflow_unreadable", `the landing Workflow ${remembered.instance} cannot be read: ${String((error as Error)?.message ?? error)}; last status: ${remembered.lastStatus?.status ?? "unknown"}; last error: ${remembered.lastStatus?.error?.message ?? remembered.detail ?? "none recorded"}; ${id} ${(await L.readLandingQueue()).some((row) => row.item === id) ? "is still queued" : "is not queued"}`, 503);
+        }
+      }
+      // A live instance is attached to, unless it has waited for the lease
+      // past the limit or the owner names an eligible reviewer in place of
+      // an ineligible remembered one (t430, src/landing/replace.ts): then it
+      // is terminated, its end confirmed, and replaced below.
+      let replacing: (Replacement & { from: string }) | null = null;
+      if (remembered && standing && ENDED.includes(standing.status)) {
+        const decision = replacementFor(remembered, named, await L.item(id), Date.now());
+        if (decision.replace) replacing = { ...decision.replace, from: remembered.instance };
+      }
+      if (standing && handle && remembered && !ENDED.includes(standing.status)) {
+        const decision = replacementFor(remembered, named, await L.item(id), Date.now());
+        if (!decision.replace) {
+          return json({ ...remembered, created: false, status: standing, ...replacementReport(remembered), ...(decision.refused ? { reviewerRefused: decision.refused } : {}) });
+        }
+        const end = await terminateConfirmed(handle);
+        if ("unconfirmed" in end) {
+          throw new RuleError("workflow_not_terminated", `${id}'s landing Workflow ${remembered.instance} is to be replaced (${decision.replace.detail}), but its end could not be confirmed: ${end.unconfirmed}. No replacement was started, so two never run at once; run atelier land ${id} --workflow again to retry`, 503);
+        }
+        await L.observeLandingWorkflowStatus(id, remembered.instance, end.ended);
+        replacing = { ...decision.replace, from: remembered.instance };
       }
       // The timeouts the landing waits with, each a positive number of
       // milliseconds; anything else keeps the Workflow's default.
@@ -1631,22 +2059,55 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const item = await L.item(id);
       if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}; there is nothing to land.`, 409);
       if (item.state === "accepted") throw new RuleError("accepted", `${id} is accepted at ${(item.acceptedHead ?? "").slice(0, 8)}; merge it with: atelier merge ${id}.`, 409);
-      // The instance is recorded under the id chosen here before it is
-      // created, so the stage it writes from its first step is never
-      // written ahead of the record (and dropped as a stale instance's).
-      const instanceId = `land-${id}-${Date.now()}`;
-      const record = await L.setLandingWorkflow(id, instanceId, actor, checks);
-      const instance = await env.LANDING_WORKFLOW.create({
-        id: instanceId,
-        params: {
-          project, key: ref.key, item: id, actor,
-          ...(typeof body.reviewer === "string" && body.reviewer ? { reviewer: body.reviewer } : {}),
-          ...(body.noReview === true ? { noReview: true } : {}),
-          origin: c.url.origin, checks,
-          ...ms("checksTimeoutMs"), ...ms("pollMs"), ...ms("mergePollMs"), ...ms("waitTimeoutMs"), ...ms("workspaceTimeoutMs"), ...ms("conflictTimeoutMs"), ...ms("reviewTimeoutMs"), ...ms("mergeTimeoutMs"),
-        },
-      });
-      return json({ ...record, created: true, status: await instance.status() }, 201);
+      // The review options: the ones this run names, and for a replacement
+      // that names none, the ones the replaced instance was started with.
+      const reviewer = named ?? (remembered && body.noReview !== true ? remembered?.reviewer ?? null : null);
+      const noReview = body.noReview === true || (!!remembered && named === null && remembered?.noReview === true);
+      // A landing that triages (t475): the Workflow submits and asks for
+      // the review only while a triage recorded at the reported head,
+      // merge base and criteria lets it go on. The record keeps it, so an
+      // instance reconciled from its claim triages too.
+      const options = { checks, ...(reviewer ? { reviewer } : {}), ...(noReview ? { noReview: true } : {}), ...(body.triage === true ? { triage: true } : {}) };
+      // Who starts the next instance is decided in the Ledger before anything
+      // is created (t430). The instance that follows a remembered one has an
+      // id derived from it, so every request that follows it (two replacing
+      // it, or one replacing it and one that found it already ended) claims
+      // the same successor: the one whose claim is recorded creates it, with
+      // the options it recorded, and every other answers that record and the
+      // instance it names. A failed create keeps its claim for reconciliation.
+      const instanceId = remembered ? replacementInstanceId(id, remembered.instance) : `land-${id}-${Date.now()}`;
+      const claim = await L.claimLandingWorkflow(id, expected, instanceId, actor, options, replacing ?? undefined);
+      if (!claim.owner) {
+        const record = claim.record;
+        if (!record) throw new RuleError("landing_replaced", `${id}'s landing Workflow ${expected ?? "record"} was cleared meanwhile; run atelier land ${id} --workflow again to start one`, 409);
+        // The owner may not have created it yet: it is waited for briefly.
+        let status: InstanceStatus | null = null;
+        for (let i = 0; i < 25 && !status; i++) {
+          try { status = await (await env.LANDING_WORKFLOW.get(record.instance)).status(); }
+          catch { await new Promise((ok) => setTimeout(ok, 200)); }
+        }
+        if (!status) throw new RuleError("landing_starting", `${id}'s landing Workflow ${record.instance} is being started by another request; run atelier land ${id} --workflow again to attach to it`, 409);
+        await L.observeLandingWorkflowStatus(id, record.instance, status);
+        return json({ ...record, created: false, status, ...replacementReport(record) });
+      }
+      let instance: WorkflowInstance;
+      try {
+        instance = await env.LANDING_WORKFLOW.create({
+          id: instanceId,
+          params: {
+            project, key: ref.key, item: id, actor, ...options, origin: c.url.origin,
+            ...ms("checksTimeoutMs"), ...ms("pollMs"), ...ms("mergePollMs"), ...ms("waitTimeoutMs"), ...ms("workspaceTimeoutMs"), ...ms("conflictTimeoutMs"), ...ms("reviewTimeoutMs"), ...ms("mergeTimeoutMs"),
+          },
+        });
+      } catch (error) {
+        // Creation may have succeeded despite an error, or reconciliation
+        // may have won while this request was delayed. Never erase its claim.
+        try { instance = await env.LANDING_WORKFLOW.get(instanceId); }
+        catch { throw error; }
+      }
+      const status = await instance.status();
+      await L.observeLandingWorkflowStatus(id, instanceId, status);
+      return json({ ...claim.record, created: true, status, ...replacementReport(claim.record!) }, 201);
     }
     case "integrated": {
       // The integrator reports a merge of one part. The Worker verifies the
@@ -1759,7 +2220,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const item = await L.release(id, actor, note, !!c.token, oldToken);
       return json(item);
     }
-    case "accept":
+    case "accept": {
       requireOwner(env, actor);
       await verifyRevision(env, ref.key, id, String(body.head ?? ""));
       await assertPlanMergeable(env, L, id);
@@ -1768,9 +2229,28 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // reason, which the Ledger refuses.
       // note, when sent, is the owner's own word on the acceptance, kept
       // with it in the ledger (land.sh records the session's note there).
-      return json(await L.accept(id, actor, String(body.head ?? ""),
-        body.overrideReview === undefined ? undefined : typeof body.overrideReview === "string" ? body.overrideReview : "",
-        typeof body.note === "string" ? body.note : undefined));
+      // An override through the API comes with the owner token, which an
+      // agent session may hold, so the Ledger takes it only under the
+      // owner's standing permission from the task's page (t371); the
+      // refusal names that page on this server and the factor it takes.
+      const overrideReview = body.overrideReview === undefined ? undefined : typeof body.overrideReview === "string" ? body.overrideReview : "";
+      let item: Item;
+      try {
+        item = await L.accept(id, actor, String(body.head ?? ""), overrideReview, typeof body.note === "string" ? body.note : undefined, undefined, c.acting ?? null);
+      } catch (err) {
+        const rule = parseRuleError(err);
+        if (rule?.code === "override_unconfirmed") {
+          throw new RuleError(rule.code, `an override of the independent review needs the owner's confirmation: ${overrideConfirmationHint(ref.name, id, c.url.origin, ownerFactorOf(env))}`, rule.status);
+        }
+        throw err;
+      }
+      // An override the owner records while a reviewer of another family was
+      // available is answered with that reviewer, so the owner sees the
+      // `atelier land ID --reviewer H/M` command that would have replaced it
+      // (t395).
+      const availableReviewer = overrideReview !== undefined ? await L.availableReviewer(id, await index(env).models()) : null;
+      return json({ ...item, ...(availableReviewer ? { availableReviewer } : {}) });
+    }
     case "merged": {
       requireOwner(env, actor);
       const p = await L.project();
@@ -1780,7 +2260,9 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const commit = /^[a-f0-9]{40,64}$/.test(merge) ? await baseline.readCommit(merge) : null;
       const history = await baseline.log({limit:1000});
       const observed = !!commit && commit.parents.includes(item.acceptedHead ?? "") && history.some(c=>c.hash===merge);
-      return json(await L.merged(id, actor, merge, observed, item.acceptedHead));
+      const merged = await L.merged(id, actor, merge, observed, item.acceptedHead);
+      const postMerge = await L.postMergeRun(id);
+      return json({ ...merged, ...(postMerge ? { postMerge } : {}) });
     }
     case "landing": {
       requireOwner(env, actor);
@@ -1795,11 +2277,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         const item = await L.item(id);
         const p = await L.project();
         const top = item.acceptedHead ? await headOf(env, p.repo) : null;
-        const landed = !!top && (await holdsCommit(env, p.repo, top, item.acceptedHead!)).holds === true;
+        const ancestry = top ? (await holdsCommit(env, p.repo, top, item.acceptedHead!)).holds : null;
+        if (await L.postMergeRun(id) && ancestry === null) throw new RuleError("missing_history", "cannot cancel a post-merge reservation without proving the accepted revision is absent from the baseline", 409);
+        const landed = ancestry === true;
         if (landed) throw new RuleError("landed", `${id} is already merged on the baseline; run atelier merge ${id} to record it`, 409);
         return json(await L.cancelLanding(id, actor));
       }
-      return json(await L.beginLanding(id, actor, String(body.head ?? "")));
+      const project = await L.project();
+      // Steps may be enabled while this landing is in progress. Observe its
+      // original baseline now, even if there is no post-merge policy yet.
+      const generation = await L.mergeGeneration();
+      const before = await headOf(env, project.repo);
+      return json(await L.beginLanding(id, actor, String(body.head ?? ""), before ?? undefined, generation));
     }
     case "plan":
       if (parts.length > 6) break;
@@ -1819,13 +2308,14 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "defect": {
       requireOwner(env, actor);
       const { note, foundIn } = cleanDefect(body);
-      return json(await L.traceDefect(id, actor, note, foundIn), 201);
+      const contradicts = cleanContradicts(body.contradicts, [ref.name, ...ref.names.filter((n) => n !== ref.name)], id);
+      return json(await L.traceDefect(id, actor, note, foundIn, contradicts), 201);
     }
     case "finding": {
       requireOwner(env, actor);
       const { head, index, verdict, note } = cleanFinding(body);
-      await L.addFinding(id, actor, head, index, verdict, note);
-      return json({ id, head, index, verdict }, 201);
+      const { review, by, event } = await L.addFinding(id, actor, head, index, verdict, note, { reviewSeq: body.reviewSeq, reviewer: body.reviewer }, c.acting ?? null);
+      return json({ id, head, index, verdict, review, by, event, ...(c.acting ? { acting: c.acting } : {}) }, 201);
     }
   }
   throw new RuleError("not_found", "no such route", 404);
@@ -1950,7 +2440,10 @@ async function modelsPage(c: Ctx, verb?: string): Promise<Response> {
   // Review precision over the last PRECISION_WINDOW_DAYS, from the same events;
   // each model's speed comes with the track record (trackRecords).
   const precision = buildPrecision(track.sources, precisionWindow(new Date()), ownerActor(env));
-  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway, precision, track.speed), error ? 400 : 200);
+  // The orchestrator's judgements over the last JUDGEMENT_WINDOW_DAYS, by the
+  // harness/model that acted for the owner (src/models/judgement.ts).
+  const judgement = buildJudgement(track.sources, judgementWindow(new Date()), ownerActor(env), entries as unknown as ModelEntry[]);
+  return html(renderModels(entries as unknown as ModelEntry[], record, ownerName(env), error, window, track.reliability, gateway, precision, track.speed, judgement), error ? 400 : 200);
 }
 
 // ── AI Gateway ───────────────────────────────────────────────────────────────
@@ -2107,8 +2600,10 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
   // The jobs the runner runs, build among them; an ask naming none is an
   // older runner's, which takes builds (missingJob in src/dispatch/rules.ts).
   const jobs = Array.isArray(body.jobs) ? body.jobs.filter((j): j is string => typeof j === "string") : [];
+  // When the runner's process started, which an older runner does not say.
+  const started = typeof body.started === "string" && Number.isFinite(Date.parse(body.started)) ? new Date(body.started).toISOString() : null;
   return {
-    runner: r.runner, kind: r.kind, jobs,
+    runner: r.runner, kind: r.kind, jobs, ...(started ? { started } : {}),
     agents: agents.flatMap((a) => {
       const x = a as { agent?: unknown; models?: unknown };
       return typeof x.agent === "string" && Array.isArray(x.models)
@@ -2124,11 +2619,65 @@ function isHeld(item: Item): boolean {
   return item.state === "claimed" && !!item.owner;
 }
 
+// Why each queued dispatch the owner's listing shows is not being taken,
+// attached as `why` so `atelier status` and `atelier show` say it: the core
+// file hold, overlap refusal and refused claims the Ledger already read
+// beside it, the live runners that gave it up after failing it (from the run
+// reports), and the model or job no live runner offers (unclaimed in
+// src/dispatch/rules.ts); asked by one runner (`offer`), also a dispatch
+// meant for another. A review request is listed apart, so it carries none.
+async function queueWhy(env: Env, queued: { project: string; item: Item & { held?: CoreHold; overlap?: OverlapRefusal; refusals?: ClaimRefusal[]; skips?: RunSkip[] } }[], offer: RunnerOffer | null = null, runner: string | null = null): Promise<{ project: string; item: (Item | RunnerWhyItem) & { why?: UnclaimedReason[] } }[]> {
+  // Each waiting dispatch's build runs since it was dispatched, read task by
+  // task, so the newest reports of other tasks never push its failures out.
+  const asks = queued.flatMap(({ project, item }) => item.dispatch && item.dispatch.job !== "review" ? [{ project, item: item.id, since: item.dispatch.at }] : []);
+  const [offers, runs] = await Promise.all([index(env).runnerOffers(), asks.length ? index(env).buildRunsSince(asks) : []]);
+  // Asked under a runner token, the reasons are built from that runner's own
+  // refusals, skips and run reports only, and each entry is cut to what the
+  // runner prints (runnerWhyItem): another runner's refusal or failure, and
+  // the task's brief and note, are the owner's to read.
+  const mine = <T extends { runner: string }>(list: readonly T[] | undefined) => list && runner ? list.filter((r) => r.runner === runner) : list ?? null;
+  const reports = mine(runs.map((r) => ({ project: r.project, item: r.item, role: r.role, outcome: r.outcome, runner: r.runner, at: r.at }))) ?? [];
+  return queued.map(({ project, item }) => {
+    if (item.dispatch?.job === "review") return { project, item: runner ? runnerWhyItem(item, undefined) : item };
+    const why = unclaimed(item, { held: item.held ?? null, overlap: item.overlap ?? null, refusals: mine(item.refusals), skips: mine(item.skips), offers, runs: reports, project, offer });
+    if (runner) return { project, item: runnerWhyItem(item, why) };
+    // Always carried, empty when nothing holds it, so the CLI can tell this
+    // listing from an older server's, which carries `held` alone.
+    return { project, item: { ...item, why } };
+  });
+}
+
+// What a runner token's why poll carries of a waiting dispatch: no more than
+// it prints (the id and the reasons) and the dispatch it was not offered,
+// without the dispatch's note, which a plain poll gives only the runner it
+// offers the task to.
+interface RunnerWhyItem { id: string; title: string; dispatch: { to: string; agent: string | null; model: string | null; job: string | null } | null; why?: UnclaimedReason[] }
+function runnerWhyItem(item: Item, why: UnclaimedReason[] | undefined): RunnerWhyItem {
+  const d = item.dispatch;
+  const dispatch = d ? { to: d.to, agent: d.agent, model: d.model, job: d.job ?? null } : null;
+  return { id: item.id, title: item.title, dispatch, ...(why ? { why } : {}) };
+}
+
+// The portfolio's notices, each project's read on its own: a project whose
+// Ledger cannot be read drops out of the list instead of failing it, so the
+// healthy projects' notices still reach the owner. With GET
+// /inbox?unread=1 the answer names those projects, `{ entries, unread }`, so
+// a reader passes them to attentionFor as not read (null notices) rather than
+// as nothing waiting; the bare list stays for older clients, with unread
+// projects named in the x-atelier-incomplete response header.
 async function inbox(env: Env, token?: AgentToken) {
   const projects = (await index(env).projects()).filter((p) => inScope(token, namesOf(p)));
   const now = new Date().toISOString();
-  const lists = await Promise.all(projects.map((p) => ledgerOf(env, p).inbox(now)));
-  return lists.flat().sort((a, b) => b.weight - a.weight);
+  const pool = await poolOf(env);
+  const lists = await Promise.allSettled(projects.map((p) => ledgerOf(env, p).inbox(now, pool)));
+  const unread: string[] = [];
+  const entries = lists.flatMap((r, i) => {
+    if (r.status === "fulfilled") return r.value;
+    console.error("project inbox unavailable", projects[i].name, codeOf(r.reason).trim());
+    unread.push(projects[i].name);
+    return [];
+  }).sort((a, b) => b.weight - a.weight);
+  return { entries, unread };
 }
 
 // Whether a revision is on a project's main line as Atelier holds it: the
@@ -2223,7 +2772,10 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const ref = await resolveProject(env, named ?? "");
     const project = ref.name;
     const L = ledger(env, ref.key);
-    const note = String(form.get("note") ?? "");
+    // A browser posts each line break of a textarea as CRLF, which the page
+    // counts as one character; the dispatch form folds them to LF here, so
+    // the limit the page showed holds. The API and CLI text is never changed.
+    const note = verb === "dispatch" ? String(form.get("note") ?? "").replace(/\r\n?/g, "\n") : String(form.get("note") ?? "");
     const owner = ownerActor(env);
     if (id === "new" && !verb) {
       // A long title with no brief becomes the brief, with a short title derived from it (itemText).
@@ -2239,8 +2791,17 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const before = await L.item(id);
     const expected = String(form.get("head") ?? "");
     if (before.head) assertRevision(before, expected);
-    if (["accept", "override", "approve", "reject"].includes(verb)) await verifyRevision(env, ref.key, id, expected);
+    if (["accept", "override", "allow-override", "approve", "reject"].includes(verb)) await verifyRevision(env, ref.key, id, expected);
     if (verb === "accept" || verb === "override") await assertPlanMergeable(env, L, id);
+    // The override forms are the owner's confirmation only with the factor
+    // no agent holds (t371, ownerFactorIn): posted with the owner token as a
+    // bearer, as an agent could, or from a session alone, which that token
+    // buys, they are refused as the API's override is.
+    let factor: OwnerFactor | undefined;
+    if (verb === "override" || verb === "allow-override") {
+      if (!c.signedIn) throw new RuleError("override_unconfirmed", `an override of the independent review needs the owner's own sign-in, not the owner token: ${overrideConfirmationHint(project, id, c.url.origin, ownerFactorOf(env))}`, 403);
+      factor = ownerFactorIn(env, c, form, project, id);
+    }
     // A change of owner takes the write token with it, as on the API routes:
     // the Ledger clears the id read here only if it is still the one recorded.
     const oldToken = await L.tokenId(id);
@@ -2265,7 +2826,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     else if (verb === "accept") await L.accept(id, owner, expected);
     // The page's override form: accept with the owner's override of a missing
     // independent review, its reason in the note.
-    else if (verb === "override") await L.accept(id, owner, expected, note);
+    else if (verb === "override") await L.accept(id, owner, expected, note, undefined, factor);
+    // The page's permission for an override from the command line (t371).
+    else if (verb === "allow-override") await L.confirmOverride(id, owner, expected, factor!);
     else if (verb === "abandon") await L.abandon(id, owner, note, oldToken);
     else if (verb === "block") await L.block(id, owner, note);
     else if (verb === "unblock") await L.unblock(id, owner);
@@ -2316,13 +2879,18 @@ async function homePage(c: Ctx): Promise<Response> {
   const { env } = c;
   const { projects, views } = await projectViews(env);
   const now = new Date();
+  const [offers, pool] = await Promise.all([offersOf(env), poolOf(env)]);
   const home: HomeView[] = await Promise.all(views.map(async (v) => {
     if (v.unavailable) return v;
-    try {
-      const L = ledgerOf(env, v.project);
-      const events = (await L.events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
-      return { ...v, events, cut: events.length >= STORY_EVENTS, waiting: await L.inbox(now.toISOString()) };
-    } catch { return { ...v, unavailable: true }; }
+    // Each read on its own: the moves or the notices not read are said on
+    // the card, and what waits on the owner from the tasks read still shows.
+    const L = ledgerOf(env, v.project);
+    const [events, inbox] = await Promise.all([
+      (L.events(undefined, STORY_EVENTS) as Promise<unknown>).catch(() => null) as Promise<LedgerEvent[] | null>,
+      L.inbox(now.toISOString(), pool).catch(() => null),
+    ]);
+    const waiting = attentionFor(v.project.name, v.items, inbox, offers, now);
+    return events ? { ...v, events, cut: events.length >= STORY_EVENTS, waiting } : { ...v, eventsUnread: true, waiting };
   }));
   // The showcase setting as the cards read it: a mode per project, under
   // whichever of its names the setting's row holds.
@@ -2420,15 +2988,16 @@ async function decisionsPage(c: Ctx, live: { nonce: string; refresh: number }): 
       return buildStory(v.project.name, v.items, events, owner, events.length >= STORY_EVENTS, titleOf(v.project));
     } catch { return null; }
   };
-  const lists = await Promise.all(views.map(async v => {
-    if (v.unavailable) return [];
-    try { return await ledgerOf(env, v.project).inbox(new Date().toISOString()); }
-    catch { v.unavailable = true; return []; }
+  const [offers, pool] = await Promise.all([offersOf(env), poolOf(env)]);
+  const attention = await Promise.all(views.map(async (v) => {
+    if (v.unavailable) return attentionFor(v.project.name, null, null, offers, now);
+    const inbox = await ledgerOf(env, v.project).inbox(now.toISOString(), pool).catch(() => null);
+    return attentionFor(v.project.name, v.items, inbox, offers, now);
   }));
-  const entries = lists.flat().sort((a,b)=>b.weight-a.weight);
+  const first = attention.flatMap((a) => a.owner.map((t) => ({ project: a.project, itemId: t.id })));
   const queued = views.flatMap((v) => v.items.filter((i) => i.state === "open" && !i.owner && i.dispatch).map((item) => ({ project: v.project, item })));
-  const projectName = c.url.searchParams.get("project") ?? entries[0]?.project;
-  const task = c.url.searchParams.get("task") ?? entries[0]?.itemId;
+  const projectName = c.url.searchParams.get("project") ?? first[0]?.project;
+  const task = c.url.searchParams.get("task") ?? first[0]?.itemId;
   const project = projectName === undefined ? undefined : projectNamed(projects, projectName);
   let selected: ReviewContext | undefined;
   if (project && task) {
@@ -2441,7 +3010,7 @@ async function decisionsPage(c: Ctx, live: { nonce: string; refresh: number }): 
   // need the task's own record; a dozen cards is enough for one screen of work.
   const details = new Map<string, Detail>();
   const seen = new Set<string>();
-  await Promise.all(entries.filter((x) => !seen.has(`${x.project}/${x.itemId}`) && seen.add(`${x.project}/${x.itemId}`)).slice(0, CARD_LIMIT).map(async (x) => {
+  await Promise.all(first.filter((x) => !seen.has(`${x.project}/${x.itemId}`) && seen.add(`${x.project}/${x.itemId}`)).slice(0, CARD_LIMIT).map(async (x) => {
     // An entry names its project as the Ledger's record does; the listed record says where that Ledger is.
     const p = projectNamed(projects, x.project);
     if (!p) return;
@@ -2450,7 +3019,7 @@ async function decisionsPage(c: Ctx, live: { nonce: string; refresh: number }): 
   const recent = (v: FloorView) => v.events[0]?.at ?? "";
   const busiest = [...floorViews].sort((a, b) => recent(b).localeCompare(recent(a)))[0];
   const latest = busiest && !selected ? await story(busiest) : null;
-  return html(renderInbox(entries, projects, ownerName(env), selected, views, floor, now, queued, latest ? { story: latest, owner } : undefined, details, live), 200, live.nonce);
+  return html(renderInbox(attention, projects, ownerName(env), selected, views, floor, now, queued, latest ? { story: latest, owner } : undefined, details, live), 200, live.nonce);
 }
 
 // ── a project's area ───────────────────────────────────────────────────────
@@ -2469,11 +3038,18 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
     const p = await L.project();
     switch (parts.length === 2 ? "overview" : parts[2]) {
       case "overview": {
+        // What the Overview cannot read is said on it, not fatal to it: the
+        // standing labels its own gaps, and the board and the events table say
+        // they were not read.
         const standing = await standingOf(env, ref.key);
-        return html(renderProject(p, await L.items(), await L.events(undefined, 40) as unknown as LedgerEvent[], ownerName(env), standing));
+        const board = await L.board().catch(() => null);
+        const events = await (L.events(undefined, 40) as Promise<unknown>).catch(() => null) as LedgerEvent[] | null;
+        return html(renderProject(p, board?.items ?? [], events, ownerName(env), standing, board));
       }
-      case "tasks":
-        return html(renderProjectTasks(p, await L.items(), ownerName(env)));
+      case "tasks": {
+        const board = await L.board();
+        return html(renderProjectTasks(p, board.items, ownerName(env), board));
+      }
       case "flow": {
         const items = await L.items();
         const events = (await L.events(undefined, STORY_EVENTS)) as unknown as LedgerEvent[];
@@ -2502,7 +3078,10 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
   if (parts.length === 3) {
     const p = await L.project();
     const item = await L.item(parts[2]);
-    const detail: Detail = await L.detail(parts[2]);
+    // The page's override forms ask for the factor this server takes (t371).
+    const read: Detail = await L.detail(parts[2]);
+    const detail: Detail = { ...read, ownerFactor: ownerFactorOf(env) };
+    detail.runs = await index(env).runsForItem(p.name, parts[2]);
     return html(renderItem(p, detail, ownerName(env), await diffFor(env, L, p.repo, item, detail.events), live), 200, nonce);
   }
   return html("Not found.", 404);
@@ -2559,6 +3138,7 @@ export default {
     // Pages show times in the owner's zone (src/time.ts).
     setTimeZone((env as unknown as Settings).TIMEZONE);
     try {
+      if (pathname.startsWith("/git/runner/")) return await runnerGitRequest(req, url, { ledger: (key) => ledger(env, key), token: (hash) => index(env).agentToken(hash), artifacts: env.ARTIFACTS, waitUntil: ctx ? (promise) => ctx.waitUntil(promise) : undefined });
       // The front door: atelier.zone itself is the public showcase, for a
       // visitor or a judge who types the domain, answered before the sign-in
       // check as every public page is. /showcase serves the same page, so the
@@ -2574,17 +3154,26 @@ export default {
       // Cloudflare Access in front of the owner's pages (src/access.ts). When
       // the server names its Access team, application and owner, every route
       // that needs a sign-in must carry an Access assertion the Worker verifies
-      // against the team's published keys and the owner's email — /login and its
-      // token form too, so the server token can no longer be tried, let alone
+      // against the team's published keys and the owner's email — /login too,
+      // so the server token can no longer be tried, let alone
       // guessed, without Access's sign-in first (the open form the 2026-10-06
       // audit noted). Never the /api routes, which take bearer tokens the CLI
-      // sends without passing Access; the sign-out form stays open.
+      // sends without passing Access; the sign-out form stays open. A request
+      // that passes is the owner's sign-in, and starts a session (t534).
       const parts = pathname.split("/").filter(Boolean).map(decodeURIComponent);
       const access = accessSettings(env as unknown as Record<string, string | undefined>);
       if (access && parts[0] !== "api" && pathname !== "/logout" && !(await accessVouches(req, access))) {
         return html(renderError("This page is behind Cloudflare Access, whose sign-in this request did not carry. Sign in at the Access prompt and retry.", ""), 401);
       }
       if (pathname === "/login") {
+        // Behind Access the assertion just verified is the owner's sign-in,
+        // and the token form would prove nothing more (t534): /login starts
+        // the session at once, or keeps the one the browser holds, and goes
+        // on to Home. Never for a request from another site (accessSignIn).
+        if (access) {
+          if (await authorised(req, env) === "ui") return Response.redirect(new URL("/home", url).toString(), 303);
+          return await accessSignIn(req, env, url, "/home", async () => new Response(null, { status: 303, headers: { location: "/home" } }));
+        }
         if (req.method === "POST") {
           // A cross-site form post carries another origin and is refused. A
           // post without an Origin header did not come from a browser form,
@@ -2606,14 +3195,16 @@ export default {
       }
       const how = await authorised(req, env);
       if (parts[0] === "api") {
-        // The server's version: the deployed main commit and its route
-        // level (src/route-level.ts). It answers without a token: the
-        // commit of a public repository and a route level are not secret,
-        // and a session checks them before it signs in. atelier land
-        // refuses on the level, saying to deploy, when the server's is
-        // lower than the CLI's.
+        // The server's version: the deployed main commit, its route level
+        // and the capabilities it supports (src/route-level.ts). It answers
+        // without a token: the commit of a public repository, a route level
+        // and capability names are not secret, and a session checks them
+        // before it signs in. Each CLI command and runner job checks the
+        // capabilities it declares against this list before its first
+        // dependent request, refusing with the missing names and saying to
+        // deploy; a CLI from before capabilities reads routeLevel alone.
         if (parts.length === 2 && parts[1] === "version" && (req.method === "GET" || req.method === "HEAD")) {
-          return json({ commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, routeLevel: ROUTE_LEVEL });
+          return json({ commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES });
         }
         if (how !== "api" && (typeof how !== "object" || !how)) {
           // A path that names no part of the API answers 404 whoever asks:
@@ -2624,12 +3215,25 @@ export default {
         }
         const token = typeof how === "object" && how ? how : undefined;
         const declared = req.headers.get("x-atelier-actor");
-        if (token && (token.actor === ownerActor(env) || declared !== null && declared !== token.actor)) {
+        if (token?.runner) {
+          const named = req.headers.get("x-atelier-runner");
+          if (named !== null && named.toLowerCase() !== token.runner) throw runnerDenied(token);
+        }
+        if (token && !token.runner && (token.actor === ownerActor(env) || declared !== null && declared !== token.actor)) {
           return json({ error: "actor_mismatch", detail: "X-Atelier-Actor must equal the agent token actor" }, 403);
         }
-        if (parts.length === 2 && parts[1] === "config" && req.method === "GET") return json({ ownerActor: ownerActor(env), ownerName: ownerName(env), ...(token ? { actor: token.actor } : {}) });
-        const actor = token?.actor ?? declared ?? "";
-        if (!validActor(actor)) return json({ error: "bad_actor", detail: "set X-Atelier-Actor to harness/model, or the project owner's actor" }, 400);
+        if (parts.length === 2 && parts[1] === "config" && req.method === "GET") return json({ ownerActor: ownerActor(env), ownerName: ownerName(env), ...(token?.runner ? { runner: token.runner, tokenId: token.id } : token ? { actor: token.actor } : {}) });
+        const actor = token?.runner ? declared ?? token.actor : token?.actor ?? declared ?? "";
+        if (!validActor(actor)) {
+          if (token?.runner) throw runnerDenied(token);
+          return json({ error: "bad_actor", detail: "set X-Atelier-Actor to harness/model, or the project owner's actor" }, 400);
+        }
+        // The acting harness/model is checked here, for every route, so a
+        // malformed name, or one an agent or runner token sends, is refused
+        // before anything is recorded. A name must be a model in the pool;
+        // it is kept as declared, since the owner token cannot prove it.
+        const declaredActing = cleanActing(req.headers.get(ACTING_HEADER), ownerActor(env), !!token);
+        const acting = declaredActing === null ? null : registeredActing(declaredActing, await index(env).models());
         const body = req.method === "GET" ? {} : await req.json().catch(() => ({}));
         // Routes read fields from the body, so anything but a JSON object is refused here.
         if (typeof body !== "object" || body === null || Array.isArray(body)) {
@@ -2639,11 +3243,60 @@ export default {
         // reaches the project as the current one does, for a token limited to
         // either, and the answer names the project as it is called now.
         const ref = parts[1] === "projects" && parts[2] !== undefined ? await resolveProject(env, parts[2]) : null;
-        if (token) {
+        // A claim refused a runner is kept on the task (noteClaimRefusal), so
+        // status and show name it (t420): the runner passes the task by
+        // until it changes, and said so only in its own log. Recording it
+        // never hides the refusal itself.
+        const claimRunner = req.method === "POST" && ref && parts[3] === "items" && /^t[0-9]+$/.test(parts[4] ?? "") && parts[5] === "claim" && parts.length === 6
+          ? token?.runner ?? parseRunner(req.headers.get("x-atelier-runner"))?.runner ?? null : null;
+        const noteRefusal = async (error: unknown) => {
+          const rule = parseRuleError(error);
+          if (!claimRunner || !ref || !rule || rule.status >= 500) return;
+          try { await ledger(env, ref.key).noteClaimRefusal(parts[4], claimRunner, actor, rule.code, rule.detail, token?.runner ? token : undefined); }
+          catch (e) { console.error("claim refusal not recorded", String(e)); }
+        };
+        if (token?.runner) {
+          const input = body as Record<string, unknown>;
+          if (!runnerRoute(req.method, parts.slice(1), input) || ref && !inScope(token, ref.names)) throw runnerDenied(token);
+          if (parts[1] === "queue" && String(input.runner).toLowerCase() !== token.runner) throw runnerDenied(token);
+          if (ref && parts[3] === "items") {
+            if (actor === ownerActor(env) || actor === INTEGRATOR) throw runnerDenied(token);
+            // A review skip (t353) is a report about a review job the
+            // runner's poll was offered, under that job's actor, checked as
+            // a run report for the review is; the runner never holds a
+            // review as a job of its own, so assertRunnerJob cannot judge it.
+            if (parts[5] === "review-skip") await ledger(env, ref.key).assertRunnerReport(token, parts[4], actor, "review");
+            // A run skip (t420) is the runner's report of a build or plan job
+            // its poll was offered, checked as that job's run report is.
+            else if (parts[5] === "run-skip") await ledger(env, ref.key).assertRunnerReport(token, parts[4], actor, input.role === "plan" ? "plan" : "build");
+            else {
+              try { await ledger(env, ref.key).assertRunnerJob(token, parts[4], actor, parts[5] === "claim"); }
+              catch (error) { await noteRefusal(error); throw error; }
+            }
+            // The authenticated runner, never a caller-selected identity, goes to the atomic claim.
+            req = new Request(req.url, { method: req.method, headers: new Headers(req.headers) });
+            req.headers.set("x-atelier-runner", token.runner);
+          }
+          if (parts[1] === "runs") {
+            if (typeof input.project !== "string" || typeof input.item !== "string" || typeof input.actor !== "string") throw runnerDenied(token);
+            const project = await resolveProject(env, input.project);
+            if (!inScope(token, project.names)) throw runnerDenied(token);
+            await ledger(env, project.key).assertRunnerReport(token, input.item, input.actor, String(input.role ?? "build"));
+            req = new Request(req.url, { method: req.method, headers: new Headers(req.headers) });
+            req.headers.set("x-atelier-runner", token.runner);
+          }
+        } else if (token) {
           if (!agentRoute(req.method, parts.slice(1), body as Record<string, unknown>)) return json({ error: "owner_token_required", detail: "this operation requires the owner token" }, 403);
           if (ref && !inScope(token, ref.names)) return json({ error: "project_scope", detail: "this project is outside the agent token scope" }, 403);
         }
-        const res = await api({ env, req, url, actor, body, token, ref, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
+        let res: Response;
+        try {
+          res = await api({ env, req, url, actor, body, token, ref, acting, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
+        } catch (error) {
+          await noteRefusal(error);
+          if (token?.runner && parseRuleError(error)?.status === 403) throw runnerDenied(token);
+          throw error;
+        }
         if (ref?.former) res.headers.set("x-atelier-project", ref.name);
         return res;
       }
@@ -2654,6 +3307,7 @@ export default {
       // else asked under the name is sent to sign in like the app's own
       // pages. Every path under /p/ is sent to sign in alike (below).
       if (!how) {
+        if (req.headers.has("authorization")) return json({ error: "unauthorised" }, 401);
         // A path under /p/ is answered the same whether or not a project is
         // registered under the name it holds: the visitor is sent to sign in
         // either way, so a guessed name learns nothing — a 404 for the rest
@@ -2661,10 +3315,18 @@ export default {
         const projectArea = parts[0] === "p" && parts.length >= 2;
         const knownUI = parts.length === 0 || projectArea || ["home", "models", "usage", "projects", "flow", "history", "studio", "decisions", "how", "ui"].includes(parts[0]);
         if (!knownUI) return html("Not found.", 404);
+        // Behind Access, a page the owner opens without a session starts one
+        // and is served as signed in (t534). A form post is not a sign-in:
+        // it is sent to /login, as before, which starts the session there.
+        if (access && (req.method === "GET" || req.method === "HEAD")) {
+          return await accessSignIn(req, env, url, url.pathname + url.search, () => ui({ env, req, url, actor: ownerActor(env), body: null, signedIn: true, access: true }, parts));
+        }
         return Response.redirect(new URL("/login", url).toString(), 303);
       }
-      if (typeof how === "object") return html("Agent tokens cannot use browser routes.", 403);
-      return await ui({ env, req, url, actor: ownerActor(env), body: null }, parts);
+      if (typeof how === "object") return how.runner ? json({ error: "runner_forbidden", detail: runnerDenied(how).message }, 403) : html("Agent tokens cannot use browser routes.", 403);
+      // Every request past the check above is one Access vouched for, where
+      // the server names its Access team.
+      return await ui({ env, req, url, actor: ownerActor(env), body: null, signedIn: how === "ui", access: access !== null }, parts);
     } catch (err) {
       const rule = parseRuleError(err);
       // The error page keeps the owner's name on the pages only the owner

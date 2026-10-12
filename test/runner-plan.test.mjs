@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { setImmediate as tick } from "node:timers/promises";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -77,6 +78,7 @@ function fixture(t, options = {}) {
       calls.push({ postPlan: [project, id, actor], text });
       return options.refused ?? { valid: true, hash: "abc123", parts: 1 };
     },
+    async identityRefusals() { return []; },
     async harness(argv, cwd, env) {
       calls.push({ harness: argv, cwd, env });
       if (options.noDocument !== true) writeFileSync(planFilePath(cwd), JSON.stringify(planDocument));
@@ -98,9 +100,11 @@ test("a plan job claims as the planner, fetches the brief, posts the plan file a
   assert.equal(state.head, "abc123");
   assert.deepEqual(calls[0].argv, ["claim", "t7", "--project", "atelier", "--as", "opencode/glm-5.3", "--runner", "home:studio"]);
   assert.deepEqual(calls.find((c) => c.jobBrief).jobBrief, ["atelier", "t7", "opencode/glm-5.3"]);
-  assert.equal(calls.find((c) => c.brief).brief, `${ROLE_PROMPTS.plan.trimEnd()}\n\nSERVER BRIEF`);
+  assert.ok(calls.find((c) => c.brief).brief.startsWith(`${ROLE_PROMPTS.plan.trimEnd()}\n\n`));
+  assert.match(calls.find((c) => c.brief).brief, /host slot wrapper:.*cli\/load\.mjs/);
+  assert.ok(calls.find((c) => c.brief).brief.endsWith("\n\nSERVER BRIEF"));
   assert.deepEqual(calls.find((c) => c.harness).harness.slice(6, 8), ["--plan-file", planFilePath(join(root, "t7"))]);
-  assert.deepEqual(calls.find((c) => c.harness).env, { XDG_DATA_HOME: join(root, "data-home"), CF_AIG_METADATA: '{"task":"t7","role":"plan","runner":"home:studio"}' });
+  assert.deepEqual(calls.find((c) => c.harness).env, { XDG_DATA_HOME: join(root, "data-home"), ATELIER_TEST_TASK: "t7", ATELIER_TEST_ACTOR: planJob.actor, ATELIER_TEST_PROJECT: planJob.project, ATELIER_TEST_PRIORITY: "ordinary", CF_AIG_METADATA: '{"task":"t7","role":"plan","runner":"home:studio"}' });
   const posted = calls.find((c) => c.postPlan);
   assert.deepEqual(posted.postPlan, ["atelier", "t7", "opencode/glm-5.3"]);
   assert.equal(posted.text, JSON.stringify(planDocument));
@@ -171,7 +175,10 @@ test("a part's build brief comes from the server, and any other task keeps brief
   const part = fixture(t);
   assert.equal((await runTask(partJob, buildConfig, "home:studio", part.io)).phase, "submitted");
   assert.deepEqual(part.calls.find((c) => c.jobBrief).jobBrief, ["atelier", "t5", "opencode/glm-5.3"]);
-  assert.equal(part.calls.find((c) => c.brief).brief, `${ROLE_PROMPTS.build.trimEnd()}\n\nSERVER BRIEF`);
+  const brief = part.calls.find((c) => c.brief).brief;
+  assert.ok(brief.startsWith(ROLE_PROMPTS.build.trimEnd()));
+  assert.match(brief, /host slot wrapper:.*load\.mjs/);
+  assert.ok(brief.endsWith("\n\nSERVER BRIEF"));
   const ordinary = fixture(t);
   assert.equal((await runTask(ordinaryJob, buildConfig, "home:studio", ordinary.io)).phase, "submitted");
   assert.ok(!ordinary.calls.some((c) => c.jobBrief));
@@ -260,7 +267,7 @@ test("a refused plan job is retried once before the runner retires it", async (t
   const claims = [], logs = [];
   let polls = 0;
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
-    workspacePath: () => workspace, wait: async () => {},
+    workspacePath: () => workspace, wait: () => tick(),
     queue: async () => { if (++polls === 4) { process.emit("SIGINT"); return []; } return [planJob]; },
     taskIO: {
       log: (s) => logs.push(s),
@@ -342,4 +349,25 @@ test("a task sent back with an earlier attempt gets the server's review findings
   assert.deepEqual(back.calls.find((c) => c.jobBrief).jobBrief, ["atelier", "t6", "opencode/glm-5.3"]);
   const text = back.calls.find((c) => c.brief).brief;
   assert.ok(text.includes("npm test") && text.includes("An earlier attempt is committed") && text.includes("FINDING-1"));
+});
+
+test("plans prepare after reset and before the planner starts", async (t) => {
+  const { io, calls } = fixture(t);
+  io.prepare = async () => {
+    assert.ok(calls.some((c) => c.reset));
+    assert.ok(!calls.some((c) => c.harness));
+    calls.push({ prepare: true });
+    return { key: "ready" };
+  };
+  assert.equal((await runPlanTask(planJob, planConfig, "home:studio", io)).phase, "submitted");
+  assert.ok(calls.some((c) => c.prepare));
+});
+
+test("a planner receives both deferred preparation and test-slot instructions", async (t) => {
+  const { io, calls } = fixture(t);
+  io.prepare = async () => ({ deferred: "Resolve input then run npm ci && npm run types" });
+  assert.equal((await runPlanTask(planJob, planConfig, "home:studio", io)).phase, "submitted");
+  const brief = calls.find((c) => c.brief).brief;
+  assert.match(brief, /Resolve input then run npm ci && npm run types/);
+  assert.match(brief, /host slot wrapper:.*load\.mjs/);
 });

@@ -1,5 +1,14 @@
 # Using Atelier well
 
+The cross-company rules below describe the default policy. With
+`atelier init --single-family COMPANY`, building and reviewing use only that
+company's models: a reviewer must be a different model from every contributor,
+never a contributor under another harness. This exception also applies to
+criteria review, handoffs and conflict contributors. Only that company's tier
+models qualify; if none qualifies, no separate tier review is requested.
+`atelier init --cross-family` restores the default; both switches record who
+made them and when. See [Single-family mode](gate.md#single-family-mode).
+
 This guide is for the owner of a project registered in Atelier: the person
 who decides what gets done and what goes in. Atelier and the agents do the
 work; the owner makes three kinds of decision. What to do, whether a plan's
@@ -55,6 +64,11 @@ acceptance criteria appear on the task's page and in the briefs its builder
 and reviewer get, and a reviewer blocks a change that fails a criterion. One
 long text with no `--brief` becomes the brief, with its first clause as the
 title; `atelier edit ID --title T --brief B --accept A` changes them.
+
+A task filed without `--accept` is created with a warning, because a review
+would have no criteria to judge its change against. `atelier init
+--require-criteria` makes that a refusal for the project, and under it
+`atelier edit ID --accept ""` is refused too.
 
 The owner also changes a live task's scope with `atelier edit ID --scope GLOB`
 (once per glob, or `--scope ""` to clear it); the change is recorded. In a
@@ -144,7 +158,8 @@ that is how Atelier improves.
 ## Habits that save trouble
 
 - Run one home runner per machine (`atelier runner --name home:NAME`), and
-  check for one before starting another: `pgrep -f "atelier.mjs runner"`.
+  check for one before starting another: `atelier status` lists the runners
+  live on this Mac by name, and to wait on a task use `atelier wait ID`.
 - Deploy a project between landings, after its full test suite passes, not
   while another task's checks run.
 - `atelier gc --project NAME` previews the workspaces of finished tasks that
@@ -172,3 +187,5 @@ that is how Atelier improves.
 | close a session of direct edits | `atelier wrap "summary"` |
 | clear finished workspaces | `atelier gc --project NAME` |
 | see spend and windows | `atelier runner --usage` |
+
+See [Function areas and the project board](areas.md) for owner commands to create, rename and remove areas, assign tasks and read their stages.

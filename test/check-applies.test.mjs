@@ -1,3 +1,4 @@
+import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -5,6 +6,7 @@ import { createServer } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
 
 // The CLI's side of path-conditioned checks: `atelier check` records a check
 // whose paths the change does not touch as not applicable instead of running
@@ -17,7 +19,7 @@ const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8",
 // A fake server for `check`: main is the first commit, the item's head a
 // second that changes docs/a.md. `policy(root)` gives the project's policy;
 // `answer(path, body)` may answer a route itself.
-async function fixture(t, policy, answer = () => undefined) {
+async function fixture(t, policy, answer = () => undefined, env = {}) {
   const root = mkdtempSync(join(tmpdir(), "atelier-applies-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const source = join(root, "source"), remote = join(root, "remote.git");
@@ -51,7 +53,7 @@ async function fixture(t, policy, answer = () => undefined) {
   await new Promise((done, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", done); });
   writeFileSync(join(root, "config.json"), JSON.stringify({ projects: { proj: { path: source } } }));
   const run = async (...argv) => {
-    const child = spawn(process.execPath, [cli, argv[0], "--project", "proj", ...argv.slice(1)], { cwd: root, env: { ...process.env, ATELIER_ACTOR: "codex/test", ATELIER_CONFIG_DIR: root, ATELIER_CACHE: join(root, "cache"), ATELIER_TOKEN: "api", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}` } });
+    const child = spawn(process.execPath, [cli, argv[0], "--project", "proj", ...argv.slice(1)], { cwd: root, env: { ...process.env, ...env, ATELIER_ACTOR: "codex/test", ATELIER_CONFIG_DIR: root, ATELIER_CACHE: join(root, "cache"), ATELIER_TOKEN: "api", ATELIER_SERVER: `http://127.0.0.1:${server.address().port}` } });
     let stdout = "", stderr = ""; child.stdout.on("data", (s) => stdout += s); child.stderr.on("data", (s) => stderr += s);
     return { status: await new Promise((done) => child.on("close", done)), stdout, stderr };
   };
@@ -61,6 +63,7 @@ async function fixture(t, policy, answer = () => undefined) {
 const touch = (root, name) => `touch '${join(root, name)}'`;
 
 test("check records a check whose paths the change does not touch as not applicable, and runs the rest", async (t) => {
+  if (!canInspectSlots(t)) return;
   const f = await fixture(t, (root) => ({
     checks: [touch(root, "ran-docs"), touch(root, "ran-app")],
     checkPaths: [{ command: touch(root, "ran-docs"), paths: ["docs/**"] }, { command: touch(root, "ran-app"), paths: ["App/**", "project.yml"] }],
@@ -126,6 +129,7 @@ function initFixture(t, registered = null) {
 import { appendFileSync } from "node:fs";
 globalThis.fetch = async (url, options = {}) => {
   const path = new URL(url).pathname, method = options.method ?? "GET";
+  if (path === "/api/version") return Response.json({ capabilities: ${JSON.stringify(SERVER_CAPABILITIES)} });
   const body = options.body ? JSON.parse(options.body) : undefined;
   appendFileSync(${JSON.stringify(log)}, JSON.stringify({ method, path, body }) + "\\n");
   let data = {};
@@ -168,4 +172,11 @@ test("decision 2026-10-06: a re-init that names no check does not narrow the pat
   const named = f.run("init", "--check", CHECK, "--approval", "Pavi, today");
   assert.equal(named.status, 0, named.stderr);
   assert.deepEqual(f.requests().filter((q) => q.method === "PUT").at(-1).body.checkPaths, [{ command: CHECK, paths: ["src/**", "astro.config.**"] }]);
+});
+
+test("N/A checks never enter or validate the slot pool", async (t) => {
+  const f = await fixture(t, () => ({ checks: ["exit 7"], checkPaths: [{ command: "exit 7", paths: ["App/**"] }], sandboxOnly: false }), undefined, { ATELIER_TEST_SLOTS: "invalid" });
+  const result = await f.run("check", "t1");
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.posts[0].notApplicable, true);
 });

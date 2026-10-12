@@ -1,3 +1,5 @@
+import { SERVER_CAPABILITIES } from "../src/route-level.ts";
+import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
@@ -38,6 +40,7 @@ async function fixture(t, check) {
   const item = { id: "t1", title: "Edit", scope: [], owner: actor, state: "claimed", head };
   const evidence = [];
   const server = createServer(async (req, res) => {
+    if (req.url === "/api/version") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ capabilities: SERVER_CAPABILITIES })); }
     let raw = ""; for await (const chunk of req) raw += chunk;
     const path = req.url;
     let data = { item, gate: { ready: false, blockers: [] }, policy: { checks: [command], sandboxOnly: false } };
@@ -72,6 +75,7 @@ function leakyCheck(root, workspace, exit) {
 }
 
 for (const exit of [0, 1]) test(`a ${exit ? "failing" : "passing"} local check sees no credentials and uploads none`, async (t) => {
+  if (!canInspectSlots(t)) return;
   const g = await fixture(t, (root, workspace) => leakyCheck(root, workspace, exit));
   assert.equal((await g.run(["start", "t1"], g.source)).status, 0);
   assert.match(git(g.workspace, "config", "--get-regexp", "extraheader"), new RegExp(WRITE), "claim stored the write token in the workspace");
@@ -83,10 +87,11 @@ for (const exit of [0, 1]) test(`a ${exit ? "failing" : "passing"} local check s
   const tail = g.evidence[0].outputTail;
   const names = tail.split("\n").map((line) => /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(line)?.[1]).filter(Boolean);
 
-  // The environment: what toolchains need, nothing named ATELIER_*, and none
+  // The environment: toolchains and slot coordination only, and none
   // of the caller's other credentials.
   for (const name of ["PATH", "HOME", "LANG", "npm_config_registry"]) assert.ok(names.includes(name), `${name} reaches the check`);
-  assert.deepEqual(names.filter((n) => n.startsWith("ATELIER_")), []);
+  assert.ok(names.includes("ATELIER_TEST_LEASE"));
+  assert.deepEqual(names.filter((n) => n.startsWith("ATELIER_") && !["ATELIER_TEST_LEASE", "ATELIER_TEST_SLOTS", "ATELIER_TEST_PRIORITY"].includes(n)), []);
   assert.deepEqual(names.filter((n) => /token|secret|key|auth|passw|credential/i.test(n)), []);
   assert.ok(!names.includes("SSH_AUTH_SOCK"));
   for (const value of Object.values(OTHER)) assert.ok(!tail.includes(value), `${value} is not in the evidence`);
@@ -102,6 +107,7 @@ for (const exit of [0, 1]) test(`a ${exit ? "failing" : "passing"} local check s
 });
 
 test("a check still runs its toolchain: node and git from PATH, a temporary folder, its own HOME", async (t) => {
+  if (!canInspectSlots(t)) return;
   const command = 'node -e "process.exit(0)" && git --version && d=$(mktemp -d) && rmdir "$d" && export HOME="$PWD/.home" && test "$HOME" = "$PWD/.home"';
   const f = await fixture(t, command);
   assert.equal((await f.run(["start", "t1"], f.source)).status, 0);
