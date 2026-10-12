@@ -97,6 +97,8 @@ function serve(fork, { state = null, closeAt = null, refuseClaim = false, blockF
       if (parts[1] === "version") [status, json] = [200, { commit: "0".repeat(40), routeLevel: ROUTE_LEVEL }];
       else if (parts[1] === "config") [status, json] = [200, { ownerActor: "owner", ownerName: "Owner", runner: RUNNER, tokenId: "runner-token-id" }];
       else if (req.method === "GET" && parts[1] === "projects" && parts[2] === PROJECT && parts.length === 3) [status, json] = [200, { project: { name: PROJECT, policy: {} } }];
+      // A build merges current main before it submits (t435): main is the fork's own.
+      else if (req.method === "POST" && parts[1] === "projects" && parts[2] === PROJECT && parts[3] === "baseline-token" && parts.length === 4) [status, json] = [200, { remote: fork.remote, token: "read-secret", defaultBranch: "main" }];
       else if (parts[1] === "projects" && parts[2] === PROJECT && parts[3] === "items" && parts[4] === "t1") {
         requests.push(`${req.method} ${parts[5] ?? "item"}`);
         [status, json] = answer(req.method, parts[5], body);
@@ -177,9 +179,10 @@ for (const state of STATES) test(`a task ${state} during its push ends the job w
   t.after(server.close);
   const r = await run(t, { fork, server });
   assert.match(r.log, new RegExp(`task ${PROJECT}/t1 ${label(state).replace(/[()]/g, "\\$&")}; workspace and commits preserved`));
-  // One claim, finish's read of the task, the refused push, then the read
+  // One claim, finish's read of the task and the review notice's baseline
+  // request, the refused push, then the read
   // that answered the state; no push recorded, nothing released or submitted.
-  assert.deepEqual(r.requests, ["POST claim", "GET item", "GET item"]);
+  assert.deepEqual(r.requests, ["POST claim", "GET item", "POST base-token", "GET item"]);
   assert.ok(existsSync(fork.marker), "the fork refused the push");
   assert.equal(r.forkHead, fork.seedHead);
   assert.notEqual(r.head, fork.seedHead, "the harness's commit stays in the workspace");
@@ -198,7 +201,7 @@ for (const state of STATES) test(`a task ${state} during finish, after a success
   const r = await run(t, { fork, server });
   assert.match(r.log, new RegExp(`task ${PROJECT}/t1 ${label(state).replace(/[()]/g, "\\$&")}; workspace and commits preserved`));
   // The push went through and was recorded; the check step's read answered the state.
-  assert.deepEqual(r.requests, ["POST claim", "GET item", "POST push", "GET item"]);
+  assert.deepEqual(r.requests, ["POST claim", "GET item", "POST base-token", "POST push", "GET item"]);
   assert.equal(r.forkHead, r.head);
   assert.equal(server.item.head, r.head);
   assert.notEqual(r.head, fork.seedHead);

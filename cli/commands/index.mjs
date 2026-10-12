@@ -6,9 +6,11 @@ import command_approvals from "./approvals.mjs";
 import command_approve from "./approve.mjs";
 import command_area from "./area.mjs";
 import command_base_token from "./base-token.mjs";
+import command_baseline_token from "./baseline-token.mjs";
 import command_block from "./block.mjs";
 import command_board from "./board.mjs";
 import command_check from "./check.mjs";
+import command_check_log from "./check-log.mjs";
 import command_claim from "./claim.mjs";
 import command_decide from "./decide.mjs";
 import command_decisions from "./decisions.mjs";
@@ -52,6 +54,7 @@ import command_revert from "./revert.mjs";
 import command_review from "./review.mjs";
 import command_review_claim from "./review-claim.mjs";
 import command_review_release from "./review-release.mjs";
+import command_review_request from "./review-request.mjs";
 import command_review_unparsable from "./review-unparsable.mjs";
 import command_run_report from "./run-report.mjs";
 import command_runner from "./runner.mjs";
@@ -62,6 +65,7 @@ import command_showcase from "./showcase.mjs";
 import command_slots from "./slots.mjs";
 import command_start from "./start.mjs";
 import command_status from "./status.mjs";
+import command_stuck from "./stuck.mjs";
 import command_submit from "./submit.mjs";
 import command_sync from "./sync.mjs";
 import command_token from "./token.mjs";
@@ -80,9 +84,11 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/approve.mjs", run: command_approve },
   { path: "cli/commands/area.mjs", run: command_area },
   { path: "cli/commands/base-token.mjs", run: command_base_token },
+  { path: "cli/commands/baseline-token.mjs", run: command_baseline_token },
   { path: "cli/commands/block.mjs", run: command_block },
   { path: "cli/commands/board.mjs", run: command_board },
   { path: "cli/commands/check.mjs", run: command_check },
+  { path: "cli/commands/check-log.mjs", run: command_check_log },
   { path: "cli/commands/claim.mjs", run: command_claim },
   { path: "cli/commands/decide.mjs", run: command_decide },
   { path: "cli/commands/decisions.mjs", run: command_decisions },
@@ -126,6 +132,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/review.mjs", run: command_review },
   { path: "cli/commands/review-claim.mjs", run: command_review_claim },
   { path: "cli/commands/review-release.mjs", run: command_review_release },
+  { path: "cli/commands/review-request.mjs", run: command_review_request },
   { path: "cli/commands/review-unparsable.mjs", run: command_review_unparsable },
   { path: "cli/commands/run-report.mjs", run: command_run_report },
   { path: "cli/commands/runner.mjs", run: command_runner },
@@ -136,6 +143,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/slots.mjs", run: command_slots },
   { path: "cli/commands/start.mjs", run: command_start },
   { path: "cli/commands/status.mjs", run: command_status },
+  { path: "cli/commands/stuck.mjs", run: command_stuck },
   { path: "cli/commands/submit.mjs", run: command_submit },
   { path: "cli/commands/sync.mjs", run: command_sync },
   { path: "cli/commands/token.mjs", run: command_token },

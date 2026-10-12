@@ -32,7 +32,7 @@ const spec: CommandSpec = {
       "--head SHA": "the full revision to accept first, when the task is submitted and not yet accepted",
       "--approve": "with --head, records the owner's review of that revision, which is not the independent review",
       "--note TEXT": "with --approve, the review's note",
-      "--override-review REASON": "with --head, accepts with the owner's override of a missing independent review, once allowed on the task's page with the Access sign-in or the confirmation secret",
+      "--override-review REASON": "with --head, accepts with the owner's override of a missing independent review, once allowed on the task's page with the Access sign-in or the confirmation secret; --as H/M names the harness/model overriding for the owner",
       "--policy-changed-ok": "lands a change that touches paths the ControlPlane policy began to protect after acceptance, once that change of policy is reviewed",
       "--cancel": "ends an interrupted merge, so the task's owner can push again",
       "--discard-local": "with --cancel, removes the unpublished merge commit from the checkout",

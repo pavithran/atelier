@@ -89,7 +89,7 @@ dashboard, made before the secrets below so the owner is never locked out:
    ```
 
    These are every path the Worker serves to the signed-in owner: Home, the
-   sign-in page and its token form, Decisions, Studio, Flow, History, the
+   sign-in page, Decisions, Studio, Flow, History, the
    Models and Usage pages and the Models form, the old `/projects` address and
    the showcase form under it, the task forms under `/ui`, and each project's
    area under `/p`. A new owner page needs its path added here.
@@ -122,11 +122,16 @@ audience must be the team and the application, and its email claim must name
 application, does not vouch. Any route that needs a sign-in is refused without
 that vouching, even a request carrying a session cookie, so the pages hold
 even if the Access application stops covering the server. `/login` is behind
-the check too, form and all: the server token cannot be tried without Access's
-sign-in first, which closes the open token form the 2026-10-06 audit noted.
+the check too, and takes no server token there, which closes the open token
+form the 2026-10-06 audit noted.
 The public pages (`/`, `/showcase`, `/how`, `/live.js`), the sign-out form and
-the `/api` routes stay open in the Worker, and signing in takes both, Access first
-and the server token after. With any of the three unset the server stands as
+the `/api` routes stay open in the Worker. Behind Access the owner's verified
+assertion is the sign-in: `/login`, or any owner page opened without a session,
+starts the thirty-day session at once, with no token form. A request from
+another site starts none; the hop back from Access's own prompt gets a page
+that reloads the address from the server's origin, where the session starts.
+Sign out ends the session; the next owner page opened under the same Access
+sign-in starts a new one. With any of the three unset the server stands as
 it always has, without the second check; a value that is set but unusable,
 such as an issuer without `https://`, logs a warning once rather than quietly
 leaving the pages unguarded.
@@ -165,8 +170,10 @@ summary 600, a report or a check's command 500, a check's output 4,000. The
 head a push reports must be a commit hash.
 Creating tasks, owner decisions, project settings, model
 registry access, dispatch configuration and token management require the
-owner token. Agent tokens cannot sign in to the browser. Signing in to the
-browser with the owner token starts a session: a random id, sent only in the
+owner token. Agent tokens cannot sign in to the browser. On a server without
+Cloudflare Access, signing in to the browser means pasting the owner token at
+`/login`; behind Access the owner's Access sign-in starts the session itself
+(above). Either way the session is a random id, sent only in the
 cookie, whose hash the Worker stores with a thirty day expiry it enforces.
 Sign out, in the rail of every page, ends the session at once. The token
 itself is never a cookie. Events from agent
@@ -277,8 +284,9 @@ The fields travel in `PUT /api/projects/NAME` as `commitName`, `commitEmail`,
 `policy.commitIdentity`. The identity fields (`commitName`, `commitEmail`,
 `agentEmails`, `privateEmails`, `publicMirrors`) came with route level 24
 (t451, capability `projects.commit-identity.v1`); `publicMirrorDestinations`,
-`privatePaths` and `privatePatterns` with route level 28 (t433, capability
-`projects.publication-policy.v1`, `src/route-level.ts`). `init` requires both
+`privatePaths` and `privatePatterns` with the named capability
+`projects.publication-policy.v1` (t433, `src/capability-declarations.ts`),
+which has no route level, so a server reporting only a level is refused. `init` requires both
 and `publish REMOTE` the second, so either refuses a server that lacks them,
 since an older server would not record or return these fields; bare
 `publish` needs neither.

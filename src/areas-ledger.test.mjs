@@ -70,7 +70,8 @@ test('assign, edit, clear and remove areas, including closed tasks and legacy ta
 test('board snapshot uses actual gates and only active landing leases', t => {
   const { ledger: l, db } = setup(t);
   l.newItem('Submitted with no evidence', [], 'owner');
-  db.prepare("UPDATE items SET state = 'submitted', head = 'abc', owner = 'codex/gpt-6-astra'").run();
+  l.claim('t1', 'codex/gpt-6-astra');
+  db.prepare("UPDATE items SET state = 'submitted', head = 'abc'").run();
   assert.equal(l.board().facts.t1.ready, false);
   db.prepare("INSERT INTO meta (key, value) VALUES ('landing-lease', ?)").run(JSON.stringify({ item: 't1', holder: 'owner', at: '2020-01-01' }));
   assert.equal(l.board().facts.t1.landing, false);
