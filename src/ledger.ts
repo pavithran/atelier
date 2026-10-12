@@ -3215,6 +3215,25 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // Newest first. `before` pages back: only events with a lower seq than it.
+  // Read-only diagnostic snapshot: no tick, lease renewal or status observation.
+  stuckSnapshot() {
+    const items = this.items();
+    return {
+      items, events: this.events(undefined, Number.MAX_SAFE_INTEGER),
+      coreFiles: this.project().policy.coreFiles,
+      lease: this.readProjectLanding(),
+      workflows: items.flatMap((item) => {
+        const record = this.landingWorkflowOf(item.id);
+        return record ? [{ item: item.id, record }] : [];
+      }),
+      openReviewItems: this.sql.exec(`SELECT DISTINCT r.item FROM review_requests r JOIN items i ON i.id = r.item WHERE r.state = 'open' AND r.superseded IS NULL AND r.head = i.head`).toArray().map((r) => String(r.item)),
+      reviews: this.sql.exec(`SELECT id, item, head, state, claimedBy, claimedAt, runner FROM review_requests WHERE state = 'claimed' AND superseded IS NULL`).toArray().map((r) => ({
+        id: Number(r.id), item: String(r.item), head: String(r.head),
+        claimedBy: String(r.claimedBy), claimedAt: String(r.claimedAt), runner: r.runner as string | null,
+      })),
+    };
+  }
+
   events(id?: string, limit = 200, before?: number): LedgerEvent[] {
     const below = before === undefined ? Number.MAX_SAFE_INTEGER : before;
     const rows = id
