@@ -2403,48 +2403,94 @@ export async function runnerReady() {
   if (!process.env[RELOAD_HANDOFF]) return;
   delete process.env[RELOAD_HANDOFF];
   if (!process.connected || !process.send) throw new Error("reload IPC channel is missing");
+  // Losing the waiting parent (including SIGKILL) ends this runner too.
+  process.once("disconnect", () => process.kill(process.pid, "SIGHUP"));
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("reload release timed out")), 60_000);
-    process.once("disconnect", () => { clearTimeout(timer); resolve(); });
+    process.on("message", function release(message) {
+      if (message?.type !== "runner-release") return;
+      clearTimeout(timer);
+      process.off("message", release);
+      process.channel?.unref();
+      resolve();
+    });
     process.send({ type: "runner-ready" }, (error) => {
       if (error) { clearTimeout(timer); reject(error); }
     });
   });
 }
 
-// The replacement is not a job child: it must survive the old runner's exit
-// cleanup. On failure, kill it and wait for its exit before resuming work.
+// launchd identifies its jobs through XPC_SERVICE_NAME. Other supervisors
+// that restart on exit can opt in explicitly. Never spawn a competing runner.
+export function runnerSupervised(env) {
+  return env.ATELIER_RUNNER_SUPERVISED === "1" ||
+    (!!env.XPC_SERVICE_NAME && env.XPC_SERVICE_NAME !== "0");
+}
+
+// Without a supervisor, remain an attached waiting parent. Temporarily own
+// signals so the idle runner's second-interrupt handler cannot orphan a child.
+// A startup failure kills and reaps the replacement before restoring polling.
 export async function reexecSelf(env, { argv = process.argv, execArgv = process.execArgv, execPath = process.execPath, readyTimeoutMs = 60_000 } = {}) {
+  if (runnerSupervised(env)) {
+    console.log(`runner: supervisor restart: was ${short(env[RELOADED_FROM])}, target ${short(env[RELOAD_TARGET])}`);
+    process.exit(0);
+  }
   const child = spawn(execPath, [...execArgv, ...argv.slice(1)], {
     env: { ...env, [RELOAD_HANDOFF]: "1" },
-    stdio: ["inherit", "inherit", "inherit", "ipc"], detached: true,
+    stdio: ["inherit", "inherit", "inherit", "ipc"],
   });
-  await new Promise((resolve, reject) => {
-    let failure;
-    const fail = (error) => {
-      if (failure) return;
-      failure = error;
-      clearTimeout(timer);
-      if (child.pid) child.kill("SIGKILL");
-      else reject(error);
-    };
-    const timer = setTimeout(() => fail(new Error("replacement runner readiness timed out")), readyTimeoutMs);
-    child.on("error", fail);
-    child.once("exit", (code, signal) => {
-      clearTimeout(timer);
-      reject(failure ?? new Error(`replacement runner exited before ready (${signal ?? code})`));
-    });
-    child.on("message", (message) => {
-      if (failure || message?.type !== "runner-ready") return;
-      clearTimeout(timer);
-      resolve();
-    });
+  const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
+  const previous = signals.map((signal) => process.rawListeners(signal));
+  let interrupted = null, ready = false, releasing = false, failure;
+  const forwards = signals.map((signal) => () => {
+    const repeated = interrupted !== null;
+    interrupted ??= signal;
+    child.kill(repeated ? "SIGKILL" : signal);
   });
-  // The old runner is idle and cannot resume its loop after this point.
-  // Closing IPC releases the initialized replacement to poll for work.
-  child.disconnect();
-  child.unref();
-  process.exit(0);
+  signals.forEach((signal, i) => {
+    process.removeAllListeners(signal);
+    process.on(signal, forwards[i]);
+  });
+  const cleanupChild = () => child.kill("SIGKILL");
+  process.once("exit", cleanupChild);
+  try {
+    await new Promise((resolve, reject) => {
+      const fail = (error) => {
+        if (failure) return;
+        failure = error;
+        clearTimeout(timer);
+        if (child.pid) child.kill("SIGKILL");
+        else reject(error);
+      };
+      const timer = setTimeout(() => fail(new Error("replacement runner readiness timed out")), readyTimeoutMs);
+      child.on("error", fail);
+      child.once("exit", (code, signal) => {
+        clearTimeout(timer);
+        if (ready || interrupted) {
+          const exitSignal = signal ?? interrupted;
+          process.exit(exitSignal ? { SIGINT: 130, SIGTERM: 143, SIGHUP: 129, SIGKILL: 137 }[exitSignal] ?? 1 : code ?? 1);
+        }
+        reject(failure ?? new Error(`replacement runner exited before ready (${signal ?? code})`));
+      });
+      child.on("message", (message) => {
+        if (failure || releasing || message?.type !== "runner-ready") return;
+        releasing = true;
+        // Even an interrupted startup needs release so its aborted runner
+        // loop can finish. It must not wait out the readiness deadline.
+        child.send({ type: "runner-release" }, (error) => {
+          if (error) { fail(error); return; }
+          clearTimeout(timer);
+          ready = true;
+        });
+      });
+    });
+  } finally {
+    process.off("exit", cleanupChild);
+    signals.forEach((signal, i) => {
+      process.off(signal, forwards[i]);
+      for (const listener of previous[i]) process.on(signal, listener);
+    });
+  }
 }
 
 // What an idle runner does about the deployed commit: nothing while the

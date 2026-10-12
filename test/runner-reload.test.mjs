@@ -4,11 +4,11 @@
 // arguments, and until then says once that it is behind.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { RELOADED_FROM, planFilePath, reexecSelf, reloadCheck, runRunner, runnerCheckout } from "../cli/runner.mjs";
+import { RELOADED_FROM, runnerSupervised, planFilePath, reexecSelf, reloadCheck, runRunner, runnerCheckout } from "../cli/runner.mjs";
 import { fileURLToPath } from "node:url";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 
@@ -266,4 +266,106 @@ test("real replacement waits for readiness, preserves arguments and environment,
   assert.match(result.stdout, /reloaded: was aaaaaaaa, now bbbbbbbb/);
   assert.equal(lines.filter((line) => line === 'replacement polled').length, 3);
   assert.doesNotMatch(result.stdout + result.stderr, /old resumed|reload loop|reloading:/);
+});
+
+
+test("supervised reload exits without spawning a replacement; supervisor restarts the same command", (t) => {
+  const s = setup(t);
+  assert.equal(runnerSupervised({ XPC_SERVICE_NAME: "zone.atelier.runner" }), true);
+  assert.equal(runnerSupervised({ XPC_SERVICE_NAME: "0" }), false);
+  assert.equal(runnerSupervised({ ATELIER_RUNNER_SUPERVISED: "1" }), true);
+  const script = join(s.dir, "supervised.mjs"), marker = join(s.dir, "restarted");
+  writeFileSync(script, `
+    import { existsSync, writeFileSync } from 'node:fs';
+    import { reexecSelf } from ${JSON.stringify(new URL('../cli/runner.mjs', import.meta.url).href)};
+    if (!existsSync(${JSON.stringify(marker)})) {
+      writeFileSync(${JSON.stringify(marker)}, 'updated checkout');
+      await reexecSelf({ ...process.env, XPC_SERVICE_NAME: 'zone.atelier.runner', ATELIER_RUNNER_RELOADED_FROM: '${OLD}', ATELIER_RUNNER_RELOAD_TARGET: '${NEW}' }, { execPath: '/must-not-spawn' });
+      throw new Error('old resumed');
+    }
+    console.log('supervisor started updated runner ' + process.argv.slice(2).join(' '));
+  `);
+  const argv = [script, 'runner', '--integrate', '--name', 'home:test'];
+  const first = spawnSync(process.execPath, argv, { encoding: 'utf8', timeout: 5000 });
+  assert.equal(first.status, 0, first.stderr);
+  assert.match(first.stdout, /supervisor restart: was aaaaaaaa, target bbbbbbbb/);
+  const second = spawnSync(process.execPath, argv, { encoding: 'utf8', timeout: 5000 });
+  assert.equal(second.status, 0, second.stderr);
+  assert.match(second.stdout, /supervisor started updated runner runner --integrate --name home:test/);
+  assert.doesNotMatch(second.stdout, /supervisor restart/);
+});
+
+for (const phase of ['initializing', 'released']) {
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    test(`attached replacement stops on ${signal} while ${phase}`, async (t) => {
+      const s = setup(t), next = join(s.dir, 'attached.mjs');
+      const runner = new URL('../cli/runner.mjs', import.meta.url).href;
+      writeFileSync(next, `
+        import { runnerReady } from ${JSON.stringify(runner)};
+        process.on('${signal}', () => { console.log('child stopped'); process.exit(0); });
+        ${phase === 'released' ? 'await runnerReady();' : ''}
+        console.log('child pid ' + process.pid);
+        setInterval(() => {}, 1000);
+      `);
+      const parent = spawn(process.execPath, ['--input-type=module', '-e', `
+        import { reexecSelf } from ${JSON.stringify(runner)};
+        // Exercise the real runner's existing signal handler too.
+        process.on('${signal}', () => { throw new Error('old handler ran'); });
+        await reexecSelf({ ...process.env, XPC_SERVICE_NAME: '0', ATELIER_RUNNER_SUPERVISED: '0' }, {
+          execArgv: [], argv: [process.execPath, ${JSON.stringify(next)}], readyTimeoutMs: 5000,
+        });
+        console.log('old resumed');
+      `], { stdio: ['ignore', 'pipe', 'pipe'] });
+      t.after(() => parent.kill('SIGKILL'));
+      let output = '', errors = '', childPid;
+      parent.stderr.on('data', chunk => { errors += chunk; });
+      parent.stdout.on('data', chunk => {
+        output += chunk;
+        const match = output.match(/child pid (\d+)/);
+        if (match && !childPid) {
+          childPid = Number(match[1]);
+          process.kill(childPid, 0);
+          parent.kill(signal);
+        }
+      });
+      const result = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { parent.kill('SIGKILL'); reject(new Error('handoff did not stop')); }, 10000);
+        parent.once('exit', (code, signal) => { clearTimeout(timer); resolve({ code, signal }); });
+      });
+      assert.equal(result.code, { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[signal], errors);
+      assert.match(output, /child stopped/);
+      assert.doesNotMatch(output, /old resumed/);
+      assert.throws(() => process.kill(childPid, 0), /ESRCH/);
+    });
+  }
+}
+
+
+test("losing the waiting parent stops the released replacement", async (t) => {
+  const s = setup(t), next = join(s.dir, 'parent-loss.mjs');
+  const runner = new URL('../cli/runner.mjs', import.meta.url).href;
+  writeFileSync(next, `
+    import { runnerReady } from ${JSON.stringify(runner)};
+    process.on('SIGHUP', () => { console.log('parent lost; child stopped'); process.exit(0); });
+    await runnerReady();
+    console.log('released');
+    setInterval(() => {}, 1000);
+  `);
+  const parent = spawn(process.execPath, ['--input-type=module', '-e', `
+    import { reexecSelf } from ${JSON.stringify(runner)};
+    await reexecSelf({ ...process.env, XPC_SERVICE_NAME: '0', ATELIER_RUNNER_SUPERVISED: '0' }, {
+      execArgv: [], argv: [process.execPath, ${JSON.stringify(next)}],
+    });
+  `], { stdio: ['ignore', 'pipe', 'pipe'] });
+  t.after(() => parent.kill('SIGKILL'));
+  let output = '';
+  parent.stdout.on('data', chunk => {
+    output += chunk;
+    if (output.includes('released')) parent.kill('SIGKILL');
+  });
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('orphan kept output open')), 10000);
+    parent.once('close', () => { clearTimeout(timer); resolve(); });
+  });
+  assert.match(output, /parent lost; child stopped/);
 });

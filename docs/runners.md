@@ -435,7 +435,9 @@ holding `cli/atelier.mjs`) now does, it logs `runner: reloading: started from
 OLD, the server runs NEW; starting replacement runner …` and spawns the
 same command line with the same environment. The replacement initializes,
 signals ready over IPC, and waits for the old process to release it before
-polling for work. The old process then exits. The replacement has a new pid.
+polling for work. The old process waits for the attached replacement to exit
+and forwards SIGINT, SIGTERM and SIGHUP, including during startup. The
+replacement has a new pid; Ctrl-C and session end still stop it.
 The new process logs `runner: reloaded: was OLD, now NEW`. Until the checkout
 holds the deployed commit it logs once `runner: behind: …`, with the `git -C
 CHECKOUT pull --ff-only` that updates it, and reloads at its first idle poll
@@ -452,9 +454,12 @@ Reloading works on all supported Node versions (24 and later), without
 `process.execve`. If spawning fails, initialization exits, or readiness takes
 longer than 60 seconds, the old runner logs the failure and keeps running.
 A replacement that times out is killed before the old runner resumes.
-Supervisors must allow the replacement process to survive the original pid's
-exit; a supervisor that kills descendants or starts another runner on that
-exit needs its lifecycle configuration adjusted for this handoff.
+Under launchd (`XPC_SERVICE_NAME`), the idle runner instead logs the old
+and target commits and exits; KeepAlive starts the same command from the
+updated checkout, without a competing child. For other supervisors configured
+to restart on exit, set `ATELIER_RUNNER_SUPERVISED=1`. The supervisor owns
+startup failures in this mode. Terminal runners retain the readiness fallback
+described above; losing their waiting parent also stops the replacement.
 
 Save a config at `~/.config/atelier/runner.json`, or select one with `--config PATH`:
 
