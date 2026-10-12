@@ -64,6 +64,7 @@ import command_showcase from "./showcase.mjs";
 import command_slots from "./slots.mjs";
 import command_start from "./start.mjs";
 import command_status from "./status.mjs";
+import command_stuck from "./stuck.mjs";
 import command_submit from "./submit.mjs";
 import command_sync from "./sync.mjs";
 import command_token from "./token.mjs";
@@ -140,6 +141,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/slots.mjs", run: command_slots },
   { path: "cli/commands/start.mjs", run: command_start },
   { path: "cli/commands/status.mjs", run: command_status },
+  { path: "cli/commands/stuck.mjs", run: command_stuck },
   { path: "cli/commands/submit.mjs", run: command_submit },
   { path: "cli/commands/sync.mjs", run: command_sync },
   { path: "cli/commands/token.mjs", run: command_token },
