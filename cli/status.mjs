@@ -122,7 +122,7 @@ export function formatLocal(local) {
       : `the server's landing lease is held by ${lease.holder} for ${lease.item} since ${lease.since}`;
   const lockText = local.landing.lock ? "a landing is running on this Mac" : "no landing is running on this Mac";
   const leftover = local.leftover
-    ? [`  ${local.leftover} ${local.leftover === 1 ? "workspace" : "workspaces"} of merged or abandoned tasks left here; atelier gc --project ${local.project} previews removing them`]
+    ? [`  ${local.leftover} ${local.leftover === 1 ? "workspace" : "workspaces"} of merged or abandoned tasks left here; atelier clean --project ${local.project} removes those whose work is in main or the ledger`]
     : [];
   return ["On this Mac:", ...local.tasks.map((t) => `  ${localTaskLine(t)}`), ...leftover, `  Landing: ${lockText}; ${leaseText}.`].join("\n");
 }

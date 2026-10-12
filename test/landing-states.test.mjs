@@ -160,7 +160,7 @@ async function landing(t, { fresh = false } = {}) {
     git(other, 'push', '-q', 'origin', 'main');
     return git(other, 'rev-parse', 'HEAD');
   };
-  return { p, git, baseline, fork, checkout, workspace, box, run, revise, H1, start, at, tip, journal, journalFile, rewrite, asked, begin, dir, mergeElsewhere };
+  return { p, cache, git, baseline, fork, checkout, workspace, box, run, revise, H1, start, at, tip, journal, journalFile, rewrite, asked, begin, dir, mergeElsewhere };
 }
 
 // ── a merge on the baseline ─────────────────────────────────────────────────
@@ -205,6 +205,29 @@ for (const fresh of [false, true]) {
     assert.equal(f.journal(), null);
   });
 }
+
+// A merge removes the task's workspace on this Mac once its HEAD is in main
+// or the head Atelier recorded (t561); one with a changed tracked file is
+// kept and named, and a later merge run removes it once it is clean.
+test('a merge removes the task\'s workspace once its work is in main, and keeps one holding more', async (t) => {
+  const f = await landing(t);
+  const ws = join(f.cache, 'work', 'proj', 't1');
+  mkdirSync(join(f.cache, 'work', 'proj'), { recursive: true });
+  f.git(f.p, 'clone', '-q', f.fork, ws);
+  f.git(ws, 'config', 'atelier.project', 'proj'); f.git(ws, 'config', 'atelier.item', 't1');
+  writeFileSync(join(ws, 'work.txt'), 'not committed\n');
+  const first = await f.run('merge', 't1');
+  assert.equal(first.status, 0, first.output);
+  assert.equal(f.box.state, 'merged');
+  assert.ok(first.output.includes(`Kept t1's workspace ${ws}: contains changed or untracked files`), first.output);
+  assert.ok(existsSync(ws));
+  // Behind the accepted head, its HEAD is in main.
+  f.git(ws, 'reset', '-q', '--hard', 'HEAD~1');
+  const again = await f.run('merge', 't1');
+  assert.equal(again.status, 0, again.output);
+  assert.ok(again.output.includes(`Removed t1's workspace ${ws}`), again.output);
+  assert.ok(!existsSync(ws));
+});
 
 // The server recorded the merge and the process stopped before it removed
 // the journal. merge --cancel removes it and keeps the merge.
