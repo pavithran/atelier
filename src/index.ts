@@ -1104,8 +1104,11 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // over settles it, finishing the commits the dead run made, before
         // it starts new work.
         const L = ledgerOf(env, p);
-        if (c.token?.runner && offer) await L.runnerPoll(c.token, offer);
-        const [held, { waiting, reviews }] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), L.queued(polls)]);
+        // A runner token's poll records its offer with the polls it is
+        // judged with, and answers in the same call, so its claim is judged
+        // as its offer was (t540).
+        const queue = c.token?.runner && offer ? await L.runnerPoll(c.token, offer, polls) : null;
+        const [held, { waiting, reviews }] = await Promise.all([offer ? L.heldJobs(offer.runner) : Promise.resolve([]), queue ?? L.queued(polls)]);
         return [...held, ...waiting, ...reviews].map((item) => ({ project: p.name, item }));
       }
       catch { unreadable.push(p.name); return []; }
@@ -1163,12 +1166,15 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       try { return await action(); }
       catch (error) { unavailable.push(`${source}: ${String((error as Error).message ?? error)}`); return null; }
     }
-    const [snapshot, offers, runs, projects] = await Promise.all([
-      read<Snapshot>("project ledger", () => L.stuckSnapshot()),
+    // The runner offers are read first and recorded in the project's ledger
+    // as its snapshot is taken, so the report judges orphaned claims with the
+    // polls the queue and the claim check read at that moment (t540).
+    const [offers, runs, projects] = await Promise.all([
       read("runner offers", () => index(env).runnerOffers()),
       read("run reports", () => index(env).runs(Number.MAX_SAFE_INTEGER)),
       read("project index", () => index(env).projects()),
     ]);
+    const snapshot = await read<Snapshot>("project ledger", () => L.stuckSnapshot(offers?.map(({ runner, at }) => ({ runner, at }))));
     if (snapshot) await Promise.all(snapshot.workflows.map(async (w) => {
       const status = await read(`Workflow ${w.record.instance}`, async () => (await (await env.LANDING_WORKFLOW.get(w.record.instance)).status()).status);
       w.status = status ?? "unknown";
