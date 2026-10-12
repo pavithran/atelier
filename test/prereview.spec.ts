@@ -42,6 +42,14 @@ async function setup(project: string, p: ProjectPolicy = policy) {
   await index().putModel(entry("opus-5.5", "claude-code"));
   await offer(["build", "review", "prereview"]);
   const L = ledger(project);
+  // No live Artifacts service: tests that exercise baseline polling replace
+  // this unavailable read with a changing in-memory repository below.
+  await runInDurableObject(L as unknown as DurableObjectStub<Ledger>, async (instance: Ledger) => {
+    const internal = instance as unknown as { env: typeof env };
+    internal.env = { ...internal.env, ARTIFACTS: {
+      async get() { throw new Error("baseline unavailable in this test"); },
+    } } as unknown as typeof env;
+  });
   const record = { name: project, repo: `${project}--baseline`, policy: p, createdAt: new Date().toISOString() };
   await L.setProject(record, "owner");
   await index().registerProject(record);
@@ -627,9 +635,9 @@ for (const [label, change] of [
   }
 }
 
-for (const outcome of ["passed", "conflict"]) {
-  it(`asks a new pre-review after main moves following a ${outcome}, without a merge event`, async () => {
-    const { L, t1, t2 } = await landing(`pre-settled-main-${outcome}`);
+for (const workflow of [false, true]) for (const outcome of ["passed", "conflict"]) {
+  it(`asks a new pre-review after main moves following a ${outcome}, without a merge event (${workflow ? "Workflow" : "CLI"})`, async () => {
+    const { L, t1, t2 } = await landing(`pre-settled-main-${outcome}-${workflow}`);
     const c = await claim(L, t2);
     if (outcome === "passed") await verdict(L, t2, c, true);
     else await L.releaseReview(t2, GPT, outcomeNote({ outcome: "conflict", detail: "conflict", main: MAIN }), true, c.request);
@@ -637,8 +645,28 @@ for (const outcome of ["passed", "conflict"]) {
     await L.renewProjectLanding(t1, "owner");
     expect(await views(L, t2)).toHaveLength(1);
     const moved = "e".repeat(40);
-    await L.noteMainHead(moved);
-    await L.queueProjectLanding(t2, "owner");
+    const instanceId = workflow ? "wf-main-moved" : undefined;
+    if (instanceId) await L.setLandingWorkflow(t2, instanceId, "owner", "local");
+    // Only the baseline moves: no noteMainHead or merge event informs the
+    // ledger. Its normal polling path must discover the new identity.
+    await runInDurableObject(L as unknown as DurableObjectStub<Ledger>, async (instance: Ledger) => {
+      const internal = instance as unknown as { env: typeof env };
+      const original = internal.env;
+      let reads = 0;
+      internal.env = { ...original, ARTIFACTS: {
+        async get(name: string) {
+          expect(name).toBe((await instance.project()).repo);
+          return {
+            async log(options: unknown) { expect(options).toEqual({ limit: 1 }); reads++; return [{ hash: moved }]; },
+            [Symbol.dispose]() {},
+          };
+        },
+      } } as unknown as typeof env;
+      try {
+        await instance.queueProjectLanding(t2, "owner", false, instanceId);
+        expect(reads).toBe(1);
+      } finally { internal.env = original; }
+    });
     await L.renewProjectLanding(t1, "owner");
     expect(await L.mergeGeneration()).toBe(generation);
     const rows = await views(L, t2);
@@ -648,7 +676,7 @@ for (const outcome of ["passed", "conflict"]) {
     const next = await claim(L, t2, GPT, moved);
     expect(next.request).not.toBe(c.request);
     await verdict(L, t2, next, true, [], { main: moved, mainNow: moved });
-    await L.queueProjectLanding(t2, "owner");
+    await L.queueProjectLanding(t2, "owner", false, instanceId);
     expect(await views(L, t2)).toHaveLength(2);
     expect(await queueIds(L)).toContain(t2);
   });

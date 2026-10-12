@@ -504,9 +504,12 @@ defect is found before a task's turn rather than after it spends the lease.
 This replaces the orchestrator's hand-run `prereview.brief`. Every ask of the
 landing queue, by `atelier land --wait` or a landing Workflow, and every
 renewal of the lease asks what is missing: one request per waiter and
-binding (its recorded head, the criteria binding, its contributors and how
-many merges main has had), never a second for the same binding. A waiter
-whose landing stops asking, gives up its place or closes is no longer
+binding (its recorded head, the criteria binding, its contributors, main's
+actual SHA and how many merges main has had), never a second for the same
+binding. Polling reads the baseline again, so a push without a recorded
+merge gives a settled pre-review a fresh binding. If that read is unavailable,
+the last observation remains; claims and verdicts still require a fresh read.
+A waiter whose landing stops asking, gives up its place or closes is no longer
 pre-reviewed: the queue's list of jobs and the claim check this themselves,
 so a waiter that expired is never offered to a runner even when no landing
 call has come since. While no lease is live, a pending pre-review waits.
@@ -518,6 +521,8 @@ that a live runner offers for the `prereview` job count. A runner whose config t
 `review` advertises `prereview` too. While no live runner advertises it,
 nothing is asked. A task with a gate review request open gets no
 pre-review, and a runner takes the gate's reviews before any pre-review.
+Pool changes withdraw open pre-reviews for models held from reviewing;
+claims and verdicts recheck that standing before they can affect the queue.
 
 The claim binds the request to main's head as the server reads it from the
 baseline then; a claim made while it cannot be read is refused and the

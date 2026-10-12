@@ -3334,6 +3334,20 @@ export class Ledger extends DurableObject<Env> {
       const index = this.env.LEDGER.get(this.env.LEDGER.idFromName("__index"));
       [pool, offers] = await Promise.all([index.models(), index.runnerOffers()]) as unknown as [ModelEntry[], SeenOffer[]];
     } catch { /* the index could not be read: nothing new is asked this time */ }
+    // A baseline push need not record item.merged (for example sync). Read
+    // main here, on both CLI and Workflow polls, even when the previous
+    // pre-review settled: otherwise nothing would claim again to discover
+    // that the deduplication binding has changed.
+    const now = new Date();
+    const lease = this.projectLanding();
+    if (pool && offers && liveOffers(offers, now).some((o) => (o.jobs ?? []).includes(PREREVIEW_JOB))
+      && prereviewCandidates(lease, !!lease && this.landingLive(lease, now.toISOString()), this.projectLandingQueue(), now.getTime()).length) {
+      try {
+        using repo = await this.env.ARTIFACTS.get(this.project().repo);
+        const [top] = await repo.log({ limit: 1 });
+        if (top && /^[a-f0-9]{40,64}$/.test(top.hash)) this.setMainHead(top.hash, new Date().toISOString());
+      } catch { /* a baseline read cannot fail the landing; claims and verdicts revalidate main */ }
+    }
     try { this.prereviewTick(pool, offers, new Date()); }
     catch (err) { console.error("pre-review tick failed", (err as Error)?.message ?? String(err)); }
   }
