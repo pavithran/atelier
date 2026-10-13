@@ -36,7 +36,7 @@ import { hooksOff, landingDir, landingJournalFile, oldLandingJournalFile, RECEIP
 import { loadPairs } from "./fresh.mjs";
 import { applyIdentity } from "./identity.mjs";
 import { markerPath } from "./gc.mjs";
-import { absolute, taskLink, waitingCommand } from "./status.mjs";
+import { absolute, overrideTail, taskLink, waitingCommand } from "./status.mjs";
 import { STAGE_LABEL } from "../src/attention.ts";
 import { formatProcesses, liveProcesses, parseLsof, parsePs } from "./procs.mjs";
 import { findStrays } from "./strays.mjs";
@@ -1434,7 +1434,7 @@ export function formatStanding(s, ownerName = "the developer", origin = "") {
   group("Last merges", s.merged.map((m) => `${m.id}  ${at(m.at)}${m.commit ? `  ${m.commit.slice(0, 8)}` : ""}  ${flat(m.title)}${m.line ? `  summary: ${flat(m.line)}` : ""}`));
   // Every merge by override, counted in the heading and one per line under
   // it, each with the link to its page on the server in use (t371).
-  group(`Merged by override: ${(s.overrides ?? []).length}`, (s.overrides ?? []).map((o) => `${o.id}  ${taskLink(origin, s.project.name, o.id)}  ${at(o.at)}  ${flat(o.title)}  reason: ${flat(o.reason)}${o.quote ? `  the developer's words: \u201c${flat(o.quote)}\u201d, relayed by ${flat(o.acting ?? "an unnamed model")}` : ""}`));
+  group(`Merged by override: ${(s.overrides ?? []).length}`, (s.overrides ?? []).map((o) => `${o.id}  ${taskLink(origin, s.project.name, o.id)}  ${at(o.at)}  ${flat(o.title)}${overrideTail(o)}`));
   group("Handoff notes", s.handoffs.map((h) => `${h.id}  ${flat(h.from || "?")} to ${flat(h.to || "?")}, ${at(h.at)}  ${flat(h.note)}`));
   if (lines.length === 1) lines.push("", s.partial?.length ? "Nothing held, waiting, queued or recently merged is shown in the part read." : "Nothing is held, waiting, queued or recently merged.");
   if (s.partial?.length) lines.push("", "Part of this record is not shown:", ...s.partial.map((x) => `  ${flat(x)}`));
