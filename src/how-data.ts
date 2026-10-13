@@ -28,7 +28,7 @@ export const STEPS: Verbed[] = [
   { verb: "Fork", line: "Every task its own fork.", about: "The claim forks the baseline into a workspace for that task alone, with one write token for its holder. The agent commits and pushes there, never to the project." },
   { verb: "Prove", line: "The checks run on the exact head.", about: "`atelier check` runs the required checks on a clean clone of exactly the head Atelier reads from Artifacts, on the machine that asks or, with `--sandbox`, in a Cloudflare container, and only those Observed results count; what an agent says it ran is shown and never counted." },
   { verb: "Review", line: "Another company reviews, or in single-family mode another model.", about: "A change to a protected path needs an approval from a model of another family than every contributor by default; a project set to single-family mode takes a different model of its one company from every contributor, and says so wherever the review shows. No agent reviews its own work." },
-  { verb: "Land", line: "One landing at a time, with a receipt.", about: "The developer accepts one exact head through the gate and it merges, one landing per project at a time, with the task's record attached as a git note." },
+  { verb: "Land", line: "One merge at a time, with a receipt.", about: "The developer accepts one exact head through the gate and it merges, one merge per project at a time under the landing lease, with the task's record attached as a git note." },
 ];
 
 // Where a page sums the five steps up, it says these three words.

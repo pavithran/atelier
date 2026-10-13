@@ -6,7 +6,7 @@ import layout from "../src/layout.css";
 import { HELP_GROUPS } from "../src/usage.ts";
 import { buildStory, type Story } from "../src/graph.ts";
 import { buildImported } from "../src/import/history.ts";
-import { renderShowcase, type ShownProject } from "../src/ui.ts";
+import { FAST_MODE_NOTE, renderShowcase, type ShownProject } from "../src/ui.ts";
 import { signIn } from "./signin.ts";
 
 // The public showcase as an anonymised portfolio (t184): the owner's setting
@@ -408,4 +408,22 @@ it("a project whose whole-record counts fail is still shown, from its recent eve
     await runInDurableObject(L(name), async (instance: object) => { (Object.getPrototypeOf(instance) as Proto).showcaseCounts = real; });
   }
   expect(logged.join("\n")).toContain("showcase: the whole-record counts of counts-fail could not be read: no such table: events_fake");
+});
+
+// Gemini 4 Argon's claims audit of 2026-10-13, finding 8: the showcase
+// counted tasks "landed in fast mode" and nothing said what fast mode is.
+it("the fast-mode count says what fast mode is, and no count appears without fast landings", () => {
+  const evs = [
+    { seq: 1, at: "2026-10-13T12:00:00Z", actor: "pavi", kind: "item.created", itemId: "t1", data: {} },
+    { seq: 2, at: "2026-10-13T12:01:00Z", actor: "codex/gpt-6-astra", kind: "item.claimed", itemId: "t1", data: {} },
+  ].reverse();
+  const story = buildStory("quick", [{ id: "t1", title: "Work", state: "claimed" }] as never, evs as never, "pavi", false, "Quick", { redact: true, ownerLabel: "PAVI" });
+  const shown = (landedFast?: number): ShownProject => ({ project: { name: "quick", repo: "quick", policy: { checks: [], protected: [] }, createdAt: time }, mode: "named", story, allTimeMerged: 20, landedFast });
+  const html = renderShowcase([story], story.tally, "pavi", "PAVI", false, new Map(), [shown(13)]);
+  const count = html.split("landed in fast mode, all time")[0].split("<div").pop()!;
+  expect(count).toContain(`title="${FAST_MODE_NOTE}"`);
+  expect(FAST_MODE_NOTE).toMatch(/with a reason/);
+  expect(FAST_MODE_NOTE).toMatch(/review follows its merge/);
+  expect(FAST_MODE_NOTE).toMatch(/Full mode.*is the default/);
+  expect(renderShowcase([story], story.tally, "pavi", "PAVI", false, new Map(), [shown()])).not.toContain("landed in fast mode");
 });

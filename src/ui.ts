@@ -72,6 +72,10 @@ const clock = (iso: string) => clockTime(iso);
 const href = (...p: string[]) => "/" + p.map(encodeURIComponent).join("/");
 const selectedHref = (project: string, task: string) =>
   `/decisions?project=${encodeURIComponent(project)}&task=${encodeURIComponent(task)}#review`;
+// What the showcase's fast-mode count means (t605, Gemini 4 Argon's claims
+// audit of 2026-10-13, finding 8): said beside the count, which no page
+// explained.
+export const FAST_MODE_NOTE = "Fast mode is a setting the developer turns on with a reason: finished tasks land together after one typecheck, secret scan and test run, each with a receipt, and each review follows its merge. Full mode, where review comes first, is the default.";
 const tag = (label: string, tone = "") => `<span class="tag ${tone}">${e(label)}</span>`;
 
 const ICONS: Record<string, string> = {
@@ -807,7 +811,7 @@ function flowParts(stories: Story[], t: Tally, owner: string, href?: (s: Story) 
     Fork: [`The task gets its own fork in Cloudflare Artifacts, and nobody else can write there. The agent commits and pushes to its fork, never to ${yours} checkout.`, `${plural(t.pushes, "push", "pushes")}`],
     Prove: ["The project's checks run in a fresh clone of exactly the pushed head, on the machine that asks for them; in a Cloudflare container only with --sandbox, or where the project requires it.", `${plural(t.checks, "check")} observed${t.inCloud ? `, ${t.inCloud} in Cloudflare` : ""}`],
     Review: [`Changes to protected files need an approval from a model of another family than every contributor by default, or a different model of the selected company from every contributor in single-family mode; ${yours} own approval does not count. Without one, ${who === "You" ? "you" : who} can accept only by recording an override with its reason.`, `${plural(t.approvals, "approval")}, ${t.sentBack} sent back`],
-    Land: [`${cap(who)} ${who === "You" ? "accept" : "accepts"} one revision on the diff, the evidence and the reviews. It merges into main on ${yours} machine, one landing at a time, with its whole history attached as a git note.`, `${plural(t.accepts, "acceptance")}, ${t.merges} merged`],
+    Land: [`${cap(who)} ${who === "You" ? "accept" : "accepts"} one revision on the diff, the evidence and the reviews. It merges into main on ${yours} machine, one merge at a time, with its whole history attached as a git note.`, `${plural(t.accepts, "acceptance")}, ${t.merges} merged`],
   };
   const journey = STEPS.map((s) => `<li><h3>${e(s.verb)}</h3><p><span class="motto">${e(s.line)}</span> ${e(said[s.verb][0])}</p><span class="n">${e(said[s.verb][1])}</span></li>`).join("");
   const moments = `<section aria-label="Latest moves"><h2>${many ? "Latest moves across projects" : "Latest moves"}</h2><ol class="moments">${momentsList.map((m) =>
@@ -1021,11 +1025,11 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     const families = VENDOR_NAMES.filter(([v]) => v !== "owner" && t.byVendor[v])
       .map(([v, label]) => `<li><i style="--c:var(--m-${v})"></i>${e(label)}</li>`).join("");
     if (!families) return `<li class="show-card idle" id="card-${i + 1}"><h3>${e(shownLabel(c))}</h3><p class="idle-note">No agent has worked here yet.</p></li>`;
-    const figure = (v: number, label: string) => `<div><dt>${label}</dt><dd>${n(v)}</dd></div>`;
+    const figure = (v: number, label: string, title = "") => `<div${title ? ` title="${e(title)}"` : ""}><dt>${label}</dt><dd>${n(v)}</dd></div>`;
     return `<li class="show-card" id="card-${i + 1}">
     <h3>${e(shownLabel(c))}</h3>
     ${c.pulse ? pulseGraph(c.pulse, false) : ""}
-    <dl class="card-figures">${figure(c.pulse?.merges ?? t.merges, "merged, last two weeks")}${c.allTimeMerged === undefined ? "" : figure(c.allTimeMerged, "merged, all time")}${c.landedFast ? figure(c.landedFast, "landed in fast mode, all time") : ""}${figure(c.pulse?.sentBack ?? t.sentBack, "sent back, last two weeks")}${figure(inProgress, "in progress, last two weeks")}</dl>
+    <dl class="card-figures">${figure(c.pulse?.merges ?? t.merges, "merged, last two weeks")}${c.allTimeMerged === undefined ? "" : figure(c.allTimeMerged, "merged, all time")}${c.landedFast ? figure(c.landedFast, "landed in fast mode, all time", FAST_MODE_NOTE) : ""}${figure(c.pulse?.sentBack ?? t.sentBack, "sent back, last two weeks")}${figure(inProgress, "in progress, last two weeks")}</dl>
     <ul class="legend-line" aria-label="Who worked on it">${families}${t.decisions ? `<li><i style="--c:var(--m-owner)"></i>${e(cap(who))}</li>` : ""}</ul>
   </li>`;
   }).join("");

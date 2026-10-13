@@ -30,6 +30,12 @@ workspace, a clone under `~/Library/Caches/ai-projects/cloudflare-git/work/`:
   deadline or interrupt, so nothing the harness started outlives the run.
   A process that leaves the group (`setsid`) is beyond this, and the comment
   in `cli/runner.mjs` says so.
+- **A harness's own sandbox, where the job allows one.** The shipped Codex
+  adapter runs a review in Codex's `read-only` sandbox and a plan in
+  `workspace-write`. A Codex build gets none: the runner refuses a Codex
+  build unless its command is `codex exec --sandbox danger-full-access` (or
+  the sandbox bypass), since the checks need localhost listening, the npm
+  cache and the network (`codexBuildRefusal` in `cli/runner.mjs`).
 - **Checks run in a clean clone**, or in a Cloudflare container with
   `--sandbox`, which is the strongest confinement Atelier has: no developer
   files, no developer network, no developer identity.

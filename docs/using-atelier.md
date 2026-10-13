@@ -18,7 +18,7 @@ about making those decisions well and leaving the rest to the system.
 Every task goes through the same five steps: **Claim** (one holder per
 task), **Fork** (every task its own fork), **Prove** (the checks run on
 the exact head), **Review** (another company reviews, or in single-family mode another
-model) and **Land** (one landing at a time, with a receipt). A task's page shows which step it is at. The developer's
+model) and **Land** (one merge at a time, with a receipt). A task's page shows which step it is at. The developer's
 decisions sit at either end: what is claimed, and what lands. What lands is
 proven, reviewed and recorded.
 
