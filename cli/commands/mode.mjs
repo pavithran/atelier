@@ -20,7 +20,7 @@ export default async function modeCommand() {
   const [, sub] = args._;
   const name = project();
   if (sub === undefined && args._.length === 1) {
-    const r = await call("GET", `${P(name)}/mode`);
+    const r = await call("GET", `${P(name)}/mode`, undefined, OWNER);
     return console.log(r.line);
   }
   if (sub === "fast" && args._.length === 2) {

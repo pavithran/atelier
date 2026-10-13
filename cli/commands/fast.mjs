@@ -8,7 +8,7 @@ export default async function fastCommand() {
   const [, sub, ...rest] = args._;
   const name = project();
   if (sub === "status" && !rest.length) {
-    const r = await call("GET", `${P(name)}/mode`);
+    const r = await call("GET", `${P(name)}/mode`, undefined, OWNER);
     if (args.json) return console.log(JSON.stringify(r, null, 2));
     console.log(r.line);
     for (const line of landedLines(r.landed)) console.log(line);
@@ -19,7 +19,7 @@ export default async function fastCommand() {
   let pairs;
   try { pairs = parsePairs(rest); } catch (err) { die(`${err.message}: atelier fast land tN=SHA [tM=SHA ...]`); }
   if (args.reviewer !== undefined && (typeof args.reviewer !== "string" || !args.reviewer.includes("/"))) die("--reviewer names harness/model");
-  const mode = await call("GET", `${P(name)}/mode`);
+  const mode = await call("GET", `${P(name)}/mode`, undefined, OWNER);
   if (mode.mode !== "fast") die(`${mode.line}: switch with atelier mode fast --reason TEXT before landing fast`);
   const titles = {};
   for (const { id } of pairs) {
