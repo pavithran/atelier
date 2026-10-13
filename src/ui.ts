@@ -2,7 +2,6 @@ import { taskPage } from "./task-page.ts";
 import { renderBoard } from "./board-html.ts";
 import type { BoardSnapshot, Stage } from "./board.ts";
 import { OWNER_CALL_LABEL, STAGE_LABEL, legacyFields, stageCounts, type Attention, type LegacyFields, type OwnerTask } from "./attention.ts";
-import { layersFigure } from "./diagrams.ts";
 import { sessionNoteText, type SessionNote } from "./sessions.ts";
 // Server-rendered pages. Every action is a plain form post and every page
 // reads fully without script; the Studio refreshes itself with a meta
@@ -212,15 +211,17 @@ export function page(title: string, body: string, active = "Decisions", ownerNam
 
 // The shell of the pages anyone can read: no rail, and no link into a signed-in
 // page. `main` is the inner HTML of <main>; `css` is appended after the site's.
-export function publicPage(o: { title: string; description: string; brand: string; nav: [label: string, url: string][]; mainClass: string; main: string; css?: string; head?: string }): string {
+// `night` keeps the page in Night whatever the device prefers, as the
+// owner's pages are; the showcase is drawn that way (d24, the d29 canvas).
+export function publicPage(o: { title: string; description: string; brand: string; nav: [label: string, url: string][]; mainClass: string; main: string; css?: string; head?: string; night?: boolean; bodyClass?: string }): string {
   const nav = o.nav.map(([label, url]) => `<a href="${url}">${e(label)}</a>`).join("");
-  return `<!doctype html><html lang="en" data-theme="night"><head><meta charset="utf-8">
+  return `<!doctype html><html lang="en" data-theme="night"${o.night ? ' data-scheme="night"' : ""}><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark light">${o.head ?? ""}
+<meta name="color-scheme" content="${o.night ? "dark" : "dark light"}">${o.head ?? ""}
 <meta name="description" content="${e(o.description)}">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="${FONTS}">
-<title>${e(o.title)}</title><style>${theme}\n${layout}${o.css ? `\n${o.css}` : ""}</style></head><body class="public">
+<title>${e(o.title)}</title><style>${theme}\n${layout}${o.css ? `\n${o.css}` : ""}</style></head><body class="public${o.bodyClass ? ` ${o.bodyClass}` : ""}">
 <header class="public-bar"><a class="brand" href="${o.brand}">Atelier</a><nav aria-label="Elsewhere">${nav}</nav></header>
 <main id="main" class="${o.mainClass}">${o.main}</main></body></html>`;
 }
@@ -723,13 +724,14 @@ function comparePick(stories: Story[], imported: Map<string, ImportedHistory>): 
   return before ? { before } : {};
 }
 
-// Before and with Atelier, side by side. When one project holds both a
-// substantial history from before its first task and tasks since, that
-// project is shown on both sides: its own git history beside its own
-// Atelier record. Otherwise the git-only project with the largest imported
-// history stands before the record Atelier kept of the shown projects'
-// tasks. `href` names where each card links, the showcase's portfolio cards.
-export function compareBlock(stories: Story[], imported: Map<string, ImportedHistory>, t: Tally, owner: string, who: string, href?: (s: Story) => string): string {
+// Before and with Atelier, side by side, as the showcase's first section after
+// its hero. When one project holds both a substantial history from before its
+// first task and tasks since, that project is shown on both sides: its own git
+// history beside its own Atelier record. Otherwise the git-only project with
+// the largest imported history stands before the record Atelier kept of the
+// shown projects' tasks. Each side says its window only when it is the same
+// project's, and what was not read in full.
+export function compareBlock(stories: Story[], imported: Map<string, ImportedHistory>, t: Tally, _owner: string, who: string): string {
   const pick = comparePick(stories, imported);
   const same = pick.same;
   const before = same ?? pick.before;
@@ -738,47 +740,41 @@ export function compareBlock(stories: Story[], imported: Map<string, ImportedHis
   if (same) t = same.tally;
   const h = imported.get(before.project)!;
   const named = h.lanes.filter((l) => l.label !== NO_AGENT);
-  const bar = h.lanes.map((l) => `<span style="--c:${laneColour(l.label, owner)};width:${((l.count / h.lanes.reduce((n, x) => n + x.count, 0)) * 100).toFixed(2)}%"></span>`).join("");
-  const total = t.agentMoves + t.decisions || 1;
-  const ours = VENDOR_NAMES.filter(([v]) => v !== "owner" && t.byVendor[v])
-    .map(([v]) => `<span style="--c:var(--m-${v});width:${((t.byVendor[v]! / total) * 100).toFixed(2)}%"></span>`).join("")
-    + `<span style="--c:var(--m-owner);width:${((t.decisions / total) * 100).toFixed(2)}%"></span>`;
-  const row = (n: number | string, label: string, dim = false) => `<li${dim ? ' class="none"' : ""}><b>${typeof n === "number" ? n.toLocaleString("en") : e(n)}</b> ${e(label)}</li>`;
+  const n = (v: number) => v.toLocaleString("en");
+  const row = (v: number | null, label: string) => v === null
+    ? `<div class="none"><dt>—</dt><dd>${e(label)}</dd></div>`
+    : `<div><dt>${n(v)}</dt><dd>${e(label)}</dd></div>`;
   const withTitle = withs.map((s) => e(s.title)).join(" and ");
-  const tasks = withs.reduce((n, s) => n + s.threads.length, 0);
+  const tasks = withs.reduce((sum, s) => sum + s.threads.length, 0);
   const reviews = t.approvals + t.sentBack;
   // A share that rounds to 0% or 100% without being exactly that says so.
-  const pct = (n: number, d: number) => {
-    const p = Math.round((n / d) * 100);
-    return p === 0 && n > 0 ? "<1%" : p === 100 && n < d ? ">99%" : `${p}%`;
+  const pct = (a: number, d: number) => {
+    const p = Math.round((a / d) * 100);
+    return p === 0 && a > 0 ? "<1%" : p === 100 && a < d ? ">99%" : `${p}%`;
   };
   // Dates for the same-project card. The commits' span is from the messages'
   // own times; the Atelier side starts at the first thing the record shows.
   const began = same ? [...same.moments].sort((a, b) => a.at.localeCompare(b.at))[0]?.at : undefined;
   const beforeDates = same
-    ? `<p class="meta compare-dates">${e(spanLabel(h.first, h.last))}${h.complete ? "" : " · only the most recent part of the history was read"}</p>` : "";
+    ? `<p class="compare-dates">${e(spanLabel(h.first, h.last))}${h.complete ? "" : " · only the most recent part of the history was read"}</p>` : "";
   const withDates = same && began
-    ? `<p class="meta compare-dates">since ${e(dayLabel(began, false))}${same.partial ? " · only the most recent part of the record was read" : ""} · the same project</p>` : "";
-  const link = (s: Story, beforeSide: boolean) => href ? href(s) : `#${beforeSide && same ? "before-" : ""}${s.project}`;
-  return `<section class="compare" aria-label="Before and with Atelier">
-  <a class="compare-card before" href="${link(before, true)}">
-    <span class="kicker">Before Atelier · from git</span>
-    <h2>${e(before.title)}</h2>
+    ? `<p class="compare-dates">since ${e(dayLabel(began, false))}${same.partial ? " · only the most recent part of the record was read" : ""} · the same project</p>` : "";
+  return `<section class="show-section compare-section" aria-labelledby="compare-h">
+  <h2 class="show-h2" id="compare-h">Git keeps what a commit claims. Atelier keeps what happened.</h2>
+  <div class="compare">
+  <article class="compare-card before">
+    <p class="compare-kicker"><span>Before Atelier · from git</span><span>${e(before.title)}</span></p>
     ${beforeDates}
-    <div class="tally-bar" aria-hidden="true">${bar}</div>
-    <p class="compare-lead"><b>${e(pct(h.attributed, h.total))}</b> of commits name an agent. Git itself keeps no record of what was checked, reviewed or decided.</p>
-    <ul>${row(h.total, `commits${h.complete ? "" : " (the most recent part)"}`)}${row(h.attributed, `name ${plural(named.length, "agent")} in their messages`)}${row("—", "checks tied to a revision", true)}${row("—", "reviews by another model", true)}${row("—", `decisions by ${who}`, true)}</ul>
-    <p class="meta">Git keeps what each commit message claims. It cannot say whether the checks passed on that revision, which model reviewed it, or who decided it should land.</p>
-  </a>
-  <a class="compare-card with" href="${link(withs[0], false)}">
-    <span class="kicker">With Atelier · observed</span>
-    <h2>${withTitle}</h2>
+    <p class="compare-lead"><b>${e(pct(h.attributed, h.total))}</b><span>of commits name an agent. Nothing else about them is recorded.</span></p>
+    <dl>${row(h.total, `commits${h.complete ? "" : " (the most recent part)"}`)}${row(h.attributed, `name ${plural(named.length, "agent")} in their messages`)}${row(null, "checks tied to a revision")}${row(null, "reviews by another model")}${row(null, `decisions by ${who}`)}</dl>
+  </article>
+  <article class="compare-card with">
+    <p class="compare-kicker"><span>With Atelier · observed</span><span>${withTitle}</span></p>
     ${withDates}
-    <div class="tally-bar" aria-hidden="true">${ours}</div>
-    ${reviews ? `<p class="compare-lead"><b>${e(pct(t.sentBack, reviews))}</b> of reviews sent the work back: ${t.sentBack.toLocaleString("en")} of ${reviews.toLocaleString("en")}.</p>` : ""}
-    <ul>${row(tasks, `${tasks === 1 ? "task" : "tasks"} taken, each by one agent on its own fork`)}${row(t.checks, `checks run on a clean copy of the exact revision`)}${row(reviews, `reviews, ${t.sentBack} sending work back`)}${row(t.decisions, `decisions by ${who}`)}${row(t.merges, "merged, with their record attached")}</ul>
-    <p class="meta">Atelier records each step as it happens: who held the task, what ran on which revision, who reviewed it, and the decision that let it land.</p>
-  </a>
+    ${reviews ? `<p class="compare-lead"><b>${e(pct(t.sentBack, reviews))}</b><span>of reviews sent the work back: ${n(t.sentBack)} of ${n(reviews)}.</span></p>` : ""}
+    <dl>${row(tasks, `${tasks === 1 ? "task" : "tasks"} taken, each by one agent on its own fork`)}${row(t.checks, "checks run on a clean copy of the exact revision")}${row(reviews, `reviews, ${n(t.sentBack)} sending work back`)}${row(t.decisions, `decisions by ${who}`)}${row(t.merges, "merged, with their record attached")}</dl>
+  </article>
+  </div>
 </section>`;
 }
 
@@ -890,68 +886,192 @@ function taskStories(cards: ShownProject[]): { card: ShownProject; thread: Story
 // A card's label: the project's title when named, its neutral kind otherwise.
 const shownLabel = (c: ShownProject) => (c.mode === "anonymous" ? cap(c.story.title) : c.story.title);
 
+// One glyph per kind of move in the showcase's feed (d9), in place of a
+// family's colour: the text says who and what, the glyph only sorts the
+// kinds at a glance. Red is for a catch, green for a merge.
+const MOVE_GLYPH: Record<string, [glyph: string, tone: string]> = {
+  "item.claimed": ["□", ""],
+  "item.submitted": ["◇", ""],
+  "item.handoff": ["⇄", "quiet"],
+  "item.dispatched": ["→", "quiet"],
+  "item.abandoned": ["–", "quiet"],
+  "review.rejected": ["▽", "catch"],
+  "review.overridden": ["!", "caution"],
+  "evidence.observed": ["×", "catch"],
+  "item.accepted": ["●", "merge"],
+  "item.merged": ["●", "merge"],
+};
+
+export interface FeedRow { at: string; kind: string; text: string; project: string; times: number; since: string }
+
+// The showcase's latest moves, newest first. An acceptance followed by its
+// merge is one row, and a move repeated back to back (the same words in the
+// same project) is one row that says how many times and over how long
+// (t530). Nothing is counted that the stories do not hold. Moves of one
+// instant keep the ledger's order by their position, newest first, so a merge
+// recorded in the acceptance's millisecond still follows it.
+export function foldMoves(moments: { at: string; kind: string; text: string; item: string; project: string; pos?: number }[], limit = 10): FeedRow[] {
+  const sorted = [...moments].sort((a, b) => b.at.localeCompare(a.at) || (b.pos ?? 0) - (a.pos ?? 0));
+  const joined: Omit<FeedRow, "times" | "since">[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const m = sorted[i], older = sorted[i + 1];
+    if (m.kind === "item.merged" && older?.kind === "item.accepted" && older.item === m.item && older.project === m.project && m.text.startsWith(`${m.item} `)) {
+      joined.push({ at: m.at, kind: m.kind, project: m.project, text: `${older.text}; ${m.text.slice(m.item.length + 1)}` });
+      i++;
+      continue;
+    }
+    joined.push({ at: m.at, kind: m.kind, project: m.project, text: m.text });
+  }
+  const rows: FeedRow[] = [];
+  for (const m of joined) {
+    const last = rows.at(-1);
+    if (last && last.text === m.text && last.project === m.project) { last.times++; last.since = m.at; continue; }
+    if (rows.length === limit) break;
+    rows.push({ ...m, times: 1, since: m.at });
+  }
+  return rows;
+}
+
+// How long a folded row's repeats took, in the largest whole unit.
+function foldSpan(from: string, to: string): string {
+  const min = Math.max(1, Math.round((Date.parse(to) - Date.parse(from)) / 60_000));
+  if (min < 120) return `${min} min`;
+  const hours = Math.round(min / 60);
+  return hours < 48 ? `${hours} h` : `${Math.round(hours / 24)} days`;
+}
+
+// The seven steps a task travels, each said for this owner and counted from
+// the tally the page draws.
+function travelSteps(t: Tally, who: string): string {
+  const n = (v: number) => v.toLocaleString("en");
+  const steps: [name: string, text: string, count: string, tone?: string][] = [
+    ["Planned", `${cap(who)} describes an outcome; it becomes a task with a scope.`, `${n(t.planned)} planned`],
+    ["Claimed", "One agent takes it and gets its own fork. Nobody else can write there.", `${plural(t.claims, "claim")}, ${plural(t.handoffs, "handoff")}`],
+    ["Worked", `The agent pushes to its fork, never to ${who}'s checkout.`, plural(t.pushes, "push", "pushes")],
+    ["Checked", "The checks run in a fresh clone of exactly the pushed head, on the machine that asks for them; in a Cloudflare container only with --sandbox, or where the project requires it.", `${n(t.checks)} observed${t.inCloud ? `, ${n(t.inCloud)} in Cloudflare` : ""}`, "observed"],
+    ["Reviewed", "A model of another family than every contributor approves, or sends it back; in single-family mode, another model of the one company.", `${n(t.approvals)} approved, ${n(t.sentBack)} sent back`],
+    ["Decided", `${cap(who)} sees the diff, the evidence and the reviews, and accepts one revision.`, `${n(t.accepts)} accepted`],
+    ["Merged", `Into main on ${who}'s machine, its history attached as a git note.`, `${n(t.merges)} merged`],
+  ];
+  return `<ol class="travel">${steps.map(([name, text, count, tone], i) =>
+    `<li><span class="travel-n">${i + 1}</span><h3>${name}</h3><p>${e(text)}</p><span class="travel-count${tone ? ` ${tone}` : ""}">${e(count)}</span></li>`).join("")}</ol>`;
+}
+
+// Where Atelier runs, layer by layer, in the canvas's short form; the
+// diagram with every arrow is on /how.
+const RUNS_ON: [layer: string, parts: string[], tone?: string][] = [
+  ["Who acts", ["Browser · the pages", "Terminal · <code>atelier plan \"goal\"</code>", "Orchestrator · starts agents", "Home runner · build, plan, review jobs"]],
+  ["Your Mac", ["the <code>atelier</code> CLI", "one workspace per task, a clone of its fork"]],
+  ["Agents", ["Claude Code · Opus, Sonnet, Fable", "Codex · gpt-6-astra", "Antigravity · Gemini, GPT-OSS", "opencode · GLM, DeepSeek, OpenRouter"]],
+  ["Cloudflare", ["Worker · pages, API, the gate", "Durable Objects · a ledger per project", "Check container · npm registry only", "Artifacts · baseline and task forks"], "cloud"],
+];
+
+const tallyHeadline = (t: Tally, who: string) =>
+  `${e(cap(who))} made ${plural(t.decisions, "decision")}. ${t.agents.length ? `${plural(t.agents.length, "agent")} did the other ${t.agentMoves.toLocaleString("en")} moves.` : "No agent has started yet."}`;
+
 export function renderShowcase(stories: Story[], _total: Tally, owner: string, ownerName: string | null, unavailable = false, imported: Map<string, ImportedHistory> = new Map(), shown?: ShownProject[]): string {
   // Without the server's portfolio view (a direct render), the stories stand
   // as the portfolio themselves, shown named.
   const cards = shown ?? stories.map((s): ShownProject => ({ project: { name: s.project, repo: s.project, policy: { checks: [], protected: [] }, createdAt: "" }, mode: "named", story: s }));
   const total = drawnTotal(stories);
-  const allMerged = cards.some((c) => c.allTimeMerged !== undefined) ? cards.reduce((n, c) => n + (c.allTimeMerged ?? 0), 0) : undefined;
   const who = ownerName || "the owner";
-  const { moments, journey, shown: drawn } = flowParts(stories, total, owner, undefined, who, imported);
-  const body = drawn.length
-    ? `${legendLine(vendorsIn(drawn), drawn.some(s => s.tally.localRuns > 0), cap(who))}${moments}${journey}`
-    : `<div class="empty"><h3>Nothing to show yet.</h3><p>The projects shown here have no claimed tasks yet.</p></div>`;
-  // Each card is where a comparison card lands, so the cards come first in
-  // the page and the comparison links up to them.
-  const anchor = (s: Story) => `#card-${Math.max(1, cards.findIndex((c) => c.story.project === s.project) + 1)}`;
+  const drawn = stories.filter((s) => s.threads.length || imported.get(s.project)?.total);
+  const n = (v: number) => v.toLocaleString("en");
+
+  // The tally's window: from the oldest to the newest event read of the
+  // projects whose threads it counts.
+  const counted = stories.filter((s) => s.threads.length);
+  const ats = counted.flatMap((s) => s.times.map((x) => x.at)).filter(Boolean).sort();
+  const window = ats.length
+    ? `${spanLabel(Date.parse(ats[0]) / 1000, Date.parse(ats[ats.length - 1]) / 1000)}${counted.some((s) => s.partial) ? " · the most recent part of the record" : ""}`
+    : "";
+  const tally = `<section class="show-band" aria-labelledby="tally-h"><div class="show-section">
+    <h2 class="show-h2" id="tally-h">${tallyHeadline(total, who)}</h2>
+    ${window ? `<p class="show-window">${e(window)}</p>` : ""}
+    <dl class="show-tally">
+      <div><dt>agent moves</dt><dd>${n(total.agentMoves)}</dd></div>
+      <div class="you"><dt>${e(`${who}'s`)} decisions</dt><dd>${n(total.decisions)}</dd></div>
+      <div class="cloud"><dt>checks run on a clean copy${total.inCloud ? `, ${n(total.inCloud)} in Cloudflare` : ""}</dt><dd>${n(total.checks)}</dd></div>
+      <div class="catch"><dt>times a model sent work back</dt><dd>${n(total.sentBack)}</dd></div>
+    </dl>
+    <p class="evidence-key" aria-label="How evidence is graded"><span class="evidence-title">Evidence</span><span><span class="grade observed">Observed</span>counts</span><span><span class="grade reported">Reported</span>shown, not counted</span><span><span class="grade pending">Pending</span>not yet run</span></p>
+  </div></section>`;
+
   const cardList = cards.map((c, i) => {
     const t = c.story.tally;
     const inProgress = c.story.threads.filter((th) => th.end === null && ["claimed", "submitted", "accepted"].includes(th.state)).length;
     const families = VENDOR_NAMES.filter(([v]) => v !== "owner" && t.byVendor[v])
       .map(([v, label]) => `<li><i style="--c:var(--m-${v})"></i>${e(label)}</li>`).join("");
+    if (!families) return `<li class="show-card idle" id="card-${i + 1}"><h3>${e(shownLabel(c))}</h3><p class="idle-note">No agent has worked here yet.</p></li>`;
+    const figure = (v: number, label: string) => `<div><dt>${label}</dt><dd>${n(v)}</dd></div>`;
     return `<li class="show-card" id="card-${i + 1}">
-    <h2>${e(shownLabel(c))}</h2>
-    ${c.pulse ? pulseGraph(c.pulse) : ""}
-    <p class="card-tally"><span><b>${t.merges}</b>merged, last two weeks</span>${c.allTimeMerged === undefined ? "" : `<span><b>${c.allTimeMerged}</b>merged, all time</span>`}<span><b>${t.sentBack}</b>sent back, last two weeks</span><span><b>${inProgress}</b>in progress, last two weeks</span></p>
-    ${families ? `<ul class="legend-line" aria-label="Families that worked on it">${families}</ul>` : '<p class="meta">No agent has worked here yet.</p>'}
+    <h3>${e(shownLabel(c))}</h3>
+    ${c.pulse ? pulseGraph(c.pulse, false) : ""}
+    <dl class="card-figures">${figure(t.merges, "merged, last two weeks")}${c.allTimeMerged === undefined ? "" : figure(c.allTimeMerged, "merged, all time")}${figure(t.sentBack, "sent back, last two weeks")}${figure(inProgress, "in progress, last two weeks")}</dl>
+    <ul class="legend-line" aria-label="Who worked on it">${families}${t.decisions ? `<li><i style="--c:var(--m-owner)"></i>${e(cap(who))}</li>` : ""}</ul>
   </li>`;
   }).join("");
-  const picks = taskStories(cards);
-  const storyList = picks.map((p, n) => `<figure class="show-story" id="story-${n + 1}">
-    <figcaption><strong>${e(cap(p.thread.title))}</strong> <span class="meta">from ${e(shownLabel(p.card))}, drawn as it happened</span></figcaption>
-    <div class="stage-scroll">${drawStory(p.one, owner, { replaySeconds: 9, ...(who === "You" ? {} : { ownerLabel: who }) })}</div>
-  </figure>`).join("");
+
+  // One task, the one with the most recorded moves of any shown project.
+  const pick = taskStories(cards)[0];
+  const story = pick ? `<section class="show-section" aria-labelledby="story-h" id="story">
+    <h2 class="show-h2" id="story-h">One task, as it happened</h2>
+    <p class="show-window">${e(pick.thread.id)} · ${e(cap(pick.thread.title))}${cards.length > 1 ? ` · ${e(shownLabel(pick.card))}` : ""}</p>
+    <figure class="show-story">
+      <div class="stage-scroll">${drawStory(pick.one, owner, { replaySeconds: 9, ownerLabel: cap(who) })}</div>
+      ${legendLine(vendorsIn([pick.one]), pick.one.tally.localRuns > 0, cap(who))}
+    </figure>
+  </section>` : "";
+
+  const many = cards.length > 1;
+  const rows = foldMoves(drawn.flatMap((s) => s.moments.map((m) => ({ ...m, project: shownLabel(cards.find((c) => c.story.project === s.project) ?? { mode: "named", story: s } as ShownProject) }))));
+  const feed = rows.map((r) => {
+    const [glyph, tone] = MOVE_GLYPH[r.kind] ?? ["·", "quiet"];
+    const fold = r.times > 1 ? ` <span class="fold">×${r.times} in ${e(foldSpan(r.since, r.at))}</span>` : "";
+    return `<li><span class="glyph ${tone}" aria-hidden="true">${glyph}</span><time datetime="${e(r.at)}">${e(shortStamp(r.at))}</time><p>${many ? `<span class="meta">${e(r.project)} · </span>` : ""}${e(r.text)}${fold}</p></li>`;
+  }).join("");
+  const moves = `<section class="show-section show-moves" aria-labelledby="moves-h">
+    <div><h2 class="show-h2" id="moves-h">Latest moves</h2><p class="show-window">times in ${e(zoneLabel())}</p></div>
+    ${rows.length ? `<ol class="feed">${feed}</ol>` : `<p class="feed-empty">Nothing to show yet: the projects shown here have no claimed tasks.</p>`}
+  </section>`;
+
+  const where = `<section class="show-section" aria-labelledby="where-h" id="where">
+    <h2 class="show-h2" id="where-h">Where it runs</h2>
+    <dl class="runs-on">${RUNS_ON.map(([layer, parts, tone]) => `<div${tone ? ` class="${tone}"` : ""}><dt>${layer}</dt><dd>${parts.map((p) => `<span>${p}</span>`).join("")}</dd></div>`).join("")}</dl>
+  </section>`;
+
   return publicPage({
     title: "Atelier · public showcase",
     description: `Atelier: several coding agents on one codebase. Claim, fork, prove, review, land. ${TAKEAWAYS} A Git platform on Cloudflare Workers and Artifacts.`,
     brand: "/",
     nav: [["How it works", "/how"], ["Source on GitHub", REPO_URL], ["Sign in", "/login"]],
-    mainClass: "page-width flow",
+    mainClass: "showcase",
+    night: true,
+    bodyClass: "show-page",
     main: `
-  <header class="flow-hero">
-    <div><span class="kicker">Public showcase · read only · from the ledger</span>
-      <h1>A Git platform for multiple coding agents</h1>
-      <p class="lead"><strong>${e(TAKEAWAYS)}</strong> ${e(TAGLINE)} Each card below is a project ${e(who)} chose to show, with its last two weeks of activity beside its all-time merges; under them, task stories drawn as threads, from claim to merge.</p>
-      <p class="subhead">${headline(total, who)}</p>${allMerged === undefined ? "" : `<p class="meta tally-window">The figures in the tally are the last two weeks; all time, ${allMerged} merged across ${plural(cards.length, "project")}.</p>`}</div>
-    ${tallyBlock(total, who)}
+  <header class="show-section show-hero" id="top">
+    <p class="kicker">Public showcase · read only · from the ledger</p>
+    <h1>A Git platform for multiple coding agents</h1>
+    <p class="show-lead">Agents of several model families work one repository at once. Atelier runs their checks itself, has a model of another family review each change, and leaves the merge to the person who owns the project.</p>
+    ${unavailable ? '<p role="status" class="error">A project could not be read just now; this page may be incomplete.</p>' : ""}
   </header>
-  ${unavailable ? '<p role="status" class="error">A project could not be read just now; this page may be incomplete.</p>' : ""}
-  <section aria-label="The portfolio" id="cards">
-    <h2 class="section-title">The portfolio</h2>
+  ${compareBlock(stories, imported, total, owner, who)}
+  ${tally}
+  <section class="show-section" aria-labelledby="portfolio-h" id="cards">
+    <h2 class="show-h2" id="portfolio-h">The portfolio</h2>
     <ul class="show-cards">${cardList}</ul>
   </section>
-  ${picks.length ? `<section aria-label="Task stories" id="stories">
-    <h2 class="section-title">Task stories</h2>
-    ${storyList}
-  </section>` : ""}
-  ${compareBlock(stories, imported, total, owner, who, anchor)}
-  ${body}
-  <section aria-label="Where it runs" id="where">
-    <h2 class="section-title">Where it runs</h2>
-    ${layersFigure()}
-    <p class="meta">How a task goes from claim to merge, and the rules each step enforces: <a href="/how#the-loop">How it works</a>.</p>
+  ${story}
+  <section class="show-section" aria-labelledby="travels-h" id="travels">
+    <h2 class="show-h2" id="travels-h">How a task travels</h2>
+    ${travelSteps(total, who)}
   </section>
-  <p class="meta public-note">Shown read only. Projects the owner names are named; the others are shown anonymised, with no project name, task title, path, commit message, commit hash or address in them. Review notes, reports and diffs stay private in every case.</p>
+  ${moves}
+  ${where}
+  <footer class="show-foot"><div class="show-foot-in">
+    <p class="public-note">Shown read only. Projects the owner names are named; the others are shown anonymised, with no project name, task title, path, commit message, commit hash or address in them. Review notes, reports and diffs stay private in every case.</p>
+    <p class="show-foot-links"><a href="/how">How it works</a><a href="${REPO_URL}">Source on GitHub</a></p>
+  </div></footer>
 `,
   });
 }
@@ -1396,7 +1516,9 @@ const PULSE_W = 20, PULSE_BAR = 14, PULSE_H = 86, PULSE_TOP = 6, PULSE_BASE = 68
 // Two weeks of moves, one bar per day, each stacked by family with the
 // owner's decisions on top; a day with nothing is a tick on the baseline.
 // Every bar says in its title what it counts, and the drawing says its total.
-function pulseGraph(p: Pulse): string {
+// Without `axis`, the bars stand alone at a fixed height and the first and
+// last day follow as text, so the labels keep their size at any card width.
+function pulseGraph(p: Pulse, axis = true): string {
   const W = PULSE_W * p.days.length;
   const peak = Math.max(1, ...p.days.map((d) => d.moves + d.decisions));
   const scale = (n: number) => (n / peak) * (PULSE_BASE - PULSE_TOP);
@@ -1418,9 +1540,13 @@ function pulseGraph(p: Pulse): string {
   const label = p.moves || p.decisions
     ? `Moves per day over the last two weeks: ${p.moves} by agents and ${plural(p.decisions, "decision")} by you, most on ${keyLabel(busiest.day, false)}`
     : "No moves in the last two weeks";
+  const first = e(keyLabel(p.days[0].day, false)), last = e(keyLabel(p.days[p.days.length - 1].day, false));
+  if (!axis) return `<div class="pulse-chart"><svg class="pulse-graph bars" viewBox="0 0 ${W} ${PULSE_BASE + 1}" preserveAspectRatio="none" role="img" aria-label="${e(label)}">
+    <line class="baseline" x1="0" x2="${W}" y1="${PULSE_BASE + 0.5}" y2="${PULSE_BASE + 0.5}"/>${bars}
+  </svg><p class="pulse-axis" aria-hidden="true"><span>${first}</span><span>${last}</span></p></div>`;
   return `<svg class="pulse-graph" viewBox="0 0 ${W} ${PULSE_H}" role="img" aria-label="${e(label)}">
     <line class="baseline" x1="0" x2="${W}" y1="${PULSE_BASE + 0.5}" y2="${PULSE_BASE + 0.5}"/>${bars}
-    <text x="4" y="${PULSE_H - 3}">${e(keyLabel(p.days[0].day, false))}</text><text x="${W - 4}" y="${PULSE_H - 3}" text-anchor="end">${e(keyLabel(p.days[p.days.length - 1].day, false))}</text>
+    <text x="4" y="${PULSE_H - 3}">${first}</text><text x="${W - 4}" y="${PULSE_H - 3}" text-anchor="end">${last}</text>
   </svg>`;
 }
 
