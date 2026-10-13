@@ -230,7 +230,9 @@ test("the harnesses are started with their own permission rules", (t) => {
   assert.equal(run("codex", s, { model: "gpt-6-astra", review: true }).seen.argv[codex.indexOf("--sandbox") + 1], "read-only");
   const agy = run("antigravity", s, { model: "gemini-3.1-pro" }).seen.argv;
   assert.equal(agy[agy.indexOf("--model") + 1], "gemini-3.1-pro-high");
-  assert.ok(agy.includes("--sandbox"));
+  // d14 (2026-10-13): Antigravity builds run without the terminal sandbox; reviews keep it.
+  assert.ok(!agy.includes("--sandbox"), "an Antigravity build runs without the terminal sandbox");
+  assert.ok(run("antigravity", s, { model: "gemini-3.1-pro", review: true }).seen.argv.includes("--sandbox"), "an Antigravity review keeps the sandbox");
   assert.deepEqual(run("opencode", s, { model: "deepseek-v4-pro" }).seen.argv, ["run", "--model", "deepseek-api/deepseek-v4-pro", "--format", "json"]);
   assert.equal(claudeModel("sonnet-5.5"), "claude-sonnet-5-5");
   assert.equal(claudeModel("claude-fable-5-1"), "claude-fable-5-1");
