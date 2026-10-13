@@ -104,6 +104,7 @@ const CONDITION_FIELDS = new Set(["harness", "effort", "details"]);
 const MODEL_NAME = new RegExp(`^(?:(?:${HARNESSES.join("|")})/)?[a-z0-9][a-z0-9._:-]{0,63}$`, "i");
 
 const bad = (detail: string) => new RuleError("bad_card", detail, 400);
+const asciiLower = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 // One line of plain text: control characters become spaces, runs of space
@@ -167,8 +168,13 @@ export function cleanSource(v: unknown): string {
   try { url = new URL(raw); } catch { throw bad(PLAIN_SOURCE); }
   if (url.protocol !== "https:") throw bad(PLAIN_SOURCE);
   if (url.username || url.password) throw bad("source must not carry a user name or password");
+  // Compared in ASCII letter case only: String.toLowerCase folds non-ASCII
+  // letters (the Kelvin sign K, U+212A) to ASCII as the parser does, so the
+  // typed authority must be plain ASCII before it is compared (Astra's and
+  // gemini-4-argon's sixth reviews of t625, 2026-10-13).
   const typed = `https://${url.host}`;
-  if (raw.slice(0, typed.length).toLowerCase() !== typed.toLowerCase() || !/^(?:[/?#]|$)/.test(raw.slice(typed.length))) throw bad(PLAIN_SOURCE);
+  const prefix = raw.slice(0, typed.length);
+  if (!/^[\x21-\x7e]*$/.test(prefix) || asciiLower(prefix) !== asciiLower(typed) || !/^(?:[/?#]|$)/.test(raw.slice(typed.length))) throw bad(PLAIN_SOURCE);
   if (raw.includes("\\")) throw bad(PLAIN_SOURCE);
   const host = url.hostname.toLowerCase().replace(/\.$/, "");
   if (!/^[a-z0-9.-]+$/.test(host) || !host.includes(".") || !host.split(".").every((l) => LABEL.test(l))
@@ -180,8 +186,12 @@ export function cleanSource(v: unknown): string {
   try {
     decoded = [url.pathname, url.search, url.hash].map((part) => decodeURIComponent(part.replace(/\+/g, " "))).join(" ");
   } catch { throw bad("source has malformed percent-encoding"); }
-  if (LOOKS_LIKE_KEY.test(decoded)) throw bad("source looks like it carries a key; a key belongs in the Keychain");
-  return url.toString();
+  // The key check also reads the host and the URL as they are stored, after
+  // the parser lowercased them: "SK-…" typed is "sk-…" kept (gemini-4-argon's
+  // sixth review of t625, 2026-10-13).
+  const stored = url.toString();
+  if ([decoded, host, stored].some((s) => LOOKS_LIKE_KEY.test(s))) throw bad("source looks like it carries a key; a key belongs in the Keychain");
+  return stored;
 }
 
 function cleanConditions(v: unknown, what: string): CardConditions {
@@ -250,8 +260,11 @@ export function cleanWithdrawal(body: Record<string, unknown>): WithdrawalInput 
 // A key pasted as the name is refused with the pool's own check, since the
 // name is stored in every record (Astra's second review of t625, 2026-10-13,
 // finding 3). Every other text a card keeps passes the same check in text().
+// The check reads the key the name is stored under (modelKey lowercases it)
+// as well as the name as given: "SK-…" would be kept as "sk-…"
+// (gemini-4-argon's sixth review of t625, 2026-10-13).
 export function cleanCardModel(named: string): string {
-  if (LOOKS_LIKE_KEY.test(named)) throw bad("the model's name looks like it carries a key; a key belongs in the Keychain");
+  if (LOOKS_LIKE_KEY.test(named) || LOOKS_LIKE_KEY.test(modelKey(named))) throw bad("the model's name looks like it carries a key; a key belongs in the Keychain");
   if (!MODEL_NAME.test(named)) throw bad(`${named} is not a model's name: give its id or an alias, such as opus-5.5, or harness/model`);
   return named;
 }

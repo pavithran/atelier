@@ -92,6 +92,9 @@ test("a key pasted into the model's name or any text a card keeps is refused", (
   // Astra's second review of t625, 2026-10-13, finding 3: sk-… was stored as a model's name.
   const key = ["sk-", "AbC123xyzQrS456"].join("");
   for (const name of [key, `codex/${key}`, "a1b2c3d4e5f6g7h8i9j0k1l2m3"]) assert.throws(() => cleanCardModel(name), /carries a key/, name);
+  // gemini-4-argon's sixth review of t625, 2026-10-13: an upper-case prefix
+  // passed, and modelKey lowercased it into the stored key.
+  for (const name of ["SK-AbC123xyzQrS456", "codex/SK-AbC123xyzQrS456"]) assert.throws(() => cleanCardModel(name), /carries a key/, name);
   const claim = CARD.claims[0];
   for (const change of [
     { vendor: key }, { title: `Card ${key}` }, { limitations: [`Leaks ${key}`] }, { reason: key, corrects: "c1" },
@@ -204,6 +207,21 @@ test("a source is checked on the host the parser reads, so no spelling of the sl
   assert.equal(cleanCard({ ...structuredClone(CARD), source: "HtTpS://Vendor.Example/card" }, TODAY).source, "https://vendor.example/card");
   assert.equal(cleanCard({ ...structuredClone(CARD), source: "https://vendor.example:8443/card" }, TODAY).source, "https://vendor.example:8443/card");
   assert.equal(cleanCard({ ...structuredClone(CARD), source: "https://vendor.example" }, TODAY).source, "https://vendor.example/");
+});
+
+test("a source's host is compared in ASCII and checked for a key as it is stored", () => {
+  // Astra's and gemini-4-argon's sixth reviews of t625, 2026-10-13: the Kelvin
+  // sign (U+212A) folds to k in both toLowerCase and the parser, so a key
+  // split by it passed and was stored joined; and an upper-case prefix the
+  // parser lowercased was never checked in the host.
+  for (const [source, why] of [
+    ["https://A\u212AIAA1B2C3D4E5F6G7H8.example/card", /plain ASCII/],
+    ["https://s\u212A-AbC123xyzQrS456.example/card", /plain ASCII/],
+    ["https://a1b2c3d4e5f6\u212Ag7h8i9j0k1l2.example/card", /plain ASCII/],
+    ["https://\u212Aey.example/card", /plain ASCII/],
+    ["https://SK-AbC123xyzQrS456.example/card", /carries a key/],
+    ["https://XOXB-AbC123xyzQrS456.example/card", /carries a key/],
+  ] as const) assert.throws(() => cleanCard({ ...structuredClone(CARD), source }, TODAY), why, source);
 });
 
 test("a correction, supersession or withdrawal names an active card of the same model, and history is kept", () => {
