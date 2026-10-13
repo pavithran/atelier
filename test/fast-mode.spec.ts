@@ -80,9 +80,12 @@ it("a landing is refused in full mode, records its receipt in fast mode, and que
   const kinds = ((await L.events(item.id)) as unknown as LedgerEvent[]).map((e) => e.kind);
   expect(kinds).toEqual(expect.arrayContaining(["item.landed_fast", "item.merged"]));
 
+  // The receipt says no review was asked for until one is (t605).
+  expect(renderItem(await L.project(), await L.detail(item.id))).toContain("no post-merge review was requested");
   // The builder never reviews its own landing; another model of its family may.
   await refusal(L.requestReview(item.id, "owner", OPUS, POOL), "self_review", /contributed/);
   expect(await L.requestReview(item.id, "owner", SONNET, POOL)).toMatchObject({ requested: true, head: M1, reviewer: SONNET });
+  expect(renderItem(await L.project(), await L.detail(item.id))).toContain("a post-merge review was requested and is not recorded yet");
   const claim = await L.claimReview(item.id, SONNET, RUNNER) as unknown as ReviewClaim;
   await L.addReview({ itemId: item.id, by: SONNET, head: M1, criteria: claim.criteria, request: claim.request, approve: true, note: "Fine", at: AT }, undefined, true);
   expect((await L.reviewsFor(item.id))[0]).toMatchObject({ postMerge: true, independence: "same-family (fast mode)" });
@@ -91,6 +94,8 @@ it("a landing is refused in full mode, records its receipt in fast mode, and que
   const html = renderItem(await L.project(), await L.detail(item.id));
   expect(html).toContain("Landed in fast mode");
   expect(html).toContain("same-family (fast mode)");
+  expect(html).toContain("its post-merge review is recorded");
+  expect(html).not.toContain("audits it");
   const counts = await L.showcaseCounts("2000-01-01T00:00:00.000Z") as unknown as ShowcaseCounts;
   expect(counts).toMatchObject({ landedFast: 1, merges: 0 });
   expect(counts.kinds.some((k) => k.kind === "item.merged")).toBe(false);
