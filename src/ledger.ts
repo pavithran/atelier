@@ -5758,7 +5758,13 @@ export class Ledger extends DurableObject<Env> {
     if (!row && closed.length) {
       throw new RuleError("stale_head", `the review request for ${closed.map((h) => h.slice(0, 8)).join(", ")} was closed: ${itemId} is at ${item.head!.slice(0, 8)}, and no review of that head is asked yet`, 409);
     }
-    if (!row) throw new RuleError("no_review", `${itemId} has no open review request`, 404);
+    if (!row) {
+      // A request a runner holds is live, as requestReview counts it (t574):
+      // the refusal names the claim, so it is not read as no request at all.
+      const held = this.sql.exec(`SELECT id, claimedBy, claimedAt FROM review_requests WHERE item = ? AND state = 'claimed' ORDER BY id DESC LIMIT 1`, itemId).toArray()[0];
+      if (held) throw new RuleError("no_review", `${itemId} has no open review request: request ${held.id} is claimed by ${held.claimedBy} since ${held.claimedAt}`, 404);
+      throw new RuleError("no_review", `${itemId} has no open review request`, 404);
+    }
     const tier = row.tier === 1;
     const head = row.head as string;
     const dispatch = JSON.parse(row.dispatch as string) as Dispatch;
@@ -5945,6 +5951,27 @@ export class Ledger extends DurableObject<Env> {
         if (asked && sameActor(asked, reviewer)) continue;
         this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
         this.log(id, actor, "review.withdrawn", { head: item.head, reviewer: asked, reason: `the project owner named ${reviewer} to review it` }, at, proved);
+      }
+    }
+    // A request at this head whose reviewer has replied to it with no verdict
+    // the server could read (t574) is asked of that reviewer again each time
+    // (unparsableReview releases the claim as a new request), so it may never
+    // be answered, and while a runner serves it again it is claimed. t573 at
+    // cc688bac: opencode/glm-5.3's replies had no VERDICT line, and naming
+    // codex/gpt-6-astra was refused as "already requested from
+    // opencode/glm-5.3" while review-claim said no request was open (the
+    // runner held the next claim). The owner naming another reviewer
+    // replaces it, open or claimed: a claim withdrawn here fences the
+    // verdict of the run holding it (its --request is no longer current).
+    if (reviewer !== null && item.head) {
+      const unread = this.unparsableFor(id).filter((u) => u.head === item.head);
+      const standing = this.sql.exec(`SELECT id, dispatch, state FROM review_requests WHERE item = ? AND head = ? AND state IN ('open', 'claimed') AND tier IS NULL`, id, item.head).toArray();
+      for (const r of standing) {
+        const d = JSON.parse(r.dispatch as string) as Dispatch;
+        const asked = d.agent && d.model ? `${d.agent}/${d.model}` : null;
+        if (!asked || sameActor(asked, reviewer) || !unread.some((u) => sameActor(u.by, asked))) continue;
+        this.sql.exec(`UPDATE review_requests SET state = 'withdrawn' WHERE id = ?`, r.id);
+        this.log(id, actor, "review.withdrawn", { head: item.head, reviewer: asked, request: r.id as number, reason: `${asked} replied with no verdict the server could read, and the project owner named ${reviewer} to review it` }, at, proved);
       }
     }
     // An open request at this head that every runner offering its reviewer
