@@ -133,9 +133,11 @@ A single task lands with:
 atelier land ID --reviewer antigravity/gemini-3.1-pro
 ```
 
-which takes the project's landing lease, merges main into the task,
-regenerates fixtures if the project declares how, pushes, checks, submits,
-waits for the independent review a runner serves, then accepts and merges.
+which merges main into the task, regenerates fixtures if the project
+declares how, pushes, checks, submits and waits for the independent review
+a runner serves, all without the project's landing lease; only then does it
+take the lease, for the merge alone (a second landing queues behind it),
+confirm main has not moved, and accept and merge.
 `atelier land` never overrides a review. When no model of another family can
 review a change, `atelier accept` and `atelier merge` take
 `--override-review` with the reason; the override is recorded where everyone
@@ -169,8 +171,11 @@ that is how Atelier improves.
   live on this Mac by name, and to wait on a task use `atelier wait ID`.
 - Deploy a project between landings, after its full test suite passes, not
   while another task's checks run.
-- `atelier gc --project NAME` previews the workspaces of finished tasks that
-  are safe to remove; `--apply` removes them.
+- A merge removes the task's workspace once its work is in main; `atelier
+  clean --project NAME` removes those of other finished tasks the same way,
+  for good, and keeps and names any holding changed files, ignored files
+  that are not rebuildable (`.scratch/` logs, a `.env`) or commits main
+  lacks.
 - Do not edit inside an agent's workspace while its agent runs. Wait for it,
   or hand the task off with `atelier handoff ID --to H/M`.
 - `atelier wrap "summary"` is for work done directly in your own checkout:
@@ -192,7 +197,7 @@ that is how Atelier improves.
 | queue it for a runner | `atelier dispatch ID` |
 | land one task | `atelier land ID --reviewer H/M` |
 | close a session of direct edits | `atelier wrap "summary"` |
-| clear finished workspaces | `atelier gc --project NAME` |
+| clear finished workspaces | `atelier clean --project NAME` |
 | see spend and windows | `atelier runner --usage` |
 
 See [Function areas and the project board](areas.md) for owner commands to create, rename and remove areas, assign tasks and read their stages.

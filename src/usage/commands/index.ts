@@ -13,6 +13,7 @@ import command_board from "./board.ts";
 import command_check from "./check.ts";
 import command_check_log from "./check-log.ts";
 import command_claim from "./claim.ts";
+import command_clean from "./clean.ts";
 import command_criteria_finding from "./criteria-finding.ts";
 import command_criteria_review from "./criteria-review.ts";
 import command_criteria_review_claim from "./criteria-review-claim.ts";
@@ -52,8 +53,12 @@ import command_push from "./push.ts";
 import command_queue from "./queue.ts";
 import command_read_token from "./read-token.ts";
 import command_receipt from "./receipt.ts";
+import command_refresh_checked from "./refresh-checked.ts";
 import command_refresh_failed from "./refresh-failed.ts";
+import command_refresh_lease from "./refresh-lease.ts";
+import command_refresh_pushing from "./refresh-pushing.ts";
 import command_refreshed from "./refreshed.ts";
+import command_refreshes from "./refreshes.ts";
 import command_release from "./release.ts";
 import command_report from "./report.ts";
 import command_revert from "./revert.ts";
@@ -96,6 +101,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/check.ts", spec: command_check },
   { path: "src/usage/commands/check-log.ts", spec: command_check_log },
   { path: "src/usage/commands/claim.ts", spec: command_claim },
+  { path: "src/usage/commands/clean.ts", spec: command_clean },
   { path: "src/usage/commands/criteria-finding.ts", spec: command_criteria_finding },
   { path: "src/usage/commands/criteria-review.ts", spec: command_criteria_review },
   { path: "src/usage/commands/criteria-review-claim.ts", spec: command_criteria_review_claim },
@@ -135,8 +141,12 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/queue.ts", spec: command_queue },
   { path: "src/usage/commands/read-token.ts", spec: command_read_token },
   { path: "src/usage/commands/receipt.ts", spec: command_receipt },
+  { path: "src/usage/commands/refresh-checked.ts", spec: command_refresh_checked },
   { path: "src/usage/commands/refresh-failed.ts", spec: command_refresh_failed },
+  { path: "src/usage/commands/refresh-lease.ts", spec: command_refresh_lease },
+  { path: "src/usage/commands/refresh-pushing.ts", spec: command_refresh_pushing },
   { path: "src/usage/commands/refreshed.ts", spec: command_refreshed },
+  { path: "src/usage/commands/refreshes.ts", spec: command_refreshes },
   { path: "src/usage/commands/release.ts", spec: command_release },
   { path: "src/usage/commands/report.ts", spec: command_report },
   { path: "src/usage/commands/revert.ts", spec: command_revert },

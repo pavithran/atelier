@@ -12,6 +12,7 @@ import command_board from "./board.mjs";
 import command_check from "./check.mjs";
 import command_check_log from "./check-log.mjs";
 import command_claim from "./claim.mjs";
+import command_clean from "./clean.mjs";
 import command_criteria_finding from "./criteria-finding.mjs";
 import command_criteria_review from "./criteria-review.mjs";
 import command_criteria_review_claim from "./criteria-review-claim.mjs";
@@ -51,8 +52,12 @@ import command_push from "./push.mjs";
 import command_queue from "./queue.mjs";
 import command_read_token from "./read-token.mjs";
 import command_receipt from "./receipt.mjs";
+import command_refresh_checked from "./refresh-checked.mjs";
 import command_refresh_failed from "./refresh-failed.mjs";
+import command_refresh_lease from "./refresh-lease.mjs";
+import command_refresh_pushing from "./refresh-pushing.mjs";
 import command_refreshed from "./refreshed.mjs";
+import command_refreshes from "./refreshes.mjs";
 import command_release from "./release.mjs";
 import command_report from "./report.mjs";
 import command_revert from "./revert.mjs";
@@ -95,6 +100,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/check.mjs", run: command_check },
   { path: "cli/commands/check-log.mjs", run: command_check_log },
   { path: "cli/commands/claim.mjs", run: command_claim },
+  { path: "cli/commands/clean.mjs", run: command_clean },
   { path: "cli/commands/criteria-finding.mjs", run: command_criteria_finding },
   { path: "cli/commands/criteria-review.mjs", run: command_criteria_review },
   { path: "cli/commands/criteria-review-claim.mjs", run: command_criteria_review_claim },
@@ -134,8 +140,12 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/queue.mjs", run: command_queue },
   { path: "cli/commands/read-token.mjs", run: command_read_token },
   { path: "cli/commands/receipt.mjs", run: command_receipt },
+  { path: "cli/commands/refresh-checked.mjs", run: command_refresh_checked },
   { path: "cli/commands/refresh-failed.mjs", run: command_refresh_failed },
+  { path: "cli/commands/refresh-lease.mjs", run: command_refresh_lease },
+  { path: "cli/commands/refresh-pushing.mjs", run: command_refresh_pushing },
   { path: "cli/commands/refreshed.mjs", run: command_refreshed },
+  { path: "cli/commands/refreshes.mjs", run: command_refreshes },
   { path: "cli/commands/release.mjs", run: command_release },
   { path: "cli/commands/report.mjs", run: command_report },
   { path: "cli/commands/revert.mjs", run: command_revert },
