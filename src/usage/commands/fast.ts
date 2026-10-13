@@ -6,18 +6,29 @@ const spec: CommandSpec = {
   capabilities: ["projects.mode.v1", "land.fast.v1"],
   forms: [
     { group: "Owner", line: 7, slot: 10, form: "fast land tN=SHA [tM=SHA ...] [--reviewer H/M] [--test CMD] [--typecheck CMD] [--regen CMD]", about: "In fast mode, in the owner's clean checkout of main: merges each SHA in order with git merge --no-ff, regenerates, runs the typecheck, the secret scan over the batch and one run of the tests, by default in a temporary clean clone of the batch's head (npm ci --prefer-offline, npm run types, then npm test), removed afterwards. Any failure resets main to where it started. On success it records a landed-fast receipt per task, marks each merged and asks the post-merge review of each of the reviewer named, which may be of the builder's family. It never pushes or deploys." },
-    { group: "Owner", line: 7, slot: 20, form: "fast status [--json] [--project P]", about: "Prints the mode and every task landed in fast mode, with its receipt and post-merge review state." },
+    { group: "Owner", line: 7, slot: 20, form: "fast status [--json] [--project P]", about: "Prints the mode, every task landed in fast mode with its receipt and post-merge review state, and every build a runner made in fast mode and reported ready, one tN=SHA line each, which atelier fast land takes as it stands." },
     { group: "Owner", line: 7, slot: 30, form: "fast close [--project P]", about: "The project owner switches back to full mode (atelier mode full) and prints what landed in fast mode and each post-merge review's state." },
+    { group: "Agents", line: 2, slot: 12, form: "fast take ID --as H/M [--runner home:NAME] [--json]", about: "In fast mode, takes a dispatched build without a fork: records the holder as a claim does, with no fork and no write token, and makes a clean clone of main for it on this machine. A clone that holds a commit an earlier run never reported is kept. A runner calls it in place of claim while the project is in fast mode." },
+    { group: "Agents", line: 2, slot: 14, form: "fast ready ID --as H/M [--commit SHA]", about: "In the clone fast take made, reports its head (or SHA) as ready for fast land, with the main it was built on and the builder its Agent line names. Nothing is pushed; the owner's atelier fast land takes it." },
   ],
-  flags: { reviewer: false, test: false, typecheck: false, regen: false, json: true },
-  subcommands: { land: { takes: ["reviewer", "test", "typecheck", "regen"] }, status: { takes: ["json"] }, close: { takes: [] } },
+  flags: { reviewer: false, test: false, typecheck: false, regen: false, json: true, runner: false, commit: false },
+  subcommands: {
+    land: { takes: ["reviewer", "test", "typecheck", "regen"] },
+    status: { takes: ["json"], capabilities: ["runners.fast-build.v1"] },
+    close: { takes: [] },
+    // A runner's fast build (t589): the take without a fork and the report.
+    take: { takes: ["runner", "json"], capabilities: ["runners.fast-build.v1"] },
+    ready: { takes: ["commit"], capabilities: ["runners.fast-build.v1"] },
+  },
   help: {
     flags: {
       "--reviewer H/M": "the model asked for each task's post-merge review; a model of the builder's family may answer in fast mode, never the builder itself",
       "--test CMD": "the batch's one test run, in the checkout; without it npm test runs in a clean clone of the batch's head, and the receipt says where the tests ran",
       "--typecheck CMD": "the typecheck; npm run typecheck unless given",
       "--regen CMD": "the regeneration; zsh bin/orchestrate/regen-fixtures.sh where the checkout has it",
-      "--json": "fast status prints the mode and the fast landings as JSON",
+      "--json": "fast status prints the mode, the fast landings and the ready builds as JSON; fast take prints the workspace, its base and whether it was kept",
+      "--runner home:NAME": "fast take names the runner taking the build",
+      "--commit SHA": "fast ready reports this commit of the clone instead of its head",
     },
     example: "atelier fast land t575=1a2b3c4 t576=5d6e7f8 --reviewer opencode/glm-5.3 --project atelier",
   },
