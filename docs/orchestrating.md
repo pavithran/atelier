@@ -861,7 +861,11 @@ merges each SHA in order with `git merge --no-ff`, regenerates the
 generated files and commits them, runs the typecheck, scans every file
 each of the batch's commits adds or changes for credentials with the
 server's own scanner (a file it cannot read as text stops the batch, as it
-blocks a push), and runs the tests once for the whole batch. If any step
+blocks a push), and runs the tests once for the whole batch. After the
+tests, every commit of the batch and every tree and blob in its whole
+tree (those it holds unchanged from main included), and every object the
+scan read, must still be there and hash to its id; a missing or changed
+one stops the batch, named by its path. If any step
 fails, main is reset to where it started and nothing is recorded; if main
 cannot be put back, fast land says so, with main's head and the command
 that restores it.
@@ -879,6 +883,23 @@ the reviewer named. It never pushes or deploys; publish main and deploy as
 after any landing, so the reviewer can read the merge. A commit a runner
 built on this machine and reported ready is fetched from its clone when the
 checkout lacks it.
+
+Before posting any receipt, fast land writes the batch's receipts (task,
+commit, merge commit, builder, tests) to
+`.git/atelier-fast-land/START..HEAD.json` in the checkout, marks each one
+as the server records it, and removes the file when all are. If a receipt
+fails (the network or the server), main already holds the batch, so
+landing again would refuse every task; fast land says which receipts were
+recorded and prints the command that records the rest:
+
+    atelier fast record .git/atelier-fast-land/START..HEAD.json --project P
+
+`atelier fast record` (with no file, the only one waiting) posts only the
+receipts not yet recorded and never merges. It refuses, posting nothing,
+when main no longer holds a receipt's merge commit, the merge is not of
+that task's commit, or any object the batch's commits reference (their
+whole trees included) is missing or no longer hashes to its id. The server answers a receipt it already holds for the
+same merge commit with the one it recorded, so posting again is safe.
 
 The post-merge review of a fast landing may come from a model of the
 builder's family (PAVI: fast mode permits single-family models), never
