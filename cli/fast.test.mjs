@@ -578,6 +578,46 @@ test("a reused blob deleted after the scan stops the batch, named by path (t618)
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// Review of t618 (gpt-6-astra, gemini-4-argon): checking only the objects
+// new to start..head and those the scan read still missed every object the
+// batch's trees hold unchanged from main (the scan skips unchanged entries),
+// such as a.txt here, which no batch commit touches. The check now covers
+// the full tree of every batch commit, and an object no changed entry
+// leads to is named by the paths that hold it.
+test("an unchanged blob the batch inherits from main, deleted after the scan, stops the batch named by path (t618)", async () => {
+  const { dir, one } = repo();
+  try {
+    const inherited = git(dir, "rev-parse", "main:a.txt");
+    const start = git(dir, "rev-parse", "HEAD");
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }], test: `rm -f .git/objects/${inherited.slice(0, 2)}/${inherited.slice(2)}`, record: () => assert.fail("recorded") });
+    assert.equal(r.ok, false, "the batch is refused");
+    assert.equal(r.failure.step, "objects changed", JSON.stringify(r.failure));
+    assert.match(r.failure.detail, /(^|[ :,])a\.txt \(/);
+    assert.equal(git(dir, "rev-parse", "main"), start);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// A mode-only change keeps the blob main holds, and the scan does not read
+// it (review of t618, gemini-4-argon).
+test("a blob a batch commit only changes the mode of, deleted after the scan, stops the batch (t618)", async () => {
+  const { dir } = repo();
+  try {
+    const kept = git(dir, "rev-parse", "main:a.txt");
+    git(dir, "checkout", "-q", "-b", "mode", "main");
+    git(dir, "update-index", "--chmod=+x", "a.txt");
+    git(dir, "commit", "-q", "-m", "mode\n\nAgent: codex/gpt-6");
+    const sha = git(dir, "rev-parse", "HEAD");
+    git(dir, "checkout", "-q", "-f", "main");
+    const start = git(dir, "rev-parse", "HEAD");
+    const r = await fastLand({ ...base, titles: { t3: "Mode" }, cwd: dir, pairs: [{ id: "t3", sha }], test: `rm -f .git/objects/${kept.slice(0, 2)}/${kept.slice(2)}`, record: () => assert.fail("recorded") });
+    assert.equal(r.failure?.step, "objects changed", JSON.stringify(r.failure));
+    assert.match(r.failure.detail, /(^|[ :,])a\.txt \(/);
+    // Main at the start needs the deleted blob too, with the other mode, so
+    // the rollback's reset cannot write a.txt; fast land says so.
+    if (git(dir, "rev-parse", "main") !== start) assert.match(r.restoreProblem, /main was NOT restored/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 // Ninth review of t592: the history checks (replacement refs, grafts, a
 // shallow boundary) ran only before the tests, so a test that wrote
 // .git/shallow after the scan cut the post-test object walk short.
