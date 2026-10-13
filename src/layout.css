@@ -770,6 +770,8 @@ body.public main.showcase { max-width: none; padding: 0 0 8px; }
 /* Each sentence of the tagline on one line, never broken; on a phone,
    four short lines: Git keeps / the code. / Atelier brings / the receipts. (PAVI) */
 .show-hero h1 > span { display: block; white-space: nowrap; }
+/* The line under it and the Cloudflare line, one phrase a line (PAVI). */
+.show-what > span, .show-stack > span { display: block; white-space: nowrap; }
 .show-what { margin: 22px 0 0; max-width: 820px; font: 700 clamp(22px, 2.4vw, 30px)/1.25 var(--font-display); letter-spacing: -.01em; color: var(--text-bright); }
 .show-stack { margin: 14px 0 0; max-width: 720px; font-family: var(--font-mono, "IBM Plex Mono", monospace); font-size: 14px; letter-spacing: 0.02em; color: var(--accent); }
 .show-lead { margin: 28px 0 0; max-width: 640px; font-size: 20px; line-height: 1.5; color: var(--text); }
@@ -878,6 +880,7 @@ body.public main.showcase { max-width: none; padding: 0 0 8px; }
   .show-band .show-section { padding-block: 44px; }
   .show-lead { font-size: 18px; }
   .show-what { font-size: 18px; }
+  .show-what > span { white-space: normal; text-wrap: balance; }
   .show-hero h1 { font-size: clamp(32px, calc((100vw - 32px) / 6.6), 72px); }
   .show-hero h1 > span > span { display: block; }
   .compare-card, .show-card, .show-story { padding: 20px; }

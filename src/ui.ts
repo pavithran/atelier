@@ -1070,8 +1070,8 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   <header class="show-section show-hero" id="top">
     <p class="kicker">Public showcase · read only · from the ledger</p>
     <h1><span><span>Git keeps</span> <span>the code.</span></span> <span><span>Atelier brings</span> <span>the receipts.</span></span></h1>
-    <p class="show-what">A Git platform for multiple coding agents, built on Cloudflare.</p>
-    <p class="show-stack">Repositories in Artifacts, the record in Durable Objects, landings as Workflows, checks in Containers on request.</p>
+    <p class="show-what"><span>A Git platform for multiple coding agents,</span> <span>built on Cloudflare.</span></p>
+    <p class="show-stack"><span>Repositories in Artifacts,</span> <span>the record in Durable Objects,</span> <span>landings as Workflows,</span> <span>checks in Containers on request.</span></p>
     <p class="show-lead">Agents of several model families work one repository at once. Atelier runs their checks itself, has a model of another family review each change, and merges it once the person who owns the project accepts it.</p>
     ${unavailable === "updating" ? '<p role="status" class="error">The server is updating; the figures return in a minute.</p>' : unavailable ? '<p role="status" class="error">A project could not be read just now; this page may be incomplete.</p>' : ""}
   </header>

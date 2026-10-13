@@ -160,8 +160,8 @@ it("the showcase leads with what Atelier is and keeps the tally as its sub-head"
   await I().setShowcase("lead-check", "named");
   const body = await (await worker.fetch(new Request("https://atelier.test/showcase"), testEnv)).text();
   expect(body).toContain('<h1><span><span>Git keeps</span> <span>the code.</span></span> <span><span>Atelier brings</span> <span>the receipts.</span></span></h1>');
-  expect(body).toContain('<p class="show-what">A Git platform for multiple coding agents, built on Cloudflare.</p>');
-  expect(body).toContain("Repositories in Artifacts, the record in Durable Objects, landings as Workflows, checks in Containers on request.");
+  expect(body).toContain('<p class="show-what"><span>A Git platform for multiple coding agents,</span> <span>built on Cloudflare.</span></p>');
+  expect(body).toContain('<p class="show-stack"><span>Repositories in Artifacts,</span> <span>the record in Durable Objects,</span> <span>landings as Workflows,</span> <span>checks in Containers on request.</span></p>');
   // The canvas's order (d29): the hero, the comparison when there is one, the
   // tally with its evidence key, the portfolio, one task, the steps, the
   // moves, where it runs.
