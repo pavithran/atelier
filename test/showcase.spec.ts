@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import { expect, it } from "vitest";
 import worker from "../src/index.ts";
 import layout from "../src/layout.css";
@@ -63,10 +64,11 @@ it("an anonymised project's names, titles, paths, commands, notes and addresses 
   for (const secret of ["hush-app", "Hush Secret Title", "Fix the crash", "src/auth.ts", "dev@private.example", "secret reviewer note", "npm run hush-suite", "Hush.xcodeproj"]) {
     expect(body, secret).not.toContain(secret);
   }
-  // What the page says instead: a neutral label from the project's kind, the
-  // kind of work of each task story, and the card's counts and families.
+  // What the page says instead: a neutral label from the project's kind and
+  // the card's counts and families. Its one task is open, so no task is told
+  // as it happened (t578: only a merged task is).
   expect(body).toContain("<h3>An iOS app</h3>");
-  expect(body).toContain("A fix");
+  expect(body).not.toContain('id="story-h"');
   expect(body).toContain("<dt>merged, last two weeks</dt><dd>0</dd>");
   expect(body).toContain("<dt>merged, all time</dt><dd>0</dd>");
   expect(body).toContain("<dt>sent back, last two weeks</dt><dd>1</dd>");
@@ -148,6 +150,13 @@ it("the showcase leads with what Atelier is and keeps the tally as its sub-head"
   await I().registerProject(record);
   await L("lead-check").newItem("Tidy the desk", [], "owner");
   await L("lead-check").claim("t1", "codex/gpt-6");
+  // One task, as it happened, tells a merged task only (t578).
+  await L("lead-check").setFork("t1", "lead-check--t1", "1".repeat(40), "codex/gpt-6");
+  await L("lead-check").recordPush("t1", "codex/gpt-6", head, head);
+  await L("lead-check").addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: "codex/gpt-6", at: time, changedPaths: ["src/a.ts"] });
+  await L("lead-check").submit("t1", "codex/gpt-6");
+  await L("lead-check").accept("t1", "owner", head);
+  await L("lead-check").merged("t1", "owner", "d".repeat(40), true, head);
   await I().setShowcase("lead-check", "named");
   const body = await (await worker.fetch(new Request("https://atelier.test/showcase"), testEnv)).text();
   expect(body).toContain("<h1>A Git platform for multiple coding agents</h1>");
@@ -164,7 +173,7 @@ it("the showcase leads with what Atelier is and keeps the tally as its sub-head"
   expect(travels).toMatch(/<span class="travel-count">\d+ claims?, \d+ handoffs?<\/span>/);
   // The steps take the accent, not the agents' family colours.
   expect(travels).not.toContain("--m-");
-  expect(body).toContain("The owner made 0 decisions.");
+  expect(body).toContain("The owner made 1 decision.");
 });
 
 it("the comparison uses the shown project with the largest imported history when the same project's is thin", async () => {
@@ -311,4 +320,55 @@ it("an anonymised story carries no commit hash in its beads, moments or drawing;
   const namedHtml = renderShowcase([named], named.tally, "pavi", "PAVI", false, new Map(), [card(named, "named")]);
   expect(namedHtml).toContain(H.slice(0, 8));
   expect(namedHtml).toContain(M.slice(0, 8));
+});
+
+// Seen live on 13 Oct 2026 (t578): the showcase read the last 3,000 events,
+// which on Atelier's own busy ledger covered eight hours, so it said 0 merged
+// in two weeks beside 379 all time and told an open, failing task as its
+// story. Every figure is now counted over the whole record, and the story is
+// a merged task read from its own events.
+it("the showcase counts the whole record, not the most recent events, and tells a merged task", async () => {
+  const name = "busy-record";
+  const record = { name, repo: name, title: "Busy Record", policy: { checks: [], protected: [] }, createdAt: time };
+  await L(name).setProject(record, "owner");
+  await I().registerProject(record);
+  const l = L(name);
+  await l.newItem("Ship the parser", [], "owner");
+  await l.claim("t1", "codex/gpt-6");
+  await l.setFork("t1", `${name}--t1`, "1".repeat(40), "codex/gpt-6");
+  await l.recordPush("t1", "codex/gpt-6", head, head);
+  await l.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: "codex/gpt-6", at: time, changedPaths: ["src/a.ts"] });
+  await l.addReview({ itemId: "t1", criteria: await l.criteria("t1"), by: "zcode/glm-5.3", head, approve: false, note: "not yet", at: time });
+  await l.addReview({ itemId: "t1", criteria: await l.criteria("t1"), by: "zcode/glm-5.3", head, approve: true, note: "fine now", at: time });
+  await l.submit("t1", "codex/gpt-6");
+  await l.accept("t1", "owner", head);
+  await l.merged("t1", "owner", "d".repeat(40), true, head);
+  await l.newItem("Chase the flaky build", [], "owner");
+  await l.claim("t2", "codex/gpt-6");
+  // More events than any read limit, all after the merge: failing checks on the open task.
+  const NOISE = 3200;
+  await runInDurableObject(l, async (_: unknown, state: DurableObjectState) => {
+    const at = new Date().toISOString();
+    for (let i = 0; i < NOISE; i++) {
+      state.storage.sql.exec(`INSERT INTO events (item_id, at, actor, kind, data) VALUES ('t2', ?, 'atelier/sandbox', 'evidence.observed', ?)`, at, JSON.stringify({ passed: false, where: "sandbox", claim: "npm test" }));
+    }
+  });
+  // This project alone is shown, so the page's figures are its own.
+  for (const e of await I().showcaseEntries()) await I().removeShowcase(e.name);
+  await I().setShowcase(name, "named");
+  const body = await (await worker.fetch(new Request("https://atelier.test/showcase"), testEnv)).text();
+  // The figures count every event: the merge, the review and the owner's
+  // acceptance happened before the last 3,000 events.
+  expect(body).toContain(`<dt>checks run on a clean copy, ${NOISE.toLocaleString("en")} in Cloudflare</dt><dd>${(NOISE + 1).toLocaleString("en")}</dd>`);
+  expect(body).toContain("<dt>times a model sent work back</dt><dd>1</dd>");
+  expect(body).toContain("The owner made 1 decision.");
+  expect(body).toContain("<dt>merged, last two weeks</dt><dd>1</dd>");
+  expect(body).toContain("<dt>merged, all time</dt><dd>1</dd>");
+  expect(body).toContain("<dt>sent back, last two weeks</dt><dd>1</dd>");
+  expect(body).not.toContain("the most recent part of the record");
+  // The story is the merged task, sent back once, not the open one with thousands of failures.
+  const story = body.slice(body.indexOf('id="story-h"'), body.indexOf("</section>", body.indexOf('id="story-h"')));
+  expect(story).toContain("t1 · Ship the parser");
+  expect(story).not.toContain("t2");
+  expect(story).toContain("sent it back");
 });
