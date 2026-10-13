@@ -855,10 +855,20 @@ In fast mode, from a clean checkout of main:
     atelier fast land t575=SHA t576=SHA --reviewer H/M
 
 merges each SHA in order with `git merge --no-ff`, regenerates the
-generated files and commits them, runs the typecheck, scans the batch's
-added lines for credentials with the server's own scanner, and runs the
-tests once for the whole batch. If any step fails, main is reset to where
-it started and nothing is recorded. On success each task gets a landed-fast
+generated files and commits them, runs the typecheck, scans every file
+each of the batch's commits adds or changes for credentials with the
+server's own scanner (a file it cannot read as text stops the batch, as it
+blocks a push), and runs the tests once for the whole batch. If any step
+fails, main is reset to where it started and nothing is recorded; if main
+cannot be put back, fast land says so, with main's head and the command
+that restores it.
+
+Fast land runs the project's commands (regeneration, typecheck, tests)
+with the developer's own filesystem access, after merging agents' changes
+to them: their environment holds no tokens or keys, but a hostile command
+could still tamper with the checkout, Git or the atelier CLI itself, so
+fast mode is for batches the developer trusts, and a check that no agent
+can forge needs the sandbox (`atelier init --sandbox-only`). On success each task gets a landed-fast
 receipt: the commit merged, the merge commit, the builder its Agent line
 names, the test command and the sha256 of its output, and the mode's
 reason. The task is marked merged, and its post-merge review is asked of

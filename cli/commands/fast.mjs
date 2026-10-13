@@ -55,6 +55,9 @@ export default async function fastCommand() {
     console.log(`${l.id} landed in fast mode: ${l.commit.slice(0, 12)} merged as ${l.mergeCommit.slice(0, 12)}, built by ${l.builder}; ${asked}`);
   }
   if (!result.ok) {
+    // Rollback could not put main back (third review of t592): say so first,
+    // with main's head and the fix, never "main is back".
+    if (result.restored === false) die(`fast land stopped at ${result.failure.step}, and ${result.restoreProblem}\nNothing was recorded.\n${result.failure.detail}`);
     if (result.failure.merged) die(`${result.failure.step} failed: ${result.failure.detail}\nMain holds the checked batch at ${result.head.slice(0, 12)}; record the rest again with atelier fast land.`);
     die(`fast land stopped at ${result.failure.step}; main is back at ${result.start.slice(0, 12)}, nothing was recorded.\n${result.failure.detail}`);
   }
