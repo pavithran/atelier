@@ -1,0 +1,35 @@
+atelier atelier/t556 "Runners reload after a CLI-only merge"
+accepted head efc2607e08275501525e3ddec2212a435452d88d
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR claude-code/opus-5.5 (anthropic)
+OBSERVED pass npm ci --prefer-offline --no-audit --no-fund && npm test — claude-code/opus-5.5 2026-10-13T00:33:24.799Z
+OBSERVED pass npm run types && npm run typecheck — claude-code/opus-5.5 2026-10-13T00:33:28.407Z
+REVIEW approve by opencode/glm-5.3 at efc2607e08275501525e3ddec2212a435452d88d, recorded by opencode/glm-5.3
+2026-10-12T19:40:19.191Z pavi item.created
+2026-10-12T20:09:39.052Z pavi item.dispatched
+2026-10-12T21:47:53.126Z pavi item.undispatched
+2026-10-12T21:47:56.193Z pavi item.dispatched
+2026-10-12T22:06:37.058Z claude-code/opus-5.5 item.claimed
+2026-10-12T22:07:43.130Z claude-code/opus-5.5 fork.created
+2026-10-12T22:09:00.685Z claude-code/opus-5.5 item.released
+2026-10-12T22:09:44.363Z claude-code/opus-5.5 item.claimed
+2026-10-12T22:10:59.979Z claude-code/opus-5.5 item.released
+2026-10-12T22:11:36.496Z claude-code/opus-5.5 item.claimed
+2026-10-12T22:16:13.438Z claude-code/opus-5.5 push.observed
+2026-10-12T22:25:12.616Z claude-code/opus-5.5 evidence.observed
+2026-10-12T22:25:15.459Z claude-code/opus-5.5 evidence.observed
+2026-10-12T22:25:16.128Z claude-code/opus-5.5 item.submitted
+2026-10-13T00:27:49.207Z pavi land.merge
+2026-10-13T00:28:03.621Z pavi land.regenerate
+2026-10-13T00:28:08.110Z claude-code/opus-5.5 push.observed
+2026-10-13T00:28:09.347Z pavi land.push
+2026-10-13T00:33:25.456Z claude-code/opus-5.5 evidence.observed
+2026-10-13T00:33:28.716Z claude-code/opus-5.5 evidence.observed
+2026-10-13T00:33:29.331Z pavi land.check
+2026-10-13T00:33:32.214Z pavi review.requested
+2026-10-13T00:40:51.876Z opencode/glm-5.3 review.claimed
+2026-10-13T00:47:54.404Z opencode/glm-5.3 review.approved
+2026-10-13T00:48:02.134Z pavi land.review
+2026-10-13T00:48:02.875Z pavi land.lease
+2026-10-13T00:48:04.707Z pavi item.accepted
+2026-10-13T00:48:04.757Z pavi land.accept
