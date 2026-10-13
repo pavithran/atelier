@@ -679,7 +679,8 @@ const FULL_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 // each receipt not yet recorded as fast land left it, and posts only those.
 // It refuses, posting nothing, when main no longer holds a receipt's merge
 // commit, the merge's second parent is not the task's commit, the merge is
-// not the task's, or the commit's Agent line names another builder.
+// not the task's, the commit's Agent line names another builder, or an
+// object the batch's commits reference is missing or changed.
 export async function recordPending({ cwd, file, record }) {
   return postPending(readPending(cwd, file), record);
 }
@@ -698,9 +699,12 @@ export function readPending(cwd, file) {
   let data;
   try { data = JSON.parse(readFileSync(file, "utf8")); } catch (err) { throw new Error(`${file} cannot be read as a fast landing's receipts: ${err?.message ?? err}`); }
   const valid = (x) => /^t\d+$/.test(x?.task) && FULL_SHA.test(x.commit) && FULL_SHA.test(x.mergeCommit) && typeof x.builder === "string" && typeof x.recorded === "boolean";
-  if (data?.version !== 1 || !Array.isArray(data.receipts) || !data.receipts.length || !data.receipts.every(valid)) throw new Error(`${file} is not a fast landing's receipts file`);
+  if (data?.version !== 1 || !FULL_SHA.test(data.start) || !FULL_SHA.test(data.head) || !Array.isArray(data.receipts) || !data.receipts.length || !data.receipts.every(valid)) throw new Error(`${file} is not a fast landing's receipts file`);
   const main = git(cwd, "rev-parse", "--verify", "refs/heads/main");
   const problems = [];
+  const holds = (a, b) => runGit(cwd, ["merge-base", "--is-ancestor", a, b]).status === 0;
+  if (!holds(data.head, main)) problems.push(`main no longer holds the batch's head ${data.head.slice(0, 12)} (main is at ${main.slice(0, 12)})`);
+  for (const x of data.receipts) if (!holds(x.mergeCommit, data.head) || holds(x.mergeCommit, data.start)) problems.push(`${x.task}'s merge commit ${x.mergeCommit.slice(0, 12)} is not in the batch ${data.start.slice(0, 12)}..${data.head.slice(0, 12)}`);
   for (const x of data.receipts.filter((r) => !r.recorded)) {
     const merge = x.mergeCommit.slice(0, 12);
     if (runGit(cwd, ["merge-base", "--is-ancestor", x.mergeCommit, main]).status !== 0) { problems.push(`main no longer holds ${x.task}'s merge commit ${merge} (main is at ${main.slice(0, 12)})`); continue; }
@@ -708,6 +712,20 @@ export function readPending(cwd, file) {
     if (parents.length !== 2 || parents[1] !== x.commit) problems.push(`${merge} is not a merge of ${x.task}'s commit ${x.commit.slice(0, 12)}`);
     else if (!git(cwd, "log", "-1", "--format=%s", x.mergeCommit).startsWith(`Merge ${x.task}:`)) problems.push(`${merge} is not the merge of ${x.task}`);
     else if (agentOfMessage(git(cwd, "log", "-1", "--format=%B", x.commit)) !== x.builder) problems.push(`${x.task}'s commit ${x.commit.slice(0, 12)} does not name ${x.builder} as its builder`);
+  }
+  // The batch's history is still whole (review of t602, gpt-6-astra: an
+  // object deleted between the failed receipt and the resume had the
+  // receipt posted for history main could not show): nothing changes what
+  // Git shows, and every object the batch's commits reference, their whole
+  // trees included, is present and hashes to its id, as fast land checked
+  // after its tests (objectProblems).
+  if (!problems.length) {
+    const overrides = historyOverrides(cwd, shallowOf(cwd)).filter((o) => !/shallow/.test(o));
+    if (overrides.length) problems.push(`the checkout has ${overrides.join(", ")}, which change the history Git shows`);
+    else {
+      const damaged = objectProblems(cwd, data.start, data.head);
+      if (damaged.length) problems.push(`objects of the batch are missing or changed: ${damaged.join(", ")}`);
+    }
   }
   if (problems.length) throw new Error(`nothing was recorded: ${problems.join("; ")}`);
   return { file, project: typeof data.project === "string" ? data.project : null, reviewer: typeof data.reviewer === "string" ? data.reviewer : null, data };

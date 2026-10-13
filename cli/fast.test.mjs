@@ -714,6 +714,27 @@ test("recordPending refuses when main no longer holds a receipt's merge commit, 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// Review of t602 (gpt-6-astra): the resume checked the merges' ancestry,
+// parents, subjects and builders but not their objects, so a blob of the
+// batch deleted between the failed receipt and the resume still had the
+// receipt posted for history main could not show.
+test("recordPending refuses when an object of the batch was damaged after the failed receipt, recording nothing (finding 9)", async () => {
+  const { dir, one, two } = repo();
+  try {
+    const { record } = failingSecond();
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }, { id: "t2", sha: two }], test: "true", record });
+    assert.equal(r.failure?.step, "record t2");
+    const blob = git(dir, "rev-parse", `${two}:two.txt`);
+    rmSync(join(dir, ".git", "objects", blob.slice(0, 2), blob.slice(2)));
+    await assert.rejects(recordPending({ cwd: dir, file: r.pending, record: () => assert.fail("recorded") }), (err) => {
+      assert.match(err.message, /nothing was recorded/);
+      assert.match(err.message, /(^|[ :,])two\.txt \(/);
+      return true;
+    });
+    assert.equal(existsSync(r.pending), true, "the file is kept");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("a batch that fails before the receipts leaves no receipts file (finding 9)", async () => {
   const { dir, one } = repo();
   try {
