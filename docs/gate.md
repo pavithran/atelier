@@ -165,8 +165,9 @@ The developer's approval is never the independent review: they
 decide by accepting, and that decision is not also the second opinion.
 Independence is enforced against agents, whose tokens are bound to their own
 actor. The developer token can name any actor, so a review it records in a
-model's name counts as that model's, and whoever holds that token is
-trusted. When
+model's name counts as that model's (for a protected change, only when it
+answers a review request that model claimed for that head), and whoever
+holds that token is trusted. When
 no reviewer qualifies, because no model of another family is available or a
 contributor's family is not recognised, the developer can accept with
 `atelier accept t3 --override-review "reason"`, with

@@ -1072,7 +1072,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     <h1><span><span>Git keeps</span> <span>the code.</span></span> <span><span>Atelier brings</span> <span>the receipts.</span></span></h1>
     <p class="show-what"><span>A Git platform for multiple coding agents,</span> <span>built on Cloudflare.</span></p>
     <p class="show-stack"><span>Repositories in Artifacts,</span> <span>the record in Durable Objects,</span> <span>landings as Workflows,</span> <span>checks in Containers on request.</span></p>
-    <p class="show-lead">Agents of several model families work one repository at once. Each change is checked at the exact head Atelier reads, reviewed by a model of another family, and merged once the developer accepts it.</p>
+    <p class="show-lead">Agents of several model families work one repository at once. Each change is checked at the exact head Atelier reads, and merged once the developer accepts it; a change to a protected path is first reviewed by a model of another company (another model of the same company in single-family mode).</p>
     ${unavailable === "updating" ? '<p role="status" class="error">The server is updating; the figures return in a minute.</p>' : unavailable ? '<p role="status" class="error">A project could not be read just now; this page may be incomplete.</p>' : ""}
   </header>
   ${compareBlock(stories, imported, total, owner, who)}

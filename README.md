@@ -750,7 +750,8 @@ Trusted, and stated here so nobody assumes otherwise:
 - **Agent tokens prove identity.** An agent token binds requests to one actor
   and optionally to projects. The developer token still permits declared actors
   for orchestration, a reviewer included: a review it records in a model's
-  name counts as that model's. Independence of review is therefore
+  name counts as that model's (for a protected change, only when it answers
+  a review request that model claimed for that head). Independence of review is therefore
   guaranteed against agents, not against whoever holds the developer token.
   Keep it with the developer's tools. A workspace write token
   controls Git pushes and is separate from an API token.
