@@ -12,11 +12,12 @@ const evidenceText = (ref, names) => { const slash = ref.indexOf("/"); return `$
 // One assignment as `models roles` prints it: id, date, role, scope, the
 // choices in order, its status, then why, the evidence, the developer's words
 // and who recorded it, acting for whom.
-export function assignmentLines(v, names = {}) {
+export function assignmentLines(v, names = {}, inPool = null) {
+  const gone = (actor) => Array.isArray(inPool) && !inPool.includes(actor);
   const status = v.status === "superseded" ? `  superseded by ${v.supersededBy.id} on ${v.supersededBy.at.slice(0, 10)}`
     : v.status === "withdrawn" ? `  withdrawn ${v.withdrawal.at.slice(0, 10)} by ${v.withdrawal.by}${v.withdrawal.acting ? ` (acting ${v.withdrawal.acting})` : ""}: ${v.withdrawal.note}` : "";
   return [
-    `${v.id}  ${v.at.slice(0, 10)}  ${v.role} in ${scopeText(v.scope, names)}: ${v.choices.map((c) => c.actor).join(", then ")}${status}`,
+    `${v.id}  ${v.at.slice(0, 10)}  ${v.role} in ${scopeText(v.scope, names)}: ${v.choices.map((c) => `${c.actor}${gone(c.actor) ? " (not in the pool now)" : ""}`).join(", then ")}${status}`,
     `    why: ${v.reason}`,
     `    evidence: ${v.evidence.map((e) => evidenceText(e, names)).join(", ")}`,
     `    the developer's words: “${v.quote}”`,
@@ -26,15 +27,15 @@ export function assignmentLines(v, names = {}) {
 
 // What `models roles` prints: the assignments standing, then the history,
 // then the fallback each role without one returns to.
-export function rolesReport({ assignments, names = {}, fallback = {} }) {
+export function rolesReport({ assignments, names = {}, fallback = {}, inPool = null }) {
   const current = assignments.filter((v) => v.status === "current");
   const past = assignments.filter((v) => v.status !== "current");
   const lines = ["Standing role assignments:"];
   if (!current.length) lines.push("  None. Every role goes by its fallback below.");
-  for (const v of current) lines.push(...assignmentLines(v, names).map((l) => `  ${l}`));
+  for (const v of current) lines.push(...assignmentLines(v, names, inPool).map((l) => `  ${l}`));
   if (past.length) {
     lines.push("", "History (superseded and withdrawn, kept with their evidence):");
-    for (const v of past) lines.push(...assignmentLines(v, names).map((l) => `  ${l}`));
+    for (const v of past) lines.push(...assignmentLines(v, names, inPool).map((l) => `  ${l}`));
   }
   const held = new Set(current.filter((v) => v.scope === "*").map((v) => v.role));
   const open = Object.entries(fallback).filter(([role]) => !held.has(role));

@@ -73,7 +73,7 @@ import {
   attributionRefusal, authorsOf, buildJob, criteriaFindingsSection, criteriaIndependenceRefusal, criteriaReviewBrief, criteriaStatus, CRITERIA_REVIEW_TIMEOUT_MS, lapsedClaim,
   pickCriteriaReviewer, postDeployChecks, RESOLUTION_VERDICTS, type CriteriaResolution, type CriteriaReview, type CriteriaReviewState, type CriteriaRevision, type CriteriaStatus, type ResolutionVerdict,
 } from "./review/criteria.ts";
-import { gateServesTier, pickTierReviewer } from "./review/tier.ts";
+import { gateServesTier, tierReviewerPick } from "./review/tier.ts";
 import type { LargeRef } from "./large.ts";
 import { linkVerdict, type Contradicts } from "./models/judgement.ts";
 import { queued as queuedStanding, refreshStanding, type RefreshStanding } from "./refresh/standing.ts";
@@ -1356,9 +1356,13 @@ export class Ledger extends DurableObject<Env> {
   // The assignments bearing on a review of the item, most specific first:
   // security or gate work reads security-review, docs alone (a docs part, or
   // a task whose scope is docs) claims-review, then review.
-  private reviewAssigned(item: Item, part: Pick<PlanPart, "kind" | "taskKind"> | null = null): Assignment[] {
-    const docs = part ? part.kind === "docs" || part.taskKind === "docs" : docsOnly(item.scope);
-    return applicableAssignments(this.heldAssignments(), null, reviewRoles({ sensitive: sensitive(item), docs }));
+  // The paths the submission changed are read with the scope, as the
+  // reviewer suggestion reads them (gemini-4-argon's review of t622,
+  // follow-up 4), so every caller reads the same roles.
+  private reviewAssigned(item: Item, part: Pick<PlanPart, "kind" | "taskKind"> | null = null, changed: readonly string[] = []): Assignment[] {
+    const scope = [...item.scope, ...changed];
+    const docs = part ? part.kind === "docs" || part.taskKind === "docs" : docsOnly(scope);
+    return applicableAssignments(this.heldAssignments(), null, reviewRoles({ sensitive: sensitive({ ...item, scope }), docs }));
   }
 
   // A task or event named as evidence for an assignment: what is missing,
@@ -3372,7 +3376,7 @@ export class Ledger extends DurableObject<Env> {
       item, pool, policy, allowPaid: false, owner: this.owner,
       precision: this.reviewPrecision(new Date().toISOString()),
       tier: kind === "protected" ? policy.reviewTier : undefined,
-      assigned: this.reviewAssigned(item),
+      assigned: this.reviewAssigned(item, null, changedPaths ?? []),
     });
     return pick.reviewer?.actor ?? null;
   }
@@ -6464,7 +6468,7 @@ export class Ledger extends DurableObject<Env> {
         avoid: need.lapsed.map((a) => ({ actor: a, reason: "its claim on a review of this head lapsed" })),
         owner: this.owner,
         precision: this.reviewPrecision(at),
-        assigned: this.reviewAssigned(item),
+        assigned: this.reviewAssigned(item, null, need.changedPaths),
         offers,
       });
       if (!pick.reviewer) {
@@ -6540,12 +6544,15 @@ export class Ledger extends DurableObject<Env> {
     // A tier model the owner has paused, reserved or kept from reviewing is
     // passed over, as the gate's selector passes it over.
     const standing = this.poolStanding();
-    const reviewer = pickTierReviewer(policy.reviewTier, contributorsOf(item), [gateReviewer, ...asked], (a) => mayAssess(a, policy, this.owner) && !actorStanding(standing, a, "review"), this.reviewPrecision(at), singleFamily(policy), this.reviewAssigned(item));
+    const pick = tierReviewerPick(policy.reviewTier, contributorsOf(item), [gateReviewer, ...asked], (a) => mayAssess(a, policy, this.owner) && !actorStanding(standing, a, "review"), this.reviewPrecision(at), singleFamily(policy), this.reviewAssigned(item, null, need.changedPaths), standing);
+    const reviewer = pick.actor;
     if (!reviewer) return;
     const slash = reviewer.indexOf("/");
     const dispatch = { ...this.standingDispatch({ to: "home", agent: reviewer.slice(0, slash), model: reviewer.slice(slash + 1) }, "review", ORCHESTRATOR, at), job: "review" as const };
     this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, tier, criteria) VALUES (?, ?, ?, ?, 'open', 1, ?)`, item.id, need.head, JSON.stringify(dispatch), null, criteriaOf(item));
-    this.log(item.id, actor, "review.requested", { head: need.head, reviewer, round: need.round, tier: true }, at, proved);
+    // What the role assignments said of this choice, kept on the request
+    // (gpt-6-astra's review of t622, finding 7).
+    this.log(item.id, actor, "review.requested", { head: need.head, reviewer, round: need.round, tier: true, ...(pick.reasons.length ? { reason: pick.reasons.join(" ") } : {}) }, at, proved);
   }
 
   // Withdraws an item's live tier requests (open ones only, with `only`), so

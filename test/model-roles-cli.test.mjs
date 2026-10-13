@@ -105,6 +105,14 @@ test("a server without models.roles.v1 is named before any request, so a deploy 
   assert.deepEqual(f.requests, []);
 });
 
+// gemini-4-argon's review of t622 at 53bf739d, finding 3: the listing never
+// said when an assigned model had left the pool.
+test("the report marks a choice the pool no longer has", () => {
+  const lines = rolesReport({ assignments: [{ ...a1, status: "current" }], names: {}, fallback: {}, inPool: ["antigravity/gemini-4-argon"] });
+  assert.match(lines.join("\n"), /security-review in every project: codex\/gpt-6-astra \(not in the pool now\)/);
+  assert.doesNotMatch(rolesReport({ assignments: [{ ...a1, status: "current" }], names: {}, fallback: {}, inPool: ["codex/gpt-6-astra"] }).join("\n"), /not in the pool/);
+});
+
 test("the report shows history apart from what stands, under each project's current name", () => {
   const lines = rolesReport({
     assignments: [

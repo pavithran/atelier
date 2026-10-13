@@ -13,6 +13,7 @@
 // withdrawn when the change is accepted, integrated or closed.
 
 import { FALLBACK, orderByAssignment, type Assignment } from "../models/assignments.ts";
+import type { PoolNames } from "../models/judgement.ts";
 import type { PoolFamily } from "../models/pool.ts";
 import { byPrecision, type PrecisionRecord } from "../models/precision.ts";
 import { actorFamily, contributed, sameActor } from "../rules.ts";
@@ -37,8 +38,20 @@ export function gateServesTier(tier: readonly string[] | undefined, reviewer: st
 // review (`assigned`, most specific first; src/models/assignments.ts) put
 // their eligible choices among the tier's models first: the tier is the
 // project's, so an assignment orders it and never adds to it.
-export function pickTierReviewer(tier: readonly string[], contributors: readonly string[], gate: readonly string[], mayReview: (actor: string) => boolean, precision: PrecisionRecord | null = null, single: PoolFamily | null = null, assigned: readonly Assignment[] = []): string | null {
-  const may = (a: string) => !contributed(a, contributors) && !gate.some((g) => sameActor(g, a)) && (!single || actorFamily(a) === single) && mayReview(a);
-  const ordered = orderByAssignment(byPrecision(tier, (a) => [a], precision), (a) => a, assigned, (a) => (may(a) ? null : "may not give the tier review"), FALLBACK.review).order;
-  return ordered.find(may) ?? null;
+export function pickTierReviewer(tier: readonly string[], contributors: readonly string[], gate: readonly string[], mayReview: (actor: string) => boolean, precision: PrecisionRecord | null = null, single: PoolFamily | null = null, assigned: readonly Assignment[] = [], pool: PoolNames = []): string | null {
+  return tierReviewerPick(tier, contributors, gate, mayReview, precision, single, assigned, pool).actor;
+}
+
+// The same pick with what the assignments said of it: the one that chose
+// the reviewer, those skipped and why, or the fallback, which the ledger
+// records on the tier request (gpt-6-astra's review of t622, finding 7).
+// `pool` reads a tier model named by an alias as the pool entry it is.
+export function tierReviewerPick(tier: readonly string[], contributors: readonly string[], gate: readonly string[], mayReview: (actor: string) => boolean, precision: PrecisionRecord | null = null, single: PoolFamily | null = null, assigned: readonly Assignment[] = [], pool: PoolNames = []): { actor: string | null; reasons: string[] } {
+  const refusal = (a: string) => contributed(a, contributors) ? "contributed to this change, and nobody reviews their own work"
+    : gate.some((g) => sameActor(g, a)) ? "already asked for the gate's review"
+      : single && actorFamily(a) !== single ? `not one of ${single}'s models (single-family mode)`
+        : mayReview(a) ? null : "may not review here (the project's policy or the developer's standing)";
+  const ordered = orderByAssignment(byPrecision(tier, (a) => [a], precision), (a) => a, assigned, refusal, FALLBACK.review, pool);
+  const actor = ordered.order.find((a) => refusal(a) === null) ?? null;
+  return { actor, reasons: actor ? ordered.reasons(actor) : ordered.outcome.lines };
 }
