@@ -1,6 +1,6 @@
 // atelier review. Its forms, flags and help are declared in src/usage/commands/review.ts.
 import { COMMAND_USAGE } from "../help.mjs";
-import { I, actor, args, call, die, itemArg, project, request, short } from "../atelier.mjs";
+import { I, actor, args, call, die, itemArg, project, rememberedReviewClaim, short } from "../atelier.mjs";
 
 export default async function reviewCommand() {
   if (!args.approve && !args.reject) die(COMMAND_USAGE.review);
@@ -15,10 +15,21 @@ export default async function reviewCommand() {
   // now: a verdict without it is refused by the server, with how to refresh.
   if (args.criteria !== undefined && !/^[a-f0-9]{64}$/.test(String(args.criteria))) die("--criteria needs the 64-digit binding atelier show prints");
   if (args.request !== undefined && !/^[0-9]+$/.test(String(args.request))) die("--request needs the request number the review claim gave");
+  // Without --request, the request this machine last claimed for the task
+  // as this reviewer (review-claim records it, t575), said aloud; with no
+  // such claim the verdict names none, as the owner's own review does.
+  let requestNumber = args.request !== undefined ? Number(args.request) : undefined;
+  if (requestNumber === undefined) {
+    const remembered = rememberedReviewClaim(name, id);
+    if (remembered && remembered.as === as) {
+      requestNumber = remembered.request;
+      console.log(`Answering review request ${requestNumber}, the one this machine last claimed for ${id} as ${as} (at ${remembered.at}); name another with --request N.`);
+    }
+  }
   await call("POST", `${I(name, id)}/review`, {
     approve: args.approve === true, note: args.note ?? "", head: args.head ?? d.item.head,
     ...(args.criteria !== undefined ? { criteria: String(args.criteria) } : {}),
-    ...(args.request !== undefined ? { request: Number(args.request) } : {}),
+    ...(requestNumber !== undefined ? { request: requestNumber } : {}),
     ...(findings !== undefined ? { findings } : {}),
   }, as);
   console.log(`${args.approve ? "Approved" : "Rejected"} ${id} @ ${short(d.item.head)} as ${as}.`);

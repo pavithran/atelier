@@ -149,6 +149,9 @@ globalThis.fetch = async (url, options = {}) => {
       // was accepted with the owner's override; t1 and t2 report no change.
       else if (verb === "edit") data = { ...item(id), ...body, ...(CHANGES[id] && body.accept ? { criteriaChange: { from: "a".repeat(64), to: "b".repeat(64), ...CHANGES[id] } } : {}) };
       else if (verb === "brief") data = { decided: "Wait on " + id, summary: null, nonGoals: [], stopWhen: [], nextGate: null, accept: ["Nested lists parse"], partAccept: ["It works"], criteria: "c".repeat(64), evidence: [], recommendation: { verdict: "wait", reason: "In progress." } };
+      // t575: a review claim answers its request, head and criteria binding; a renewal its word.
+      else if (verb === "review-claim") data = { item: item(id), head: HEAD, request: 7, criteria: "c".repeat(64) };
+      else if (verb === "review-renew") data = { renewed: true };
       else data = detail(id);
     }
   }
@@ -683,6 +686,58 @@ test("review sends the criteria binding and the request only as given, and refus
     assert.match(bad.stderr, message);
   }
   assert.equal(f.requests().filter((q) => q.path.endsWith("/review")).length, 0);
+});
+
+// t575: on 2026-10-13 a hand-served review of t573 lost its claim to the
+// 5-minute lease during a 6-minute run, and its verdict, sent without
+// --request, was refused for "request undefined". The claim now prints the
+// exact verdict command and how to renew; --renew renews through the route a
+// runner uses; review without --request answers the request claimed here.
+test("review-claim prints the verdict command and the lease, --renew renews it, and review remembers the request", (t) => {
+  const f = fixture(t);
+  const C = "c".repeat(64), as = { ATELIER_ACTOR: "opencode/glm-5.3" };
+  const claim = f.run(f.workspace, ["review-claim", "t2", "--runner", "home:hand"], as);
+  assert.equal(claim.status, 0, claim.stderr);
+  // The JSON stays the one line on stdout, which a runner parses.
+  assert.equal(JSON.parse(claim.stdout).request, 7);
+  assert.equal(claim.stdout.trim().split("\n").length, 1);
+  assert.match(claim.stderr, new RegExp(`^Claimed t2's review request 7 at ${f.head} as opencode/glm-5\\.3\\.$`, "m"));
+  assert.match(claim.stderr, new RegExp(`^Criteria binding: ${C}$`, "m"));
+  assert.ok(claim.stderr.includes(`Record the verdict with: atelier review t2 --head ${f.head} --request 7 --criteria ${C} --approve|--reject --note "…" --as opencode/glm-5.3`), claim.stderr);
+  assert.match(claim.stderr, /lease lasts 5 minutes .*atelier review-claim t2 --renew --request 7 --as opencode\/glm-5\.3/);
+  f.clear();
+  // --renew without --request renews the request claimed here, by the runner's route.
+  const renew = f.run(f.workspace, ["review-claim", "t2", "--renew"], as);
+  assert.equal(renew.status, 0, renew.stderr);
+  assert.match(renew.stdout, /Renewed the lease on t2's review request 7, the one this machine last claimed, as opencode\/glm-5\.3: it lasts 5 more minutes/);
+  assert.deepEqual(f.requests().map((q) => [q.method, q.path, q.body, q.actor]), [["POST", "/api/projects/demo/items/t2/review-renew", { request: 7 }, "opencode/glm-5.3"]]);
+  f.clear();
+  const named = f.run(f.workspace, ["review-claim", "t2", "--renew", "--request", "9"], as);
+  assert.equal(named.status, 0, named.stderr);
+  assert.deepEqual(f.requests().map((q) => q.body), [{ request: 9 }]);
+  f.clear();
+  // review without --request answers the remembered request and says which.
+  const verdict = f.run(f.workspace, ["review", "t2", "--approve", "--criteria", C, "--note", "fine"], as);
+  assert.equal(verdict.status, 0, verdict.stderr);
+  assert.match(verdict.stdout, /^Answering review request 7, the one this machine last claimed for t2 as opencode\/glm-5\.3/m);
+  assert.deepEqual(f.requests().filter((q) => q.path.endsWith("/review")).map((q) => q.body.request), [7]);
+  f.clear();
+  // Another reviewer, or a task never claimed here, sends no request at all.
+  for (const [id, env] of [["t2", { ATELIER_ACTOR: "claude-code/opus" }], ["t4", as]]) {
+    const other = f.run(f.workspace, ["review", id, "--approve", "--criteria", C], env);
+    assert.equal(other.status, 0, other.stderr);
+    assert.doesNotMatch(other.stdout, /Answering/);
+    assert.ok(!("request" in f.requests().find((q) => q.path.endsWith("/review")).body));
+    f.clear();
+  }
+  // Nothing to renew for a task never claimed here; --request without --renew is refused.
+  const none = f.run(f.workspace, ["review-claim", "t4", "--renew"], as);
+  assert.equal(none.status, 1);
+  assert.match(none.stderr, /no review request of t4 was claimed on this machine; name it with --request N/);
+  const stray = f.run(f.workspace, ["review-claim", "t2", "--request", "7"], as);
+  assert.equal(stray.status, 1);
+  assert.match(stray.stderr, /--request names the claim --renew renews/);
+  assert.equal(f.requests().length, 0);
 });
 
 test("review-release forwards the claim generation and preserves owner recovery without a number", (t) => {
