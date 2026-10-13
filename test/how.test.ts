@@ -194,7 +194,7 @@ test("the plan flow draws what the code does, from goal to merge", () => {
   assert.equal(PLAN_FLOW[0].lane, "owner");
   assert.equal(PLAN_FLOW.at(-1)!.name, "Accept and merge");
   assert.equal(PLAN_FLOW.filter((s) => s.lane === "owner").length, 3, "the owner acts three times, as the caption says");
-  assert.match(PLAN_FLOW_CAPTION, /The owner acts three times/);
+  assert.match(PLAN_FLOW_CAPTION, /The developer acts three times/);
 });
 
 test("the plan flow's text fits its boxes and lanes at the drawn size", () => {
@@ -227,7 +227,7 @@ test("the layers diagram shows a goal entering as a plan and the runner's jobs",
   assert.match(LAYERS_LABEL, /Ledger[^.]*holds each plan and dispatches its parts/);
   assert.match(LAYERS_CAPTION, /--integrate[^.]*integrate and refresh jobs/);
   const svg = layersDiagram();
-  assert.ok(svg.includes(">owner: atelier plan &quot;goal&quot;</text>"), "the terminal node shows the goal entering as a plan");
+  assert.ok(svg.includes(">developer: atelier plan &quot;goal&quot;</text>"), "the terminal node shows the goal entering as a plan");
   assert.ok(svg.includes(">build, plan and review jobs</text>"), "the home runner node names its jobs");
   assert.ok(svg.includes(">holds each plan and dispatches its parts and jobs</text>"), "the Ledger node holds the plan");
   for (const t of [LAYERS_LABEL, LAYERS_CAPTION]) assert.doesNotMatch(t, /\s[–—-]\s|[–—]/, t);
