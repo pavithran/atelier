@@ -1,14 +1,5 @@
 # Atelier
 
-The cross-company rules below describe the default policy. With
-`atelier init --single-family COMPANY`, building and reviewing use only that
-company's models: a reviewer must be a different model from every contributor,
-never a contributor under another harness. This exception also applies to
-criteria review, handoffs and conflict contributors. Only that company's tier
-models qualify; if none qualifies, no separate tier review is requested.
-`atelier init --cross-family` restores the default; both switches record who
-made them and when. See [Single-family mode](docs/gate.md#single-family-mode).
-
 Atelier is a multi-agent system for software work, built on Git: a planner
 splits a goal into parts, builders of several model families work them at
 the same time, each in its own fork, reviewers of another family check each
@@ -63,6 +54,15 @@ model of the project's one company from every contributor. The project
 owner's approval is not that review; without one, the owner can accept only
 by recording an override with its reason.
 
+The cross-company rule above is the default policy. With
+`atelier init --single-family COMPANY`, building and reviewing use only that
+company's models: a reviewer must be a different model from every contributor,
+never a contributor under another harness. This exception also applies to
+criteria review, handoffs and conflict contributors. Only that company's tier
+models qualify; if none qualifies, no separate tier review is requested.
+`atelier init --cross-family` restores the default; both switches record who
+made them and when. See [Single-family mode](docs/gate.md#single-family-mode).
+
 ### Land
 
 **One landing at a time, with a receipt.** The project owner is the person
@@ -100,20 +100,23 @@ the commit when multiple agents work at once, and that is what Atelier adds.
 | Which model is worth it? | Nothing records it. | Each model's track record and reliability from the ledger, and its calls, cost and latency from AI Gateway. |
 | Who did what? | Commit metadata, which an agent writes itself. | Every claim, push, check, review, decision and merge is an event in the ledger, and each merge's builder, reviewer and head go into Git as provenance notes. |
 
-The record shows what this catches. In Atelier's own project, as of
-2026-10-07 23:00 UTC, models recorded 303 reviews; 91 sent the work back,
-with 57 findings marked blocking, each found before the change merged. Of the
-205 merged tasks, 157 carry an approval from another model family at the
-revision that merged, and every task merged since 22:11 UTC on 2026-10-06
-does (68 in a row), since the project owner extended the rule to every
-path in the project that day.
+The record shows what this catches. Atelier's own project was read from its
+ledger at 2026-10-12 23:03 UTC with `atelier ls --all --json` and then
+`atelier receipt ID --json` for each of the 568 items listed, counted the way
+`video/scripts/derive.mjs` counts them. Models recorded 681 reviews; 268 sent
+the work back, with 360 findings marked blocking, each found before the
+change merged. Of the 365 merged (364 tasks and one plan), 317 carry an
+approval from another model family at the revision that merged, and every
+task merged after 22:11 UTC on 2026-10-06 does (228 tasks), since the project
+owner extended the rule to every path in the project that day. The public
+showcase at [atelier.zone](https://atelier.zone) counts the same 365 merged.
 
 ## Built on Cloudflare
 
 | Product | What it does in Atelier | State |
 | --- | --- | --- |
 | Workers | One Worker (`src/index.ts`) serves the API the CLI calls, the signed-in pages and the public pages, on the custom domain atelier.zone. | Live |
-| Durable Objects | The `Ledger` class, with SQLite storage. One instance per project handles one request at a time, which is what makes one owner per task hold; it keeps the project's tasks, events, evidence and reviews. One index instance keeps what spans projects: the project list, agent tokens, the model pool, runner offers, usage and run reports, and the showcase setting. | Live |
+| Durable Objects | The `Ledger` class, with SQLite storage. One instance per project checks and records a claim in one synchronous step (`claim` in `src/ledger.ts`), which is what makes one owner per task hold; it keeps the project's tasks, events, evidence and reviews. One index instance keeps what spans projects: the project list, agent tokens, the model pool, runner offers, usage and run reports, and the showcase setting. | Live |
 | Artifacts | Git repositories: each project's baseline, and a fork for every task and every plan. The Worker reads commits, trees and diffs through the binding to measure what a change touches and to preview its merge. Writes come only through a `git push` with a write token minted for one workspace. | Live (Artifacts is in open beta) |
 | Containers | `CheckRunner`, a Durable Object with a container from the Cloudflare-managed `cloudflare/debian-trixie` image, runs a task's required checks with `--sandbox`. The container holds no credential and its Internet is off, except GET and HEAD requests to the npm registry. The image has no git; the Worker streams Debian's git package, pinned by sha256, into each container (docs/setup.md). | Built and configured in `wrangler.jsonc`; a successful run in production has not been established |
 | Workers Analytics Engine | The `atelier_metrics` dataset (binding `METRICS`), with `src/metrics.ts` to write one typed data point (`writeMetric`) and read rows back through the Analytics Engine SQL API (`query`). Model speed (`src/models/speed.ts`) and reviewer precision (`src/models/precision.ts`) are computed from the ledger's own events, not written here. | Bound; nothing writes to it yet |
@@ -133,6 +136,21 @@ in package.json; runners reload themselves after a deploy on all supported
 Node versions, see docs/runners.md), git, a Cloudflare account on the Workers
 Paid plan (Artifacts is in open beta there), and `wrangler` logged in.
 
+**Try it without an account.** Nothing below needs a Cloudflare account
+until step 2. The live server is at [atelier.zone](https://atelier.zone): its
+root is the public showcase, and [atelier.zone/how](https://atelier.zone/how)
+states each rule the code enforces and lists every command. On your own
+machine, step 1 builds and tests everything, and
+
+```sh
+node test/preview.mjs
+```
+
+serves a read-only preview of the pages with illustrative content, with no
+account or token and no call to any Atelier server (the pages load their
+fonts from Google Fonts); it prints its address
+([Local visual review](docs/setup.md#local-visual-review)).
+
 **1. Build and test.**
 
 ```sh
@@ -141,15 +159,27 @@ cd atelier
 npm ci && npm run types && npm test
 ```
 
+`npm test` runs the whole suite. On the owner's Mac, the 143 landing check
+runs that passed from 2026-10-11 to 2026-10-12 (each `npm ci`, this suite
+and the typecheck, in a clean clone) took 4.4 to 10.6 minutes, median 6.0
+(the `land.check` events in the ledger). Among the suite's output are lines
+such as `uncaught exception … 403` or `… 409`: workerd logs each refusal the
+Workers runtime tests assert as an uncaught rejection, so those lines are the
+refusals under test, not failures; the summary at the end says whether
+anything failed ([Local development](docs/setup.md#local-development)).
+
 **2. Deploy the Worker.** `wrangler.jsonc` routes the Worker to atelier.zone
 as a custom domain and turns `workers.dev` off. In your copy, replace the
 route with a domain on your own account, or remove `routes` and set
-`workers_dev` to `true`. Choose a server token (a random one is fine, kept
-where you can paste it from), deploy, and give the Worker the token as a
-secret; wrangler reads it from the prompt, so it is not written on a command
-line:
+`workers_dev` to `true`. The Worker binds the R2 bucket `atelier-large`
+(`r2_buckets` in `wrangler.jsonc`), and a deploy whose bucket does not exist
+fails, so the first command creates it, once. Then choose a server token (a
+random one is fine, kept where you can paste it from), deploy, and give the
+Worker the token as a secret; wrangler reads it from the prompt, so it is not
+written on a command line:
 
 ```sh
+npx wrangler r2 bucket create atelier-large
 openssl rand -hex 32
 npm run deploy
 npx wrangler secret put ATELIER_TOKEN
@@ -158,6 +188,14 @@ npx wrangler secret put ATELIER_TOKEN
 `npm run deploy` runs `wrangler deploy` and records the commit it deployed,
 which `GET /api/version` reports with the server's route level. `atelier
 land` refuses to run against a server whose route level is below the CLI's.
+
+The server token is not enough for everything. Overriding a review that no
+model qualified to give needs the owner's own confirmation, a factor no agent
+session holds: either the owner's pages behind Cloudflare Access, or a
+confirmation secret, `OVERRIDE_SECRET`, given to the Worker as a second
+secret. A server with neither confirms no override (`NO_OWNER_FACTOR` in
+`src/rules.ts`). [Confirming an override](docs/setup.md#confirming-an-override)
+sets up either.
 
 **3. Install the CLI and sign in.** `login` asks for the token, checks it
 against the server, and only then stores it (in the macOS Keychain, the
@@ -687,8 +725,8 @@ in
 
 Enforced by construction:
 
-- one owner per item, because the project's Durable Object handles one
-  request at a time;
+- one owner per item, because the project's Durable Object checks and
+  records a claim in one synchronous step;
 - one live write token per workspace, minted for the owner and revoked on
   handoff, release or abandonment;
 - observed evidence tied to the head Atelier reads from Artifacts, not the
@@ -757,11 +795,11 @@ configurable) against a throwaway project over the CLI's own request protocol
 reports what the run measured. It proves three things, and asserts each before
 exiting cleanly:
 
-- **claim spread** — N agents claim N tasks at once; all N succeed and each
+- **claim spread**: N agents claim N tasks at once; all N succeed and each
   gets its own fork;
-- **claim race** — N agents race for one task; exactly one wins and the other
+- **claim race**: N agents race for one task; exactly one wins and the other
   N-1 are refused, each refusal naming the holder;
-- **pushes** — with `--push`, each agent makes a tiny commit and pushes it to
+- **pushes**: with `--push`, each agent makes a tiny commit and pushes it to
   its own fork, and the push is observed at that fork's head (without
   `--push` no push is made and the phase is skipped, so the run stays cheap).
 
@@ -774,10 +812,10 @@ bin/concurrency-proof.mjs --project throwaway --agents 1000 --push
 ```
 
 The tests run it against a stand-in server on localhost
-(`test/concurrency-proof.test.mjs`); the proof is never run against the live
-server. The figures below are one measured run against that stand-in, a single
-Node process on this machine, included because the brief asks for measured
-numbers rather than claims — they are not the live server's latency:
+(`test/concurrency-proof.test.mjs`). The figures below are one measured run
+against that stand-in, a single Node process on this machine, included
+because the brief asks for measured numbers rather than claims; they are not
+the live server's latency:
 
 ```
 N=1000: claim spread 1000/1000 ok with 1000 distinct forks, median 77.3ms,
@@ -785,14 +823,23 @@ p90 78.1ms; claim race 1 winner, 999 refused each naming the holder, median
 47.8ms, p90 48.6ms; cleanup 1001/1001; ~9172 req/s over 0.436s, 4002 requests.
 ```
 
-The request count is every request the run sent — the 1001 that created the
+The request count is every request the run sent: the 1001 that created the
 tasks and the race, the 2000 claims, and the 1001 abandons. With `--push`, the
 proof also reports how many of the git pushes ran at once (its peak live git
 subprocesses): the pushes are concurrent, so all N overlap, and that figure is
 asserted in the tests.
 
-A run against the live server prints the live numbers; this README reports
-only what a run measured.
+On 2026-10-09 the claim race ran once against the live server (deploy
+3cad79b5): 1,000 agents raced for one task on atelier.zone. One agent got the
+task, 976 were refused with a refusal naming the holder, and 23 were answered
+with a retryable 503, the server saying it was busy. No second agent was
+granted the task. These figures are as the orchestrating session reported
+the run, and the run was not repeated. The ledger keeps them in the brief of
+t364, the task filed that day to fix how the proof read the holder
+(`atelier receipt t364 --json`; its page,
+[atelier.zone/p/atelier/t364](https://atelier.zone/p/atelier/t364), is behind
+the owner's sign-in), all but the count of 503s, which only that report
+gives.
 
 ## Licence
 

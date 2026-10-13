@@ -13,10 +13,13 @@ cross-family review and the integration branch all show up once.
 
 ## Before you start
 
-**Sign in and register the project.** In the project's checkout:
+**Sign in and register the project.** In the project's checkout, sign in
+to your own Worker, the address you deployed in the README's
+[Quickstart](../README.md#quickstart) (atelier.zone is the project's own
+server and takes only its owner's token):
 
 ```sh
-atelier login --server https://atelier.zone
+atelier login --server https://YOUR-WORKER-ADDRESS
 atelier init --title "Demo" --check "npm test" --protect "src/rules.ts"
 ```
 
@@ -173,7 +176,7 @@ demo/t10  Add JSON output to the export script and document it
 Phase: proposed.
 Proposal 1: 2 parts, 3f9c2a7b1d4e, by claude-code/opus-5.5.
 Recommendation: decide. Read the split with atelier plan show t10, then approve it by its hash or send it back with a note.
-https://atelier.zone/p/demo/t10
+https://YOUR-WORKER-ADDRESS/p/demo/t10
 ```
 
 `atelier show t10 --project demo` prints the same brief. The split itself:
