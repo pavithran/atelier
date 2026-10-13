@@ -9,21 +9,21 @@ models qualify; if none qualifies, no separate tier review is requested.
 `atelier init --cross-family` restores the default; both switches record who
 made them and when. See [Single-family mode](gate.md#single-family-mode).
 
-This guide is for the owner of a project registered in Atelier: the person
+This guide is for the developer of a project registered in Atelier: the person
 who decides what gets done and what goes in. Atelier and the agents do the
-work; the owner makes three kinds of decision. What to do, whether a plan's
+work; the developer makes three kinds of decision. What to do, whether a plan's
 split is right, and whether finished work is accepted. Everything below is
 about making those decisions well and leaving the rest to the system.
 
 Every task goes through the same five steps: **Claim** (one holder per
 task), **Fork** (every task its own fork), **Prove** (Atelier runs the
 tests), **Review** (another company reviews, or in single-family mode another
-model) and **Land** (one landing at a time, with a receipt). A task's page shows which step it is at. The owner's
+model) and **Land** (one landing at a time, with a receipt). A task's page shows which step it is at. The developer's
 decisions sit at either end: what is claimed, and what lands. What lands is
 proven, reviewed and recorded.
 
 `docs/orchestrating.md` is the companion for a session that runs Atelier on
-the owner's behalf; the How it works page (`/how`) holds every rule and
+the developer's behalf; the How it works page (`/how`) holds every rule and
 command.
 
 ## Start with what waits for you
@@ -32,7 +32,7 @@ command.
 atelier status
 ```
 
-It lists, for every project, what needs the owner: a plan to approve, work
+It lists, for every project, what needs the developer: a plan to approve, work
 to accept, failing checks, a change outside its scope. The Decisions page
 on the site shows the same, ranked. When nothing waits, there is nothing to
 do.
@@ -56,7 +56,7 @@ atelier plan "what should be true when this is done" --scope "src/**" --planner 
 ```
 
 A planner proposes parts, Atelier routes each to a model from the pool, and
-nothing is dispatched until the owner approves. For now the CLI refuses a
+nothing is dispatched until the developer approves. For now the CLI refuses a
 goal longer than 500 characters, because the plan job carries the goal as its
 dispatch note, which is capped there (task t198).
 
@@ -77,7 +77,7 @@ would have no criteria to judge its change against. `atelier init
 --require-criteria` makes that a refusal for the project, and under it
 `atelier edit ID --accept ""` is refused too.
 
-The owner also changes a live task's scope with `atelier edit ID --scope GLOB`
+The developer also changes a live task's scope with `atelier edit ID --scope GLOB`
 (once per glob, or `--scope ""` to clear it); the change is recorded. In a
 project that refuses overlapping claims (`atelier init --refuse-overlap`), a
 claim is refused while its scope overlaps a claimed, submitted or accepted
@@ -112,7 +112,7 @@ contradicts what you asked. Then:
 
 After approval the runner builds the parts, checks them, has each reviewed
 by a model of another family, and integrates them on the plan's own branch.
-The owner accepts the whole once.
+The developer accepts the whole once.
 
 ## Accept work deliberately
 
@@ -200,4 +200,4 @@ that is how Atelier improves.
 | clear finished workspaces | `atelier clean --project NAME` |
 | see spend and windows | `atelier runner --usage` |
 
-See [Function areas and the project board](areas.md) for owner commands to create, rename and remove areas, assign tasks and read their stages.
+See [Function areas and the project board](areas.md) for developer commands to create, rename and remove areas, assign tasks and read their stages.

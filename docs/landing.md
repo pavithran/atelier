@@ -21,15 +21,15 @@ It pushes, runs required checks, and submits only if those checks pass and
 the workspace remains unchanged. A project with `sandboxOnly` enabled uses
 the cloud runner automatically. `--sandbox` selects it explicitly.
 
-Once a part of a plan is submitted, if the gate needs an independent review, the server queues a review request automatically as a `review` job, and a runner that offers review jobs claims it. Approval moves the part to integration. For a single task outside a plan, nothing is queued automatically; its review is requested when the owner lands it whole (see Landing a task whole, below), or the owner can complete an exact revision by hand with:
+Once a part of a plan is submitted, if the gate needs an independent review, the server queues a review request automatically as a `review` job, and a runner that offers review jobs claims it. Approval moves the part to integration. For a single task outside a plan, nothing is queued automatically; its review is requested when the developer lands it whole (see Landing a task whole, below), or they can complete an exact revision by hand with:
 
 ```sh
 atelier merge t9 --head FULL_COMMIT_SHA --approve --note 'Reviewed changes'
 ```
 
-`--approve` records the owner's own review, which is not the independent
+`--approve` records the developer's own review, which is not the independent
 review a protected change needs: that review must already exist, or
-`--override-review "reason"` records the owner's override of it while
+`--override-review "reason"` records the developer's override of it while
 accepting. Acceptance still goes through the gate. Already accepted work
 needs only `atelier merge t9 --head FULL_COMMIT_SHA`.
 
@@ -96,7 +96,7 @@ to its own remotes remain separate decisions.
 ## Landing a task whole
 
 `atelier land t9` runs the whole second half in one command, for the project
-owner in the registered checkout: it merges main into the task's workspace,
+developer in the registered checkout: it merges main into the task's workspace,
 regenerates the project's fixtures when its policy declares how, pushes, runs
 the required checks, submits and waits for the independent review the gate
 needs — all without the landing lease — and only then takes the lease,
@@ -291,7 +291,7 @@ The steps in between:
 
 2. Main is fetched into the task's workspace and merged with `--no-ff`,
    without the lease (t550), through the merge pipeline (`cli/merge-pipeline.mjs`), the same one
-   every merge Atelier makes with Git goes through: the owner's merge onto
+   every merge Atelier makes with Git goes through: the developer's merge onto
    the baseline, `atelier update` (a pipeline merge wherever a declared
    generator must run, otherwise a rebase through the clone's merge
    drivers), a runner's merge-main, integrate and refresh merges, and the
@@ -327,7 +327,7 @@ The steps in between:
    and review are of the final output; nothing carries over from the head
    before. On
    conflicts the landing stops, leaves the merge in the workspace for the
-   owner to resolve, and names the files. After resolving and committing,
+   developer to resolve, and names the files. After resolving and committing,
    run `atelier push` in the workspace to record the resolution before running
    `atelier land t9` again. A rerun before that push stops before taking the
    lease, naming the commits the recorded head lacks and `atelier push`. Any
@@ -351,11 +351,11 @@ The steps in between:
 4. If the gate needs an independent review, the landing requests one through the
    review-request routes and waits for the verdict: the reviewer is the one named with
    `--reviewer H/M`, or a model of another family than every contributor
-   picked from the pool, still without the lease. The landing says what the runners are busy with while the request is unclaimed, and, when no live runner offers the reviewer for the review job, that the request can never be claimed until one does, with the review by hand and the `--reviewer` that asks a model a runner offers. A rejection or a timeout stops the landing (the request stays open and the task stays submitted). `--no-review` skips the waiting and leaves the task submitted for the owner to settle by hand.
+   picked from the pool, still without the lease. The landing says what the runners are busy with while the request is unclaimed, and, when no live runner offers the reviewer for the review job, that the request can never be claimed until one does, with the review by hand and the `--reviewer` that asks a model a runner offers. A rejection or a timeout stops the landing (the request stays open and the task stays submitted). `--no-review` skips the waiting and leaves the task submitted for the developer to settle by hand.
 5. With the head checked and approved, the landing takes the lease,
    confirms main has not moved (above), and accepts and merges through the
    CLI's own `accept` and `merge` commands, each run as this CLI's child,
-   so their checks and their journals behave exactly as when the owner runs
+   so their checks and their journals behave exactly as when the developer runs
    them.
 
 Each step, its duration and what it settled are recorded on the task as
@@ -379,7 +379,7 @@ H/M` and cleared with `--triage ""`, or `"triage": "H/M"` in this Mac's
 registration of the project in the Atelier config); with neither, no triage
 runs. A model of the builder's own company may triage, since triage
 is not the independent review; the pool's rules still apply: the model must
-be in the pool, not refused, and not paid per token. It runs on the owner's
+be in the pool, not refused, and not paid per token. It runs on the developer's
 Mac through its harness's adapter (`bin/harness`), read-only, for at most 30
 minutes (`ATELIER_LAND_TRIAGE_TIMEOUT` milliseconds).
 
@@ -418,15 +418,15 @@ unavailable stops the landing before the task is submitted (through the
 Workflow, before the head is reported, so the Workflow submits nothing): the
 findings are printed with the command to run again, the lease is never
 taken, and the task stays with its holder, its merged head pushed. The project
-owner can skip the triage with `--no-triage "REASON"`, or go past a stop with
+developer can skip the triage with `--no-triage "REASON"`, or go past a stop with
 `--override-triage "REASON"`; either is recorded with the head and the
 criteria binding before the landing goes on, and a record the server
-refuses — it takes one only from the signed-in project owner — stops the
+refuses — it takes one only from the signed-in developer — stops the
 landing. Neither stands in for the independent review.
 
 Triage is recorded as `land.triage` events (the binding, the model, the
 outcome — passed, stopped, bypassed or overridden — each criterion's status,
-and the owner's reason), never as a review: it adds no approval, rejection
+and the developer's reason), never as a review: it adds no approval, rejection
 or round, and the gate decides as it did. After a pass or a bypass the
 landing goes on under the review rules as they are, whether no review is
 needed, an approval already covers the change, or `--no-review` was given.
@@ -435,7 +435,7 @@ needed, an approval already covers the change, or `--no-review` was given.
 
 `atelier land t9 --workflow` lands the task through a Cloudflare Workflow
 (`src/landing-workflow.ts`, the `LANDING_WORKFLOW` binding in
-`wrangler.jsonc`) instead of running every step on the owner's machine.
+`wrangler.jsonc`) instead of running every step on the developer's machine.
 Without `--workflow`, `atelier land` runs exactly as the section above
 describes; the Workflow is an opt-in per landing, and `--dry-run` with
 `--workflow` is refused.
@@ -525,7 +525,7 @@ was more than this change needed, t305).
 
 - `local`: after the push (and the triage, when the landing triages), the
   command runs the required checks on the
-  owner's machine in a clean clone of the pushed head, exactly as the plain
+  developer's machine in a clean clone of the pushed head, exactly as the plain
   landing does, and the server records each result as observed evidence at
   the head it reads from Artifacts (only the task's holder can record a
   check, and only at that head). Only then does the command report the
@@ -561,7 +561,7 @@ command warns that the checks run in the container.
 
 A merge of main that stops on conflicts is reported as such. The Workflow,
 holding no lease, pauses at stage `conflict`, naming the files, for up to a
-week. The owner (or the builder, through `atelier dispatch t9 --job
+week. The developer (or the builder, through `atelier dispatch t9 --job
 merge-main`) resolves and commits them, then runs `atelier land t9
 --workflow` again: the command attaches to the live instance and sends a
 `resume` event, and the Workflow asks for the workspace steps in a new round, since main may have moved while it waited.

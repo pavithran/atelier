@@ -101,14 +101,14 @@ declaring no release, which broke the seal's current-handoff gate. The break
 was missed for a day because only the fast suite ran after the wrap, and the
 fast suite cannot see the seal.
 
-In Atelier the gate is not a suite the owner chooses whether to run; it is
+In Atelier the gate is not a suite the developer chooses whether to run; it is
 derived from the record at the moment of decision. `Ledger.accept` runs `gate`
 and refuses with every blocker (src/ledger.ts, src/rules.ts), and the inbox,
 briefs and pages recompute it on every request (`inboxFor` in src/rules.ts,
 `Ledger.inbox`). Skipping the checks does not skip the gate; the item blocks
 with "not yet observed at this head". A session wrap runs its checks in the
-owner's checkout at the weaker Reported grade, and a failing one still stops
-wrap before anything is staged, unless the owner allows it and the note names
+developer's checkout at the weaker Reported grade, and a failing one still stops
+wrap before anything is staged, unless the developer allows it and the note names
 what was allowed (`wrap` and `wrapReady` in cli/atelier.mjs,
 `failingChecksRefusal` in src/sessions.ts). Tests: test/ledger.spec.ts, "an
 item moves from creation to merge, gated by observed evidence";
@@ -179,7 +179,7 @@ later run from the same side.
 
 Partly prevented. The CLI's usage text is data in src/usage.ts that the CLI
 imports, so help and parser share one source. The handoff routes return the exact next command
-for the new owner ("${to} runs: atelier claim ${id} --project ${project}", the
+for the new holder ("${to} runs: atelier claim ${id} --project ${project}", the
 handoff cases in src/index.ts), built in the Worker apart from the CLI that
 parses it, and the real binary is tested to print its usage, so a command
 named in help is a command that exists and prints its usage without contacting a
