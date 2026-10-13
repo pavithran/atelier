@@ -27,7 +27,7 @@ import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { buildPrecision, precisionWindow } from "./models/precision.ts";
 import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, registeredActing } from "./models/judgement.ts";
-import { ALL_PROJECTS, checkEvidence, cleanAssignmentInput, FALLBACK, inputFingerprint, resolveChoices, seedProject } from "./models/assignments.ts";
+import { ALL_PROJECTS, checkEvidence, cleanAssignmentInput, FALLBACK, inputFingerprint, isRetryOf, isWithdrawalRetry, resolveChoices, seedProject } from "./models/assignments.ts";
 import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
@@ -74,7 +74,7 @@ const READ_TTL = 3600;
 // not that confirmation, since without Access the owner token buys one.
 // `acting` is the harness/model an owner-token request names as acting for
 // the owner (X-Atelier-Acting, src/models/judgement.ts), or null.
-type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null; acting?: string | null; waitUntil?: (p: Promise<unknown>) => void; signedIn?: boolean; access?: boolean };
+type Ctx = { env: Env; req: Request; url: URL; actor: string; body: any; token?: AgentToken; ref?: ProjectRef | null; acting?: string | null; declaredActing?: string | null; waitUntil?: (p: Promise<unknown>) => void; signedIn?: boolean; access?: boolean };
 
 // ── auth ───────────────────────────────────────────────────────────────────
 // The owner bearer token may declare any actor for orchestration. Agent tokens
@@ -520,8 +520,14 @@ async function sendPool(env: Env): Promise<string[]> {
   const [pool, projects] = await Promise.all([I.models(), I.projects()]);
   // Each project gets the role assignments bearing on it with the pool, as a
   // versioned snapshot its ledger refuses when older than its copy.
-  const results = await Promise.allSettled(projects.map(async (p) => ledgerOf(env, p).poolChanged(pool, await I.assignmentSnapshotFor(p.key ?? p.name)).then(() => null).catch(() => p.name)));
-  return results.filter((r) => r.status === "fulfilled" && r.value !== null).map((r) => (r as any).value as string);
+  return unreachedOf(projects, async (p) => { await ledgerOf(env, p).poolChanged(pool, await I.assignmentSnapshotFor(p.key ?? p.name)); });
+}
+// The projects a send to each could not reach: one whose snapshot could not
+// be read counts as one whose ledger could not be, never as reached
+// (gpt-6-astra's third review of t622, follow-up 6).
+async function unreachedOf(projects: readonly ProjectRecord[], send: (p: ProjectRecord) => Promise<void>): Promise<string[]> {
+  const results = await Promise.all(projects.map((p) => send(p).then(() => null, () => p.name)));
+  return results.filter((name): name is string => name !== null);
 }
 // Sends each project's ledger the role assignments bearing on it (its own,
 // by its key, and every project's; src/models/assignments.ts), after one is
@@ -532,8 +538,12 @@ async function sendPool(env: Env): Promise<string[]> {
 async function sendAssignments(env: Env): Promise<string[]> {
   const I = index(env);
   const projects = await I.projects();
-  const results = await Promise.allSettled(projects.map(async (p) => ledgerOf(env, p).assignmentsChanged(await I.assignmentSnapshotFor(p.key ?? p.name)).then(() => null).catch(() => p.name)));
-  return results.filter((r) => r.status === "fulfilled" && r.value !== null).map((r) => (r as any).value as string);
+  return unreachedOf(projects, async (p) => { await ledgerOf(env, p).assignmentsChanged(await I.assignmentSnapshotFor(p.key ?? p.name)); });
+}
+// The acting model a request declared, checked against the pool now, for a
+// route that checks it itself (the role assignments').
+async function registeredActingOf(env: Env, c: Pick<Ctx, "declaredActing">): Promise<string | null> {
+  return c.declaredActing ? registeredActing(c.declaredActing, await index(env).models()) : null;
 }
 function resolveProject(env: Env, name: string): Promise<ProjectRef> {
   return index(env).resolveProject(name);
@@ -1177,12 +1187,20 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // projects are read again, so what changed since cannot fail it; the
       // same id with other content is refused (gpt-6-astra's second review,
       // finding 5).
+      // The retry is judged against what was recorded, the acting model
+      // included, so one removed from the pool since does not fail it
+      // (gpt-6-astra's third review, finding 4). It sends every project the
+      // snapshot standing now, as the first request did or should have, and
+      // says which it could not reach and whether the record still stands:
+      // a first request that stopped before its broadcast is repaired, and a
+      // later withdrawal or supersession is kept (gpt-6-astra's third
+      // review, finding 3).
       const fingerprint = inputFingerprint(input);
       const prior = await I.assignmentForRequest(input.request);
-      if (prior) {
-        if (prior.fingerprint === fingerprint) return json({ ...prior, retried: true, unreached: [] }, 200);
-        throw new RuleError("request_reused", `request ${input.request} already recorded ${prior.id}, with other content; a new decision needs a new request id`, 409);
+      if (prior && isRetryOf(prior, input.request, fingerprint, c.declaredActing ?? null)) {
+        return json({ ...prior, retried: true, unreached: await sendAssignments(env) }, 200);
       }
+      const acting = await registeredActingOf(env, c);
       let scope = ALL_PROJECTS;
       if (input.scope !== ALL_PROJECTS) {
         const ref = await resolveProject(env, input.scope);
@@ -1191,12 +1209,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       }
       const evidence = await checkEvidence(input.evidence, (name) => resolveProject(env, name), (key, item, seq) => ledger(env, key).evidenceMissing(item, seq));
       const choices = resolveChoices(input.choices, await I.models(), input.role);
-      const record = await I.assignRole(actor, { ...input, fingerprint, scope, choices, evidence }, c.acting ?? null);
+      const record = await I.assignRole(actor, { ...input, fingerprint, scope, choices, evidence }, acting);
       const unreached = await sendAssignments(env);
       return json({ ...record, unreached }, record.retried ? 200 : 201);
     }
     if (parts.length === 3 && parts[2] === "withdraw" && m === "POST") {
-      const record = await I.withdrawRoleAssignment(parts[1], actor, body.note, c.acting ?? null);
+      // A retried withdrawal, too, is judged against its record before the
+      // acting model is checked against the pool.
+      const done = await I.assignmentWithdrawalOf(parts[1]);
+      if (done && isWithdrawalRetry(done, body.note, c.declaredActing ?? null)) return json({ ...done, retried: true, unreached: await sendAssignments(env) });
+      const record = await I.withdrawRoleAssignment(parts[1], actor, body.note, await registeredActingOf(env, c));
       const unreached = await sendAssignments(env);
       return json({ ...record, unreached });
     }
@@ -3854,8 +3876,11 @@ export default {
         // malformed name, or one an agent or runner token sends, is refused
         // before anything is recorded. A name must be a model in the pool;
         // it is kept as declared, since the owner token cannot prove it.
+        // A role assignment's routes check it themselves, after a retry is
+        // matched to its record (gpt-6-astra's third review of t622, finding 4).
         const declaredActing = cleanActing(req.headers.get(ACTING_HEADER), ownerActor(env), !!token);
-        const acting = declaredActing === null ? null : registeredActing(declaredActing, await index(env).models());
+        const deferActing = parts[1] === "model-roles" && req.method === "POST";
+        const acting = declaredActing === null || deferActing ? null : registeredActing(declaredActing, await index(env).models());
         const body = req.method === "GET" ? {} : await req.json().catch(() => ({}));
         // Routes read fields from the body, so anything but a JSON object is refused here.
         if (typeof body !== "object" || body === null || Array.isArray(body)) {
@@ -3924,7 +3949,7 @@ export default {
         }
         let res: Response;
         try {
-          res = await api({ env, req, url, actor, body, token, ref, acting, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
+          res = await api({ env, req, url, actor, body, token, ref, acting, declaredActing, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }, parts.slice(1));
         } catch (error) {
           await noteRefusal(error);
           if (token?.runner && parseRuleError(error)?.status === 403) throw runnerDenied(token);

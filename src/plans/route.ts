@@ -257,6 +257,7 @@ interface Context {
   offered: Map<string, string[]> | null;   // actors live runners offer, whatever job; null when the offers were not read or none is live, and routing restricts nothing
   governed: boolean;
   reviewOffered: Offering | null;          // what the live runners offer for the review job; null when none were read or no runner is live
+  buildOffered: Offering | null;           // the same for a part's build, home
   offersRead: boolean;                     // whether the caller read runner offers at all
   single: PoolFamily | null;               // the company the project runs on alone (single-family mode, t394), or null under the default
 }
@@ -336,6 +337,13 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
 
   const refusal = claimRefusal(actor, ctx.input.policy);
   const build = refusal ? [...both, refusal] : [...both];
+  // The build job a part's dispatch asks of a runner (dispatchPart in
+  // src/ledger.ts: home, a build): a model a live runner names only for
+  // review or planning, or only in the cloud, could never claim it, so no
+  // build assignment promotes it (gpt-6-astra's third review of t622,
+  // finding 2). A model no live runner offers at all is excluded above.
+  if (ctx.buildOffered && ctx.offered?.has(actor.toLowerCase()) && !ctx.buildOffered.actors.has(actor.toLowerCase()))
+    build.push(`no live runner offers ${actor} for a build at home: ${ctx.buildOffered.instead.join("; ")}`);
   if (heldBuild) build.push(heldBuild);
   // The reviewer's eligibility as pickReviewer judges it: under a governed
   // policy the assessor role; otherwise the project's eligible harnesses and
@@ -527,6 +535,7 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
 // such a runner would take, so a reviewer is routed only to a model one
 // lists, which is the claim's own rule applied ahead of the claim.
 const REVIEW_JOB: Pick<Dispatch, "to" | "job"> = { to: "home", job: "review" };
+const BUILD_JOB: Pick<Dispatch, "to" | "job"> = { to: "home" };
 
 export function routeParts(plan: Plan, input: RouteInput): PartRoute[] {
   const pool = [...input.pool];
@@ -547,6 +556,7 @@ export function routeParts(plan: Plan, input: RouteInput): PartRoute[] {
     offered: live.length ? offeredActors(live) : null,
     governed: input.policy.agents !== undefined,
     reviewOffered: input.offers != null ? offering(REVIEW_JOB, input.offers) : null,
+    buildOffered: input.offers != null ? offering(BUILD_JOB, input.offers) : null,
     offersRead: input.offers != null,
     single: singleFamily(input.policy),
   };

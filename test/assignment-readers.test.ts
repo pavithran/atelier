@@ -294,3 +294,73 @@ test("pickReviewer and suggestReviewer: an assigned reviewer no live runner offe
   const item = { id: "t1", title: "Rename a helper", brief: "", scope: ["src/**"], owner: "claude-code/opus-5.5", pushActors: [] };
   assert.equal(suggestReviewer({ item, project: "atelier", pool: POOL, policy, sources: [], runs: [], owner: "owner", assignments: [a], offers }).actor, "antigravity/gemini-4-argon");
 });
+
+// gpt-6-astra's third review of t622, finding 1: pickReviewer found a pool
+// entry by the first name that matched, an alias before an exact id, so
+// assigning codex/gpt-6-luna, which Astra lists as an alias, picked Astra and
+// called it the assignment's choice.
+test("pickReviewer: an assignment naming an exact pool id picks that entry, not one that lists it as an alias", () => {
+  const astraAliased = { ...astra, aliases: ["gpt-6-luna"] };
+  const luna = entry("codex", "gpt-6-luna");
+  const a = { ...assigned("review", ["codex/gpt-6-luna"]), choices: [{ actor: "codex/gpt-6-luna", model: "gpt-6-luna" }] };
+  const pick = pickReviewer({ item: built, pool: [astraAliased, luna], policy, allowPaid: false, assigned: [a] });
+  assert.equal(pick.reviewer?.actor, "codex/gpt-6-luna");
+  assert.equal(pick.assignment?.applied, a.id);
+  // A paused Luna is passed over with its own standing, never Astra's.
+  const paused = pickReviewer({ item: built, pool: [astraAliased, { ...luna, state: "paused" as const, stateAt: AT }], policy, allowPaid: false, assigned: [a] });
+  assert.equal(paused.reviewer?.actor, "codex/gpt-6-astra");
+  assert.equal(paused.assignment?.applied, null);
+  said(paused.assignment?.lines, /codex\/gpt-6-luna: paused since 2026-10-13/);
+});
+
+// gemini-4-argon's third review of t622, finding 1: which assignment applied
+// was judged over the tier and the pool together, so a more specific one
+// naming a model outside the tier kept a less specific one from ordering
+// the tier, and a reviewer from the tier, the previous round or the routing
+// was reported with an assignment that had not chosen it.
+test("pickReviewer: the tier and the pool are each ordered by the assignment with an eligible choice there, and the outcome is the chosen reviewer's", () => {
+  const specific = assigned("security-review", ["codex/gpt-6-astra"]);
+  const general = assigned("review", ["zcode/glm-5.3"]);
+  const tier = ["antigravity/gemini-4-argon", "zcode/glm-5.3"];
+  const pick = pickReviewer({ item: built, pool: POOL, policy, allowPaid: false, tier, assigned: [specific, general] });
+  assert.equal(pick.reviewer?.actor, "zcode/glm-5.3");
+  assert.equal(pick.assignment?.applied, general.id);
+  assert.match(pick.assignment!.skipped.find((s) => s.id === specific.id)!.why, /no choice is eligible here/);
+  said(pick.reviewer?.reasons, new RegExp(`Role assignment ${general.id} \\(review, every project, 2026-10-13\\): choice 1 of 1`));
+  assert.doesNotMatch(pick.reviewer!.reasons.join("\n"), /puts codex\/gpt-6-astra first/);
+  // The pool alone: the more specific assignment orders it.
+  const pool = pickReviewer({ item: built, pool: POOL, policy, allowPaid: false, assigned: [specific, general] });
+  assert.equal(pool.reviewer?.actor, "codex/gpt-6-astra");
+  assert.equal(pool.assignment?.applied, specific.id);
+  // The previous round's reviewer and the plan's routing come first: no
+  // assignment is reported as applied, and each is skipped as coming after.
+  for (const [input, ahead] of [
+    [{ previous: "antigravity/gemini-4-argon" }, /The previous round's reviewer comes before role assignments/],
+    [{ route: { reviewer: { actor: "antigravity/gemini-4-argon", reasons: [] }, alternates: [] } }, /The plan's routing comes before role assignments/],
+  ] as const) {
+    const first = pickReviewer({ item: built, pool: POOL, policy, allowPaid: false, assigned: [specific, general], ...input });
+    assert.equal(first.reviewer?.actor, "antigravity/gemini-4-argon");
+    assert.equal(first.assignment?.applied, null);
+    assert.deepEqual(first.assignment?.skipped.map((s) => s.id), [specific.id, general.id]);
+    said(first.reviewer?.reasons, ahead);
+    assert.doesNotMatch(first.reviewer!.reasons.join("\n"), /puts .* first/);
+  }
+});
+
+// gpt-6-astra's third review of t622, finding 2: the planner and plan
+// routing read offers across every job and destination, so an assigned
+// model offered only for review, or only in the cloud, was promoted for a
+// plan job or a part's build, both of which go home.
+test("pickPlanner and routeParts: an assigned model a live runner offers only for other work, or only elsewhere, is passed over", () => {
+  const now = new Date().toISOString();
+  const home = (agents: { agent: string; models: string[] }[], jobs: string[]) => ({ runner: `home:${jobs.join("-")}`, kind: "home" as const, agents, jobs, at: now });
+  const offers = [home([{ agent: "codex", models: ["gpt-6-astra"] }], ["review"]), home([{ agent: "antigravity", models: ["gemini-4-argon"] }, { agent: "zcode", models: ["glm-5.3"] }, { agent: "claude-code", models: ["opus-5.5"] }], ["build", "plan", "review"])];
+  const plan1 = pickPlanner(POOL, [], policy, undefined, offers, [assigned("plan", ["codex/gpt-6-astra"])]);
+  assert.notEqual(plan1.actor, "codex/gpt-6-astra");
+  said(plan1.reasons, /codex\/gpt-6-astra: no live runner offers codex\/gpt-6-astra for the plan job at home/);
+  const cloudPlan = [{ ...home([{ agent: "codex", models: ["gpt-6-astra"] }], ["plan"]), runner: "cloud:far", kind: "cloud" as const }, offers[1]];
+  assert.notEqual(pickPlanner(POOL, [], policy, undefined, cloudPlan, [assigned("plan", ["codex/gpt-6-astra"])]).actor, "codex/gpt-6-astra");
+  const [r] = routeParts(plan(part("a")), { pool: POOL, events: [], policy, allowPaid: false, offers, assignments: [assigned("build", ["codex/gpt-6-astra", "claude-code/opus-5.5"])] });
+  assert.equal(r.builder?.actor, "claude-code/opus-5.5");
+  said(r.builder?.reasons, /codex\/gpt-6-astra: .*no live runner offers codex\/gpt-6-astra for a build at home/);
+});
