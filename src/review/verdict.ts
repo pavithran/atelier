@@ -43,6 +43,10 @@ export interface VerdictOptions {
 // than `findings` is refused rather than cut, since a cut could drop a
 // blocking finding. Text over its cap is cut with an ellipsis, which changes
 // no verdict.
+// The refusal of a reply with no verdict at all, which the opencode adapter
+// answers by asking once more for the verdict lines (t576).
+export const NO_VERDICT = "the reply states no verdict: it has no VERDICT line and no JSON verdict";
+
 export const VERDICT_LIMITS = { reply: 100_000, findings: 50, file: 512, text: 2000, summary: 600 } as const;
 
 // What may block, when the project sets no review bar of its own (`atelier
@@ -166,7 +170,7 @@ function read(raw: unknown, asked: number, options: VerdictOptions): Statement {
   const json = jsonStatements(reply, withChecks);
   const lines = lineStatements(reply, criteria, withChecks);
   const verdicts = new Set([...json.map((s) => s.verdict), ...lines.verdicts]);
-  if (!verdicts.size) refuse("the reply states no verdict: it has no VERDICT line and no JSON verdict");
+  if (!verdicts.size) refuse(NO_VERDICT);
   // Lowercase approve and reject are ordinary words in a review of code that
   // approves and rejects things, so only the capitalised keywords count as
   // saying a verdict. A capitalised keyword for the other verdict anywhere,
