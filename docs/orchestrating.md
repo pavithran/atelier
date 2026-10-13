@@ -746,6 +746,46 @@ that verification after deployment; a local pass cannot stand in for it.
 5. Report to the lead developer: what merged, what was deployed, what is
    landing and what went back.
 
+### After a deploy
+
+A Durable Object keeps running the code it started with until it goes
+idle, so a deploy leaves a busy Ledger on the older code. On 2026-10-13
+from 09:35 to 10:05 EDT, after the deploys of t578 and t585, the atelier
+Ledger answered "The RPC receiver does not implement the method" for
+`showcaseCounts` and `mode`, and the showcase showed zeros. Stopping every
+runner for about 70 s let it go idle and start again on the new code.
+
+Since t586 the Worker handles this itself (src/ledger-stub.ts):
+
+- The first time a Worker isolate addresses a Ledger, it sends its own
+  `DEPLOYED_MAIN` (`ledgerVersion`). A Ledger reads the `DEPLOYED_MAIN` of
+  the deploy whose code it runs, so a Ledger on older code sees the two
+  differ and restarts (`ctx.abort()`) once no call is in flight
+  (src/restart-gate.ts), or after 30 s if it is never idle. New methods are
+  served within a minute, with the runners left running.
+- A call the Ledger lacks asks it to restart (`restartForUpdate`) and
+  answers 503 `server_updating`, "the server is updating; try again in a
+  minute", instead of a 500. The showcase says "The server is updating" and
+  is kept for ten seconds only.
+- A Ledger restarts at most once a minute (`ledgerRestart` in
+  src/rules.ts), and not again for a Worker whose restart brought the same
+  code back, so an old Worker isolate lingering after a deploy cannot keep
+  restarting it. `npm run deploy` sets `DEPLOYED_MAIN`; a deploy without it
+  restarts a Ledger only when a method is missing.
+- The Worker log says which Ledger restarted and why (`Ledger restarting
+  for an update: ...`).
+
+The first deploy of t586 still needs the manual step once. A Ledger built
+before t586 has no `ledgerVersion` and no `restartForUpdate`, and nothing it
+already does resets it safely: it never calls `ctx.abort()` or
+`blockConcurrencyWhile`, and an error from a call, the missing-method error
+included, does not reset a Durable Object. The only other
+resets are its running out of memory or CPU, which are not safe to provoke.
+So after deploying t586, if a page or the CLI says the server is updating,
+or the Worker log says a Ledger "predates ledgerVersion", stop every runner
+for 70 s and start them again. From then on every Ledger runs code that
+restarts itself on the first call after a deploy.
+
 ## Fast mode
 
 Atelier has two modes. Full mode is the default: every task is claimed,
