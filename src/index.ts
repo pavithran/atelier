@@ -1593,11 +1593,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts[2] === "mode" && parts.length === 3) {
     if (m === "GET") return json({ ...(await L.mode()), landed: await L.fastLandings(), ready: await L.fastReadyList() });
     requireOwner(env, actor);
-    // The switch to fast mode takes the developer's permission from the
-    // Settings page (Astra's audit of 2026-10-13, finding 3); the refusal
-    // names that page on this server and the factor it takes.
+    // The switch to fast mode takes the developer's direction, `quote` with
+    // the acting model (t629, projects.developer-direction.v1), or their
+    // permission from the Settings page (Astra's audit of 2026-10-13,
+    // finding 3); the refusal names that page on this server and the
+    // factor it takes.
     if (m === "POST") {
-      try { return json(await L.setMode(actor, body.mode, body.reason, c.acting ?? null)); } catch (err) {
+      try { return json(await L.setMode(actor, body.mode, body.reason, c.acting ?? null, body.quote)); } catch (err) {
         const rule = parseRuleError(err);
         if (rule?.code === "fast_mode_unconfirmed") throw new RuleError(rule.code, `fast mode needs the developer's confirmation, as an override of the independent review does: ${fastModeConfirmationHint(project, c.url.origin, ownerFactorOf(env))}`, rule.status);
         throw err;
@@ -2601,14 +2603,16 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // note, when sent, is the owner's own word on the acceptance, kept
       // with it in the ledger (land.sh records the session's note there).
       // An override through the API comes with the owner token, which an
-      // agent session may hold, so the Ledger takes it only under the
-      // owner's standing permission from the task's page (t371); the
-      // refusal names that page on this server and the factor it takes.
+      // agent session may hold, so the Ledger takes it only with the
+      // developer's direction, `quote` with the acting model, recorded with
+      // it (t629, projects.developer-direction.v1), or under the owner's
+      // standing permission from the task's page (t371); the refusal names
+      // that page on this server and the factor it takes.
       const overrideReview = body.overrideReview === undefined ? undefined : typeof body.overrideReview === "string" ? body.overrideReview : "";
       const availability = overrideReview !== undefined ? await reviewerAvailability(env, L, id) : undefined;
       let item: Item;
       try {
-        item = await L.accept(id, actor, String(body.head ?? ""), overrideReview, typeof body.note === "string" ? body.note : undefined, undefined, availability, undefined, c.acting ?? null);
+        item = await L.accept(id, actor, String(body.head ?? ""), overrideReview, typeof body.note === "string" ? body.note : undefined, undefined, availability, undefined, c.acting ?? null, body.quote);
       } catch (err) {
         const rule = parseRuleError(err);
         if (rule?.code === "override_unconfirmed") {

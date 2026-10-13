@@ -28,7 +28,7 @@ import { controlPlaneChanges, mergePolicyDecision, shipChanges } from "../src/co
 import { cleanSummary } from "../src/brief.ts";
 import { notePreview } from "../src/text.ts";
 import { recordedText } from "../src/rules.ts";
-import { ROUTE_LEVEL, checkCapabilities, requiredForCommand } from "../src/route-level.ts";
+import { ROUTE_LEVEL, capabilityFallback, checkCapabilities, requiredForCommand } from "../src/route-level.ts";
 import { terminalTaskExit } from "../src/tokens.ts";
 export { controlPlaneChanges, mergePolicyDecision } from "../src/control-plane.ts";
 
@@ -373,7 +373,10 @@ export async function requireCapabilities(cmd, word = args._[1]) {
   const required = requiredForCommand(cmd, word, args);
   if (!required.length) return;
   const check = checkCapabilities(await serverVersion(), required);
-  if (!check.ok) die(`${check.message}, then run atelier ${cmd} again`, check.kind === "unavailable" ? 4 : 1);
+  if (!check.ok) {
+    const fallback = capabilityFallback(check.missing);
+    die(`${check.message}, then run atelier ${cmd} again${fallback ? `. ${fallback}` : ""}`, check.kind === "unavailable" ? 4 : 1);
+  }
 }
 
 const isMain = process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
@@ -737,9 +740,22 @@ export function fieldsArg(cmd) {
 // server refuses the same (overrideReason in src/rules.ts).
 export function overrideArg(form) {
   const reason = args["override-review"];
+  if (args.quote !== undefined && reason === undefined) die(`--quote records the developer's words for an override: atelier ${form} --override-review REASON --quote "what the developer said"`);
   if (reason === undefined) return undefined;
   if (typeof reason !== "string" || !reason.trim()) die(`--override-review needs a reason: atelier ${form} --override-review "why no independent review is possible"`);
   return reason.trim();
+}
+
+// The developer's direction (t629): their own words, --quote, which with the
+// acting model (--as or ATELIER_ACTOR, sent as X-Atelier-Acting) let the
+// developer token alone switch to fast mode or override a missing review.
+// Both are checked here before any request; the server checks them again.
+export function directionArg(form) {
+  const quote = args.quote;
+  if (quote === undefined) return {};
+  if (typeof quote !== "string" || !quote.trim()) die(`--quote needs the developer's words: atelier ${form} --quote "what the developer said"`);
+  if (!actingHeaders()["x-atelier-acting"]) die(`--quote needs the model acting on the developer's words: add --as H/M or set ATELIER_ACTOR, such as claude-code/opus-5.5`);
+  return { quote: quote.trim() };
 }
 
 export function itemArg(i = 1) {
@@ -1329,6 +1345,7 @@ export function writeReceipt(cwd, { name, id, item, owners, view, reviews, polic
         policy.approval ? `The Atelier baseline copy in Artifacts was approved as: ${policy.approval.replace(/[.\s]*$/, "")}.` : null,
         reviews.length ? `Reviews at the accepted head: ${reviews.map((r) => `${r.by} ${r.approve ? "approved" : "rejected"}`).join("; ")}.` : override ? null : "No review was required at the accepted head.",
         override ? `${OWNER_NAME} overrode the independent review at the accepted head: ${override.reason.replace(/[.\s]*$/, "")}.` : null,
+        override?.quote ? `The override was made on ${OWNER_NAME}'s words, \u201c${override.quote}\u201d, relayed by ${override.acting ?? "an unnamed model"}.` : null,
         `Provenance is on refs/notes/atelier for the merge commit${notesRemote ? `, and that ref alone is pushed to ${notesRemote}` : ""}.`,
       ].filter(Boolean).join(" "),
     },
@@ -1395,6 +1412,8 @@ export function formatStanding(s, ownerName = "the developer", origin = "") {
   const runner = (q) => `${q.to}${q.agent ? ` ${q.agent}` : ""}${q.model ? `/${q.model}` : ""}`;
   const mode = s.familyMode?.single ? ` (single-family: ${flat(s.familyMode.single)})` : "";
   const lines = [`${flat(s.project.title)} (${flat(s.project.name)})${mode} as of ${at(s.generatedAt)}, from Atelier's record`];
+  // Fast mode, with the developer's words and the model that relayed them when it was switched on their direction (t629).
+  if (s.mode) lines.push(flat(s.mode));
   const group = (title, rows) => { if (rows.length) lines.push("", `${title}:`, ...rows.map((r) => `  ${r}`)); };
   group("Held now", s.live.map((i) => `${i.id}  ${i.state}  held by ${flat(i.owner ?? "nobody")}${i.since ? ` since ${at(i.since)}` : ", since when is not shown"}  ${flat(i.title)}`));
   // One line per task waiting on the owner, as attentionFor places it
@@ -1415,7 +1434,7 @@ export function formatStanding(s, ownerName = "the developer", origin = "") {
   group("Last merges", s.merged.map((m) => `${m.id}  ${at(m.at)}${m.commit ? `  ${m.commit.slice(0, 8)}` : ""}  ${flat(m.title)}${m.line ? `  summary: ${flat(m.line)}` : ""}`));
   // Every merge by override, counted in the heading and one per line under
   // it, each with the link to its page on the server in use (t371).
-  group(`Merged by override: ${(s.overrides ?? []).length}`, (s.overrides ?? []).map((o) => `${o.id}  ${taskLink(origin, s.project.name, o.id)}  ${at(o.at)}  ${flat(o.title)}  reason: ${flat(o.reason)}`));
+  group(`Merged by override: ${(s.overrides ?? []).length}`, (s.overrides ?? []).map((o) => `${o.id}  ${taskLink(origin, s.project.name, o.id)}  ${at(o.at)}  ${flat(o.title)}  reason: ${flat(o.reason)}${o.quote ? `  the developer's words: \u201c${flat(o.quote)}\u201d, relayed by ${flat(o.acting ?? "an unnamed model")}` : ""}`));
   group("Handoff notes", s.handoffs.map((h) => `${h.id}  ${flat(h.from || "?")} to ${flat(h.to || "?")}, ${at(h.at)}  ${flat(h.note)}`));
   if (lines.length === 1) lines.push("", s.partial?.length ? "Nothing held, waiting, queued or recently merged is shown in the part read." : "Nothing is held, waiting, queued or recently merged.");
   if (s.partial?.length) lines.push("", "Part of this record is not shown:", ...s.partial.map((x) => `  ${flat(x)}`));
