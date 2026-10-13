@@ -2,11 +2,12 @@
 import { holdText, orphanText } from "../../src/dispatch/rules.ts";
 import { notePreview } from "../../src/text.ts";
 import { OWNER, apiToken, die, flat, project, resolveTokenActor, server, tokenActor } from "../atelier.mjs";
+import { serverFetch } from "../server-fetch.mjs";
 
 // Everything waiting for a runner, across projects, oldest first.
 export default async function queueCommand() {
   await resolveTokenActor();
-  const res = await fetch(server() + "/api/queue", { headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER } });
+  const res = await serverFetch(server() + "/api/queue", { headers: { authorization: `Bearer ${apiToken()}`, "x-atelier-actor": tokenActor ?? OWNER } });
   if (!res.ok) die(`queue: ${res.status} ${(await res.text()).slice(0, 200)}`);
   const incomplete = res.headers.get("x-atelier-incomplete");
   if (incomplete) console.log(`Could not read: ${incomplete}. Tasks waiting there are not listed.`);
