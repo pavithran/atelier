@@ -10,6 +10,8 @@ import {
   buildCapabilities, capabilitiesForLevel, checkCapabilities, commandCapabilities, requiredForCommand, requiredForJobs,
 } from "../src/route-level.ts";
 import { COMMAND_MODULES } from "../src/usage/commands/index.ts";
+import { MANIFEST_PATH } from "../cli/merge-driver.mjs";
+import { installMergeConfig } from "../cli/merge-pipeline.mjs";
 import { DEFAULT_JOBS } from "../cli/runner-config.mjs";
 
 const need = ["a.one.v1", "a.two.v1"];
@@ -350,8 +352,10 @@ test("the review job requires the skip routes, and a legacy server from before t
   assert.equal(checkCapabilities({ capabilities: SERVER_CAPABILITIES.filter((n) => n !== "reviews.skip-as-runner.v1") }, requiredForJobs(["build"])).ok, true);
 });
 
-// Exercise git merge itself so this also verifies the committed attribute.
-test("independent capability additions merge cleanly, including the same and new families", async (t) => {
+// Exercise git merge itself so this also verifies the committed attribute,
+// which routes the file to the records driver (t463) through this
+// repository's manifest, installed as Atelier installs it in every clone.
+test("independent capability additions merge cleanly, including the same and new families; a name both sides add stops as a conflict", async (t) => {
   const dir = mkdtempSync(resolve(".capabilities-merge-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
@@ -365,6 +369,9 @@ test("independent capability additions merge cleanly, including the same and new
   const base = readFileSync(resolve(file), "utf8");
   writeFileSync(join(dir, file), base);
   writeFileSync(join(dir, ".gitattributes"), readFileSync(resolve(".gitattributes")));
+  mkdirSync(join(dir, "bin"));
+  writeFileSync(join(dir, MANIFEST_PATH), readFileSync(resolve(MANIFEST_PATH)));
+  installMergeConfig(dir);
   const supportSource = readFileSync(resolve("src/route-level.ts"), "utf8")
     .replaceAll('from "./usage/', `from "${resolve("src/usage")}/`);
   writeFileSync(join(dir, "src/route-level.ts"), supportSource);
@@ -388,6 +395,14 @@ test("independent capability additions merge cleanly, including the same and new
     git("add", file); git("commit", "-qm", "theirs");
     for (const [first, second] of [[`ours-${i}`, `theirs-${i}`], [`theirs-${i}`, `ours-${i}`]]) {
       git("checkout", "-qB", `merge-${first}`, first);
+      if (names[0] === names[1]) {
+        // The same name added differently on both sides is a key conflict
+        // the merge leaves for a person, never two declarations.
+        assert.throws(() => git("merge", "--no-edit", second), /reviews\.same\.v1: added by both sides with different records/);
+        assert.match(readFileSync(join(dir, file), "utf8"), /^<{7} ours\n {2}\{ name: "reviews\.same\.v1"/m);
+        git("merge", "--abort");
+        continue;
+      }
       git("merge", "--no-edit", second);
       const merged = readFileSync(join(dir, file), "utf8");
       assert.doesNotMatch(merged, /^[<>=]{7}/m);

@@ -1,0 +1,62 @@
+{
+  "regenerated": {
+    "step": "merge",
+    "ms": 0,
+    "fromMain": [
+      "0000000000000000000000000000000000000000"
+    ],
+    "conflicts": [
+      "gen-fixtures.txt"
+    ],
+    "resolvedBy": "atelier land, through the merge pipeline",
+    "regenerated": [
+      {
+        "name": "fixtures",
+        "outputs": [
+          {
+            "path": "gen-fixtures.txt",
+            "matches": "neither side"
+          }
+        ],
+        "log": "/tmp/merge-logs/fixtures.log",
+        "logSha": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    ],
+    "reason": "moved-code comparison at task 0000000, main 0000000, merge base 0000000: no edit in moved code"
+  },
+  "stopped": {
+    "step": "merge",
+    "ms": 0,
+    "failed": true,
+    "fromMain": [
+      "0000000000000000000000000000000000000000"
+    ],
+    "mainHead": "0000000000000000000000000000000000000000",
+    "conflicts": [
+      "work.txt",
+      "gen-fixtures.txt"
+    ],
+    "source": [
+      "work.txt"
+    ],
+    "generated": [
+      "gen-fixtures.txt"
+    ],
+    "resolvedBy": "the project owner, by hand"
+  },
+  "routeLevel": {
+    "step": "merge",
+    "ms": 0,
+    "fromMain": [
+      "0000000000000000000000000000000000000000"
+    ],
+    "routeLevel": {
+      "base": 6,
+      "main": 7,
+      "task": 7,
+      "was": 7,
+      "set": 8
+    },
+    "reason": "moved-code comparison at task 0000000, main 0000000, merge base 0000000: no edit in moved code"
+  }
+}
