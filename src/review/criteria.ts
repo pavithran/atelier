@@ -121,8 +121,10 @@ export const CRITERIA_REVIEW_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 // the part or task was first dispatched) and the reviews. A part sent back
 // after an integration conflict carries no job name but names the plan
 // branch's head (`planHead`): the runner's merge-plan job, a merge too. A
-// dispatch with none of these builds, and a build needs the approval.
-export const CRITERIA_EXEMPT_JOBS: readonly string[] = ["plan", "review", "prereview", "criteria-review", "integrate", "refresh", "merge-main"];
+// dispatch with none of these builds, and a build needs the approval. The
+// task refresh's jobs (t462) merge main into a task's head and resolve that
+// merge's conflicts, merges too.
+export const CRITERIA_EXEMPT_JOBS: readonly string[] = ["plan", "review", "prereview", "criteria-review", "integrate", "refresh", "merge-main", "task-refresh", "task-resolve"];
 
 export function buildJob(dispatch: { job?: string; planHead?: string | null } | null | undefined): boolean {
   if (!dispatch) return true;
