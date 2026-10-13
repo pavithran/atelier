@@ -89,6 +89,29 @@ export function saveConfig(c) {
 
 export const trimSlash = (url) => String(url).replace(/\/$/, "");
 
+// The review requests this machine claimed by hand (t575): `review-claim`
+// records each claim it makes here, by server, project and task, so
+// `review` without --request answers the request this machine last claimed
+// for the task, and `review-claim --renew` renews it, rather than sending
+// none and being refused for a claim it holds. Kept beside the
+// configuration, never in a workspace: a hand review has none.
+const REVIEW_CLAIMS = join(CONFIG_DIR, "review-claims.json");
+const REVIEW_CLAIM_KEEP_MS = 24 * 60 * 60_000;
+function readReviewClaims() {
+  try { const c = JSON.parse(readFileSync(REVIEW_CLAIMS, "utf8")); return c && typeof c === "object" ? c : {}; } catch { return {}; }
+}
+export function rememberReviewClaim(name, id, claim) {
+  const now = Date.now();
+  const kept = Object.fromEntries(Object.entries(readReviewClaims()).filter(([, c]) => now - Date.parse(c?.at) < REVIEW_CLAIM_KEEP_MS));
+  kept[`${server()} ${name} ${id}`] = { ...claim, at: new Date(now).toISOString() };
+  mkdirSync(CONFIG_DIR, { recursive: true });
+  writeFileSync(REVIEW_CLAIMS, JSON.stringify(kept, null, 2) + "\n", { mode: 0o600 });
+}
+export function rememberedReviewClaim(name, id) {
+  const c = readReviewClaims()[`${server()} ${name} ${id}`];
+  return c && Number.isSafeInteger(c.request) && c.request > 0 ? c : undefined;
+}
+
 // ATELIER_TOKEN wins, for whichever server is in use: the environment is the
 // user's own setting, for an agent's session or as an override. Otherwise the
 // store for this system (see credentials.mjs) holds the token `login` stored
