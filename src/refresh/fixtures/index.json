@@ -1,0 +1,10 @@
+[
+  { "name": "same-change", "kind": "mechanical", "transformation": "same-change" },
+  { "name": "one-sided", "kind": "mechanical", "transformation": "one-sided" },
+  { "name": "whitespace", "kind": "mechanical", "transformation": "whitespace" },
+  { "name": "import-union", "kind": "mechanical", "transformation": "import-union" },
+  { "name": "behavioural", "kind": "behavioural" },
+  { "name": "import-clash", "kind": "behavioural" },
+  { "name": "no-base", "kind": "uncertain" },
+  { "name": "unclosed", "kind": "uncertain" }
+]
