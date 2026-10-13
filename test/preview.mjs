@@ -187,10 +187,13 @@ function browsePage(item, rest, url) {
   if (!head) return null;
   const w = { project, item, at: atHash ? head.hash : null };
   const [what, ...path] = rest;
+  // Only the fixture's own files: a name every object inherits
+  // (constructor, toString, __proto__) is no file.
+  const file = Object.hasOwn(FILES, path.join("/")) ? FILES[path.join("/")] : null;
   if (what === "code") {
-    if (FILES[path.join("/")] !== undefined) {
-      const lines = FILES[path.join("/")].split("\n").slice(0, -1);
-      return browse.renderBlob(w, head, path, { kind: "text", lines, bytes: FILES[path.join("/")].length }, "PAVI");
+    if (file !== null) {
+      const lines = file.split("\n").slice(0, -1);
+      return browse.renderBlob(w, head, path, { kind: "text", lines, bytes: file.length }, "PAVI");
     }
     const node = treeAt(path);
     return node && browse.renderTree(w, head, path, node, "PAVI", { by: new Map(node.entries.map((x) => [x.name, commits[0]])), examined: commits.length, complete: true });
@@ -200,7 +203,7 @@ function browsePage(item, rest, url) {
     const c = find(path[0]);
     return c && browse.renderCommit(w, { commit: c, parent: c.parents[0] ?? null, files: c.parents.length ? diff.files : [], truncated: false }, "PAVI");
   }
-  if (what === "history" && FILES[path.join("/")] !== undefined) return browse.renderHistory(w, head, path, commits, true, "PAVI");
+  if (what === "history" && file !== null) return browse.renderHistory(w, head, path, commits, true, "PAVI");
   return null;
 }
 

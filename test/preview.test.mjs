@@ -46,6 +46,8 @@ const PAGES = [
   ["/p/atelier/plans", "atelier", "atelier"],
   ["/p/atelier/ship", "Ship · atelier", "atelier"],
   ["/p/atelier/settings", "Settings · atelier", "atelier"],
+  ["/p/atelier/code", "Code · atelier", "atelier"],
+  ["/p/atelier/log", "Log · atelier", "atelier"],
   ["/p/atelier/t1", "Run checks in a Cloudflare container", null],
   ["/p/atelier/t4", "Test the ledger end to end", null],
 ];
@@ -66,7 +68,7 @@ for (const [path, title, h1] of PAGES) {
 
 test("a project tab is drawn as that tab, not as task t1", async () => {
   // The bar's crumb names the page; Plans is held under Tasks and Ship under Settings.
-  for (const [path, crumb] of [["/p/atelier/tasks", "Tasks"], ["/p/atelier/flow", "Activity"], ["/p/atelier/plans", "Plans"], ["/p/atelier/ship", "Ship"], ["/p/atelier/settings", "Settings"], ["/p/atelier/t4", "t4"]]) {
+  for (const [path, crumb] of [["/p/atelier/tasks", "Tasks"], ["/p/atelier/flow", "Activity"], ["/p/atelier/plans", "Plans"], ["/p/atelier/ship", "Ship"], ["/p/atelier/settings", "Settings"], ["/p/atelier/code", "Code"], ["/p/atelier/log", "Log"], ["/p/atelier/t4", "t4"]]) {
     const html = await (await fetch(base + path)).text();
     assert.ok(html.includes(`<p class="crumb"><a href="/p/atelier">atelier</a> › <span>${crumb}</span></p>`), `${path} does not name ${crumb} in the bar`);
     if (path !== "/p/atelier/t4") assert.ok(!html.includes("<title>Run checks in a Cloudflare container"), `${path} drew task t1's page`);
@@ -135,4 +137,12 @@ test("an address the preview does not serve is a 404, not the Decisions page", a
   const res = await fetch(`${base}/no-such-page`);
   assert.equal(res.status, 404);
   assert.equal((await fetch(`${base}/p/atelier/t99`)).status, 404);
+  // A name an object inherits is no file (codex/gpt-6-astra's second review
+  // of t604: /p/atelier/code/constructor crashed the server).
+  for (const name of ["constructor", "toString", "__proto__"]) {
+    for (const path of [`/p/atelier/code/${name}`, `/p/atelier/history/${name}`, `/p/atelier/t1/code/${name}`]) {
+      assert.equal((await fetch(base + path)).status, 404, path);
+    }
+  }
+  assert.equal((await fetch(`${base}/p/atelier/code`)).status, 200, "the preview still serves after those requests");
 });
