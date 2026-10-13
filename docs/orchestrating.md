@@ -761,6 +761,43 @@ reason, so every review brief carries it. Fast mode has no end time.
 `atelier mode` prints `Mode: full` or `Mode: fast since TIME (reason)`, and
 the project's Overview says so while fast mode stands.
 
+### Runner builds in fast mode
+
+A build that begins with a claim forks main, and in fast mode the forks are
+what fails. On 2026-10-13 at 10:35 EDT, in fast mode (decision d14), every
+runner build still began with such a claim, the forks of cloudflare-git
+failed (Artifacts INTERNAL_ERROR), and the builds were run by hand in local
+clones (PAVI: aren't we in fast mode? why are we creating forks?). So while
+the project is in fast mode a runner takes a dispatched build without a
+fork:
+
+- The queue marks a plain build `fast` (src/rules.ts `fastBuildRefusal`).
+  A plan job, a part, a merge-main job and a task whose fork already holds
+  work keep the claim; the claim of the last needs no new fork.
+- The runner calls `atelier fast take tN` in place of `atelier claim`
+  (POST items/tN/fast-take). The server records the holder as a claim does,
+  with the same checks and an `item.claimed` event, then `item.fast_taken`.
+  It makes no fork and records no write token, and answers a read token
+  for the baseline. The CLI clones main with it into the runner's cache
+  (`fast/PROJECT/tN`), keeps no remote, and writes the project's commit
+  identity.
+- The harness builds and commits there with its Agent line, from the same
+  brief a build gets plus a "Fast mode" section.
+- The runner calls `atelier fast ready tN` in the clone (POST
+  items/tN/fast-ready): the commit, the main it was built on, the builder
+  its Agent line names and the clone's path. The task stays claimed by its
+  builder and its dispatch is cleared, so no runner takes it again. Nothing
+  is pushed, checked or submitted; the owner's batch does that.
+- A run that committed but could not report keeps its claim; the next take
+  keeps the clone and reports the commit without the harness. A run that
+  committed nothing releases the task.
+
+A fast take the server refuses because the project is back in full mode
+falls back to the claim. Back in full mode runners claim with forks, push
+and submit as before. The routes are the named capability
+`runners.fast-build.v1`; `atelier fast take`, `ready` and `status` ask for
+it.
+
 In fast mode, from a clean checkout of main:
 
     atelier fast land t575=SHA t576=SHA --reviewer H/M
@@ -774,7 +811,9 @@ receipt: the commit merged, the merge commit, the builder its Agent line
 names, the test command and the sha256 of its output, and the mode's
 reason. The task is marked merged, and its post-merge review is asked of
 the reviewer named. It never pushes or deploys; publish main and deploy as
-after any landing, so the reviewer can read the merge.
+after any landing, so the reviewer can read the merge. A commit a runner
+built on this machine and reported ready is fetched from its clone when the
+checkout lacks it.
 
 The post-merge review of a fast landing may come from a model of the
 builder's family (PAVI: fast mode permits single-family models), never
@@ -783,11 +822,14 @@ A merge that went through the gate keeps the family rule for its post-merge
 review. A rejection files a fix task, "Fix after fast landing of tN: ...",
 whose criteria are the review's findings.
 
-`atelier fast status` lists every fast landing with its review's state.
+`atelier fast status` lists every fast landing with its review's state,
+then every build reported ready as a `tN=SHA` line, which `atelier fast
+land` takes as it stands, and the command that lands them all.
 `atelier mode full` (or `atelier fast close`) returns the project to full
 mode, withdraws the decision and prints the same list. The task page names
-a fast landing as "Landed in fast mode" with its receipt, and the showcase
-counts fast landings apart from gated merges.
+a fast landing as "Landed in fast mode" with its receipt, and a ready build
+as "Ready for fast land at SHA"; the showcase counts fast landings apart
+from gated merges.
 
 ## Judging a review
 

@@ -1121,3 +1121,78 @@ test("a same-family post-merge review is accepted only for a task landed in fast
   assert.deepEqual(fix.accept, ["src/a.ts:4: null deref"]);
   assert.deepEqual(fastFixTask("t9", "x", { by: "a/b", head: H2, note: "wrong", findings: [] }).accept, ["Resolve the post-merge review's rejection of t9: wrong"]);
 });
+
+// ── fast builds (t589) ───────────────────────────────────────────────────────
+// 2026-10-13 10:35 EDT: in fast mode every runner build still began with a
+// claim that forks main, and the forks failed, so builds ran by hand in
+// local clones. In fast mode a dispatched plain build is taken without a
+// fork and its commit reported ready; in full mode nothing changes.
+import { fastJobRefusal, fastBuildRefusal, assertFastBuild, fastReady, standingFastReady, fastReadyLines } from "../src/rules.ts";
+
+const FAST = projectMode({ mode: "fast", since: "2026-10-13T14:00:00.000Z", reason: "forks fail", by: "owner" });
+const BUILD = { id: "t9", kind: undefined, plan: undefined, dispatch: { at: T, agent: "claude-code", model: "opus-5.5" } } as unknown as Item;
+
+test("in fast mode a dispatched plain build is taken without a fork; in full mode every build claims with one", () => {
+  assert.equal(fastBuildRefusal(FAST, BUILD), null);
+  assert.match(fastBuildRefusal({ mode: "full" }, BUILD) ?? "", /full mode, so a build claims with a fork/);
+  assert.throws(() => assertFastBuild({ mode: "full" }, BUILD), (e: RuleError) => e.code === "not_fast_mode" && e.status === 409);
+  assert.doesNotThrow(() => assertFastBuild(FAST, BUILD));
+  // A job named build is the same as none named.
+  assert.equal(fastJobRefusal({ ...BUILD, dispatch: { ...BUILD.dispatch!, job: "build" } }), null);
+  // Plans, parts and merge-main jobs keep the claim in either mode.
+  for (const other of [{ ...BUILD, kind: "plan" as const }, { ...BUILD, kind: "part" as const, plan: "t1" }, { ...BUILD, dispatch: { ...BUILD.dispatch!, job: "merge-main" } }, { ...BUILD, dispatch: { ...BUILD.dispatch!, job: "plan" } }]) {
+    assert.ok(fastJobRefusal(other as Item), JSON.stringify(other));
+    assert.throws(() => assertFastBuild(FAST, other as Item), (e: RuleError) => e.code === "not_fast_build");
+  }
+  // A fork that holds work from an earlier claim is built there; an empty one is not.
+  assert.match(fastJobRefusal({ ...BUILD, fork: "p--t9", base: H1, head: H2 }) ?? "", /fork holds work/);
+  assert.equal(fastJobRefusal({ ...BUILD, fork: "p--t9", base: H1, head: H1 }), null);
+  // A fast take is for a dispatched build.
+  assert.throws(() => assertFastBuild(FAST, { ...BUILD, dispatch: null }), (e: RuleError) => e.code === "not_dispatched");
+});
+
+test("a fast build's report names the commit, its main and the builder its Agent line names, from the holder, in fast mode", () => {
+  const held = { id: "t9", state: "claimed" as const, owner: "claude-code/opus-5.5", runner: "home:studio" };
+  const body = { commit: H2, base: H1, builder: "claude-code/opus-5.5", workspace: "/Users/x/cache/fast/p/t9" };
+  assert.deepEqual(fastReady(body, FAST, held, "claude-code/opus-5.5"), { ...body, runner: "home:studio" });
+  // The runner is the server's record, not the report's.
+  assert.equal(fastReady({ ...body, runner: "home:other" }, FAST, held, "claude-code/opus-5.5").runner, "home:studio");
+  assert.equal(fastReady({ ...body, workspace: undefined }, FAST, held, "claude-code/opus-5.5").workspace, null);
+  assert.throws(() => fastReady(body, { mode: "full" }, held, "claude-code/opus-5.5"), (e: RuleError) => e.code === "not_fast_mode");
+  assert.throws(() => fastReady(body, FAST, held, "codex/gpt-6"), (e: RuleError) => e.code === "not_holder");
+  assert.throws(() => fastReady(body, FAST, { ...held, state: "open" as const }, "claude-code/opus-5.5"), (e: RuleError) => e.code === "not_holder");
+  assert.throws(() => fastReady({ ...body, commit: H1 }, FAST, held, "claude-code/opus-5.5"), (e: RuleError) => e.code === "nothing_built");
+  for (const bad of [{ commit: "abc" }, { base: null }, { builder: "nobody" }, { builder: "codex/gpt-6" }, { workspace: "relative/path" }, { workspace: `/${"x".repeat(1001)}` }, { workspace: "/a\nb" }]) {
+    assert.throws(() => fastReady({ ...body, ...bad }, FAST, held, "claude-code/opus-5.5"), (e: RuleError) => e.code === "bad_ready", JSON.stringify(bad));
+  }
+});
+
+test("the standing report is the last one with no claim, release, handoff, dispatch or close after it", () => {
+  const ev = (seq: number, kind: string, data: Record<string, unknown> = {}) => ({ seq, kind, data, at: `2026-10-13T14:0${seq}:00.000Z`, actor: "claude-code/opus-5.5" });
+  const ready = (seq: number, commit: string) => ev(seq, "item.fast_ready", { commit, base: "0".repeat(40), builder: "claude-code/opus-5.5", runner: "home:studio", workspace: "/w" });
+  assert.equal(standingFastReady([]), null);
+  // In any order: the task page's events come newest first.
+  assert.deepEqual(standingFastReady([ready(3, H2), ev(2, "item.fast_taken"), ev(1, "item.claimed")]), { commit: H2, base: "0".repeat(40), builder: "claude-code/opus-5.5", runner: "home:studio", workspace: "/w", at: "2026-10-13T14:03:00.000Z", by: "claude-code/opus-5.5" });
+  assert.equal(standingFastReady([ready(1, H1), ready(4, H2)])?.commit, H2);
+  for (const kind of ["item.claimed", "item.released", "item.handoff", "item.dispatched", "item.merged", "item.abandoned"]) {
+    assert.equal(standingFastReady([ready(1, H1), ev(2, kind)]), null, kind);
+  }
+  // Events that change nothing about the build leave it standing.
+  assert.equal(standingFastReady([ready(1, H1), ev(2, "review.requested")])?.commit, H1);
+});
+
+test("fast status prints each ready commit as a tN=SHA line atelier fast land takes, and the command for all", () => {
+  assert.deepEqual(fastReadyLines([]), ["Nothing is ready for fast land."]);
+  const lines = fastReadyLines([
+    { item: "t5", commit: H1, builder: "claude-code/opus-5.5", runner: "home:studio", at: "2026-10-13T14:05:00.000Z" },
+    { item: "t7", commit: H2, builder: "codex/gpt-6", runner: null, at: "2026-10-13T14:09:00.000Z" },
+  ]);
+  assert.deepEqual(lines, [
+    "Ready for fast land (2):",
+    `t5=${H1}  built by claude-code/opus-5.5 on home:studio at 2026-10-13 14:05 UTC`,
+    `t7=${H2}  built by codex/gpt-6 at 2026-10-13 14:09 UTC`,
+    `Land them: atelier fast land t5=${H1} t7=${H2}`,
+  ]);
+  // Each line's first word is what atelier fast land parses.
+  for (const l of lines.slice(1, 3)) assert.match(l.split(" ")[0], /^t\d+=[0-9a-f]{40}$/);
+});

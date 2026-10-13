@@ -91,7 +91,7 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
   // criteria reviewer's claim, verdict and failure (t438); asking for one
   // and resolving its findings stay the owner's.
   if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "diff", "job-brief", "criteria-reviews"].includes(verb) || parts.length === 6 && ["sandbox", "logs", "diffs"].includes(verb);
-  return method === "POST" && parts.length === 5 && ["claim", "read-token", "base-token", "push", "evidence", "sandbox", "review", "review-claim", "review-renew", "review-release", "review-unparsable", "criteria-review-claim", "criteria-review", "criteria-review-failed", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "block", "unblock"].includes(verb);
+  return method === "POST" && parts.length === 5 && ["claim", "fast-take", "fast-ready", "read-token", "base-token", "push", "evidence", "sandbox", "review", "review-claim", "review-renew", "review-release", "review-unparsable", "criteria-review-claim", "criteria-review", "criteria-review-failed", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "block", "unblock"].includes(verb);
 }
 
 // A separate allowlist: runner credentials never inherit an agent's review,
@@ -99,7 +99,9 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
 // word, not a review: it says the runner will not serve a review job it was
 // offered (t353), and the gateway takes it only for such a job, as it takes
 // a run report (assertRunnerReport). run-skip is its word that it gives up a
-// build or plan job it was offered (t420), taken the same way.
+// build or plan job it was offered (t420), taken the same way. fast-take and
+// fast-ready (t589) are fast mode's claim without a fork and the report of
+// the commit it built, judged as a claim and the holder's calls are.
 const RUNNER_ITEM = "projects/:project/items/:id";
 
 // The authoritative method/path inventory. Body restrictions remain below;
@@ -115,7 +117,7 @@ export const RUNNER_ROUTES: readonly { method: string; pattern: string }[] = [
   { method: "GET", pattern: RUNNER_ITEM },
   ...["brief", "job-brief", "diff"].map(verb => ({ method: "GET", pattern: `${RUNNER_ITEM}/${verb}` })),
   ...["sandbox", "logs", "diffs"].map(verb => ({ method: "GET", pattern: `${RUNNER_ITEM}/${verb}/*` })),
-  ...["claim", "read-token", "base-token", "push", "evidence", "sandbox", "submit", "plan", "release", "review-skip", "run-skip"]
+  ...["claim", "read-token", "base-token", "push", "evidence", "sandbox", "submit", "plan", "release", "review-skip", "run-skip", "fast-take", "fast-ready"]
     .map(verb => ({ method: "POST", pattern: `${RUNNER_ITEM}/${verb}` })),
 ];
 

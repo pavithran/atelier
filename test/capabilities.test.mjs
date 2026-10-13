@@ -159,9 +159,10 @@ test("each command that relies on a named capability declares it in its module",
   assert.deepEqual(COMMAND_CAPABILITIES.edit, ["items.brief-criteria.v1", "reviews.criteria-binding.v1", "areas.manage.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.area, ["areas.manage.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.board, ["areas.board.v1"]);
-  // mode switches the project's mode and fast lands in it (t585).
+  // mode switches the project's mode and fast lands in it (t585); fast take,
+  // ready and status call the fast build's routes (t589).
   assert.deepEqual(COMMAND_CAPABILITIES.mode, ["projects.mode.v1"]);
-  assert.deepEqual(COMMAND_CAPABILITIES.fast, ["projects.mode.v1", "land.fast.v1"]);
+  assert.deepEqual(COMMAND_CAPABILITIES.fast, ["projects.mode.v1", "land.fast.v1", "runners.fast-build.v1"]);
   // stuck reads the owner's stuck report route (t441).
   assert.deepEqual(COMMAND_CAPABILITIES.stuck, ["projects.stuck.v1"]);
   assert.deepEqual(COMMAND_CAPABILITIES.init, ["projects.commit-identity.v1", "projects.require-criteria.v1", "land.post-merge.v1", "land.triage.v1", "reviews.criteria-review.v1"]);
@@ -289,6 +290,23 @@ test("atelier stuck requires the stuck report by name, which no legacy level gua
   const legacy = checkCapabilities({ routeLevel: ROUTE_LEVEL + 2 }, COMMAND_CAPABILITIES.stuck);
   assert.equal(legacy.kind, "unmapped");
   assert.deepEqual(legacy.missing, ["projects.stuck.v1"]);
+});
+
+test("fast take, fast ready and fast status require the fast build by name, which no legacy level guarantees; land and close do not (t589)", () => {
+  assert.equal(CAPABILITIES.find((c) => c.name === "runners.fast-build.v1")?.level, undefined);
+  assert.ok(SERVER_CAPABILITIES.includes("runners.fast-build.v1"));
+  for (const word of ["take", "ready", "status"]) {
+    const required = requiredForCommand("fast", word);
+    assert.deepEqual(required, ["projects.mode.v1", "land.fast.v1", "runners.fast-build.v1"], word);
+    assert.equal(checkCapabilities({ capabilities: SERVER_CAPABILITIES }, required).ok, true, word);
+    assert.deepEqual(checkCapabilities({ capabilities: SERVER_CAPABILITIES.filter((n) => n !== "runners.fast-build.v1") }, required).missing, ["runners.fast-build.v1"], word);
+    assert.equal(checkCapabilities({ routeLevel: ROUTE_LEVEL + 3 }, required).kind, "unmapped", word);
+  }
+  for (const word of ["land", "close"]) assert.deepEqual(requiredForCommand("fast", word), ["projects.mode.v1", "land.fast.v1"], word);
+  // The build job itself asks nothing new: the queue marks a build fast only
+  // on a server that has the routes, and fast take checks for itself.
+  assert.ok(!JOB_CAPABILITIES.build.includes("runners.fast-build.v1"));
+  assert.equal(ROUTE_LEVEL, 28);
 });
 
 test("models set requires the pool's standing by name, which no legacy level guarantees (t389)", () => {
