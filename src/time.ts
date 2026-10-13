@@ -68,11 +68,16 @@ export function zoneName(at: Date | string | number = Date.now()): string {
   return parts(at).tz;
 }
 
-// "New York time", or "UTC": the zone itself, right in every season, for a
+// "ET", or "UTC": the zone itself, right in every season, for a
 // legend beside times from many dates. An abbreviation such as EDT is right
 // only for the dates it belongs to.
 export function zoneLabel(): string {
   if (zone === "UTC") return "UTC";
+  // The zone's generic short name ("ET", "PT"), right in every season; the
+  // city's name where the runtime has none (PAVI, 2026-10-13: "times in New
+  // York time" read awkwardly; EST would be wrong in October).
+  const generic = new Intl.DateTimeFormat("en-US", { timeZone: zone, timeZoneName: "shortGeneric" }).formatToParts(new Date()).find((p) => p.type === "timeZoneName")?.value;
+  if (generic && /^[A-Z]{1,5}$/.test(generic)) return generic;
   const city = zone.split("/").pop()!.replace(/_/g, " ");
   return `${city} time`;
 }

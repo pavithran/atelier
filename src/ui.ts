@@ -956,11 +956,11 @@ function foldSpan(from: string, to: string): string {
 
 // The seven steps a task travels, each said for this owner and counted from
 // the tally the page draws.
-function travelSteps(t: Tally, who: string): string {
+function travelSteps(t: Tally, who: string, taken: number): string {
   const n = (v: number) => v.toLocaleString("en");
   const steps: [name: string, text: string, count: string, tone?: string][] = [
-    ["Planned", `${cap(who)} describes an outcome; it becomes a task with a scope.`, `${n(t.planned)} planned`],
-    ["Claimed", "One agent takes it and gets its own fork. Nobody else can write there.", `${plural(t.claims, "claim")}, ${plural(t.handoffs, "handoff")}`],
+    ["Planned", `${cap(who)} ${who === "You" ? "state" : "states"} an outcome. A planner model splits it into tasks, each with a scope, and ${who === "You" ? "you approve" : `${who} approves`} the split; a small change can be filed as one task directly.`, `${n(t.planned)} planned`],
+    ["Claimed", "One agent takes it and gets its own fork. Nobody else can write there.", `${plural(taken, "task")} taken, ${plural(t.handoffs, "handoff")}`],
     ["Worked", `The agent pushes to its fork, never to ${who}'s checkout.`, plural(t.pushes, "push", "pushes")],
     ["Checked", "The checks run in a fresh clone of exactly the pushed head, on the machine that asks for them; in a Cloudflare container only with --sandbox, or where the project requires it.", `${n(t.checks)} observed${t.inCloud ? `, ${n(t.inCloud)} in Cloudflare` : ""}`, "observed"],
     ["Reviewed", "A model of another family than every contributor approves, or sends it back; in single-family mode, another model of the one company.", `${n(t.approvals)} approved, ${n(t.sentBack)} sent back`],
@@ -1082,7 +1082,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
   ${story}
   <section class="show-section" aria-labelledby="travels-h" id="travels">
     <h2 class="show-h2" id="travels-h">How a task travels</h2>
-    ${travelSteps(total, who)}
+    ${travelSteps(total, who, stories.reduce((sum, st) => sum + tasksOf(st), 0))}
   </section>
   ${moves}
   ${where}
