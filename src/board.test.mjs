@@ -65,7 +65,7 @@ test('web and board share membership, stages, holder, purposes and counts; links
 test('narrow layout stacks fields and wraps long titles and holders; focus remains visible', () => {
   const css = readFileSync(new URL('./layout.css', import.meta.url), 'utf8');
   assert.match(css, /@media \(max-width: 700px\)\s*\{\s*\.area-board \.task-list li \{ grid-template-columns: minmax\(0, 1fr\)/);
-  assert.match(css, /\.area-task-title[^}]*overflow-wrap: anywhere/);
+  assert.match(css, /\.area-task-title[^}]*overflow-wrap: break-word/);
   assert.match(css, /\.area-holder[^}]*overflow-wrap: anywhere/);
   assert.match(css, /\.area-task-title:focus-visible[^}]*outline: 2px/);
   const html = renderBoard('a/b', { areas: [], items: [item({ title: '<script>bad</script>' })], facts: {} });
