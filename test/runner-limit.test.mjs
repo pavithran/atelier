@@ -418,3 +418,65 @@ test("the runner sends structured limit releases with its credential directly to
   assert.equal(requests[0].body.providerLimit, true);
   assert.match(requests[0].body.note, /usage limit until/);
 });
+
+// t462: a resolver's harness that hits a limit on a refresh's mechanical
+// conflicts is routed as a build's is: the job gives its refresh lease back
+// saying so, the loop pauses the harness, and no failure is counted, so the
+// refresh is served again after the reset however many limits it meets.
+test("a task-resolve job whose resolver hits a limit gives its lease back, pauses the harness and counts no failure", async (t) => {
+  const { spawnSync } = await import("node:child_process");
+  const dir = mkdtempSync(join(tmpdir(), "atelier-limit-resolve-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const env = { ...process.env, GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@example.com" };
+  const git = (cwd, ...args) => { const r = spawnSync("git", args, { cwd, env, encoding: "utf8" }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
+  // A task and main that each add an import after the same line: a mechanical conflict.
+  const work = join(dir, "work"), fork = join(dir, "fork.git"), baseline = join(dir, "main.git");
+  git(dir, "init", "--quiet", "-b", "main", work);
+  const commit = (text, message) => { writeFileSync(join(work, "index.ts"), text); git(work, "add", "index.ts"); git(work, "commit", "--quiet", "-m", message); return git(work, "rev-parse", "HEAD"); };
+  const imports = 'import { a } from "./a.ts";\nimport { b } from "./b.ts";\n\nexport const all = [a, b];\n';
+  const base = commit(imports, "base");
+  const taskHead = commit(imports.replace('"./b.ts";\n', '"./b.ts";\nimport { task } from "./task.ts";\n'), "task");
+  git(work, "checkout", "--quiet", "-B", "mainline", base);
+  const mainHead = commit(imports.replace('"./b.ts";\n', '"./b.ts";\nimport { main } from "./main.ts";\n'), "main");
+  for (const [repo, head] of [[fork, taskHead], [baseline, mainHead]]) { git(dir, "init", "--quiet", "--bare", "-b", "main", repo); git(work, "push", "--quiet", repo, `${head}:refs/heads/main`); }
+  const configFile = join(dir, "runner.json");
+  writeFileSync(configFile, JSON.stringify({ agents: [entry], jobs: ["task-resolve"] }));
+  const resolve = { project: "atelier", item: { id: "t7", head: taskHead, dispatch: { ...dispatch, job: "task-resolve", head: mainHead, expectedHead: taskHead } }, agent: "opencode", model: "glm-5.3", actor: "opencode/glm-5.3" };
+  const lease = { id: "L1", job: "resolve", by: resolve.actor, mainHead, expectedHead: taskHead };
+  const logs = [], releases = [], served = [], reports = [], offers = [];
+  let clock = NOW, poll = 0;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: configFile }, {
+    limitFile: join(dir, "limits.json"), now: () => clock, wait: async () => { clock += 2 * 60 * MIN; await tick(); },
+    workspacePath: (project, id) => join(dir, "cache", project, id),
+    reportRun: async (body) => { reports.push(body); },
+    async queue(offer) {
+      offers.push(offer.agents.map((a) => a.agent));
+      if (++poll === 5) process.emit("SIGTERM");
+      return offer.agents.some((a) => a.agent === "opencode") ? [resolve] : [];
+    },
+    taskIO: {
+      log: (s) => logs.push(s), env: {}, ownerTokens: () => [],
+      async cli(argv) {
+        if (argv[0] !== "refresh-lease") throw new Error(`unexpected ${argv[0]}`);
+        if (argv.includes("--release")) { releases.push(argv); return JSON.stringify({ released: true }); }
+        return JSON.stringify({ lease, workspace: { remote: fork, token: "w", defaultBranch: "main" }, baseline: { remote: baseline, token: "r", defaultBranch: "main" }, checks: [], commitIdentity: null });
+      },
+      async harness(argv) {
+        served.push(argv);
+        assert.match(readFileSync(argv[argv.indexOf("--file") + 1], "utf8"), /import-union/);
+        return limited({ resetAt: new Date(clock + 60 * MIN).toISOString() });
+      },
+    },
+  });
+  assert.equal(served.length, 4, "a limit on polls 1 to 4; the job is served again after each reset");
+  assert.equal(releases.length, 4);
+  for (const r of releases) {
+    assert.equal(r[r.indexOf("--release") + 1], "L1");
+    assert.ok(r.includes("--provider-limit"));
+    assert.match(r[r.indexOf("--reason") + 1], /^opencode usage limit: usage limit reached/);
+  }
+  assert.ok(logs.some((l) => l.startsWith("infrastructure event: provider limit on opencode during task-resolve of atelier/t7; opencode paused until")));
+  assert.ok(!logs.some((l) => /needs the owner's attention/.test(l)), "neither failure cap moves");
+  assert.deepEqual(reports, [], "no run is reported against the model");
+  assert.equal(git(dir, "--git-dir", fork, "rev-parse", "main"), taskHead, "nothing pushed");
+});
