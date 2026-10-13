@@ -572,7 +572,9 @@ it('the showcase draws a named project that has work, and survives a cache that 
   expect(res.status).toBe(200);
   const body=await res.text();
   expect(body).toContain('Drawn project');
-  expect(body).toContain('>t1<');
+  // Its open task is in the latest moves; only a merged task is told as it happened (t578).
+  expect(body).toContain('gpt-6 took t1');
+  expect(body).not.toContain('id="story-h"');
   expect(body).toContain('The owner made 0 decisions.');
   expect(body).toContain('Proven. Reviewed. Recorded.');
  }finally{(caches.default as {put:unknown}).put=put;}
