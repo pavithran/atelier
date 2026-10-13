@@ -74,8 +74,8 @@ test("a review line names its recorder: the reviewer itself under its own token,
   const lines = receiptText("atelier", "t1", story).split("\n").slice(2);
   assert.match(lines[0], /rejected by opencode\/glm-5\.3 at aaaaaaaa: Before t215\.$/);
   assert.match(lines[1], /approved by opencode\/glm-5\.3 at bbbbbbbb \(recorded by opencode\/glm-5\.3 with its own token\): Served by a runner under its own token\.$/);
-  assert.match(lines[2], /rejected by zcode\/glm-5\.3 at bbbbbbbb \(recorded by the developer with the owner token, answering a review request it claimed\): Served by a runner/);
-  assert.match(lines[3], /approved by antigravity\/gemini-3\.1-pro at bbbbbbbb \(recorded by the developer with the owner token\): Named by the owner\.$/);
+  assert.match(lines[2], /rejected by zcode\/glm-5\.3 at bbbbbbbb \(recorded by the developer with the developer token, answering a review request it claimed\): Served by a runner/);
+  assert.match(lines[3], /approved by antigravity\/gemini-3\.1-pro at bbbbbbbb \(recorded by the developer with the developer token\): Named by the owner\.$/);
 });
 
 test("the landing's own steps and the queue's plumbing are not lines of the story", () => {

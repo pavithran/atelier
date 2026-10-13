@@ -270,11 +270,11 @@ it("decision 2026-10-06: only the owner overrides a missing review, with a reaso
   await L.addEvidence(observed("t1", H2, ["AGENTS.md"]));
   await L.submit("t1", A);
   await refusal(L.accept("t1", "owner", H2), "not_ready", /protected path/);
-  // t371: the owner token alone does not override. Without the owner's
+  // t371: the developer token alone does not override. Without the owner's
   // permission from the task's page the override is refused, naming the page
   // and the button, and nothing is recorded; with it, given for this head
   // with a factor no agent holds, the override goes through and spends it.
-  await refusal(L.accept("t1", "owner", H2, reason), "override_unconfirmed", /needs the developer's confirmation: open \/p\/override\/t1 as the developer, press "Allow an override from the command line" confirming as the developer, then run the command again within 15 minutes; the owner token alone does not confirm it/);
+  await refusal(L.accept("t1", "owner", H2, reason), "override_unconfirmed", /needs the developer's confirmation: open \/p\/override\/t1 as the developer, press "Allow an override from the command line" confirming as the developer, then run the command again within 15 minutes; the developer token alone does not confirm it/);
   expect(kinds(await L.events("t1"))).not.toContain("review.overridden");
   await refusal(L.confirmOverride("t1", B, H2, "secret"), "not_project_owner", /only the developer allows an override/);
   await refusal(L.confirmOverride("t1", "owner", H2, "session" as never), "override_unconfirmed", /only with the developer's Access identity or the confirmation secret/);
@@ -721,7 +721,7 @@ it("HTTP review and acceptance preserve the displayed revision through successfu
  expect((await post('accept','')).status).toBe(409);
  const bearer=await post('override','No model of another family is available');
  expect(bearer.status).toBe(403);
- expect(await bearer.text()).toMatch(/needs the developer(&#39;|'|&#x27;)s own sign-in, not the owner token/);
+ expect(await bearer.text()).toMatch(/needs the developer(&#39;|'|&#x27;)s own sign-in, not the developer token/);
  expect((await post('allow-override','')).status).toBe(403);
  expect((await L.item('t1')).state).toBe('submitted');
  const cookie={cookie:await signIn('fixture-token',bindings)};
