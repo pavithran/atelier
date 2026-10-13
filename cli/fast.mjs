@@ -286,7 +286,7 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
   // developer's files and Keychain.
   const env = checkEnv();
   const merged = [];
-  let failure = null, tests = null;
+  let failure = null, tests = null, scanned = null;
   try {
     for (const { id, sha } of pairs) {
       if (sources[id] && !hasCommit(cwd, sha)) {
@@ -308,6 +308,17 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       log(`merged ${id} (${commit.slice(0, 12)}) as ${merged.at(-1).mergeCommit.slice(0, 12)}`);
       for (const g of r.regenerated ?? []) log(`regenerated ${g.outputs.map((o) => `${o.path} (matches ${o.matches})`).join(", ")} with ${g.command.join(" ")}`);
     }
+    // Main's head as fast land itself left it: after the merges, and after
+    // the regeneration commit it makes. A project command that moves it (a
+    // typecheck or regeneration that resets main back) stops the batch, so
+    // the scan never reads a shorter range than the merges made (fourth
+    // review of t592).
+    let expected = failure ? null : git(cwd, "rev-parse", "HEAD");
+    const moved = (after) => {
+      const branch = git(cwd, "rev-parse", "--abbrev-ref", "HEAD"), now = git(cwd, "rev-parse", "HEAD");
+      if (branch === "main" && now === expected) return null;
+      return { step: "checkout changed", detail: `main moved during the ${after}: ${branch !== "main" ? `the checkout is on ${branch}, not main` : `main is at ${now.slice(0, 12)}, not ${expected.slice(0, 12)} as fast land left it`}` };
+    };
     if (!failure && regen) {
       // Untracked files already in the checkout are the owner's, not the
       // regeneration's: they stay out of its commit (t588).
@@ -315,6 +326,7 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       const stray = new Set(untracked());
       const r = sh(cwd, regen, env);
       if (!r.ok) failure = { step: "regenerate", detail: r.output.trim().split("\n").slice(-10).join("\n") };
+      else if ((failure = moved("regeneration"))) { /* refused */ }
       else {
         git(cwd, "add", "-u");
         const made = untracked().filter((f) => !stray.has(f));
@@ -322,25 +334,26 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
         if (git(cwd, "diff", "--cached", "--name-only")) {
           git(cwd, "commit", "-q", "-m", `Regenerate after fast landing of ${pairs.map((p) => p.id).join(", ")}\n\nLanded fast: ${reason}`);
           log("regenerated and committed the generated files");
+          expected = git(cwd, "rev-parse", "HEAD");
         }
       }
     }
     if (!failure && typecheck) {
       const r = sh(cwd, typecheck, env);
       if (!r.ok) failure = { step: "typecheck", detail: r.output.trim().split("\n").slice(-20).join("\n") };
-      else log(`typecheck passed: ${typecheck}`);
+      else if (!(failure = moved("typecheck"))) log(`typecheck passed: ${typecheck}`);
     }
+    if (!failure) failure = moved("checks before the secret scan");
     // The head the scan reads is the head that lands: the tests run on it,
     // and after them the checkout must still be on main at it, with no
     // tracked change (review of t592: a test script that committed after the
     // scan landed what the scan never read).
-    let scanned = null;
     if (!failure) {
       const overrides = historyOverrides(cwd, shallowAtStart);
       if (overrides.length) failure = { step: "secret scan", detail: `the checkout has ${overrides.join(", ")}, which change the history Git shows; remove them and land again` };
     }
     if (!failure) {
-      scanned = git(cwd, "rev-parse", "HEAD");
+      scanned = expected;
       const { hits, unscanned } = await scanBatch(cwd, start, scanned);
       const found = [];
       if (hits.length) found.push(`added lines that look like credentials: ${hits.slice(0, 20).join(", ")}`);
@@ -359,8 +372,14 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       const branch = git(cwd, "rev-parse", "--abbrev-ref", "HEAD"), now = git(cwd, "rev-parse", "HEAD");
       const changed = git(cwd, "status", "--porcelain", "--untracked-files=no");
       if (branch !== "main" || now !== scanned || changed) {
-        failure = { step: "checkout changed", detail: `the checkout changed after the secret scan of ${scanned.slice(0, 12)}: ${branch !== "main" ? `it is on ${branch}, not main` : now !== scanned ? `main is at ${now.slice(0, 12)}` : `tracked files changed:\n${changed}`}` };
+        failure = { step: "checkout changed", detail: `the checkout changed after the secret scan of ${scanned.slice(0, 12)}: ${branch !== "main" ? `it is on ${branch}, not main` : now !== scanned ? `main moved to ${now.slice(0, 12)}` : `tracked files changed:\n${changed}`}` };
       }
+    }
+    // Every merge a receipt will name is in the scanned head's history, so
+    // no receipt records a merge main does not hold (fourth review of t592).
+    if (!failure) {
+      const lost = merged.filter((m) => runGit(cwd, ["merge-base", "--is-ancestor", m.mergeCommit, scanned]).status !== 0);
+      if (lost.length) failure = { step: "checkout changed", detail: `main moved: ${scanned.slice(0, 12)} does not hold the merge of ${lost.map((m) => `${m.id} (${m.mergeCommit.slice(0, 12)})`).join(", ")}` };
     }
     if (failure) return { ok: false, start, ...restore(), landed: [], failure };
   } catch (err) {
@@ -368,7 +387,7 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
   }
   // Main holds the checked batch now. A receipt the server refuses leaves it
   // so (the merges passed); the caller names what was and was not recorded.
-  const head = git(cwd, "rev-parse", "HEAD");
+  const head = scanned;
   const landed = [];
   for (const m of merged) {
     const receipt = { commit: m.commit, mergeCommit: m.mergeCommit, builder: m.builder, tests };

@@ -426,6 +426,26 @@ test("a rollback that cannot restore main says so, naming main's head and the fi
   }
 });
 
+// Fourth review of t592 (codex/gpt-6-astra): a typecheck or regeneration
+// script that moved main back before the scan left the scan an empty range,
+// the head checks compared against that moved head, and the receipts named
+// merges main no longer held (which may hold a credential).
+for (const [step, opts] of [["typecheck", { typecheck: "git reset -q --hard HEAD^1" }], ["regen", { regen: "git reset -q --hard HEAD^1" }]]) {
+  test(`a ${step} that moves main back before the scan stops the batch, nothing recorded (finding 4)`, async () => {
+    const { dir, one, two } = repo();
+    try {
+      const start = git(dir, "rev-parse", "HEAD");
+      const recorded = [];
+      const r = await fastLand({ ...base, ...opts, cwd: dir, pairs: [{ id: "t1", sha: one }, { id: "t2", sha: two }], test: "true", record: (id) => { recorded.push(id); return { ok: true }; } });
+      assert.equal(r.ok, false, "the batch is refused");
+      assert.equal(r.failure.step, "checkout changed");
+      assert.match(r.failure.detail, /main moved/);
+      assert.deepEqual(recorded, []);
+      assert.equal(git(dir, "rev-parse", "main"), start);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+}
+
 test("a blob the scan cannot read stops the batch, naming its path (finding 4)", async () => {
   const { dir } = repo();
   try {
