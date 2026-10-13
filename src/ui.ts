@@ -73,9 +73,9 @@ const href = (...p: string[]) => "/" + p.map(encodeURIComponent).join("/");
 const selectedHref = (project: string, task: string) =>
   `/decisions?project=${encodeURIComponent(project)}&task=${encodeURIComponent(task)}#review`;
 // What the showcase's fast-mode count means (t605, Gemini 4 Argon's claims
-// audit of 2026-10-13, finding 8): said beside the count, which no page
-// explained.
-export const FAST_MODE_NOTE = "Fast mode is a setting the developer turns on with a reason: finished tasks land together after one typecheck, secret scan and test run, each with a receipt, and each review follows its merge. Full mode, where review comes first, is the default.";
+// audit of 2026-10-13, finding 8): shown under the card's figures whenever
+// it counts fast landings, which no page explained.
+export const FAST_MODE_NOTE = "Fast mode, which the developer turns on with a reason: finished tasks land together after one typecheck, secret scan and test run, each with a receipt, and are reviewed after the merge. Full mode, review first, is the default.";
 const tag = (label: string, tone = "") => `<span class="tag ${tone}">${e(label)}</span>`;
 
 const ICONS: Record<string, string> = {
@@ -1025,11 +1025,11 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     const families = VENDOR_NAMES.filter(([v]) => v !== "owner" && t.byVendor[v])
       .map(([v, label]) => `<li><i style="--c:var(--m-${v})"></i>${e(label)}</li>`).join("");
     if (!families) return `<li class="show-card idle" id="card-${i + 1}"><h3>${e(shownLabel(c))}</h3><p class="idle-note">No agent has worked here yet.</p></li>`;
-    const figure = (v: number, label: string, title = "") => `<div${title ? ` title="${e(title)}"` : ""}><dt>${label}</dt><dd>${n(v)}</dd></div>`;
+    const figure = (v: number, label: string) => `<div><dt>${label}</dt><dd>${n(v)}</dd></div>`;
     return `<li class="show-card" id="card-${i + 1}">
     <h3>${e(shownLabel(c))}</h3>
     ${c.pulse ? pulseGraph(c.pulse, false) : ""}
-    <dl class="card-figures">${figure(c.pulse?.merges ?? t.merges, "merged, last two weeks")}${c.allTimeMerged === undefined ? "" : figure(c.allTimeMerged, "merged, all time")}${c.landedFast ? figure(c.landedFast, "landed in fast mode, all time", FAST_MODE_NOTE) : ""}${figure(c.pulse?.sentBack ?? t.sentBack, "sent back, last two weeks")}${figure(inProgress, "in progress, last two weeks")}</dl>
+    <dl class="card-figures">${figure(c.pulse?.merges ?? t.merges, "merged, last two weeks")}${c.allTimeMerged === undefined ? "" : figure(c.allTimeMerged, "merged, all time")}${c.landedFast ? figure(c.landedFast, "landed in fast mode, all time") : ""}${figure(c.pulse?.sentBack ?? t.sentBack, "sent back, last two weeks")}${figure(inProgress, "in progress, last two weeks")}</dl>${c.landedFast ? `<p class="card-note">${e(FAST_MODE_NOTE)}</p>` : ""}
     <ul class="legend-line" aria-label="Who worked on it">${families}${t.decisions ? `<li><i style="--c:var(--m-owner)"></i>${e(cap(who))}</li>` : ""}</ul>
   </li>`;
   }).join("");
@@ -1076,7 +1076,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     <h1><span><span>Git keeps</span> <span>the code.</span></span> <span><span>Atelier brings</span> <span>the receipts.</span></span></h1>
     <p class="show-what"><span>A Git platform for multiple coding agents,</span> <span>built on Cloudflare.</span></p>
     <p class="show-stack"><span>Repositories in Artifacts,</span> <span>the record in Durable Objects,</span> <span>landings as Workflows,</span> <span>checks in Containers on request.</span></p>
-    <p class="show-lead">Agents of several model families work one repository at once. Each change is checked at the exact head Atelier reads, and merged once the developer accepts it; a change to a protected path is first reviewed by a model of another company (another model of the same company in single-family mode).</p>
+    <p class="show-lead">Agents of several model families work one repository at once. In full mode, the default, a change merges once its checks pass at the exact head Atelier reads and the developer accepts it, and a change to a protected path first needs a review by a model of another company (another model of that company in single-family mode) unless the developer records an override. In fast mode the review follows the merge.</p>
     ${unavailable === "updating" ? '<p role="status" class="error">The server is updating; the figures return in a minute.</p>' : unavailable ? '<p role="status" class="error">A project could not be read just now; this page may be incomplete.</p>' : ""}
   </header>
   ${compareBlock(stories, imported, total, owner, who)}

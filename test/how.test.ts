@@ -293,11 +293,16 @@ test("no page or doc says Atelier itself runs the tests, and /how names --sandbo
   const pages = readdirSync(join(root, "src")).filter((name) => /^how.*\.ts$/.test(name)).map((name) => `src/${name}`);
   for (const file of ["README.md", ...docs, ...pages, "src/ui.ts"]) {
     const text = read(file).replace(/\s+/g, " ");
-    for (const claim of [/Atelier runs the tests/i, /run by Atelier and not taken on an agent's word/i]) {
+    for (const claim of [/Atelier (itself )?runs (the |their |its )?(tests|checks)( itself)?/i, /run by Atelier and not taken on an agent's word/i, /(tests|checks) run on the exact head, not on the agent's word/i]) {
       assert.doesNotMatch(text, claim, `${file} says ${claim.source}`);
     }
   }
   assert.ok(pages.some((file) => read(file).includes("--sandbox-only")), "/how no longer names --sandbox-only");
+  // The film's narration says the trust boundary where it speaks of the
+  // exact head: a local pass is the caller's word, a container's is not.
+  for (const line of read("docs/video.md").split("\n").filter((l) => l.startsWith("> ") && /exact head/.test(l))) {
+    assert.match(line, /Cloudflare container/, `the narration speaks of the exact head without the container: ${line}`);
+  }
 });
 
 // Gemini 4 Argon's claims audit of 2026-10-13, finding 8: /how listed the
