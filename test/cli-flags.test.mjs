@@ -704,12 +704,20 @@ test("review-claim prints the verdict command and the lease, --renew renews it, 
   assert.match(claim.stderr, new RegExp(`^Claimed t2's review request 7 at ${f.head} as opencode/glm-5\\.3\\.$`, "m"));
   assert.match(claim.stderr, new RegExp(`^Criteria binding: ${C}$`, "m"));
   assert.ok(claim.stderr.includes(`Record the verdict with: atelier review t2 --head ${f.head} --request 7 --criteria ${C} --approve|--reject --note "…" --as opencode/glm-5.3`), claim.stderr);
-  assert.match(claim.stderr, /lease lasts 5 minutes .*atelier review-claim t2 --renew --request 7 --as opencode\/glm-5\.3/);
+  // Astra's review of t575 (2026-10-13): the server skips a renewal within
+  // 30 seconds of its last one (REVIEW_RENEW_MS) and answers only
+  // {renewed: true}, so "five more minutes" after an early renewal was
+  // wrong, and renewing at its last moment lost the claim. The guidance
+  // now renews every 2 minutes, inside the 4 minutes 30 seconds a renewal
+  // is sure of.
+  assert.match(claim.stderr, /lease lasts 5 minutes .*atelier review-claim t2 --renew --request 7 --as opencode\/glm-5\.3 every 2 minutes/);
+  assert.doesNotMatch(claim.stderr, /within every 5 minutes/);
   f.clear();
   // --renew without --request renews the request claimed here, by the runner's route.
   const renew = f.run(f.workspace, ["review-claim", "t2", "--renew"], as);
   assert.equal(renew.status, 0, renew.stderr);
-  assert.match(renew.stdout, /Renewed the lease on t2's review request 7, the one this machine last claimed, as opencode\/glm-5\.3: it lasts 5 more minutes/);
+  assert.match(renew.stdout, /Renewed the lease on t2's review request 7, the one this machine last claimed, as opencode\/glm-5\.3: it lasts at least 4 minutes 30 seconds from now \(the server skips a renewal within 30 seconds of the last\); renew again within 2 minutes\./);
+  assert.doesNotMatch(renew.stdout, /5 more minutes/);
   assert.deepEqual(f.requests().map((q) => [q.method, q.path, q.body, q.actor]), [["POST", "/api/projects/demo/items/t2/review-renew", { request: 7 }, "opencode/glm-5.3"]]);
   f.clear();
   const named = f.run(f.workspace, ["review-claim", "t2", "--renew", "--request", "9"], as);
@@ -738,6 +746,15 @@ test("review-claim prints the verdict command and the lease, --renew renews it, 
   assert.equal(stray.status, 1);
   assert.match(stray.stderr, /--request names the claim --renew renews/);
   assert.equal(f.requests().length, 0);
+  // Astra's review of t575 (2026-10-13): the remembered claim does not supply
+  // the reviewer, so a renewal without --as fails or is refused by the
+  // server's actor check; the help and the handbook name it.
+  const help = spawnSync(process.execPath, [resolve("cli/atelier.mjs"), "review-claim", "--help"], { encoding: "utf8" });
+  assert.match(help.stdout, /review-claim ID --renew --as H\/M/);
+  assert.match(help.stdout, /renew every 2 minutes/);
+  const handbook = readFileSync("docs/orchestrating.md", "utf8").replace(/\s+/g, " ");
+  assert.match(handbook, /`atelier review-claim ID --renew --as HARNESS\/MODEL`/);
+  assert.doesNotMatch(handbook, /`atelier review-claim ID --renew`/);
 });
 
 test("review-release forwards the claim generation and preserves owner recovery without a number", (t) => {
