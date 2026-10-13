@@ -993,7 +993,7 @@ it('the showcase names the owner\'s zone in its legend, and UTC when none is set
  const s=mergedShowcaseStory();
  try{
   setTimeZone('America/New_York');
-  expect(renderShowcase([s],s.tally,'pavi','PAVI')).toContain('times in New York time');
+  expect(renderShowcase([s],s.tally,'pavi','PAVI')).toContain('times in ET');
   setTimeZone(undefined);
   expect(renderShowcase([s],s.tally,'pavi','PAVI')).toContain('times in UTC');
  }finally{setTimeZone(undefined);}

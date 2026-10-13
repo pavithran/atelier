@@ -18,7 +18,7 @@ test("times are shown in the owner's zone, with daylight saving, and in UTC when
 
 test("a legend names the zone, right in every season; each timestamp carries its own abbreviation", () => {
   setTimeZone("America/New_York");
-  assert.equal(zoneLabel(), "New York time");
+  assert.equal(zoneLabel(), "ET");
   assert.equal(stamp("2026-01-15T15:46:00Z"), "2026-01-15 10:46 EST");
   assert.equal(stamp("2026-07-15T14:46:00Z"), "2026-07-15 10:46 EDT");
   // Across the November change: 05:30 UTC is 01:30 EDT, 06:30 UTC is 01:30 EST.

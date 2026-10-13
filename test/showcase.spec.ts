@@ -170,7 +170,7 @@ it("the showcase leads with what Atelier is and keeps the tally as its sub-head"
   const travels = body.slice(body.indexOf('id="travels-h"'), body.indexOf('id="moves-h"'));
   expect([...travels.matchAll(/<h3>([A-Za-z]+)<\/h3>/g)].map((m) => m[1])).toEqual(["Planned", "Claimed", "Worked", "Checked", "Reviewed", "Decided", "Merged"]);
   expect(travels).toMatch(/<span class="travel-count">\d+ planned<\/span>/);
-  expect(travels).toMatch(/<span class="travel-count">\d+ claims?, \d+ handoffs?<\/span>/);
+  expect(travels).toMatch(/<span class="travel-count">\d+ tasks? taken, \d+ handoffs?<\/span>/);
   // The steps take the accent, not the agents' family colours.
   expect(travels).not.toContain("--m-");
   expect(body).toContain("The owner made 1 decision.");
