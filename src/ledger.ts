@@ -9,6 +9,8 @@ import { runnerDenied, runnerTaskTerminal, sha256, type AgentToken, type Browser
 import { actorStanding, modelState, OBSERVED_UNDER, withStanding, type ModelEntry, type ModelNote, type ModelRole, type ModelSet, type ModelStatus, type PoolFamily } from "./models/pool";
 import { MODEL_PROFILES } from "./models/registry.ts";
 import { DurableObject } from "cloudflare:workers";
+import { gateMethods, RestartGate } from "./restart-gate.ts";
+import { ledgerRestart, parseLedgerRestart } from "./rules";
 import {
   preparationPaths, ownerPortAllowed,
   REVIEW_RENEW_MS, reviewLeaseExpired,
@@ -677,6 +679,11 @@ function reviewFindings(r: Review): ReviewFindings | null {
   return { by: r.by, head: r.head, summary: r.note || null, findings };
 }
 
+// Each Ledger's restart gate (src/restart-gate.ts, t586): every method on
+// the class's prototype runs through it (gateMethods, after the class), so
+// a restart asked for after a deploy waits until no call is in flight.
+const GATES = new WeakMap<object, RestartGate>();
+
 export class Ledger extends DurableObject<Env> {
   private sql: SqlStorage;
   #ownerAssignment = false;
@@ -685,8 +692,51 @@ export class Ledger extends DurableObject<Env> {
     return (this.env as unknown as { OWNER_ACTOR?: string }).OWNER_ACTOR || DEFAULT_OWNER;
   }
 
+  // The DEPLOYED_MAIN this Ledger's code was built for (t586). A Durable
+  // Object sees the vars of the deploy whose code it runs, so a Ledger left
+  // on older code by a deploy reports the older commit here while the
+  // Worker reports the new one.
+  private get deployed(): string | null {
+    return (this.env as unknown as { DEPLOYED_MAIN?: string }).DEPLOYED_MAIN?.trim() || null;
+  }
+
+  // The Worker sends its DEPLOYED_MAIN the first time an isolate addresses
+  // this Ledger (src/ledger-stub.ts); when the two differ, this Ledger
+  // restarts on the new code once it is idle between requests.
+  ledgerVersion(worker?: string | null): { version: string | null; restarting: boolean; why: string } {
+    return { version: this.deployed, ...this.#restartFor(worker ?? null, false) };
+  }
+
+  // The Worker found a method missing here (the runtime answered "The RPC
+  // receiver does not implement the method"): this Ledger runs older code
+  // than the Worker, whatever the versions say, and restarts once idle.
+  restartForUpdate(worker?: string | null, method?: string): { restarting: boolean; why: string } {
+    return this.#restartFor(worker ?? null, true, typeof method === "string" ? method.slice(0, 80) : undefined);
+  }
+
+  // Asks the gate for a restart when ledgerRestart allows one, and records
+  // it first, so the Ledger that starts next knows when the last was and
+  // for which Worker (at most one a minute; none again for a Worker whose
+  // restart brought the same code back). A private method, so RPC cannot
+  // reach it.
+  #restartFor(worker: string | null, missing: boolean, method?: string): { restarting: boolean; why: string } {
+    const gate = GATES.get(this);
+    if (!gate) return { restarting: false, why: "unavailable" };
+    if (gate.pending) return { restarting: true, why: "pending" };
+    const raw = this.sql.exec(`SELECT value FROM meta WHERE key = 'ledger-restart'`).toArray()[0]?.value;
+    const now = Date.now();
+    const decision = ledgerRestart({ ledger: this.deployed, worker, last: parseLedgerRestart(raw), now, missing });
+    if (!decision.restart) return { restarting: false, why: decision.why };
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('ledger-restart', ?)`, JSON.stringify({ at: now, from: this.deployed, for: worker }));
+    const reason = `Ledger restarting for an update: it runs ${this.deployed?.slice(0, 12) ?? "an unnamed build"}, the Worker ${worker?.slice(0, 12) ?? "an unnamed build"}${method ? `, which called ${method}` : ""}`;
+    console.log(reason);
+    gate.request(reason);
+    return { restarting: true, why: decision.why };
+  }
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    GATES.set(this, new RestartGate((reason) => ctx.abort(reason)));
     this.sql = ctx.storage.sql;
     // Reviewers' replies no verdict could be read from (t407) are kept in
     // their own table, below beside the reviews, one row each in the order
@@ -2660,9 +2710,10 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // Delivery runs in the background: a failure is logged without the
-  // response body or the topic, and nothing is retried.
+  // response body or the topic, and nothing is retried. It holds the
+  // restart gate, so a restart after a deploy waits for it.
   private deliver(request: Request): void {
-    this.ctx.waitUntil((async () => {
+    const work = (async () => {
       try {
         const response = await fetch(request, { redirect: "error", signal: AbortSignal.timeout(10_000) });
         if (!response.ok) console.error("Atelier notification failed", response.status);
@@ -2670,7 +2721,9 @@ export class Ledger extends DurableObject<Env> {
       } catch {
         console.error("Atelier notification failed");
       }
-    })());
+    })();
+    const gate = GATES.get(this);
+    this.ctx.waitUntil(gate ? gate.hold(work) : work);
   }
 
   recordSandboxRequest(id: string, actor: string, runId: string): void {
@@ -7851,6 +7904,10 @@ export class Ledger extends DurableObject<Env> {
     if (kind.startsWith("item.") || kind.startsWith("plan.") || kind === "project.set") this.dispatchWaiting();
   }
 }
+
+// Every Ledger call, RPC, alarm or internal, counts itself in flight, so a
+// restart after a deploy fires between requests (t586).
+gateMethods(Ledger.prototype, (self) => GATES.get(self));
 
 function toEvent(r: Row): LedgerEvent {
   return {

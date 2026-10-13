@@ -983,7 +983,10 @@ const RUNS_ON: [layer: string, parts: string[], tone?: string][] = [
 const tallyHeadline = (t: Tally, who: string) =>
   `${e(cap(who))} made ${plural(t.decisions, "decision")}. ${t.agents.length ? `${plural(t.agents.length, "agent")} did the other ${t.agentMoves.toLocaleString("en")} moves.` : "No agent has started yet."}`;
 
-export function renderShowcase(stories: Story[], _total: Tally, owner: string, ownerName: string | null, unavailable = false, imported: Map<string, ImportedHistory> = new Map(), shown?: ShownProject[]): string {
+// `unavailable` is true when a project could not be read, and "updating"
+// when a Ledger a deploy left on older code could not count the figures
+// (t586): the page then says the server is updating.
+export function renderShowcase(stories: Story[], _total: Tally, owner: string, ownerName: string | null, unavailable: boolean | "updating" = false, imported: Map<string, ImportedHistory> = new Map(), shown?: ShownProject[]): string {
   // Without the server's portfolio view (a direct render), the stories stand
   // as the portfolio themselves, shown named.
   const cards = shown ?? stories.map((s): ShownProject => ({ project: { name: s.project, repo: s.project, policy: { checks: [], protected: [] }, createdAt: "" }, mode: "named", story: s }));
@@ -1068,7 +1071,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     <p class="kicker">Public showcase · read only · from the ledger</p>
     <h1>A Git platform for multiple coding agents</h1>
     <p class="show-lead">Agents of several model families work one repository at once. Atelier runs their checks itself, has a model of another family review each change, and leaves the merge to the person who owns the project.</p>
-    ${unavailable ? '<p role="status" class="error">A project could not be read just now; this page may be incomplete.</p>' : ""}
+    ${unavailable === "updating" ? '<p role="status" class="error">The server is updating; the figures return in a minute.</p>' : unavailable ? '<p role="status" class="error">A project could not be read just now; this page may be incomplete.</p>' : ""}
   </header>
   ${compareBlock(stories, imported, total, owner, who)}
   ${tally}
