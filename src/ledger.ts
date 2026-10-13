@@ -1,5 +1,4 @@
 import { landingOf } from "./diff.ts";
-import type { ShowcaseCounts } from "./graph.ts";
 import { parsePostMerge, reservePostMerge, preparePostMerge, startAttempt, finishAttempt, recordCommand, recoverPostMerge, expireAttempt, type PostMergePolicy, type PostMergeRun, type Attempt } from "./post-merge.ts";
 import type { Area, BoardSnapshot, StageFacts } from "./board.ts";
 import { cleanSession, type SessionNote } from "./sessions.ts";
@@ -4542,59 +4541,6 @@ export class Ledger extends DurableObject<Env> {
       ? this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?`, id, below, limit).toArray()
       : this.sql.exec(`SELECT * FROM events WHERE seq < ? ORDER BY seq DESC LIMIT ?`, below, limit).toArray();
     return rows.map(eventOf);
-  }
-
-  // The public showcase's figures over the whole record, counted in SQL
-  // rather than over a window of events (t578: 3,000 events covered eight
-  // hours of this project's own record, and the page said 0 merged in two
-  // weeks beside 379 all time). Events are counted by actor and kind; those
-  // at or after `since` again by half-hour, so the caller can place them on
-  // days in the owner's zone. The owner's served annotations are returned
-  // with the events they annotate, so the caller counts those under the
-  // model that served them, as buildStory does. `story` is the merged task
-  // the page tells as it happened: one a review sent back first when there
-  // is one, then the one with the most events.
-  showcaseCounts(since: string): ShowcaseCounts {
-    const num = (v: unknown) => Number(v ?? 0);
-    const kinds = this.sql.exec(
-      `SELECT actor, kind, COUNT(*) AS n, MIN(seq) AS first,
-        SUM(CASE WHEN kind = 'evidence.observed' AND json_extract(data, '$.where') = 'sandbox' THEN 1 ELSE 0 END) AS cloud
-       FROM events WHERE kind != 'event.served' GROUP BY actor, kind`,
-    ).toArray().map((r) => ({ actor: String(r.actor), kind: String(r.kind), n: num(r.n), first: num(r.first), cloud: num(r.cloud) }));
-    const recent = this.sql.exec(
-      `SELECT actor, kind, substr(at, 1, 14) || CASE WHEN substr(at, 15, 2) < '30' THEN '00' ELSE '30' END AS slot, COUNT(*) AS n
-       FROM events WHERE at >= ? AND kind != 'event.served' GROUP BY actor, kind, slot`, since,
-    ).toArray().map((r) => ({ actor: String(r.actor), kind: String(r.kind), at: `${String(r.slot)}:00.000Z`, n: num(r.n) }));
-    // A merge is counted when its task was claimed before it, as the graph
-    // counts only the merges of the threads it draws.
-    const merges = num(this.sql.exec(
-      `SELECT COUNT(*) AS n FROM events m WHERE m.kind = 'item.merged' AND EXISTS
-        (SELECT 1 FROM events c WHERE c.item_id = m.item_id AND c.kind = 'item.claimed' AND c.seq < m.seq)`,
-    ).one().n);
-    const taken = num(this.sql.exec(`SELECT COUNT(DISTINCT item_id) AS n FROM events WHERE kind = 'item.claimed'`).one().n);
-    const span = this.sql.exec(`SELECT MIN(at) AS first, MAX(at) AS last FROM events`).one();
-    const served = this.sql.exec(`SELECT * FROM events WHERE kind = 'event.served' ORDER BY seq`).toArray().map(eventOf);
-    const seqs = [...new Set(served.map((ev) => ev.data.seq).filter((s): s is number => typeof s === "number"))];
-    const annotated: ShowcaseCounts["annotated"] = [];
-    for (let i = 0; i < seqs.length; i += 90) {
-      const part = seqs.slice(i, i + 90);
-      for (const r of this.sql.exec(`SELECT seq, at, actor, kind, json_extract(data, '$.where') AS place FROM events WHERE seq IN (${part.map(() => "?").join(", ")})`, ...part).toArray()) {
-        annotated.push({ seq: num(r.seq), at: String(r.at), actor: String(r.actor), kind: String(r.kind), cloud: r.kind === "evidence.observed" && r.place === "sandbox" });
-      }
-    }
-    const pick = this.sql.exec(
-      `SELECT i.id AS id,
-        (SELECT COUNT(*) FROM events e WHERE e.item_id = i.id AND e.kind = 'review.rejected') AS back,
-        (SELECT COUNT(*) FROM events e WHERE e.item_id = i.id) AS n
-       FROM items i WHERE i.state = 'merged'
-         AND EXISTS (SELECT 1 FROM events c WHERE c.item_id = i.id AND c.kind = 'item.claimed')
-       ORDER BY back > 0 DESC, n DESC, i.id LIMIT 1`,
-    ).toArray()[0];
-    return {
-      kinds, recent, merges, taken, served, annotated,
-      first: (span.first as string | null) ?? null, last: (span.last as string | null) ?? null,
-      story: pick ? String(pick.id) : null,
-    };
   }
 
   // Who holds what, without titles, scopes or paths: safe to hand to a
