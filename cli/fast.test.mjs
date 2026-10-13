@@ -446,6 +446,25 @@ for (const [step, opts] of [["typecheck", { typecheck: "git reset -q --hard HEAD
   });
 }
 
+// Fifth review of t592 (t606): a subtree the scan could not read lost its
+// path, because the path was recovered with a recursive ls-tree that fails
+// as a whole when any subtree is missing. The walk now goes level by level
+// and names the deepest path it reached.
+test("a subtree the scan cannot read stops the batch, naming its path (finding 4)", async () => {
+  const { dir } = repo();
+  try {
+    mkdirSync(join(dir, "nested"));
+    const sha = leakBranch(dir, [{ "nested/k.txt": "first\n" }, { "nested/k.txt": null }]);
+    const lost = git(dir, "rev-parse", `${sha}^:nested`);
+    rmSync(join(dir, ".git", "objects", lost.slice(0, 2), lost.slice(2)));
+    const start = git(dir, "rev-parse", "HEAD");
+    const r = await fastLand({ ...base, titles: { t3: "Lost" }, cwd: dir, pairs: [{ id: "t3", sha }], test: "true", record: () => assert.fail("recorded") });
+    assert.equal(r.failure?.step, "secret scan", JSON.stringify(r.failure));
+    assert.match(r.failure.detail, /(^|[ :,])nested\/ \(.*cannot be read/);
+    assert.equal(git(dir, "rev-parse", "HEAD"), start);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("a blob the scan cannot read stops the batch, naming its path (finding 4)", async () => {
   const { dir } = repo();
   try {
