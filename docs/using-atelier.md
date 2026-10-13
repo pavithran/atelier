@@ -133,9 +133,11 @@ A single task lands with:
 atelier land ID --reviewer antigravity/gemini-3.1-pro
 ```
 
-which takes the project's landing lease, merges main into the task,
-regenerates fixtures if the project declares how, pushes, checks, submits,
-waits for the independent review a runner serves, then accepts and merges.
+which merges main into the task, regenerates fixtures if the project
+declares how, pushes, checks, submits and waits for the independent review
+a runner serves, all without the project's landing lease; only then does it
+take the lease, for the merge alone (a second landing queues behind it),
+confirm main has not moved, and accept and merge.
 `atelier land` never overrides a review. When no model of another family can
 review a change, `atelier accept` and `atelier merge` take
 `--override-review` with the reason; the override is recorded where everyone
