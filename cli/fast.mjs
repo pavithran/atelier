@@ -172,23 +172,36 @@ function readObject(cwd, kind, hash) {
   return r.stdout;
 }
 
-// A tree's entries, parsed from its raw form ("<mode> <name>\0<raw id>"),
-// with modes as ls-tree prints them.
-function parseTree(raw, idBytes) {
+// A tree's entries, parsed strictly from its raw form ("<mode> <name>\0"
+// and the id's raw bytes), with modes as ls-tree prints them. Each entry
+// must be an octal mode of five or six digits, one space, a name that is
+// not empty, ".", ".." and holds no "/", a NUL, and exactly the id's length
+// of bytes; anything else throws, so a malformed tree stops the batch as
+// an unreadable one does, and every entry moves the parse forward (eighth
+// review of t592: a tree of 21 bytes with no space looped forever).
+function parseTree(raw, idBytes, hash) {
+  const malformed = (why) => unreadable("tree", hash, `is malformed: ${why}`);
   const out = [];
   for (let i = 0; i < raw.length; ) {
-    const space = raw.indexOf(0x20, i), nul = raw.indexOf(0, space);
-    const mode = raw.toString("latin1", i, space).padStart(6, "0");
+    const space = raw.indexOf(0x20, i);
+    if (space < 0) throw malformed(`no space after the mode at byte ${i}`);
+    const mode = raw.toString("latin1", i, space);
+    if (!/^[0-7]{5,6}$/.test(mode)) throw malformed(`a mode that is not five or six octal digits at byte ${i}`);
+    const nul = raw.indexOf(0, space + 1);
+    if (nul < 0) throw malformed(`no NUL after the name at byte ${space + 1}`);
     const name = raw.toString("utf8", space + 1, nul);
-    const hash = raw.toString("hex", nul + 1, nul + 1 + idBytes);
-    out.push({ name, mode, type: mode === "040000" ? "tree" : mode === "160000" ? "commit" : "blob", hash });
-    i = nul + 1 + idBytes;
+    if (!name || name === "." || name === ".." || name.includes("/")) throw malformed(`a name Git does not allow at byte ${space + 1}`);
+    const end = nul + 1 + idBytes;
+    if (end > raw.length) throw malformed(`an id shorter than ${idBytes} bytes at byte ${nul + 1}`);
+    const padded = mode.padStart(6, "0");
+    out.push({ name, mode: padded, type: padded === "040000" ? "tree" : padded === "160000" ? "commit" : "blob", hash: raw.toString("hex", nul + 1, end) });
+    i = end;
   }
   return out;
 }
 
 function readTree(cwd, hash) {
-  return parseTree(readObject(cwd, "tree", hash), objectFormat(cwd) === "sha256" ? 32 : 20);
+  return parseTree(readObject(cwd, "tree", hash), objectFormat(cwd) === "sha256" ? 32 : 20, hash);
 }
 
 // A commit's tree and first parent, from its verified bytes.
