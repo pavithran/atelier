@@ -9,9 +9,10 @@
 // the developer, immutable, each with an id and the server's time. A
 // correction or a supersession is a new card naming the one it replaces, and
 // a withdrawal is a record naming the card it withdraws, so the history stays
-// whole. Cards are stored under the model's canonical key (canonicalModel),
-// so a model named by an alias, or run under several harnesses, has one set
-// of cards, and taking a model out of the pool and back loses none.
+// whole. Cards are stored under the key the model's name gives (modelKey,
+// src/rules.ts), so a model named by a registry alias, or run under several
+// harnesses, has one set of cards, and taking a model out of the pool and
+// back loses none. Pool aliases are never read (cardFiling says why).
 //
 // The registry's static priors (src/models/registry.ts, `prior: true`) are
 // the older, supplied vendor descriptions; they stay there, labelled as
@@ -140,28 +141,35 @@ function day(v: unknown, what: string): string {
   return v;
 }
 
-// A source is a public https URL, written plainly: it starts https://, its
-// authority (host and port) is plain ASCII with no %-escape and no
-// backslash, so the host the parser reads is the host as typed and the key
-// check on the typed text (text()) covers it. Every review round of t625
-// (2026-10-13) found a spelling the parser decodes or folds (%-escapes,
-// full-width letters, a backslash for the slashes) that a decoded check
-// missed; these are refused outright. The host must then be a domain name
-// of plain labels, neither local, private nor numeric, kept lowercased and
-// without its one trailing dot. The path, query and fragment are scanned
-// decoded, so percent-encoding hides no key there.
+// A source is a public https URL, written plainly, checked on one parse. The
+// URL is parsed once (new URL) and every check reads the parsed result: its
+// protocol, its user name and password, and its host. The typed text is then
+// held to that parse: it must be "https://", in any letter case, then the
+// parsed host exactly as the parser gives it back (letter case aside), then
+// "/", "?", "#" or the end. So the host the parser reads is the host as
+// typed, and the key check on the typed text (text()) covers it; any
+// spelling the parser decodes, folds or skips (%-escapes, full-width letters,
+// a backslash or a third slash, an empty user name, a default port) makes
+// the two differ and is refused. Every review round of t625 (2026-10-13)
+// found such a spelling; the fifth (Astra's, finding 1) found that a string
+// pre-check of the authority read "https:////host" as an empty authority
+// while the parser found the host, so no pre-check of the typed text decides
+// what the host is. The host must then be a domain name of plain labels,
+// neither local, private nor numeric, kept lowercased and without its one
+// trailing dot. The path, query and fragment are scanned decoded, so
+// percent-encoding hides no key there.
 const PRIVATE_HOST = /(?:^|\.)(?:localhost|local|localdomain|internal|intranet|lan|home|corp|private|home\.arpa)$/;
 const LABEL = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
+const PLAIN_SOURCE = "source must be an https URL starting https:// with its host right after, written in plain ASCII as the parser reads it: no %-escape, user name, extra slash or backslash";
 export function cleanSource(v: unknown): string {
   const raw = text(v, "source", 500, true)!;
-  const plain = /^https:\/\/([^/?#]*)/i.exec(raw);
-  if (!plain) throw bad("source must be an https URL, starting https://");
-  if (raw.includes("\\")) throw bad("source must not contain a backslash");
-  if (/[%\u0080-￿]/.test(plain[1])) throw bad("source's host must be written in plain ASCII, without %-escapes");
   let url: URL;
-  try { url = new URL(raw); } catch { throw bad("source must be a URL, such as https://vendor.example/model-card"); }
-  if (url.protocol !== "https:") throw bad("source must be an https URL");
+  try { url = new URL(raw); } catch { throw bad(PLAIN_SOURCE); }
+  if (url.protocol !== "https:") throw bad(PLAIN_SOURCE);
   if (url.username || url.password) throw bad("source must not carry a user name or password");
+  const typed = `https://${url.host}`;
+  if (raw.slice(0, typed.length).toLowerCase() !== typed.toLowerCase() || !/^(?:[/?#]|$)/.test(raw.slice(typed.length))) throw bad(PLAIN_SOURCE);
+  if (raw.includes("\\")) throw bad(PLAIN_SOURCE);
   const host = url.hostname.toLowerCase().replace(/\.$/, "");
   if (!/^[a-z0-9.-]+$/.test(host) || !host.includes(".") || !host.split(".").every((l) => LABEL.test(l))
     || PRIVATE_HOST.test(host) || /^[\d.]+$/.test(host)) {

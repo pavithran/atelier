@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { COMMAND_USAGE } from "../help.mjs";
 import { OWNER, args, at, call, die, project, serverVersion } from "../atelier.mjs";
 import { cleanCard, cleanCardModel, cleanWithdrawal, conditionText } from "../../src/models/cards.ts";
+import { modelKey } from "../../src/rules.ts";
 
 // The model pool. With no subcommand, lists it. `models add ID --harness H
 // --where home|cloud [--provider P] [--endpoint URL] [--keychain NAME]
@@ -24,6 +25,7 @@ export default async function modelsCommand() {
   };
   const taskOf = (n) => (n.project ? `${n.projectName ?? n.project}/${n.item}` : n.item);
   const noteLines = (m) => (m.notes ?? []).map((n) => `  ${n.at.slice(0, 10)} by ${n.by}${n.item ? ` on ${taskOf(n)}` : ""}: ${n.text}`);
+  const entryNotes = (m) => { const lines = noteLines(m); return lines.length ? lines : ["  No notes yet. Add one: atelier models note ID 'text'"]; };
   if (sub === "admit" || sub === "withdraw") {
     if (!id || !args.reason) die(`atelier models ${sub} ID --project NAME --reason TEXT`);
     const name = project();
@@ -78,22 +80,41 @@ export default async function modelsCommand() {
   if (sub === "show") {
     if (!id) die("atelier models show ID");
     // A model the pool does not have may still have vendor cards.
-    const cards = (await serverVersion())?.capabilities?.includes("models.card.v1")
-      ? await call("GET", `/models/${encodeURIComponent(id)}/cards`, undefined, OWNER) : null;
-    // The entry by its id, an alias or harness/id, or as the server resolves
-    // the name to its canonical model (gemini-4-argon's review of t625).
+    const viewOf = (name) => call("GET", `/models/${encodeURIComponent(name)}/cards`, undefined, OWNER);
+    let cards = (await serverVersion())?.capabilities?.includes("models.card.v1") ? await viewOf(id) : null;
     const pool = await call("GET", "/models", undefined, OWNER);
-    const named = (e) => [e.id, ...(e.aliases ?? []), `${e.harness}/${e.id}`].includes(id);
-    const m = pool.find((e) => e.id === id) ?? pool.find(named) ?? pool.find((e) => cards?.pool.includes(`${e.harness}/${e.id}`));
-    if (!m && !cards?.cards.length) die(`${id} is not in the pool${cards ? " and has no vendor cards" : ""}`);
-    if (m) {
-      console.log(modelLine(m));
-      const lines = noteLines(m);
-      if (!lines.length) console.log("  No notes yet. Add one: atelier models note ID 'text'");
-      for (const line of lines) console.log(line);
-    } else console.log(`${id} is not in the pool; its vendor cards are kept under ${cards.model}.`);
-    if (!cards) return console.log("  Vendor cards: this server does not have models.card.v1 yet; deploy it to record and show them.");
+    const entryName = (e) => `${e.harness}/${e.id}`;
+    if (!cards) {
+      // No cards to attribute: the entry by its id, an alias or harness/id.
+      const m = pool.find((e) => e.id === id) ?? pool.find((e) => [e.id, ...(e.aliases ?? []), entryName(e)].includes(id));
+      if (!m) die(`${id} is not in the pool`);
+      for (const line of [modelLine(m), ...entryNotes(m)]) console.log(line);
+      return console.log("  Vendor cards: this server does not have models.card.v1 yet; deploy it to record and show them.");
+    }
+    // Cards belong to the key the server gives the name (modelKey), and the
+    // entries shown beside them are the ones the server says are that model
+    // (view.pool), never an entry found here by a pool alias: an alias moved
+    // to another model would print one model's cards under another's entry
+    // (Astra's fifth review of t625, 2026-10-13, finding 2). A name that is
+    // only a pool alias is followed to its entry's own name, and the answer
+    // says so and which key it shows.
+    const aliasOf = (view) => pool.filter((e) => (e.aliases ?? []).some((a) => modelKey(a) === modelKey(id)) && !view.pool.includes(entryName(e)));
+    let others = aliasOf(cards);
+    if (!cards.cards.length && !cards.pool.length && others.length === 1) {
+      const [e] = others;
+      cards = await viewOf(entryName(e));
+      console.log(`${id} is a pool alias of ${entryName(e)}; cards are kept under a model's own name, so these are the cards kept under ${cards.model}.`);
+      others = [];
+    }
+    const entries = pool.filter((e) => cards.pool.includes(entryName(e)));
+    if (!entries.length && !cards.cards.length && !others.length) die(`${id} is not in the pool and has no vendor cards`);
+    if (!entries.length && !cards.cards.length) {
+      return console.log(`${id} is a pool alias of ${others.map(entryName).join(" and ")}; cards are kept under each model's own name: atelier models show ${entryName(others[0])}`);
+    }
+    for (const m of entries) for (const line of [modelLine(m), ...entryNotes(m)]) console.log(line);
+    if (!entries.length) console.log(`${id} is not in the pool; its vendor cards are kept under ${cards.model}.`);
     for (const line of cardLines(cards)) console.log(line);
+    for (const e of others) console.log(`  ${id} is also a pool alias of ${entryName(e)}, whose cards are kept under its own name: atelier models show ${entryName(e)}`);
     return;
   }
   if (sub) die(`${COMMAND_USAGE.models}
