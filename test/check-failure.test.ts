@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
-  attemptHeader, attemptNumbers, boundedTail, checkAttemptsAt, checkLogPointer, effectiveFailures, failingTests, failingTestsLine, failureDetail, failureJson, failureSummary,
+  attemptHeader, attemptNumbers, boundedTail, checkAttemptsAt, checkLogPointer, collectFailureLines, effectiveFailures, FAILURE_LINES_CHARS, FAILURE_LINES_MAX, failingTests, failingTestsLine, failureDetail, failureJson, failureSummary,
   headsWithChecks, LOCAL_OUTPUT_TAIL, readCheckLog, resolveFailures, SANDBOX_OUTPUT_TAIL, SUMMARY_TAIL_CHARS, SUMMARY_TAIL_LINES, SUMMARY_TEST_NAMES,
 } from "../src/check-failure.ts";
 import { LARGE_MAX, type LargeRef } from "../src/large.ts";
@@ -504,4 +504,82 @@ test("a why line longer than the landing record leaves the summary its check-log
   const short = failureDetail("the required checks failed: npm test.", "t1", H1, [f], 2000);
   assert.ok(short.startsWith("the required checks failed: npm test.\nFailed checks at aaaaaaaa"), short);
   assert.equal(short, `the required checks failed: npm test.\n${failureSummary("t1", H1, [f], 2000 - 38)}`);
+});
+
+// t567 at 881860ea, evidence #2957 (2026-10-13 01:59 UTC): a failed `npm
+// test` run on a machine kept a tail that held only a design fixture's
+// stderr, so the failing test could not be named without a rerun, which
+// passed. `npm test` writes stdout before stderr, and since t568 runs the
+// vitest pool after a failed node pool, so the lines naming a node failure
+// fall out of the last 3,500 characters. The run now keeps the lines naming
+// the failure, read from the whole output, beside the tail (t569).
+test("a failed run on a machine keeps the lines naming its failure beside a tail of stderr noise, and both check-log and the summary name the failing test", async () => {
+  const stdout = [
+    "\x1b[32m✔ the cap holds (1.1ms)\x1b[39m",
+    "\x1b[31m✖ fails: the release waits for its review (2.3ms)\x1b[39m",
+    "  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:",
+    "",
+    "  1 !== 2",
+    "ℹ tests 2",
+    "ℹ pass 1",
+    "ℹ fail 1",
+    " RUN  v3.2.4 /repo",
+    " ✓ test/sample.spec.ts (1 test) 3ms",
+    " Test Files  1 passed (1)",
+    "      Tests  1 passed (1)",
+  ].join("\n");
+  const noise = Array.from({ length: 120 }, (_, i) => `[design fixture] warning: rendered sample ${i} without a theme`).join("\n");
+  const output = `${stdout}\n${noise}\n`;
+  assert.ok(noise.length > LOCAL_OUTPUT_TAIL, String(noise.length));
+  const sha = `\n[sha256 of full output: ${"0".repeat(64)}]`;
+  const outputTail = `${output.slice(-LOCAL_OUTPUT_TAIL)}${sha}`;
+  assert.ok(!outputTail.includes("✖"), "the tail alone holds no failure line");
+
+  const failureLines = collectFailureLines(output);
+  assert.equal(failureLines, [
+    "✖ fails: the release waits for its review (2.3ms)",
+    "  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:",
+    "ℹ fail 1",
+  ].join("\n"));
+
+  // What check-log prints first.
+  const log = await readCheckLog({ outputTail, where: "runner", failureLines }, none);
+  assert.equal(log.whole, false);
+  assert.deepEqual(log.failureLines, failureLines.split("\n"));
+  // Without them, the tail names nothing; with them, the summary names the test.
+  const [bare] = await resolveFailures(effectiveFailures(policy, [ev({ passed: false, outputTail })], H1), none);
+  assert.equal(bare.tests, null);
+  const [f] = await resolveFailures(effectiveFailures(policy, [ev({ passed: false, outputTail, failureLines })], H1), none);
+  assert.deepEqual(f.tests?.names, ["fails: the release waits for its review"]);
+  const summary = failureSummary("t1", H1, [f]);
+  assert.ok(summary.includes("failing tests (node:test, read from the failure lines kept from the whole output and from its tail): fails: the release waits for its review"), summary);
+  const lines = summary.split("\n");
+  const at = lines.findIndex((line) => line.includes("failure lines, read from the whole output: 3 lines:"));
+  assert.ok(at > 0 && at < lines.findIndex((line) => line.includes("log: inline tail only")), summary);
+  // Fitted to the landing's record, the failure lines give way after the
+  // tail and before the names: the failing test is still named.
+  const fitted = failureSummary("t1", H1, [f], 900);
+  assert.ok(fitted.length <= 900 && fitted.includes("59 lines, left out of this summary for its size") && fitted.includes("fails: the release waits for its review (2.3ms)"), fitted);
+  // A whole log in the tail holds the lines already: none are added.
+  const whole = await readCheckLog({ outputTail: `${stdout}${sha}`, where: "runner", failureLines }, none);
+  assert.equal(whole.failureLines, undefined);
+});
+
+test("the failure lines are bounded in lines and characters, read vitest's and TAP's formats, and count what they leave out", () => {
+  const vitest = collectFailureLines([
+    " FAIL  test/a.spec.ts > a suite > it breaks",
+    "AssertionError: expected 1 to be 2",
+    " Test Files  1 failed | 3 passed (4)",
+    "      Tests  1 failed | 9 passed (10)",
+    "not ok 3 - a tap test",
+    "  error: 'boom'",
+    "not ok 4 - skipped # SKIP later",
+  ].join("\n"));
+  assert.equal(vitest.split("\n").length, 6);
+  assert.ok(!vitest.includes("SKIP"));
+  const many = collectFailureLines(Array.from({ length: 500 }, (_, i) => `not ok ${i} - test ${i} ${"x".repeat(150)}`).join("\n"));
+  const kept = many.split("\n");
+  assert.ok(kept.length <= FAILURE_LINES_MAX && many.length <= FAILURE_LINES_CHARS, `${kept.length} ${many.length}`);
+  assert.match(kept.at(-1)!, /^\[atelier\] and \d+ more failure lines not kept$/);
+  assert.equal(collectFailureLines("all fine\nℹ fail 0"), "");
 });
