@@ -18,7 +18,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 
-import { NO_VERDICT, parseVerdict } from "../../src/review/verdict.ts";
+import { NO_VERDICT, criteriaAsked, parseVerdict } from "../../src/review/verdict.ts";
 import { readSecret } from "../credentials.mjs";
 import { GATEWAY_TOKEN_KEY, GATEWAY_TOKEN_VAR, METADATA_VAR, metadataEscaped } from "./providers.mjs";
 
@@ -92,9 +92,29 @@ export function reviewPrompt(brief, diff) {
 export const VERDICT_DEMAND = "Your reply MUST end with exactly one line, the last line of your reply, either VERDICT: APPROVE or VERDICT: REJECT, preceded by a SUMMARY: line on what you checked and one FINDING: blocking|follow-up PATH:LINE text line per finding.";
 
 // The second ask, in the same opencode session, when the first reply states
-// no verdict: the lines alone, no new review (t576).
+// no verdict: the lines alone, no new review (t576). A change with
+// acceptance criteria is asked for one CRITERION line per criterion as well,
+// as many as the brief's reply format asks for (criteriaAsked): an approval
+// without them is refused by parseVerdict, given the task's criterion count
+// by the runner, and the review released (Astra's review of t576,
+// 2026-10-13). The ask ends with the lines themselves, one per criterion, so
+// a reviewer who copies them and fills them in gives a complete reply.
+export function verdictFollowUp(criteria) {
+  const count = Number.isSafeInteger(criteria) && criteria > 0 ? criteria : 0;
+  if (!count) return VERDICT_FOLLOW_UP;
+  return [
+    VERDICT_FOLLOW_UP_HEAD,
+    `Reply with only these lines: a SUMMARY: line on what you checked, one FINDING: blocking|follow-up PATH:LINE text line per finding (REJECT needs at least one blocking finding, APPROVE allows none), one CRITERION line for each of the ${count} acceptance criteria, numbered as the brief's reply format numbers them, saying met or unmet (or deferred, only where the brief allows it) and then how you proved it: what you did and what you saw, from your review above (an approval needs every criterion met), and last exactly one line, either VERDICT: APPROVE or VERDICT: REJECT.`,
+    "In this shape, with your own words after each colon and dash:",
+    "SUMMARY: What you checked, in one sentence.",
+    ...Array.from({ length: count }, (_, i) => `CRITERION ${i + 1}: met — What you did to prove criterion ${i + 1} met, and what you saw.`),
+    "VERDICT: APPROVE",
+  ].join("\n");
+}
+
+const VERDICT_FOLLOW_UP_HEAD = "Your reply above states no verdict, so Atelier cannot read it. Do not review again and run nothing.";
 export const VERDICT_FOLLOW_UP = [
-  "Your reply above states no verdict, so Atelier cannot read it. Do not review again and run nothing.",
+  VERDICT_FOLLOW_UP_HEAD,
   "Reply with only these lines: a SUMMARY: line on what you checked, one FINDING: blocking|follow-up PATH:LINE text line per finding (REJECT needs at least one blocking finding, APPROVE allows none), and last exactly one line, either VERDICT: APPROVE or VERDICT: REJECT.",
 ].join("\n");
 
@@ -344,8 +364,11 @@ function runHarness(harness, args, kind, setup, childEnv, io, fail) {
   const env = io.env ?? process.env;
   const spawn = io.spawn ?? spawnSync;
   const { argv: harnessArgv, verdictFrom } = HARNESSES[harness].command(args, kind, setup);
-  let prompt;
-  try { prompt = promptFor(harness, args); } catch (error) { return fail(`could not read the brief or diff: ${error.message}`); }
+  let prompt, brief = "";
+  try {
+    prompt = promptFor(harness, args);
+    if (kind === "review" && HARNESSES[harness].followUp) brief = readFileSync(args.brief, "utf8");
+  } catch (error) { return fail(`could not read the brief or diff: ${error.message}`); }
   const exe = executableFor(harness, env);
   const capture = kind === "review" && verdictFrom !== "file";
   const result = spawn(exe, harnessArgv, {
@@ -367,7 +390,7 @@ function runHarness(harness, args, kind, setup, childEnv, io, fail) {
   const followUp = HARNESSES[harness].followUp;
   if (followUp && noVerdict(answer)) {
     const again = spawn(exe, followUp(args, kind, setup), {
-      cwd: args.workspace, env: childEnv, input: VERDICT_FOLLOW_UP, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+      cwd: args.workspace, env: childEnv, input: verdictFollowUp(criteriaAsked(brief)), encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
       stdio: ["pipe", "pipe", "inherit"],
     });
     const more = !again.error && again.status === 0 && typeof again.stdout === "string" ? again.stdout.trim() : "";
