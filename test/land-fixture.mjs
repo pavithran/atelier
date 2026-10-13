@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
@@ -279,6 +279,39 @@ export async function mainMovesDuringReview(f, { file = "other.txt", text = "ano
 }
 
 export const WAITING = /Waiting behind (\S+)'s landing of (t\d) \(since ([^)]+)\); t1 takes the lease for its merge as soon as the lease is free\./g;
+
+// t463: the project declares gen-fixtures.txt as an output its generator
+// writes from in/*.txt, and routes it to the generated driver. Each side
+// commits the same declarations with an input of its own and the output it
+// generated, so the two sides' outputs conflict.
+export function declareGenerated(dir, side, { command = ["sh", "-c", "cat in/*.txt > gen-fixtures.txt"], also = {} } = {}) {
+  mkdirSync(join(dir, "bin"), { recursive: true }); mkdirSync(join(dir, "in"), { recursive: true });
+  writeFileSync(join(dir, "bin", "merge-manifest.json"), JSON.stringify({ version: 1, generators: [{ name: "fixtures", command, inputs: ["in/**"], outputs: ["gen-fixtures.txt"] }] }));
+  writeFileSync(join(dir, ".gitattributes"), "gen-fixtures.txt merge=atelier-generated\n");
+  writeFileSync(join(dir, "in", `${side}.txt`), `${side}\n`);
+  writeFileSync(join(dir, "gen-fixtures.txt"), `${side}\n`);
+  for (const [file, text] of Object.entries(also)) writeFileSync(join(dir, file), text);
+  git(dir, "add", "."); git(dir, "commit", "-m", `${side} adds an input and regenerates`); git(dir, "push", "-q", "origin", "main");
+}
+
+// t463: the merge steps the CLI posts are kept, with what varies from run to
+// run put in place, in test/fixtures/land/merge-steps.json; the route spec
+// (test/land-routes.spec.ts) sends those bodies to the ledger through the
+// route, so a field the CLI starts sending that the ledger refuses fails
+// there. ATELIER_WRITE_FIXTURES=1 rewrites the entry.
+const MERGE_STEPS = join(dirname(new URL(import.meta.url).pathname), "fixtures", "land", "merge-steps.json");
+export function sameMergeStep(name, body) {
+  const steady = JSON.parse(JSON.stringify(body, (key, value) => key === "ms" ? 0
+    : key === "log" ? `/tmp/merge-logs/${value.split("/").pop().replace(/^[0-9TZ-]+-/, "")}`
+      : typeof value === "string" && /^[0-9a-f]{40}$/.test(value) ? "0".repeat(40)
+        : typeof value === "string" && /^[0-9a-f]{64}$/.test(value) ? "f".repeat(64)
+          : typeof value === "string" ? value.replace(/\b[0-9a-f]{7,40}\b/g, "0000000").replace(/"[^"]*\/t1"/g, '"/workspace/t1"') : value));
+  const kept = existsSync(MERGE_STEPS) ? JSON.parse(readFileSync(MERGE_STEPS, "utf8")) : {};
+  if (process.env.ATELIER_WRITE_FIXTURES === "1") {
+    mkdirSync(dirname(MERGE_STEPS), { recursive: true });
+    writeFileSync(MERGE_STEPS, `${JSON.stringify({ ...kept, [name]: steady }, null, 2)}\n`);
+  } else assert.deepEqual(steady, kept[name], `the ${name} merge step the CLI posts is not the one test/fixtures/land/merge-steps.json keeps for the route spec; rerun with ATELIER_WRITE_FIXTURES=1 and check the spec still passes`);
+}
 
 // Raises the route level in one of the fixture's checkouts — the task's
 // workspace or main's — and pushes it, so a test can raise it on either
