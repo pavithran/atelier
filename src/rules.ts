@@ -2096,6 +2096,31 @@ export function assertFastMode(mode: ProjectMode): asserts mode is Extract<Proje
   if (mode.mode !== "fast") throw new RuleError("not_fast_mode", "the project is in full mode; the developer switches with atelier mode fast --reason TEXT before landing fast", 409);
 }
 
+// Fast mode lands without the gate, so it is held to what an override of the
+// independent review is (Astra's audit of 2026-10-13, finding 3): a project
+// that forbids overrides (`atelier init --no-override`) refuses the switch
+// to fast mode and every fast landing, and the switch to fast mode needs the
+// developer's confirmation with the factor no agent holds, never the
+// developer token alone. The developer gives it as a permission on the
+// project's Settings page, good for OVERRIDE_CONFIRMATION_MS and one switch,
+// as `atelier accept --override-review` takes the task page's. Switching
+// back to full needs none.
+export interface FastModeConfirmation { by: string; at: string; until: string; factor: OwnerFactor }
+
+export function assertFastModeAllowed(policy: Pick<ProjectPolicy, "noOverride">): void {
+  if (policy.noOverride) throw new RuleError("fast_mode_forbidden", "this project forbids overrides of the independent review (atelier init --no-override), and fast mode lands without that review, so fast mode is refused", 403);
+}
+
+export function fastModeConfirmationHint(project: string, origin = "", factor?: OwnerFactor | null): string {
+  const page = `open ${origin}/p/${encodeURIComponent(project)}/settings as the developer, press "Allow fast mode from the command line" ${ownerFactorText(factor)}, then run atelier mode fast again within ${OVERRIDE_CONFIRMATION_MS / 60000} minutes`;
+  return `${page}; ${factor === null ? `${NO_OWNER_FACTOR}; ` : ""}the developer token alone does not confirm it`;
+}
+
+export function assertFastModeConfirmed(c: FastModeConfirmation | null | undefined, now: number, owner: string, project: string): void {
+  if (c && c.by === owner && Date.parse(c.until) > now && (c.factor === "access" || c.factor === "secret")) return;
+  throw new RuleError("fast_mode_unconfirmed", `fast mode needs the developer's confirmation, as an override of the independent review does: ${fastModeConfirmationHint(project)}`, 403);
+}
+
 // What a landing in fast mode records: the commit merged, the merge commit,
 // the builder its Agent line names, the test command and the sha256 of its
 // output, and the mode's reason. Since t588 the tests also say where they
