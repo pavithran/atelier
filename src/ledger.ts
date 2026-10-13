@@ -65,7 +65,7 @@ import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type Review
 import type { SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
 import { suggestReviewer } from "./review/suggest.ts";
-import { applicableAssignments, assignmentHistory, currentAssignments, docsOnly, recordAssignment, reviewRoles, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentStore, type AssignmentView, type ResolvedAssignment } from "./models/assignments.ts";
+import { ALL_PROJECTS, applicableAssignments, assignmentHistory, assignmentSnapshot, currentAssignments, docsOnly, recordAssignment, reviewRoles, snapshotApplies, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentSnapshot, type AssignmentStore, type AssignmentView, type ResolvedAssignment } from "./models/assignments.ts";
 import { sensitive } from "./models/suggest.ts";
 import { buildPrecision, precisionWindow, type PrecisionRecord } from "./models/precision.ts";
 import { independenceRefusal } from "./review/independence.ts";
@@ -1228,6 +1228,12 @@ export class Ledger extends DurableObject<Env> {
     return currentAssignments(this.assignmentStore.records());
   }
 
+  // What a project's ledger is sent: the assignments bearing on the project
+  // (its own, by its key, and every project's) at the record's version now.
+  assignmentSnapshotFor(key: string): AssignmentSnapshot {
+    return assignmentSnapshot(this.assignmentStore.records(), (a) => a.scope === ALL_PROJECTS || a.scope === key);
+  }
+
   // The events recording and withdrawing assignments, for the acting
   // models' judgement record (src/models/judgement.ts).
   assignmentEvents(): LedgerEvent[] {
@@ -1326,15 +1332,25 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // The index sends the role assignments bearing on this project (its own
-  // and every project's) whenever one is recorded or withdrawn, and with the
-  // pool (src/models/assignments.ts). The selectors here read this copy.
-  assignmentsChanged(assignments: Assignment[]): void {
-    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('assignments', ?)`, JSON.stringify(assignments));
+  // and every project's) whenever one is recorded or withdrawn, with the
+  // pool, and when the project is initialised (src/models/assignments.ts).
+  // The selectors here read this copy. A snapshot older than the one held
+  // is refused (gpt-6-astra's review of t622, finding 1): two broadcasts may
+  // land in either order, and the older would bring back what was withdrawn.
+  // Returns whether the snapshot was taken.
+  assignmentsChanged(snapshot: AssignmentSnapshot): boolean {
+    if (!snapshotApplies(this.heldSnapshot(), snapshot)) return false;
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('assignments', ?)`, JSON.stringify({ version: snapshot.version, assignments: snapshot.assignments }));
+    return true;
+  }
+
+  private heldSnapshot(): AssignmentSnapshot | null {
+    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'assignments'`).toArray()[0];
+    return row ? JSON.parse(row.value as string) as AssignmentSnapshot : null;
   }
 
   private heldAssignments(): Assignment[] {
-    const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'assignments'`).toArray()[0];
-    return row ? JSON.parse(row.value as string) as Assignment[] : [];
+    return this.heldSnapshot()?.assignments ?? [];
   }
 
   // The assignments bearing on a review of the item, most specific first:
@@ -1360,7 +1376,7 @@ export class Ledger extends DurableObject<Env> {
   // or kept from reviewing is withdrawn and asked of another. A standalone
   // item's unclaimed request to such a model is withdrawn too, so the next
   // landing's gate asks again rather than waiting on it.
-  poolChanged(pool: ModelEntry[], assignments?: Assignment[]): void {
+  poolChanged(pool: ModelEntry[], assignments?: AssignmentSnapshot): void {
     this.keepPool(pool);
     if (assignments) this.assignmentsChanged(assignments);
     const at = new Date().toISOString();

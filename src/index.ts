@@ -27,7 +27,7 @@ import { buildRecord, type ActorRecord } from "./models/record";
 import { buildSpeed, type SpeedRecord } from "./models/speed.ts";
 import { buildPrecision, precisionWindow } from "./models/precision.ts";
 import { ACTING_HEADER, buildJudgement, cleanActing, cleanContradicts, judgementTotals, judgementWindow, registeredActing } from "./models/judgement.ts";
-import { ALL_PROJECTS, checkEvidence, cleanAssignmentInput, FALLBACK, resolveChoices, type Assignment } from "./models/assignments.ts";
+import { ALL_PROJECTS, checkEvidence, cleanAssignmentInput, FALLBACK, resolveChoices } from "./models/assignments.ts";
 import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson, type ProjectEvents, type Reliability } from "./models/reliability.ts";
 import { cleanServed } from "./models/served.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
@@ -517,22 +517,22 @@ function index(env: Env) {
 // cannot be reached keeps its last copy; the change itself stands.
 async function sendPool(env: Env): Promise<string[]> {
   const I = index(env);
-  const [pool, projects, assignments] = await Promise.all([I.models(), I.projects(), I.currentRoleAssignments()]);
-  const results = await Promise.allSettled(projects.map((p) => ledgerOf(env, p).poolChanged(pool, bearingOn(assignments, p)).then(() => null).catch(() => p.name)));
+  const [pool, projects] = await Promise.all([I.models(), I.projects()]);
+  // Each project gets the role assignments bearing on it with the pool, as a
+  // versioned snapshot its ledger refuses when older than its copy.
+  const results = await Promise.allSettled(projects.map(async (p) => ledgerOf(env, p).poolChanged(pool, await I.assignmentSnapshotFor(p.key ?? p.name)).then(() => null).catch(() => p.name)));
   return results.filter((r) => r.status === "fulfilled" && r.value !== null).map((r) => (r as any).value as string);
 }
-// The role assignments that bear on a project: its own, by its key, and
-// every project's (src/models/assignments.ts).
-function bearingOn(assignments: readonly Assignment[], p: ProjectRecord): Assignment[] {
-  return assignments.filter((a) => a.scope === ALL_PROJECTS || a.scope === (p.key ?? p.name));
-}
-// Sends each project's ledger the role assignments bearing on it, after one
-// is recorded or withdrawn, so its selectors read them without the index.
-// Returns the projects it could not reach.
+// Sends each project's ledger the role assignments bearing on it (its own,
+// by its key, and every project's; src/models/assignments.ts), after one is
+// recorded or withdrawn, so its selectors read them without the index. Each
+// is a snapshot with the record's version, and a ledger keeps the newest it
+// has seen, whatever order the broadcasts land in. Returns the projects it
+// could not reach.
 async function sendAssignments(env: Env): Promise<string[]> {
   const I = index(env);
-  const [projects, assignments] = await Promise.all([I.projects(), I.currentRoleAssignments()]);
-  const results = await Promise.allSettled(projects.map((p) => ledgerOf(env, p).assignmentsChanged(bearingOn(assignments, p)).then(() => null).catch(() => p.name)));
+  const projects = await I.projects();
+  const results = await Promise.allSettled(projects.map(async (p) => ledgerOf(env, p).assignmentsChanged(await I.assignmentSnapshotFor(p.key ?? p.name)).then(() => null).catch(() => p.name)));
   return results.filter((r) => r.status === "fulfilled" && r.value !== null).map((r) => (r as any).value as string);
 }
 function resolveProject(env: Env, name: string): Promise<ProjectRef> {
@@ -1472,7 +1472,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (!ALREADY_EXISTS.test(codeOf(err))) throw err;
     }
     const record = await L.initProject(init, actor);
-    await L.poolChanged(await index(env).models());
+    // The pool and the role assignments standing now, so a project made
+    // after an assignment for every project reads it from the start
+    // (gpt-6-astra's review of t622, finding 3).
+    await L.poolChanged(await index(env).models(), await index(env).assignmentSnapshotFor(ref?.key ?? project));
     await index(env).registerProject(record);
     return json({ project: record, baseline: await mint(env, repo, "write", await projectBranch(env, record)) });
   }
@@ -3681,7 +3684,7 @@ async function reviewerAvailability(env: Env, L: ReturnType<typeof ledger>, id: 
 // The API's own top-level paths, as api() and the routes before it read them.
 // A caller without a token is refused on them (401); anything else under /api
 // answers 404 before auth is asked, as it does after it.
-const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "usage", "runs", "reliability", "queue", "runners", "projects"]);
+const API_PATHS = new Set(["config", "tokens", "showcase", "inbox", "models", "model-roles", "usage", "runs", "reliability", "queue", "runners", "projects"]);
 
 export default {
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {

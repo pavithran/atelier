@@ -19,6 +19,17 @@ const entry = (harness: ModelEntry["harness"], id: string): ModelEntry => ({
 });
 const POOL = [entry("codex", "gpt-6-astra"), entry("antigravity", "gemini-4-argon"), entry("zcode", "glm-5.3"), entry("claude-code", "opus-5.5")];
 
+// PUT /projects/NAME creates the baseline in Artifacts first; a stand-in
+// answers, as test/model-set.spec.ts does.
+const artifacts = {
+  create: async () => ({}),
+  get: async () => ({
+    info: async () => ({ remote: "https://git.test/repo", defaultBranch: "main" }),
+    createToken: async () => ({ plaintext: "token", id: "id", expiresAt: "soon" }),
+    [Symbol.dispose]() {},
+  }),
+} as unknown as typeof env.ARTIFACTS;
+
 const index = () => env.LEDGER.get(env.LEDGER.idFromName("__index"));
 const ledger = (name: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
 
@@ -42,7 +53,7 @@ async function project(name: string) {
 }
 
 const body = (change: Record<string, unknown> = {}) => ({
-  role: "review", choices: ["codex/gpt-6-astra"], reason: "Every blocking finding judged was real.", quote: "astra reviews", evidence: [], ...change,
+  request: crypto.randomUUID(), role: "review", choices: ["codex/gpt-6-astra"], reason: "Every blocking finding judged was real.", quote: "astra reviews", evidence: [], ...change,
 });
 
 it("the developer records an assignment with checked evidence; the project's selector reads it, and withdrawal restores the fallback", async () => {
@@ -77,8 +88,8 @@ it("the developer records an assignment with checked evidence; the project's sel
 it("a second assignment supersedes only by naming the standing one; a retry is answered once; another project's is not sent here", async () => {
   const L = await project("roles-beta");
   await project("roles-gamma");
-  const first = await (await call("POST", "/model-roles", body({ evidence: ["roles-beta/t1"], scope: "roles-beta" }))).json() as Assignment;
-  const again = await call("POST", "/model-roles", body({ evidence: ["roles-beta/t1"], scope: "roles-beta" }));
+  const first = await (await call("POST", "/model-roles", body({ evidence: ["roles-beta/t1"], scope: "roles-beta", request: "roles-beta-first" }))).json() as Assignment;
+  const again = await call("POST", "/model-roles", body({ evidence: ["roles-beta/t1"], scope: "roles-beta", request: "roles-beta-first" }));
   expect(again.status).toBe(200);
   expect(await again.json()).toMatchObject({ id: first.id, retried: true });
   const stale = await call("POST", "/model-roles", body({ evidence: ["roles-beta/t1"], scope: "roles-beta", choices: ["zcode/glm-5.3"] }));
@@ -108,4 +119,46 @@ it("a renamed project keeps its assignments and evidence under its key and lists
   // Argon gone from the pool: the assignment's next choice reviews.
   const without = POOL.filter((m) => m.id !== "gemini-4-argon");
   expect(await ledger("roles-old").availableReviewer("t1", without)).toBe("zcode/glm-5.3");
+});
+
+// gpt-6-astra's review of t622 at 53bf739d, finding 1: broadcasts read at
+// different times can arrive out of order; an older one must not bring back
+// what a newer one withdrew.
+it("a project's copy refuses a snapshot older than the one it holds", async () => {
+  const L = await project("roles-stale");
+  const a = await (await call("POST", "/model-roles", body({ evidence: ["roles-stale/t1"], scope: "roles-stale" }))).json() as Assignment;
+  const stale = await index().assignmentSnapshotFor("roles-stale");
+  expect(stale.assignments.map((x: Assignment) => x.id)).toEqual([a.id]);
+  await call("POST", `/model-roles/${a.id}/withdraw`, { note: "withdrawn" });
+  expect(await L.availableReviewer("t1", POOL)).toBe("antigravity/gemini-4-argon");
+  // The older broadcast lands late.
+  expect(await L.assignmentsChanged(stale)).toBe(false);
+  expect(await L.availableReviewer("t1", POOL)).toBe("antigravity/gemini-4-argon");
+});
+
+// gpt-6-astra's review of t622 at 53bf739d, finding 3 (and Argon's finding 2):
+// a project initialised after an assignment for every project started with
+// none until the next broadcast.
+it("a project initialised after an assignment for every project reads it from the start", async () => {
+  for (const m of POOL) await index().putModel(m);
+  await project("roles-evidence");
+  const a = await (await call("POST", "/model-roles", body({ evidence: ["roles-evidence/t1"] }))).json() as Assignment;
+  try {
+    const name = "roles-late-init";
+    const made = await worker.fetch(new Request(`https://atelier.test/api/projects/${name}`, {
+      method: "PUT", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" }, body: JSON.stringify({ checks: ["npm test"] }),
+    }), { ...testEnv, ARTIFACTS: artifacts } as typeof env);
+    expect(made.status, await made.text().catch(() => "")).toBe(200);
+    const L = ledger(name);
+    await L.newItem("Fix the lease race", ["src/lease.ts"], "owner", { accept: ["Works"] });
+    await L.claim("t1", "claude-code/opus-5.5");
+    expect(await L.availableReviewer("t1", POOL)).toBe("codex/gpt-6-astra");
+  } finally {
+    await call("POST", `/model-roles/${a.id}/withdraw`, { note: "test over" });
+  }
+});
+
+it("the API answers an unauthenticated model-roles request with 401, as every API path does", async () => {
+  const r = await worker.fetch(new Request("https://atelier.test/api/model-roles"), testEnv);
+  expect(r.status).toBe(401);
 });

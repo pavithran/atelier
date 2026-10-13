@@ -3,6 +3,7 @@
 // model does what, with evidence, which routing reads
 // (src/models/assignments.ts). Their forms, flags and help are declared
 // in src/usage/commands/models.ts with the rest of `models`.
+import { randomUUID } from "node:crypto";
 import { OWNER, actingHeaders, args, call, die } from "./atelier.mjs";
 
 const scopeText = (scope, names) => (scope === "*" ? "every project" : names[scope] ?? scope);
@@ -53,7 +54,9 @@ export async function assignCommand() {
   for (const flag of ["reason", "quote"]) if (typeof args[flag] !== "string" || !args[flag].trim()) die(`an assignment needs --${flag}: ${usage}`);
   const evidence = args.multi.evidence ?? [];
   if (!evidence.length) die(`an assignment rests on evidence: --evidence PROJECT/tN, once per task or event (${usage})`);
-  const body = { role, choices: choices.flatMap((c) => c.split(",")).map((c) => c.trim()).filter(Boolean), reason: args.reason, quote: args.quote, evidence, scope: args.scope, replaces: args.replaces };
+  // One id for this command, the same on every retry of its request, so a
+  // late retry is answered with its record and never records it again.
+  const body = { request: randomUUID(), role, choices: choices.flatMap((c) => c.split(",")).map((c) => c.trim()).filter(Boolean), reason: args.reason, quote: args.quote, evidence, scope: args.scope, replaces: args.replaces };
   const a = await call("POST", "/model-roles", body, OWNER, actingHeaders());
   const where = a.scope === "*" ? "every project" : args.scope;
   if (a.retried) return console.log(`${a.id} already records that assignment (${a.at.slice(0, 10)}); nothing new was recorded.${unreachedLine(a.unreached)}`);
