@@ -157,6 +157,9 @@ export function cleanSource(v: unknown): string {
   if (!host.includes(".") || PRIVATE_HOST.test(host) || /^[\d.]+$/.test(host) || host.startsWith("[") || host.includes(":")) {
     throw bad("source must name a public host by its domain name");
   }
+  // The parser has already decoded the host; a key there is refused too
+  // (Astra's second review of t625, 2026-10-13, finding 2).
+  if (LOOKS_LIKE_KEY.test(host)) throw bad("source looks like it carries a key; a key belongs in the Keychain");
   url.hostname = host;
   let decoded: string;
   try {
@@ -229,7 +232,11 @@ export function cleanWithdrawal(body: Record<string, unknown>): WithdrawalInput 
 }
 
 // The name a card is filed under: a model's id or alias, or harness/model.
+// A key pasted as the name is refused with the pool's own check, since the
+// name is stored in every record (Astra's second review of t625, 2026-10-13,
+// finding 3). Every other text a card keeps passes the same check in text().
 export function cleanCardModel(named: string): string {
+  if (LOOKS_LIKE_KEY.test(named)) throw bad("the model's name looks like it carries a key; a key belongs in the Keychain");
   if (!MODEL_NAME.test(named)) throw bad(`${named} is not a model's name: give its id or an alias, such as opus-5.5, or harness/model`);
   return named;
 }

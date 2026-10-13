@@ -88,6 +88,20 @@ test("a withdrawal names a card and gives a reason; a card is filed under a mode
   for (const bad of ["", "nobody/opus-5.5", "../etc", "a b"]) assert.throws(() => cleanCardModel(bad), /not a model's name/);
 });
 
+test("a key pasted into the model's name or any text a card keeps is refused", () => {
+  // Astra's second review of t625, 2026-10-13, finding 3: sk-… was stored as a model's name.
+  const key = ["sk-", "AbC123xyzQrS456"].join("");
+  for (const name of [key, `codex/${key}`, "a1b2c3d4e5f6g7h8i9j0k1l2m3"]) assert.throws(() => cleanCardModel(name), /carries a key/, name);
+  const claim = CARD.claims[0];
+  for (const change of [
+    { vendor: key }, { title: `Card ${key}` }, { limitations: [`Leaks ${key}`] }, { reason: key, corrects: "c1" },
+    { claims: [{ ...claim, benchmark: key }] }, { claims: [{ ...claim, version: key }] }, { claims: [{ ...claim, unit: key }] },
+    { claims: [{ ...claim, conditions: { harness: key } }] }, { claims: [{ ...claim, conditions: { effort: key } }] },
+    { claims: [{ ...claim, conditions: { details: [key] } }] },
+  ]) assert.throws(() => cleanCard({ ...structuredClone(CARD), ...change }, TODAY), /carries a key/, JSON.stringify(change));
+  assert.throws(() => cleanWithdrawal({ withdraws: "c1", reason: key }), /carries a key/);
+});
+
 let next = 1;
 const stored = (input: CardInput | ReturnType<typeof cleanWithdrawal>): CardRecord =>
   ({ ...input, id: `c${next++}`, model: "example-5", named: "example-5", at: `2026-10-13T10:00:0${next % 10}.000Z`, by: "owner" }) as CardRecord;
@@ -128,6 +142,9 @@ test("a source hiding a key behind percent-encoding, or a local host behind a tr
     ["https://printer.local/card", /public host/],
     ["https://wiki.internal./card", /public host/],
     ["https://vendor.example/card?q=%E0%A4%A", /percent-encoding/],
+    // Astra's second review of t625, 2026-10-13, finding 2: an encoded key in the host passed.
+    ["https://%73%6b%2dAbC123xyzQrS456.example/card", /carries a key/],
+    [`https://${key.toLowerCase()}.example/card`, /carries a key/],
   ] as const) assert.throws(() => cleanCard({ ...structuredClone(CARD), source }, TODAY), why, source);
   // A public host with a trailing dot or capitals is kept in its plain form.
   assert.equal(cleanCard({ ...structuredClone(CARD), source: "https://Vendor.Example./card?x=1" }, TODAY).source, "https://vendor.example/card?x=1");
