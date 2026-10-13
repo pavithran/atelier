@@ -538,9 +538,16 @@ export async function runLand(io) {
   // releases no lease, but it leaves the queue the landing holds a place in
   // (t249). A terminal hang-up is taken the same way, so the regenerate
   // command's group (runRegenerateIn) ends with the landing.
+  //
+  // The signal also SIGKILLs the process group of the step under way
+  // (cli/group.mjs), so that step fails while the release is still asked,
+  // and the landing's failure path below runs beside it. That path waits
+  // for the signal's ending (`stopping`) rather than end the landing itself
+  // with exit 1, the lease still held (t590).
+  let stopping = null;
   const onSignal = (signal) => {
     print(`${signal} received; releasing the landing lease of ${name}…`);
-    release(`${signal} ended the landing`).finally(() => process.exit(signal === "SIGINT" ? 130 : signal === "SIGHUP" ? 129 : 143));
+    stopping = release(`${signal} ended the landing`).finally(() => process.exit(signal === "SIGINT" ? 130 : signal === "SIGHUP" ? 129 : 143));
   };
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, onSignal);
 
@@ -836,9 +843,13 @@ export async function runLand(io) {
       break;
     }
   } catch (error) {
+    // A step the signal ended fails here before its release is answered;
+    // the signal's handler ends the landing, with the signal's status.
+    if (stopping) await stopping;
     await release(`stopped: ${String(error.message).split("\n")[0]}`);
     die(error.message);
   }
+  if (stopping) await stopping;
   await release("merged");
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.off(signal, onSignal);
   print(`${id} spent ${span(Date.now() - began - heldMs)} landing without the lease and held it ${span(heldMs)}.`);
