@@ -122,7 +122,7 @@ const CLAUDE_DENIED = ["Bash(git push:*)", "Bash(atelier:*)", "WebFetch", "WebSe
 
 // Antigravity's model ids for Atelier's; any other id passes through.
 // The review adapter (cli/agy-review.mjs) reads this table too (t573).
-export const AGY_MODELS = { "gemini-3.1-pro": "gemini-3.1-pro-high", "gemini-3.8-flash": "gemini-3.8-flash-high", "gpt-oss-120b": "gpt-oss-120b-medium" };
+export const AGY_MODELS = { "gemini-3.1-pro": "gemini-3.1-pro-high", "gemini-3.8-flash": "gemini-3.8-flash-high", "claude-opus-5.5": "claude-opus-5-5-high", "claude-sonnet-5.5": "claude-sonnet-5-5-high", "gpt-oss-120b": "gpt-oss-120b-medium" };
 
 // For each harness, the command for a job: { argv, verdictFrom } where
 // verdictFrom says how the review's answer is read: "stdout", "file" (the
