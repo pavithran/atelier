@@ -4,6 +4,8 @@ import worker from "../src/index.ts";
 import type { LedgerEvent, ReviewClaim } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { parseRuleError, type ProjectPolicy } from "../src/rules.ts";
+import { renderItem } from "../src/ui.ts";
+import type { ShowcaseCounts } from "../src/graph.ts";
 
 // Fast mode (t585). On 2026-10-13 Artifacts failed every new fork, so no
 // task could be claimed, and four finished tasks were merged by hand,
@@ -85,6 +87,13 @@ it("a landing is refused in full mode, records its receipt in fast mode, and que
   await L.addReview({ itemId: item.id, by: SONNET, head: M1, criteria: claim.criteria, request: claim.request, approve: true, note: "Fine", at: AT }, undefined, true);
   expect((await L.reviewsFor(item.id))[0]).toMatchObject({ postMerge: true, independence: "same-family (fast mode)" });
   expect((await L.fastLandings())[0]).toMatchObject({ item: item.id, review: { state: "approved", by: SONNET } });
+  // The task page names the mode it landed under, and the showcase counts it apart from gated merges.
+  const html = renderItem(await L.project(), await L.detail(item.id));
+  expect(html).toContain("Landed in fast mode");
+  expect(html).toContain("same-family (fast mode)");
+  const counts = await L.showcaseCounts("2000-01-01T00:00:00.000Z") as unknown as ShowcaseCounts;
+  expect(counts).toMatchObject({ landedFast: 1, merges: 0 });
+  expect(counts.kinds.some((k) => k.kind === "item.merged")).toBe(false);
 });
 
 it("a same-family post-merge review is refused for a merge that did not land fast", async () => {

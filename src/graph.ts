@@ -123,6 +123,7 @@ export interface ShowcaseCounts {
   recent: { actor: string; kind: string; at: string; n: number }[];
   merges: number;              // merges of tasks claimed before them
   taken: number;               // tasks ever claimed
+  landedFast?: number;         // tasks landed in fast mode (t585), counted apart from merges
   served: LedgerEvent[];       // the annotations, oldest first
   annotated: { seq: number; at: string; actor: string; kind: string; cloud: boolean }[];
   first: string | null;        // the oldest and newest event of the record

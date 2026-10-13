@@ -874,6 +874,7 @@ export interface ShownProject {
   story: Story;
   pulse?: Pulse;
   allTimeMerged?: number;
+  landedFast?: number;         // tasks landed in fast mode, all time, apart from allTimeMerged (t585)
   inProgress?: number;         // tasks claimed, submitted or accepted now, from the items
   featured?: Story;            // one merged task, told from its own events
 }
@@ -1021,7 +1022,7 @@ export function renderShowcase(stories: Story[], _total: Tally, owner: string, o
     return `<li class="show-card" id="card-${i + 1}">
     <h3>${e(shownLabel(c))}</h3>
     ${c.pulse ? pulseGraph(c.pulse, false) : ""}
-    <dl class="card-figures">${figure(c.pulse?.merges ?? t.merges, "merged, last two weeks")}${c.allTimeMerged === undefined ? "" : figure(c.allTimeMerged, "merged, all time")}${figure(c.pulse?.sentBack ?? t.sentBack, "sent back, last two weeks")}${figure(inProgress, "in progress, last two weeks")}</dl>
+    <dl class="card-figures">${figure(c.pulse?.merges ?? t.merges, "merged, last two weeks")}${c.allTimeMerged === undefined ? "" : figure(c.allTimeMerged, "merged, all time")}${c.landedFast ? figure(c.landedFast, "landed in fast mode, all time") : ""}${figure(c.pulse?.sentBack ?? t.sentBack, "sent back, last two weeks")}${figure(inProgress, "in progress, last two weeks")}</dl>
     <ul class="legend-line" aria-label="Who worked on it">${families}${t.decisions ? `<li><i style="--c:var(--m-owner)"></i>${e(cap(who))}</li>` : ""}</ul>
   </li>`;
   }).join("");
@@ -2273,6 +2274,21 @@ function progressBlock(item: Item, checks: { grade: string; passed: boolean | nu
 // A task's page sits inside its project's area: the project's tab bar above
 // the review sheet, the area reached from Home. The five steps sit above
 // the sheet, the task's current one marked.
+// A task landed in fast mode (t585): the receipt the owner's batch
+// recorded, the same-family reviews it allowed, and the fix task a rejected
+// post-merge review filed.
+function fastLandingBlock(p: ProjectRecord, d: Detail): string {
+  const ev = d.events.find((x) => x.kind === "item.landed_fast");
+  if (!ev) return "";
+  const r = ev.data as Record<string, unknown>;
+  const tests = (r.tests ?? {}) as { command?: string; sha256?: string };
+  const short = (v: unknown) => e(String(v ?? "").slice(0, 12));
+  const sameFamily = d.reviews.filter((x) => x.independence).map((x) => `<li>${e(x.by)}: ${e(x.independence!)}</li>`).join("");
+  const fixes = d.events.filter((x) => x.kind === "item.fix_filed" && typeof x.data.foundIn === "string").map((x) => `<p>Fix after fast landing: <a href="${href("p", p.name, String(x.data.foundIn))}">${e(String(x.data.foundIn))}</a></p>`).join("");
+  return `<div class="fast-landing"><p><strong>Landed in fast mode</strong> on ${e(ev.at.slice(0, 16).replace("T", " "))} UTC: ${short(r.commit)} merged as ${short(r.mergeCommit)}, built by ${e(String(r.builder ?? ""))}. Reason: ${e(String(r.reason ?? ""))}.</p>
+  <p class="meta">Tests: <code>${e(tests.command ?? "")}</code>, output sha256 <code>${short(tests.sha256)}</code>. It skipped the gate; its post-merge review audits it.</p>${sameFamily ? `<ul>${sameFamily}</ul>` : ""}${fixes}</div>`;
+}
+
 export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null = null, diff: ItemDiff | "unavailable" | null = null, live?: Live): string {
   return page(d.item.title, `<div class="page-width">
   ${projectTabs(p, "Tasks", d.item.id)}
@@ -2849,6 +2865,7 @@ ${defectOrigin}${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
   ${notices}
   ${checkRows}${notApplicableRows}${reports}${reviews}${prereview}${overrideNote}${blockers}
   ${item.state === "merged" ? d.events.filter((ev) => ev.kind === "item.defect" && ev.data.mergeCommit && typeof ev.data.foundIn === "string").map((ev) => `<p>Post-merge defect: <a href="${href("p", p.name, String(ev.data.foundIn))}">${e(String(ev.data.foundIn))}</a></p>`).join("") : ""}
+  ${fastLandingBlock(p, d)}
 </section>
 ${submissionRounds(d)}
 <details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>

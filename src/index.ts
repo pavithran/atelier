@@ -224,7 +224,9 @@ async function publicStories(env: Env, entries: { project: ProjectRecord; mode: 
         project: record, mode, story,
         ...(featured?.threads.length ? { featured: { ...featured, threads: featured.threads.filter((th) => th.id === counts.story) } } : {}),
         pulse: pulseFromCounts(counts, owner, now),
-        allTimeMerged: items.filter((i) => i.state === "merged").length,
+        // Gated merges and fast-mode landings (t585) are counted apart.
+        allTimeMerged: items.filter((i) => i.state === "merged").length - (counts.landedFast ?? 0),
+        landedFast: counts.landedFast ?? 0,
         inProgress: items.filter((i) => ["claimed", "submitted", "accepted"].includes(i.state)).length,
       };
     } catch { return null; /* left out; the page says a project could not be read */ }
