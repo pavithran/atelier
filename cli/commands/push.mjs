@@ -2,6 +2,10 @@
 import { I, OWNER, actor, args, call, count, die, forkBranch, git, hasCommit, holds, itemArg, project, requireWorkspace, short, serverVersion, wsConfig } from "../atelier.mjs";
 
 import { checkCapabilities, COMMAND_CAPABILITIES } from "../../src/route-level.ts";
+import { pushCommitsInTurn, refused413 } from "../push-steps.mjs";
+
+// A workspace a runner claimed pushes through the runner route (t488).
+const RUNNER_ROUTE = /\/git\/runner\/[^/?#]+\/[^/?#]+$/i;
 
 export default async function pushCommand() {
   const name = project(), id = itemArg(), as = await actor();
@@ -79,7 +83,27 @@ export default async function pushCommand() {
       [`GIT_CONFIG_KEY_${n + 1}`]: `http.${credential.remote}.extraHeader`, [`GIT_CONFIG_VALUE_${n + 1}`]: `Authorization: Bearer ${credential.token}` };
   }
   const pushArgs = ["push", "--quiet", "--recurse-submodules=no", ...lease, credential?.remote ?? "origin", `HEAD:${branch}`];
-  const r = git(pushArgs, { allowFail: true, token: credential?.token, env: credentialEnv });
+  let r = git(pushArgs, { allowFail: true, token: credential?.token, env: credentialEnv });
+  // A pack too large for one request answers 413 (t577: t544's ~96
+  // regenerated PNGs through the runner route stranded its build for seven
+  // hours). The unpushed first-parent commits then go one at a time, oldest
+  // first, and a commit too large on its own goes once to the fork's own
+  // URL where the workspace is on the runner route and records it
+  // (atelier.fork-remote); otherwise the push stops naming the commit, its
+  // size and how the owner can push it. A forced or rolled-back push is not
+  // a fast-forward and is not stepped.
+  if ((r.status !== 0 || r.error) && !lease.length && refused413(r.stderr || r.stdout)) {
+    const remote = credential?.remote ?? "origin";
+    const url = git(["config", "--get", "remote.origin.url"], { allowFail: true }).stdout?.trim() ?? "";
+    const onRoute = !credential && RUNNER_ROUTE.test(url.replace(/\/+$/, ""));
+    const fork = onRoute ? git(["config", "--get", "atelier.fork-remote"], { allowFail: true }).stdout?.trim() || null : null;
+    const { item } = await call("GET", I(name, id), undefined, as);
+    const ownerHint = `The owner can push it from a workspace on the fork itself: atelier claim ${id} --as ${item.owner ?? "HOLDER"} --runner ${item.runner ?? "home:NAME"}, then atelier push.`;
+    try {
+      pushCommitsInTurn(git, undefined, { remote, branch, opts: { token: credential?.token, env: credentialEnv }, say: (line) => console.log(line), fallback: fork, ownerHint, refusal: (r.stderr || r.stdout || "").trim() });
+      r = { status: 0 };
+    } catch (error) { die(`${id}: ${error.message}`); }
+  }
   if (r.status !== 0 || r.error) {
     // Git's refusal says nothing about why the fork refused. A runner's
     // workspace pushes through the Worker, which refuses the push once the
