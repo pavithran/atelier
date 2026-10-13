@@ -432,29 +432,38 @@ once and exits.
 
 ### Reload on deploy
 
-Runners no longer need restarting after a deploy (t265). Between jobs, after
+Runners no longer need restarting after a deploy (t265), nor after a merge
+that changes only `cli/**` (t556), which deploys nothing. Between jobs, after
 a poll that claimed nothing, a runner (build, review or the integrator) reads
-the deployed commit from `GET /api/version`. When the commit it started from
-does not contain the deployed one, and the checkout it runs from (the folder
-holding `cli/atelier.mjs`) now does, it logs `runner: reloading: started from
-OLD, the server runs NEW; starting replacement runner …` and spawns the
-same command line with the same environment. The replacement initializes,
+`GET /api/version`. Beside the deployed commit (`commit`) it names `main`:
+main's head of the project the Worker is built from (the Worker var
+`SOURCE_PROJECT`, `atelier` when unset), as that project's ledger last
+observed it, which moves with every merge; `null` when that project is not
+registered or its ledger has seen no main. The runner's target is `main`,
+or the deployed commit from a server that names no main. When the commit it
+started from does not contain the target, and the checkout it runs from (the
+folder holding `cli/atelier.mjs`) now does, it logs `runner: reloading:
+started from OLD, main is at NEW; starting replacement runner …` (`the server
+runs NEW` when the target is the deployed commit) and spawns the same command
+line with the same environment. A checkout that holds the deployed commit but
+not yet main's head reloads to the deployed one, and again once it holds
+main's. The replacement initializes,
 signals ready over IPC, and waits for the old process to release it before
 polling for work. The old process waits for the attached replacement to exit
 and forwards every SIGINT, SIGTERM and SIGHUP, including during startup.
 The replacement has its own process group so terminal signals reach it once.
 It has a new pid; Ctrl-C and session end still stop it.
 The new process logs `runner: reloaded: was OLD, now NEW`. Until the checkout
-holds the deployed commit it logs once `runner: behind: …`, with the `git -C
+holds the target it logs once per target `runner: behind: …`, with the `git -C
 CHECKOUT pull --ff-only` that updates it, and reloads at its first idle poll
 after the pull. It never reloads mid-job (while it holds a claim, a review, a
 merge, a refresh or a check), nor while a skip report waits to be sent, nor
-under `--once`. A process started from a commit that contains the deployed
-one never reloads, so a reloaded runner, or one whose checkout is ahead of
-the deploy, does not reload again. A version endpoint that does not answer
-or names no commit means no reload. A re-exec that fails logs `runner: reload
-failed: …` and the old process runs on; it is tried again only after the
-next deploy, or restart it by hand.
+under `--once`. A process started from a commit that contains the target
+never reloads, so a reloaded runner, or one whose checkout is ahead of main,
+does not reload again. A version endpoint that does not answer or names no
+commit means no reload. A re-exec that fails logs `runner: reload failed: …`
+and the old process runs on; it is tried again only once main or the deploy
+moves, or restart it by hand.
 
 Reloading works on all supported Node versions (24 and later), without
 `process.execve`. If spawning fails, initialization exits, or readiness takes
