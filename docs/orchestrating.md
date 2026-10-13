@@ -893,8 +893,9 @@ recorded and prints the command that records the rest:
 
 `atelier fast record` (with no file, the only one waiting) posts only the
 receipts not yet recorded and never merges. It refuses, posting nothing,
-when main no longer holds a receipt's merge commit, or the merge is not of
-that task's commit. The server answers a receipt it already holds for the
+when main no longer holds a receipt's merge commit, the merge is not of
+that task's commit, or any object the batch's commits reference (their
+whole trees included) is missing or no longer hashes to its id. The server answers a receipt it already holds for the
 same merge commit with the one it recorded, so posting again is safe.
 
 The post-merge review of a fast landing may come from a model of the
