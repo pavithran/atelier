@@ -12,7 +12,7 @@ import { areaField } from "../src/area-commands.ts";
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { accessSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { constants as osConstants, homedir } from "node:os";
@@ -44,6 +44,7 @@ import { formatTokenExpiryWarnings, parseExpiryDay, readTokenExpiries, recordTok
 import { runnerCredential, readSecret } from "./credentials.mjs";
 import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
+import { describeConflicts, installMergeConfig, mergeThrough } from "./merge-pipeline.mjs";
 import { slotInvocation } from "./load.mjs";
 export { checkEnv } from "./check-env.mjs";
 import { COMMANDS, COMMAND_USAGE, commandFor, OWNER_LANDING } from "./help.mjs";
@@ -884,6 +885,10 @@ export async function claimWorkspace(name, id, as, runner) {
   // configured header, and a revoked one alongside the fresh one is refused.
   storeWorkspaceToken(dir, r.workspace.remote, r.workspace.token);
   recordTokenExpiry(dir, r.workspace.expiresAt);
+  // The merge drivers .gitattributes names (cli/merge-pipeline.mjs), so a
+  // merge or rebase the builder runs by hand here merges declared outputs
+  // and records as Atelier's own merges do, never as plain text.
+  installMergeConfig(dir, { git });
   if (!fresh) {
     git(["remote", "set-url", "origin", r.workspace.remote], { cwd: dir });
     git(["fetch", "--quiet", "origin"], { cwd: dir });
@@ -1023,6 +1028,7 @@ export function cleanClone(remote, token, head, baseline, name) {
   writeFileSync(markerPath(dir), JSON.stringify({ version: 1, project: name, pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
   git(["clone", "--quiet", remote, dir], { token });
   git(["checkout", "--quiet", "--detach", head], { cwd: dir });
+  installMergeConfig(dir, { git });
   let changed, againstMain;
   if (baseline) {
     git(["fetch", "--quiet", baseline.remote, baseline.defaultBranch], { cwd: dir, token: baseline.token });
@@ -1045,21 +1051,37 @@ export function cleanClone(remote, token, head, baseline, name) {
 // of its own, and goes away with the clone; nothing pushes it. Returns main's
 // head, which the evidence is bound to. A merge that stops on conflicts ends
 // the command: the preview on the item page lists the same paths, and the
-// workspace's owner resolves them with atelier update.
-export function mergeWithMain(dir, id) {
+// workspace's owner resolves them with atelier update. The merge goes
+// through the merge pipeline (cli/merge-pipeline.mjs), as a landing's
+// does, so the checks see the regenerated outputs the landing would push,
+// compared as they are with nothing exempted. Answers { main, provenance }:
+// the merge's provenance lines and where each generator's log is kept, since
+// the clone, its merge commit and the logs under its Git directory go when
+// the check ends. Each log is copied under CACHE/merge-logs first, and the
+// caller records the provenance with each check's evidence.
+export async function mergeWithMain(dir, id, name = "") {
   const main = git(["rev-parse", "FETCH_HEAD"], { cwd: dir });
   if (git(["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"], { cwd: dir, allowFail: true }).status === 0) {
     process.stderr.write(`atelier: main at ${short(main)} is already in this revision; the merge is the revision itself\n`);
-    return main;
+    return { main, provenance: "" };
   }
-  const r = git(["-c", "user.name=atelier", "-c", "user.email=atelier@localhost", "-c", "commit.gpgsign=false", "merge", "--no-ff", "--no-verify", "--no-edit", "-m", `atelier check --merged: main at ${main}`, "FETCH_HEAD"], { cwd: dir, allowFail: true });
-  if (r.status !== 0) {
-    const conflicts = git(["diff", "--name-only", "--diff-filter=U"], { cwd: dir, allowFail: true }).stdout.trim();
-    git(["merge", "--abort"], { cwd: dir, allowFail: true });
-    die(`the merge of ${id} with main at ${short(main)} stops${conflicts ? ` on conflicts in:\n${conflicts}` : `:\n${(r.stderr || r.stdout).trim()}`}\nIn the workspace, run atelier update, resolve them, commit, and atelier push --force; then check again.`, 2);
+  const config = [["user.name", "atelier"], ["user.email", "atelier@localhost"], ["commit.gpgsign", "false"]];
+  const r = await mergeThrough(dir, "FETCH_HEAD", { git, config, verify: false, message: `atelier check --merged: main at ${main}`, log: (line) => process.stderr.write(`atelier: ${line}\n`) });
+  if (r.state === "conflicts") die(`the merge of ${id} with main at ${short(main)} stops on conflicts; nothing was regenerated.\n${describeConflicts(r, r.manifest)}\nIn the workspace, run atelier update, resolve them, commit, and atelier push --force; then check again.`, 2);
+
+  const kept = join(CACHE, "merge-logs", ...[name, id].filter(Boolean));
+  const logs = [];
+  for (const g of r.regenerated ?? []) {
+    mkdirSync(kept, { recursive: true });
+    const log = join(kept, `${short(main)}-${basename(g.log)}`);
+    copyFileSync(g.log, log);
+    logs.push(`Atelier-Generator-Log: ${g.name}: ${log}`);
+    process.stderr.write(`atelier: ${g.stop ? "failed generator " + g.name : "regenerated"} ${g.outputs.map((o) => `${o.path} (matches ${o.matches})`).join(", ")} with ${g.command.join(" ")}; log ${log}\n`);
   }
+  if (r.state === "stopped" || r.state === "failed") die(`the merge of ${id} with main at ${short(main)} stops:\n${r.reason}\n${logs.join("\n")}\nIn the workspace, run atelier update, resolve it, commit, and atelier push --force; then check again.`, 2);
   process.stderr.write(`atelier: merged with main at ${short(main)} in the clean clone\n`);
-  return main;
+  const lines = [...(r.provenance ?? []), ...logs];
+  return { main, provenance: lines.length ? `Merged with main at ${main} through the merge pipeline:\n${lines.join("\n")}` : "" };
 }
 
 // Runs one check with checkEnv's variables and returns its output with every
