@@ -31,8 +31,8 @@ import { buildReliability, cleanDefect, cleanFinding, cleanRun, reliabilityJson,
 import { cleanServed } from "./models/served.ts";
 import { FILE_LIMIT, cleanPath, commitChanges, lastChanges, logPage, pathHistory, repoSource, resolve, viewFile, walk } from "./browse/repo";
 import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderBrowseHistory, renderLog, renderTree, type Where } from "./browse/view";
-import { addTally, buildStory, emptyTally, tallyFromCounts, VENDOR_NAMES, type ShowcaseCounts, type Story } from "./graph";
-import { PULSE_DAYS, pulseFromCounts } from "./pulse";
+import { addTally, buildStory, emptyTally, VENDOR_NAMES, type Story } from "./graph";
+import { buildPulse } from "./pulse";
 import { projectKind } from "./kind";
 import { assign, parseRunner, unclaimed, type ClaimRefusal, type CoreHold, type OverlapRefusal, type RunnerOffer, type RunSkip, type SeenOffer, type UnclaimedReason } from "./dispatch/rules";
 import { parseResolvers } from "./refresh/resolver.ts";
@@ -203,29 +203,17 @@ async function publicStories(env: Env, entries: { project: ProjectRecord; mode: 
     try {
       const L = ledgerOf(env, p);
       // Durable Object RPC types the event data as never; it is the Ledger's own LedgerEvent.
-      // The threads are drawn from the most recent events; every figure the
-      // page prints is counted over the whole record by the Ledger (t578).
-      const now = new Date();
-      const since = new Date(now.getTime() - (PULSE_DAYS + 1) * 86400_000).toISOString();
-      const [record, items, events, counts] = await Promise.all([L.project(), L.items(), L.events(undefined, STORY_EVENTS) as unknown as Promise<LedgerEvent[]>, L.showcaseCounts(since) as unknown as Promise<ShowcaseCounts>]);
+      const [record, items, events] = await Promise.all([L.project(), L.items(), L.events(undefined, STORY_EVENTS) as unknown as Promise<LedgerEvent[]>]);
       cutoffs.set(p.name, firstTaskAt(items));
       const anon = mode === "anonymous";
       const title = anon
         ? projectKind(record.policy.checks, await rootFiles(env, record.repo))
         : titleOf(record);
-      const opts = { redact: true, ownerLabel: ownerName(env) || "The owner", anon };
-      const story = buildStory(p.name, items, events, owner, events.length >= STORY_EVENTS, title, opts);
-      story.tally = tallyFromCounts(counts, owner);
-      story.counted = { from: counts.first, to: counts.last, taken: counts.taken };
-      // The task told as it happened is a merged one, read from its own events.
-      const told = counts.story ? (await L.events(counts.story, FEATURED_EVENTS)) as unknown as LedgerEvent[] : [];
-      const featured = told.length ? buildStory(p.name, items, told, owner, false, title, opts) : null;
       return {
-        project: record, mode, story,
-        ...(featured?.threads.length ? { featured: { ...featured, threads: featured.threads.filter((th) => th.id === counts.story) } } : {}),
-        pulse: pulseFromCounts(counts, owner, now),
+        project: record, mode,
+        story: buildStory(p.name, items, events, owner, events.length >= STORY_EVENTS, title, { redact: true, ownerLabel: ownerName(env) || "The owner", anon }),
+        pulse: buildPulse(events, owner, new Date(), events.length >= STORY_EVENTS),
         allTimeMerged: items.filter((i) => i.state === "merged").length,
-        inProgress: items.filter((i) => ["claimed", "submitted", "accepted"].includes(i.state)).length,
       };
     } catch { return null; /* left out; the page says a project could not be read */ }
   }));
@@ -308,8 +296,6 @@ async function importedAll(env: Env, projects: ProjectRecord[], cutoffs: Map<str
 
 // How much of a project's record the graph reads; a longer record is drawn from its most recent part.
 const STORY_EVENTS = 3000;
-// How many of its own events the showcase's one task is told from.
-const FEATURED_EVENTS = 2000;
 // How many of each task's own events the "where it stands" view reads.
 const TASK_EVENTS = 300;
 
