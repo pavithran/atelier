@@ -77,11 +77,12 @@ made them and when. See [Single-family mode](docs/gate.md#single-family-mode).
 
 ### Land
 
-**One landing at a time, with a receipt.** The developer is the person
+**One merge at a time, with a receipt.** The developer is the person
 the project belongs to; in the API they act as a reserved actor, `owner`
 unless the deployment names another. Work reaches the project only when the
-developer accepts one exact head through the gate and it merges, one landing per
-project at a time (`atelier land` holds the project's landing lease), with
+developer accepts one exact head through the gate and it merges, one merge per
+project at a time (`atelier land` holds the project's landing lease for the
+merge), with
 the task's record attached to the merge as a git note: its receipt. A goal
 too large for one task is split by a planner model into parts; once the
 developer approves the split, each part is claimed, forked, proven and reviewed
@@ -107,7 +108,7 @@ the commit when multiple agents work at once, and that is what Atelier adds.
 | Who holds this work? | Commits record authors, not who holds the work; two agents can take the same task, and a crashed one leaves its branch half done. | One holder per task, holding the only write token for its workspace; a handoff is recorded and revokes the old token; a restarted runner takes back the jobs a dead run left. |
 | Did the checks really pass? | An agent reports that the tests passed, and the report is believed. | The required checks run in a clean clone of the exact head Atelier reads, and a merge is refused until every one is observed passing there; with `--sandbox-only`, only runs in a Cloudflare container count. |
 | Who checked it independently? | A model can review, and approve, its own work. | A change to a protected path needs approval from a model of another family than every contributor, and an agent's token speaks only for that agent. |
-| Is main still sound after the merge? | Branches drift from main, and what merges may not be what was reviewed. | One landing at a time under a lease: main is merged in, checks run again, and the exact head that was reviewed is the one merged. A plan's parts are integrated on the plan's own branch first. |
+| Is main still sound after the merge? | Branches drift from main, and what merges may not be what was reviewed. | One merge at a time under a lease: main is merged in, checks run again, and the exact head that was reviewed is the one merged. A plan's parts are integrated on the plan's own branch first. |
 | What needs the developer now? | A stream of pull requests and notifications. | A decision inbox, ranked, each entry with a recommendation; `atelier land` takes a task from review to merge in one command. |
 | Which model is worth it? | Nothing records it. | Each model's track record and reliability from the ledger, and its calls, cost and latency from AI Gateway. |
 | Who did what? | Commit metadata, which an agent writes itself. | Every claim, push, check, review, decision and merge is an event in the ledger, and each merge's builder, reviewer and head go into Git as provenance notes. |
@@ -117,11 +118,16 @@ ledger at 2026-10-12 23:03 UTC with `atelier ls --all --json` and then
 `atelier receipt ID --json` for each of the 568 items listed, counted the way
 `video/scripts/derive.mjs` counts them. Models recorded 681 reviews; 268 sent
 the work back, with 360 findings marked blocking, each found before the
-change merged. Of the 365 merged (364 tasks and one plan), 317 carry an
-approval from another model family at the revision that merged, and every
-task merged after 22:11 UTC on 2026-10-06 does (228 tasks), since the project
-developer extended the rule to every path in the project that day. The public
-showcase at [atelier.zone](https://atelier.zone) counts the same 365 merged.
+change merged. Of the 365 merged by then (364 tasks and one plan), 317 carry
+an approval from another model family at the revision that merged, and every
+task merged from 22:11 UTC on 2026-10-06 to that reading does (228 tasks),
+since the project developer extended the rule to every path in the project
+that day. The public showcase at [atelier.zone](https://atelier.zone) counts
+live, so its figures have moved on since: read on 2026-10-13 for Gemini 4
+Argon's claims audit, it showed 379 merged, all time, and, counted apart, 13
+landed in fast mode. Those 13 landed on 2026-10-13, when the developer had
+switched the project to fast mode while Artifacts failed to create forks; a
+task landed in fast mode has its review after the merge, not before it.
 
 ## Built on Cloudflare
 
@@ -136,10 +142,10 @@ showcase at [atelier.zone](https://atelier.zone) counts the same 365 merged.
 | GraphQL Analytics API | The Models page and `atelier runner --usage` read the gateway's calls from it (`src/usage/gateway.ts`): each model's calls, failures, tokens, cost, and median and p90 duration over the last 7 days. | Live: the Models page shows each model's calls, failures, cost and durations |
 | Workers Logs | `observability` is enabled in `wrangler.jsonc`, so the Worker's logs are kept. | Live |
 | Queues | A consumer for Artifacts push notices (`cf.artifacts.repo.pushed`) is written in `src/index.ts`, but `wrangler.jsonc` declares no consumer, so no notice is delivered; the CLI reports each push to the Worker instead. | Written, not configured |
-| Cloudflare Access | In front of the developer's pages: the Worker verifies the Access assertion and the developer's email on every signed-in route ([setup](docs/setup.md#cloudflare-access-in-front-of-the-developers-pages)). | Live: five Access applications on atelier.zone, with the Worker's own check on |
+| Cloudflare Access | In front of the developer's pages: the Worker verifies the Access assertion and the developer's email on every signed-in route ([setup](docs/setup.md#cloudflare-access-in-front-of-the-developers-pages)). | Live: Access applications on atelier.zone, with the Worker's own check on |
 | Browser Rendering | A render check (`src/render-check.ts`, `test/render-check.test.mjs`) builds `/how` and the showcase from the pushed tree, posts each page to the reserved host `render.atelier.test`, and the Worker's `BROWSER` binding renders it in Cloudflare's headless browser and reports the laid-out geometry; a label wider than its box, overlapping boxes or a figure that shrinks instead of scrolling fails the check. | Built and configured in `wrangler.jsonc` |
 | R2 | Large check logs and review diffs (`src/large.ts`), kept in the bucket `atelier-large` (binding `LARGE`) and named in briefs and the ledger by a reference ending in the payload's sha256, instead of carried inline. The same bucket caches the pinned Debian git package the check container installs (`fetchPinned` in `src/sandbox/runner.ts`). | Live: the bucket `atelier-large` exists and is bound |
-| Workflows | The landing pipeline as a Cloudflare Workflow (`src/landing-workflow.ts`, binding `LANDING_WORKFLOW`): `atelier land ID --workflow` runs the lease, the checks, the submission, the review wait and the acceptance as durable steps with retries, and waits for the developer's machine to merge main, push and merge. | Live behind `atelier land --workflow` (local checks by default) |
+| Workflows | The landing pipeline as a Cloudflare Workflow (`src/landing-workflow.ts`, binding `LANDING_WORKFLOW`): `atelier land ID --workflow` runs the checks (in a container with `--checks container`), the submission and the review wait without the landing lease, then takes the lease for the acceptance and the merge alone, as durable steps with retries, and waits for the developer's machine to merge main, push, run the checks (by default) and merge. | Live behind `atelier land --workflow` (local checks by default) |
 
 ## Quickstart
 
@@ -259,10 +265,10 @@ of its own (see [Further setup](#further-setup)).
 atelier land t1
 ```
 
-`land` takes the project's landing lease, merges main into the workspace,
-pushes, runs the required checks and submits, then accepts the task and
-merges it into the checkout with `--no-ff`, and publishes the merge to the
-baseline. The merge commit carries
+`land` merges main into the workspace, pushes, runs the required checks
+and submits, all without the project's landing lease; it takes the lease
+for the merge alone, then accepts the task and merges it into the checkout
+with `--no-ff`, and publishes the merge to the baseline. The merge commit carries
 the task's provenance as a git note on `refs/notes/atelier`, and the command
 prints how to read it. A change to a protected path also waits for a review
 from another model family, which a runner serves; see [Review](#review) and
@@ -439,13 +445,17 @@ evidence stay. [docs/orchestrator.md](docs/orchestrator.md) is the design.
 ### Landing
 
 `atelier land ID` runs the whole second half of a single task, for the
-developer in the registered checkout. It takes the project's landing
-lease on the server, so two landings never race main; merges main into the
-task's workspace, stopping on conflicts and naming the files; runs the
-project's regenerate command when one is declared; pushes, runs the required
-checks and submits; requests the independent review the gate needs and waits
-for the verdict; then accepts and merges. `--reviewer H/M` names the
-reviewer, `--wait` queues behind a landing that holds the lease, `--no-review`
+developer in the registered checkout. It merges main into the task's
+workspace, stopping on conflicts and naming the files; runs the project's
+regenerate command when one is declared; pushes, runs the required checks
+and submits; and requests the independent review the gate needs and waits
+for the verdict. None of this holds the project's landing lease, so several
+landings check and review at once. Once the head is checked and approved,
+the landing queues for the lease on the server, so two merges never race
+main, confirms under it that main has not moved, then accepts and merges;
+where main moved, it releases the lease and goes again from the merge of
+main. `--reviewer H/M` names the reviewer; every landing queues for the
+lease, so `--wait` is kept for compatibility and changes nothing; `--no-review`
 leaves the task submitted for the developer to settle, and `--dry-run` prints
 the steps and the refusals without changing anything. A landing stopped
 partway resumes when the same command runs again, and each step is recorded

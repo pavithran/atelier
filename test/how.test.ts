@@ -299,3 +299,12 @@ test("no page or doc says Atelier itself runs the tests, and /how names --sandbo
   }
   assert.ok(pages.some((file) => read(file).includes("--sandbox-only")), "/how no longer names --sandbox-only");
 });
+
+// Gemini 4 Argon's claims audit of 2026-10-13, finding 8: /how listed the
+// fast-mode commands and never said what fast mode is.
+test("/how says what fast mode is: chosen with a reason, batch checks, review after the merge, full mode the default", () => {
+  const prose = read("src/how.ts").replace(/\s+/g, " ");
+  for (const said of ["atelier mode fast --reason", "atelier fast land", "one typecheck, one secret scan and one test run", "review follows its merge", "carries a receipt", "Full mode, the process above, is the default"]) {
+    assert.ok(prose.includes(said), `/how does not say "${said}"`);
+  }
+});

@@ -118,8 +118,8 @@ For example, this config offers builds and plans with a local wrapper:
 {
   "jobs": ["build", "plan"],
   "agents": [{
-    "agent": "codex",
-    "models": ["gpt-6-astra"],
+    "agent": "claude-code",
+    "models": ["opus-5.5"],
     "command": ["/absolute/path/to/wrapper", "{model}", "{brief_file}", "{workspace}", "{plan_file}"]
   }]
 }
@@ -254,7 +254,10 @@ unless `--config` names another file):
   models for that harness, with every job including `review` and, for each
   model, `tokens` naming the Keychain entry `agent.MODEL`. No entry names a
   command, so the runner runs Atelier's adapter for each harness (The
-  adapters, below). Setup refuses to overwrite a runner config that exists.
+  adapters, below). The Codex entry this writes plans and reviews, but the
+  runner refuses its builds (Build validation blocked by the harness,
+  below) until it names a `codex exec --sandbox danger-full-access`
+  command. Setup refuses to overwrite a runner config that exists.
 - `opencode/NAME/PROVIDER.json`, NAME the runner config's whole file name
   (`opencode/runner.json/` for `runner.json`): one opencode provider
   config per provider the opencode models use (`zai-coding`, `deepseek-api`,
@@ -315,7 +318,9 @@ and `atelier-agy.mjs` take the wrapper contract's six arguments (The wrapper
 contract in `bin/orchestrate/README.md`); the shared code is
 `cli/harness/adapter.mjs`. An entry with no `command` runs its harness's
 adapter with this Node and every placeholder, so one command builds, plans
-and reviews. An entry for `zcode` or `gemini-cli` still names its own
+and reviews. Codex is the exception for builds: the runner refuses a Codex
+build under `atelier-codex.mjs` (Build validation blocked by the harness,
+below), so a Codex entry that builds names its own `codex exec` command. An entry for `zcode` or `gemini-cli` still names its own
 command, since no adapter ships for them; a `command` given for any harness
 replaces the default.
 
@@ -329,7 +334,7 @@ brief and the diff, and the answer goes to the verdict file. Per harness:
 | Adapter | Runs | Permissions |
 | --- | --- | --- |
 | `atelier-claude` | `claude -p --model claude-MODEL` (`opus-5.5` is `claude-opus-5-5`) | `--strict-mcp-config` with no server; edits accepted; Bash only for `git add`, `git commit` and other named Git, npm and Node commands; `git push`, `atelier` and the web denied; a review gets no edit tools |
-| `atelier-codex` | `codex exec --model MODEL -` | no MCP server: plugins, apps, browser and computer use switched off as features (`--disable FEATURE`), each server defined in a `config.toml` switched off by name (`-c mcp_servers.NAME.enabled=false`), and both checked with `codex mcp list --json` before the job; `workspace-write` sandbox with `.git` writable for a build, `read-only` for a review, whose last message is the verdict |
+| `atelier-codex` | `codex exec --model MODEL -` | no MCP server: plugins, apps, browser and computer use switched off as features (`--disable FEATURE`), each server defined in a `config.toml` switched off by name (`-c mcp_servers.NAME.enabled=false`), and both checked with `codex mcp list --json` before the job; `workspace-write` sandbox with `.git` writable for a plan, `read-only` for a review, whose last message is the verdict; the runner refuses a build run through this adapter |
 | `atelier-opencode` | `opencode run --model PROVIDER/MODEL` | the provider config setup wrote (`OPENCODE_CONFIG`) and no other: an empty folder of the run's own, outside the workspace and removed as the run ends, as `HOME` and every XDG folder (`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`), so neither `~/.opencode` nor `~/.config/opencode` is read, with git given the developer's global git config as `GIT_CONFIG_GLOBAL` so commits keep their identity; `OPENCODE_DISABLE_PROJECT_CONFIG` and `OPENCODE_DISABLE_CLAUDE_CODE` set, `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG_CONTENT` and `OPENCODE_PERMISSION` dropped; its key and the gateway token read from the credential store at run time and given to opencode alone |
 | `atelier-agy` | `agy --model MODEL` (`gemini-3.1-pro` is `gemini-3.1-pro-high`) | `--sandbox`, the workspace its working folder; a review's answer is `agy`'s JSON `response` |
 
@@ -698,10 +703,14 @@ verdict is refused, so retries do not file duplicate defects.
 
 Codex build commands must explicitly establish unrestricted check execution:
 `codex exec --sandbox danger-full-access` (or the explicit sandbox bypass).
-The runner refuses restricted defaults, `--full-auto`, `workspace-write`,
-`read-only`, and opaque wrappers before claiming, naming localhost listening,
-the npm cache and network access as the unavailable check capabilities. This
-is a refusal, not a request to silently weaken an adapter's confinement.
+Before claiming a build, a merge-main job or a fast-mode build, the runner
+(`codexBuildRefusal` in `cli/runner.mjs`) refuses any other Codex command:
+restricted defaults, `--full-auto`, `workspace-write`, `read-only`, and
+wrappers, the shipped `atelier-codex.mjs` among them, naming localhost
+listening, the npm cache and network access as the unavailable check
+capabilities. So a Codex entry with no `command`, as `atelier runner setup`
+writes it, plans and reviews under the adapter and builds nothing. This is a
+refusal, not a request to silently weaken an adapter's confinement.
 
 Build stdout is captured while it streams. A final report that required checks
 could not run records `validation_blocked` rather than a model test failure.

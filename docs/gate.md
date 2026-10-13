@@ -25,7 +25,7 @@ five verbs. They are labels: the commands keep their own names.
 | Fork | Every task its own fork. | `atelier push`, `atelier update` |
 | Prove | The checks run on the exact head. | `atelier check`, `atelier submit` |
 | Review | Another company reviews, or in single-family mode another model. | `atelier review` |
-| Land | One landing at a time, with a receipt. | `atelier land`, `atelier accept`, `atelier merge` |
+| Land | One merge at a time, with a receipt. | `atelier land`, `atelier accept`, `atelier merge` |
 
 A task's page shows the five as its progress, the current one marked, read
 from the task's recorded state: open is at Claim; claimed with nothing pushed,
