@@ -175,7 +175,7 @@ it("the showcase leads with what Atelier is and keeps the tally as its sub-head"
   expect(travels).toMatch(/<span class="travel-count">\d+ tasks? taken, \d+ handoffs?<\/span>/);
   // The steps take the accent, not the agents' family colours.
   expect(travels).not.toContain("--m-");
-  expect(body).toContain("The owner made 1 decision.");
+  expect(body).toContain("The developer made 1 decision.");
 });
 
 it("the comparison uses the shown project with the largest imported history when the same project's is thin", async () => {
@@ -363,7 +363,7 @@ it("the showcase counts the whole record, not the most recent events, and tells 
   // acceptance happened before the last 3,000 events.
   expect(body).toContain(`<dt>checks run on a clean copy, ${NOISE.toLocaleString("en")} in Cloudflare</dt><dd>${(NOISE + 1).toLocaleString("en")}</dd>`);
   expect(body).toContain("<dt>times a model sent work back</dt><dd>1</dd>");
-  expect(body).toContain("The owner made 1 decision.");
+  expect(body).toContain("The developer made 1 decision.");
   expect(body).toContain("<dt>merged, last two weeks</dt><dd>1</dd>");
   expect(body).toContain("<dt>merged, all time</dt><dd>1</dd>");
   expect(body).toContain("<dt>sent back, last two weeks</dt><dd>1</dd>");

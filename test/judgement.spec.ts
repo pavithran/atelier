@@ -208,7 +208,7 @@ it("the section says an empty window totals nothing, and names the unknown actin
   const html = judgementSection(empty);
   expect(html).toContain("The orchestrator's judgements · 2026-07-12 to 2026-10-10");
   expect(html).toContain("Totals: 0 verdicts: 0 upheld, 0 contradicted, 0 unresolved; 0 decisions recorded, 0 withdrawn; 0 overrides.");
-  expect(html).toContain("Nothing was judged for the owner from 2026-07-12 to 2026-10-10.");
+  expect(html).toContain("Nothing was judged for the developer from 2026-07-12 to 2026-10-10.");
   expect(html).toContain("no defect is not proof a verdict was right");
   expect(html).not.toMatch(/\d%|precision|success/);
   const legacy = buildJudgement([{ project: "atelier", events: [
