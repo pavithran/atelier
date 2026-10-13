@@ -35,7 +35,7 @@ merged.
   the agent policy. An unmapped actor has no role. Claiming or receiving a
   handoff requires an available agent with `executor` in `eligible_roles`.
   Agent reviews count toward the gate only when the agent is available with
-  `assessor`. The project owner's rejection always counts; the owner's
+  `assessor`. The developer's rejection always counts; their
   approval is never the required review.
   `preferred_roles` records a preference and does not grant a role. The
   other roles do not grant execution or review authority.
@@ -48,9 +48,9 @@ merged.
   model of the selected company from every contributor. Coordinated changes
   need a different model from every contributor, also of the selected company
   in single-family mode; direct changes need no
-  review. Required reviews must come from assessors. The project owner's
-  approval is neither review; where no reviewer qualifies, the owner's
-  override stands in for it, as [the gate](gate.md) describes. Project owner acceptance is
+  review. Required reviews must come from assessors. The developer's
+  approval is neither review; where no reviewer qualifies, their
+  override stands in for it, as [the gate](gate.md) describes. Developer acceptance is
   always required. A measured empty change has nothing to merge.
   Projects without these policy files have no change classes: a protected
   change needs its review from another family (or a different model of the
@@ -81,7 +81,7 @@ merged.
   `atelier accept ID`. `merge --cancel` does not read or refresh ControlPlane
   policy.
 - Copying a project into Artifacts is an off-machine copy, so `init` refuses
-  a ControlPlane project until the project owner's approval is recorded with
+  a ControlPlane project until the developer's approval is recorded with
   `--approval "…"`. The approval is kept in the project's policy and quoted in
   every merge receipt. Once recorded it stands: a later `init` that changes
   the checks, the title or the policy keeps it, and it is asked for again
@@ -101,7 +101,7 @@ merged.
 A project moves to Atelier one at a time, and the move is itself an Atelier
 task, reviewed by a model from another family by default (or a different
 model of the selected company from every contributor in single-family mode)
-and accepted by the project owner. `atelier adopt` runs in the project's registered checkout:
+and accepted by the developer. `atelier adopt` runs in the project's registered checkout:
 
 ```sh
 atelier adopt --project NAME --as HARNESS/MODEL
@@ -126,7 +126,7 @@ task's workspace it writes `bin/control-plane`, replaces
 no command renders a paste any more, that the agent writes the relay
 envelope itself as the relay rule says (one fenced block with a language
 tag, a copy saved under `~/Documents/ai-project-data/<project>/`) and that
-`atelier handoff` transfers ownership and is not a relay, and exits 2; and
+`atelier handoff` moves a task to a new holder and is not a relay, and exits 2; and
 it inserts the text `atelier guide` prints
 into `AGENTS.md`: right after its first heading, at the top when the file has
 no heading, and in place of the section it already carries, so adopting a
@@ -150,7 +150,7 @@ never contacts ControlPlane's central checkout:
 Adopt then reads the checkout, without changing it, and prints the leftovers
 the agent finishing the task must settle: a
 `docs/control-plane/work-item.v1.json` whose state is `active`,
-`completed-unreconciled` or `blocked`, with its plan id, state and owner; a
+`completed-unreconciled` or `blocked`, with its plan id, state and holder; a
 capability in `docs/control-plane/project-adapter.v1.json` whose command names
 a file the project does not have — the command is read as shell words, so a
 quoted path with spaces stays one word; a script run through an
@@ -162,4 +162,4 @@ program is never judged; a vendored `tools/control-plane/`
 directory; and each line in `AGENTS.md`, `CLAUDE.md` and `GLM.md` that still
 names `pickup-card`, `control-plane-paste`, `session-receipt` or
 `audit record`, with its file and line number. The same list is recorded on
-the task as reported notes, so the reviewer and the owner see it there.
+the task as reported notes, so the reviewer and the developer see it there.
