@@ -735,6 +735,26 @@ test("recordPending refuses when an object of the batch was damaged after the fa
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// Re-review of t602 (gpt-6-astra): the resume compared the shallow boundary
+// with itself, so a .git/shallow written after the failed receipt was never
+// seen, and the object check then stopped at that boundary. The boundary
+// fast land saw is kept in the receipts file and compared at the resume.
+test("recordPending refuses when the shallow boundary changed since fast land, recording nothing (finding 9)", async () => {
+  const { dir, one, two } = repo();
+  try {
+    const { record } = failingSecond();
+    const r = await fastLand({ ...base, cwd: dir, pairs: [{ id: "t1", sha: one }, { id: "t2", sha: two }], test: "true", record });
+    assert.equal(r.failure?.step, "record t2");
+    writeFileSync(join(dir, ".git", "shallow"), `${two}\n`);
+    await assert.rejects(recordPending({ cwd: dir, file: r.pending, record: () => assert.fail("recorded") }), (err) => {
+      assert.match(err.message, /nothing was recorded/);
+      assert.match(err.message, /shallow boundary/);
+      return true;
+    });
+    assert.equal(existsSync(r.pending), true, "the file is kept");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("a batch that fails before the receipts leaves no receipts file (finding 9)", async () => {
   const { dir, one } = repo();
   try {

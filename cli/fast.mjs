@@ -616,7 +616,9 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
     // The receipts are written before any is posted (finding 9); a write
     // that fails rolls the batch back like any other step, as nothing is
     // recorded yet.
-    pending = { version: 1, ...note, start, head: scanned, receipts: merged.map((m) => ({ task: m.id, commit: m.commit, mergeCommit: m.mergeCommit, builder: m.builder, tests, recorded: false })) };
+    // The shallow boundary (.git/shallow's contents, "" when there is none)
+    // is kept too, so the resume sees one written since (re-review of t602).
+    pending = { version: 1, ...note, start, head: scanned, shallow: shallowAtStart, receipts: merged.map((m) => ({ task: m.id, commit: m.commit, mergeCommit: m.mergeCommit, builder: m.builder, tests, recorded: false })) };
     file = join(pendingDir(cwd), `${start}..${scanned}.json`);
     writePending(file, pending);
   } catch (err) {
@@ -699,7 +701,7 @@ export function readPending(cwd, file) {
   let data;
   try { data = JSON.parse(readFileSync(file, "utf8")); } catch (err) { throw new Error(`${file} cannot be read as a fast landing's receipts: ${err?.message ?? err}`); }
   const valid = (x) => /^t\d+$/.test(x?.task) && FULL_SHA.test(x.commit) && FULL_SHA.test(x.mergeCommit) && typeof x.builder === "string" && typeof x.recorded === "boolean";
-  if (data?.version !== 1 || !FULL_SHA.test(data.start) || !FULL_SHA.test(data.head) || !Array.isArray(data.receipts) || !data.receipts.length || !data.receipts.every(valid)) throw new Error(`${file} is not a fast landing's receipts file`);
+  if (data?.version !== 1 || typeof data.shallow !== "string" || !FULL_SHA.test(data.start) || !FULL_SHA.test(data.head) || !Array.isArray(data.receipts) || !data.receipts.length || !data.receipts.every(valid)) throw new Error(`${file} is not a fast landing's receipts file`);
   const main = git(cwd, "rev-parse", "--verify", "refs/heads/main");
   const problems = [];
   const holds = (a, b) => runGit(cwd, ["merge-base", "--is-ancestor", a, b]).status === 0;
@@ -720,7 +722,9 @@ export function readPending(cwd, file) {
   // trees included, is present and hashes to its id, as fast land checked
   // after its tests (objectProblems).
   if (!problems.length) {
-    const overrides = historyOverrides(cwd, shallowOf(cwd)).filter((o) => !/shallow/.test(o));
+    // Against the boundary fast land saw, kept in the file: compared with
+    // the current one it could never differ (re-review of t602, gpt-6-astra).
+    const overrides = historyOverrides(cwd, data.shallow);
     if (overrides.length) problems.push(`the checkout has ${overrides.join(", ")}, which change the history Git shows`);
     else {
       const damaged = objectProblems(cwd, data.start, data.head);
