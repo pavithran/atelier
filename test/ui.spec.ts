@@ -799,22 +799,18 @@ it('the showcase sets a project known only from git beside Atelier\'s record, an
  expect(html).toContain('class="compare"');
  expect(html).toContain('Before Atelier · from git');
  expect(html).toContain('&lt;Old&gt; project');
- expect(html).toContain('href="#card-2"');
- expect(html).toContain('href="#card-1"');
- expect(html).toContain('It cannot say whether the checks passed');
  expect(html).toContain('No agent has worked here yet.');
  expect(html).not.toContain('0 tasks taken');
- const card=(cls:string)=>html.split(`class="compare-card ${cls}"`)[1].split('</a>')[0];
+ const card=(cls:string)=>html.split(`class="compare-card ${cls}"`)[1].split('</article>')[0];
  expect(card('before')).toContain('&lt;Old&gt; project');
  expect(card('before')).not.toContain('<Old>');
  expect(card('with')).toContain('>Built<');
- expect(card('before')).toContain('<b>50%</b> of commits name an agent');
+ expect(card('before')).toContain('<b>50%</b><span>of commits name an agent');
  expect(card('with')).not.toContain('class="compare-lead"');
  // A planned task nobody has claimed is still a task: that project is not "before".
  const planned=buildStory('planned',[{id:'t1',title:'Later',state:'open'}] as never,[{seq:1,at:at(0),actor:'pavi',kind:'item.created',itemId:'t1',data:{}}] as never,'pavi',false,'Planned',{redact:true,ownerLabel:'PAVI'});
   const both=renderShowcase([withs,planned,before],withs.tally,'pavi','PAVI',false,new Map([['old',h],['planned',h]]));
-  const beforeCard=both.split('class="compare-card before"')[1].split('</a>')[0];
-  expect(beforeCard).toContain('href="#card-3"');
+  const beforeCard=both.split('class="compare-card before"')[1].split('</article>')[0];
   expect(beforeCard).toContain('&lt;Old&gt; project');
   expect(beforeCard).not.toContain('>Planned<');
  expect(renderShowcase([withs,planned],withs.tally,'pavi','PAVI',false,new Map([['planned',h]]))).not.toContain('class="compare"');
@@ -838,8 +834,8 @@ it('the comparison leads with the share of reviews that sent work back',async()=
  const before=buildStory('old',[],[],'pavi',false,'Old',{redact:true,ownerLabel:'PAVI'});
  const h=buildImported([{hash:'a',committedAt:100,message:'x\n\nAgent: codex/gpt-6'}],null,true);
  const html=renderShowcase([withs,before],withs.tally,'pavi','PAVI',false,new Map([['old',h]]));
- const card=html.split('class="compare-card with"')[1].split('</a>')[0];
- expect(card).toContain('<b>33%</b> of reviews sent the work back: 1 of 3.');
+ const card=html.split('class="compare-card with"')[1].split('</article>')[0];
+ expect(card).toContain('<b>33%</b><span>of reviews sent the work back: 1 of 3.');
 });
 
 it('a share that rounds to 0% or 100% without being exactly that says so',async()=>{
@@ -850,7 +846,7 @@ it('a share that rounds to 0% or 100% without being exactly that says so',async(
  const withs=buildStory('built',[{id:'t1',title:'Work',state:'claimed'}] as never,[{seq:2,at:at(1),actor:'codex/gpt-6-astra',kind:'item.claimed',itemId:'t1',data:{}},{seq:1,at:at(0),actor:'pavi',kind:'item.created',itemId:'t1',data:{}}] as never,'pavi',false,'Built',{redact:true,ownerLabel:'PAVI'});
  const before=buildStory('old',[],[],'pavi',false,'Old',{redact:true,ownerLabel:'PAVI'});
  const commits=(named:number,total:number)=>Array.from({length:total},(_,i)=>({hash:`h${i}`,committedAt:i+1,message:i<named?'x\n\nAgent: codex/gpt-6':'x'}));
- const lead=(named:number,total:number)=>renderShowcase([withs,before],withs.tally,'pavi','PAVI',false,new Map([['old',buildImported(commits(named,total),null,true)]])).split('class="compare-card before"')[1].split('</p>')[0];
+ const lead=(named:number,total:number)=>renderShowcase([withs,before],withs.tally,'pavi','PAVI',false,new Map([['old',buildImported(commits(named,total),null,true)]])).split('class="compare-lead"')[1].split('</p>')[0];
  expect(lead(1,300)).toContain('<b>&lt;1%</b>');
  expect(lead(299,300)).toContain('<b>&gt;99%</b>');
  expect(lead(300,300)).toContain('<b>100%</b>');
@@ -902,9 +898,8 @@ it('the showcase labels its two-week figures and sets the all-time merges beside
  const s=mergedShowcaseStory();
  const card={project:{name:'example',repo:'example',policy:{checks:[],protected:[]},createdAt:''},mode:'named' as const,story:s};
  const html=renderShowcase([s],s.tally,'pavi','PAVI',false,new Map(),[{...card,allTimeMerged:215}]);
- expect(html).toContain(`<b>${s.tally.merges}</b>merged, last two weeks`);
- expect(html).toContain('<b>215</b>merged, all time');
- expect(html).toContain('all time, 215 merged across 1 project.');
+ expect(html).toContain(`<dt>merged, last two weeks</dt><dd>${s.tally.merges}</dd>`);
+ expect(html).toContain('<dt>merged, all time</dt><dd>215</dd>');
  const unset=renderShowcase([s],s.tally,'pavi','PAVI',false,new Map(),[card]);
  expect(unset).not.toContain('merged, all time');
  expect(unset).not.toContain('all time, ');
@@ -947,7 +942,7 @@ async function sameParts(){
  ],unix('2026-10-05T00:00:00Z'),complete);
  return {renderShowcase,story,history};
 }
-const side=(html:string,cls:string)=>html.split(`class="compare-card ${cls}"`)[1].split('</a>')[0];
+const side=(html:string,cls:string)=>html.split(`class="compare-card ${cls}"`)[1].split('</article>')[0];
 it('a project with history before its first task and tasks since is compared with itself',async()=>{
  const {renderShowcase,story,history}=await sameParts();
  const photo=story('photograph','<Photograph>');
@@ -956,26 +951,23 @@ it('a project with history before its first task and tasks since is compared wit
  expect(html).toContain('class="compare"');
  expect(before).toContain('&lt;Photograph&gt;');expect(withs).toContain('&lt;Photograph&gt;');
  expect(before).not.toContain('<Photograph>');
- expect(before).toContain('<p class="meta compare-dates">4 Sept to 4 Oct</p>');
+ expect(before).toContain('<p class="compare-dates">4 Sept to 4 Oct</p>');
  expect(withs).toContain('since 5 Oct · the same project');
- expect(before).toContain('<b>67%</b> of commits name an agent');
- expect(before).toContain('<b>3</b> commits');
- expect(withs).toContain('<b>50%</b> of reviews sent the work back: 1 of 2.');
- expect(withs).toContain('<b>2</b> tasks taken');
- expect(withs).toContain('<b>1</b> checks run');
- expect(withs).toContain('<b>2</b> reviews, 1 sending work back');
- expect(withs).toContain('<b>1</b> decisions by PAVI');
- expect(before).toContain('href="#card-1"');expect(withs).toContain('href="#card-1"');
+ expect(before).toContain('<b>67%</b><span>of commits name an agent');
+ expect(before).toContain('<dt>3</dt><dd>commits');
+ expect(withs).toContain('<b>50%</b><span>of reviews sent the work back: 1 of 2.');
+ expect(withs).toContain('<dt>2</dt><dd>tasks taken');
+ expect(withs).toContain('<dt>1</dt><dd>checks run');
+ expect(withs).toContain('<dt>2</dt><dd>reviews, 1 sending work back');
+ expect(withs).toContain('<dt>1</dt><dd>decisions by PAVI');
  expect(html).toContain('id="card-1"');
- expect(before).toContain('It cannot say whether the checks passed');
- expect(withs).toContain('Atelier records each step as it happens');
 });
 it('the comparison says when only the recent part of a history or record was read',async()=>{
  const {renderShowcase,story,history}=await sameParts();
  const photo=story('photograph','Photograph',true);
  const html=renderShowcase([photo],photo.tally,'pavi','PAVI',false,new Map([['photograph',history(false)]]));
  expect(side(html,'before')).toContain('4 Sept to 4 Oct · only the most recent part of the history was read');
- expect(side(html,'before')).toContain('<b>3</b> commits (the most recent part)');
+ expect(side(html,'before')).toContain('<dt>3</dt><dd>commits (the most recent part)');
  expect(side(html,'with')).toContain('since 5 Oct · only the most recent part of the record was read · the same project');
  const whole=renderShowcase([story('photograph','Photograph')],photo.tally,'pavi','PAVI',false,new Map([['photograph',history(true)]]));
  expect(side(whole,'before')).not.toContain('only the most recent part');
@@ -987,15 +979,14 @@ it('with no project holding both, the comparison stays across projects, and with
  const built=story('built','Built');
  const idle=buildStory('old',[],[],'pavi',false,'Old',{redact:true,ownerLabel:'PAVI'});
  const cross=renderShowcase([built,idle],built.tally,'pavi','PAVI',false,new Map([['old',history()]]));
- expect(side(cross,'before')).toContain('href="#card-2"');expect(side(cross,'with')).toContain('href="#card-1"');
- expect(cross).not.toContain('compare-dates');expect(cross).not.toContain('the same project');
+ expect(cross).not.toContain('class="compare-dates"');expect(cross).not.toContain('the same project');
  expect(side(cross,'before')).toContain('>Old<');
  // Two projects with both: the one with more tasks.
  const one=buildStory('small',[{id:'t1',title:'One',state:'claimed'}] as never,[
   {seq:2,at:'2026-10-05T12:01:00Z',actor:'codex/gpt-6-astra',kind:'item.claimed',itemId:'t1',data:{}}] as never,'pavi',false,'Small',{redact:true,ownerLabel:'PAVI'});
  const both=renderShowcase([one,built],one.tally,'pavi','PAVI',false,new Map([['small',history()],['built',history()]]));
  expect(side(both,'before')).toContain('>Built<');expect(side(both,'with')).toContain('>Built<');
- expect(side(both,'with')).toContain('<b>2</b> tasks taken');
+ expect(side(both,'with')).toContain('<dt>2</dt><dd>tasks taken');
  expect(both.match(/class="compare-card before"/g)).toHaveLength(1);
 });
 it('the comparison dates follow the owner\'s time zone',async()=>{

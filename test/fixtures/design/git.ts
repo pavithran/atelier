@@ -84,7 +84,8 @@ export class FakeGit {
           log: async (o: { ref?: string; limit?: number; offset?: number } = {}) => {
             const all = git.log(name, o.ref);
             const from = o.offset ?? 0;
-            return all.slice(from, o.limit === undefined ? undefined : from + o.limit);
+            // Artifacts answers each commit's commit time too; here it is the author time.
+            return all.slice(from, o.limit === undefined ? undefined : from + o.limit).map((c) => ({ ...c, committedAt: c.authoredAt }));
           },
           readCommit: async (h: string) => git.commits.get(h) ?? null,
           readTree: async (h: string) => git.trees.get(h) ?? null,
