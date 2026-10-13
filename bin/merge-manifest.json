@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "generators": [
+    {
+      "name": "command-indexes",
+      "command": [
+        "node",
+        "cli/regenerate.mjs"
+      ],
+      "inputs": [
+        "cli/**",
+        "src/**"
+      ],
+      "outputs": [
+        "cli/commands/index.mjs",
+        "src/usage/commands/index.ts",
+        "test/fixtures/cli/help.txt",
+        "test/fixtures/cli/usage.json",
+        "test/fixtures/cli/guide.txt"
+      ]
+    }
+  ],
+  "records": [
+    {
+      "path": "src/capability-declarations.ts",
+      "framed": true,
+      "key": "^  \\{ name: \"([^\"]+)\","
+    }
+  ],
+  "registries": [
+    {
+      "name": "command-handlers",
+      "dir": "cli/commands",
+      "files": "*.mjs",
+      "exclude": [
+        "index.mjs"
+      ],
+      "key": "^// atelier (\\S+?)[.:]?(?: |$)"
+    },
+    {
+      "name": "command-declarations",
+      "dir": "src/usage/commands",
+      "files": "*.ts",
+      "exclude": [
+        "index.ts"
+      ],
+      "key": "^  name: \"([^\"]+)\","
+    }
+  ]
+}

@@ -8,6 +8,7 @@ import { LAND_JSON_MAX } from "../src/ledger.ts";
 import type { ReviewClaim, Ledger, LedgerEvent } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.ts";
+import MERGE_STEPS from "./fixtures/land/merge-steps.json";
 
 // The server side of atelier land (t187): the project's landing lease on the
 // Ledger (one landing at a time, refused with who holds it and since when, a
@@ -195,9 +196,10 @@ it("the landing-lease route takes, renews and cancels the lease for the owner, a
   const L = await setup(project);
   const a = (await L.newItem("First", [], "owner")).id;
   const b = (await L.newItem("Second", [], "owner")).id;
-  const token = { ...env, ATELIER_TOKEN: "land-routes-token" } as typeof env;
+  const TOKEN = "land-routes-token";
+  const token = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
   const post = (body: Record<string, unknown>) => worker.fetch(new Request(`https://atelier.test/api/projects/${project}/landing-lease`, {
-    method: "POST", headers: { authorization: "Bearer land-routes-token", "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify(body),
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify(body),
   }), token);
   const took = await post({ item: a });
   expect(took.status).toBe(200);
@@ -585,6 +587,38 @@ it("a triage is recorded as its own land.triage step, by the project owner alone
   expect(after.reviews).toEqual(before.reviews);
   expect(after.gate).toEqual(before.gate);
   expect((await events(L, id)).some((e) => e.kind.startsWith("review."))).toBe(false);
+});
+
+it("the merge steps atelier land posts reach the ledger whole through the land route: regenerated outputs, source conflicts, main's head and the route levels (t463)", async () => {
+  const project = "land-merge-steps";
+  const L = await setup(project);
+  const id = (await L.newItem("Landing", [], "owner")).id;
+  const TOKEN = "land-routes-token";
+  const token = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
+  // The bodies are what the CLI posted in test/land.test.mjs, which checks
+  // them against this fixture, so a field it sends that the ledger refuses
+  // fails here rather than as a warning in a real landing.
+  const post = (body: Record<string, unknown>) => worker.fetch(new Request(`https://atelier.test/api/projects/${project}/items/${id}/land`, {
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json", "x-atelier-actor": "owner" }, body: JSON.stringify(body),
+  }), token);
+  for (const [name, body] of Object.entries(MERGE_STEPS)) {
+    const r = await post(body);
+    expect(r.status, `${name}: ${await r.clone().text()}`).toBe(200);
+  }
+  const recorded = (await events(L, id)).filter((e) => e.kind === "land.merge").sort((a, b) => a.seq - b.seq);
+  const without = ({ step: _step, ms: _ms, ...rest }: Record<string, unknown>) => rest;
+  expect(recorded.map((e) => without(e.data))).toEqual(Object.values(MERGE_STEPS).map((b) => without(b)));
+  expect(recorded[0].data.regenerated).toEqual([{ name: "fixtures", outputs: [{ path: "gen-fixtures.txt", matches: "neither side" }], log: "/tmp/merge-logs/fixtures.log", logSha: "f".repeat(64) }]);
+  expect(recorded[1].data).toMatchObject({ failed: true, source: ["work.txt"], generated: ["gen-fixtures.txt"], mainHead: "0".repeat(40) });
+  expect(recorded[2].data.routeLevel).toEqual({ base: 6, main: 7, task: 7, was: 7, set: 8 });
+  // What the new fields take is checked, as every other field is.
+  const bad = async (data: Record<string, unknown>, detail: RegExp) => refusal(L.landEvent(id, "owner", "merge", 5, data), "bad_field", detail);
+  await bad({ routeLevel: { base: "6" } }, /routeLevel must be route levels/);
+  await bad({ routeLevel: { other: 6 } }, /routeLevel must be route levels/);
+  await bad({ regenerated: [{ name: "x", outputs: [{ path: "a", matches: "both" }], log: "l", logSha: "s" }] }, /regenerated must be a list of generators/);
+  await bad({ regenerated: [{ name: "x", outputs: [], log: "l" }] }, /regenerated must be a list of generators/);
+  await bad({ mainHead: 7 }, /mainHead must be text/);
+  await bad({ source: "work.txt" }, /source must be a list/);
 });
 
 it("a merge step with more commits from main than its record has room for is cut to the first hashes with the count, not refused", async () => {
