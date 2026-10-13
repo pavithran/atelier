@@ -4,7 +4,7 @@ import { entryRuns, latestNote, noteLine, standingRefusal, type ModelEntry } fro
 import { buildReliability, outcomesOf, reliabilityLine, tiebreak, type ProjectEvents, type RunReport } from "./reliability.ts";
 import { paidPerToken, type Choice } from "../plans/route.ts";
 import { servedActor, servedBy } from "./served.ts";
-import { applicableAssignments, FALLBACK, orderByAssignment, type Assignment } from "./assignments.ts";
+import { applicableAssignments, FALLBACK, orderByAssignment, sensitiveText, type Assignment } from "./assignments.ts";
 
 export interface SuggestionRecords { sources: ProjectEvents[]; runs: RunReport[] }
 type Task = Pick<Item, "id" | "title" | "brief" | "scope" | "owner" | "pushActors">;
@@ -22,7 +22,7 @@ export interface SuggestionInput extends SuggestionRecords {
 const actorOf = (m: ModelEntry) => `${m.harness}/${m.id}`;
 const keysOf = (m: ModelEntry) => new Set([m.id, ...m.aliases].map(modelKey));
 export const frontier = (m: ModelEntry) => [m.id, ...m.aliases].some((id) => /(?:^|[-/])(fable|opus)(?:[-.]|$)|^gpt-6-astra(?:[-.:]|$)/i.test(id));
-export const sensitive = (item: Task) => /\b(security|auth(?:entication|orization)?|concurren\w*|race|locking|locks?|leases?|gates?)\b/i.test([item.title, item.brief, ...item.scope].join(" "));
+export const sensitive = (item: Pick<Task, "title" | "brief" | "scope">) => sensitiveText([item.title, item.brief, ...item.scope]);
 
 // A pair of consecutive stalled build outcomes latches the exclusion. A
 // later refusal or timeout cannot clear it; a submitted or merged build can.

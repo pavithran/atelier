@@ -148,6 +148,52 @@ test("routeParts: a docs part reads claims-review, then review; an ineligible ch
   assert.equal(held.reviewer?.actor, "codex/gpt-6-astra");
 });
 
+// gpt-6-astra's review of t622 at 53bf739d, finding 4 (and gemini-4-argon's
+// finding 1): plan routing read only docs, so a security part was reviewed by
+// the general review assignment, and approval froze that routing.
+test("routeParts: a security, concurrency or gate part reads security-review before review", () => {
+  const security = assigned("security-review", ["codex/gpt-6-astra"]);
+  const review = assigned("review", ["antigravity/gemini-4-argon"]);
+  const build = assigned("build", ["claude-code/opus-5.5"]);
+  const gate = part("g", { title: "Harden the authentication gate", brief: "Close the lease race" });
+  const [r] = routeParts(plan(gate), { pool: POOL, events: [], policy, allowPaid: false, assignments: [build, security, review] });
+  assert.equal(r.reviewer?.actor, "codex/gpt-6-astra");
+  said(r.reviewer?.reasons, new RegExp(`Role assignment ${security.id} \\(security-review`));
+  const [plainPart] = routeParts(plan(part("p")), { pool: POOL, events: [], policy, allowPaid: false, assignments: [build, security, review] });
+  assert.equal(plainPart.reviewer?.actor, "antigravity/gemini-4-argon");
+});
+
+// gemini-4-argon's review of t622 at 53bf739d, finding 1: routing passed
+// only the eligible list, so an assigned model that failed a rule was said
+// to be "not a candidate here" instead of why.
+test("routeParts: an assigned builder or reviewer that fails a rule is passed over with its real reason", () => {
+  const build = assigned("build", ["codex/gpt-6-astra", "claude-code/opus-5.5"]);
+  const review = assigned("review", ["claude-code/sonnet-5.5", "zcode/glm-5.3"]);
+  const pool = [{ ...astra, state: "paused" as const, stateAt: AT }, argon, glm, opus, sonnet];
+  const [r] = routeParts(plan(part("a")), { pool, events: [], policy, allowPaid: false, assignments: [build, review] });
+  assert.equal(r.builder?.actor, "claude-code/opus-5.5");
+  said(r.builder?.reasons, /codex\/gpt-6-astra: paused since 2026-10-13/);
+  assert.doesNotMatch(r.builder!.reasons.join("\n"), /not a candidate here/);
+  assert.equal(r.reviewer?.actor, "zcode/glm-5.3");
+  said(r.reviewer?.reasons, /claude-code\/sonnet-5.5: same family as the builder/);
+});
+
+// gpt-6-astra's review of t622 at 53bf739d, finding 5: without policy.agents,
+// routing never read reviewer admissions or the eligible harnesses, so an
+// assignment promoted a reviewer whose admission was withdrawn, which
+// pickReviewer refuses.
+test("routeParts: a reviewer whose admission was withdrawn, or whose harness is not eligible, is never routed", () => {
+  const review = assigned("review", ["codex/gpt-6-astra"]);
+  const withdrawn = { ...policy, reviewerAdmissions: [{ id: "gpt-6-astra", aliases: [], by: "owner", reason: "retired", at: AT, active: false }] };
+  const [r] = routeParts(plan(part("a")), { pool: POOL, events: [], policy: withdrawn, allowPaid: false, assignments: [assigned("build", ["claude-code/opus-5.5"]), review] });
+  assert.notEqual(r.reviewer?.actor, "codex/gpt-6-astra");
+  said(r.reviewer?.reasons, /codex\/gpt-6-astra: .*admission was withdrawn/);
+  const eligible = { ...policy, eligible: ["claude-code", "antigravity", "zcode"] };
+  const [e] = routeParts(plan(part("a")), { pool: POOL, events: [], policy: eligible, allowPaid: false, assignments: [assigned("build", ["claude-code/opus-5.5"]), review] });
+  assert.notEqual(e.reviewer?.actor, "codex/gpt-6-astra");
+  said(e.reviewer?.reasons, /codex\/gpt-6-astra: .*not an eligible agent here/);
+});
+
 test("pickPlanner: a plan assignment puts its eligible choice first; a paid one stays passed over", () => {
   assert.equal(pickPlanner(POOL, [], policy).actor, "zcode/glm-5.3");
   const a = assigned("plan", ["codex/gpt-6-astra"]);
