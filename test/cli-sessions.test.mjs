@@ -673,7 +673,8 @@ test("wrap pushes a declared public mirror only the project's no-reply address: 
   const branch = f.git("branch", "--show-current");
   // History the mirror already holds is not read again, whatever it carries.
   f.git("push", "-q", "github", branch);
-  const identity = JSON.stringify({ name: "Owner", email: "123+owner@users.noreply.github.com", agentEmails: ["agents@atelier.example"], publicMirrors: ["github"] });
+  f.git("push", "-q", "origin", branch);
+  const identity = JSON.stringify({ name: "Owner", email: "123+owner@users.noreply.github.com", agentEmails: ["agents@atelier.example"], publicMirrors: ["github"], publicMirrorDestinations: { github: path } });
   // A commit under the project's no-reply address is published.
   f.git("config", "user.email", "123+owner@users.noreply.github.com");
   const pushed = f.runWith({ FAKE_IDENTITY: identity }, "wrap", "Owner", "--push", "--no-check");
@@ -687,13 +688,13 @@ test("wrap pushes a declared public mirror only the project's no-reply address: 
   const refused = f.runWith({ FAKE_IDENTITY: identity }, "wrap", "Agent", "--push", "--no-check");
   assert.equal(refused.status, 1, refused.stderr);
   const commit = f.git("rev-parse", "HEAD");
-  assert.match(refused.stdout, new RegExp(`Remote github: not pushed; it would publish addresses that are not public:\\n  commit ${commit.slice(0, 12)}: the author email agents@atelier\\.example is not the project's public address 123\\+owner@users\\.noreply\\.github\\.com \\(commitEmail\\), the only one a public mirror \\(publicMirrors\\) takes\\n  commit ${commit.slice(0, 12)}: the committer email agents@atelier\\.example`));
+  assert.ok(refused.stdout.includes(`${commit.slice(0, 12)}: author and committer email is not 123+owner@users.noreply.github.com`), refused.stdout);
   assert.doesNotMatch(refused.stdout, /test@example\.invalid/, "what the mirror already holds is outside the range");
   assert.equal(f.git("--git-dir", path, "rev-parse", `refs/heads/${branch}`), published);
-  // A remote the policy does not declare a public mirror is the owner's own, and takes the agent's commit.
-  assert.match(refused.stdout, /Remote origin: pushed\./);
-  assert.equal(f.git("--git-dir", own, "rev-parse", `refs/heads/${branch}`), commit);
-  assert.match(refused.stderr, /the push failed for 1 remote: github/);
+  // With a public mirror declared, no remote is trusted by its URL: origin gets the same check and keeps what it had.
+  assert.match(refused.stdout, /Remote origin: failed\./);
+  assert.equal(f.git("--git-dir", own, "rev-parse", `refs/heads/${branch}`), published);
+  assert.match(refused.stderr, /the push failed for 2 remotes: github, origin/);
 });
 
 test("wrap checks no remote as a public mirror when the policy declares none", (t) => {
@@ -791,4 +792,26 @@ test("wrap runs no registered check when one is never read-only, and changes not
   const skipped = f.runWith({ FAKE_CHECKS: checks }, "wrap", "Skip", "--next", "x", "--no-check");
   assert.equal(skipped.status, 0, skipped.stderr);
   assert.equal(existsSync(ran), false, "--no-check ran nothing");
+});
+
+test("publish and wrap --push share the registered mirror privacy policy", (t) => {
+  for (const command of ["publish", "wrap"]) {
+    const f = fixture(t), path = remote(f, "github");
+    const branch = f.git("branch", "--show-current");
+    f.git("push", "-q", "github", branch);
+    const before = f.git("rev-parse", "HEAD");
+    const email = "123+owner@users.noreply.github.com";
+    const identity = JSON.stringify({ name: "Owner", email, agentEmails: [], publicMirrors: ["github"], publicMirrorDestinations: { github: path } });
+    f.git("config", "user.email", email);
+    const secret = "AKIA" + "ABCDEFGHIJKLMNOP";
+    writeFileSync(join(f.checkout, "secret.txt"), `key = ${secret}\n`);
+    f.git("add", "secret.txt"); f.git("commit", "-qm", "Intermediate secret");
+    const offending = f.git("rev-parse", "HEAD");
+    f.git("rm", "secret.txt"); f.git("commit", "-qm", "Remove secret");
+    const r = f.runWith({ FAKE_IDENTITY: identity }, ...(command === "publish" ? ["publish", "github"] : ["wrap", "Privacy", "--push", "--no-check"]));
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.ok(r.stdout.includes(`${offending.slice(0, 12)} secret.txt:1: secret`), r.stdout);
+    assert.ok(!r.stdout.includes(secret));
+    assert.equal(f.git("--git-dir", path, "rev-parse", `refs/heads/${branch}`), before);
+  }
 });
