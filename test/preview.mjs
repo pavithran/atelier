@@ -13,7 +13,7 @@ import { createServer } from "node:http";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), "atelier-preview-"));
-const ENTRIES = ["ui", "floor", "how", "attention", "graph", "actions-page", "models/record", "usage/page", "usage/report"];
+const ENTRIES = ["ui", "floor", "how", "attention", "graph", "actions-page", "models/record", "usage/page", "usage/report", "browse/view"];
 await build({ entryPoints: ENTRIES.map((x) => join(ROOT, "src", `${x}.ts`)), bundle: true, platform: "node", format: "esm", loader: { ".css": "text" }, outdir: dir, outbase: join(ROOT, "src"), logLevel: "error" });
 const load = (x) => import(pathToFileURL(join(dir, `${x}.js`)));
 const ui = await load("ui");
@@ -25,6 +25,7 @@ const { renderActions } = await load("actions-page");
 const { buildRecord } = await load("models/record");
 const { renderUsage } = await load("usage/page");
 const { DEFAULT_THRESHOLDS } = await load("usage/report");
+const browse = await load("browse/view");
 
 // Fixed revisions that look like real ones, so screenshots never show placeholders.
 const HEAD = "9621fac2436196a267f96ec81225c2cc3181512d";
@@ -126,6 +127,83 @@ const plans = [{
   proposal: null, plan: null, approval: null, parts: [], preview: null, integration: { integrationHead: null }, harnessFailure: null, pastDeadline: false,
 }];
 
+// Tasks the pages link to beyond the board's: the merged task History lists
+// and the plan the Plans tab shows.
+const merged = make("t5", "Add guarded cache cleanup", "merged", null, "5c0ffee1a2b3c4d5e6f708192a3b4c5d6e7f8091");
+const tasks = [...items, merged, planItem];
+
+// A small repository for the Code and Log tabs and each fork's browsing
+// (src/browse/view.ts): the same files at every commit, and each fork's
+// commits as its pushes name them, on the baseline's.
+const FILES = {
+  "README.md": "# Atelier\n\nA Git platform for coding agents.\n",
+  "package.json": '{\n  "name": "atelier",\n  "type": "module"\n}\n',
+  "src/rules.ts": "// The policy, as pure functions.\nexport const DEFAULT_OWNER = \"owner\";\n",
+  "src/sandbox/runner.ts": diff.files[0].hunks[0].lines.map((l) => l.text).join("\n") + "\n",
+};
+const full = (short) => (short + "0123456789abcdef0123456789abcdef01234567").slice(0, 40);
+const commitOf = (hash, message, parent, minAgo, author = "pavi thomas") =>
+  ({ hash, treeHash: full("7ee"), message, author: { name: author, email: "dev@example.com" }, parents: parent ? [parent] : [], authoredAt: Math.floor((now.getTime() - minAgo * 60_000) / 1000) });
+const baseline = [
+  commitOf(merged.head, "t5: add guarded cache cleanup\n\nAgent: codex/gpt-6\nCo-Authored-By: GPT-6 <noreply@openai.com>", BASE, 600),
+  commitOf(BASE, "Start the ledger", null, 2000),
+];
+const forkLine = (pushes, author) => {
+  const line = [];
+  let parent = BASE;
+  pushes.forEach(([hash, message], i) => { line.unshift(commitOf(hash, `${message}\n\nAgent: ${author}`, parent, 200 - i * 30, author)); parent = hash; });
+  return [...line, baseline[1]];
+};
+const repos = {
+  "": baseline,
+  t1: forkLine([[full("72701920"), "t1: a container runs the checks"], [HEAD, "t1: count only sandbox runs under sandboxOnly"]], "claude-code/opus-5.5"),
+  t2: forkLine([[full("1a2b3c4d"), "t2: read push events"], [full("5e6f7a8b"), "t2: record each push"], [items[2].head, "t2: fix the failing test"]], "codex/gpt-6"),
+  t4: forkLine([[items[1].head, "t4: test the ledger end to end"]], "zcode/glm-5.3"),
+  t5: baseline,
+  t6: [baseline[1]],
+};
+function treeAt(path) {
+  const prefix = path.length ? path.join("/") + "/" : "";
+  const names = new Map();
+  for (const file of Object.keys(FILES)) {
+    if (!file.startsWith(prefix)) continue;
+    const [first, ...more] = file.slice(prefix.length).split("/");
+    names.set(first, more.length ? "tree" : "blob");
+  }
+  if (!names.size) return null;
+  const entries = [...names].sort(([a, x], [b, y]) => (x === "tree" ? 0 : 1) - (y === "tree" ? 0 : 1) || a.localeCompare(b))
+    .map(([name, type]) => ({ name, type, mode: type === "tree" ? "040000" : "100644", hash: full("b10b") }));
+  return { kind: "tree", hash: full("7ee"), entries, total: entries.length };
+}
+
+// A browsing page under /p/atelier or /p/atelier/tN: code, log, commit/HASH
+// or history/PATH. Null when the address names nothing here.
+function browsePage(item, rest, url) {
+  const commits = repos[item ?? ""];
+  if (!commits) return null;
+  const find = (hash) => Object.values(repos).flat().find((c) => hash && c.hash.startsWith(hash));
+  const atHash = url.searchParams.get("at");
+  const head = atHash ? find(atHash) : commits[0];
+  if (!head) return null;
+  const w = { project, item, at: atHash ? head.hash : null };
+  const [what, ...path] = rest;
+  if (what === "code") {
+    if (FILES[path.join("/")] !== undefined) {
+      const lines = FILES[path.join("/")].split("\n").slice(0, -1);
+      return browse.renderBlob(w, head, path, { kind: "text", lines, bytes: FILES[path.join("/")].length }, "PAVI");
+    }
+    const node = treeAt(path);
+    return node && browse.renderTree(w, head, path, node, "PAVI", { by: new Map(node.entries.map((x) => [x.name, commits[0]])), examined: commits.length, complete: true });
+  }
+  if (what === "log" && !path.length) return browse.renderLog(w, head, commits, 0, false, "PAVI");
+  if (what === "commit" && path.length === 1) {
+    const c = find(path[0]);
+    return c && browse.renderCommit(w, { commit: c, parent: c.parents[0] ?? null, files: c.parents.length ? diff.files : [], truncated: false }, "PAVI");
+  }
+  if (what === "history" && FILES[path.join("/")] !== undefined) return browse.renderHistory(w, head, path, commits, true, "PAVI");
+  return null;
+}
+
 // The bar as the server fills it (src/index.ts, withShell): the Decisions
 // count, the project switcher, and under /p/NAME the project's row.
 function shellFor(pathname) {
@@ -142,18 +220,22 @@ function shellFor(pathname) {
 export function route(url) {
   const state = url.searchParams.get("state");
   const path = url.pathname.replace(/\/+$/, "") || "/";
+  const parts = path.split("/").slice(1).map((x) => { try { return decodeURIComponent(x); } catch { return x; } });
+  // The task first: the one the address names, or ?task= on Decisions; the
+  // ?state= variants then apply to it.
+  const named = parts[0] === "p" && parts[1] === project.name && parts[2] ? tasks.find((i) => i.id === parts[2]) : undefined;
+  const chosen = named ?? (url.searchParams.get("task") === "t4" ? items[1] : items[0]);
   const d = structuredClone(detail);
-  const taskDetail = (item) => {
-    d.item = structuredClone(item);
-    d.events = events.filter((x) => x.itemId === item.id).reverse();
-    if (item.id === "t4") d.gate = { ...d.gate, ready: true, needsAssessor: false, blockers: [] };
-  };
-  if (url.searchParams.get("task") === "t4") taskDetail(items[1]);
+  if (chosen.id !== "t1") {
+    d.item = structuredClone(chosen);
+    d.events = events.filter((x) => x.itemId === chosen.id).reverse();
+    if (chosen.id === "t4") d.gate = { ...d.gate, ready: true, needsAssessor: false, blockers: [] };
+  }
   if (state === "local" || state === "local-strict") d.evidence.forEach((x) => { delete x.where; x.by = "codex/gpt-6"; });
   if (state === "local") d.policy = { ...policy, sandboxOnly: false };
   if (state === "failed") { d.evidence[0].passed = false; d.gate.needsAssessor = false; }
   if (state === "ready") d.gate = { ...d.gate, ready: true, needsAssessor: false, blockers: [] };
-  if (state === "accepted" || state === "merged") { d.item.state = state; d.item.acceptedHead = HEAD; d.gate.needsAssessor = false; }
+  if (state === "accepted" || state === "merged") { d.item.state = state; d.item.acceptedHead = d.item.head; d.gate.needsAssessor = false; }
   if (state === "long") d.item.title = "Review a project with a very long title, extensive agent output, and deeply nested files that must remain readable on a phone";
   const empty = state === "empty";
   const decisions = () => ui.renderInbox(empty ? [] : [attention], [project], "PAVI", empty ? undefined : { project, detail: d, diff }, [{ project, items }]);
@@ -167,7 +249,7 @@ export function route(url) {
     "/projects": () => pages["/home"](),
     "/studio": () => ui.renderStudio(empty ? { benches: [], from: floor.from, to: floor.to } : floor, "PAVI", now),
     "/flow": () => ui.renderFlow(empty ? [] : [story], empty ? emptyTally() : addTally(emptyTally(), story.tally), OWNER, "PAVI"),
-    "/history": () => ui.renderHistory([{ project, items: [make("t5", "Add guarded cache cleanup", "merged", null)] }], "PAVI"),
+    "/history": () => ui.renderHistory([{ project, items: [merged] }], "PAVI"),
     "/models": () => ui.renderModels(models, buildRecord(events), "PAVI"),
     "/usage": () => renderUsage(empty ? [] : usage, DEFAULT_THRESHOLDS, [], now, "PAVI"),
     "/error": () => ui.renderError("This task changed since you opened it. Refresh and review the new revision."),
@@ -178,14 +260,14 @@ export function route(url) {
     "/p/atelier/ship": () => ui.renderProjectShip(project, renderActions(project.name, [], [], HEAD), "PAVI"),
     "/p/atelier/settings": () => ui.renderProjectSettings(project, "PAVI"),
   };
-  let html;
-  const task = path.match(/^\/p\/atelier\/([^/]+)$/)?.[1];
-  const item = items.find((i) => i.id === task);
-  if (pages[path]) html = pages[path]();
-  else if (item) {
-    if (item.id !== "t1") taskDetail(item);
-    html = ui.renderItem(project, d, "PAVI", state === "unavailable" ? "unavailable" : diff);
-  } else return { status: 404, html: "Not found." };
+  let html = pages[path]?.() ?? null;
+  if (!html && parts[0] === "p" && parts[1] === project.name) {
+    // /p/atelier/tN is the task; past it, or past /p/atelier, a browsing page.
+    if (named && parts.length === 3) html = ui.renderItem(project, d, "PAVI", state === "unavailable" ? "unavailable" : diff);
+    else if (named) html = browsePage(named.id, parts.slice(3), url);
+    else html = browsePage(null, parts.slice(2), url);
+  }
+  if (!html) return { status: 404, html: "Not found." };
   html = html.replace(/<meta http-equiv="refresh" content="\d+">/, "");
   if (ui.hasShell(html)) html = ui.fillShell(html, shellFor(path));
   return { status: 200, html };

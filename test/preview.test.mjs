@@ -73,6 +73,64 @@ test("a project tab is drawn as that tab, not as task t1", async () => {
   }
 });
 
+// Every same-origin link on every page the preview serves, followed from the
+// bar's destinations, is itself served (codex/gpt-6-astra's and Gemini 4
+// Argon's reviews of t604: the Code tab and its Log, the fork's code and log
+// from a task, a commit from Flow, and the tasks History and Plans link to
+// were 404s). Query strings are kept: ?at=, ?page= and ?state= pages too.
+test("every link on every page the preview serves is itself served", async () => {
+  const start = ["/", "/decisions", "/home", "/studio", "/flow", "/history", "/models", "/usage", "/login", "/how", "/error", "/p/atelier"];
+  const from = new Map(start.map((p) => [p, "(start)"]));
+  const queue = [...start];
+  const broken = [];
+  const done = new Set();
+  while (queue.length) {
+    const path = queue.shift();
+    if (done.has(path)) continue;
+    done.add(path);
+    const res = await fetch(base + path);
+    const html = await res.text();
+    if (res.status !== 200) { broken.push(`${path} (${res.status}, linked from ${from.get(path)})`); continue; }
+    if (html.includes("<!--shell:")) broken.push(`${path} (shell marker left)`);
+    for (const m of html.matchAll(/href="(\/(?!\/)[^"]*)"/g)) {
+      const link = m[1].replaceAll("&amp;", "&").split("#")[0];
+      if (!from.has(link)) { from.set(link, path); queue.push(link); }
+    }
+  }
+  assert.deepEqual(broken, []);
+  // The crawl reached the browsing pages, not only the bar's.
+  for (const p of ["/p/atelier/code", "/p/atelier/log", "/p/atelier/t1/code", "/p/atelier/t1/log", "/p/atelier/t5", "/p/atelier/t6"]) assert.ok(done.has(p), `the crawl never reached ${p}`);
+  assert.ok([...done].some((p) => /^\/p\/atelier\/t1\/commit\//.test(p)), "the crawl reached no commit page");
+  assert.ok([...done].some((p) => /^\/p\/atelier\/(t\d+\/)?history\//.test(p)), "the crawl reached no file history");
+});
+
+// The ?state= variants change the task the address names, t4 as much as t1:
+// the task is chosen before the state is applied.
+test("a task's ?state= variants apply to the task the address names", async () => {
+  const LONG = "Review a project with a very long title, extensive agent output, and deeply nested files that must remain readable on a phone";
+  for (const id of ["t1", "t4"]) {
+    const long = await (await fetch(`${base}/p/atelier/${id}?state=long`)).text();
+    assert.ok(long.includes(`<title>${LONG} · Atelier</title>`), `${id}?state=long kept its own title`);
+    // The task's status line, as renderItem words each state.
+    const plain = await (await fetch(`${base}/p/atelier/${id}`)).text();
+    for (const [state, words] of [["accepted", "Ready to merge"], ["merged", "Merged into the project"]]) {
+      const html = await (await fetch(`${base}/p/atelier/${id}?state=${state}`)).text();
+      assert.ok(html.includes(`>${words}<`), `${id}?state=${state} is not drawn as "${words}"`);
+      assert.ok(!plain.includes(`>${words}<`), `${id} is drawn as "${words}" with no state`);
+    }
+    for (const state of ["failed", "ready", "local", "local-strict", "unavailable", "empty"]) {
+      const res = await fetch(`${base}/p/atelier/${id}?state=${state}`);
+      assert.equal(res.status, 200, `${id}?state=${state}`);
+      assert.ok(!(await res.text()).includes("<!--shell:"));
+    }
+  }
+  for (const path of ["/decisions?state=empty", "/home?state=empty", "/studio?state=empty", "/flow?state=empty", "/usage?state=empty", "/p/atelier/plans?state=empty", "/decisions?task=t4"]) {
+    const res = await fetch(base + path);
+    assert.equal(res.status, 200, path);
+    assert.ok(!(await res.text()).includes("<!--shell:"), path);
+  }
+});
+
 test("an address the preview does not serve is a 404, not the Decisions page", async () => {
   const res = await fetch(`${base}/no-such-page`);
   assert.equal(res.status, 404);
