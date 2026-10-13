@@ -194,6 +194,8 @@ review independence, even if a Git push was first observed after handoff or
 release. Recorded push contributors also remain; a push first observed while
 nobody holds the item adds no one, since it was made with an earlier holder's
 token. Agent tokens cannot reopen accepted work by reviewing it.
+Independence of review is enforced against agents in this way, not against
+the developer token, which can name any actor, a reviewer included.
 What an agent writes has a stated limit, and text over it is refused whole,
 never cut: a review, handoff or release note 2,000 characters, a submit
 summary 600, a report or a check's command 500, a check's output 4,000. The
