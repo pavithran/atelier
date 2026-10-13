@@ -90,7 +90,13 @@ test("the review code is called by the ledger and the runner, and the page says 
   // import it, and nothing else from src/review.
   const triageOnly = (file: string) => [join("cli", "land.mjs"), join("src", "landing-workflow.ts"), join("src", "index.ts")].includes(file)
     && [...read(file).matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*)["'](?:[^"']*\/)?review\/([^"']+)["']/g)].every((m) => m[1] === "triage.ts");
-  const callers = [...sources("src"), ...sources("cli")].filter((file) => !file.startsWith(inside) && !sharesTypes.has(file) && !triageOnly(file) && imports.test(read(file)));
+  // The harness adapter (cli/harness/adapter.mjs), which the runner starts
+  // for a review, reads the reply with the runner's own verdict parser only
+  // to tell whether it states a verdict, and asks once more when it does not
+  // (t576); it imports src/review/verdict.ts and nothing else from src/review.
+  const verdictCheckOnly = (file: string) => file === join("cli", "harness", "adapter.mjs")
+    && [...read(file).matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*)["'](?:[^"']*\/)?review\/([^"']+)["']/g)].every((m) => m[1] === "verdict.ts");
+  const callers = [...sources("src"), ...sources("cli")].filter((file) => !file.startsWith(inside) && !sharesTypes.has(file) && !triageOnly(file) && !verdictCheckOnly(file) && imports.test(read(file)));
   assert.deepEqual([...callers].sort(), ["cli/runner.mjs", "src/ledger.ts"], "the review code should be called by the ledger and the runner alone");
   const requests = ORCHESTRATOR.find((p) => p.name === "Review requests and runner job")!;
   assert.ok(requests.built);

@@ -1403,6 +1403,14 @@ it("the showcase draws a named project's short title, never its brief, and neith
     // One long text, as an older CLI sends it: the title is its first clause.
     await L.newItem(`Fix the quokka parser (zebrafish marker): ${"the rest of the brief ".repeat(5)}`, [], "owner");
     await L.claim("t1", "codex/gpt-6-astra");
+    // The story tells a merged task only (t578), so the task is merged.
+    const head = "2".repeat(40);
+    await L.setFork("t1", `${name}--t1`, "1".repeat(40), "codex/gpt-6-astra");
+    await L.recordPush("t1", "codex/gpt-6-astra", head, head);
+    await L.addEvidence({ itemId: "t1", claim: "npm test", grade: "observed", head, passed: true, by: "codex/gpt-6-astra", at: new Date().toISOString(), changedPaths: ["src/a.ts"] });
+    await L.submit("t1", "codex/gpt-6-astra");
+    await L.accept("t1", "owner", head);
+    await L.merged("t1", "owner", "d".repeat(40), true, head);
     const html = await (await worker.fetch(new Request("https://atelier.test/showcase"), { ...testEnv, SHOWCASE: `${name}${mode}` } as typeof env)).text();
     expect(html, name).not.toContain("zebrafish");
     if (mode) {
