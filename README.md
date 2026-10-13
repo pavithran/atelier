@@ -43,8 +43,14 @@ so multiple agents work concurrently without touching each other's files.
 
 ### Prove
 
-**Atelier runs the tests.** A check that Atelier ran itself, in a clean
-clone of exactly the head it reads from Artifacts, is *Observed*. Anything
+**The checks run on the exact head.** `atelier check` runs each required
+check in a clean clone of exactly the head Atelier reads from Artifacts, on
+the machine that asks (an agent's or a runner's), or with `--sandbox` in a
+Cloudflare container. Atelier records the result as *Observed* only when it
+names that head, with the paths the change touches, which Atelier measures
+itself. The pass or fail of a local run is the word of the machine that ran
+it; a project that wants results no agent can forge is registered with
+`atelier init --sandbox-only`, and then only container runs count. Anything
 an agent says it did is *Reported*: shown, never counted. A required check
 with no observed result at the current head is *Pending*. Only Observed
 passes count.
@@ -56,7 +62,9 @@ change to a protected path needs approval from a model of another family than
 every recorded contributor by default; in single-family mode, a different
 model of the project's one company from every contributor. The
 developer's approval is not that review; without one, they can accept only
-by recording an override with its reason.
+by recording an override with its reason. Independence is enforced against
+agents, whose tokens are bound to their own actor. The developer token can
+act for anyone, a reviewer included, so the developer is trusted.
 
 The cross-company rule above is the default policy. With
 `atelier init --single-family COMPANY`, building and reviewing use only that
@@ -97,8 +105,8 @@ the commit when multiple agents work at once, and that is what Atelier adds.
 | The question | With Git and a forge alone | With Atelier |
 | --- | --- | --- |
 | Who holds this work? | Commits record authors, not who holds the work; two agents can take the same task, and a crashed one leaves its branch half done. | One holder per task, holding the only write token for its workspace; a handoff is recorded and revokes the old token; a restarted runner takes back the jobs a dead run left. |
-| Did the checks really pass? | An agent reports that the tests passed, and the report is believed. | Atelier runs the required checks itself, in a clean clone of the exact head; a merge is refused until every required check is observed passing there. |
-| Who checked it independently? | A model can review, and approve, its own work. | A change to a protected path needs approval from a model of another family than every contributor. |
+| Did the checks really pass? | An agent reports that the tests passed, and the report is believed. | The required checks run in a clean clone of the exact head Atelier reads, and a merge is refused until every one is observed passing there; with `--sandbox-only`, only runs in a Cloudflare container count. |
+| Who checked it independently? | A model can review, and approve, its own work. | A change to a protected path needs approval from a model of another family than every contributor, and an agent's token speaks only for that agent. |
 | Is main still sound after the merge? | Branches drift from main, and what merges may not be what was reviewed. | One landing at a time under a lease: main is merged in, checks run again, and the exact head that was reviewed is the one merged. A plan's parts are integrated on the plan's own branch first. |
 | What needs the developer now? | A stream of pull requests and notifications. | A decision inbox, ranked, each entry with a recommendation; `atelier land` takes a task from review to merge in one command. |
 | Which model is worth it? | Nothing records it. | Each model's track record and reliability from the ledger, and its calls, cost and latency from AI Gateway. |
@@ -276,7 +284,7 @@ accepted work into the real checkout, and the baseline follows.
 | `atelier new "title" --scope GLOB` | the developer | Creates a task. The scope is what it intends to touch; overlapping live scopes are flagged. |
 | `atelier claim t3 --as H/M` | an agent | Grants the task atomically, forks the baseline, mints an eight-hour write token for the holder alone, and clones the workspace. |
 | `atelier push` | the task's holder | Pushes, then asks the Worker to read the head from Artifacts. The ledger records the head Atelier saw, not the one the agent named. |
-| `atelier check` | the task's holder; anyone with `--sandbox` | Runs each required check in a fresh clone of that head, or in a container, and records the results as Observed with the paths the change touches, which the Worker measures itself. |
+| `atelier check` | the task's holder; anyone with `--sandbox` | Runs each required check in a fresh clone of that head on the caller's machine, or in a container, and records the results as Observed with the paths the change touches, which the Worker measures itself. |
 | `atelier submit` | the task's holder | Marks the task ready; the gate states what still blocks it. |
 | `atelier handoff t3 --to H/M` | the task's holder or the developer | Moves the task to a new holder and revokes the old write token; the workspace carries over. |
 | `atelier review t3 --approve` | a model that did not work on the task | Required when the change touches a protected path, from another family than every contributor. |
@@ -741,7 +749,10 @@ Trusted, and stated here so nobody assumes otherwise:
 
 - **Agent tokens prove identity.** An agent token binds requests to one actor
   and optionally to projects. The developer token still permits declared actors
-  for orchestration. Keep it with the developer's tools. A workspace write token
+  for orchestration, a reviewer included: a review it records in a model's
+  name counts as that model's. Independence of review is therefore
+  guaranteed against agents, not against whoever holds the developer token.
+  Keep it with the developer's tools. A workspace write token
   controls Git pushes and is separate from an API token.
 - **Git credentials stay off the command line.** The CLI hands every
   Artifacts token to git through git's environment (`GIT_CONFIG_COUNT`,
@@ -756,8 +767,9 @@ Trusted, and stated here so nobody assumes otherwise:
   touches: the changed paths are measured by the Worker from Artifacts for
   every check, so a protected change always needs its independent review,
   whatever a local result says. Cloudflare container checks execute on the
-  server and are available with `--sandbox`; `sandboxOnly` policy requires
-  that evidence.
+  server and are available with `--sandbox`; a project that wants results no
+  agent can forge is registered with `atelier init --sandbox-only`, whose
+  `sandboxOnly` policy counts only that evidence.
   The container integration still needs deployment and a live runtime check.
 - **A local check runs with the caller's file access.** `atelier check`,
   `finish` and `done` run the item's check code on the caller's machine as
