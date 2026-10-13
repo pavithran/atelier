@@ -211,11 +211,12 @@ test("a reviewer is routed only to a model a live runner offers for the review j
   assert.equal(buildOnly.builder!.actor, "codex/gpt-6-astra");
   assert.equal(buildOnly.reviewer, null);
   assert.equal(buildOnly.unrouted, "no reviewer of another family than openai (codex/gpt-6-astra): claude-code/opus-5.5 (no live runner offers claude-code/opus-5.5 for the review job: home:mbp offers no review job)");
-  // A cloud runner offering the models is not a home review runner either.
+  // A cloud runner offering the models is not a home review runner either,
+  // nor a home build runner: a part's build goes home (dispatchPart), so no
+  // model it offers builds (gpt-6-astra's third review of t622, finding 2).
   const cloud = one([opus, gpt], { offers: [seen("cloud:far", { kind: "cloud", jobs: ["build", "review"], agents: [{ agent: "claude-code", models: ["opus-5.5"] }, { agent: "codex", models: ["gpt-6-astra"] }] })] });
-  assert.equal(cloud.builder!.actor, "codex/gpt-6-astra");
-  assert.equal(cloud.reviewer, null);
-  assert.match(cloud.unrouted!, /no live runner offers claude-code\/opus-5\.5 for the review job: cloud:far is a cloud runner, not a home one/);
+  assert.equal(cloud.builder, null);
+  assert.match(cloud.unrouted!, /no eligible builder: .*codex\/gpt-6-astra \(no live runner offers codex\/gpt-6-astra for a build at home: cloud:far is a cloud runner, not a home one\)/);
   // A live runner offering review under another cross-family model routes
   // the reviewer to it alone, its reasons naming the runner, and the build
   // side is untouched by the review job's offer.

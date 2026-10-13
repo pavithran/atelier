@@ -82,7 +82,7 @@
 
 import { DECISION_NOTE_MAX, DECISION_QUOTE_MAX, DECISION_TEXT_MAX, line } from "../decisions.ts";
 import { RuleError, sameActor } from "../rules.ts";
-import { canonicalModel, type PoolNames } from "./judgement.ts";
+import { canonicalModel, poolEntryFor, type PoolNames } from "./judgement.ts";
 import { entryRuns, standingRefusal, type ModelEntry, type ModelRole } from "./pool.ts";
 
 export const ASSIGNMENT_ROLES = ["build", "review", "security-review", "claims-review", "plan"] as const;
@@ -440,6 +440,26 @@ export function inputFingerprint(input: AssignmentInput): string {
   return JSON.stringify([input.scope, input.role, input.choices, input.reason, input.quote, input.evidence.map(refText), input.replaces]);
 }
 
+// Whether a request is a retry of the one that recorded `prior` (found by
+// its request id): the same content as sent, by the same acting model.
+// Judged against what was recorded, never against the pool or the projects
+// as they are now, so a model removed since, the acting one included, does
+// not fail the retry (gpt-6-astra's third review of t622, finding 4). The
+// same id with other content, or another acting model, is another request
+// reusing it, and is refused.
+export function isRetryOf(prior: Pick<Assignment, "id" | "fingerprint" | "acting">, request: string, fingerprint: string, acting: string | null): true {
+  if (prior.fingerprint === fingerprint && (prior.acting ?? "").toLowerCase() === (acting ?? "").toLowerCase()) return true;
+  const what = prior.fingerprint === fingerprint ? `acting as ${prior.acting ?? "nobody"}, not ${acting ?? "nobody"}` : "with other content";
+  throw new RuleError("request_reused", `request ${request} already recorded ${prior.id}, ${what}; a new decision needs a new request id`, 409);
+}
+
+// Whether a withdrawal request is a retry of the withdrawal recorded: the
+// same note, by the same acting model. Otherwise it is not, and
+// withdrawAssignment judges it as a new request.
+export function isWithdrawalRetry(done: Pick<AssignmentWithdrawal, "note" | "acting">, note: unknown, acting: string | null): boolean {
+  return typeof note === "string" && line(note) === done.note && (done.acting ?? "").toLowerCase() === (acting ?? "").toLowerCase();
+}
+
 // ── reading ─────────────────────────────────────────────────────────────
 
 // The assignments that bear on a job in a project, most specific first:
@@ -455,9 +475,16 @@ export function applicableAssignments(current: readonly Assignment[], project: s
   ]);
 }
 
-// Whether a candidate actor is an assignment's choice: the same harness and
-// the same model, by the pool's names when it is given.
+// Whether a candidate actor is an assignment's choice. When the pool has
+// both, they match only as the same pool entry (poolEntryFor), so the entry
+// the developer named is the one promoted: two entries in one harness that
+// share a model, such as two profiles of it, are two candidates
+// (gemini-4-argon's third review of t622, finding 2). Otherwise, as for a
+// choice the pool has since lost, the same harness and the same model.
 export function choiceMatches(choice: AssignmentChoice, actor: string, pool: PoolNames = []): boolean {
+  if (choice.actor.toLowerCase() === actor.toLowerCase()) return true;
+  const chosen = poolEntryFor(choice.actor, pool), entry = poolEntryFor(actor, pool);
+  if (chosen && entry) return chosen === entry;
   if (sameActor(choice.actor, actor)) return true;
   const harness = (a: string) => a.slice(0, Math.max(0, a.indexOf("/"))).toLowerCase();
   return harness(choice.actor) === harness(actor) && canonicalModel(actor, pool) === choice.model;
@@ -494,7 +521,10 @@ export function orderByAssignment<T>(candidates: readonly T[], actorOf: (c: T) =
     const firsts: { c: T; k: number }[] = [];
     const missed: string[] = [];
     a.choices.forEach((choice, k) => {
-      const matches = candidates.filter((c) => choiceMatches(choice, actorOf(c), pool));
+      // The candidate named exactly as the choice first, then any other name
+      // of its pool entry.
+      const exact = (c: T) => actorOf(c).toLowerCase() === choice.actor.toLowerCase();
+      const matches = candidates.filter((c) => choiceMatches(choice, actorOf(c), pool)).sort((x, y) => Number(exact(y)) - Number(exact(x)));
       const ok = matches.find((c) => refusal(c) === null);
       if (ok !== undefined && !firsts.some((f) => f.c === ok)) firsts.push({ c: ok, k });
       else if (ok === undefined) missed.push(`${choice.actor}: ${matches.length ? refusal(matches[0]) : "not a candidate here (not in the pool, or not offered for this job)"}`);

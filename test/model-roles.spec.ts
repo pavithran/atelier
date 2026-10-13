@@ -269,3 +269,134 @@ it("a review requested without suggestion records keeps the selector's reasons",
   const asked = events.find((e) => e.kind === "review.requested");
   expect(String(asked?.data.reason)).toMatch(new RegExp(`Role assignment ${a.id}`));
 });
+
+// gpt-6-astra's third review of t622, finding 3: a retry answered at once,
+// unreached empty, so a first request that stopped between its record and
+// its broadcast left a project on the old routing with nothing said.
+it("a retry sends every project the assignments standing now and says whether its record still stands", async () => {
+  await project("roles-repair-a");
+  const first = body({ evidence: ["roles-repair-a/t1"], request: "roles-repair-request" });
+  const made = await call("POST", "/model-roles", first);
+  expect(made.status).toBe(201);
+  const a = await made.json() as Assignment;
+  try {
+    // A project the first request's broadcast never reached: registered
+    // after it, without the initialisation that seeds a copy.
+    const late = await project("roles-repair-b");
+    expect(await late.availableReviewer("t1", POOL)).toBe("antigravity/gemini-4-argon");
+    const again = await call("POST", "/model-roles", first);
+    expect(again.status).toBe(200);
+    expect(await again.json()).toMatchObject({ id: a.id, retried: true, status: "current", unreached: [] });
+    expect(await late.availableReviewer("t1", POOL)).toBe("codex/gpt-6-astra");
+  } finally {
+    await call("POST", `/model-roles/${a.id}/withdraw`, { note: "test over" });
+  }
+  // Withdrawn since: the retry says so, and the withdrawal stands everywhere.
+  const after = await call("POST", "/model-roles", first);
+  expect(await after.json()).toMatchObject({ id: a.id, retried: true, status: "withdrawn" });
+  expect(await ledger("roles-repair-b").availableReviewer("t1", POOL)).toBe("antigravity/gemini-4-argon");
+});
+
+// gpt-6-astra's third review of t622, finding 4: the acting model was checked
+// against the pool for every route before the retry was matched, so removing
+// it after the first request made the retry fail.
+it("a retry recorded with an acting model the pool has since lost is answered from its record", async () => {
+  await project("roles-acting");
+  const sonnet = entry("claude-code", "sonnet-5.5");
+  await index().putModel(sonnet);
+  const first = body({ evidence: ["roles-acting/t1"], scope: "roles-acting", request: "roles-acting-request" });
+  const made = await (await call("POST", "/model-roles", first, "owner", "claude-code/sonnet-5.5")).json() as Assignment;
+  expect(made.acting).toBe("claude-code/sonnet-5.5");
+  await index().removeModel("sonnet-5.5");
+  try {
+    const again = await call("POST", "/model-roles", first, "owner", "claude-code/sonnet-5.5");
+    expect(again.status, await again.clone().text()).toBe(200);
+    expect(await again.json()).toMatchObject({ id: made.id, retried: true });
+    // Another acting model reusing the id is another request.
+    const other = await call("POST", "/model-roles", first, "owner", "claude-code/opus-5.5");
+    expect(other.status).toBe(409);
+    // A new request is still checked against the pool now.
+    const fresh = await call("POST", "/model-roles", body({ evidence: ["roles-acting/t1"], scope: "roles-acting", replaces: made.id }), "owner", "claude-code/sonnet-5.5");
+    expect(JSON.stringify(await fresh.json())).toMatch(/unregistered_acting/);
+    // So is a withdrawal; its retry is answered from its record.
+    await index().putModel(sonnet);
+    const note = { note: "Sonnet stood in this week." };
+    expect((await call("POST", `/model-roles/${made.id}/withdraw`, note, "owner", "claude-code/sonnet-5.5")).status).toBe(200);
+    await index().removeModel("sonnet-5.5");
+    const retried = await call("POST", `/model-roles/${made.id}/withdraw`, note, "owner", "claude-code/sonnet-5.5");
+    expect(retried.status, await retried.clone().text()).toBe(200);
+    expect(await retried.json()).toMatchObject({ withdraws: made.id, retried: true });
+  } finally {
+    await index().removeModel("sonnet-5.5").catch(() => {});
+  }
+});
+
+// A plan approved over POOL in `name`, its one part's item and routing.
+async function planned(name: string) {
+  const L = ledger(name);
+  await L.setProject({ name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: AT }, "owner");
+  const planner = "claude-code/opus-5.5", runner = { runner: "home:studio", kind: "home" } as const;
+  const { item } = await L.newPlan("Ship the feature", ["src/**"], "owner", planner, []);
+  await L.claim(item.id, planner, runner);
+  const part = { key: "a", title: "Part a", kind: "build", taskKind: "feature", scope: ["src/a/**"], dependsOn: [], provides: [], uses: [], brief: "Build it", acceptance: ["It works"], tests: [], size: "S" };
+  const post = await L.postPlan(item.id, planner, { schema: "atelier.plan.v1", goal: "Ship the feature", parts: [part] });
+  if (!post.valid) throw new Error(post.errors.join("; "));
+  await L.release(item.id, planner, "proposed");
+  const { parts } = await L.approvePlan(item.id, "owner", post.hash, false, POOL);
+  const route = (await L.planView(item.id)).parts[0].route!;
+  return { L, id: item.id, partId: parts[0].id, route, runner };
+}
+
+// The part worked to submitted by `actor`, checks passing, paths measured.
+async function submitted(L: ReturnType<typeof ledger>, partId: string, actor: string, runner: { runner: string; kind: "home" }) {
+  const H = "a".repeat(40);
+  await L.claim(partId, actor, runner);
+  await L.setFork(partId, `fork-${partId}`, "0".repeat(40), actor);
+  await L.recordPush(partId, actor, H, H);
+  await L.addEvidence({ itemId: partId, claim: "npm test", grade: "observed", passed: true, head: H, changedPaths: ["src/a/x.ts"], by: "owner", at: new Date().toISOString() });
+  await L.submit(partId, actor);
+}
+
+const assignment = (id: string, role: Assignment["role"], actor: string): Assignment => ({
+  id, kind: "assigned", scope: "*", role, choices: [{ actor, model: actor.slice(actor.indexOf("/") + 1) }], reason: "By judgement.", quote: "PAVI's words", evidence: [], by: "owner", at: AT,
+});
+
+// gpt-6-astra's third review of t622, finding 5: the plan tick's review
+// request kept no reason, so which assignment applied or was skipped, and
+// why, was lost where the reviewer is chosen.
+it("a plan's review request records what the role assignments said of its reviewer", async () => {
+  const { L, partId, route, runner } = await planned("roles-plan-tick");
+  const a = assignment("a900", "review", "zcode/glm-5.3");
+  await L.assignmentsChanged({ version: 900, assignments: [a] });
+  await submitted(L, partId, route.builder!.actor, runner);
+  const asked = (await L.events(partId) as unknown as { kind: string; data: Record<string, any> }[]).find((e) => e.kind === "review.requested")!;
+  expect(asked.data.reviewer).toBe(route.reviewer!.actor);
+  // The routing fixed at approval came first, and the assignment is named as skipped for it.
+  expect(String(asked.data.reason)).toMatch(/Role assignment a900 skipped: the plan's routing comes before role assignments/);
+  expect(asked.data.assignment).toMatchObject({ applied: null, skipped: [{ id: "a900" }] });
+});
+
+// gpt-6-astra's third review of t622, finding 2: the plan tick chose a
+// replacement reviewer with no offers at all, so an assignment promoted a
+// model no runner offers for the review job, whose request nobody could claim.
+it("a plan's replacement reviewer is one a live runner offers for the review job at home", async () => {
+  const { L, partId, route, runner } = await planned("roles-plan-offers");
+  const builder = route.builder!.actor, reviewer = route.reviewer!.actor;
+  // The routed reviewer claims the part and lets it go, so it is a contributor.
+  await L.reroutePlan(partId, "owner", reviewer);
+  await L.claim(partId, reviewer, runner);
+  await L.release(partId, reviewer, "stalled");
+  await L.reroutePlan(partId, "owner", builder);
+  // Of the two models left, the one asked first without offers is assigned
+  // and offered only for builds; the other is offered for review at home.
+  const left = POOL.map((m) => `${m.harness}/${m.id}`).filter((a) => a !== builder && a !== reviewer);
+  const unoffered = route.alternates.map((c) => c.actor).find((a) => left.includes(a)) ?? left[0];
+  const offered = left.find((a) => a !== unoffered)!;
+  await L.assignmentsChanged({ version: 901, assignments: [assignment("a901", "review", unoffered)] });
+  const split = (a: string) => ({ agent: a.slice(0, a.indexOf("/")), models: [a.slice(a.indexOf("/") + 1)] });
+  await L.runnerPoll({ id: "tok-builds", runner: "home:builds" } as never, { runner: "home:builds", kind: "home", jobs: ["build"], agents: [builder, unoffered, offered].map(split) });
+  await L.runnerPoll({ id: "tok-reviews", runner: "home:reviews" } as never, { runner: "home:reviews", kind: "home", jobs: ["review"], agents: [split(offered)] });
+  await submitted(L, partId, builder, runner);
+  const asked = (await L.events(partId) as unknown as { kind: string; data: Record<string, any> }[]).find((e) => e.kind === "review.requested")!;
+  expect(asked.data.reviewer).toBe(offered);
+});

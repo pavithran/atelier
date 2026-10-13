@@ -60,7 +60,11 @@ export async function assignCommand() {
   const body = { request: randomUUID(), role, choices: choices.flatMap((c) => c.split(",")).map((c) => c.trim()).filter(Boolean), reason: args.reason, quote: args.quote, evidence, scope: args.scope, replaces: args.replaces };
   const a = await call("POST", "/model-roles", body, OWNER, actingHeaders());
   const where = a.scope === "*" ? "every project" : args.scope;
-  if (a.retried) return console.log(`${a.id} already records that assignment (${a.at.slice(0, 10)}); nothing new was recorded.${unreachedLine(a.unreached)}`);
+  // A retry says whether the record still stands: one superseded or
+  // withdrawn since is not what routing reads.
+  const since = a.status === "superseded" ? ` It has since been superseded by ${a.supersededBy?.id}, so routing reads that one.`
+    : a.status === "withdrawn" ? ` It has since been withdrawn (${a.withdrawal?.id}), so ${a.role} goes by its fallback.` : "";
+  if (a.retried) return console.log(`${a.id} already records that assignment (${a.at.slice(0, 10)}); nothing new was recorded.${since}${unreachedLine(a.unreached)}`);
   console.log(`${a.id}: ${a.role} in ${where} goes to ${a.choices.map((c) => c.actor).join(", then ")}, recorded ${a.at.slice(0, 10)}${a.supersedes ? `, superseding ${a.supersedes}` : ""}. Routing reads it from now on. To withdraw it: atelier models roles withdraw ${a.id} --note "why"${unreachedLine(a.unreached)}`);
 }
 

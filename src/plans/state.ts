@@ -6,7 +6,7 @@
 // `node --test` as phase.ts's are.
 
 import type { LedgerEvent } from "../ledger.ts";
-import { liveOffers, offeredActors, type SeenOffer } from "../dispatch/rules.ts";
+import { liveOffers, offeredActors, offering, type Dispatch, type SeenOffer } from "../dispatch/rules.ts";
 import { applicableAssignments, FALLBACK, orderByAssignment, type Assignment } from "../models/assignments.ts";
 import type { ModelEntry } from "../models/pool.ts";
 import { standingRefusal } from "../models/pool.ts";
@@ -291,6 +291,7 @@ export interface PlannerPick {
 }
 
 const actorOf = (entry: ModelEntry) => `${entry.harness}/${entry.id}`;
+const PLAN_JOB: Pick<Dispatch, "to" | "job"> = { to: "home", job: "plan" };
 
 // The default planner: the first pool model in route()'s order for research
 // work that may plan. A refused model is passed over, as routing passes it
@@ -306,6 +307,10 @@ export function pickPlanner(pool: readonly ModelEntry[], events: readonly Ledger
   const entries = new Map(pool.map((entry) => [actorOf(entry), entry]));
   const ranked = route({ kind: "research" }, pool.map((entry) => profileFor(entry, profiles)), recordFor(pool, events), { localOnly: false, allowedWhere: "any" });
   const offered = offers ? offeredActors(liveOffers(offers)) : null;
+  // The plan job goes home (planDispatch in src/ledger.ts): a model a live
+  // runner names only for other work, or only in the cloud, could never
+  // claim it (gpt-6-astra's third review of t622, finding 2).
+  const planOffer = offers ? offering(PLAN_JOB, offers) : null;
   const passedOver: Choice[] = [];
   const refusalsOf = (entry: ModelEntry): string[] => {
     const actor = actorOf(entry);
@@ -315,6 +320,7 @@ export function pickPlanner(pool: readonly ModelEntry[], events: readonly Ledger
     if (held) refusals.push(held);
     if (paidPerToken(entry)) refusals.push(`paid per token (${entry.provider}); name it with --planner to use it`);
     if (offered && !offered.has(actor.toLowerCase())) refusals.push(`no live runner offers ${actor}, so no runner could claim the plan job`);
+    else if (planOffer && !planOffer.actors.has(actor.toLowerCase())) refusals.push(`no live runner offers ${actor} for the plan job at home: ${planOffer.instead.join("; ")}`);
     try { assertEligible(actor, policy, DEFAULT_OWNER, "planner"); } catch (err) {
       const rule = parseRuleError(err);
       if (!rule) throw err;

@@ -65,7 +65,7 @@ import { reviewNeeded, REVIEW_CLAIM_TIMEOUT_MS, type ReviewRequired, type Review
 import type { SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
 import { suggestReviewer } from "./review/suggest.ts";
-import { ALL_PROJECTS, applicableAssignments, assignmentHistory, assignmentSnapshot, currentAssignments, docsOnly, recordAssignment, reviewRoles, snapshotApplies, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentSnapshot, type AssignmentStore, type AssignmentView, type ResolvedAssignment } from "./models/assignments.ts";
+import { ALL_PROJECTS, applicableAssignments, assignmentHistory, assignmentSnapshot, currentAssignments, docsOnly, recordAssignment, reviewRoles, snapshotApplies, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentSnapshot, type AssignmentStore, type AssignmentView, type AssignmentWithdrawal, type ResolvedAssignment } from "./models/assignments.ts";
 import { sensitive } from "./models/suggest.ts";
 import { buildPrecision, precisionWindow, type PrecisionRecord } from "./models/precision.ts";
 import { independenceRefusal } from "./review/independence.ts";
@@ -1213,9 +1213,15 @@ export class Ledger extends DurableObject<Env> {
     return recordAssignment(this.assignmentStore, actor, input, new Date().toISOString(), acting);
   }
 
-  // The assignment a request recorded, by the client's request id, or null.
-  assignmentForRequest(request: string): Assignment | null {
-    return this.assignmentStore.records().find((r): r is Assignment => r.kind === "assigned" && r.request === request) ?? null;
+  // The assignment a request recorded, by the client's request id, with its
+  // status now (current, superseded or withdrawn), or null.
+  assignmentForRequest(request: string): AssignmentView | null {
+    return assignmentHistory(this.assignmentStore.records()).find((a) => a.request === request) ?? null;
+  }
+
+  // The withdrawal of an assignment, or null while none is recorded.
+  assignmentWithdrawalOf(id: string): AssignmentWithdrawal | null {
+    return this.assignmentStore.records().find((r): r is AssignmentWithdrawal => r.kind === "withdrawn" && r.withdraws === id) ?? null;
   }
 
   withdrawRoleAssignment(id: string, actor: string, note: unknown, acting: string | null = null) {
@@ -5060,10 +5066,35 @@ export class Ledger extends DurableObject<Env> {
   // is live, however many runners asked. A read that fails says the same.
   private async routingOffers(): Promise<readonly SeenOffer[] | undefined> {
     try {
-      return routable(await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers());
+      const recorded = await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers();
+      this.keepOffers(recorded);
+      return routable(recorded);
     } catch {
       return undefined;
     }
+  }
+
+  // The runners' offers as this ledger last read them from the index, kept
+  // so the plan tick, which runs in one synchronous step without the index,
+  // judges a reviewer it asks by what a runner offers as every other
+  // selector does (gpt-6-astra's third review of t622, finding 2).
+  private keepOffers(offers: readonly SeenOffer[] | null | undefined): void {
+    if (!offers) return;
+    this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('offers', ?)`, JSON.stringify(offers));
+  }
+
+  // Those offers with the ones runner tokens' polls recorded here
+  // (runnerPoll), each runner's newest; liveOffers then reads only the live
+  // ones, so offers that have gone stale restrict nothing, as with none.
+  private heldOffers(): SeenOffer[] {
+    const kept = this.runnerMeta<SeenOffer[]>("offers") ?? [];
+    const polled = this.sql.exec(`SELECT value FROM meta WHERE key LIKE 'runner-offer:%'`).toArray().map((r) => JSON.parse(r.value as string) as SeenOffer);
+    const newest = new Map<string, SeenOffer>();
+    for (const offer of [...kept, ...polled]) {
+      const held = newest.get(offer.runner);
+      if (!held || held.at < offer.at) newest.set(offer.runner, offer);
+    }
+    return [...newest.values()];
   }
 
   // The owner states a goal. The plan item is created and dispatched as a
@@ -5224,6 +5255,7 @@ export class Ledger extends DurableObject<Env> {
   // plan order, the tick dispatches what may start, all in one transaction,
   // and the alarm is set for the deadline.
   async approvePlan(id: string, actor: string, hash: string, allowPaid: boolean, pool: ModelEntry[], offers: readonly SeenOffer[] | null = null): Promise<{ item: Item; parts: Item[] }> {
+    this.keepOffers(offers);
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer approves a plan", 403);
     const item = this.planItem(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("closed", `${id} is ${item.state}`);
@@ -5880,6 +5912,7 @@ export class Ledger extends DurableObject<Env> {
     // asked.
     const standing = this.poolStanding();
     const pool = withStanding(approval.pool, standing);
+    const tickOffers = this.heldOffers();
     for (const listed of parts) {
       if (listed.state !== "submitted" || !listed.partKey) continue;
       // The part as item() reads it, with its push actors: planParts reads
@@ -5941,6 +5974,8 @@ export class Ledger extends DurableObject<Env> {
       const pick = named ? null : pickReviewer({
         item: p, pool, policy, allowPaid: approval.allowPaid,
         part, route,
+        // The request goes home, so the offer is judged there.
+        offers: tickOffers, destination: () => "home",
         previous: need.previousReviewer,
         // A protected part's review goes to the tier first, so one review
         // serves the gate and the tier (src/review/tier.ts).
@@ -5978,8 +6013,14 @@ export class Ledger extends DurableObject<Env> {
       const topTier = this.gateIsTier(p, need, reviewer);
       this.sql.exec(`INSERT INTO review_requests (item, head, dispatch, briefHash, state, topTier, criteria) VALUES (?, ?, ?, ?, 'open', ?, ?)`,
         p.id, need.head, JSON.stringify(dispatch), briefHash, topTier ? 1 : null, criteriaOf(p));
-      this.log(p.id, ORCHESTRATOR, "review.requested", { head: need.head, reviewer, briefHash, round: need.round, ...(topTier ? { topTier: true } : {}) }, at);
-      this.askTierReview(p, need, reviewer, ORCHESTRATOR, at);
+      // Why this reviewer, the assignment applied or skipped included, kept
+      // on the request as a standalone review keeps it (gpt-6-astra's third
+      // review of t622, finding 5).
+      const reason = named ? "Named by the developer for this part" : pick!.reviewer!.reasons.join(" ");
+      this.log(p.id, ORCHESTRATOR, "review.requested", { head: need.head, reviewer, briefHash, round: need.round, reason, ...(pick?.assignment ? { assignment: pick.assignment } : {}), ...(topTier ? { topTier: true } : {}) }, at);
+      // The tier is the project's, judged against the developer's pool as it is
+      // now (the default), with the offers the tick read.
+      this.askTierReview(p, need, reviewer, ORCHESTRATOR, at, false, undefined, tickOffers);
     }
   }
 
@@ -6320,6 +6361,7 @@ export class Ledger extends DurableObject<Env> {
   // every runner offering its reviewer has skipped is withdrawn and asked
   // anew (renewSkippedRequest), so the runners serve the new request.
   requestReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted = false, proved = false, records?: SuggestionRecords & { project: string }, offers?: readonly SeenOffer[]): { needed: boolean; reason: string; at?: string; head?: string; reviewer?: string; requested?: boolean; request?: number } {
+    this.keepOffers(offers);
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer asks for a review", 403);
     const item = this.reviewItem(id);
     this.keepPool(pool);
@@ -7480,6 +7522,7 @@ export class Ledger extends DurableObject<Env> {
   // gives the reason; the refresh job clears. The runner offers the Worker
   // read come with it, for the merge-main part a conflict adds.
   async refreshFailed(id: string, actor: string, mainHead: string, reason: string, kind: string | null, offers: readonly SeenOffer[] | null = null): Promise<Item> {
+    this.keepOffers(offers);
     const { record, refresh } = this.reportedRefresh(id, actor, mainHead, " failure");
     const at = new Date().toISOString();
     const why = reason.slice(0, 500);
@@ -7534,6 +7577,7 @@ export class Ledger extends DurableObject<Env> {
   // offers the Worker read come with it, for the part's routing as approval
   // routes it.
   async planResolve(id: string, actor: string, mainHead: string, holds: boolean, to: unknown, offers: readonly SeenOffer[] | null = null, token?: string | null): Promise<Item> {
+    this.keepOffers(offers);
     const { plan, record, reopening, builder } = this.resolveAllowed(id, actor, mainHead, holds, to);
     const at = new Date().toISOString();
     if (reopening) this.reopenPlan(plan, actor, at, token, "the developer asked to resolve main into the branch");
@@ -8011,6 +8055,7 @@ export class Ledger extends DurableObject<Env> {
   // (superseded: queued again from the new head). A repeated report answers
   // the recorded outcome.
   taskRefreshFailed(id: string, actor: string, report: { lease: string; mainHead: string; expectedHead: string; outcome: string; reason: string; report?: unknown }, offers: readonly SeenOffer[] | null = null): { item: Item; result: RefreshResult; replay?: true; revoke?: string | null } {
+    this.keepOffers(offers);
     const outcome = report.outcome;
     if (!["mechanical", "returned", "superseded"].includes(outcome)) throw new RuleError("bad_outcome", "outcome must be mechanical, returned or superseded", 400);
     const key = resultKey(id, report.expectedHead, report.mainHead);

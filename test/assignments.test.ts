@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   ALL_PROJECTS, applicableAssignments, assignmentHistory, checkEvidence, cleanAssignmentInput, currentAssignments,
-  assignmentSnapshot, FALLBACK, orderByAssignment, seedProject, snapshotApplies, parseEvidenceRef, recordAssignment, resolveChoices, reviewRoles, standingFor, withdrawAssignment,
+  assignmentSnapshot, choiceMatches, FALLBACK, isRetryOf, isWithdrawalRetry, orderByAssignment, seedProject, snapshotApplies, parseEvidenceRef, recordAssignment, resolveChoices, reviewRoles, standingFor, withdrawAssignment,
   type Assignment, type AssignmentRecord, type AssignmentStore, type ResolvedAssignment,
 } from "../src/models/assignments.ts";
 import type { ModelEntry } from "../src/models/pool.ts";
@@ -280,4 +280,38 @@ test("a candidate under an alias or another letter case is the choice; the same 
   const a1 = recordAssignment(store, OWNER, input({ role: "build", choices: resolveChoices(["claude-code/opus-5.5"], POOL, "build") }), AT);
   const r = orderByAssignment(["antigravity/claude-opus-5.5", "claude-code/Claude-Opus-5-5"], (c) => c, [a1], () => null, FALLBACK.build, POOL);
   assert.deepEqual(r.order, ["claude-code/Claude-Opus-5-5", "antigravity/claude-opus-5.5"]);
+});
+
+// gemini-4-argon's third review of t622, finding 2: two entries in one
+// harness that share a model were one candidate to choiceMatches, so
+// assigning the second by its id promoted the first.
+test("an assignment naming one of two entries that share a model in a harness promotes that entry", () => {
+  const twin = [...POOL, entry("claude-code", "claude-opus-5-5", { family: "anthropic" })];
+  const [chosen] = resolveChoices(["claude-code/claude-opus-5-5"], twin, "build");
+  assert.equal(chosen.actor, "claude-code/claude-opus-5-5");
+  const a: Assignment = { id: "a1", kind: "assigned", scope: ALL_PROJECTS, role: "build", choices: [chosen], reason: "r", quote: "q", evidence: [], by: OWNER, at: AT };
+  assert.deepEqual(orderByAssignment(["claude-code/opus-5.5", "claude-code/claude-opus-5-5"], (c) => c, [a], () => null, FALLBACK.build, twin).order, ["claude-code/claude-opus-5-5", "claude-code/opus-5.5"]);
+  // The one named is paused: the other entry is not moved in its place.
+  const held = orderByAssignment(["claude-code/opus-5.5", "claude-code/claude-opus-5-5"], (c) => c, [a], (c) => (c === "claude-code/claude-opus-5-5" ? "paused" : null), FALLBACK.build, twin);
+  assert.equal(held.outcome.applied, null);
+  // Two profiles of one model are two entries too.
+  const profiles = [entry("opencode", "qwen-3:32b"), entry("opencode", "qwen-3:72b")];
+  const [big] = resolveChoices(["opencode/qwen-3:72b"], profiles, "build");
+  const b: Assignment = { ...a, choices: [big] };
+  assert.deepEqual(orderByAssignment(["opencode/qwen-3:32b", "opencode/qwen-3:72b"], (c) => c, [b], () => null, FALLBACK.build, profiles).order, ["opencode/qwen-3:72b", "opencode/qwen-3:32b"]);
+  // An alias of the named entry is still that entry.
+  assert.equal(choiceMatches(chosen, "claude-code/Claude-Opus-5-5", twin), true);
+});
+
+// gpt-6-astra's third review of t622, finding 4: a retry was validated
+// against the pool before its record was read, so an acting model removed
+// since failed it. It is judged against what was recorded.
+test("a retry is the same content by the same acting model as recorded; anything else reusing the id is refused", () => {
+  const prior = { id: "a4", fingerprint: "fp", acting: "claude-code/opus-5.5" };
+  assert.equal(isRetryOf(prior, "req-1", "fp", "Claude-Code/opus-5.5"), true);
+  refused(() => isRetryOf(prior, "req-1", "other", "claude-code/opus-5.5"), "request_reused", /already recorded a4, with other content/);
+  refused(() => isRetryOf(prior, "req-1", "fp", null), "request_reused", /acting as claude-code\/opus-5.5, not nobody/);
+  assert.equal(isWithdrawalRetry({ note: "Reserved this week.", acting: "codex/gpt-6-astra" }, " Reserved this week. ", "codex/gpt-6-astra"), true);
+  assert.equal(isWithdrawalRetry({ note: "Reserved this week." }, "Another note", null), false);
+  assert.equal(isWithdrawalRetry({ note: "Reserved this week." }, "Reserved this week.", "codex/gpt-6-astra"), false);
 });
