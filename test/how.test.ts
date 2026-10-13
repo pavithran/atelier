@@ -282,3 +282,44 @@ test("the How page, help and docs state the current core-file hold rule", () => 
   assert.match(core.enforced, /submitted or accepted item that is not landing holds nothing/);
   assert.match(core.enforced, /once each claimed blocker submits or is released and each landing ends/);
 });
+
+// t595's review (codex/gpt-6-astra and antigravity/gemini-4-argon, 2026-10-13):
+// pages and docs once said Atelier itself runs the tests, where a local check
+// runs on the caller's machine and only a container check, which
+// `--sandbox-only` requires, is Atelier's own run. No reader-facing text may
+// say so again, and /how must name the setting that makes it true.
+test("no page or doc says Atelier itself runs the tests, and /how names --sandbox-only", () => {
+  const docs = readdirSync(join(root, "docs")).filter((name) => name.endsWith(".md")).map((name) => `docs/${name}`);
+  const pages = readdirSync(join(root, "src")).filter((name) => /^how.*\.ts$/.test(name)).map((name) => `src/${name}`);
+  for (const file of ["README.md", ...docs, ...pages, "src/ui.ts"]) {
+    const text = read(file).replace(/\s+/g, " ");
+    for (const claim of [/Atelier (itself )?runs (the |their |its )?(tests|checks)( itself)?/i, /run by Atelier and not taken on an agent's word/i, /(tests|checks) run on the exact head, not on the agent's word/i]) {
+      assert.doesNotMatch(text, claim, `${file} says ${claim.source}`);
+    }
+  }
+  assert.ok(pages.some((file) => read(file).includes("--sandbox-only")), "/how no longer names --sandbox-only");
+  // The film's narration says the trust boundary where it speaks of the
+  // exact head: a local pass is the caller's word, a container's is not.
+  for (const line of read("docs/video.md").split("\n").filter((l) => l.startsWith("> ") && /exact head/.test(l))) {
+    assert.match(line, /Cloudflare container/, `the narration speaks of the exact head without the container: ${line}`);
+  }
+});
+
+// Gemini 4 Argon's claims audit of 2026-10-13, finding 8: /how listed the
+// fast-mode commands and never said what fast mode is.
+test("/how says what fast mode is: chosen with a reason, batch checks, review after the merge, full mode the default", () => {
+  const prose = read("src/how.ts").replace(/\s+/g, " ");
+  for (const said of ["atelier mode fast --reason", "atelier fast land", "one typecheck, one secret scan and one test run", "follows the merge instead of preceding it", "carries a receipt", "Full mode, the process above, is the default"]) {
+    assert.ok(prose.includes(said), `/how does not say "${said}"`);
+  }
+});
+
+// t595's review (codex/gpt-6-astra, 2026-10-13): independence of review holds
+// against agents, not against whoever holds the developer token; /how and the
+// README must keep saying so.
+test("/how and the README say review independence holds against agents, not the developer token", () => {
+  for (const file of ["README.md", "src/how-data.ts"]) {
+    const text = read(file).replace(/\s+/g, " ");
+    assert.match(text, /against agents, not against whoever holds (the|that) (developer )?token/i, `${file} keeps the developer-token caveat`);
+  }
+});

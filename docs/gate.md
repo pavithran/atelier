@@ -23,9 +23,9 @@ five verbs. They are labels: the commands keep their own names.
 | --- | --- | --- |
 | Claim | One holder per task. | `atelier start`, `atelier claim`, `atelier handoff`, `atelier release` |
 | Fork | Every task its own fork. | `atelier push`, `atelier update` |
-| Prove | Atelier runs the tests. | `atelier check`, `atelier submit` |
+| Prove | The checks run on the exact head. | `atelier check`, `atelier submit` |
 | Review | Another company reviews, or in single-family mode another model. | `atelier review` |
-| Land | One landing at a time, with a receipt. | `atelier land`, `atelier accept`, `atelier merge` |
+| Land | One merge at a time, with a receipt. | `atelier land`, `atelier accept`, `atelier merge` |
 
 A task's page shows the five as its progress, the current one marked, read
 from the task's recorded state: open is at Claim; claimed with nothing pushed,
@@ -162,7 +162,12 @@ then ordinary checks. N/A checks never enter the pool. `ATELIER_LOAD_LIMIT`
 and `ATELIER_LOAD` are retired; no load-average gate remains.
 
 The developer's approval is never the independent review: they
-decide by accepting, and that decision is not also the second opinion. When
+decide by accepting, and that decision is not also the second opinion.
+Independence is enforced against agents, whose tokens are bound to their own
+actor. The developer token can name any actor, so a review it records in a
+model's name counts as that model's (for a protected change, only when it
+answers a review request that model claimed for that head), and whoever
+holds that token is trusted. When
 no reviewer qualifies, because no model of another family is available or a
 contributor's family is not recognised, the developer can accept with
 `atelier accept t3 --override-review "reason"`, with
