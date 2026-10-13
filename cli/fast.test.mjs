@@ -10,6 +10,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { deflateSync } from "node:zlib";
 import { fastLand, parsePairs, scanBatch } from "./fast.mjs";
 import { MANIFEST_PATH } from "./merge-pipeline.mjs";
 
@@ -487,6 +488,27 @@ test("a merge whose commit does not have the task's commit as a parent stops the
     assert.match(r.failure.detail, /parents/);
     assert.deepEqual(recorded, []);
     assert.equal(git(dir, "rev-parse", "main"), start);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Seventh review of t592 (codex/gpt-6-astra): git cat-file does not check a
+// loose object against its id, so a script that rewrote the object's file
+// under .git/objects made the scan read other bytes than the ones that land.
+test("an object whose bytes do not hash to its id stops the batch, naming its path (finding 4)", async () => {
+  const { dir } = repo();
+  try {
+    const sha = leakBranch(dir, [{ "k.txt": KEY }, { "k.txt": "second\n" }]);
+    const leak = git(dir, "rev-parse", `${sha}^:k.txt`);
+    const file = join(dir, ".git", "objects", leak.slice(0, 2), leak.slice(2));
+    const harmless = Buffer.from("harmless\n");
+    rmSync(file);
+    writeFileSync(file, deflateSync(Buffer.concat([Buffer.from(`blob ${harmless.length}\0`), harmless])));
+    assert.equal(git(dir, "cat-file", "blob", leak), "harmless", "git reads the forged bytes");
+    const start = git(dir, "rev-parse", "HEAD");
+    const r = await fastLand({ ...base, titles: { t3: "Forged" }, cwd: dir, pairs: [{ id: "t3", sha }], test: "true", record: () => assert.fail("recorded") });
+    assert.equal(r.failure?.step, "secret scan", JSON.stringify(r.failure));
+    assert.match(r.failure.detail, /k\.txt \(.*does not hash to its id/);
+    assert.equal(git(dir, "rev-parse", "HEAD"), start);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

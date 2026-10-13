@@ -144,31 +144,69 @@ export function testInCleanClone(cwd, head, { setup, test, env = checkEnv() }) {
   }
 }
 
-// A Reader (src/diff.ts) over the checkout's object store: trees from
-// `git ls-tree`, blobs from `git cat-file`, so no diff driver or
-// .gitattributes setting (-diff, binary) decides what the scan sees. An
-// object it cannot read throws, carrying the object's hash, so the batch
-// stops rather than passing a hole and scanBatch can name the path.
-const unreadable = (kind, hash) => Object.assign(new Error(`the ${kind} ${hash.slice(0, 12)} cannot be read`), { object: hash });
+// A Reader (src/diff.ts) over the checkout's object store: every tree and
+// blob read raw with `git cat-file`, so no diff driver or .gitattributes
+// setting (-diff, binary) decides what the scan sees. An object it cannot
+// read throws, carrying the object's hash, so the batch stops rather than
+// passing a hole and scanBatch can name the path.
+//
+// Every object read is checked against its id (seventh review of t592):
+// git cat-file does not verify a loose object, so a script that rewrote an
+// object's file under .git/objects would have the scan read other bytes
+// than the ones that land. The bytes are hashed as Git hashes them,
+// "<type> <size>\0" and the content, with the repository's object format.
+const unreadable = (kind, hash, why = "cannot be read") => Object.assign(new Error(`the ${kind} ${hash.slice(0, 12)} ${why}`), { object: hash });
 
+const formats = new Map();
+function objectFormat(cwd) {
+  if (!formats.has(cwd)) formats.set(cwd, git(cwd, "rev-parse", "--show-object-format") === "sha256" ? "sha256" : "sha1");
+  return formats.get(cwd);
+}
+
+// The object's content, verified against its id; throws as unreadable.
+function readObject(cwd, kind, hash) {
+  const r = runGit(cwd, ["cat-file", kind, hash], { encoding: "buffer" });
+  if (r.status !== 0) throw unreadable(kind, hash);
+  const id = createHash(objectFormat(cwd)).update(`${kind} ${r.stdout.length}\0`).update(r.stdout).digest("hex");
+  if (id !== hash.toLowerCase()) throw unreadable(kind, hash, `does not hash to its id (its bytes hash to ${id.slice(0, 12)})`);
+  return r.stdout;
+}
+
+// A tree's entries, parsed from its raw form ("<mode> <name>\0<raw id>"),
+// with modes as ls-tree prints them.
+function parseTree(raw, idBytes) {
+  const out = [];
+  for (let i = 0; i < raw.length; ) {
+    const space = raw.indexOf(0x20, i), nul = raw.indexOf(0, space);
+    const mode = raw.toString("latin1", i, space).padStart(6, "0");
+    const name = raw.toString("utf8", space + 1, nul);
+    const hash = raw.toString("hex", nul + 1, nul + 1 + idBytes);
+    out.push({ name, mode, type: mode === "040000" ? "tree" : mode === "160000" ? "commit" : "blob", hash });
+    i = nul + 1 + idBytes;
+  }
+  return out;
+}
+
+function readTree(cwd, hash) {
+  return parseTree(readObject(cwd, "tree", hash), objectFormat(cwd) === "sha256" ? 32 : 20);
+}
+
+// A commit's tree and first parent, from its verified bytes.
+function commitOf(cwd, hash) {
+  const text = readObject(cwd, "commit", hash).toString("utf8");
+  const header = text.slice(0, text.indexOf("\n\n") + 1 || text.length);
+  return { tree: /^tree ([0-9a-f]+)$/m.exec(header)?.[1], parent: /^parent ([0-9a-f]+)$/m.exec(header)?.[1] ?? null };
+}
+
+// A tree's entries, or null when it cannot be read or verified.
 function listTree(cwd, hash) {
-  const r = runGit(cwd, ["ls-tree", "-z", hash]);
-  if (r.status !== 0) return null;
-  return r.stdout.split("\0").filter(Boolean).map((e) => {
-    const tab = e.indexOf("\t");
-    const [mode, type, h] = e.slice(0, tab).split(" ");
-    return { name: e.slice(tab + 1), mode, type, hash: h };
-  });
+  try { return readTree(cwd, hash); } catch { return null; }
 }
 
 export function gitReader(cwd) {
   return {
-    tree: async (hash) => listTree(cwd, hash) ?? Promise.reject(unreadable("tree", hash)),
-    blob: async (hash) => {
-      const r = runGit(cwd, ["cat-file", "blob", hash], { encoding: "buffer" });
-      if (r.status !== 0) throw unreadable("blob", hash);
-      return new Uint8Array(r.stdout);
-    },
+    tree: async (hash) => readTree(cwd, hash),
+    blob: async (hash) => new Uint8Array(readObject(cwd, "blob", hash)),
   };
 }
 
@@ -213,8 +251,18 @@ export async function scanBatch(cwd, start, head = "HEAD") {
   const hits = new Set(), unscanned = new Set();
   for (const line of git(cwd, "rev-list", "--parents", `${start}..${head}`).split("\n").filter(Boolean)) {
     const [commit, parent] = line.split(" ");
-    const baseTree = parent ? git(cwd, "rev-parse", `${parent}^{tree}`) : emptyTree;
-    const headTree = git(cwd, "rev-parse", `${commit}^{tree}`);
+    // The trees come from the commits' verified bytes, and the first
+    // parent rev-list walked must be the one the commit names.
+    let baseTree, headTree;
+    try {
+      const head = commitOf(cwd, commit);
+      if ((head.parent ?? undefined) !== parent) throw unreadable("commit", commit, `names parent ${head.parent?.slice(0, 12) ?? "none"}, not ${parent?.slice(0, 12) ?? "none"} as Git listed it`);
+      headTree = head.tree;
+      baseTree = parent ? commitOf(cwd, parent).tree : emptyTree;
+    } catch (err) {
+      unscanned.add(`commit ${commit.slice(0, 12)} (cannot be read: ${err?.message ?? err})`);
+      continue;
+    }
     let scan;
     try { scan = await scanTrees(reader, baseTree, headTree); }
     catch (err) {
