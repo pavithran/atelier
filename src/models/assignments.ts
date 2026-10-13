@@ -114,6 +114,14 @@ export function reviewRoles(opts: { sensitive?: boolean; docs?: boolean }): Assi
   return [...(opts.sensitive ? ["security-review" as const] : []), ...(opts.docs ? ["claims-review" as const] : []), "review"];
 }
 
+// Security, concurrency or gate work, read from a task's or a part's words
+// and paths: its review reads security-review first. Dispatch suggestions
+// ask a frontier builder for the same work (src/models/suggest.ts).
+export const SENSITIVE = /\b(security|auth(?:entication|orization)?|concurren\w*|race|locking|locks?|leases?|gates?)\b/i;
+export function sensitiveText(parts: readonly (string | null | undefined)[]): boolean {
+  return SENSITIVE.test(parts.filter((p): p is string => typeof p === "string").join(" "));
+}
+
 // Whether a task's scope is documentation alone (Markdown, or under docs/),
 // so its review reads claims-review: what it claims against the code.
 export function docsOnly(paths: readonly string[]): boolean {

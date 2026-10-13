@@ -116,11 +116,14 @@ test("a governed policy keeps executors as builders and assessors as reviewers",
   const paused = one([opus, gpt, glm], { policy: { ...governed, agents: { ...governed.agents, glm: { available: false, eligible_roles: ["executor", "assessor"] } } } });
   assert.equal(paused.builder!.actor, "claude-code/opus-5.5");
   assert.deepEqual(actors(paused.excluded), ["zcode/glm-5.3", "codex/gpt-6-astra"]);
-  // Without agents, the project's eligible harnesses are the claim's rule, and any model may review.
+  // Without agents, the project's eligible harnesses are the claim's rule, and the review's too, as
+  // pickReviewer and the ledger apply it (gpt-6-astra's review of t622, finding 5): a
+  // reviewer whose review the ledger would refuse is never routed.
   const legacy = one([opus, gpt], { policy: { ...policy, eligible: ["claude"] } });
   assert.equal(legacy.builder!.actor, "claude-code/opus-5.5");
   assert.deepEqual(legacy.excluded, [{ actor: "codex/gpt-6-astra", reasons: ["codex is not an eligible agent here (eligible: claude)"] }]);
-  assert.equal(legacy.reviewer!.actor, "codex/gpt-6-astra");
+  assert.equal(legacy.reviewer, null);
+  assert.match(legacy.unrouted!, /codex\/gpt-6-astra \(codex is not an eligible agent here \(eligible: claude\)\)/);
   assert.ok(!legacy.builder!.reasons.some((reason) => reason.startsWith("Governed policy")));
 });
 

@@ -31,7 +31,7 @@
 
 import type { LedgerEvent } from "../ledger.ts";
 import { liveOffers, offering, offeredActors, type Dispatch, type Offering, type SeenOffer } from "../dispatch/rules.ts";
-import { applicableAssignments, FALLBACK, orderByAssignment, reviewRoles, type Assignment } from "../models/assignments.ts";
+import { applicableAssignments, FALLBACK, orderByAssignment, reviewRoles, sensitiveText, type Assignment } from "../models/assignments.ts";
 import { actorStanding, familyOf, standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import { buildRecord, type ActorRecord, type ModelRecord } from "../models/record.ts";
 import { MODEL_PROFILES, type Family, type Harness, type ModelProfile, type TaskKind } from "../models/registry.ts";
@@ -227,6 +227,21 @@ function claimRefusal(actor: string, policy: ProjectPolicy): string | null {
   }
 }
 
+// The rule a review applies outside a governed policy, so routing never
+// names a reviewer whose review the ledger would refuse: the eligible
+// harnesses and the reviewer admissions. Single-family mode is judged in
+// judge() in its own words.
+function assessorRefusal(actor: string, policy: ProjectPolicy): string | null {
+  try {
+    assertEligible(actor, policy, undefined, "assessor");
+    return null;
+  } catch (err) {
+    const rule = parseRuleError(err);
+    if (!rule) throw err;
+    return rule.code === "single_family" ? null : rule.detail;
+  }
+}
+
 // The gate counts a review as cross-family only when both families are
 // recognised and differ (gate() in src/rules.ts); routing picks by the same rule.
 const crossFamily = (a: PoolFamily, b: PoolFamily) => a !== "other" && b !== "other" && a !== b;
@@ -322,7 +337,12 @@ function judge(candidate: Candidate, entry: ModelEntry, part: PlanPart, ctx: Con
   const refusal = claimRefusal(actor, ctx.input.policy);
   const build = refusal ? [...both, refusal] : [...both];
   if (heldBuild) build.push(heldBuild);
-  const review = ctx.governed && !hasRole(actor, ctx.input.policy, "assessor") ? [...both, `${actor} needs an available agent with the assessor role`] : [...both];
+  // The reviewer's eligibility as pickReviewer judges it: under a governed
+  // policy the assessor role; otherwise the project's eligible harnesses and
+  // its reviewer admissions, so a model whose admission was withdrawn is
+  // never routed to review (gpt-6-astra's review of t622, finding 5).
+  const reviewerRefusal = ctx.governed ? (hasRole(actor, ctx.input.policy, "assessor") ? null : `${actor} needs an available agent with the assessor role`) : assessorRefusal(actor, ctx.input.policy);
+  const review = reviewerRefusal ? [...both, reviewerRefusal] : [...both];
   if (heldReview) review.push(heldReview);
   // The offer the review job asks of a runner: a review is claimed only by
   // a runner that offers the job and can claim as the model, so a reviewer
@@ -434,7 +454,9 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   // A build assignment orders the eligible builders; its first eligible
   // choice builds, ahead of the spread, which still orders the rest.
   const assignments = ctx.input.assignments ?? [];
-  const buildOrder = assignments.length ? orderByAssignment(able, (v) => v.actor, applicableAssignments(assignments, null, ["build"]), () => null, FALLBACK.build, ctx.input.pool) : null;
+  // Every verdict is a candidate, with the rules it failed as its refusal,
+  // so an assigned model that may not build is passed over with its reason.
+  const buildOrder = assignments.length ? orderByAssignment([...able, ...verdicts.filter((v) => v.build.length)], (v) => v.actor, applicableAssignments(assignments, null, ["build"]), (v) => (v.build.length ? v.build.join("; ") : null), FALLBACK.build, ctx.input.pool) : null;
   if (!builder && buildOrder?.outcome.applied) {
     builder = buildOrder.order[0];
     lead.push(...buildOrder.reasons(builder));
@@ -446,7 +468,7 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   }
   if (!builder) return none(`no eligible builder: ${excluded.map((e) => `${e.actor} (${e.reasons.join("; ")})`).join(", ")}`, excluded);
   builds.add(builder);
-  const alternates = (buildOrder?.outcome.applied ? buildOrder.order : able).filter((v) => v !== builder).slice(0, 2).map((v) => choice(v, [rank(v)], "executor", ctx));
+  const alternates = (buildOrder?.outcome.applied ? buildOrder.order.filter((v) => !v.build.length) : able).filter((v) => v !== builder).slice(0, 2).map((v) => choice(v, [rank(v)], "executor", ctx));
   const chosen = choice(builder, [...lead, rank(builder)], "executor", ctx);
 
   const others = verdicts.filter((v) => v !== builder);
@@ -466,7 +488,13 @@ function routePart(part: PlanPart, ctx: Context, builds: Load, reviews: Load): P
   const reviewers = byPrecision(byPace(others.filter((v) => !v.review.length && independent(v)), ctx, "review"), namesOfVerdict, precision);
   // A review assignment (claims-review for a docs part, then review) picks
   // the first of its choices that qualifies, ahead of the spread.
-  const reviewOrder = assignments.length ? orderByAssignment(reviewers, (v) => v.actor, applicableAssignments(assignments, null, reviewRoles({ docs: part.kind === "docs" || part.taskKind === "docs" })), () => null, FALLBACK.review, ctx.input.pool) : null;
+  // A security, concurrency or gate part reads security-review first, as a
+  // task's review does (gpt-6-astra's review of t622, finding 4). Every other
+  // model is a candidate with the rule it failed as its refusal.
+  const roles = reviewRoles({ sensitive: sensitiveText([part.title, part.brief, ...part.scope]), docs: part.kind === "docs" || part.taskKind === "docs" });
+  const reviewRefusal = (v: Verdict) => (v.review.length ? v.review.join("; ")
+    : independent(v) ? null : single ? "the same model as the builder" : `same family as the builder (${v.family})`);
+  const reviewOrder = assignments.length ? orderByAssignment([...reviewers, ...others.filter((v) => !reviewers.includes(v))], (v) => v.actor, applicableAssignments(assignments, null, roles), reviewRefusal, FALLBACK.review, ctx.input.pool) : null;
   const reviewer = reviewOrder?.outcome.applied ? { pick: reviewOrder.order[0], lead: null }
     : reviewers.length ? spread(reviewers, reviews, "reviews", ctx, (a, b) => !precision || termOf(a) === termOf(b)) : null;
   if (!reviewer) {
