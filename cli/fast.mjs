@@ -53,7 +53,9 @@ function git(cwd, ...a) {
   return r.stdout.trim();
 }
 
-function sh(cwd, command, env = process.env) {
+// Runs a project command with exactly the environment given; there is no
+// default, so no caller hands it the developer's environment by omission.
+function sh(cwd, command, env) {
   const r = spawnSync("sh", ["-c", command], { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, env });
   return { ok: r.status === 0, output: `${r.stdout ?? ""}${r.stderr ?? ""}`, status: r.status };
 }
@@ -154,6 +156,13 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
   if (git(cwd, "rev-parse", "--abbrev-ref", "HEAD") !== "main") throw new Error("fast land runs in a checkout of main");
   if (git(cwd, "status", "--porcelain", "--untracked-files=no")) throw new Error("the checkout has uncommitted changes; fast land needs a clean main");
   const start = git(cwd, "rev-parse", "HEAD");
+  // Every project command below (regeneration, typecheck, a --test in the
+  // checkout) runs code the merged agents may have changed, so it gets the
+  // check environment, not the developer's (Astra's audit of 2026-10-13,
+  // finding 5): no tokens, provider keys or SSH_AUTH_SOCK. This filters
+  // variables only and is no sandbox: the commands can still read the
+  // developer's files and Keychain.
+  const env = checkEnv();
   const merged = [];
   let failure = null, tests = null;
   try {
@@ -181,7 +190,7 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       // regeneration's: they stay out of its commit (t588).
       const untracked = () => git(cwd, "ls-files", "-z", "--others", "--exclude-standard").split("\0").filter(Boolean);
       const stray = new Set(untracked());
-      const r = sh(cwd, regen);
+      const r = sh(cwd, regen, env);
       if (!r.ok) failure = { step: "regenerate", detail: r.output.trim().split("\n").slice(-10).join("\n") };
       else {
         git(cwd, "add", "-u");
@@ -194,7 +203,7 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       }
     }
     if (!failure && typecheck) {
-      const r = sh(cwd, typecheck);
+      const r = sh(cwd, typecheck, env);
       if (!r.ok) failure = { step: "typecheck", detail: r.output.trim().split("\n").slice(-20).join("\n") };
       else log(`typecheck passed: ${typecheck}`);
     }
@@ -209,7 +218,7 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
     if (!failure) {
       const where = cleanClone ? "clean clone" : "checkout";
       if (cleanClone) log(`running ${test} in a clean clone of ${git(cwd, "rev-parse", "--short=12", "HEAD")}`);
-      const r = cleanClone ? testInCleanClone(cwd, git(cwd, "rev-parse", "HEAD"), { setup: cleanClone.setup, test, ...(cleanClone.env ? { env: cleanClone.env } : {}) }) : { ...sh(cwd, test), step: "tests" };
+      const r = cleanClone ? testInCleanClone(cwd, git(cwd, "rev-parse", "HEAD"), { setup: cleanClone.setup, test, ...(cleanClone.env ? { env: cleanClone.env } : {}) }) : { ...sh(cwd, test, env), step: "tests" };
       if (!r.ok) failure = { step: r.step, detail: `in the ${where}:\n${r.output.trim().split("\n").slice(-20).join("\n")}` };
       else { tests = { command: test, sha256: createHash("sha256").update(r.output).digest("hex"), where }; log(`tests passed once for the batch in the ${where}: ${test}`); }
     }

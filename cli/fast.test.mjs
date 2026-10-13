@@ -285,6 +285,31 @@ test("a text file .gitattributes marks -diff still has its credential found (fin
   assert.match(r.failure.detail, /k\.txt:1/);
 });
 
+// Astra's audit of 2026-10-13, finding 5: regeneration, the typecheck and a
+// --test run in the checkout ran with the developer's whole environment
+// after agent changes were merged, so a changed project script could read
+// their tokens, provider keys and SSH_AUTH_SOCK. Each now gets checkEnv's
+// variables, as the clean-clone test run already did.
+test("the project commands fast land runs cannot read the developer's secret variables (finding 5)", async () => {
+  const { dir, one } = repo();
+  const saved = { FAST_LAND_PROBE_TOKEN: process.env.FAST_LAND_PROBE_TOKEN, SSH_AUTH_SOCK: process.env.SSH_AUTH_SOCK };
+  process.env.FAST_LAND_PROBE_TOKEN = "developer-secret";
+  process.env.SSH_AUTH_SOCK = "/tmp/developer-agent.sock";
+  const blind = (step) => `if [ -n "$FAST_LAND_PROBE_TOKEN$SSH_AUTH_SOCK" ]; then echo "${step} read the developer's variables"; exit 1; fi; test -n "$PATH"`;
+  try {
+    // Each command alone, so a pass of one is not hidden behind another's failure.
+    for (const step of ["regen", "typecheck", "test"]) {
+      const commands = { regen: null, typecheck: "true", test: "true", [step]: blind(step) };
+      const r = await fastLand({ ...base, ...commands, cwd: dir, pairs: [{ id: "t1", sha: one }], record: () => ({ ok: true }) });
+      assert.equal(r.ok, true, `${step}: ${JSON.stringify(r.failure)}`);
+      git(dir, "reset", "-q", "--hard", r.start);
+    }
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a credential one batch commit adds and a later one removes is still found in history (finding 4)", async () => {
   const r = await landLeak([{ "k.txt": KEY }, { "k.txt": null }]);
   assert.equal(r.failure?.step, "secret scan");
