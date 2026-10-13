@@ -43,7 +43,7 @@ function run(t, extra, argv = ["queue"], stored = {}, jobs = ["build", "review",
 test("a named runner with no entry uses the owner login and says so once", (t) => {
   const result = run(t, { ATELIER_RUNNER_NAME: "home:nobody", ATELIER_TOKEN: "owner-secret" });
   assert.match(result.stderr, /AUTH=Bearer owner-secret/, result.stderr);
-  assert.equal(result.stderr.match(/running with the owner's credential/g)?.length, 1, result.stderr);
+  assert.equal(result.stderr.match(/running with the developer's credential/g)?.length, 1, result.stderr);
 });
 
 test("a named runner with no entry and no owner login fails without a request", (t) => {
@@ -55,7 +55,7 @@ test("a named runner with no entry and no owner login fails without a request", 
 
 test("claim --runner with no entry follows the same rule", (t) => {
   const result = run(t, { ATELIER_TOKEN: "owner-secret" }, ["claim", "t1", "--project", "demo", "--runner", "home:nobody"]);
-  assert.match(result.stderr, /running with the owner's credential/, result.stderr);
+  assert.match(result.stderr, /running with the developer's credential/, result.stderr);
   assert.match(result.stderr, /AUTH=Bearer owner-secret/, result.stderr);
   assert.doesNotMatch(result.stderr, /no runner credential/, result.stderr);
 });
@@ -80,13 +80,13 @@ for (const [argv, jobs] of [
       const result = run(t, { ATELIER_TOKEN: "owner-secret" }, argv, stored, jobs);
       assert.notEqual(result.status, 0, result.stderr);
       assert.match(result.stderr, /must contain a secret entry object/, result.stderr);
-      assert.doesNotMatch(result.stderr, /AUTH=|running with the owner's credential/, result.stderr);
+      assert.doesNotMatch(result.stderr, /AUTH=|running with the developer's credential/, result.stderr);
     });
   }
   test(`${label}: missing entry uses the stored owner login, or fails without one`, (t) => {
     const owner = run(t, {}, argv, { API_TOKEN: "owner-secret" }, jobs);
     assert.match(owner.stderr, /AUTH=Bearer owner-secret/, owner.stderr);
-    assert.equal(owner.stderr.match(/running with the owner's credential/g)?.length, 1, owner.stderr);
+    assert.equal(owner.stderr.match(/running with the developer's credential/g)?.length, 1, owner.stderr);
     const missing = run(t, {}, argv, {}, jobs);
     assert.notEqual(missing.status, 0, missing.stderr);
     assert.match(missing.stderr, /no API token/, missing.stderr);
@@ -100,7 +100,7 @@ for (const [argv, jobs] of [
       const result = run(t, {}, argv, { API_TOKEN: "owner-secret", "runner.home:nobody": entry }, jobs);
       assert.notEqual(result.status, 0, result.stderr);
       assert.match(result.stderr, /one line of text|no server binding|not bound/, result.stderr);
-      assert.doesNotMatch(result.stderr, /AUTH=|running with the owner's credential/, result.stderr);
+      assert.doesNotMatch(result.stderr, /AUTH=|running with the developer's credential/, result.stderr);
     });
   }
 
@@ -108,7 +108,7 @@ for (const [argv, jobs] of [
     test(`${label}: explicit ${token || "empty"} token never selects owner`, (t) => {
       const result = run(t, { ATELIER_RUNNER_TOKEN: token }, argv, { API_TOKEN: "owner-secret" }, jobs);
       assert.notEqual(result.status, 0, result.stderr);
-      assert.doesNotMatch(result.stderr, /owner-secret|running with the owner's credential/, result.stderr);
+      assert.doesNotMatch(result.stderr, /owner-secret|running with the developer's credential/, result.stderr);
       if (token) assert.equal(result.stderr.match(new RegExp(`AUTH=Bearer ${token}`, "g"))?.length, 1, result.stderr);
       else assert.doesNotMatch(result.stderr, /AUTH=/, result.stderr);
     });

@@ -36,7 +36,7 @@ every task it created.
   --project NAME    the throwaway project to run against (required)
   --agents N        number of simulated agents, 1..${MAX_AGENTS} (default 10)
   --server URL      the server (default $ATELIER_SERVER)
-  --token TOKEN     the owner token (default $ATELIER_TOKEN)
+  --token TOKEN     the developer's token (default $ATELIER_TOKEN)
   --push            make a tiny git commit and push in the push phase;
                     without it no push is made and the phase is skipped
   --scratch DIR     where the --push workspaces go (default .scratch/concurrency-proof)
@@ -49,11 +49,11 @@ every task it created.
   --json            print the report as one JSON object instead of prose
   -h, --help        print this
 
-Owner calls (creating and abandoning tasks) name ATELIER_OWNER, the
-project owner's actor (as the atelier CLI is configured with it); without it the
+Developer calls (creating and abandoning tasks) name ATELIER_OWNER, the
+developer's actor (as the atelier CLI is configured with it); without it the
 clean-up is refused and the tasks must be abandoned by hand.
 
-The owner token is sent only to the server named, over https (plain http is
+The developer's token is sent only to the server named, over https (plain http is
 accepted for a server on this machine alone, as the CLI accepts it).
 `;
 
@@ -90,7 +90,7 @@ function parseArgs(argv) {
   if (!Number.isInteger(out.retries) || out.retries < 0) usageError("--retries must be a whole number, 0 or more");
   if (!Number.isFinite(out.backoffMs) || out.backoffMs < 0) usageError("--backoff-ms must be a number, 0 or more");
   if (!out.server) usageError("no server: pass --server URL or set ATELIER_SERVER");
-  if (!out.token) usageError("no owner token: pass --token or set ATELIER_TOKEN");
+  if (!out.token) usageError("no developer token: pass --token or set ATELIER_TOKEN");
   return out;
 }
 
@@ -103,7 +103,7 @@ function server() {
   try { parsed = new URL(cfg.server); } catch { return fail(`${cfg.server} is not a URL; name the server as https://HOST`); }
   if (parsed.protocol === "https:") return cfg.server;
   if (parsed.protocol === "http:" && new Set(["localhost", "127.0.0.1", "[::1]"]).has(parsed.hostname)) return cfg.server;
-  return fail(`${cfg.server} is not https: the owner token goes with every request, and over plain http it would be readable on every network on the way. Name the server as https://HOST; plain http is accepted for a server on this machine alone (localhost, 127.0.0.1 or [::1])`);
+  return fail(`${cfg.server} is not https: the developer's token goes with every request, and over plain http it would be readable on every network on the way. Name the server as https://HOST; plain http is accepted for a server on this machine alone (localhost, 127.0.0.1 or [::1])`);
 }
 
 const base = server().replace(/\/$/, "");

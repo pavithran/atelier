@@ -140,9 +140,9 @@ test("the paste stub says no command renders a paste, that a handoff is no relay
     assert.equal(r.stdout, "");
     assert.equal(r.stderr, `control-plane-paste: no command renders a paste any more; this project works through Atelier.
 Write the relay envelope yourself, as the relay rule in AGENTS.md says: one complete fenced
-block with a language tag (bash for a command the owner runs, text for prose, a brief or an
+block with a language tag (bash for a command the developer runs, text for prose, a brief or an
 envelope), and save a copy under ~/Documents/ai-project-data/weblog/, never the portfolio root.
-\`atelier handoff\` transfers ownership of a task to another agent. It is not a relay and is
+\`atelier handoff\` hands a task to another agent. It is not a relay and is
 never part of a paste request.
 `);
   }
@@ -260,7 +260,7 @@ function checkout(t, { paste = true } = {}) {
 test("the leftovers are what ControlPlane still holds in the checkout", (t) => {
   const { dir } = checkout(t);
   assert.deepEqual(leftovers(dir), [
-    "docs/control-plane/work-item.v1.json: plan plan-2026-09 is active, owned by pavi",
+    "docs/control-plane/work-item.v1.json: plan plan-2026-09 is active, held by pavi",
     'docs/control-plane/project-adapter.v1.json: capability "paste" runs tools/control-plane/paste.py, which does not exist',
     'docs/control-plane/project-adapter.v1.json: capability "ship" runs tools/ship.py, which does not exist',
     'docs/control-plane/project-adapter.v1.json: capability "report-card" runs x.mjs, which does not exist',

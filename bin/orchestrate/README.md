@@ -278,18 +278,18 @@ It runs no model and reads no config. It offers only the integrate and refresh
 jobs and acts as `atelier/integrator`. Without it, a plan's parts build and
 pass review and then stop. Run exactly one.
 
-The integrator does not claim under the owner's token that `atelier login`
+The integrator does not claim under the developer's token that `atelier login`
 stored. It acts as the reserved actor `atelier/integrator`, whose claim the
 server takes only through an agent token bound to that actor; a claim with
-any other token is refused (`integrator_token`). Issue the token from an
-owner session and start the integrator with it in `ATELIER_TOKEN`:
+any other token is refused (`integrator_token`). Issue the token from a
+developer session and start the integrator with it in `ATELIER_TOKEN`:
 
 ```sh
 atelier token issue --as atelier/integrator --label integrator   # prints the token once
 ATELIER_TOKEN=atl_… atelier runner --integrate --name home:mac-integrator
 ```
 
-Started with the owner's token instead, the integrator is offered the jobs
+Started with the developer's token instead, the integrator is offered the jobs
 all the same, every claim is refused, and it logs `runner: claim refused:
 integrator_token: atelier/integrator claims only through a token bound to
 it`, skips the job and integrates nothing. The token expires (30 days unless
@@ -376,11 +376,11 @@ unknown, so the claim stays), or `runner: claim not released: REASON`. A review
 job ends with `runner: reviewed: approve` or `reject`. A job that never got
 its claim logs `runner: skipped: REASON` or `runner: claim refused: REASON`.
 The integrator logs `runner: every part is integrated; the plan item
-is submitted for the owner` when a plan's last part merges.
+is submitted for the developer` when a plan's last part merges.
 
 The log does not name the task a job is on: the lines above carry no task id.
 Only the line after a job ends, `runner: reported PROJECT/ID as OUTCOME`, and
-the notice `runner: PROJECT/ID needs the owner's attention after 2 failures;
+the notice `runner: PROJECT/ID needs the developer's attention after 2 failures;
 skipped for this process` (3 consecutive infrastructure failures for the
 other form) do. To see which task a runner holds now, run `atelier status
 --project PROJECT`. `launchctl print gui/$(id -u)/zone.atelier.runner`
@@ -399,7 +399,7 @@ resumed: …`, then the push, checks and submit of `atelier finish`) without
 running the model again, and where it holds none, the model builds as for any
 claim. A restart therefore loses no committed work and leaves no runner
 reported busy with a claim no live run holds; a resumed finish that keeps
-failing leaves the claim for the owner, as any failed finish does. This needs
+failing leaves the claim for the developer, as any failed finish does. This needs
 a server at route level 13 (the task's own raise to 6 plus the raises main
 had already merged), which the runner asks for at start.
 
@@ -440,7 +440,7 @@ terminal sandboxed. No script pushes a project's own remotes or deploys.
 `land-queue.sh` runs `post-merge.sh TASK` synchronously after the CLI reports
 that a task landed through the landing Workflow. This step requires clean
 `main`, pulls, runs `npm run typecheck` and `npm test`,
-deploys (owner decision d6), and publishes to `public`. Set `NOREPLY` to the
+deploys (developer decision d6), and publishes to `public`. Set `NOREPLY` to the
 recorded public no-reply address. It checks author and committer separately
 and audits every outgoing commit, including paths removed in later commits.
 

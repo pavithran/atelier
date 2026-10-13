@@ -245,7 +245,7 @@ export async function runLand(io) {
     if (action !== "resume") {
       const { run: recovered } = await request("POST", path, { run: run.id, action, reason: args.reason, resolution: args.resolution });
       if (action === "skip" && recovered?.state === "reserved") {
-        print(`Post-merge run ${recovered.id}: step waived; remaining steps still need diff preparation or an owner waiver.`);
+        print(`Post-merge run ${recovered.id}: step waived; remaining steps still need diff preparation or a developer waiver.`);
         return;
       }
     }
@@ -409,7 +409,7 @@ export async function runLand(io) {
     // counts. The refusal names the agents that would count.
     if (d0.policy) {
       const refusal = roleRefusal(reviewer, d0.policy, "assessor", d0.ownerActor);
-      if (refusal) die(`${reviewer}'s approval would not count in ${name}: ${refusal}. Name another reviewer with --reviewer H/M. The owner can admit a registered model with atelier models admit ID --project ${name} --reason TEXT.`);
+      if (refusal) die(`${reviewer}'s approval would not count in ${name}: ${refusal}. Name another reviewer with --reviewer H/M. The developer can admit a registered model with atelier models admit ID --project ${name} --reason TEXT.`);
     }
   }
   const regenerate = typeof d0.policy?.regenerate === "string" ? d0.policy.regenerate : null;
@@ -1035,7 +1035,7 @@ async function triageGate(io, { triage, dir, id, itemPath, head, mainHead, targe
   // with the actor it authenticated; any failure stops the landing.
   const recordStrict = async (ms, data, what) => {
     try { await request("POST", `${itemPath}/land`, { step: "triage", ms: Math.max(0, Math.round(ms)), ...data }); }
-    catch (error) { throw new StepError(`${what} could not be recorded on the ledger, so the landing stops before the review request: ${error.message}. Only the project owner, signed in, may record it; ${leftAs()}. Run ${retry} again once the server records it`); }
+    catch (error) { throw new StepError(`${what} could not be recorded on the ledger, so the landing stops before the review request: ${error.message}. Only the developer, signed in, may record it; ${leftAs()}. Run ${retry} again once the server records it`); }
   };
   // Where a stop leaves the task. This landing has submitted nothing and
   // asked for no review by then; a task submitted before it stays
@@ -1061,7 +1061,7 @@ async function triageGate(io, { triage, dir, id, itemPath, head, mainHead, targe
     if (triage.mode === "bypass") {
       guard();
       await recordStrict(Date.now() - t0, triageRecord(binding, "bypassed", { reason: triage.reason }), "The bypass of the triage (--no-triage)");
-      print(`Triage bypassed by the project owner (--no-triage: ${triage.reason}); recorded at ${short(head)} with criteria binding ${short(binding.criteria)}. The review rules apply as before.`);
+      print(`Triage bypassed by the developer (--no-triage: ${triage.reason}); recorded at ${short(head)} with criteria binding ${short(binding.criteria)}. The review rules apply as before.`);
       return binding;
     }
     const criteria = triageCriteria(d.item?.accept ?? [], d.item?.partAccept ?? null);
@@ -1087,11 +1087,11 @@ async function triageGate(io, { triage, dir, id, itemPath, head, mainHead, targe
     const findings = [`The triage of ${id} by ${triage.actor} stopped at ${short(head)} (merge base ${short(base)}, criteria ${short(binding.criteria)}): ${outcome.why}.`, ...lines, ...unverified];
     if (triage.override) {
       await recordStrict(Date.now() - t0, triageRecord(binding, "overridden", { triager: triage.actor, reason: triage.override }), "The override of the stopped triage (--override-triage)");
-      print([...findings, `The project owner overrode the stopped triage (--override-triage: ${triage.override}); recorded at ${short(head)} with criteria binding ${short(binding.criteria)}. The review rules apply as before.`].join("\n"));
+      print([...findings, `The developer overrode the stopped triage (--override-triage: ${triage.override}); recorded at ${short(head)} with criteria binding ${short(binding.criteria)}. The review rules apply as before.`].join("\n"));
       return binding;
     }
     throw new StepError([...findings,
-      `The landing stops before the review request: ${leftAs(`the merged head stays pushed to ${id}'s fork`)}. Fix what the triage found and run ${retry} again, which triages the new head; or, as the project owner, ${triageBypass(retry, triage)}.`].join("\n"));
+      `The landing stops before the review request: ${leftAs(`the merged head stays pushed to ${id}'s fork`)}. Fix what the triage found and run ${retry} again, which triages the new head; or, as the developer, ${triageBypass(retry, triage)}.`].join("\n"));
   }
 }
 
@@ -1263,7 +1263,7 @@ function routeUse(io, dir, route) {
 // cannot land — stops here. Answers whether origin moved.
 function adoptWorkspaceRemote(io, { dir, id, holder }, remote) {
   if (typeof remote !== "string" || !remote.trim()) throw new StepError(`the re-claim of ${id} as ${holder} returned no workspace remote`);
-  if (isRunnerRoute(remote)) throw new StepError(`the re-claim of ${id} as ${holder} answered another runner route (${shownRemote(remote)}) rather than ${id}'s fork, so this landing's own credential is a runner token's; land with the owner's credential`);
+  if (isRunnerRoute(remote)) throw new StepError(`the re-claim of ${id} as ${holder} answered another runner route (${shownRemote(remote)}) rather than ${id}'s fork, so this landing's own credential is a runner token's; land with the developer's credential`);
   const { urls, pushUrls, destinations } = originUrls(io, dir);
   if (urls.length === 1 && urls[0] === remote && !pushUrls.length) return false;
   const stale = [...new Set(destinations.filter((u) => u !== remote))];
@@ -1301,7 +1301,7 @@ async function ensureWorkspaceToken(io, { dir, id, itemPath, item }) {
   if (!route && item?.owner && Number.isFinite(at) && at - Date.now() > TOKEN_WINDOW_MS) return;
   const when = Number.isFinite(at) ? `${at <= Date.now() ? "expired" : "expires"} ${recorded.slice(0, 16).replace("T", " ")} UTC` : null;
   io.print(route
-    ? `${id}'s workspace ${routeUse(io, dir, route)} the runner route ${shownRemote(route)}, with the runner's Git credential${when ? ` (recorded as one that ${when})` : " (its expiry is not recorded)"}, which the owner's landing cannot push through; re-claiming ${id} for its holder to land through its fork, before the landing takes the lease…`
+    ? `${id}'s workspace ${routeUse(io, dir, route)} the runner route ${shownRemote(route)}, with the runner's Git credential${when ? ` (recorded as one that ${when})` : " (its expiry is not recorded)"}, which the developer's landing cannot push through; re-claiming ${id} for its holder to land through its fork, before the landing takes the lease…`
     : when
       ? `${id}'s workspace write token ${when}; refreshing it for its holder before the landing takes the lease…`
       : `${id}'s workspace records no write token expiry (it was claimed before expiries were recorded); refreshing the token for its holder before the landing takes the lease…`);
@@ -1493,7 +1493,7 @@ async function compareMoved(io, { dir, id, name, record, moved, t0, mainHead }) 
     if (!approved) {
       // Recorded before the landing goes on: on the ledger, which takes a
       // landing's steps from the project owner alone, and in the log.
-      const actor = io.owner ?? "the project owner";
+      const actor = io.owner ?? "the developer";
       const summary = `--moved-ok: ${actor} approved ${findings} at ${revs}: ${report.findings.map(describeFinding).join("; ")}`;
       try { await request("POST", `/projects/${encodeURIComponent(name)}/items/${encodeURIComponent(id)}/land`, { step: "merge", ms: 0, head: taskHead, resolvedBy: `${actor} with --moved-ok`, conflicts: paths.map((p) => p.slice(0, 200)), reason: summary.slice(0, 500) }); }
       catch (error) { throw new StepError(`the --moved-ok approval of ${findings} (${shortRevs}) could not be recorded on the ledger, so the landing stops before merging main; Git and the workspace are unchanged: ${error.message}`); }
@@ -1633,7 +1633,7 @@ export async function mergeMainAndRegenerate(io, { dir, id, name, regenerate, re
     if (r.state !== "merged" && r.state !== "held") {
       const conflicts = [...(r.source ?? []), ...(r.records ?? []), ...(r.generated ?? [])];
       const reason = unsettled ?? (r.state === "conflicts" ? (r.problems?.length ? r.problems.join("; ") : null) : r.reason);
-      const data = { fromMain, mainHead, ...(conflicts.length ? { conflicts, ...(r.source?.length ? { source: r.source } : {}), ...(r.generated?.length ? { generated: r.generated } : {}), resolvedBy: "the project owner, by hand" } : {}), ...(reason ? { reason } : {}) };
+      const data = { fromMain, mainHead, ...(conflicts.length ? { conflicts, ...(r.source?.length ? { source: r.source } : {}), ...(r.generated?.length ? { generated: r.generated } : {}), resolvedBy: "the developer, by hand" } : {}), ...(reason ? { reason } : {}) };
       await record("merge", Date.now() - t0, { failed: true, ...data });
       // The conflicts can go back to the task's builder instead of the
       // owner's session (t243): a merge-main dispatch makes a runner

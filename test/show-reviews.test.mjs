@@ -194,11 +194,11 @@ test("formatCriteriaReviews prints each review's checks after deploy, and the st
   const lines = formatCriteriaReviews(view).split("\n");
   const at = lines.findIndex((l) => l.startsWith("  Criteria review 5, revision 2 (the criteria as they are now)"));
   assert.ok(at > 0, lines.join("\n"));
-  assert.equal(lines[at + 2], "    Check after deploy: criterion 2, the project owner's: Signing in needs a real account; the owner sees the banner once deployed.");
+  assert.equal(lines[at + 2], "    Check after deploy: criterion 2, the developer's: Signing in needs a real account; the owner sees the banner once deployed.");
   assert.equal(lines[at + 3], "    Check after deploy: criterion 1, the orchestrator's: The smoke check probes /health.");
   assert.equal(lines.at(-3), "  Checks after deploy for revision 2, the builder cannot verify these in its workspace:");
   assert.equal(lines.at(-2), "    criterion 1: the orchestrator checks it once deployed. The smoke check probes /health.");
-  assert.equal(lines.at(-1), "    criterion 2: the project owner checks it once deployed. Signing in needs a real account; the owner sees the banner once deployed.");
+  assert.equal(lines.at(-1), "    criterion 2: the developer checks it once deployed. Signing in needs a real account; the owner sees the banner once deployed.");
   // A record from a server before the checks prints as it did.
   assert.ok(!formatCriteriaReviews(CRITERIA_VIEW).includes("Checks after deploy"));
 });

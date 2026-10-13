@@ -13,7 +13,7 @@ export default async function wrapCommand() {
   // The server records a session only for the project owner. Refuse here,
   // before wrap commits or pushes anything the server would then not take a
   // note for.
-  if (as !== OWNER) die(`only the project owner records a session: run wrap as ${OWNER}, without --as or ATELIER_ACTOR naming another actor`);
+  if (as !== OWNER) die(`only the developer records a session: run wrap as ${OWNER}, without --as or ATELIER_ACTOR naming another actor`);
   const head = git(["rev-parse", "HEAD"], { cwd });
   let data;
   // An unquoted summary reaches here as several words: they are one summary.
@@ -35,7 +35,7 @@ export default async function wrapCommand() {
     const result = await runGroupedCheck(command, { cwd, env: process.env, metadata: { project: name, actor: as, class: "release" }, maxBytes: 1024 * 1024 });
     const passed = result.status === 0 && !result.error;
     data.checks.push({ command, passed, grade: "reported" });
-    console.log(`Reported: ${command}: ${passed ? "passed" : "failed"} (owner's checkout, not a clean clone).`);
+    console.log(`Reported: ${command}: ${passed ? "passed" : "failed"} (developer's checkout, not a clean clone).`);
     if (!passed) failing.push({ command, status: result.status, signal: result.signal, timedOut: result.timedOut });
   }
   // A failing registered check stops wrap here, with every result printed
@@ -113,7 +113,7 @@ export default async function wrapCommand() {
   // the working tree against the index leaves out.
   const diff = git(["diff", "--cached", "--check"], { cwd, allowFail: true });
   data.checks.push({ command: "git diff --cached --check", passed: diff.status === 0, grade: "reported" });
-  console.log(`Reported: git diff --cached --check: ${diff.status === 0 ? "passed" : "failed"} (owner's checkout, not a clean clone).`);
+  console.log(`Reported: git diff --cached --check: ${diff.status === 0 ? "passed" : "failed"} (developer's checkout, not a clean clone).`);
   if (diff.stdout || diff.stderr) console.log(diff.stdout || diff.stderr);
   const staged = git(["diff", "--cached", "--quiet"], { cwd, allowFail: true });
   if (staged.status === 1) {

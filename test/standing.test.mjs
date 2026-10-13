@@ -77,7 +77,7 @@ test("text a person or agent wrote cannot start a line of its own or carry termi
   }));
   assert.ok(!out.includes("\x1b"));
   assert.equal(out.split("\n").filter((l) => l.trim().startsWith("t9")).length, 0);
-  assert.equal(out.split("\n").filter((l) => l === "Waiting on PAVI:" || l === "Waiting on the project owner:").length, 1);
+  assert.equal(out.split("\n").filter((l) => l === "Waiting on PAVI:" || l === "Waiting on the developer:").length, 1);
 });
 
 test("the checkout line is one line whatever the project or branch is called", () => {
@@ -191,8 +191,8 @@ for (const failed of ["tasks", "notices"]) {
       const out = json ? JSON.parse(r.output).brief.join("\n") : r.output;
       assert.ok(out.includes(partial[0]), out);
       assert.match(out, /counts cover only what was read/);
-      assert.match(out, /Waiting on the owner: nothing known; more may be waiting\./);
-      assert.ok(!out.includes("Waiting on the owner: nothing."));
+      assert.match(out, /Waiting on the developer: nothing known; more may be waiting\./);
+      assert.ok(!out.includes("Waiting on the developer: nothing."));
     });
     test(`status --project${json ? " --json" : ""} preserves a failed ${failed} read`, async (t) => {
       const r = await run(t, setup, ["status", "--project", "demo", ...(json ? ["--json"] : [])]);

@@ -67,7 +67,7 @@ test("atelier decide needs the decision and the owner's words, before any server
   const f = await fixture(t);
   const noQuote = await f.run(["decide", "Another company reviews every change.", "--project", "proj"]);
   assert.equal(noQuote.status, 1);
-  assert.match(noQuote.stderr, /a decision needs the owner's words: atelier decide "text" --quote/);
+  assert.match(noQuote.stderr, /a decision needs the developer's words: atelier decide "text" --quote/);
   const bare = await f.run(["decide", "Another company reviews every change.", "--quote", "--project", "proj"]);
   assert.equal(bare.status, 1);
   assert.match(bare.stderr, /--quote needs the owner's words/);

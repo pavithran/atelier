@@ -252,7 +252,7 @@ test("two failed criteria reviews skip that review alone: the task's build and t
   // have skipped too. Poll 4 takes the new review request fresh.
   assert.deepEqual(taken, ["criteria-review-claim", "criteria-review-claim", "claim", "criteria-review-claim"]);
   assert.equal(claims[2][1], "t21");
-  const attention = logs.filter((s) => s.includes("needs the owner's attention after 2 failures"));
+  const attention = logs.filter((s) => s.includes("needs the developer's attention after 2 failures"));
   assert.equal(attention.length, 1);
   assert.match(attention[0], /atelier\/t21/);
 });

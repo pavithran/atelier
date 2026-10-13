@@ -141,7 +141,7 @@ export function parseConfig(json, { configPath, env } = {}) {
         // The owner's own credential (API_TOKEN, or a name the store reads
         // from ATELIER_TOKEN) is not a reviewer's token: naming it would have
         // the owner record the review, which is what `tokens` exists to prevent.
-        else if (isOwnerSecretName(where)) errors.push(`tokens.${model} must not name the owner's token (${where.toUpperCase()}): a review is recorded only by the reviewer's own agent token (atelier token issue --as AGENT/${model}, then store that token under a name of its own)`);
+        else if (isOwnerSecretName(where)) errors.push(`tokens.${model} must not name the developer's token (${where.toUpperCase()}): a review is recorded only by the reviewer's own agent token (atelier token issue --as AGENT/${model}, then store that token under a name of its own)`);
         else tokens[model] = where;
       }
     }

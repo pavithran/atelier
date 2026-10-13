@@ -15,7 +15,7 @@ import { OWNER, P, actor, apiToken, args, call, cfg, cliState, die, git, landing
 export default async function shipCommand() {
   if (args._.length !== 1) die(COMMAND_USAGE.ship);
   const name = project(), as = await actor(OWNER);
-  if (as !== OWNER) die(`only the project owner ships: run ship as ${OWNER}, without --as or ATELIER_ACTOR naming another actor`);
+  if (as !== OWNER) die(`only the developer ships: run ship as ${OWNER}, without --as or ATELIER_ACTOR naming another actor`);
   const p = cfg.projects?.[name];
   if (!p?.path || !existsSync(p.path)) die(`ship runs in ${name}'s registered checkout, and this machine has none; run atelier init in that checkout first`);
   const top = git(["rev-parse", "--show-toplevel"], { allowFail: true });

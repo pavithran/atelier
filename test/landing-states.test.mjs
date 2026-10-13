@@ -421,7 +421,7 @@ test('stopped before the Git merge: merge goes on, cancel ends it, and another t
   f.begin(f.H1);
   const cancelled = await f.run('merge', 't1', '--cancel');
   assert.equal(cancelled.status, 0, cancelled.output);
-  assert.equal(cancelled.output, 't1: the merge is cancelled; its owner can push a new revision.\n');
+  assert.equal(cancelled.output, 't1: the merge is cancelled; its holder can push a new revision.\n');
   assertRestored(f);
   assert.ok(f.asked('/landing', true));
 
@@ -467,7 +467,7 @@ test('stopped inside the Git merge: cancel keeps it unless asked, then aborts it
   const cancelled = await f.run('merge', 't1', '--cancel', '--discard-local');
   assert.equal(cancelled.status, 0, cancelled.output);
   assert.match(cancelled.output, /Aborted the unfinished Git merge; main is at [0-9a-f]{8}, where the merge began\.\n/);
-  assert.match(cancelled.output, /t1: the merge is cancelled; its owner can push a new revision\./);
+  assert.match(cancelled.output, /t1: the merge is cancelled; its holder can push a new revision\./);
   assertRestored(f);
   assert.ok(f.asked('/landing', true));
 });
@@ -634,7 +634,7 @@ test('a merge onto the baseline that would regenerate outputs nobody checked or 
   const before = { at: f.at(), tip: f.tip() };
   const r = await f.run('merge', 't1');
   assert.equal(r.status, 1, r.output);
-  assert.match(r.output, /merging t1 would regenerate gen\.txt, since the baseline and the accepted revision both changed what its generator reads \(gen\)\. The regenerated outputs were never checked or reviewed, so nothing was merged and t1 stays accepted\. The project owner can send it back to a runner with atelier dispatch t1 --job merge-main, or hand it to a builder with atelier handoff t1 --to H\/M: main is merged into its workspace there/);
+  assert.match(r.output, /merging t1 would regenerate gen\.txt, since the baseline and the accepted revision both changed what its generator reads \(gen\)\. The regenerated outputs were never checked or reviewed, so nothing was merged and t1 stays accepted\. The developer can send it back to a runner with atelier dispatch t1 --job merge-main, or hand it to a builder with atelier handoff t1 --to H\/M: main is merged into its workspace there/);
   // Not atelier land, which refuses an accepted task (cli/land.mjs).
   assert.doesNotMatch(r.output, /atelier land t1/);
   assert.deepEqual({ at: f.at(), tip: f.tip() }, before);
