@@ -16,7 +16,7 @@ import { CheckRunner, Egress, type RunRequest } from "./sandbox/runner";
 import { agentLine, DEFAULT_OWNER, parseAgents, parseExecution, assertRevision, pushNotice, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, overrideConfirmationHint, type Evidence, type Item, type OwnerFactor } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
-import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
+import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, REVIEW_TIER_MAX, TEXT_CONTROLS } from "./text.ts";
 import { cleanTitle, titleOf, renderModels, renderFlow, renderShowcase, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type ShownProject, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
@@ -1828,8 +1828,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // A claim (a check's command or a report's text) and a check's output
       // are stored as sent, so each over its limit is refused, not cut.
       const claim = String(body.claim ?? ""), outputTail = String(body.outputTail ?? "");
+      // The failure lines read from the whole output (t569) have a limit
+      // of their own beside the tail's, and are kept only for a check.
+      const failureLines = check && typeof body.failureLines === "string" ? body.failureLines : "";
       assertLength(claim, CLAIM_MAX, check ? "the check's command" : "the report");
       if (check) assertLength(outputTail, OUTPUT_MAX, "the check's output");
+      if (check) assertLength(failureLines, FAILURE_LINES_CHARS, "the check's failure lines");
       const e: Evidence = {
         itemId: id,
         claim,
@@ -1839,6 +1843,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         by: actor,
         at: new Date().toISOString(),
         ...(check ? { changedPaths: null, outputTail, where: "runner" as const } : {}),
+        ...(failureLines ? { failureLines } : {}),
         // The load the caller read when the check started (t403); a number or
         // nothing, never a value the caller made up for it.
         ...(check && Number.isFinite(Number(body.load)) ? { load: Number(body.load) } : {}),
