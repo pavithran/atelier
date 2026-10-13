@@ -11,15 +11,26 @@
 // task, through `record`. It never pushes or deploys; the caller prints the
 // owner's next commands.
 //
+// The default test run (t588) is in a temporary clean clone of the batch's
+// head, as atelier check runs a check: the owner's checkout can hold stray
+// files, a node_modules of its own or a path (iCloud) where the node pool
+// fails, and once the same merged tree failed there and passed 3,138 node
+// tests in a clean clone. The clone gets checkEnv's variables, runs its
+// setup (npm ci --prefer-offline, npm run types) and then the test command,
+// and is removed afterwards. A --test the owner gives still runs in the
+// checkout. The receipt says which: "clean clone" or "checkout".
+//
 // The work is here, apart from the command, so a test drives it in a
 // temporary repository with stand-in commands and a stand-in recorder.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scanLine } from "../src/secret-scan.ts";
 import { agentOfMessage } from "../src/rules.ts";
 import { describeConflicts, mergeThrough } from "./merge-pipeline.mjs";
+import { checkEnv } from "./check-env.mjs";
 
 const SHA = /^[0-9a-f]{7,64}$/;
 
@@ -41,9 +52,32 @@ function git(cwd, ...a) {
   return r.stdout.trim();
 }
 
-function sh(cwd, command) {
-  const r = spawnSync("sh", ["-c", command], { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, env: process.env });
+function sh(cwd, command, env = process.env) {
+  const r = spawnSync("sh", ["-c", command], { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, env });
   return { ok: r.status === 0, output: `${r.stdout ?? ""}${r.stderr ?? ""}`, status: r.status };
+}
+
+// The default test setup in the clean clone, as a project's check does it.
+export const CLEAN_CLONE_SETUP = "npm ci --prefer-offline && npm run types";
+
+// Clones the checkout at `head` into a temporary directory, runs `setup`
+// there (when given) and then `test`, and removes the clone whatever
+// happened. Untracked and ignored files in the checkout are not in the
+// clone. Answers { ok, step, output }: step is "test setup" or "tests".
+export function testInCleanClone(cwd, head, { setup, test, env = checkEnv() }) {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-fast-land-"));
+  try {
+    git(cwd, "clone", "--quiet", "--no-checkout", ".", dir);
+    git(dir, "-c", "advice.detachedHead=false", "checkout", "--quiet", "--detach", head);
+    if (setup) {
+      const s = sh(dir, setup, env);
+      if (!s.ok) return { ok: false, step: "test setup", output: s.output };
+    }
+    const r = sh(dir, test, env);
+    return { ok: r.ok, step: "tests", output: r.output };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 // Added lines of the batch's diff that the server's push scan would flag.
@@ -63,9 +97,11 @@ export function scanBatch(cwd, start) {
 
 // `titles` maps each task to its title; `record(id, receipt)` posts one
 // receipt; `log` prints a step; `run` runs a declared generator for the merge
-// pipeline (its default where omitted). Returns { ok, start, head, landed,
-// failure }.
-export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, regen, record, run, log = () => {} }) {
+// pipeline (its default where omitted). `cleanClone`, when given as { setup },
+// runs the test command in a temporary clean clone of the batch's head after
+// that setup (testInCleanClone); without it the test runs in the checkout.
+// Returns { ok, start, head, landed, failure }.
+export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, regen, cleanClone = null, record, run, log = () => {} }) {
   if (git(cwd, "rev-parse", "--abbrev-ref", "HEAD") !== "main") throw new Error("fast land runs in a checkout of main");
   if (git(cwd, "status", "--porcelain", "--untracked-files=no")) throw new Error("the checkout has uncommitted changes; fast land needs a clean main");
   const start = git(cwd, "rev-parse", "HEAD");
@@ -88,12 +124,20 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       for (const g of r.regenerated ?? []) log(`regenerated ${g.outputs.map((o) => `${o.path} (matches ${o.matches})`).join(", ")} with ${g.command.join(" ")}`);
     }
     if (!failure && regen) {
+      // Untracked files already in the checkout are the owner's, not the
+      // regeneration's: they stay out of its commit (t588).
+      const untracked = () => git(cwd, "ls-files", "-z", "--others", "--exclude-standard").split("\0").filter(Boolean);
+      const stray = new Set(untracked());
       const r = sh(cwd, regen);
       if (!r.ok) failure = { step: "regenerate", detail: r.output.trim().split("\n").slice(-10).join("\n") };
-      else if (git(cwd, "status", "--porcelain")) {
-        git(cwd, "add", "-A");
-        git(cwd, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", `Regenerate after fast landing of ${pairs.map((p) => p.id).join(", ")}\n\nLanded fast: ${reason}`);
-        log("regenerated and committed the generated files");
+      else {
+        git(cwd, "add", "-u");
+        const made = untracked().filter((f) => !stray.has(f));
+        if (made.length) git(cwd, "add", "--", ...made);
+        if (git(cwd, "diff", "--cached", "--name-only")) {
+          git(cwd, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", `Regenerate after fast landing of ${pairs.map((p) => p.id).join(", ")}\n\nLanded fast: ${reason}`);
+          log("regenerated and committed the generated files");
+        }
       }
     }
     if (!failure && typecheck) {
@@ -107,9 +151,11 @@ export async function fastLand({ cwd, pairs, titles, reason, typecheck, test, re
       else log("secret scan found nothing in the batch's added lines");
     }
     if (!failure) {
-      const r = sh(cwd, test);
-      if (!r.ok) failure = { step: "tests", detail: r.output.trim().split("\n").slice(-20).join("\n") };
-      else { tests = { command: test, sha256: createHash("sha256").update(r.output).digest("hex") }; log(`tests passed once for the batch: ${test}`); }
+      const where = cleanClone ? "clean clone" : "checkout";
+      if (cleanClone) log(`running ${test} in a clean clone of ${git(cwd, "rev-parse", "--short=12", "HEAD")}`);
+      const r = cleanClone ? testInCleanClone(cwd, git(cwd, "rev-parse", "HEAD"), { setup: cleanClone.setup, test, ...(cleanClone.env ? { env: cleanClone.env } : {}) }) : { ...sh(cwd, test), step: "tests" };
+      if (!r.ok) failure = { step: r.step, detail: `in the ${where}:\n${r.output.trim().split("\n").slice(-20).join("\n")}` };
+      else { tests = { command: test, sha256: createHash("sha256").update(r.output).digest("hex"), where }; log(`tests passed once for the batch in the ${where}: ${test}`); }
     }
     if (failure) {
       spawnSync("git", ["merge", "--abort"], { cwd });

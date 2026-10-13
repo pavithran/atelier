@@ -2284,12 +2284,13 @@ function fastLandingBlock(p: ProjectRecord, d: Detail): string {
   const ev = d.events.find((x) => x.kind === "item.landed_fast");
   if (!ev) return "";
   const r = ev.data as Record<string, unknown>;
-  const tests = (r.tests ?? {}) as { command?: string; sha256?: string };
+  const tests = (r.tests ?? {}) as { command?: string; sha256?: string; where?: string };
   const short = (v: unknown) => e(String(v ?? "").slice(0, 12));
+  const ran = tests.where === "clean clone" ? " in a clean clone of the batch's head" : tests.where === "checkout" ? " in the owner's checkout" : "";
   const sameFamily = d.reviews.filter((x) => x.independence).map((x) => `<li>${e(x.by)}: ${e(x.independence!)}</li>`).join("");
   const fixes = d.events.filter((x) => x.kind === "item.fix_filed" && typeof x.data.foundIn === "string").map((x) => `<p>Fix after fast landing: <a href="${href("p", p.name, String(x.data.foundIn))}">${e(String(x.data.foundIn))}</a></p>`).join("");
   return `<div class="fast-landing"><p><strong>Landed in fast mode</strong> on ${e(ev.at.slice(0, 16).replace("T", " "))} UTC: ${short(r.commit)} merged as ${short(r.mergeCommit)}, built by ${e(String(r.builder ?? ""))}. Reason: ${e(String(r.reason ?? ""))}.</p>
-  <p class="meta">Tests: <code>${e(tests.command ?? "")}</code>, output sha256 <code>${short(tests.sha256)}</code>. It skipped the gate; its post-merge review audits it.</p>${sameFamily ? `<ul>${sameFamily}</ul>` : ""}${fixes}</div>`;
+  <p class="meta">Tests: <code>${e(tests.command ?? "")}</code>${ran}, output sha256 <code>${short(tests.sha256)}</code>. It skipped the gate; its post-merge review audits it.</p>${sameFamily ? `<ul>${sameFamily}</ul>` : ""}${fixes}</div>`;
 }
 
 export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null = null, diff: ItemDiff | "unavailable" | null = null, live?: Live): string {
