@@ -1,6 +1,6 @@
 # Post-merge steps
 
-Post-merge policy is owner-only. Each landing reserves a durable Ledger run
+Post-merge policy is developer-only. Each landing reserves a durable Ledger run
 **before publishing the merge**. Its member task IDs, policy approval, ordered
 steps and before/after default-branch SHAs survive executor death, task closure,
 lease expiry and manual lease release. All merge routes check that reservation.
@@ -14,7 +14,7 @@ Bootstrap by deploying the new server manually, then use its matching CLI.
 server that reports only a route level has it from level 27); `atelier init`
 and `atelier land`, which declare it, refuse older servers, and
 `land --post-merge` asks for it alone before its first request.
-The owner runs init in the registered checkout, not a task workspace:
+The developer runs init in the registered checkout, not a task workspace:
 
 ```sh
 atelier init \
@@ -42,7 +42,7 @@ with a range of 1000..3600000. `protect` must explicitly name trusted script
 and configuration globs. Because scripts can import other code dynamically,
 configuring steps conservatively makes the entire repository protected for
 review, in addition to recording these declared inputs. The approval is
-stamped by the server with the owner's actor and time. This authorization is
+stamped by the server with the developer's actor and time. This authorization is
 separate from ordinary read-only checks; their deployment/install/publication
 refusals remain unchanged. A `check` step has those same command refusals.
 
@@ -59,14 +59,14 @@ no recorded before SHA cannot reserve new steps using a guessed baseline.
 
 CLI land and Workflow land both use the merge executor and the same Ledger
 run. Workflow waits for the run to complete after the task becomes merged.
-The owner machine supplies the executor, Git, Node/npm and credentials. Each
+The developer machine supplies the executor, Git, Node/npm and credentials. Each
 attempt starts in a fresh clone checked out detached at the recorded merged
 SHA, never a moving branch. Node projects require a committed package-lock.json
 and run `npm ci --no-audit --no-fund` before check/deploy commands. Installation
 and its lifecycle scripts are part of the approved source. Checks receive the
-existing filtered check environment; deploy and publish receive the owner's
-environment. This is trusted owner code, not a sandbox: processes can read
-files permitted to the owner. Publish supports an owner-provided GIT_ASKPASS;
+existing filtered check environment; deploy and publish receive the developer's
+environment. This is trusted developer code, not a sandbox: processes can read
+files permitted to the developer. Publish supports a developer-provided GIT_ASKPASS;
 Git ignores global/system config and hooks and sends the baseline read token
 only on the clone request.
 
@@ -93,15 +93,15 @@ atelier land t123 --post-merge reconcile --resolution no-effect --reason 'Stoppe
 then resumes, and `skip` records a waiver and continues. Passed and nonmatching
 steps never replay. Retry/skip of a running or uncertain attempt is refused.
 If a recorded merge is still `reserved` because its diff history is unavailable,
-the owner can `skip --reason` each unstarted step. Each waiver is recorded;
+the developer can `skip --reason` each unstarted step. Each waiver is recorded;
 remaining steps stay reserved until their diff can be prepared or they too are
 waived. The last waiver releases the reservation without changing the merged
 task or pretending the missing diff was empty. Before publication, use landing
 cancellation instead; post-merge skip requires a recorded merge.
-After stopping its executor, the owner reconciles it as `no-effect` (leaving a
+After stopping its executor, the developer reconciles it as `no-effect` (leaving a
 failed step for retry/skip) or `completed` (recording a confirmed external
 effect). Reconciling deploy as completed independently checks its version again: the
-observation must pass, or the owner must explicitly waive it. Reconciliation records the explanation
+observation must pass, or the developer must explicitly waive it. Reconciliation records the explanation
 and invalidates stale outcome reports. Status and task/project history include
 run, SHAs, policy snapshot, step, attempt and outcomes. Raw command output is
 bounded to 1 MiB per command during execution. Durable diagnostics retain at most
@@ -117,9 +117,9 @@ proof of deployment: the Worker independently fetches the configured HTTPS
 `versionUrl` without credentials or redirects, and requires the pinned commit
 and a route level at least its own and the constant in the pinned src/route-level.ts when present. Command outcomes are persisted before this observation. A mismatched version records failure;
 an interrupted outcome report remains blocked for reconciliation. Keep the
-owner's Cloudflare credentials available in the executor environment. Recovery
+developer's Cloudflare credentials available in the executor environment. Recovery
 may require a manual bootstrap deployment if the currently deployed server
-cannot serve the new routes. Init and production deploy are owner rollout
+cannot serve the new routes. Init and production deploy are developer rollout
 steps, not something tests perform.
 
 ## Controlled publication privacy
@@ -160,12 +160,12 @@ Successful blob scans are cached by object ID within one publication attempt,
 including remote-tip rescans. Every commit identity/message and every path is
 still checked; the cache is never reused across attempts or policies.
 
-## Required owner rollout smoke
+## Required developer rollout smoke
 
 Local tests cover Git history and SQLite/Workflow state transitions. They do
 not reproduce production Artifacts history availability, Cloudflare deployment
 propagation, credential access, Workflow retention or remote Git lease behavior.
-Before and after deployment, run this smoke in an owner-controlled project:
+Before and after deployment, run this smoke in a developer-controlled project:
 
 1. Configure a harmless always check, a path-conditioned check and an approved
    deployment with its real version URL. Confirm init preserves/clears policy.

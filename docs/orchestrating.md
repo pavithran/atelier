@@ -11,7 +11,7 @@ made them and when. See [Single-family mode](gate.md#single-family-mode).
 
 This is the handbook for a session that runs Atelier for a project: one that
 files tasks, sends them to coding agents, has their work reviewed, and lands
-it for the owner. It is written from the work of 6 October 2026, when one
+it for the developer. It is written from the work of 6 October 2026, when one
 session landed about forty tasks on Atelier itself with agents from four
 model families, and records what went wrong and what prevents it. The rules
 Atelier enforces are in the README and on the `/how` page; this document is
@@ -35,13 +35,13 @@ points at it and states the review path (it does not edit the file).
 - Every protected or coordinated change is reviewed by a model from another
   company than every agent that worked on it; in single-family mode, only a
   different model of the selected company from every contributor counts.
-- Never override a review, a check or a block, except on the owner's own
-  confirmation. Ask, and cite the owner's words; never infer them.
+- Never override a review, a check or a block, except on the developer's own
+  confirmation. Ask, and cite the developer's words; never infer them.
 - Judge each review finding against the code before acting, and record every
   verdict with `atelier finding ... --as H/M`, naming yourself, as you name
   yourself on `atelier decide`, `atelier decisions withdraw` and on an
   override: the Models page measures your verdicts as it measures a
-  reviewer's. Without `--as` the record cannot tell you from the owner, and
+  reviewer's. Without `--as` the record cannot tell you from the developer, and
   the page counts the judgement as unknown.
 - File every task with its acceptance criteria, written before the build. A
   review judges the change against them, so a task without them gives the
@@ -53,7 +53,7 @@ points at it and states the review path (it does not edit the file).
   one task took three review rounds and another five, each over a case the
   criteria left unstated.
 - When a criterion requires that every path be guarded (every write of an
-  owner, every call that needs a check), ask for a runtime boundary, never
+  developer, every call that needs a check), ask for a runtime boundary, never
   for a test that scans the source for the paths. Ask for one guarded entry
   point that does the write and checks the guard, and for the low-level
   write to refuse any call that does not come through it, tested by calling
@@ -61,7 +61,7 @@ points at it and states the review path (it does not edit the file).
   missed. t389's criterion 4 said "a test enumerates those paths and fails
   if one is added without the check"; gpt-6-astra rejected it ten times from
   9 to 12 October, each time over an assignment path the checks missed, and
-  the last two over owner writes the builder's scanner of regular
+  the last two over developer writes the builder's scanner of regular
   expressions missed (the last was
   `const fields = { owner: to }; this.update(id, fields, at)`).
 - Before asking for the independent review, read the diff against the
@@ -71,7 +71,7 @@ points at it and states the review path (it does not edit the file).
   `H/M` names a reviewer of another family than every contributor; the
   command merges main, checks, submits, waits for the independent review,
   then accepts and merges. Never land two together. An override while
-  accepting is the owner's last resort when no reviewer qualifies, and
+  accepting is the developer's last resort when no reviewer qualifies, and
   never the way to land another agent's work.
 - Report every run that ended without a result with `atelier run-report`.
 - On a stall (a claimed task with no progress), check whether the agent's
@@ -79,8 +79,8 @@ points at it and states the review path (it does not edit the file).
   `atelier release` it. Do not start the same work twice.
 - After two rejections on the same point, stop resending the task to the
   same builder: judge the findings, then hand it to a builder from another
-  company or ask the owner.
-- Record every judgement you make for the owner, with its reason: a finding's
+  company or ask the developer.
+- Record every judgement you make for the developer, with its reason: a finding's
   verdict (`atelier finding`), a decision (`atelier decide`), a hold released.
   Your judgements are measured like a reviewer's: a finding you refuted that
   later proves real counts against you.
@@ -93,7 +93,7 @@ points at it and states the review path (it does not edit the file).
 
 A task moves through five hands:
 
-1. **The owner, or the session acting for the owner,** files it with
+1. **The developer, or the session acting for the developer,** files it with
    `atelier new "title" --scope GLOB`, and reads its id from that command's
    output. Never assume the next number: another session may have filed one
    in between, and claiming the wrong id puts your work under someone else's
@@ -112,7 +112,7 @@ A task moves through five hands:
    review it as well, at the same time, whatever its family in the default mode (only the selected company in single-family mode): its rejection
    sends the change back like any rejection, its approval never stands in
    for the cross-family review, and a landing never waits for it.
-5. **The owner** accepts that exact revision and merges it into the
+5. **The developer** accepts that exact revision and merges it into the
    registered checkout with `atelier merge`.
 
 Several builders can work at once, each on its own task and fork, except on
@@ -134,7 +134,7 @@ must not run in parallel.
 A session that takes over has no memory of the last one; everything it needs
 is in Atelier, the repository and this handbook. Before dispatching anything:
 
-1. `atelier status` for what waits for the owner, and `atelier ls --project
+1. `atelier status` for what waits for the developer, and `atelier ls --project
    P` for every live task and who holds it.
 2. For each claimed task, look at its workspace: uncommitted changes, a
    `COMMIT_MSG.txt` an agent left, a merge in progress, or an agent's log in
@@ -143,7 +143,7 @@ is in Atelier, the repository and this handbook. Before dispatching anything:
    processes live on this Mac, by task, with no command lines.
 3. Check that main type-checks and that the deployed server holds main's
    routes.
-4. Read the owner's standing decisions where the project keeps them, and
+4. Read the developer's standing decisions where the project keeps them, and
    the review bar in force (`atelier init` prints it; every review brief
    states it).
 
@@ -155,7 +155,7 @@ setup in its README.
 
 ## Registering workspace preparation
 
-After deploying the Worker and updating the runner's CLI, the owner registers
+After deploying the Worker and updating the runner's CLI, the developer registers
 Atelier's preparation policy once, from the project checkout:
 
 ```sh
@@ -165,7 +165,7 @@ atelier init --prepare "npm ci --prefer-offline --no-audit --no-fund && npm run 
   --prepare-output node_modules --prepare-output worker-configuration.d.ts
 ```
 
-This is an owner rollout step; a task build does not register the project.
+This is a developer rollout step; a task build does not register the project.
 The runner prepares build and plan workspaces after reset and automatic
 merges, before starting the harness or finishing resumed work. Manual claims
 print the command and directory for the caller to run. Reviews, integration
@@ -227,7 +227,7 @@ misread:
   judge against. `atelier new` now warns on a task filed without criteria, and
   `atelier init --require-criteria` refuses one for the project.
 - Say what the agent must not do: push, deploy, run `atelier` against the
-  real server, or touch the owner's checkout.
+  real server, or touch the developer's checkout.
 - Before sending one brief to many projects, pilot it on the project whose
   documents carry the most rules, and have the pilot reviewed. A fault in a
   brief is copied into every project it reaches.
@@ -309,7 +309,7 @@ loop, which matches its own command line and cannot see a death:
 `--for merged` (the default) ends when the task merges, `--for submitted`
 when its agent submits, `--for reviewed` when a review is recorded at its
 head and current acceptance criteria, and `--for any-change` at the first
-change of state, head, owner or review count. It prints one line and exits 0 when reached, 1 when the task
+change of state, head, holder or review count. It prints one line and exits 0 when reached, 1 when the task
 failed (abandoned, blocked, or rejected in review), 3 at `--timeout`, 4 when
 the task cannot be read. A task whose agent died stays claimed, so pair a
 long wait with `--timeout` and look at `atelier status` when it ends.
@@ -333,7 +333,7 @@ which uses the route a runner renews with. This machine remembers the
 request it last claimed for the task, so `--renew` and `atelier review`
 without `--request` both use that request, and `review` names it.
 
-**Report after each landing.** The report the owner gets after every landing
+**Report after each landing.** The report the developer gets after every landing
 is `atelier status --brief`, under 20 lines: the recent merges, the commit
 the server is deployed at, live builds, reviews and the landing running, and
 the last 24 hours' spend against the daily limit. Give it as it prints; do
@@ -402,7 +402,7 @@ Restart a runner when:
   its log when the checkout is behind; update the checkout (the post-merge
   steps do on this Mac and the Studio) rather than restarting. A reload
   starts a fresh process, which forgets the tasks it gave up on;
-- **its log says `atelier/tN needs the owner's attention after 2 failures;
+- **its log says `atelier/tN needs the developer's attention after 2 failures;
   skipped for this process`**: the runner will not take tN again until it
   restarts. First read the two failures above that line and fix their cause;
   restarting without a fix only repeats them;
@@ -569,7 +569,7 @@ approval that names one, is a malformed reply, however it was posted.
 | --- | --- | --- |
 | pass | Nothing: the task keeps its place | None |
 | blocking findings | The task leaves the queue and its landing is fenced (`prereview_blocked`, for the CLI and the Workflow alike). The builder and head stay; a runner's builder gets the claim back with the findings in its rework brief | Once they are fixed, `atelier unblock tN`, then `atelier land tN` again |
-| blocking, builder unavailable | As above, but the inbox says owner action is needed | Hand the task over (`atelier handoff`) or dispatch it, then unblock |
+| blocking, builder unavailable | As above, but the inbox says developer action is needed | Hand the task over (`atelier handoff`) or dispatch it, then unblock |
 | conflict, preparation failed | Recorded apart from a result; the task keeps its place | The landing will meet the same conflict or failure: resolve it ahead |
 | unavailable (no reviewer, skipped, timed out, malformed reply, runner failure) | Nothing: the task keeps its place and lands normally | None; it is tried at most three times in all, and after no reviewer qualified, not again for five minutes |
 | task took the lease first | The result is kept as evidence and controls nothing | None |
@@ -685,7 +685,7 @@ that verification after deployment; a local pass cannot stand in for it.
    in the log and run it a second time; a failure that does not repeat is a
    flaky test to file, one that repeats is a break on main to send back to
    the task that caused it.
-3. Deploy once the suite passes (the owner's decision d6: landed changes are
+3. Deploy once the suite passes (the developer's decision d6: landed changes are
    deployed after main's full suite passes, not only when a capability is
    added):
 
@@ -729,7 +729,7 @@ that verification after deployment; a local pass cannot stand in for it.
    value goes back to its task. Output from c: the file must be removed from every outgoing
    commit that contains it. Deleting it at the tip does not remove it from
    published history. Stop publication and coordinate history repair with
-   the owner; do not rewrite shared main casually. Re-audit the entire
+   the developer; do not rewrite shared main casually. Re-audit the entire
    outgoing range after any repair. The `-m --root` scans include merge
    changes and initial commits. Review commit messages, metadata and binary
    files as well as added lines for private details, including spend figures.
@@ -790,12 +790,12 @@ restarts itself on the first call after a deploy.
 
 Atelier has two modes. Full mode is the default: every task is claimed,
 built on its fork, checked, reviewed and landed one at a time, as above.
-Fast mode is the owner's, for when that path cannot run. On 2026-10-13
+Fast mode is the developer's, for when that path cannot run. On 2026-10-13
 Artifacts failed every new fork, so no task could be claimed, and four
 finished tasks (t575 to t578) were merged by hand, outside the record. Fast
 mode makes that path a recorded one.
 
-Only the owner switches. `atelier mode fast --reason TEXT` puts the project
+Only the developer switches. `atelier mode fast --reason TEXT` puts the project
 in fast mode; the switch is recorded as a standing decision with the
 reason, so every review brief carries it. Fast mode has no end time.
 `atelier mode` prints `Mode: full` or `Mode: fast since TIME (reason)`, and
@@ -827,7 +827,7 @@ fork:
   items/tN/fast-ready): the commit, the main it was built on, the builder
   its Agent line names and the clone's path. The task stays claimed by its
   builder and its dispatch is cleared, so no runner takes it again. Nothing
-  is pushed, checked or submitted; the owner's batch does that.
+  is pushed, checked or submitted; the developer's batch does that.
 - A run that committed but could not report keeps its claim; the next take
   keeps the clone and reports the commit without the harness. A run that
   committed nothing releases the task.
@@ -876,14 +876,14 @@ from gated merges.
 A reviewer's finding is a claim about the code, and it can be wrong. On
 6 October about half of one reviewer's blocking findings did not hold: code
 it could not see, a language feature it thought missing, a decision by the
-owner it read as a defect. The other half were real, and some were serious.
+developer it read as a defect. The other half were real, and some were serious.
 
 - Check each blocking finding against the code before acting on it.
 - When it holds, fix it in a new commit with a test that fails without the
   fix, and send the task back to the same reviewer.
 - When it does not, say why in the review's context, with the file and line
   that show it, and ask for the review again. Do not override the review
-  quietly, and never let a reviewer overrule the owner's decision.
+  quietly, and never let a reviewer overrule the developer's decision.
 - A rejection is bound to the revision it read. Another reviewer's approval
   of the same revision does not clear it: the gate still sees a reviewer who
   asked for changes with no push since. So a refuted finding is answered
@@ -915,7 +915,7 @@ owner it read as a defect. The other half were real, and some were serious.
 ## Keeping the record honest
 
 - The task's holder is who the ledger says did the work. Before another
-  model works on a task, hand it off (`atelier handoff`). The project owner
+  model works on a task, hand it off (`atelier handoff`). The developer
   can send an accepted task back to building with `atelier handoff ID --to H/M`
   or `atelier dispatch ID --job merge-main` after a merge conflict. The earlier
   reviews and acceptance stay in the history; the new revision is submitted,
@@ -939,8 +939,8 @@ next session nothing. Each kind of lesson has a place in Atelier:
   the workaround does; `atelier land` began as such a script.
 - **A rule about how to work** (a failure and what prevents it): change this
   handbook through a task, so the change is reviewed like code.
-- **A decision by the owner**: record it where the project keeps its
-  decisions and cite the owner's words; never infer one.
+- **A decision by the developer**: record it where the project keeps its
+  decisions and cite the developer's words; never infer one.
 
 ## What to record
 

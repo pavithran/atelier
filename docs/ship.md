@@ -1,8 +1,8 @@
 # Protected actions and `atelier ship`
 
-A protected action runs only with the project owner's approval for one exact
+A protected action runs only with the developer's approval for one exact
 revision of the project's main line, and each approval is used by one run.
-`atelier ship`, run by the owner in the registered checkout, composes the
+`atelier ship`, run by the developer in the registered checkout, composes the
 project's ship order from its own files, refuses before running anything when
 a protected step has no approval at the revision being shipped, runs the steps
 in order, stops at the first failure, and records every step on the ledger.
@@ -26,8 +26,8 @@ taken back by a revert:
 | `photos-writeback` | writing to a Photos library |
 
 Pushing the project's branch to its own remotes, such as GitHub, is not a
-protected action. `atelier ship` is run by the owner alone, at one exact
-revision of the main line, and `--push` is the owner's own act there, so it
+protected action. `atelier ship` is run by the developer alone, at one exact
+revision of the main line, and `--push` is the developer's own act there, so it
 needs no approval (PAVI's decision of 2026-10-06); `deploy`, `install`,
 `paid-run` and `photos-writeback` keep their revision-bound approvals.
 
@@ -46,7 +46,7 @@ yet.
 
 ## How an approval binds to a revision
 
-The owner approves one kind at one revision:
+The developer approves one kind at one revision:
 
 ```bash
 atelier approve deploy --head "$(git rev-parse HEAD)" --note "release 12" --expires 24h
@@ -76,11 +76,11 @@ the main line's head as the page read it. For a project set up with
   stays bound to the old revision and a ship at the new one needs its own.
 - **It expires.** An approval stands for 24 hours unless `--expires` says
   otherwise, from `1m` to `30d`.
-- **The owner can withdraw it** while it is unused: `atelier approvals
+- **The developer can withdraw it** while it is unused: `atelier approvals
   withdraw ID`, or the Withdraw button on the project page.
-- **Only the project owner** approves, withdraws, uses or records. The routes
-  are owner-only: an agent token is refused before the route is reached, and
-  the owner token naming any other actor is refused by the route, as accept
+- **Only the developer** approves, withdraws, uses or records. The routes
+  are developer-only: an agent token is refused before the route is reached, and
+  the developer token naming any other actor is refused by the route, as accept
   is.
 
 `atelier approvals` lists the approvals that stand; `--all` adds the used,
@@ -193,7 +193,7 @@ a class outside the four is refused before anything runs.
 
 Before anything runs, `atelier ship` refuses, saying what to do next, unless:
 
-- the owner runs it (no `--as` or `ATELIER_ACTOR` naming another actor);
+- the developer runs it (no `--as` or `ATELIER_ACTOR` naming another actor);
 - the current directory is the project's registered checkout, on the
   registered branch, with no merge, rebase, cherry-pick, revert or landing in
   progress;
@@ -211,14 +211,14 @@ It then prints the steps and runs them:
   there is nothing to commit; what later steps change, such as a delivery
   receipt an install writes, is committed by wrap.
 - **install, deploy and verify-delivery** take their approvals, then run each
-  command or request in turn. A command runs with the owner's environment,
+  command or request in turn. A command runs with the developer's environment,
   which a deploy needs for its own credentials, less every variable whose
   name starts with `ATELIER_`. Its output is shown as it comes.
 - **wrap** is `atelier wrap "Ship SHORT: steps"` run in the checkout. It runs
   the registered checks, commits what the steps changed, records the session
   and updates the baseline; a failing check stops the ship there.
 - **push** runs only with `--push`, taking no approval, since ship is
-  owner-only and this is the owner's own act at the exact revision being
+  developer-only and this is their own act at the exact revision being
   shipped: `git push
   --no-force --no-follow-tags REMOTE refs/heads/BRANCH:refs/heads/TARGET`,
   then reads the remote back and fails unless it holds the new HEAD. Without
@@ -246,7 +246,7 @@ Each is an event in the project's ledger, with no task id:
 There is one `action.ran` for every command, request or step that ran,
 passing or failing, and none for a step that did not run. The ship id is the
 same on every step of one ship. The output tail is the last 3,500 characters,
-cut after redaction: the owner's Atelier token, any Artifacts token in the
+cut after redaction: the developer's Atelier token, any Artifacts token in the
 checkout's Git settings, and the value of every environment variable whose
 name says it holds a token, a key, a secret, a password or a credential are
 replaced with `[redacted]`, as `atelier check` redacts check output.
@@ -255,7 +255,7 @@ The project page lists the approvals with their status and the latest steps
 run; `GET /api/projects/P/actions` returns both.
 
 While a merged revision's declared protected actions have not run, the
-owner's inbox carries a reminder. The kinds the order needs unconditionally
+developer's inbox carries a reminder. The kinds the order needs unconditionally
 (install, deploy and the kinds runs name; push needs one only with `--push`)
 are recorded with the project's policy at `atelier init` and `atelier sync`,
 and for each merged item the entry stands from its `item.merged` event until
@@ -294,6 +294,6 @@ path catches.
   line.
 - It does not run `paid-run` or `photos-writeback` actions on its own, only
   steps that name those kinds.
-- It does not deliver a merged revision by itself: the owner runs it, and the
+- It does not deliver a merged revision by itself: the developer runs it, and the
   inbox's reminder (above) stands until a run of each declared kind is
   recorded.
