@@ -766,8 +766,9 @@ body.public main.showcase { max-width: none; padding: 0 0 8px; }
 .show-window { margin: -12px 0 28px; font-size: 15px; color: var(--text-muted); }
 .show-hero { padding-top: 64px; padding-bottom: 24px; }
 .show-hero .kicker { display: block; margin: 0 0 18px; font-weight: 400; line-height: 1.5; letter-spacing: .1em; }
-.show-hero h1 { margin: 0; max-width: 15ch; font: 800 clamp(44px, 6.4vw, 88px)/.98 var(--font-display); letter-spacing: -.035em; color: var(--text-bright); }
-.show-stack { margin: 18px 0 0; max-width: 720px; font-family: var(--font-mono, "IBM Plex Mono", monospace); font-size: 14px; letter-spacing: 0.02em; color: var(--accent); }
+.show-hero h1 { margin: 0; max-width: 17ch; font: 800 clamp(44px, 6.4vw, 88px)/.98 var(--font-display); letter-spacing: -.035em; color: var(--text-bright); }
+.show-what { margin: 22px 0 0; max-width: 820px; font: 700 clamp(22px, 2.4vw, 30px)/1.25 var(--font-display); letter-spacing: -.01em; color: var(--text-bright); }
+.show-stack { margin: 14px 0 0; max-width: 720px; font-family: var(--font-mono, "IBM Plex Mono", monospace); font-size: 14px; letter-spacing: 0.02em; color: var(--accent); }
 .show-lead { margin: 28px 0 0; max-width: 640px; font-size: 20px; line-height: 1.5; color: var(--text); }
 .show-hero .error { margin-top: 20px; }
 
