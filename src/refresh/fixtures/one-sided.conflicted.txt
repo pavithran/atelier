@@ -1,0 +1,9 @@
+const LIMIT = 10;
+<<<<<<< HEAD
+const NAME = "atelier";
+||||||| merged common ancestors
+const NAME = "atelier";
+=======
+const NAME = "Atelier";
+>>>>>>> 1111111
+const MODE = "home";

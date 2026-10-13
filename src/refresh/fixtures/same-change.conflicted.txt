@@ -1,0 +1,9 @@
+export function total(items) {
+<<<<<<< HEAD
+  return items.reduce((a, b) => a + b.price, 0);
+||||||| merged common ancestors
+  return items.reduce((a, b) => a + b.cost, 0);
+=======
+  return items.reduce((a, b) => a + b.price, 0);
+>>>>>>> 1111111
+}

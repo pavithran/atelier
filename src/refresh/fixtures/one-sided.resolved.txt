@@ -1,0 +1,3 @@
+const LIMIT = 10;
+const NAME = "Atelier";
+const MODE = "home";
