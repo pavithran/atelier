@@ -512,6 +512,29 @@ test("an object whose bytes do not hash to its id stops the batch, naming its pa
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// Eighth review of t592 (codex/gpt-6-astra): the raw tree parser checked no
+// separator, NUL, id length or progress, so 21 bytes with no space made it
+// loop forever. A malformed tree, stored under its correct id, now stops
+// the batch, named by its path.
+test("a malformed tree under its correct id stops the batch promptly, naming its path (finding 4)", { timeout: 20_000 }, async () => {
+  const { dir } = repo();
+  try {
+    const plumb = (input, ...a) => execFileSync("git", a, { cwd: dir, input, encoding: "utf8" }).trim();
+    const bad = plumb("A".repeat(21), "hash-object", "-t", "tree", "--literally", "-w", "--stdin");
+    const mainTree = git(dir, "ls-tree", "main");
+    const withNested = plumb(`${mainTree}\n040000 tree ${bad}\tnested\n`, "mktree", "--missing");
+    const first = git(dir, "commit-tree", withNested, "-p", "main", "-m", "nested");
+    const b = plumb("b\n", "hash-object", "-w", "--stdin");
+    const later = plumb(`${mainTree}\n100644 blob ${b}\tb.txt\n`, "mktree");
+    const sha = git(dir, "commit-tree", later, "-p", first, "-m", "later\n\nAgent: codex/gpt-6");
+    const start = git(dir, "rev-parse", "HEAD");
+    const r = await fastLand({ ...base, titles: { t3: "Malformed" }, cwd: dir, pairs: [{ id: "t3", sha }], test: "true", record: () => assert.fail("recorded") });
+    assert.equal(r.failure?.step, "secret scan", JSON.stringify(r.failure));
+    assert.match(r.failure.detail, /(^|[ :,])nested\/ \(.*malformed/);
+    assert.equal(git(dir, "rev-parse", "HEAD"), start);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("a blob the scan cannot read stops the batch, naming its path (finding 4)", async () => {
   const { dir } = repo();
   try {
